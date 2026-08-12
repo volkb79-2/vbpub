@@ -410,13 +410,16 @@ mistaken for a small change:
   stack's own instance rather than a repo-global runner.
 - **Changed-path → stack mapping** for `--changed`. Cheap only because stacks
   are already directory-scoped; still a new inference CIU does not perform.
-- **A provenance precondition — DONE (S17, 2026-08-08/09).** `bake` now stamps
+- **A provenance precondition — DONE (S17, 2026-08-08/09; machine-readable
+  output DONE, S17.3/S17.4, 2026-08-11/12).** `bake` now stamps
   `org.opencontainers.image.revision`, and `ciu provenance` (S17.2) refuses a
   live lane against a stale image at TEST time. `ciu test`'s job here shrinks
   to *calling* the existing gate rather than building one — nothing left
-  to design. (`ciu provenance` itself still has no machine-readable output,
-  which matters for the next bullet — see CIU-20 in
-  `KNOWN_ISSUES_TODO_BACKLOG.md`.)
+  to design. `ciu provenance --json` (S17.3, CIU-20) now emits the closed,
+  bounded verdict document a downstream evidence consumer needs — the gap
+  this bullet used to point at is closed; the follow-on assay integration it
+  unblocks (a Tier-2 adjudicated evidence reader) is assay's own work, not
+  named here again.
 - **A judged-result contract**, so `ciu test` can surface a testing library's
   verdict without linking against it or parsing its prose. Still open, but no
   longer abstract: this is not a contract CIU has to invent. **assay**, an

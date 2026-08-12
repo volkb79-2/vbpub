@@ -374,22 +374,33 @@ def _ksm(rest: list[str]) -> int:
 
 
 def _provenance(rest: list[str]) -> int:
-    """Handle `ciu provenance [--ignore-mismatch]` (S17.2).
+    """Handle `ciu provenance [--ignore-mismatch] [--json]` (S17.2/S17.3, CIU-20).
 
     Verify that the RUNNING containers were built from the commit under test,
     before a live/integration lane is allowed to produce evidence. Standalone
     today; this is the check `ciu test` will call once that surface exists
     (docs/DESIGN-NOTES.md D7).
+
+    This is the ONLY place that turns `verify_running_provenance`'s verdict
+    into prose, a raise, or a warning — the function itself never prints and
+    never raises, so `--json` can print ONLY the JSON document, never prose
+    mixed onto the same stream.
     """
     import argparse as _ap
+    import json as _json
 
-    from .deploy import load_global_config, verify_running_provenance
+    from .deploy import (
+        ProvenanceResult,
+        load_global_config,
+        verify_running_provenance,
+        warn,
+    )
     from .dev import resolve_repo_root
-    from .engine import get_git_hash
 
     p = _ap.ArgumentParser(prog="ciu provenance", add_help=False)
     p.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                    action="store_true", default=False)
+    p.add_argument("--json", dest="json_output", action="store_true", default=False)
     p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
     opts = p.parse_args(rest)
 
@@ -406,28 +417,78 @@ def _provenance(rest: list[str]) -> int:
     if not project or not env_tag:
         # No instance identity means no way to tell THIS instance's containers
         # from a sibling worktree's, and a host-wide verdict would be wrong in
-        # both directions. Refuse to answer rather than answer wrongly.
-        print("ciu provenance: deploy.project_name and deploy.environment_tag "
-              "are required to scope the check to this instance (S8.7).",
-              file=sys.stderr)
+        # both directions. Refuse to answer rather than answer wrongly. Emitted
+        # here, BEFORE verify_running_provenance is ever called — there is no
+        # project_prefix to scope a check with.
+        result = ProvenanceResult(
+            schema_version=1, instance=None, commit_under_test=None,
+            tree_state=None, containers=None, overall="refused-no-identity",
+        )
+        if opts.json_output:
+            print(_json.dumps(result.to_dict(), indent=2))
+        else:
+            print("ciu provenance: deploy.project_name and deploy.environment_tag "
+                  "are required to scope the check to this instance (S8.7).",
+                  file=sys.stderr)
         return 2
 
-    try:
-        verify_running_provenance(f"{project}-{env_tag}",
-                                  ignore_mismatch=opts.ignore_mismatch)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+    result = verify_running_provenance(f"{project}-{env_tag}")
 
-    # Do NOT claim "OK" for a run that could not check anything. The dirty and
-    # non-git paths WARN and return, so printing a green line after them would
-    # contradict the warning one line above and hand the reader a verdict the
-    # tool never reached — the exact shape of misleading evidence this check
-    # exists to prevent.
-    rev = get_git_hash()
-    if rev == "dev" or rev.endswith("-dirty"):
+    if opts.json_output:
+        print(_json.dumps(result.to_dict(), indent=2))
+        if result.overall == "mismatch" and not opts.ignore_mismatch:
+            return 2
         return 0
-    print(f"provenance OK — running containers match {rev}")
+
+    if result.overall == "mismatch":
+        mismatches = [c for c in (result.containers or []) if c.status == "mismatch"]
+        detail = "\n".join(
+            f"  {c.name} ({c.image}): running {c.labelled_revision}, "
+            f"testing {result.commit_under_test}"
+            for c in mismatches
+        )
+        message = (
+            f"[S17] {len(mismatches)} running container(s) were built from a "
+            f"different commit than the one under test:\n{detail}\n"
+            "Rebuild and redeploy (`ciu bake` + `ciu up`) so the result describes "
+            "the code under test, or pass --ignore-mismatch to run anyway (the "
+            "result then describes the OLD artifact, whatever it says)."
+        )
+        if opts.ignore_mismatch:
+            warn(message)
+            return 0
+        print(message, file=sys.stderr)
+        return 2
+
+    if result.overall == "not-verified-dirty":
+        warn(
+            "[S17] working tree is dirty — provenance NOT verified. Uncommitted "
+            "changes are in no image, so no running container can match this "
+            "tree; commit before treating a live result as evidence about this "
+            "code."
+        )
+        return 0
+
+    if result.overall == "not-verified-unknown":
+        # Not a git checkout — nothing to compare against. Silent, as before:
+        # this is not an adverse finding, just nothing to check.
+        return 0
+
+    if result.overall == "not-verified-no-evidence":
+        warn(
+            "[S17] provenance could not be verified — no checkable evidence "
+            "(docker unavailable, or no containers with a usable revision "
+            "label were found). This is not a refusal; rerun where docker is "
+            "reachable for a real verdict, or inspect --json for the full "
+            "document."
+        )
+        return 0
+
+    # verified-match: do NOT claim "OK" for a run that could not check
+    # anything — the branches above already returned for every case that
+    # didn't actually verify something, so reaching here means >=1 container
+    # was checked and matched.
+    print(f"provenance OK — running containers match {result.commit_under_test}")
     return 0
 
 
@@ -447,6 +508,8 @@ def _worktree(rest: list[str]) -> int:
     p_add.add_argument("--profile", default=None, metavar="P1,P2")
     p_add.add_argument("--worktree-dir", dest="worktree_dir",
                        default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
+    p_add.add_argument("--data-isolation", dest="data_isolation", default=None,
+                       metavar="PROFILE")
 
     p_rm = sub.add_parser("rm", add_help=False)
     p_rm.add_argument("name")
@@ -469,6 +532,7 @@ def _worktree(rest: list[str]) -> int:
             path = wt_mod.add(
                 repo_root, opts.name, base=opts.base, profile=opts.profile,
                 worktree_dir=opts.worktree_dir,
+                data_isolation=opts.data_isolation,
             )
             print(f"worktree ready: {path}")
             print(f"  next: cd {path} && source ciu.env && ciu up")

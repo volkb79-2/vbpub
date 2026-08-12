@@ -713,6 +713,7 @@ def generate_overlay(
     physical_root: Path | None = None,
     compose_yaml_text: str | None = None,
     governance: Mapping[str, Any] | None = None,
+    image_revisions: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Write ``<stack>/.ciu/ciu.compose.overlay.yml`` (the overlay); S4.17/S8.1/S15.
 
@@ -760,9 +761,23 @@ def generate_overlay(
     (``deploy.governance_slice_preflight``). One summary line is always
     logged when *governance* is not ``None`` (S15.7).
 
+    *image_revisions* (S17.4, CIU-21) is an optional ``{service: revision}``
+    map, built by the caller (``engine.py``, already docker-aware) from each
+    service's OWN baked ``org.opencontainers.image.revision`` label — never
+    from the host tree's current commit. For every entry, ``CIU_IMAGE_REVISION
+    =<revision>`` is APPENDED to that service's ``environment`` fragment
+    (append-never-clobber, S15.11's precedent — ``environment`` is a MERGE
+    key shared with governance's own injections). This injection is
+    UNCONDITIONAL: it runs regardless of ``governance.enabled`` and is not
+    subject to ``exempt_services`` (governance's ``enabled`` gate above governs
+    RESOURCE governance only). A service with no entry in *image_revisions*
+    gets no variable — the caller omits services with no baked label rather
+    than passing a placeholder.
+
     Returns the overlay path, or ``None`` when there are no secrets, no
-    configfiles, **and** no governance injections (S8.1/S15 — the overlay is
-    omitted only when there is nothing at all to wire).
+    configfiles, no governance injections, **and** no image revisions (S8.1/
+    S15/S17.4 — the overlay is omitted only when there is nothing at all to
+    wire).
 
     *repo_root* / *physical_root* are forwarded to :func:`to_physical_path`;
     when ``None`` they are read from the environment there.
@@ -855,7 +870,7 @@ def generate_overlay(
                 flush=True,
             )
 
-    if not materialized and not configfile_mounts and not governance_injections:
+    if not materialized and not configfile_mounts and not governance_injections and not image_revisions:
         return None
 
     stack_dir = Path(stack_dir)
@@ -937,6 +952,17 @@ def generate_overlay(
                     svc.setdefault(key, []).extend(value)
                 else:
                     svc[key] = value
+
+    if image_revisions:
+        # S17.4/CIU-21 — UNCONDITIONAL: independent of governance.enabled and
+        # exempt_services (the gate above governs RESOURCE governance only).
+        # Append-never-clobber (S15.11 KSM precedent): "environment" is a
+        # MERGE key shared with the configfile/governance fragments above.
+        for service_name, revision in image_revisions.items():
+            svc = services.setdefault(service_name, {})
+            svc.setdefault("environment", []).append(
+                f"CIU_IMAGE_REVISION={revision}"
+            )
 
     if services:
         overlay["services"] = services

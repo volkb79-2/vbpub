@@ -2071,17 +2071,20 @@ hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
 container prefix and volumes. `ciu worktree` is the verb that composes what CIU
 already knows into one operation.
 
-- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR]`** —
+- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--data-isolation PROFILE]`** —
   creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
   `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
   `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
-  prepares an instance, it does not decide you want it running.
-- **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
-  under that worktree's own `ciu.env`, and only then `git worktree remove`.
-  **The order is normative.** `ciu down` preserves volumes, so it strands
-  `vol-*` dirs owned by image UIDs that an unprivileged `rm -rf` cannot delete;
-  and removing the checkout first destroys the rendered config that tells CIU
-  what to clean. A failed clean ABORTS the removal unless `--force`.
+  prepares an instance, it does not decide you want it running. `--data-isolation`
+  additionally provisions a namespaced data slot (S16.2).
+- **`worktree rm NAME [-y] [--force]`** — when the worktree was created with
+  `--data-isolation`, first drops its namespaced data slot (S16.2), then runs
+  `ciu clean` INSIDE the worktree under that worktree's own `ciu.env`, and only
+  then `git worktree remove`. **The order is normative.** `ciu down` preserves
+  volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
+  `rm -rf` cannot delete; and removing the checkout first destroys the rendered
+  config that tells CIU what to clean. A failed clean ABORTS the removal unless
+  `--force`; a failed data-isolation drop does too (S16.2).
 - **`worktree list`** — registered worktrees, primary marked.
 
 Both sub-operations run as SUBPROCESSES under the target worktree's environment.
@@ -2091,6 +2094,45 @@ instance's identity from the old instance's environment. The worktree's
 `ciu.env` is read by explicit path, never via a search that consults
 `$REPO_ROOT` — that search would find the PRIMARY's file and operate on the
 wrong instance.
+
+### S16.2 — Namespaced data isolation (CIU-23)
+
+`worktree add --data-isolation <profile>` provisions a database/schema
+namespaced by the new instance's own `INSTANCE_ID` (S2) — NEVER by its
+`NAME` — via an injectable `DataIsolationProvisioner` (a `Protocol`
+implemented by `worktree.PostgresProvisioner`, the real Postgres-backed
+shipped default). Naming by `INSTANCE_ID` rather than `NAME` is load-bearing:
+`INSTANCE_ID` is a hash of the PHYSICAL repo path, so two different CLONES of
+the repo that independently choose the SAME worktree name get different
+`INSTANCE_ID`s and therefore never collide on one entity — a name-keyed
+scheme would.
+
+The resulting connection identity (entity name, profile, DSN) is written into
+the new worktree's own `ciu.env` as `CIU_DATA_ISOLATION_ENTITY` /
+`CIU_DATA_ISOLATION_PROFILE` / `CIU_DATA_ISOLATION_DSN`. **This value MAY be
+credential-bearing** (a DSN can embed a database user/host/name) and MUST
+NEVER be recommended as an `env_passthrough` candidate for a consumer's own
+assay lane — a passthrough value lands in every verdict artifact in
+cleartext.
+
+`worktree rm` drops the namespaced entity BEFORE `ciu clean` (extending the
+module's clean-before-remove ordering to a second precondition). The drop is
+IDEMPOTENT: dropping an already-absent entity is a no-op success, which is
+what makes a RETRIED `worktree rm` safe after a prior partial failure — if
+the drop succeeded on an earlier attempt but `ciu clean` then failed and
+aborted removal, the checkout and its `ciu.env` (naming the now-dead DSN)
+remain; the retried `rm` re-runs the drop as a no-op, then retries `ciu
+clean`. A FAILED drop aborts removal unless `--force`. Unlike `worktree
+rm`'s existing `--force` path over a failed `ciu clean` (which proceeds
+silently), a `--force`-masked drop failure WARNS, naming the entity that was
+not dropped and stating it is now the operator's problem — it is not mirrored
+from the existing silent path, it improves on it.
+
+The injectable provisioner is deliberately the test seam: this package's gate
+(`tester-unified:local`) has no live Postgres server, so naming, ordering,
+force semantics, and the idempotent-retry contract are proven against a FAKE
+implementation of `DataIsolationProvisioner`. A real-server proof against the
+shipped `PostgresProvisioner` is deliberately deferred — tracked as CIU-26.
 
 ## S17 — Image provenance
 
@@ -2105,9 +2147,12 @@ answer and would be trusted as one.
 
 ### S17.2 — Enforcement at TEST time (`ciu provenance`, fail CLOSED)
 
-`verify_running_provenance` refuses when a RUNNING container's image carries a
-revision label differing from the commit under test (`ValueError` → S10.3
-exit 2). Exposed as `ciu provenance [--ignore-mismatch]`.
+`ciu provenance [--ignore-mismatch] [--json]` refuses (S10.3 exit 2) when a
+RUNNING container's image carries a revision label differing from the commit
+under test. `deploy.verify_running_provenance` builds the verdict (S17.3);
+`cli._provenance` is the SOLE place that turns it into a refusal, a warning,
+or `--json`'s document (`verify_running_provenance` itself never raises and
+never prints, so the two output modes cannot mix on one stream).
 
 **This is a test-time gate, not a deploy-time one, and the distinction is the
 design.** At deploy the question is "did I remember to bake?", which the
@@ -2141,3 +2186,85 @@ Scope is self-selecting, and the non-refusals are as normative as the refusal:
 
 `--ignore-mismatch` (alias `--force`) downgrades the refusal to a warning;
 `--no-preflight` skips the check entirely, like its sibling preflights.
+
+### S17.3 — Machine-readable provenance verdict (`ciu provenance --json`, CIU-20)
+
+`deploy.verify_running_provenance` ALWAYS builds and returns a
+`ProvenanceResult` — never bare `None`, never raising internally. Its fields,
+in wire order: `schema_version` (constant `1`), `instance`,
+`commit_under_test`, `tree_state`, `containers`, `overall`.
+
+- `commit_under_test` is `get_git_hash()`'s return value VERBATIM (the
+  `-dirty` suffix, if any, lives ONLY here).
+- `tree_state` is DERIVED from that same string (`.endswith("-dirty")` →
+  `dirty`, `== "dev"` → `not-a-checkout`, else `clean`) — never set
+  independently, so the two fields cannot contradict.
+- `containers` is `list[{name, image, labelled_revision, status}]`, sorted by
+  `name` ascending, when — and ONLY when — enumeration ran (`docker ps`
+  succeeded); JSON `null` in every case where no container-level verdict was
+  formed (identity refused, dirty tree, non-checkout, or enumeration could
+  not run). `labelled_revision` is JSON `null` when unknown, NEVER `""`.
+  `status` is one of `match` / `mismatch` / `unlabelled`.
+- `overall` is one of SIX closed values, decided in this order: (1) identity
+  (`project`/`env_tag`) unresolved → `refused-no-identity` (every other field
+  null), emitted by `cli._provenance` BEFORE `verify_running_provenance` is
+  even called — there is no `project_prefix` yet to scope a check with; (2)
+  `commit_under_test == "dev"` → `not-verified-unknown` (`containers` null);
+  (3) `commit_under_test` ends in `-dirty` → `not-verified-dirty` (`containers`
+  null); (4) enumeration could NOT run (`docker ps` raised or returned
+  non-zero) → `not-verified-no-evidence` (`containers` null); (5) enumeration
+  ran, ≥1 container `mismatch` → `mismatch` (`containers` the sorted list);
+  (6) enumeration ran, ≥1 `match` and ZERO `mismatch` → `verified-match`
+  (`containers` the list) — a green verdict is NEVER emitted from zero checked
+  containers; (7) enumeration ran but produced NEITHER a match NOR a mismatch
+  (empty, or all `unlabelled`) → `not-verified-no-evidence` (`containers` the
+  possibly-empty list).
+
+The `null` (enumeration did not/could not run) vs `[]` (enumeration ran,
+found nothing informative) distinction is load-bearing: collapsing both to
+`[]`, as the pre-S17.3 code did, let a docker-less host emit
+`verified-match` with `containers: []` — a green provenance document
+attesting nothing.
+
+`ciu provenance --json` is `store_true` (matching `ciu diagnose --json`'s
+shape exactly — NOT `[PATH|-]`) and prints ONLY the JSON document to stdout,
+no prose mixed in. `cli._provenance` is the ONLY place that decides
+prose/raise/warn behaviour from the verdict, and does so identically to the
+pre-S17.3 CLI for every case that was already correctly handled (a genuine
+mismatch, a dirty tree, a non-checkout, a verified match); the ONE case whose
+prose is new is `not-verified-no-evidence`, which did not exist as a
+distinguishable case before S17.3 and must never print "provenance OK".
+
+### S17.4 — In-container revision exposure (CIU-21)
+
+Every service's rendered overlay carries `CIU_IMAGE_REVISION=<revision>` in
+its `environment`, where `<revision>` is read back from THAT service's OWN
+image's `org.opencontainers.image.revision` label (S17.1) — never from
+`get_git_hash()`, which is the host tree's CURRENT view, not the RUNNING
+image's baked truth; comparing one against the other is a check that can
+never fail, which is worse than no check.
+
+The map is built ONCE per render/up pass in `engine.py` (already
+docker-aware), immediately before Step 15's `generate_overlay` call, by
+calling `deploy._image_revision_label` per service — never reimplementing its
+label lookup. A service with no baked label, or a `build:` service with no
+baked `image:` yet, is OMITTED from the map rather than given a placeholder
+(mirrors S17.1: a value that looks like an answer would be trusted as one).
+The map is passed into `composefile.generate_overlay` as a new
+`image_revisions` keyword — plain data — so `composefile.py` gains NO
+docker/procutil/subprocess import; the docker lookup lives entirely in
+`engine.py`.
+
+The injection is UNCONDITIONAL: it happens regardless of
+`governance.enabled` and is not subject to `governance.exempt_services`
+(S15's gate governs RESOURCE governance only). `environment` is an
+append-never-clobber MERGE key (S15.11's KSM precedent) — an assignment
+instead of an append would silently drop a co-located `LD_PRELOAD` entry, the
+exact CIU-14 failure class one call site over. A non-empty `image_revisions`
+map writes an overlay even when every other reason to write one is absent —
+such a stack now gets an overlay where it previously had none, so
+`engine.reset_service`'s existing `overlay_path.exists()` check newly
+includes it in `docker compose down`'s `-f` args.
+
+`--json` grammar and `S17.4`'s exposure are independent: neither depends on
+the other, and a project may adopt either alone.
