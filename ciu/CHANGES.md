@@ -7,6 +7,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.0.1] - 2026-08-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=b413d2ec031680f86b832ec8d8284e91b3a6c7e3 -->
+
+### Fixed
+- fix(ciu): implement provenance no-preflight bypass (d7b9146f)
+
 ## [6.0.0] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=6fd3d88f764913c47570dbf4e36785658f33b650 -->
