@@ -2071,12 +2071,14 @@ hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
 container prefix and volumes. `ciu worktree` is the verb that composes what CIU
 already knows into one operation.
 
-- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--data-isolation PROFILE]`** —
+- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--data-isolation PROFILE] [--shared-infra REF --shared-infra-services S1,S2 --shared-infra-ref-projects R1,R2]`** —
   creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
   `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
   `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
   prepares an instance, it does not decide you want it running. `--data-isolation`
-  additionally provisions a namespaced data slot (S16.2).
+  additionally provisions a namespaced data slot (S16.2). `--shared-infra`
+  joins the new instance's declared diverging services onto an existing
+  reference instance's shared network (S16.1).
 - **`worktree rm NAME [-y] [--force]`** — when the worktree was created with
   `--data-isolation`, first drops its namespaced data slot (S16.2), then runs
   `ciu clean` INSIDE the worktree under that worktree's own `ciu.env`, and only
@@ -2094,6 +2096,72 @@ instance's identity from the old instance's environment. The worktree's
 `ciu.env` is read by explicit path, never via a search that consults
 `$REPO_ROOT` — that search would find the PRIMARY's file and operate on the
 wrong instance.
+
+### S16.1 — Shared-infra join for worktree instances (CIU-22)
+
+`worktree add NAME --shared-infra REF --shared-infra-services S1[,S2]
+--shared-infra-ref-projects R1[,R2] --profile P1[,P2]` joins only the new
+instance's declared DIVERGING-tier services onto an EXISTING reference
+worktree's shared-infra network, instead of standing up a second copy of
+heavy, rarely-diverging infrastructure (identity, secrets, observability,
+reverse-proxy). `REF` is resolved by the same basename-or-absolute-path
+grammar `find_worktree` already uses. The three shared-infra flags and a
+non-empty `--profile` are an ALL-OR-NOTHING group — no mode may infer a
+tier from a compose file, and a partial group is an add-time refusal before
+any side effect.
+
+**Validation happens at `add` time; joining happens at `ciu up` time.** `add`
+never deploys (S16's existing rule, unchanged): it resolves REF, reads its
+explicit `ciu.env` for `DOCKER_NETWORK_INTERNAL`, and proves EVERY declared
+reference Compose project (`--shared-infra-ref-projects`) has a running
+container on that network — AND-combined, never OR, and scoped to both the
+network and the exact project label, so a bare labelled-container count
+elsewhere on the host is never mistaken for liveness. Only then does it
+create the checkout and record the resolved intent
+(`CIU_SHARED_INFRA_REF_PATH`, `CIU_SHARED_INFRA_NETWORK`,
+`CIU_SHARED_INFRA_SERVICES`, `CIU_SHARED_INFRA_REF_PROJECTS`) into the new
+worktree's OWN `ciu.env`. The actual `docker network connect` calls happen
+later, in the new worktree's own process, after `docker compose up`
+succeeds — never during `add`, and never before Compose has brought this
+instance's own stack up on its own network.
+
+**The new instance keeps its own `DOCKER_NETWORK_INTERNAL` throughout.**
+Only the declared diverging-tier service containers gain a SECOND network
+membership, via imperative `docker network connect` calls outside compose
+(precedent: `_connect_devcontainer_to_network`) — never a compose
+`networks:` declaration (inert: CIU writes no such key anywhere in `src/`),
+never every container in the project, and never a reference-tier container.
+
+**The post-up join re-validates everything before any side effect.** `ciu
+up` re-resolves the recorded REF against the current `git worktree list`
+(catches removal since `add`), re-reads its `ciu.env`, and refuses if its
+network changed or a declared reference project now equals the joining
+instance's own compose project. It re-runs the same AND-combined liveness
+check `add` used (catches a reference stopped between verbs), then requires
+a RUNNING container for every declared service in THIS compose project
+(matched by `com.docker.compose.project`/`com.docker.compose.service`
+labels) before touching the reference network at all.
+
+**Already-exists detection is Docker STATE, not Docker diagnostic TEXT.** On
+every non-zero `docker network connect` result, CIU re-inspects that
+network's membership for the target container ID: present means a
+successful CONCURRENT no-op (this invocation never connected it, so it is
+not added to rollback); absent means a genuine failure. Matching Docker's
+human-readable error string was explicitly rejected across review — it is
+unreproducible and unspecified across Docker versions.
+
+**Rollback is scoped to only this invocation's own successful connects.** A
+genuine connect failure disconnects, in REVERSE order, only the container
+IDs THIS call connected with a zero return — never a pre-existing member,
+never a concurrent no-op. CIU never runs `docker compose down` on this
+failure: the instance's own stack stays up, on its own network, observably
+not joined, so the operator can restore the reference and retry, or
+explicitly `ciu down`.
+
+The gate (`tester-unified:local`) has no Docker socket, so every branch
+above — liveness, target discovery, the concurrent-connect state check, and
+rollback — is proven against a scripted fake at the `procutil.docker`
+boundary, the same seam S16.2's provisioner tests use.
 
 ### S16.2 — Namespaced data isolation (CIU-23)
 

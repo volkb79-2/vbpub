@@ -354,6 +354,10 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | `PUBLIC_TLS_CRT_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 | `CIU_SERVICES_PROFILE` | No | Comma-separated ordered profile list; default selection for `ciu up` [S7.5] |
+| `CIU_SHARED_INFRA_REF_PATH` | No | Resolved absolute path of the shared-infra reference worktree; set by `worktree add --shared-infra` [S16.1] |
+| `CIU_SHARED_INFRA_NETWORK` | No | The reference worktree's `DOCKER_NETWORK_INTERNAL`, recorded at add-time; re-validated at `ciu up` [S16.1] |
+| `CIU_SHARED_INFRA_SERVICES` | No | Comma-separated, order-preserved list of this instance's OWN diverging-tier service names to join to the reference network [S16.1] |
+| `CIU_SHARED_INFRA_REF_PROJECTS` | No | Comma-separated, order-preserved list of Compose project names whose liveness on the reference network proves it is up (AND-combined) [S16.1] |
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].
@@ -368,6 +372,28 @@ wins only when it agrees with this process's own mountinfo-derived physical
 root for `REPO_ROOT`, or when mountinfo has no entry to check against;
 otherwise the mountinfo-derived value wins and CIU warns on stderr. Every
 other key in this table keeps the simple "pre-set env always wins" rule.
+
+### Shared-infra join example [S16.1]
+
+```console
+# Reference instance already up, on network repo-ab12cd-network, with the
+# idp and vault stacks running as Compose projects idp-dev-idp / vault-dev-vault.
+$ ciu worktree add pkg-under-test \
+    --profile core,db \
+    --shared-infra primary \
+    --shared-infra-services api,worker \
+    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault
+worktree ready: /repo/.worktrees/pkg-under-test
+  next: cd /repo/.worktrees/pkg-under-test && source ciu.env && ciu up
+```
+
+The new checkout's `ciu.env` then carries the four `CIU_SHARED_INFRA_*` keys
+above. `ciu up` there deploys `pkg-under-test`'s OWN `api`/`worker`
+containers on its OWN network exactly as any worktree would, then — only
+after that succeeds — connects `api` and `worker` to `repo-ab12cd-network`
+too, so they can reach the reference instance's `idp`/`vault`. Every other
+container in `pkg-under-test` (anything not named in
+`--shared-infra-services`) stays on its own network only.
 
 ---
 

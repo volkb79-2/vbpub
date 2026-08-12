@@ -35,11 +35,22 @@ container. This module refuses to remove a checkout it has not cleaned.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import procutil
+
 DEFAULT_WORKTREE_DIR = ".worktrees"
+
+# S16.1 — shared-infra join intent keys (CIU-22). A worktree created with
+# `--shared-infra` carries these four in its OWN ciu.env; see
+# SharedInfraIntent / parse_shared_infra_intent below.
+SHARED_INFRA_REF_PATH = "CIU_SHARED_INFRA_REF_PATH"
+SHARED_INFRA_NETWORK = "CIU_SHARED_INFRA_NETWORK"
+SHARED_INFRA_SERVICES = "CIU_SHARED_INFRA_SERVICES"
+SHARED_INFRA_REF_PROJECTS = "CIU_SHARED_INFRA_REF_PROJECTS"
 
 
 class WorktreeError(RuntimeError):
@@ -226,6 +237,173 @@ def find_worktree(repo_root: Path, name: str) -> WorktreeInfo | None:
     return None
 
 
+@dataclass(frozen=True)
+class SharedInfraIntent:
+    """S16.1/CIU-22 — a worktree's recorded intent to join a reference
+    instance's shared-infra network, resolved and validated once at
+    ``worktree add --shared-infra`` time and persisted verbatim into this
+    worktree's own ``ciu.env`` (see :func:`parse_shared_infra_intent`,
+    :func:`connect_shared_infra_after_up`)."""
+
+    ref_path: Path
+    network: str
+    services: tuple[str, ...]
+    ref_projects: tuple[str, ...]
+
+
+def _split_unique_list(raw: str, *, label: str) -> tuple[str, ...]:
+    """Split *raw* on commas into a non-empty, duplicate-free, order-preserving
+    tuple. Every item is stripped; a blank item or a duplicate is a loud
+    ``WorktreeError`` — this is shared by add-time CLI parsing and ciu.env
+    intent parsing so both reject the same malformed input the same way."""
+    items = [p.strip() for p in raw.split(",")]
+    if not raw or any(not item for item in items):
+        raise WorktreeError(
+            f"[S16.1] {label} must be a non-empty comma-separated list with no "
+            f"blank items: {raw!r}"
+        )
+    seen: set[str] = set()
+    for item in items:
+        if item in seen:
+            raise WorktreeError(f"[S16.1] {label} contains a duplicate item: {item!r}")
+        seen.add(item)
+    return tuple(items)
+
+
+def parse_shared_infra_intent(values: Mapping[str, str]) -> SharedInfraIntent | None:
+    """The SOLE reader of the S16.1 shared-infra intent recorded in a
+    worktree's own ``ciu.env`` (CIU-22). Called by ``engine.py`` against
+    ``os.environ`` after bootstrap.
+
+    All four fields absent returns ``None`` — an ordinary worktree, unaffected
+    by this feature. Any PARTIAL, empty, malformed, or duplicate-containing
+    group raises :class:`WorktreeError`: no consumer may silently proceed on a
+    corrupt intent (a hand-edited or truncated ``ciu.env``).
+    """
+    keys = (
+        SHARED_INFRA_REF_PATH, SHARED_INFRA_NETWORK,
+        SHARED_INFRA_SERVICES, SHARED_INFRA_REF_PROJECTS,
+    )
+    present = [k for k in keys if values.get(k)]
+    if not present:
+        return None
+    missing = [k for k in keys if not values.get(k)]
+    if missing:
+        raise WorktreeError(
+            f"[S16.1] partial shared-infra intent in ciu.env: {', '.join(missing)} "
+            f"missing while {', '.join(present)} set. This checkout's ciu.env is "
+            "corrupt or was hand-edited; regenerate it via `ciu worktree add "
+            "--shared-infra ...` or remove all four CIU_SHARED_INFRA_* fields."
+        )
+    return SharedInfraIntent(
+        ref_path=Path(values[SHARED_INFRA_REF_PATH]),
+        network=values[SHARED_INFRA_NETWORK],
+        services=_split_unique_list(values[SHARED_INFRA_SERVICES], label=SHARED_INFRA_SERVICES),
+        ref_projects=_split_unique_list(
+            values[SHARED_INFRA_REF_PROJECTS], label=SHARED_INFRA_REF_PROJECTS
+        ),
+    )
+
+
+def _check_reference_network_and_projects(network: str, ref_projects: tuple[str, ...]) -> None:
+    """S16.1 — the two reference-live Docker checks, shared by add-time
+    preflight and post-up revalidation: *network* must exist, and EVERY
+    *ref_projects* entry (AND-combined, never OR) must have at least one
+    RUNNING container on it carrying ``com.docker.compose.project=<R>``. This
+    proves only that something carrying each operator-supplied label is
+    running — R is never derived or independently authenticated by CIU.
+
+    A network containing only an unrelated/undeclared-project container (the
+    masquerader case) fails here because the per-project query is scoped to
+    both the network AND the exact declared label — a bare labelled-container
+    count on the network is not accepted as liveness.
+    """
+    try:
+        inspect = procutil.docker(["network", "inspect", network], capture=True, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(f"[S16.1] could not inspect network {network!r}: {exc}") from exc
+    if inspect.returncode != 0:
+        raise WorktreeError(
+            f"[S16.1] shared-infra network {network!r} does not exist or is not "
+            f"inspectable: {(inspect.stderr or inspect.stdout or '').strip()}"
+        )
+
+    for project in ref_projects:
+        try:
+            ps = procutil.docker(
+                [
+                    "ps",
+                    "--filter", f"network={network}",
+                    "--filter", f"label=com.docker.compose.project={project}",
+                    "--format", "{{.ID}}",
+                ],
+                capture=True, check=False,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise WorktreeError(
+                f"[S16.1] could not query reference project {project!r} on "
+                f"network {network!r}: {exc}"
+            ) from exc
+        ids = [line for line in (ps.stdout or "").splitlines() if line.strip()]
+        if ps.returncode != 0 or not ids:
+            raise WorktreeError(
+                f"[S16.1] shared-infra reference project {project!r} has no "
+                f"running container on network {network!r}; the reference "
+                "instance does not look live. Bring it up first, or drop "
+                "--shared-infra."
+            )
+
+
+def _preflight_shared_infra_for_add(
+    repo_root: Path,
+    *,
+    shared_infra: str,
+    shared_infra_services: str,
+    shared_infra_ref_projects: str,
+) -> SharedInfraIntent:
+    """S16.1 — resolve and validate `worktree add --shared-infra` input
+    BEFORE any side effect (no git worktree, no checkout). Read-only Docker
+    checks only; see the module's O1 contract."""
+    from .workspace_env import parse_workspace_env
+
+    ref = find_worktree(repo_root, shared_infra)
+    if ref is None:
+        raise WorktreeError(
+            f"[S16.1] --shared-infra {shared_infra!r} does not resolve to a "
+            f"registered worktree under {repo_root}. `ciu worktree list` shows "
+            "what exists."
+        )
+
+    ref_env_file = ref.path / "ciu.env"
+    if not ref_env_file.is_file():
+        raise WorktreeError(
+            f"[S16.1] {ref_env_file} does not exist, so CIU cannot read the "
+            "reference worktree's network. Run `ciu env generate` there first."
+        )
+    try:
+        ref_env = parse_workspace_env(ref_env_file)
+    except OSError as exc:
+        raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
+
+    network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
+    if not network:
+        raise WorktreeError(
+            f"[S16.1] {ref_env_file} has no DOCKER_NETWORK_INTERNAL; the "
+            "reference worktree is not a usable CIU instance."
+        )
+
+    services = _split_unique_list(shared_infra_services, label="--shared-infra-services")
+    ref_projects = _split_unique_list(
+        shared_infra_ref_projects, label="--shared-infra-ref-projects"
+    )
+
+    _check_reference_network_and_projects(network, ref_projects)
+
+    return SharedInfraIntent(
+        ref_path=ref.path, network=network, services=services, ref_projects=ref_projects,
+    )
+
+
 def _generate_env_in(worktree: Path) -> int:
     """Run ``ciu env generate`` INSIDE *worktree*, with the primary checkout's
     repo-path variables STRIPPED from the child environment.
@@ -301,6 +479,9 @@ def add(
     worktree_dir: str = DEFAULT_WORKTREE_DIR,
     data_isolation: str | None = None,
     provisioner: DataIsolationProvisioner | None = None,
+    shared_infra: str | None = None,
+    shared_infra_services: str | None = None,
+    shared_infra_ref_projects: str | None = None,
 ) -> Path:
     """Create worktree *name* and make it a ready-to-deploy CIU instance.
 
@@ -326,6 +507,24 @@ def add(
     it must NEVER be recommended as an ``env_passthrough`` candidate for a
     consumer's own assay lane: a passthrough value lands in every verdict
     artifact in cleartext.
+
+    With *shared_infra* (S16.1/CIU-22), joins this instance's declared
+    diverging-tier services onto an EXISTING reference worktree's shared-infra
+    network instead of standing up a second copy of heavy, rarely-diverging
+    infrastructure. *shared_infra* is the reference worktree (the same
+    basename-or-absolute-path grammar as :func:`find_worktree`);
+    *shared_infra_services* and *shared_infra_ref_projects* are raw
+    comma-separated lists (this function owns validation, not argparse). All
+    three, together with a non-empty *profile*, are an all-or-nothing group —
+    partial input is a loud :class:`WorktreeError`, never silent inference
+    from a compose file. The reference is fully validated (registered, its own
+    ``ciu.env`` network, every declared reference project actually running on
+    it) BEFORE any side effect; `add` records the resolved intent into the new
+    worktree's own ``ciu.env`` but never joins anything itself — the actual
+    ``docker network connect`` calls happen later, at ``ciu up`` time, in the
+    new worktree's own process (see :func:`connect_shared_infra_after_up`).
+    This instance keeps its OWN ``DOCKER_NETWORK_INTERNAL`` throughout; only
+    the declared diverging services later gain a SECOND membership.
     """
     if not name or "/" in name or name.startswith("."):
         raise WorktreeError(
@@ -338,6 +537,22 @@ def add(
         raise WorktreeError(
             f"[S16] {target} already exists. Use `ciu worktree rm {name}` first, "
             "or pick another name."
+        )
+
+    shared_infra_intent: SharedInfraIntent | None = None
+    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+        if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
+            raise WorktreeError(
+                "[S16.1] --shared-infra requires --shared-infra-services, "
+                "--shared-infra-ref-projects, and a non-empty --profile all "
+                "together; got a partial group. No mode may infer a tier from "
+                "a compose file."
+            )
+        shared_infra_intent = _preflight_shared_infra_for_add(
+            repo_root,
+            shared_infra=shared_infra,
+            shared_infra_services=shared_infra_services,
+            shared_infra_ref_projects=shared_infra_ref_projects,
         )
 
     res = _git(["worktree", "add", "-b", name, str(target), base], repo_root)
@@ -397,6 +612,21 @@ def add(
                 f'export CIU_DATA_ISOLATION_ENTITY="{entity}"\n'
                 f'export CIU_DATA_ISOLATION_PROFILE="{data_isolation}"\n'
                 f'export CIU_DATA_ISOLATION_DSN="{dsn}"\n'
+            )
+
+    if shared_infra_intent is not None:
+        env_file = target / "ciu.env"
+        with env_file.open("a", encoding="utf-8") as fh:
+            fh.write(
+                "\n# Shared-infra join intent (S16.1/CIU-22), set by "
+                "`ciu worktree add --shared-infra`. Resolved and validated at "
+                "add-time; `ciu up` re-validates before joining -- this "
+                "instance's OWN DOCKER_NETWORK_INTERNAL never changes.\n"
+                f'export {SHARED_INFRA_REF_PATH}="{shared_infra_intent.ref_path}"\n'
+                f'export {SHARED_INFRA_NETWORK}="{shared_infra_intent.network}"\n'
+                f'export {SHARED_INFRA_SERVICES}="{",".join(shared_infra_intent.services)}"\n'
+                f'export {SHARED_INFRA_REF_PROJECTS}='
+                f'"{",".join(shared_infra_intent.ref_projects)}"\n'
             )
     return target
 
@@ -536,3 +766,213 @@ def remove(
             f"{(res.stderr or res.stdout).strip()}"
         )
     return wt.path
+
+
+def _network_container_ids(network: str) -> set[str]:
+    """The FULL (untruncated) container IDs currently members of *network*.
+
+    Matched against ``docker ps --no-trunc`` IDs in
+    :func:`connect_shared_infra_after_up` — ``docker ps``'s default ``.ID``
+    format is a truncated 12-char ID, while ``docker network inspect``'s
+    ``.Containers`` map is keyed by the FULL 64-char ID; comparing a truncated
+    ID against a full one would never match, silently treating every target as
+    absent. ``--no-trunc`` on the ``ps`` side is what keeps this comparison
+    valid.
+    """
+    res = procutil.docker(
+        [
+            "network", "inspect", network,
+            "--format", "{{range $id, $c := .Containers}}{{$id}} {{end}}",
+        ],
+        capture=True, check=False,
+    )
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.1] could not inspect shared-infra network {network!r} "
+            f"membership: {(res.stderr or res.stdout or '').strip()}"
+        )
+    return set((res.stdout or "").split())
+
+
+def _disconnect_rollback(network: str, connected_ids: list[str]) -> list[str]:
+    """Disconnect *connected_ids* from *network* in REVERSE order — only IDs
+    THIS invocation itself connected, never a pre-existing member or a
+    concurrent no-op. Returns human-readable failure strings for any
+    disconnect that itself failed; the caller appends them to the original
+    failure rather than swallowing them."""
+    failures: list[str] = []
+    for cid in reversed(connected_ids):
+        try:
+            res = procutil.docker(
+                ["network", "disconnect", network, cid], capture=True, check=False
+            )
+        except (FileNotFoundError, OSError) as exc:
+            failures.append(f"{cid}: {exc}")
+            continue
+        if res.returncode != 0:
+            failures.append(f"{cid}: {(res.stderr or res.stdout or '').strip()}")
+    return failures
+
+
+def _connect_failure_message(
+    cname: str, cid: str, network: str, detail: str, rollback_failures: list[str]
+) -> str:
+    message = (
+        f"[S16.1] could not connect {cname!r} ({cid}) to shared-infra network "
+        f"{network!r}: {detail}"
+    )
+    if rollback_failures:
+        message += "; rollback also failed for: " + "; ".join(rollback_failures)
+    return message
+
+
+def connect_shared_infra_after_up(
+    repo_root: Path,
+    compose_project: str,
+    intent: SharedInfraIntent,
+) -> None:
+    """S16.1/CIU-22 — after a SUCCESSFUL non-dry-run ``docker compose up`` of
+    THIS instance's own stack, join its declared diverging-tier services onto
+    *intent*'s reference network. Called from ``engine.main_execution`` and
+    ``engine.run_shipped``, never before Compose has succeeded and never for a
+    dry run.
+
+    This instance's own ``DOCKER_NETWORK_INTERNAL`` and its base compose/
+    overlay network declarations are NEVER touched — only the declared
+    diverging-service containers gain a SECOND membership, on the reference
+    network, via imperative ``docker network connect`` calls outside compose.
+
+    Every precondition below is checked BEFORE any connect is attempted:
+
+    1. Re-resolve *intent.ref_path* against the CURRENT ``git worktree list``
+       (the reference may have been removed since `add`); re-read its
+       explicit ``ciu.env``; require its ``DOCKER_NETWORK_INTERNAL`` still
+       equal *intent.network* (catches a stale recording); refuse any
+       declared reference project equal to *compose_project* (a reference
+       must belong to the OTHER instance); then re-run the same AND-combined
+       reference-liveness check `add` used, so a reference stopped between
+       verbs is caught here too.
+    2. For every declared service, require at least one RUNNING container in
+       *compose_project* carrying that service's label — a previously joined
+       child masquerading as live infra never satisfies this because it
+       carries its OWN project's label, not the reference's.
+    3. Only once every precondition above holds does this snapshot the
+       reference network's membership and connect each declared-service
+       container ABSENT from that snapshot. On every NON-ZERO connect result,
+       re-inspect the network for that SAME container ID (Docker STATE, never
+       Docker diagnostic TEXT): present means a successful CONCURRENT no-op
+       (this invocation never connected it, so it is not recorded and never
+       rolled back); absent means a genuine failure, which disconnects only
+       this invocation's own zero-return connects, in reverse order, and
+       re-raises.
+
+    Never runs ``docker compose down`` on failure: this instance's own stack
+    stays up, on its own network, observably not joined.
+    """
+    from .workspace_env import parse_workspace_env
+
+    ref = find_worktree(repo_root, str(intent.ref_path))
+    if ref is None:
+        raise WorktreeError(
+            f"[S16.1] shared-infra reference {intent.ref_path} is no longer a "
+            f"registered worktree under {repo_root}; it may have been removed. "
+            "Restore it, re-run `ciu worktree add --shared-infra` to update the "
+            "recorded reference, or `ciu down` this instance."
+        )
+
+    ref_env_file = ref.path / "ciu.env"
+    if not ref_env_file.is_file():
+        raise WorktreeError(
+            f"[S16.1] {ref_env_file} does not exist; the shared-infra reference "
+            "is not a usable CIU instance any more."
+        )
+    try:
+        ref_env = parse_workspace_env(ref_env_file)
+    except OSError as exc:
+        raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
+
+    current_network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
+    if not current_network or current_network != intent.network:
+        raise WorktreeError(
+            f"[S16.1] shared-infra reference network changed (recorded "
+            f"{intent.network!r}, now {current_network or '(absent)'!r}); "
+            "refusing to join a network that may no longer be the reference's "
+            "own."
+        )
+
+    for project in intent.ref_projects:
+        if project == compose_project:
+            raise WorktreeError(
+                f"[S16.1] declared reference project {project!r} is this "
+                "instance's OWN compose project; a reference project must "
+                "belong to the reference instance, not the one joining it."
+            )
+
+    _check_reference_network_and_projects(intent.network, intent.ref_projects)
+
+    targets: list[tuple[str, str]] = []
+    for service in intent.services:
+        try:
+            res = procutil.docker(
+                [
+                    "ps", "--no-trunc",
+                    "--filter", f"label=com.docker.compose.project={compose_project}",
+                    "--filter", f"label=com.docker.compose.service={service}",
+                    "--format", "{{.ID}}\t{{.Names}}",
+                ],
+                capture=True, check=False,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise WorktreeError(
+                f"[S16.1] could not query shared-infra service {service!r} in "
+                f"project {compose_project!r}: {exc}"
+            ) from exc
+        rows = [line for line in (res.stdout or "").splitlines() if line.strip()]
+        if res.returncode != 0 or not rows:
+            raise WorktreeError(
+                f"[S16.1] declared shared-infra service {service!r} has no "
+                f"running container in compose project {compose_project!r}; "
+                "cannot join a service Compose did not start."
+            )
+        for row in rows:
+            cid, _, cname = row.partition("\t")
+            targets.append((cid, cname))
+
+    # Deterministic connect order.
+    targets.sort(key=lambda t: t[1])
+
+    existing_members = _network_container_ids(intent.network)
+    absent = [(cid, cname) for cid, cname in targets if cid not in existing_members]
+
+    connected: list[str] = []
+    for cid, cname in absent:
+        try:
+            result = procutil.docker(
+                ["network", "connect", intent.network, cid], capture=True, check=False
+            )
+        except (FileNotFoundError, OSError) as exc:
+            rollback_failures = _disconnect_rollback(intent.network, connected)
+            raise WorktreeError(
+                _connect_failure_message(
+                    cname, cid, intent.network, str(exc), rollback_failures
+                )
+            ) from exc
+
+        if result.returncode == 0:
+            connected.append(cid)
+            continue
+
+        # Non-zero: Docker STATE, not Docker diagnostic TEXT, decides the
+        # outcome. Re-inspect membership for this SAME target ID.
+        members_now = _network_container_ids(intent.network)
+        if cid in members_now:
+            # Another actor joined it between the snapshot and this connect
+            # call: a successful concurrent no-op. This invocation never
+            # connected it, so it is not recorded and never rolled back.
+            continue
+
+        rollback_failures = _disconnect_rollback(intent.network, connected)
+        detail = (result.stderr or result.stdout or "").strip()
+        raise WorktreeError(
+            _connect_failure_message(cname, cid, intent.network, detail, rollback_failures)
+        )

@@ -52,6 +52,7 @@ from . import composefile
 from . import governance
 from . import hooks_runner
 from . import procutil
+from . import worktree
 from .deploy_pkg import health as _health
 from .config_constants import (
     CIU_COMPOSE_OUTPUT,
@@ -1435,6 +1436,20 @@ def main_execution(
                 result["message"] = "User aborted deployment"
             result["stdout"] = docker_result.get("stdout", "")
 
+            # ---- S16.1/CIU-22: join declared shared-infra services ----
+            # Only after Compose reports SUCCESS (never on "interrupted"); the
+            # intent lives in THIS worktree's already-loaded environment.
+            if docker_result["status"] == "success":
+                shared_infra_intent = worktree.parse_shared_infra_intent(os.environ)
+                if shared_infra_intent is not None:
+                    print("[STEP 16/17] Joining declared shared-infra services...", flush=True)
+                    try:
+                        worktree.connect_shared_infra_after_up(
+                            repo_root, project, shared_infra_intent
+                        )
+                    except worktree.WorktreeError as exc:
+                        raise ComposeError(str(exc)) from exc
+
         # ---- Step 17: post_compose hooks (S9) ----
         if skip_hooks:
             print("[STEP 17/17] --skip-hooks: skipping post_compose hooks", flush=True)
@@ -1559,6 +1574,26 @@ def run_shipped(
             result["status"] = "interrupted"
             result["message"] = "User aborted shipped deployment"
         result["stdout"] = docker_result.get("stdout", "")
+
+        # ---- S16.1/CIU-22: join declared shared-infra services ----
+        if docker_result["status"] == "success":
+            shared_infra_intent = worktree.parse_shared_infra_intent(os.environ)
+            if shared_infra_intent is not None:
+                if shipped_project is None:
+                    raise ComposeError(
+                        "[S16.1] this worktree declares a shared-infra join, but "
+                        "deploy.project_name/environment_tag are not set, so the "
+                        "shipped stack's own compose project cannot be derived to "
+                        "scope the join. Set both, or drop the shared-infra join."
+                    )
+                print("[SHIPPED 3/4] Joining declared shared-infra services...", flush=True)
+                try:
+                    worktree.connect_shared_infra_after_up(
+                        repo_root, shipped_project, shared_infra_intent
+                    )
+                except worktree.WorktreeError as exc:
+                    raise ComposeError(str(exc)) from exc
+
         print("[SHIPPED 4/4] Done.", flush=True)
         return result
     finally:
