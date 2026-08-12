@@ -488,3 +488,24 @@ class TestPostgresProvisionerShippedDefault:
         prov = worktree.PostgresProvisioner()
         prov.drop("ciu_abc123", "")
         assert calls[0][1] == "postgres"
+
+
+class TestDataIsolationProvisionerDefaultStubs:
+    """The Protocol's own method bodies refuse loudly (NotImplementedError)
+    rather than silently no-op'ing when a concrete subclass forgets to
+    override one — exercised directly via a trivial subclass, since a
+    Protocol is a normal instantiable class once explicitly subclassed."""
+
+    def test_provision_stub_refuses_when_not_overridden(self):
+        class Incomplete(worktree.DataIsolationProvisioner):
+            pass
+
+        with pytest.raises(NotImplementedError, match="provision"):
+            Incomplete().provision("ciu_abc123", "postgres")
+
+    def test_drop_stub_refuses_when_not_overridden(self):
+        class Incomplete(worktree.DataIsolationProvisioner):
+            pass
+
+        with pytest.raises(NotImplementedError, match="drop"):
+            Incomplete().drop("ciu_abc123", "postgres")

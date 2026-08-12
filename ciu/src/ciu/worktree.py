@@ -69,7 +69,9 @@ class DataIsolationProvisioner(Protocol):
         entity must not fail or lose data. Raise :class:`DataIsolationError`
         on a genuine failure.
         """
-        ...
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement provision()"
+        )
 
     def drop(self, entity: str, profile: str) -> None:
         """Idempotently remove the namespaced *entity*.
@@ -80,7 +82,9 @@ class DataIsolationProvisioner(Protocol):
         :class:`DataIsolationError` only on a genuine failure (cannot
         connect, permission denied, ...).
         """
-        ...
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement drop()"
+        )
 
 
 @dataclass(frozen=True)
