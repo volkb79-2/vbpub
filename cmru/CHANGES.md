@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.0.1] - 2026-08-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=8e6359e5c4519feee99a662d7c1e0efa804f7812 -->
+
+### Fixed
+- fix(cmru): make the estate shim select its explicit config (8e6359e5)
+
 ## [2.0.0] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=6abbc2e8933cd90007f8fc8cf41a5c23d02d432b -->
