@@ -26,6 +26,7 @@ def run_cmd(
     check: bool = False,
     env: dict | None = None,
     capture: bool = True,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run *cmd* as a subprocess and return the ``CompletedProcess``.
 
@@ -48,6 +49,10 @@ def run_cmd(
         When *True* (the default), capture both stdout and stderr
         (``capture_output=True``).  When *False*, both streams are passed
         through to the parent's stdout/stderr.
+    input:
+        Optional text written to the child's stdin (e.g. a SQL script piped
+        to ``psql -f -``). *None* (the default) leaves stdin untouched —
+        identical to every pre-existing caller that never passed this.
 
     Returns
     -------
@@ -72,6 +77,7 @@ def run_cmd(
         capture_output=capture,
         timeout=timeout,
         env=env,
+        input=input,
     )
 
     if check and result.returncode != 0:
@@ -98,6 +104,6 @@ def docker(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
     """Thin wrapper: run ``docker <args>`` via :func:`run_cmd`.
 
     All keyword arguments are forwarded to :func:`run_cmd` unchanged
-    (``timeout``, ``check``, ``env``, ``capture``).
+    (``timeout``, ``check``, ``env``, ``capture``, ``input``).
     """
     return run_cmd(["docker", *args], **kw)

@@ -1038,6 +1038,43 @@ def execute_docker_compose_with_logs(
     return result
 
 
+def _build_image_revisions(compose_yaml_text: str) -> dict[str, str]:
+    """S17.4/CIU-21 — per-service baked ``image.revision`` label, by service.
+
+    Read once per render/up pass from the rendered compose's own ``image:``
+    keys (never from :func:`get_git_hash` — that is the HOST tree's CURRENT
+    view, not the RUNNING image's baked truth, and comparing one against the
+    other is a check that can never fail) and passed to
+    :func:`composefile.generate_overlay` as plain data, so composefile.py
+    never needs a docker import (S8.1's docker-free invariant for that
+    module). A service with no baked label, or a ``build:`` service with no
+    ``image:`` baked yet, is OMITTED rather than given a placeholder — reads
+    :func:`deploy._image_revision_label` (never reimplements its label
+    lookup), which already returns "" for both an absent label and an image
+    that does not exist yet (this overlay is generated at Step 15, before
+    Step 16's ``docker compose up`` — on a plain ``ciu up`` with no prior
+    ``bake`` the image may legitimately not exist yet).
+    """
+    import yaml as _yaml
+
+    from . import deploy as deploy_mod
+
+    doc = _yaml.safe_load(compose_yaml_text) or {}
+    services = doc.get("services") if isinstance(doc, dict) else None
+    if not isinstance(services, dict):
+        return {}
+
+    revisions: dict[str, str] = {}
+    for name, block in services.items():
+        image = (block or {}).get("image") if isinstance(block, dict) else None
+        if not image:
+            continue
+        revision = deploy_mod._image_revision_label(image)
+        if revision:
+            revisions[str(name)] = revision
+    return revisions
+
+
 # ===========================================================================
 # E. PIPELINE — main_execution (S8.3)
 # ===========================================================================
@@ -1360,16 +1397,18 @@ def main_execution(
         for name in unconsumed:
             print(f"[WARN] declared secret '{name}' is consumed by no channel (S4.20)", flush=True)
 
-        # ---- Step 15: overlay (S4.17/S8.1/S15) ----
+        # ---- Step 15: overlay (S4.17/S8.1/S15/S17.4) ----
         print("[STEP 15/17] Generating overlay...", flush=True)
         governance_config = governance.resolve_stack_governance(
             merged.get(root_key, {}).get("governance"), global_config
         )
+        image_revisions = _build_image_revisions(rendered_compose)
         overlay_path = composefile.generate_overlay(
             working_dir, materialized, configfile_mounts,
             repo_root=repo_root, physical_root=None,
             compose_yaml_text=rendered_compose,
             governance=governance_config,
+            image_revisions=image_revisions,
         )
         # S4.22 completeness: scan the overlay for secret leaks too.
         if overlay_path is not None and overlay_path.exists():

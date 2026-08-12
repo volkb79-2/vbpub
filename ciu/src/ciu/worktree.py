@@ -37,12 +37,135 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 
 
 class WorktreeError(RuntimeError):
     """A worktree operation failed (configuration/environment; exit 2)."""
+
+
+class DataIsolationError(RuntimeError):
+    """A data-isolation provision/drop operation failed (S16.2, CIU-23)."""
+
+
+class DataIsolationProvisioner(Protocol):
+    """Injectable seam (S16.2/CIU-23) for namespaced per-worktree data isolation.
+
+    `worktree add --data-isolation <profile>` needs a real Postgres (or
+    similar) server to prove naming/ordering/force/idempotency against, which
+    `tester-unified:local` cannot supply (no live database in this package's
+    gate). This Protocol is the injected test seam instead: tests exercise
+    the full contract against a FAKE implementation; :class:`PostgresProvisioner`
+    is the shipped, real default, exercised live only outside this gate
+    (CIU-26 tracks that deferred proof).
+    """
+
+    def provision(self, entity: str, profile: str) -> str:
+        """Create the namespaced *entity* under *profile* if absent.
+
+        Returns its connection DSN. Idempotent: re-provisioning an existing
+        entity must not fail or lose data. Raise :class:`DataIsolationError`
+        on a genuine failure.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement provision()"
+        )
+
+    def drop(self, entity: str, profile: str) -> None:
+        """Idempotently remove the namespaced *entity*.
+
+        Dropping an ALREADY-ABSENT entity is a no-op SUCCESS, never an error
+        — this is what makes a retried `worktree rm` safe after a prior
+        partial failure (see :func:`_drop_data_isolation_in`). Raise
+        :class:`DataIsolationError` only on a genuine failure (cannot
+        connect, permission denied, ...).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement drop()"
+        )
+
+
+@dataclass(frozen=True)
+class PostgresProvisioner:
+    """Shipped default S16.2 provisioner: a thin wrapper around
+    ``docker exec <container> psql`` — the same docker-exec idiom
+    `provisioning.py`'s existing ``pg:`` probes already use, so this adds no
+    new dependency (no DB driver import).
+
+    *profile* is the target container's name (e.g. the compose service name
+    of the shared Postgres this worktree's databases live on); it defaults to
+    ``"postgres"`` when empty. This class's naming/ordering/force/idempotency
+    behaviour is proven in this package's gate against a FAKE
+    (:class:`DataIsolationProvisioner`) — it is not itself exercised live
+    in-gate (CIU-26 tracks the deferred real-server proof).
+    """
+
+    admin_user: str = "postgres"
+
+    def _psql(self, container: str, *args: str):
+        from . import procutil
+        return procutil.docker(
+            ["exec", container, "psql", "-U", self.admin_user, "-tAc", *args],
+            capture=True, check=False,
+        )
+
+    def _psql_script(self, container: str, sql: str):
+        """Run *sql* fed on STDIN (``-f -``), not ``-c``.
+
+        ``-c`` cannot mix a SQL statement with a ``\\gexec`` meta-command in
+        one argument — psql rejects it with a syntax error unconditionally.
+        Feeding the same text as a script on stdin has no such restriction.
+        ``docker exec -i`` is required so the daemon-side psql actually
+        receives what's piped in; without ``-i`` stdin is closed and ``-f -``
+        reads EOF immediately (an empty, silently-successful no-op that never
+        creates anything).
+        """
+        from . import procutil
+        return procutil.docker(
+            ["exec", "-i", container, "psql", "-U", self.admin_user, "-tA", "-f", "-"],
+            capture=True, check=False, input=sql,
+        )
+
+    def provision(self, entity: str, profile: str) -> str:
+        container = profile or "postgres"
+        sql = (
+            f"SELECT 'CREATE DATABASE \"{entity}\"' WHERE NOT EXISTS "
+            f"(SELECT FROM pg_database WHERE datname='{entity}')\\gexec\n"
+        )
+        result = self._psql_script(container, sql)
+        if result.returncode != 0:
+            raise DataIsolationError(
+                f"could not provision database {entity!r} on {container!r}: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+        return f"postgresql://{self.admin_user}@{container}/{entity}"
+
+    def drop(self, entity: str, profile: str) -> None:
+        container = profile or "postgres"
+        result = self._psql(container, f'DROP DATABASE IF EXISTS "{entity}"')
+        if result.returncode != 0:
+            raise DataIsolationError(
+                f"could not drop database {entity!r} on {container!r}: "
+                f"{(result.stderr or result.stdout or '').strip()}"
+            )
+
+
+def _default_provisioner() -> DataIsolationProvisioner:
+    return PostgresProvisioner()
+
+
+def _data_isolation_entity(instance_id: str) -> str:
+    """The namespaced entity name for *instance_id* (S16.2).
+
+    A pure function of INSTANCE_ID (a hash of the PHYSICAL repo path, S2) —
+    NEVER of the worktree's ``name``. Two different CLONES of this repo can
+    legitimately choose the same worktree name; because they have different
+    physical paths they get different INSTANCE_IDs, so their entities never
+    collide. A name-keyed scheme would collide there; this cannot.
+    """
+    return f"ciu_{instance_id}"
 
 
 @dataclass(frozen=True)
@@ -176,6 +299,8 @@ def add(
     base: str = "main",
     profile: str | None = None,
     worktree_dir: str = DEFAULT_WORKTREE_DIR,
+    data_isolation: str | None = None,
+    provisioner: DataIsolationProvisioner | None = None,
 ) -> Path:
     """Create worktree *name* and make it a ready-to-deploy CIU instance.
 
@@ -191,6 +316,16 @@ def add(
 
     Deploy is deliberately NOT performed: `add` prepares an instance, it does
     not decide that you want it running.
+
+    With *data_isolation* (S16.2/CIU-23), also provisions a database/schema
+    namespaced by THIS worktree's own ``INSTANCE_ID`` (never its *name* — see
+    :func:`_data_isolation_entity`) via an injectable *provisioner* (the real
+    Postgres-backed :class:`PostgresProvisioner` by default), and writes the
+    resulting connection identity into the new worktree's own ``ciu.env``.
+    That value MAY be credential-bearing (it can embed a DB user/host/name) —
+    it must NEVER be recommended as an ``env_passthrough`` candidate for a
+    consumer's own assay lane: a passthrough value lands in every verdict
+    artifact in cleartext.
     """
     if not name or "/" in name or name.startswith("."):
         raise WorktreeError(
@@ -236,7 +371,114 @@ def add(
                 "`ciu worktree add --profile`\n"
                 f'export CIU_SERVICES_PROFILE="{profile}"\n'
             )
+
+    if data_isolation:
+        instance_id = _read_instance_id(target)
+        entity = _data_isolation_entity(instance_id)
+        prov = provisioner or _default_provisioner()
+        try:
+            dsn = prov.provision(entity, data_isolation)
+        except DataIsolationError as exc:
+            raise WorktreeError(
+                f"[S16.2] worktree created at {target}, but provisioning the "
+                f"isolated database failed: {exc}. The checkout exists but has "
+                "no working data isolation; fix the cause and re-run "
+                "`ciu worktree add`, or omit --data-isolation."
+            ) from exc
+        env_file = target / "ciu.env"
+        with env_file.open("a", encoding="utf-8") as fh:
+            fh.write(
+                "\n# Data isolation (S16.2/CIU-23), set by "
+                "`ciu worktree add --data-isolation`.\n"
+                "# WARNING: this value MAY be credential-bearing (it can embed "
+                "a DB user/host/name). NEVER add it to a consumer's assay "
+                "env_passthrough list -- passthrough values land in every "
+                "verdict artifact in cleartext.\n"
+                f'export CIU_DATA_ISOLATION_ENTITY="{entity}"\n'
+                f'export CIU_DATA_ISOLATION_PROFILE="{data_isolation}"\n'
+                f'export CIU_DATA_ISOLATION_DSN="{dsn}"\n'
+            )
     return target
+
+
+def _read_instance_id(worktree: Path) -> str:
+    """The freshly-generated ``ciu.env``'s ``INSTANCE_ID`` (S2.7/S16.2)."""
+    from .workspace_env import parse_workspace_env
+
+    env_file = worktree / "ciu.env"
+    values = parse_workspace_env(env_file)
+    instance_id = values.get("INSTANCE_ID")
+    if not instance_id:
+        raise WorktreeError(
+            f"[S16.2] {env_file} has no INSTANCE_ID; `ciu env generate` should "
+            "always write one (S2.7), so this checkout is not a usable "
+            "instance. Cannot derive a namespaced data-isolation entity "
+            "without it."
+        )
+    return instance_id
+
+
+def _drop_data_isolation_in(
+    worktree: Path,
+    *,
+    force: bool,
+    provisioner: DataIsolationProvisioner | None,
+) -> None:
+    """S16.2/CIU-23 — drop this worktree's namespaced data-isolation entity.
+
+    A no-op when the worktree was never given ``--data-isolation`` (no
+    ``ciu.env``, or no ``CIU_DATA_ISOLATION_ENTITY`` in it) — fully backward
+    compatible with a worktree that has none.
+
+    Idempotent: dropping an already-absent entity is a provisioner-level
+    no-op success (see :class:`DataIsolationProvisioner`), which is what makes
+    a RETRIED ``worktree rm`` safe after a prior partial failure — if this
+    drop succeeded on an earlier attempt but ``_clean_in`` then failed and
+    aborted removal, the entity is already gone, ``ciu.env`` still names it,
+    and this function's next attempt re-runs against an absent entity and
+    succeeds trivially before ``_clean_in`` is retried.
+
+    Extends the module's clean-before-remove ordering rule to a SECOND
+    precondition: a FAILED drop aborts removal unless *force*, the same as a
+    failed ``ciu clean``. Unlike ``_clean_in``'s own SILENT force path, a
+    forced-through drop failure is NOT silent: it warns, naming the entity
+    that was not dropped and stating it is now the operator's problem.
+    """
+    env_file = worktree / "ciu.env"
+    if not env_file.is_file():
+        return
+
+    from .workspace_env import parse_workspace_env
+
+    try:
+        env = parse_workspace_env(env_file)
+    except OSError:
+        return  # unreadable; _clean_in raises its own, clearer error next
+
+    entity = env.get("CIU_DATA_ISOLATION_ENTITY")
+    if not entity:
+        return  # this worktree was never given --data-isolation
+
+    data_isolation_profile = env.get("CIU_DATA_ISOLATION_PROFILE", "")
+    prov = provisioner or _default_provisioner()
+    try:
+        prov.drop(entity, data_isolation_profile)
+    except DataIsolationError as exc:
+        if not force:
+            raise WorktreeError(
+                f"[S16.2] could not drop data-isolation entity {entity!r}: "
+                f"{exc}. NOT proceeding with `ciu clean` — the database would "
+                "outlive the checkout that names it. Fix the cause and retry "
+                "(the drop is idempotent: an already-dropped entity is a "
+                "no-op), or pass --force to remove anyway (the entity becomes "
+                "your problem)."
+            ) from exc
+        print(
+            f"[WARN] [S16.2] --force: could not drop data-isolation entity "
+            f"{entity!r} ({exc}); it was NOT dropped and is now the "
+            "operator's problem.",
+            flush=True,
+        )
 
 
 def remove(
@@ -245,13 +487,21 @@ def remove(
     *,
     yes: bool = False,
     force: bool = False,
+    provisioner: DataIsolationProvisioner | None = None,
 ) -> Path:
-    """Dispose of worktree *name*: ``ciu clean`` first, then remove the checkout.
+    """Dispose of worktree *name*: drop data isolation, ``ciu clean``, then
+    remove the checkout.
 
-    Never reorders those two steps — see the module docstring. A clean that fails
+    Never reorders those steps — see the module docstring. A clean that fails
     ABORTS the removal (unless *force*), because removing the checkout after a
     failed clean destroys the only config that could complete it and leaves
     root-owned volume dirs no unprivileged operator can delete.
+
+    When this worktree was created with ``--data-isolation`` (S16.2/CIU-23),
+    its namespaced database/schema is dropped FIRST, before ``ciu clean`` —
+    see :func:`_drop_data_isolation_in` for the full ordering/force/retry
+    contract, which mirrors and extends this function's own clean-before-
+    remove rule. A worktree with no data isolation is unaffected.
     """
     wt = find_worktree(repo_root, name)
     if wt is None:
@@ -264,6 +514,8 @@ def remove(
             f"[S16] refusing to remove {wt.path}: that is the PRIMARY checkout, "
             "not a worktree instance."
         )
+
+    _drop_data_isolation_in(wt.path, force=force, provisioner=provisioner)
 
     rc = _clean_in(wt.path, yes=yes)
     if rc != 0 and not force:

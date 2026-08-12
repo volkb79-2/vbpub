@@ -9,8 +9,10 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-11 (CIU-20/21 filed by assay, OPEN — no code items pending
-before that).
+Last updated: 2026-08-12 (CIU-20/21/23 FIXED — code + tests + spec + docs,
+`ciu-P01-worktree-isolation-primitives`; CIU-26 filed as the deferred
+real-Postgres proof for CIU-23's shipped provisioner. CIU-22/24/25 remain
+OPEN, split out pending design — see `nyxloom-trove/backlog.md`).
 
 **Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
 the current `src/` tree. All three recent fixes are present and intact:
@@ -52,12 +54,13 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-17 | No CLI-level `--ksm` / `--no-ksm` override for an ad-hoc run; toggling KSM requires editing `governance.ksm_optin` in the TOML layer. Raised alongside CIU-14 and explicitly ruled out of its scope as a convenience feature, then never filed on its own | Low | FIXED |
 | CIU-19 | `reset_service`'s orphan sweep filtered on `<prefix>.component=<service>` ALONE, which is not instance-scoped — a second checkout of the same repo labels its containers identically, so `ciu clean` in one instance deleted the same-named service out of **every** instance on the host. Observed live while building `ciu worktree` (S16): cleaning a worktree instance removed the PRIMARY instance's `db-init`. With a full stack up, that is someone's database | High | FIXED |
 | CIU-18 | Image provenance is STAMPED but not ENFORCED. `bake` now sets `org.opencontainers.image.revision` (with a `-dirty` suffix) on every baked image, so a container can be traced to its commit — but nothing yet REFUSES to run a live/integration lane against an image whose label does not match the commit under test. Until it does, a live result can still silently describe an unknown artifact, which the consuming project's own policy (dstdns AGENTS.md §4.1a) already calls a defect. FIXED as a TEST-time gate (`ciu provenance`, S17.2) over RUNNING containers — not a deploy-time one: at deploy the question is "did I bake?", which surfaces immediately, whereas the question that yields bad EVIDENCE is asked against an already-running stack. `ciu test` (D7) will call it when that surface exists | Medium | FIXED |
-| CIU-20 | `ciu provenance` has no machine-readable output: the success path is silent and the failure path is prose + exit code, so a downstream evidence consumer (assay) cannot record *what was checked and what it found* — only "no refusal happened", which is not the same fact | Low | OPEN |
-| CIU-21 | No way for a process INSIDE a container to learn the image's own `org.opencontainers.image.revision`: the label is readable only from the docker-daemon side, so an in-container test runner cannot verify its own provenance without an outside co-process | Low | OPEN |
+| CIU-20 | `ciu provenance` has no machine-readable output: the success path is silent and the failure path is prose + exit code, so a downstream evidence consumer (assay) cannot record *what was checked and what it found* — only "no refusal happened", which is not the same fact. FIXED: `deploy.verify_running_provenance` now ALWAYS builds and returns a `ProvenanceResult` (never raises, never bare `None`); `ciu provenance --json` (S17.3, `store_true` matching `ciu diagnose --json`) prints the closed six-value `overall` grammar, with the `containers: null` (could not enumerate) vs `containers: []` (enumerated, found nothing) distinction that closes the docker-unavailable false-green. `cli._provenance` is the sole place deciding prose/raise/warn from the verdict | Low | FIXED |
+| CIU-21 | No way for a process INSIDE a container to learn the image's own `org.opencontainers.image.revision`: the label is readable only from the docker-daemon side, so an in-container test runner cannot verify its own provenance without an outside co-process. FIXED: every rendered overlay carries `CIU_IMAGE_REVISION=<revision>` per service (S17.4), read from that service's OWN baked label via `deploy._image_revision_label` (never `get_git_hash()`), built in `engine.py` and passed into `composefile.generate_overlay` as data (`composefile.py` gains no docker import) — unconditional, independent of `governance.enabled`/`exempt_services`, append-never-clobber on the shared `environment` merge key | Low | FIXED |
 | CIU-22 | No shared-infra-join for `ciu worktree`: `worktree add` gives a new instance its OWN full stack, but heavy/rarely-diverging infra (identity, secrets, observability, reverse-proxy) has to stand up N times too — no way to join a new worktree's diverging tier onto an EXISTING instance's shared infra networks | Medium | OPEN |
-| CIU-23 | No lightweight per-worktree DATA isolation: the only isolation `ciu worktree` offers is a full separate container stack, but the common real-lane case (schema diverges per package, nothing else does) needs only a namespaced database on a shared server, not N full Postgres containers | Medium | OPEN |
+| CIU-23 | No lightweight per-worktree DATA isolation: the only isolation `ciu worktree` offers is a full separate container stack, but the common real-lane case (schema diverges per package, nothing else does) needs only a namespaced database on a shared server, not N full Postgres containers. FIXED: `worktree add --data-isolation <profile>` provisions a database/schema namespaced by the instance's own `INSTANCE_ID` (never its `NAME` — collision-safe across repo clones) via an injectable `DataIsolationProvisioner` (S16.2; `worktree.PostgresProvisioner` ships as the real default). `worktree rm` drops it BEFORE `ciu clean`, idempotently, with a retry-safe terminal state on a partial failure; `--force` masking a failed drop WARNS (unlike `ciu clean`'s own silent force path). The real-server proof is deferred — see CIU-26 | Medium | FIXED |
 | CIU-24 | No concurrency budget for worktree instances: nothing caps how many can run at once against a host's actual capacity, so K parallel isolated real-lane gates can OOM or starve a shared host with no warning | Low | OPEN |
 | CIU-25 | No leak detector for worktree instances: an orphaned stack (crashed child, killed session, forgotten `worktree rm`) is never reaped, silently consuming host resources indefinitely | Low | OPEN |
+| CIU-26 | CIU-23's `worktree.PostgresProvisioner` (the real, shipped S16.2 data-isolation default) has no live-server proof: its naming/ordering/force/idempotency contract is proven in-gate only against a FAKE `DataIsolationProvisioner`, because `tester-unified:local` has no live Postgres server to provision against. Needs an integration lane (outside this repo's own gate) that runs `PostgresProvisioner` against a real Postgres and confirms `provision`/`drop` actually create/remove a database, not just that the mechanism dispatches correctly | Low | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -884,3 +887,40 @@ consumer cannot see other instances' worktrees at all, so leak detection is
 structurally CIU's to own, same reasoning as CIU-24.
 
 **Proposed SPEC ID:** S16.4 — stale worktree instance detection and reap.
+
+### CIU-26 detail: no real-Postgres proof for the S16.2 shipped provisioner
+
+**Reported by:** self-filed on landing `ciu-P01-worktree-isolation-primitives`
+(CIU-23's own handoff), 2026-08-12, per that handoff's own instruction to give
+the deferral an owner rather than leaving it merely remembered.
+**Severity:** Low — the MECHANISM (naming, ordering, force semantics,
+idempotent retry) is fully proven in-gate against a fake; what's missing is
+proof that the real class's SQL actually works against a real server.
+
+**The problem.** S16.2's `worktree.PostgresProvisioner` — the real,
+shipped-by-default `DataIsolationProvisioner` — talks to Postgres via
+`docker exec <container> psql ...` (the same docker-exec idiom
+`provisioning.py`'s existing `pg:` probes already use). `tester-unified:local`
+has no live Postgres server, so this package's gate exercises the FULL
+naming/ordering/force/idempotency contract only against an injected FAKE
+provisioner (the deliberate test seam — see S16.2 and the package's own
+`nyxloom-trove/reports/ciu-P01-worktree-isolation-primitives-LOG.md`).
+`PostgresProvisioner` itself is only unit-tested against a mocked
+`procutil.docker` (confirms the command SHAPE — `DROP DATABASE IF EXISTS`,
+the right container, error propagation) — never against a database that
+actually exists.
+
+**What's needed.** An integration lane (outside this repo's own 100%-unit
+gate — it needs a real Postgres container) that runs `PostgresProvisioner.
+provision()` then `.drop()` against it and confirms the database was
+actually created and actually removed, not just that the mechanism dispatched
+the right SQL string.
+
+**Why it belongs in CIU, not in a consumer.** `PostgresProvisioner` is CIU's
+own shipped code; a consumer adopting `--data-isolation` has no way to verify
+CIU's own provisioner works before trusting it with real schema-isolation
+data.
+
+**Proposed venue:** not S16.2 itself (that SPEC id already covers the
+mechanism); a dedicated integration-test lane, analogous to how S17.2's own
+real-Postgres-shaped precedents are exercised — outside the unit gate.

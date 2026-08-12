@@ -77,27 +77,31 @@ def _rows(revision, project="proj-abc-api"):
 
 
 class TestRunningProvenance:
-    """S17.2 is a TEST-time gate over RUNNING containers, not a deploy-time one:
-    at deploy the question is 'did I bake?', which surfaces at once. The question
-    that yields bad EVIDENCE is asked against an already-running stack."""
+    """S17.2/S17.3 is a TEST-time gate over RUNNING containers, not a deploy-time
+    one: at deploy the question is 'did I bake?', which surfaces at once. The
+    question that yields bad EVIDENCE is asked against an already-running stack.
+
+    CIU-20 (O1) refactored `verify_running_provenance` to ALWAYS build and
+    return a `ProvenanceResult` verdict — it never raises and never prints;
+    that decision now belongs to `cli._provenance` alone (see
+    test_ciu_provenance_json.py for that layer's own, much larger, coverage).
+    These tests therefore assert on the returned verdict's `overall`/
+    `containers` fields rather than on a raise or captured prose.
+    """
 
     def test_matching_revision_passes(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("abc12345")))
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall == "verified-match"
 
-    def test_mismatched_revision_REFUSES(self, monkeypatch):
+    def test_mismatched_revision_is_reported_not_raised(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
-        with pytest.raises(ValueError, match=r"\[S17\].*different commit"):
-            deploy.verify_running_provenance(PREFIX)
-
-    def test_ignore_mismatch_downgrades_to_a_warning(self, monkeypatch, capsys):
-        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
-        deploy.verify_running_provenance(PREFIX, ignore_mismatch=True)
-        out = capsys.readouterr().out
-        assert "S17" in out and "deadbeef" in out
+        result = deploy.verify_running_provenance(PREFIX)  # must not raise
+        assert result.overall == "mismatch"
+        assert result.containers[0].status == "mismatch"
+        assert result.containers[0].labelled_revision == "deadbeef"
 
     def test_a_SIBLING_instance_is_not_reported_as_stale(self, monkeypatch):
         """A worktree instance (S16) legitimately runs a different commit. Its
@@ -108,7 +112,8 @@ class TestRunningProvenance:
             deploy.procutil, "docker",
             _docker_ps(_rows("deadbeef", project="OTHER-instance-api")),
         )
-        deploy.verify_running_provenance(PREFIX)  # must not raise
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall == "not-verified-no-evidence"  # nothing of OURS ran
 
     def test_unlabelled_image_is_SKIPPED_not_refused(self, monkeypatch):
         """External images (postgres:16) carry no revision label; refusing on
@@ -116,39 +121,55 @@ class TestRunningProvenance:
         evidence of mismatch."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("")))
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall != "mismatch"
+        assert result.containers[0].status == "unlabelled"
+        assert result.containers[0].labelled_revision is None
 
     def test_no_value_label_is_treated_as_absent(self, monkeypatch):
         """docker --format renders a missing key as the literal '<no value>';
         comparing that against a revision would refuse every unlabelled image."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("<no value>")))
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.containers[0].status == "unlabelled"
+        assert result.containers[0].labelled_revision is None
 
-    def test_dirty_tree_warns_and_does_not_refuse(self, monkeypatch, capsys):
+    def test_dirty_tree_is_reported_not_refused(self, monkeypatch):
         """Uncommitted changes are in NO image, so nothing can match. Refusing
         would fire on every dev-loop run and get switched off for good."""
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345-dirty")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
-        deploy.verify_running_provenance(PREFIX)
-        assert "dirty" in capsys.readouterr().out
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall == "not-verified-dirty"
+        assert result.tree_state == "dirty"
+        assert result.containers is None
 
-    def test_non_git_checkout_is_silent(self, monkeypatch):
+    def test_non_git_checkout_is_not_verified_unknown(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "dev")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(_rows("deadbeef")))
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall == "not-verified-unknown"
+        assert result.tree_state == "not-a-checkout"
 
     def test_nothing_running_is_not_a_mismatch(self, monkeypatch):
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", _docker_ps(([], {})))
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)
+        assert result.overall == "not-verified-no-evidence"
+        assert result.containers == []
 
     def test_docker_unavailable_does_not_manufacture_a_verdict(self, monkeypatch):
+        """CIU-20's own false-green: docker-unavailable must NEVER read as
+        verified-match. `containers` is null (enumeration did not run), never
+        `[]` (which would mean 'ran, found nothing')."""
         def boom(*_a, **_kw):
             raise FileNotFoundError("docker")
         monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
         monkeypatch.setattr(deploy.procutil, "docker", boom)
-        deploy.verify_running_provenance(PREFIX)
+        result = deploy.verify_running_provenance(PREFIX)  # must not raise
+        assert result.overall == "not-verified-no-evidence"
+        assert result.containers is None
 
 
 class TestMemoryProfile:

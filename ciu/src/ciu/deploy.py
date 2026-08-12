@@ -43,8 +43,9 @@ import argparse
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from . import config_model
 from . import engine
@@ -553,12 +554,56 @@ def registry_preflight(config: dict) -> None:
 # ===========================================================================
 
 
-def verify_running_provenance(
-    project_prefix: str,
-    *,
-    ignore_mismatch: bool = False,
-) -> None:
-    """S17.2 — refuse to run a live lane against containers built from another commit.
+@dataclass(frozen=True)
+class ContainerProvenance:
+    """One running container's provenance verdict (S17.3, CIU-20)."""
+
+    name: str
+    image: str
+    labelled_revision: Optional[str]  # None (JSON null) when unknown, never ""
+    status: str  # "match" | "mismatch" | "unlabelled"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "image": self.image,
+            "labelled_revision": self.labelled_revision,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class ProvenanceResult:
+    """S17.3/CIU-20 — the machine-readable provenance verdict.
+
+    Always built (never bare ``None``); :func:`verify_running_provenance` never
+    raises. ``_provenance`` (cli.py) is the only place that turns this into
+    prose/raise/warn behaviour. ``to_dict`` field order is the wire order.
+    """
+
+    schema_version: int
+    instance: Optional[str]
+    commit_under_test: Optional[str]
+    tree_state: Optional[str]
+    containers: Optional[list[ContainerProvenance]]
+    overall: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "instance": self.instance,
+            "commit_under_test": self.commit_under_test,
+            "tree_state": self.tree_state,
+            "containers": (
+                None if self.containers is None
+                else [c.to_dict() for c in self.containers]
+            ),
+            "overall": self.overall,
+        }
+
+
+def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
+    """S17.2/S17.3 — build the machine-readable provenance verdict (CIU-20).
 
     **This is a TEST-time check, not a deploy-time one, and the distinction is
     the whole point.** At deploy time the question is "did I remember to bake?",
@@ -575,73 +620,94 @@ def verify_running_provenance(
     policy (AGENTS.md §4.1a) already classes that as a defect, with nothing
     enforcing it.
 
-    Scoped to containers whose compose project starts with *project_prefix*, so
-    a sibling worktree instance (S16) — legitimately running a DIFFERENT commit
-    — is never mistaken for this instance being stale.
+    Scoped to containers whose compose project starts with *project_prefix*
+    (also recorded verbatim as ``instance``), so a sibling worktree instance
+    (S16) — legitimately running a DIFFERENT commit — is never mistaken for
+    this instance being stale.
 
-    The non-refusals are as load-bearing as the refusal:
+    ALWAYS returns a :class:`ProvenanceResult` — never ``None``, and never
+    raises. This function only builds the verdict; ``_provenance`` (cli.py) is
+    the ONLY place that turns it into prose, a raise, or a warning, so the
+    same verdict serves both the human CLI and ``--json`` machine consumers
+    without ever mixing prose onto the JSON stream.
 
-    - Only labelled images are checked. CIU's bake is the only thing that sets
-      the label, so ``postgres:16`` is skipped without maintaining a list of
-      "our" images.
-    - An UNLABELLED image is skipped: external, or built before S17. Absence is
-      not evidence of mismatch, and refusing on it would break every install on
-      upgrade.
-    - A DIRTY tree WARNS instead of refusing. Uncommitted changes are in no
-      artifact anywhere, so nothing can match; a check that fired on every
-      dev-loop run would be switched off within a day, and a rule nobody can
-      keep enforces nothing.
-
-    Raises ValueError (S10.3 → exit 2) on a genuine mismatch, unless
-    *ignore_mismatch* downgrades it to a warning — the escape hatch for
-    deliberately testing an older artifact.
+    ``overall`` is one of six closed values, decided in order: an unresolved
+    identity is handled entirely by the CLI before this function is even
+    called (``refused-no-identity`` never originates here); a non-checkout
+    commit (``get_git_hash() == "dev"``) is ``not-verified-unknown``; a dirty
+    tree is ``not-verified-dirty``; enumeration that could not run at all
+    (no docker, or ``docker ps`` failed) is ``not-verified-no-evidence`` with
+    ``containers: null``; a successful enumeration with at least one
+    ``mismatch`` is ``mismatch``; one with at least one ``match`` and no
+    ``mismatch`` is ``verified-match`` — a green verdict is NEVER emitted from
+    zero checked containers; anything else (empty, or all ``unlabelled``) is
+    ``not-verified-no-evidence`` with the (possibly empty) container list.
     """
-    expected = engine.get_git_hash()
-    if expected == "dev":
-        return  # not a git checkout — nothing to compare against
+    commit = engine.get_git_hash()
 
-    if expected.endswith("-dirty"):
-        warn(
-            "[S17] working tree is dirty — provenance NOT verified. Uncommitted "
-            "changes are in no image, so no running container can match this "
-            "tree; commit before treating a live result as evidence about this "
-            "code."
+    if commit == "dev":
+        return ProvenanceResult(
+            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            tree_state="not-a-checkout", containers=None,
+            overall="not-verified-unknown",
         )
-        return
 
-    mismatches: list[tuple[str, str, str]] = []
-    for name, image in _running_containers(project_prefix):
-        actual = _image_revision_label(image)
-        if actual and actual != expected:
-            mismatches.append((name, image, actual))
+    if commit.endswith("-dirty"):
+        return ProvenanceResult(
+            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            tree_state="dirty", containers=None, overall="not-verified-dirty",
+        )
 
-    if not mismatches:
-        return
+    raw = _running_containers(project_prefix)
+    if raw is None:
+        return ProvenanceResult(
+            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            tree_state="clean", containers=None,
+            overall="not-verified-no-evidence",
+        )
 
-    detail = "\n".join(
-        f"  {name} ({image}): running {actual}, testing {expected}"
-        for name, image, actual in sorted(mismatches)
+    containers: list[ContainerProvenance] = []
+    has_match = False
+    has_mismatch = False
+    for name, image in raw:
+        actual = _image_revision_label(image) or None
+        if actual is None:
+            status = "unlabelled"
+        elif actual == commit:
+            status = "match"
+            has_match = True
+        else:
+            status = "mismatch"
+            has_mismatch = True
+        containers.append(ContainerProvenance(name, image, actual, status))
+    containers.sort(key=lambda c: c.name)
+
+    if has_mismatch:
+        overall = "mismatch"
+    elif has_match:
+        overall = "verified-match"
+    else:
+        overall = "not-verified-no-evidence"
+
+    return ProvenanceResult(
+        schema_version=1, instance=project_prefix, commit_under_test=commit,
+        tree_state="clean", containers=containers, overall=overall,
     )
-    message = (
-        f"[S17] {len(mismatches)} running container(s) were built from a "
-        f"different commit than the one under test:\n{detail}\n"
-        "Rebuild and redeploy (`ciu bake` + `ciu up`) so the result describes "
-        "the code under test, or pass --ignore-mismatch to run anyway (the "
-        "result then describes the OLD artifact, whatever it says)."
-    )
-    if ignore_mismatch:
-        warn(message)
-        return
-    raise ValueError(message)
 
 
-def _running_containers(project_prefix: str) -> list[tuple[str, str]]:
+def _running_containers(project_prefix: str) -> Optional[list[tuple[str, str]]]:
     """``(name, image)`` for running containers in this instance's projects.
 
     Filtered by the compose PROJECT label, which carries the instance id — a
     sibling worktree instance (S16) legitimately runs a different commit and
     must never be reported as this instance being stale. Docker's label filter
     is exact-match only, so the prefix test is applied here.
+
+    Returns ``None`` when enumeration could not run at all (no docker CLI, or
+    ``docker ps`` failed) — distinct from ``[]``, a successful enumeration that
+    found nothing. Collapsing both to ``[]`` (CIU-20's own defect) let a
+    docker-less host emit ``verified-match`` with ``containers: []``: a green
+    provenance document attesting nothing.
     """
     try:
         res = procutil.docker(
@@ -649,9 +715,9 @@ def _running_containers(project_prefix: str) -> list[tuple[str, str]]:
             capture=True, check=False,
         )
     except (FileNotFoundError, OSError):
-        return []
+        return None
     if res.returncode != 0:
-        return []
+        return None
     out: list[tuple[str, str]] = []
     for line in (res.stdout or "").splitlines():
         parts = line.split("\t")
