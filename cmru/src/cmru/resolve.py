@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+
 
 def resolve_via_latest_json(
     gh_releases_url: str,
@@ -84,7 +86,7 @@ def format_result(result: Dict[str, Any], fmt: str) -> str:
 def resolve_main(argv: Optional[list] = None) -> None:
     """Entry point for ``cmru resolve``.
 
-    ``cmru.toml`` is required and supplies project prefix plus GitHub identity.
+    The selected CMRU configuration supplies the project prefix plus GitHub identity.
     Tokens retain S2.4's explicit secret-source precedence; owner/repo are not
     guessed from an incomplete environment.
     """
@@ -94,7 +96,9 @@ def resolve_main(argv: Optional[list] = None) -> None:
     parser.add_argument("--project", help="Project name (maps to prefix via config)")
     parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
     parser.add_argument("--format", choices=["json", "env", "url"], default="json")
-    parser.add_argument("--config", help="Path to cmru.toml")
+    parser.add_argument(
+        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+    )
     args = parser.parse_args(argv)
 
     if not args.project and not args.prefix:
@@ -124,7 +128,7 @@ def resolve_main(argv: Optional[list] = None) -> None:
         prefix = proj.prefix
 
     if not owner or not repo:
-        print("[ERROR] GitHub owner/repo unknown in cmru.toml", file=sys.stderr)
+        print("[ERROR] GitHub owner/repo unknown in the selected CMRU config", file=sys.stderr)
         sys.exit(2)
 
     from cmru.hosts.github import GitHubReleaseHost

@@ -19,11 +19,12 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "cmru" / "src"))
 
 from cmru.cli import main  # noqa: E402
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME  # noqa: E402
 
 
 _ESTATE_CONFIG_VERBS = frozenset({
     "build", "changelog", "cleanup", "publish", "release", "resolve",
-    "run", "standards", "status",
+    "run", "standards", "status", "get", "get-py",
 })
 
 
@@ -40,7 +41,7 @@ def _root_argv(argv: list[str]) -> list[str]:
         return argv
     if any(arg == "--config" or arg.startswith("--config=") for arg in argv[1:]):
         return argv
-    return [*argv, "--config", str(ROOT / "cmru.orchestration.toml")]
+    return [*argv, "--config", str(ROOT / ORCHESTRATION_CONFIG_FILENAME)]
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
 
@@ -167,7 +169,9 @@ def getpy_main(argv: Optional[list] = None) -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Emit get.py for a project")
     parser.add_argument("--project", required=True)
-    parser.add_argument("--config", help="Path to cmru.toml")
+    parser.add_argument(
+        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+    )
     parser.add_argument("--output", help="Write to file instead of stdout")
     args = parser.parse_args(argv)
 

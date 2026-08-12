@@ -67,6 +67,46 @@ def _release(tag: str, release_id: int) -> dict:
     return {"tag_name": tag, "id": release_id, "published_at": "2024-01-01T00:00:00Z"}
 
 
+class TestDeleteUnmanagedReleaseTag:
+    """One-off migration cleanup is exact, tag-preserving, and fail-closed."""
+
+    def test_deletes_exact_release_but_never_a_git_tag(self):
+        with (
+            patch.object(cli, "list_releases", return_value=[_release("ciu-wheel-latest", 77)]),
+            patch.object(cli, "delete_release") as delete,
+        ):
+            changed = cli.delete_unmanaged_release_tag(
+                "owner", "repo", "token", "ciu-wheel-latest", dry_run=False,
+            )
+
+        assert changed is True
+        delete.assert_called_once_with("owner", "repo", "token", 77, dry_run=False)
+
+    def test_missing_release_is_an_idempotent_noop(self):
+        with (
+            patch.object(cli, "list_releases", return_value=[]),
+            patch.object(cli, "delete_release") as delete,
+        ):
+            changed = cli.delete_unmanaged_release_tag(
+                "owner", "repo", "token", "ciu-wheel-latest", dry_run=False,
+            )
+
+        assert changed is False
+        delete.assert_not_called()
+
+    def test_dry_run_never_calls_the_delete_api(self):
+        with (
+            patch.object(cli, "list_releases", return_value=[_release("ciu-wheel-latest", 77)]),
+            patch.object(cli, "delete_release") as delete,
+        ):
+            changed = cli.delete_unmanaged_release_tag(
+                "owner", "repo", "token", "ciu-wheel-latest", dry_run=True,
+            )
+
+        assert changed is True
+        delete.assert_not_called()
+
+
 # ─── cleanup_project_releases_and_tags ───────────────────────────────────────
 
 class TestCleanupProjectReleasesAndTags:

@@ -45,6 +45,9 @@ cmru build   --project <name>     # isolated build worktree; retained for inspec
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
+cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
+cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
+cmru version                      # print the CMRU version
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
@@ -55,6 +58,11 @@ transaction is the pre-publish debug/recovery path; see
 `build` is diagnostic only; do not chain it to `publish` expecting the retained artifact to
 be published. The safe end-to-end verb is `release`; the deliberate design question is tracked
 in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
+
+`cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
+it requires a project scope and `--yes` (or `--dry-run`), accepts only that project's
+namespace, deletes the exact GitHub Release, and leaves its Git tag untouched. It cannot
+be mistaken for policy cleanup of normal immutable `<project>-v<semver>` releases.
 
 ## Logging and live diagnostics
 

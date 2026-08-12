@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from cmru.config_names import PROJECT_CONFIG_FILENAME
+
 
 # ---------------------------------------------------------------------------
 # Git helpers
@@ -47,7 +49,7 @@ def _git(repo_root: Path, *args: str) -> str:
 # editing them (e.g. repointing release_config during a migration) MUST NOT trigger a
 # version bump for that product. Excluded from change detection (S12.2).
 _RELEASE_CONTROL_EXCLUDES = (
-    ":(exclude,glob)**/cmru.toml",
+    f":(exclude,glob)**/{PROJECT_CONFIG_FILENAME}",
     ":(exclude,glob)**/cmru.vars",
     # CMRU's source-first history is release metadata, not a product change that
     # should by itself schedule the following release.  Custom configured history

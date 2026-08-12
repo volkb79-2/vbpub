@@ -36,7 +36,11 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "cmru: tester-unified suite", argv = ["python3", "-m", "cmru.tester_gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+  # The CMRU package owns the repository-root estate shims (`cmru.py` and
+  # `cmru.release.sh`), which its release tests exercise.  The project command
+  # explicitly selects that root and then the cmru workdir; tester-gate itself
+  # still accepts only a contained workdir and mounts exactly that declared root.
+  { label = "cmru: tester-unified suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = ".." },
 ]
 
 [steps.build]

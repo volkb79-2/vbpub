@@ -46,6 +46,13 @@ def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeyp
     assert cli._cmru_version() == "2.0.0"
 
 
+def test_source_dev_version_is_derived_from_the_nearest_cmru_tag():
+    assert cli._dev_version_from_describe("cmru-v2.0.1-7-gabc123ef") == "2.0.2.dev7+gabc123ef"
+    assert cli._dev_version_from_describe("cmru-v2.0.1-0-gabc123ef") == "2.0.1"
+    assert cli._dev_version_from_describe("ciu-v6.0.0-7-gabc123ef") is None
+    assert cli._dev_version_from_describe("cmru-v2.0.1-rc1-7-gabc123ef") is None
+
+
 MINIMAL_S2 = """schema_version = 1
 [orchestration]
 project_order = ["alpha"]
@@ -253,7 +260,7 @@ def test_help_lists_verbs_and_ordering():
     with redirect_stdout(out):
         cli.main(["--help"])
     text = out.getvalue()
-    for verb in ("status", "release", "changelog", "build", "publish", "resolve", "get", "cleanup", "run-step"):
+    for verb in ("status", "release", "changelog", "build", "publish", "resolve", "get", "cleanup", "version", "run-step"):
         assert verb in text, f"{verb} missing from help"
     assert "TYPICAL WORKFLOW" in text
 
@@ -261,6 +268,58 @@ def test_help_lists_verbs_and_ordering():
 def test_unknown_verb_exits_2():
     with pytest.raises(SystemExit) as exc:
         cli.main(["frobnicate"])
+    assert exc.value.code == 2
+
+
+def test_version_is_a_verb_not_a_flag(monkeypatch):
+    monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.main(["version"])
+    assert out.getvalue() == "cmru 2.0.2\n"
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 2
+
+
+def test_cleanup_delete_unmanaged_release_requires_confirmation(tmp_path):
+    cfg_path = _valid_config(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "cleanup", "--config", str(cfg_path), "--project", "alpha",
+            "--delete-unmanaged-release-tag", "alpha-wheel-latest",
+        ])
+    assert exc.value.code == 2
+
+
+def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):
+    cfg_path = _valid_config(tmp_path)
+    (tmp_path / "alpha" / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "test-token"\n', encoding="utf-8"
+    )
+    calls = []
+    monkeypatch.setattr(
+        cli, "delete_unmanaged_release_tag",
+        lambda owner, repo, token, tag, *, dry_run: calls.append(
+            (owner, repo, token, tag, dry_run)
+        ) or True,
+    )
+
+    cli.main([
+        "cleanup", "--config", str(cfg_path), "--project", "alpha",
+        "--delete-unmanaged-release-tag", "alpha-wheel-latest", "--dry-run",
+    ])
+    assert calls == [("octocat", "demo", "test-token", "alpha-wheel-latest", True)]
+
+
+def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
+    cfg_path = _valid_config(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "cleanup", "--config", str(cfg_path), "--project", "alpha",
+            "--delete-unmanaged-release-tag", "alpha-v1.0.0", "--dry-run",
+        ])
     assert exc.value.code == 2
 
 

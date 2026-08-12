@@ -20,6 +20,9 @@ cmru release                # 2. isolated transaction: prepare → gate → inte
    └─ cmru publish          #    run an explicit project's push step
 cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
+cmru cleanup --project P --delete-unmanaged-release-tag TAG --yes
+                                  # delete one old GitHub Release only, never its Git tag
+cmru version                      # print the CMRU version
 
 cmru resolve --project P    # consumer: highest-semver published version  (read-only)
 cmru get     --project P    # consumer: emit a standalone installer       (read-only)
@@ -281,6 +284,13 @@ finds no new source or generated output beyond the cursor) and does not duplicat
 tag that predates source-first history. It writes a generated `backfilled-after-release` entry
 to the current source tree and never moves the immutable tag; the caller reviews and commits
 that migration explicitly.
+
+**S-REL.4c — Unmanaged-release cleanup.** `cmru cleanup --project P
+--delete-unmanaged-release-tag TAG --yes` is a migration-only operation for an old GitHub
+Release outside P's normal `<prefix>-v<semver>`/`<prefix>-latest` lifecycle. It requires the
+explicit project namespace and confirmation (or `--dry-run`), deletes exactly one GitHub
+Release with that tag, and MUST NOT delete its Git tag. A managed release is rejected; normal
+project cleanup remains the sole operation allowed to delete managed Releases and tags.
 
 **S-REL.4b — Release declaration.** `[project.release]` MUST contain `git_tag` and
 `build_step`. `build_step` MUST name an explicit `[steps.<name>]` command. Optional

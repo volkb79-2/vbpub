@@ -15,6 +15,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Iterable, Mapping, Optional
 
+from cmru.config_names import PROJECT_CONFIG_FILENAME
+
 
 
 @dataclass(frozen=True)
@@ -119,10 +121,10 @@ def compute_build_date(config: dict, project_root: Path) -> None:
 def parse_step(config: dict, step_name: str) -> StepConfig:
     steps = config.get("steps")
     if not steps or not isinstance(steps, dict):
-        raise ValueError("[steps] section is required in cmru.toml")
+        raise ValueError(f"[steps] section is required in {PROJECT_CONFIG_FILENAME}")
     step = steps.get(step_name)
     if not step or not isinstance(step, dict):
-        raise ValueError(f"Step '{step_name}' not found in cmru.toml")
+        raise ValueError(f"Step '{step_name}' not found in {PROJECT_CONFIG_FILENAME}")
 
     commands = step.get("commands")
     if not commands or not isinstance(commands, list):
@@ -520,7 +522,7 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     (repo_root, projects, _order, _defaults, _steps, _mode, _step_order,
      _cleanup, github, env) = load_config(project_config_path)
     if len(projects) != 1:
-        raise RuntimeError("run-step requires a project-local cmru.toml")
+        raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
     apply_release_env(github, env)
     project = next(iter(projects.values()))
     step = project.runner_steps.get(step_name) if project.runner_steps else None
@@ -537,8 +539,12 @@ def run_step(project_config_path: Path, step_name: str) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run one named step from a project cmru.toml")
-    parser.add_argument("--config", required=True, help="Path to project cmru.toml")
+    parser = argparse.ArgumentParser(
+        description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}"
+    )
+    parser.add_argument(
+        "--config", required=True, help=f"Path to project {PROJECT_CONFIG_FILENAME}"
+    )
     parser.add_argument("--step", required=True, help="Step name to execute")
     parser.add_argument(
         "--show-run-details", action="store_true",

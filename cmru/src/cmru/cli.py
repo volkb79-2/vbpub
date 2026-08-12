@@ -21,6 +21,7 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import transaction
 from cmru import exit_codes
 from cmru.config import load_forge_config
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 
 
 @dataclass(frozen=True)
@@ -579,6 +580,48 @@ def delete_release(owner: str, repo: str, token: str, release_id: int, dry_run: 
         raise RuntimeError(f"Failed to delete release {release_id}: {body}")
 
 
+def delete_unmanaged_release_tag(
+    owner: str,
+    repo: str,
+    token: str,
+    tag: str,
+    *,
+    dry_run: bool,
+) -> bool:
+    """Delete exactly one named old GitHub Release, never its Git tag.
+
+    Normal CMRU cleanup manages versioned Releases and their Git tags together.
+    This deliberately narrower operation removes an explicitly named unmanaged
+    Release left by a predecessor workflow while preserving its tag. An absent
+    target is an idempotent no-op; duplicate records or a malformed record are
+    unsafe and fail loudly.
+    """
+    matches = [release for release in list_releases(owner, repo, token)
+               if release.get("tag_name") == tag]
+    if not matches:
+        log_info(f"Cleanup: unmanaged GitHub Release {tag} is absent; no action.")
+        return False
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Cleanup: expected one GitHub Release for {tag!r}, found {len(matches)}."
+        )
+    release_id = matches[0].get("id")
+    if not isinstance(release_id, int):
+        raise RuntimeError(f"Cleanup: GitHub Release {tag!r} has no usable numeric ID.")
+    if dry_run:
+        log_info(
+            f"[DRY RUN] Would delete unmanaged GitHub Release {tag} "
+            f"(id={release_id}); its Git tag is untouched."
+        )
+        return True
+    log_info(
+        f"Cleanup: deleting unmanaged GitHub Release {tag} (id={release_id}); "
+        "its Git tag is untouched."
+    )
+    delete_release(owner, repo, token, release_id, dry_run=False)
+    return True
+
+
 def cleanup_releases(
     owner: str,
     repo: str,
@@ -1033,7 +1076,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="cmru explicit step orchestration")
     parser.add_argument(
         "--config",
-        help="Path to cmru.toml",
+        help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
     )
     parser.add_argument(
         "--project",
@@ -1135,13 +1178,15 @@ def _orchestrate() -> None:
 
 
 def _source_tree_version() -> Optional[str]:
-    """Return CMRU's exact source tag when this import is from its source tree.
+    """Return CMRU's source version when this import is from its source tree.
 
     A repository shim puts ``cmru/src`` ahead of an editable installation. In
     that situation package metadata can describe an older installed wheel even
     though the source tree being executed is tagged differently. Git is the
-    authoritative source for an exact source checkout; installed wheels simply
-    have no adjacent ``pyproject.toml`` and use distribution metadata below.
+    authoritative source for a checkout; installed wheels simply have no adjacent
+    ``pyproject.toml`` and use distribution metadata below.  For a checkout
+    beyond an exact CMRU tag, derive the same next-patch dev shape used by
+    setuptools-scm rather than reporting unrelated, stale editable metadata.
     """
     project_root = Path(__file__).resolve().parents[2]
     if not (project_root / "pyproject.toml").is_file():
@@ -1150,11 +1195,35 @@ def _source_tree_version() -> Optional[str]:
         ["git", "-C", str(project_root), "describe", "--exact-match", "--tags", "--match", "cmru-v*"],
         capture_output=True, text=True, check=False,
     )
-    if result.returncode != 0:
+    if result.returncode == 0:
+        tag = result.stdout.strip()
+        match = re.fullmatch(r"cmru-v([0-9][0-9A-Za-z.+-]*)", tag)
+        if match:
+            return match.group(1)
+
+    result = subprocess.run(
+        ["git", "-C", str(project_root), "describe", "--tags", "--long", "--match", "cmru-v*"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
         return None
-    tag = result.stdout.strip()
-    match = re.fullmatch(r"cmru-v([0-9][0-9A-Za-z.+-]*)", tag)
-    return match.group(1) if match else None
+    return _dev_version_from_describe(result.stdout.strip())
+
+
+def _dev_version_from_describe(description: str) -> Optional[str]:
+    """Render a simple SemVer ``git describe --long`` result as a dev version.
+
+    CMRU's released tags are plain ``X.Y.Z`` SemVer.  Do not guess a version for
+    another grammar: falling back to installed distribution metadata is more
+    honest than inventing a release candidate shape this command cannot prove.
+    """
+    match = re.fullmatch(r"cmru-v(\d+)\.(\d+)\.(\d+)-(\d+)-g([0-9a-f]+)", description)
+    if not match:
+        return None
+    major, minor, patch, distance, revision = match.groups()
+    if distance == "0":
+        return f"{major}.{minor}.{patch}"
+    return f"{major}.{minor}.{int(patch) + 1}.dev{distance}+g{revision}"
 
 
 def _cmru_version() -> str:
@@ -1175,7 +1244,7 @@ def _default_config_path() -> Path:
     a parent repository's orchestration file would make a copied project silently
     depend on the old checkout, exactly the boundary this contract removes.
     """
-    return Path.cwd() / "cmru.toml"
+    return Path.cwd() / PROJECT_CONFIG_FILENAME
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
@@ -1235,7 +1304,10 @@ def _run_project_steps(
         project = configs[name]
         for step in steps:
             if step not in (project.runner_steps or {}):
-                raise RuntimeError(f"{name}: requested step {step!r} is not declared in cmru.toml")
+                raise RuntimeError(
+                    f"{name}: requested step {step!r} is not declared in "
+                    f"{PROJECT_CONFIG_FILENAME}"
+                )
             log_info(f"{name}: running step '{step}'")
             run_project_step(project, step, repo_root, log_dir)
 
@@ -1585,7 +1657,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     if not av or av[0] in ("-h", "--help"):
         print(
             f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            "Config: project cmru.toml, or explicit cmru.orchestration.toml — select with --config\n"
+            f"Config: project {PROJECT_CONFIG_FILENAME}, or explicit "
+            f"{ORCHESTRATION_CONFIG_FILENAME} — select with --config\n"
             "\n"
             "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
             "  1. status                  preview what changed + the next version (no writes)\n"
@@ -1614,11 +1687,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             "\n"
             "MAINTENANCE\n"
             "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
-            "    run-step --config C --step S                  execute one project cmru.toml step\n"
+            "    cleanup  --delete-unmanaged-release-tag TAG --project P --yes\n"
+            "                                                delete one explicit old GitHub Release (not its tag)\n"
+            "    version                                     print this CMRU version\n"
+            f"    run-step --config C --step S                  execute one project {PROJECT_CONFIG_FILENAME} step\n"
         )
         return
 
-    if av[0] == "--version":
+    if av[0] == "version":
         print(f"cmru {_cmru_version()}")
         return
 
@@ -1647,7 +1723,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
-        parser.add_argument("--config", help="Path to cmru.toml")
+        parser.add_argument(
+            "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+        )
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         parser.add_argument("--show-run-details", action="store_true")
         parser.add_argument("--log-append", action="store_true")
@@ -1694,7 +1772,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / "cmru.toml" for project in configs.values()
+                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
                          if project.project_root is not None],
                     )
                     log_info(
@@ -1737,7 +1815,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         parser.add_argument("--project", required=True)
         parser.add_argument("--backfill-tag", required=True, metavar="TAG")
-        parser.add_argument("--config", help="Path to cmru.toml")
+        parser.add_argument(
+            "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+        )
         vargs = parser.parse_args(rest)
         cfg_path = _resolve_config(vargs.config)
         repo_root, configs, *_ = load_config(cfg_path)
@@ -1774,7 +1854,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--no-build", action="store_true",
                             help="release: tag + push only; skip build/publish")
-        parser.add_argument("--config", help="Path to cmru.toml")
+        parser.add_argument(
+            "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+        )
         parser.add_argument("--resume", metavar="WORKTREE",
                             help="Resume a retained failed release worktree")
         parser.add_argument("--abandon", metavar="WORKTREE|all-previous",
@@ -1896,7 +1978,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / "cmru.toml" for project in configs.values()
+                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
                          if project.project_root is not None],
                     )
                     log_info(
@@ -2038,7 +2120,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "cmru cleanup — delete old Releases, stale tags, and prune ghcr.\n\n"
                 "Without --remove-assets: project-aware cleanup driven by [cleanup] config\n"
                 "  (keeps <prefix>-latest + keep_release_tags; deletes the rest).\n"
-                "With --remove-assets AGE: age-based cleanup."
+                "With --remove-assets AGE: age-based cleanup.\n"
+                "With --delete-unmanaged-release-tag TAG: delete that exact old GitHub Release only; "
+                "requires --project and --yes (or --dry-run)."
             ),
             formatter_class=_ap.RawDescriptionHelpFormatter,
         )
@@ -2049,7 +2133,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--project", help="Limit to one project (project-aware mode only)")
         parser.add_argument("--dry-run", action="store_true",
                             help="List what would be deleted without deleting")
-        parser.add_argument("--config", help="Path to cmru.toml")
+        parser.add_argument(
+            "--delete-unmanaged-release-tag", metavar="TAG",
+            help="Delete one explicitly named non-CMRU GitHub Release, never its Git tag",
+        )
+        parser.add_argument(
+            "--yes", action="store_true",
+            help="Confirm --delete-unmanaged-release-tag (not required with --dry-run)",
+        )
+        parser.add_argument(
+            "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+        )
         vargs = parser.parse_args(rest)
 
         cfg_path = _resolve_config(vargs.config)
@@ -2057,7 +2151,36 @@ def main(argv: Optional[List[str]] = None) -> None:
         (repo_root, configs, project_order, _default_projects, _default_steps,
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
 
-        if vargs.remove_assets:
+        if vargs.remove_assets and vargs.delete_unmanaged_release_tag:
+            parser.error("--remove-assets and --delete-unmanaged-release-tag are mutually exclusive")
+
+        if vargs.delete_unmanaged_release_tag:
+            if not vargs.project:
+                parser.error("--delete-unmanaged-release-tag requires --project to scope the operation")
+            if not (vargs.yes or vargs.dry_run):
+                parser.error("--delete-unmanaged-release-tag requires --yes (or --dry-run)")
+            project = configs.get(vargs.project)
+            if project is None:
+                parser.error(f"unknown project: {vargs.project}")
+            prefix = project.prefix or ""
+            bare = _bare_prefix(prefix)
+            tag = vargs.delete_unmanaged_release_tag
+            if not bare or not tag.startswith(f"{bare}-"):
+                parser.error(
+                    f"{tag!r} is outside project {vargs.project!r}'s release namespace {bare!r}"
+                )
+            if tag.startswith(prefix) or tag == f"{bare}-latest":
+                parser.error(
+                    f"{tag!r} is CMRU-managed; use ordinary cleanup policy, not "
+                    "--delete-unmanaged-release-tag"
+                )
+            if not github_config.token:
+                parser.error("an explicit CMRU publish credential is required to delete a GitHub Release")
+            delete_unmanaged_release_tag(
+                github_config.owner, github_config.repo, github_config.token, tag,
+                dry_run=vargs.dry_run,
+            )
+        elif vargs.remove_assets:
             # Explicit age-based cleanup mode.
             remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
         else:

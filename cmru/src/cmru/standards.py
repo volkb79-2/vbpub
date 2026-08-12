@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+
 
 PROJECT_TEMPLATE_REVISION = 2
 
@@ -113,7 +115,9 @@ def standards_main(argv: list[str] | None = None) -> None:
         )
     )
     parser.add_argument("--project", action="append", help="Check one project (repeatable)")
-    parser.add_argument("--config", help="Path to cmru.toml")
+    parser.add_argument(
+        "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
+    )
     parser.add_argument("--update", action="store_true", help="Update stale CMRU-owned revision markers")
     args = parser.parse_args(argv)
 
@@ -133,8 +137,12 @@ def standards_main(argv: list[str] | None = None) -> None:
         for name in selected:
             project_path = getattr(projects[name], "project_root", None)
             if project_path is None:
-                raise ValueError(f"{name}: project-local cmru.toml is required for standards update")
-            changed = _update_project_revision(Path(project_path) / "cmru.toml") or changed
+                raise ValueError(
+                    f"{name}: project-local {PROJECT_CONFIG_FILENAME} is required for standards update"
+                )
+            changed = _update_project_revision(
+                Path(project_path) / PROJECT_CONFIG_FILENAME
+            ) or changed
         if changed:
             print("[INFO] Updated CMRU-owned template revision marker(s).", flush=True)
         # Re-read to ensure a malformed update can never be reported as conformant.

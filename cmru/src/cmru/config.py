@@ -28,6 +28,11 @@ else:
     import tomllib  # type: ignore[no-redef]
 
 from cmru import exit_codes
+from cmru.config_names import (
+    CONFIG_FILENAMES,
+    ORCHESTRATION_CONFIG_FILENAME,
+    PROJECT_CONFIG_FILENAME,
+)
 
 
 # ─── Config dataclasses (S2) ─────────────────────────────────────────────────
@@ -472,14 +477,14 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
 
 
 def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS2Config, TargetsConfig]:
-    raw = _read_toml(config_path, "cmru.toml")
+    raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
         raw,
         {"schema_version", "github", "targets", "env", "build_metadata", "project", "steps", "project_metadata"},
-        "cmru.toml",
+        PROJECT_CONFIG_FILENAME,
     )
     if raw.get("schema_version") != 1:
-        _error("cmru.toml.schema_version must be exactly 1")
+        _error(f"{PROJECT_CONFIG_FILENAME}.schema_version must be exactly 1")
     github = _github(raw.get("github"), config_path)
     targets = _targets(raw.get("targets"))
     env = _scalar_env(raw.get("env", {}), "env")
@@ -591,7 +596,7 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
 
 def _parse_cleanup(raw: object) -> CleanupS2Config:
     if not isinstance(raw, dict):
-        _error("[cleanup] is required in cmru.orchestration.toml")
+        _error(f"[cleanup] is required in {ORCHESTRATION_CONFIG_FILENAME}")
     _reject_unknown(raw, {"max_age_days", "release_tag_prefixes", "keep_release_tags", "ghcr_packages", "ghcr_delete_packages"}, "cleanup")
     if "max_age_days" in raw and (not isinstance(raw["max_age_days"], int) or raw["max_age_days"] <= 0):
         _error("cleanup.max_age_days must be a positive integer")
@@ -621,10 +626,10 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
 
 
 def _load_orchestration_config(config_path: Path) -> ForgeConfig:
-    raw = _read_toml(config_path, "cmru.orchestration.toml")
-    _reject_unknown(raw, {"schema_version", "orchestration", "cleanup"}, "cmru.orchestration.toml")
+    raw = _read_toml(config_path, ORCHESTRATION_CONFIG_FILENAME)
+    _reject_unknown(raw, {"schema_version", "orchestration", "cleanup"}, ORCHESTRATION_CONFIG_FILENAME)
     if raw.get("schema_version") != 1:
-        _error("cmru.orchestration.toml.schema_version must be exactly 1")
+        _error(f"{ORCHESTRATION_CONFIG_FILENAME}.schema_version must be exactly 1")
     orch_raw = raw.get("orchestration")
     if not isinstance(orch_raw, dict):
         _error("[orchestration] is required")
@@ -657,8 +662,11 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         if not isinstance(config_value, str) or not config_value.strip():
             _error(f"{where}.config must be a non-empty project-relative path")
         config_rel = Path(config_value)
-        if config_rel.is_absolute() or ".." in config_rel.parts or config_rel.name != "cmru.toml":
-            _error(f"{where}.config must be a project-relative path ending in cmru.toml")
+        if config_rel.is_absolute() or ".." in config_rel.parts or config_rel.name != PROJECT_CONFIG_FILENAME:
+            _error(
+                f"{where}.config must be a project-relative path ending in "
+                f"{PROJECT_CONFIG_FILENAME}"
+            )
         dependencies[project_id] = _string_list(entry.get("depends_on", []), f"{where}.depends_on")
         project_path = (config_path.parent / config_rel).resolve()
         project, project_github, project_targets = _parse_project_document(project_path)
@@ -728,12 +736,12 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
 def load_forge_config(config_path: Path, *, require_orchestration: bool = False) -> ForgeConfig:
     """Load exactly one of the two strict CMRU config documents."""
     config_path = config_path.expanduser().resolve()
-    if config_path.name == "cmru.toml":
+    if config_path.name == PROJECT_CONFIG_FILENAME:
         config = _load_project_config(config_path)
-    elif config_path.name == "cmru.orchestration.toml":
+    elif config_path.name == ORCHESTRATION_CONFIG_FILENAME:
         config = _load_orchestration_config(config_path)
     else:
-        _error("CMRU configuration must be named cmru.toml or cmru.orchestration.toml")
-    if require_orchestration and config_path.name != "cmru.orchestration.toml":
-        _error("this estate-level verb requires cmru.orchestration.toml")
+        _error("CMRU configuration must be named " + " or ".join(sorted(CONFIG_FILENAMES)))
+    if require_orchestration and config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        _error(f"this estate-level verb requires {ORCHESTRATION_CONFIG_FILENAME}")
     return config
