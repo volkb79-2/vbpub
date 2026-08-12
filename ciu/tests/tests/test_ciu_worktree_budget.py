@@ -243,6 +243,57 @@ def test_git_common_dir_absolute_result_used_as_is(tmp_git_repo, monkeypatch):
     assert result == Path(absolute_common)
 
 
+def test_lock_location_is_shared_across_the_whole_worktree_family(tmp_git_repo, monkeypatch):
+    """Real git, UNMOCKED: `_git_common_dir` from the PRIMARY and from a
+    LINKED worktree of the SAME family must resolve to the IDENTICAL path
+    (a linked worktree's `--git-common-dir` always reports the primary's
+    own `.git`, never its own) -- this identity is what makes the S16.3
+    lock visible to every sibling worktree, per SPEC S16.3's own claim.
+
+    Then prove `worktree_budget_slot` itself actually USES that shared
+    location, not just that `_git_common_dir` alone reports it correctly:
+    taking a slot from EITHER worktree must create exactly ONE lock file,
+    at the shared common-dir path -- never a second, per-worktree-local
+    one. A mutant that swapped the lock path for
+    `repo_root / _BUDGET_LOCK_NAME` (a per-worktree-local lock) would still
+    pass every OTHER test in this file (`test_cap_none_...` only checks
+    non-existence through the same mutated function, and the two-thread
+    contention test passes the SAME repo_root to both threads) but fails
+    THIS one: it would produce two distinct lock files instead of one
+    shared one.
+    """
+    _write_ciu_env(tmp_git_repo, network="net-primary")
+    linked = _add_linked_worktree(tmp_git_repo, "linked")
+    (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text(
+        _global_defaults(env_tag="linked", max_concurrent=3)
+    )
+    _git_ok(["add", "-A"], linked)
+    _git_ok(["commit", "-m", "linked distinct project"], linked)
+    _write_ciu_env(linked, network="net-linked")
+
+    common_from_primary = worktree._git_common_dir(_ciu_root(tmp_git_repo))
+    common_from_linked = worktree._git_common_dir(_ciu_root(linked))
+    assert common_from_primary == common_from_linked, (
+        "a linked worktree's own --git-common-dir must equal the primary's"
+    )
+
+    monkeypatch.setattr(worktree.procutil, "docker", _deployed_docker({}))
+
+    with worktree.worktree_budget_slot(
+        _ciu_root(tmp_git_repo), 1, "net-primary", _stack_rel()
+    ):
+        pass
+    with worktree.worktree_budget_slot(
+        _ciu_root(linked), 1, "net-linked", _stack_rel()
+    ):
+        pass
+
+    lock_files = set(tmp_git_repo.parent.rglob(worktree._BUDGET_LOCK_NAME))
+    assert lock_files == {common_from_primary / worktree._BUDGET_LOCK_NAME}, (
+        f"expected exactly one shared lock file, found {lock_files}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # primary_ciu_root -- the git-root-to-CIU-root offset (S16.3)
 # ---------------------------------------------------------------------------
@@ -837,6 +888,67 @@ def test_lock_held_continuously_from_count_decision_through_executor(tmp_git_rep
     ):
         executor()
     assert recorder.events == ["LOCK_EX", "LOCK_UN"]
+
+
+def test_candidate_rendering_finishes_before_the_first_lock_ex(tmp_git_repo, monkeypatch):
+    """Proves candidate resolution (every candidate's `render_global_chain`
+    call, inside `_resolve_budget_candidates`) finishes ENTIRELY before the
+    family flock is ever acquired -- required by the handoff's own
+    proof-material table ("Assert all candidate env/config renders finish
+    before the first `LOCK_EX`"). `test_lock_held_continuously_...` above
+    only records `LOCK_EX`/`LOCK_UN` transitions, so it cannot distinguish
+    this from a mutant that moved `_resolve_budget_candidates()` to run
+    INSIDE the flock: the render calls would still happen somewhere between
+    the same LOCK_EX/LOCK_UN pair either way, and that test would still
+    pass. Recording renders and lock transitions into ONE shared ordered
+    list is what makes the two distinguishable: a render event appearing
+    at or after the `LOCK_EX` index fails THIS test specifically.
+    """
+    _write_ciu_env(tmp_git_repo, network="net-primary")
+    linked = _add_linked_worktree(tmp_git_repo, "linked")
+    (_ciu_root(linked) / "ciu.global.defaults.toml.j2").write_text(
+        _global_defaults(env_tag="linked", max_concurrent=3)
+    )
+    _git_ok(["add", "-A"], linked)
+    _git_ok(["commit", "-m", "linked distinct project"], linked)
+    _write_ciu_env(linked, network="net-linked")
+    monkeypatch.setattr(worktree.procutil, "docker", _deployed_docker({}))
+
+    events: list[str] = []
+    real_flock = fcntl.flock
+
+    def recording_flock(fd, operation):
+        result = real_flock(fd, operation)
+        if operation == fcntl.LOCK_EX:
+            events.append("LOCK_EX")
+        elif operation == fcntl.LOCK_UN:
+            events.append("LOCK_UN")
+        return result
+
+    monkeypatch.setattr(worktree.fcntl, "flock", recording_flock)
+
+    real_render = worktree.config_model.render_global_chain
+
+    def recording_render(*args, **kwargs):
+        events.append("render")
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(worktree.config_model, "render_global_chain", recording_render)
+
+    with worktree.worktree_budget_slot(
+        _ciu_root(tmp_git_repo), 1, "net-primary", _stack_rel()
+    ):
+        pass
+
+    assert "LOCK_EX" in events, f"the lock was never acquired: {events}"
+    lock_index = events.index("LOCK_EX")
+    render_indices = [i for i, e in enumerate(events) if e == "render"]
+    # Both candidates (primary + linked) must actually have been rendered --
+    # an empty list here would make the ordering assertion below vacuous.
+    assert len(render_indices) == 2, f"expected 2 candidate renders, got: {events}"
+    assert all(i < lock_index for i in render_indices), (
+        f"a candidate render occurred at/after LOCK_EX: {events}"
+    )
 
 
 def test_lock_released_on_refusal_before_ever_yielding(tmp_git_repo, monkeypatch):

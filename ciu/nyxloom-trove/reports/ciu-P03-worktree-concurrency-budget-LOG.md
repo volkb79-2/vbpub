@@ -428,3 +428,82 @@ named in the handoff's traceability table is present and passing:
   see "A real regression the real gate caught" above.
 - Nothing else required inventing an externally-visible interface, default,
   or bound. No BLOCKED condition was hit.
+
+## Round 2 — independent review findings and fixes (post `ea05b9b6`)
+
+Independent review verdict: REJECT. Reviewer's own framing: "the
+implementation itself is correct... the proof isn't" — the offset
+arithmetic, the exact-label classifier's genuine immunity to ciu-P02's
+shared-infra join (re-verified by the reviewer with a custom
+Docker-filter-interpreting fake, not just my scripted responder), the
+already-deployed-may-rerun rule, and both self-caught bugs from round 1 all
+held. Two load-bearing invariants had zero test defense; fixed exactly
+those two, touched nothing else.
+
+1. **The family-wide lock LOCATION had no oracle.** The reviewer mutated
+   `worktree_budget_slot`'s `lock_path = _git_common_dir(repo_root) /
+   _BUDGET_LOCK_NAME` to `repo_root / _BUDGET_LOCK_NAME` (a per-worktree
+   -local lock) and all 1983 round-1 tests still passed — my two-thread
+   contention test passes the SAME `repo_root` to both simulated threads,
+   so a shared and a per-worktree-local lock are indistinguishable there;
+   my `_git_common_dir` unit tests all mocked `worktree._git`, so none
+   exercised what a REAL linked worktree's `--git-common-dir` actually
+   reports. Fixed with
+   `test_lock_location_is_shared_across_the_whole_worktree_family` in
+   `tests/tests/test_ciu_worktree_budget.py`: real (unmocked) git, a real
+   primary + a real linked worktree, asserting
+   `_git_common_dir(primary) == _git_common_dir(linked)` and then that
+   taking a budget slot from EITHER worktree produces exactly ONE lock
+   file on disk, at that shared path. Re-verified by reproducing the
+   reviewer's exact mutation myself: the new test fails
+   (`expected exactly one shared lock file, found {...two paths...}`)
+   while every other test in the file still passes; reverted, confirmed a
+   clean `git diff` and the real fix passing again.
+2. **The bounded critical section had no oracle.** The reviewer moved
+   `_resolve_budget_candidates(...)` (every candidate's `ciu.env` parse and
+   `render_global_chain` call) to run INSIDE the flock instead of before
+   it, and all 1983 round-1 tests still passed — `_FlockRecorder` only
+   records `LOCK_EX`/`LOCK_UN`, which is identical either way since moving
+   work around inside the same lock/unlock pair doesn't change what it
+   sees. Fixed with
+   `test_candidate_rendering_finishes_before_the_first_lock_ex`: wraps
+   `worktree.config_model.render_global_chain` into the SAME ordered
+   event list the flock recorder already uses, then asserts every
+   recorded `"render"` event's index is strictly less than
+   `events.index("LOCK_EX")` — directly proving resolution happens before
+   the lock is taken, not just that the lock itself behaves correctly once
+   entered. Re-verified the same way: reproduced the reviewer's exact
+   mutation (moved `_resolve_budget_candidates` inside the `try:` block
+   after `fcntl.flock(...)`), confirmed the new test alone fails
+   (`a candidate render occurred at/after LOCK_EX: ['LOCK_EX', 'render',
+   'render', 'LOCK_UN']`) while the other 79 tests in the file still pass,
+   reverted, confirmed a clean `git diff` and the real fix passing again.
+
+Both new tests live in `tests/tests/test_ciu_worktree_budget.py`; no other
+file was touched this round.
+
+**Flagged, not fixed (explicitly out of this package's scope per the review
+instruction):** `resolve_worktree_cap` (and `_ciu_root_offset`/`git_toplevel`)
+gate "is this a git work tree at all" on `git rev-parse --show-toplevel`
+returning exit code 0. Git also exits 128 for "dubious ownership" (a
+bind-mounted repo owned by a different uid than the process reading it —
+this project's own gate-container shape, and standard in CI), which is
+indistinguishable from "not a git repository" by return code alone. A
+genuine worktree family hitting a dubious-ownership error therefore
+silently resolves to "no cap, no Docker call, no lock, no diagnostic" —
+exactly the state a host-capacity policy is least allowed to fail open in.
+This mirrors an existing, already-accepted precedent
+(`engine._check_gitignore`, S1.7) that fails open the same way for a lint
+check, not a host-capacity limit, so it is a real, load-bearing gap, not a
+novel risk class. Filing as a CIU-25-adjacent follow-up: discriminate
+"genuinely not a git work tree" (exit 128, "not a git repository") from
+"is a git work tree but git refuses for another reason" (exit 128,
+"detected dubious ownership" or any other message) — e.g. via `git
+rev-parse --is-inside-work-tree` returning `false` specifically, versus a
+non-zero/error exit — and treat the latter as a loud `[S16.3]` failure
+rather than a silent no-cap. Not implemented here per explicit review
+instruction to fix only the two defects above.
+
+### Round 2 final gate
+
+Run after committing `<round-2 commit>`. See below.
