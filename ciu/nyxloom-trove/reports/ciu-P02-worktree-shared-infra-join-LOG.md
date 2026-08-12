@@ -431,3 +431,51 @@ no behavioral change to any already-passing path); `engine.py`: two
 new logic); test files: fixture/fixture-data changes plus new tests, no
 production logic touched beyond the two files above. Nothing outside the
 five defects and the documentation gap was modified.
+
+## Round 2 final gate (after committing `861a35f3`)
+
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=src python3 run-ciu-tests.py`:
+
+```
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/cli.py                                     399     27    128      4    94%   350-373, 595-600, 814, 817, 820
+src/ciu/composefile.py                             344     14    168      2    96%   809-833, 924
+src/ciu/deploy.py                                 1027      3    422      1    99%   725, 745-746
+src/ciu/engine.py                                  844      0    278      0   100%
+src/ciu/governance.py                              382      1    158      2    99%   189, 197->201
+src/ciu/ksm.py                                     180     56     64      6    68%   86, 118-120, 133-134, 140, 151, 159, 165-166, 214, 260-261, 292-307, 327-385, 405-406, 414-415
+src/ciu/worktree.py                                321     24    112      4    93%   210, 224, 416-426, 441-468, 560, 764
+--------------------------------------------------------------------------------------------
+TOTAL                                             6199    125   2438     19    98%
+Coverage JSON written to file coverage.json
+FAIL Required test coverage of 100% not reached. Total coverage: 98.05%
+====================== 1884 passed, 8 warnings in 12.84s =======================
+```
+(every other module not listed is 100%). `engine.py` is still 100%.
+`worktree.py`'s 24 missing lines are the EXACT SAME pre-existing statements
+as every prior measurement in this LOG (`210, 224, 416-426, 441-468, 560,
+764` — `list_worktrees`, `_generate_env_in`, `_clean_in`, and the
+pre-existing `git` failure-branch tails of `add()`/`remove()`), confirming
+both new `try/except` blocks added this round (defects 2 and 4) are fully
+exercised. The blanket `--cov-fail-under=100` failure is the SAME
+pre-existing, unrelated-to-this-package shortfall as every measurement
+before it in this LOG (and, per the task brief, is not fixable from inside
+this package regardless — `run-ciu-tests.py`'s own `--cov-fail-under=100`
+runs before the changed-line half ever does, and was already failing this
+way before ciu-P01).
+
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=../nyxloom/src python3 -m
+nyxloom.coverage_gate --repo . --base main --coverage-json coverage.json
+--source src/ciu`:
+
+```
+diff-coverage OK: 177/177 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+**100% of this package's own changed executable lines are covered** (up from
+167/167 before this round — the 10 new lines are the defect 2/3/4 fixes),
+against the SAME `coverage.json` the blanket run above just produced. Both
+numbers reported honestly, per instruction: the declared gate cannot pass
+end-to-end on this host (pre-existing, not this package's defect), but the
+changed-line floor this package is actually accountable for is met.
