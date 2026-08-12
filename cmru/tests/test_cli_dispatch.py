@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import importlib.util
+import json
 import subprocess
 from types import SimpleNamespace
 from contextlib import redirect_stdout
@@ -260,7 +261,7 @@ def test_help_lists_verbs_and_ordering():
     with redirect_stdout(out):
         cli.main(["--help"])
     text = out.getvalue()
-    for verb in ("status", "release", "changelog", "build", "publish", "resolve", "get", "cleanup", "version", "run-step"):
+    for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "run-step"):
         assert verb in text, f"{verb} missing from help"
     assert "TYPICAL WORKFLOW" in text
 
@@ -281,6 +282,30 @@ def test_version_is_a_verb_not_a_flag(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main(["--version"])
     assert exc.value.code == 2
+
+
+def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
+    workspace = SimpleNamespace(
+        branch="cmru/build/debug", path=tmp_path / "retained-build", base="a" * 40,
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.main(["worktrees", "--json"])
+
+    assert json.loads(out.getvalue()) == [{
+        "branch": "cmru/build/debug",
+        "path": str(workspace.path),
+        "purpose": "build",
+        "source_commit": "a" * 40,
+        "visible": False,
+    }]
 
 
 def test_cleanup_delete_unmanaged_release_requires_confirmation(tmp_path):
@@ -321,6 +346,28 @@ def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
             "--delete-unmanaged-release-tag", "alpha-v1.0.0", "--dry-run",
         ])
     assert exc.value.code == 2
+
+
+def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path, monkeypatch):
+    cfg_path = _valid_config(tmp_path)
+    expected_id = f"19700101T000000Z_{'a' * 40}"
+    calls = []
+    monkeypatch.setattr(
+        cli.transaction,
+        "delete_retained_build_output",
+        lambda root, project, name, output_id, *, dry_run: calls.append(
+            (root, project, name, output_id, dry_run)
+        ) or [tmp_path / "alpha" / "logs" / output_id, tmp_path / "alpha" / "artifacts" / output_id],
+    )
+
+    cli.main([
+        "cleanup", "--config", str(cfg_path), "--project", "alpha",
+        "--delete-build-output", expected_id, "--dry-run",
+    ])
+
+    assert len(calls) == 1
+    assert calls[0][0] == tmp_path
+    assert calls[0][2:] == ("alpha", expected_id, True)
 
 
 def test_invalid_config_missing_github(tmp_path):

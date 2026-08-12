@@ -1,6 +1,7 @@
 """Behavioural contract tests for isolated, source-first release transactions."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -1681,6 +1682,158 @@ def test_list_retained_workspaces_finds_release_worktrees_only():
         found = {w.branch for w in transaction.list_retained_workspaces(h.repo_root)}
 
         assert found == {"cmru/release/abc"}
+
+
+def test_list_cmru_workspaces_discovers_retained_build_and_release_worktrees():
+    with _OriginAndClone() as h:
+        h.add_worktree("cmru/release/abc", path_name="release-a")
+        h.add_worktree("cmru/build/def", path_name="build-a")
+        h.add_worktree("human/topic", path_name="unrelated")
+
+        found = {w.branch for w in transaction.list_cmru_workspaces(h.repo_root)}
+
+        assert found == {"cmru/release/abc", "cmru/build/def"}
+
+
+def test_retain_successful_build_outputs_copies_commit_addressed_record(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    main_project = repo_root / "alpha"
+    child_root = tmp_path / "build-worktree"
+    child_project = child_root / "alpha"
+    (child_project / "logs" / "cmru").mkdir(parents=True)
+    (child_project / "logs" / "cmru" / "run-tests.log").write_text("passed\n")
+    (child_project / "dist").mkdir()
+    (child_project / "dist" / "alpha.whl").write_bytes(b"wheel bytes")
+    main_project.mkdir(parents=True)
+    project = SimpleNamespace(project_root=main_project, artifact_dirs=("dist",))
+    workspace = transaction.ReleaseWorkspace(
+        repo_root=repo_root, path=child_root, branch="cmru/build/abc", base="a" * 40,
+    )
+
+    def fake_git(_path, *args, check=True):
+        values = {
+            ("rev-parse", "HEAD"): "a" * 40,
+            ("show", "-s", "--format=%ct", "HEAD"): "0",
+            ("show", "-s", "--format=%cI", "HEAD"): "1970-01-01T00:00:00+00:00",
+            ("status", "--porcelain=v1", "--untracked-files=all"): " M alpha/generated.txt\n",
+        }
+        return values[args]
+
+    monkeypatch.setattr(transaction, "_git", fake_git)
+
+    retained = transaction.retain_successful_build_outputs(
+        repo_root, workspace, {"alpha": project}, ["alpha"],
+    )
+
+    output_id = f"19700101T000000Z_{'a' * 40}"
+    assert retained == [main_project / "logs" / output_id, main_project / "artifacts" / output_id]
+    manifest = json.loads((main_project / "artifacts" / output_id / "build.json").read_text())
+    assert manifest["publication"] == "forbidden"
+    assert manifest["source_commit"] == "a" * 40
+    assert manifest["source_tree_changes"] == [" M alpha/generated.txt"]
+    assert (main_project / "logs" / output_id / "cmru" / "run-tests.log").read_text() == "passed\n"
+    assert (main_project / "artifacts" / output_id / "dist" / "alpha.whl").read_bytes() == b"wheel bytes"
+    # Retention copied before worktree removal; a caller-side retention failure
+    # can therefore still be debugged from the original source tree.
+    assert (child_project / "dist" / "alpha.whl").exists()
+
+    dry_targets = transaction.delete_retained_build_output(
+        repo_root, project, "alpha", output_id, dry_run=True,
+    )
+    assert dry_targets == [main_project / "logs" / output_id, main_project / "artifacts" / output_id]
+    assert (main_project / "artifacts" / output_id).exists()
+    transaction.delete_retained_build_output(repo_root, project, "alpha", output_id, dry_run=False)
+    assert not (main_project / "logs" / output_id).exists()
+    assert not (main_project / "artifacts" / output_id).exists()
+
+
+def test_discard_build_workspace_requires_exact_managed_build_worktree():
+    with _OriginAndClone() as h:
+        parent = h.repo_root / ".worktrees"
+        parent.mkdir()
+        path = parent / "cmru-build-debug"
+        _git("worktree", "add", "-q", "-b", "cmru/build/debug", str(path), "main", cwd=h.repo_root)
+
+        preview = transaction.discard_build_workspace(h.repo_root, path, dry_run=True)
+        assert preview.branch == "cmru/build/debug"
+        assert path.is_dir()
+
+        transaction.discard_build_workspace(h.repo_root, path, dry_run=False)
+        assert not path.exists()
+
+
+def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = SimpleNamespace(project_root=tmp_path / "alpha")
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / ".worktrees" / "build", "cmru/build/abc", "a" * 40,
+    )
+    loaded = (
+        tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(
+        transaction, "create_workspace", lambda _root, *, base, purpose: workspace,
+    )
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        transaction,
+        "retain_successful_build_outputs",
+        lambda *_args: calls.append("retained") or [tmp_path / "alpha" / "logs" / "record"],
+    )
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["build", "--config", str(config), "--project", "alpha"])
+
+    assert exc.value.code == 0
+    assert calls == ["retained", "removed"]
+
+
+def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_path, monkeypatch):
+    config = tmp_path / "cmru.toml"
+    config.write_text("", encoding="utf-8")
+    project = SimpleNamespace(project_root=tmp_path / "alpha")
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / ".worktrees" / "build", "cmru/build/abc", "a" * 40,
+    )
+    loaded = (
+        tmp_path, {"alpha": project}, ["alpha"], ["alpha"], [], "project-first", {},
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args: {})
+    monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
+    monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
+    monkeypatch.setattr(
+        transaction, "create_workspace", lambda _root, *, base, purpose: workspace,
+    )
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
+    monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        transaction, "retain_successful_build_outputs", lambda *_args: calls.append("retained"),
+    )
+    monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["build", "--config", str(config), "--project", "alpha"])
+
+    assert exc.value.code == 1
+    assert calls == []
 
 
 def test_abandon_workspace_removes_worktree_branch_backup_and_scope():

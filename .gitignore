@@ -278,5 +278,6 @@ core
 .venv-1/
 /logs/
 **/logs/
+**/artifacts/
 nyxloom/ntfy/.secrets/
 nyxloom/nyxloomd/secrets.env

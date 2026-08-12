@@ -41,12 +41,15 @@ cmru release --project ciu        # one project
 cmru changelog --project assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
 cmru standards --project pwmcp --update  # safely update CMRU-owned revision markers
-cmru build   --project <name>     # isolated build worktree; retained for inspection
+cmru build   --project <name>     # isolated local build; retains logs/artifacts, then removes worktree
+cmru worktrees                    # list retained failed build/release worktrees
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
 cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
 cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
+cmru cleanup --project ciu --delete-build-output <commit-date>_<commit> --dry-run
+cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
 cmru version                      # print the CMRU version
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
@@ -55,9 +58,9 @@ cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 contract in dependency order, and retains a failed transaction for diagnosis. A retained
 transaction is the pre-publish debug/recovery path; see
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
-`build` is diagnostic only; do not chain it to `publish` expecting the retained artifact to
-be published. The safe end-to-end verb is `release`; the deliberate design question is tracked
-in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
+`build` is local-consumption/diagnostic only; do not chain it to `publish` expecting its
+retained artifact record to be published. The safe end-to-end verb is `release`; the deliberate
+design question is tracked in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
 
 `cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
 it requires a project scope and `--yes` (or `--dry-run`), accepts only that project's
@@ -158,10 +161,17 @@ fast-forwards `origin/main` from the validated branch before creating tags or pu
 If another writer advanced remote main, the release fails before publication. A failure keeps
 the branch/worktree for diagnosis; success removes both (after optional evidence retention).
 
-`cmru build` uses the same remote snapshot and transaction mechanics but stops before release:
-it always retains a `cmru/build/<id>` worktree. Its console output names the worktree, whose
-project `logs/cmru/` and declared artifact directories are the authoritative non-release
-outputs. CMRU never copies those unapproved artifacts into the caller checkout.
+`cmru build` uses the same remote snapshot and transaction mechanics but stops before every
+release action. On success it copies project logs to
+`<project>/logs/<commit-date>_<full-commit>/` and declared artifact directories to
+`<project>/artifacts/<commit-date>_<full-commit>/`, writes `build.json` with a SHA-256
+inventory and a `publication: forbidden` marker, then removes the worktree. These records are
+gitignored local consumption outputs, not release candidates and not inputs to `cmru publish`.
+If the build or retention fails, CMRU keeps the exact `cmru/build/<id>` worktree and prints its
+path. Run `cmru worktrees` to discover retained build/release worktrees, then use
+`cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
+coordinate is never overwritten; remove it explicitly with
+`cmru cleanup --project <name> --delete-build-output <id> --yes` before rebuilding that source.
 
 `steps.prepare` is for deterministic source preparation, such as resolving an upstream
 version. It may change only paths declared in `release.commit_generated`; cmru commits those

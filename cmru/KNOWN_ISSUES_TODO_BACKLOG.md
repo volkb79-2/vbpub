@@ -189,10 +189,12 @@ MDT’s OCI layout/digest contract; do not promise a universal resume mechanism 
 **Status:** resolved. Every runner step writes a line-flushed project-local
 `<project>/logs/cmru/<step>.log`, overwriting by default and inserting `\n---\n` with
 `--log-append`. In a transaction that path is inside the retained worktree, so a failed
-release or a normal `cmru build` is self-contained for debugging. Successful releases remove
-it with the worktree unless `--retain-logs-on-release` moves it project-side. The root wrapper
-also creates/overwrites the full `cmru.release.log`; `--show-run-details` restores raw console
-flow without duplicating that transcript.
+release or build is self-contained for debugging. Successful releases remove it with the
+worktree unless `--retain-logs-on-release` moves it project-side. A successful normal
+`cmru build` instead copies it into its commit-addressed local output record before removing its
+worktree; a failed build retains the worktree and prints the exact path. The root wrapper also
+creates/overwrites the full `cmru.release.log`; `--show-run-details` restores raw console flow
+without duplicating that transcript.
 
 ### KI-08 — S4 overstates what the `cmru publish` verb implements — *shipped*
 **Status:** SPEC S4 now matches the intentional implementation. `cmru publish` fail-fast
@@ -207,24 +209,41 @@ must provide equivalent consumer-verifiable evidence itself.
 environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
 ### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
-**Evidence:** `cmru build` correctly creates and retains an isolated
-`cmru/build/<id>` worktree, runs its gate/build phases there, and deliberately does
-not copy unapproved artifacts into the caller checkout. `cmru publish`, by contrast,
-runs the project's declared `push` step in the caller checkout. Consequently the
-seemingly natural sequence `cmru build --project X` then `cmru publish --project X`
-does not publish the reviewed build; it finds no artifact or can publish a different
-caller-side artifact.
+**Evidence:** `cmru build` creates an isolated `cmru/build/<id>` worktree, runs its
+prepare/gate/build phases there, and on success copies logs and declared artifact directories
+into commit-addressed, gitignored local records under `<project>/logs/` and
+`<project>/artifacts/`. The `build.json` inventory binds their source SHA, digest inventory,
+and any tracked prepared-tree changes and explicitly says `publication: forbidden`. CMRU then
+removes the successful worktree; a failed child or output-retention failure retains it for
+debugging. `cmru publish`, by contrast, runs the project's declared `push` step in the caller
+checkout and is deliberately unaware of those local records. Consequently the seemingly natural
+sequence `cmru build --project X` then `cmru publish --project X` still does **not** publish the
+reviewed build; it finds no declared push input or can publish a different caller-side artifact.
 
 **Current safe workflow:** use `cmru release`, whose one source-first transaction
 performs gate → tag policy → build → push in one worktree. `cmru build` is a
-diagnostic/inspection verb, not a pre-publication staging verb.
+local-consumption/inspection verb, not a pre-publication staging verb.
 
-**Decision required:** either keep `publish` as a low-level caller-worktree command
-and make that non-composability explicit (recommended for now), or design a
-`publish --worktree <path>` / immutable build-record protocol. The latter must bind
-the retained worktree, source SHA, artifact digests, gate evidence, and remote
-publication idempotency; copying `dist/` back merely to make the command chain work
-would defeat the isolation rule. Do not auto-fix this as a convenience alias.
+**`--from-candidate` is deliberately postponed.** It would be a release-verb addition for a
+different use case, not an alias for `--resume`: a durable, deliberate promotion boundary after
+an immutable commit has been built and gated, while offsite fuzzing/mutation evidence, review,
+or an approval may take hours or days. `--resume <worktree>` instead continues one retained
+pre-tag source transaction after immediate investigation; a manual worktree edit invalidates its
+old gate evidence and it is not a durable post-tag publication retry (KI-06). Holding such a
+mutable worktree while waiting for a remote result is not a candidate protocol.
+
+**What a future candidate must prove:** a persisted immutable record must bind the exact source
+SHA and resolved version/tag intent, artifact digests, declared gate verdict, pinned build
+toolchain/image, remote-job request and returned evidence/attestation, and idempotent remote
+publication state. Promotion must revalidate every identity before minting/pushing the tag and
+publishing the recorded artifacts. A normal local `build.json` cannot qualify: it explicitly
+forbids publication and may truthfully record uncommitted deterministic `prepare` outputs.
+
+**Decision for now:** keep `publish` as a low-level caller-worktree command and retain this
+non-composability. Do not add `publish --worktree`, `release --from-candidate`, or a convenience
+alias until a concrete remote-qualification release policy requires it. At that point design
+`release --from-candidate <id>` as a full immutable promotion state machine, not a generic
+retry. Copying `dist/` back merely to make the command chain work would defeat the isolation rule.
 
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.

@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,8 +24,9 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Mapping, Sequence
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -278,6 +280,243 @@ def _digest_tree(path: Path) -> list[dict[str, str]]:
     return entries
 
 
+_BUILD_OUTPUT_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z_[0-9a-f]{40}$")
+
+
+def build_output_id(workspace: ReleaseWorkspace) -> tuple[str, str, str]:
+    """Return the immutable local-output coordinate for the built source tree.
+
+    The coordinate is deliberately source-derived rather than wall-clock-derived:
+    rebuilding an unchanged commit addresses the same local evidence record and
+    therefore refuses to overwrite it.  ``cmru cleanup --delete-build-output``
+    is the explicit way to discard that record before another build of the same
+    source snapshot.
+    """
+    source_commit = _git(workspace.path, "rev-parse", "HEAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise RuntimeError(f"invalid build source commit: {source_commit!r}")
+    raw_epoch = _git(workspace.path, "show", "-s", "--format=%ct", "HEAD")
+    if not raw_epoch.isdecimal():
+        raise RuntimeError(f"invalid build source commit timestamp: {raw_epoch!r}")
+    source_date = _git(workspace.path, "show", "-s", "--format=%cI", "HEAD")
+    output_id = (
+        datetime.fromtimestamp(int(raw_epoch), timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + f"_{source_commit}"
+    )
+    return output_id, source_commit, source_date
+
+
+def _project_roots_for_retention(
+    repo_root: Path, workspace: ReleaseWorkspace, project: object, name: str,
+) -> tuple[Path, Path]:
+    """Resolve one project in the caller checkout and its transaction copy."""
+    project_root = getattr(project, "project_root", None)
+    if project_root is None:
+        raise RuntimeError(f"{name}: cannot retain outputs without project_root")
+    main_project_root = Path(project_root).resolve()
+    try:
+        relative = main_project_root.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise RuntimeError(f"{name}: project_root is outside repository: {main_project_root}") from exc
+    return main_project_root, workspace.path / relative
+
+
+def retain_successful_build_outputs(
+    repo_root: Path,
+    workspace: ReleaseWorkspace,
+    projects: Mapping[str, object],
+    project_names: Sequence[str],
+) -> list[Path]:
+    """Copy a successful non-release build's evidence into the caller checkout.
+
+    A normal ``cmru build`` is useful precisely because its artifacts can be
+    consumed locally.  After a successful child build this function copies the
+    declared artifact directories and project-local logs into immutable,
+    commit-addressed records, then lets the caller remove the isolated worktree.
+    It never treats those records as publishable release candidates: ``build.json``
+    says so explicitly and records any tracked source changes left by ``prepare``.
+
+    Every destination is first staged and validated.  Existing coordinates are a
+    hard error; overwriting an earlier build would make its provenance mutable.
+    Sources remain in the worktree until all copying succeeds, so a retention
+    error leaves the worktree intact for diagnosis.
+    """
+    output_id, source_commit, source_date = build_output_id(workspace)
+    retained: list[Path] = []
+    source_changes = _git(
+        workspace.path, "status", "--porcelain=v1", "--untracked-files=all",
+    ).splitlines()
+
+    for name in project_names:
+        project = projects.get(name)
+        if project is None:
+            raise RuntimeError(f"build result names unknown project: {name}")
+        artifact_dirs = tuple(getattr(project, "artifact_dirs", ()) or ())
+        if not artifact_dirs:
+            raise RuntimeError(
+                f"{name}: cmru build requires project.release.artifact_dirs so it can retain "
+                "the successful local output"
+            )
+        main_project_root, child_project_root = _project_roots_for_retention(
+            repo_root, workspace, project, name,
+        )
+        source_logs = child_project_root / "logs"
+        if not source_logs.is_dir() or source_logs.is_symlink():
+            raise RuntimeError(f"{name}: build logs are missing or unsafe: {source_logs}")
+
+        source_artifacts: list[tuple[str, Path]] = []
+        for raw_dir in artifact_dirs:
+            source = child_project_root / raw_dir
+            if not source.is_dir() or source.is_symlink():
+                raise RuntimeError(f"{name}: declared artifact directory is missing or unsafe: {source}")
+            source_artifacts.append((raw_dir, source))
+
+        target_logs = main_project_root / "logs" / output_id
+        target_artifacts = main_project_root / "artifacts" / output_id
+        if target_logs.exists() or target_artifacts.exists():
+            raise RuntimeError(
+                f"{name}: build output {output_id} already exists; inspect it or remove it with "
+                f"cmru cleanup --project {name} --delete-build-output {output_id} --yes"
+            )
+
+        stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))
+        staged_logs = stage / "logs"
+        staged_artifacts = stage / "artifacts"
+        moved_logs = False
+        try:
+            shutil.copytree(source_logs, staged_logs, symlinks=True)
+            staged_artifacts.mkdir()
+            copied_artifacts: list[dict[str, object]] = []
+            for raw_dir, source in source_artifacts:
+                target = staged_artifacts / Path(raw_dir).name
+                if target.exists():
+                    raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
+                shutil.copytree(source, target, symlinks=True)
+                files = _digest_tree(target)
+                if not files:
+                    raise RuntimeError(f"{name}: declared artifact directory is empty: {source}")
+                copied_artifacts.append({"directory": target.name, "files": files})
+
+            manifest = {
+                "schema_version": 1,
+                "kind": "cmru-local-build",
+                "publication": "forbidden",
+                "project": name,
+                "build_id": output_id,
+                "source_commit": source_commit,
+                "source_commit_date": source_date,
+                "source_tree_changes": source_changes,
+                "logs": _digest_tree(staged_logs),
+                "artifacts": copied_artifacts,
+            }
+            (staged_artifacts / "build.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+
+            # Recheck immediately before the irreversible rename; another shell
+            # must not turn an immutable output record into an overwrite.
+            if target_logs.exists() or target_artifacts.exists():
+                raise RuntimeError(f"{name}: build output destination appeared during retention: {output_id}")
+            target_logs.parent.mkdir(parents=True, exist_ok=True)
+            target_artifacts.parent.mkdir(parents=True, exist_ok=True)
+            staged_logs.replace(target_logs)
+            moved_logs = True
+            try:
+                staged_artifacts.replace(target_artifacts)
+            except Exception:
+                # The sources are still safe in the retained worktree.  Restore
+                # the first rename so the caller checkout remains all-or-nothing.
+                target_logs.replace(staged_logs)
+                moved_logs = False
+                raise
+            retained.extend((target_logs, target_artifacts))
+        finally:
+            if moved_logs:
+                # A later unexpected exception must not leave a partial record.
+                if target_logs.exists() and not target_artifacts.exists():
+                    target_logs.replace(staged_logs)
+            shutil.rmtree(stage, ignore_errors=True)
+    return retained
+
+
+def delete_retained_build_output(
+    repo_root: Path,
+    project: object,
+    project_name: str,
+    output_id: str,
+    *,
+    dry_run: bool,
+) -> list[Path]:
+    """Delete one verified local build record, never a glob or age range."""
+    if not _BUILD_OUTPUT_ID_RE.fullmatch(output_id):
+        raise RuntimeError(
+            "--delete-build-output must be the exact <commit-date>_<40-hex-commit> "
+            "coordinate printed by cmru build"
+        )
+    main_project_root, _child_project_root = _project_roots_for_retention(
+        repo_root,
+        ReleaseWorkspace(repo_root=repo_root, path=repo_root, branch="", base=""),
+        project,
+        project_name,
+    )
+    artifact_root = main_project_root / "artifacts" / output_id
+    logs_root = main_project_root / "logs" / output_id
+    manifest_path = artifact_root / "build.json"
+    if (
+        not artifact_root.is_dir() or artifact_root.is_symlink()
+        or not logs_root.is_dir() or logs_root.is_symlink()
+        or not manifest_path.is_file() or manifest_path.is_symlink()
+    ):
+        raise RuntimeError(
+            f"{project_name}: retained build record is incomplete or unsafe for {output_id}; "
+            "remove it manually after inspection"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"{project_name}: invalid retained build manifest: {manifest_path}") from exc
+    if not isinstance(manifest, dict) or (
+        manifest.get("schema_version") != 1
+        or manifest.get("kind") != "cmru-local-build"
+        or manifest.get("publication") != "forbidden"
+        or manifest.get("project") != project_name
+        or manifest.get("build_id") != output_id
+    ):
+        raise RuntimeError(f"{project_name}: retained build manifest does not authorize cleanup: {manifest_path}")
+
+    targets = [logs_root, artifact_root]
+    if dry_run:
+        return targets
+    # Both paths were derived from a validated project root and a strict output
+    # ID, then authenticated by build.json.  They are therefore safe exact
+    # deletion targets; no user-supplied directory tree is ever recursed.
+    for target in targets:
+        shutil.rmtree(target)
+    return targets
+
+
+def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> ReleaseWorkspace:
+    """Discard one inspected failed ``cmru/build/*`` worktree by exact path."""
+    path = path.resolve()
+    expected_parent = (repo_root / ".worktrees").resolve()
+    if path.parent != expected_parent:
+        raise RuntimeError(f"{path} is outside this repository's managed .worktrees directory")
+    if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
+        raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+    branch = _git(path, "branch", "--show-current")
+    if not branch.startswith("cmru/build/"):
+        raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+    workspace = ReleaseWorkspace(
+        repo_root=repo_root,
+        path=path,
+        branch=branch,
+        base=_git(path, "rev-parse", "HEAD"),
+    )
+    if not dry_run:
+        remove_workspace(workspace)
+    return workspace
+
+
 def retain_success_outputs(
     repo_root: Path,
     workspace: ReleaseWorkspace,
@@ -384,9 +623,8 @@ def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> No
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.progress").unlink(missing_ok=True)
 
 
-def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
-    """Every ``cmru/release/*`` worktree still on disk — i.e. retained after a
-    failed (never-resumed) release attempt.
+def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
+    """Every retained ``cmru/release/*`` or ``cmru/build/*`` worktree.
 
     ``git worktree add`` records the absolute path it was given at creation
     time, and ``git worktree list`` always reports that same literal path
@@ -394,11 +632,9 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     point. This repo is bind-mounted at two different absolute paths (the
     devcontainer's ``/workspaces/vbpub`` and the host's own checkout path),
     so a worktree created from one side is invisible — its recorded path
-    genuinely does not exist — when this runs from the other side. Skip
-    those instead of letting the ``git rev-parse`` below raise an uncaught
-    ``FileNotFoundError`` (a bad ``cwd``) and take down the whole release
-    invocation over a worktree this process simply cannot see right now;
-    it is still reachable, and cleanable, from whichever side created it.
+    genuinely does not exist — when this runs from the other side.  Keep it
+    in this discovery listing with an empty ``base`` so an operator still sees
+    the path; callers that need to mutate a worktree must require visibility.
     """
     raw = _git(repo_root, "worktree", "list", "--porcelain")
     workspaces: list[ReleaseWorkspace] = []
@@ -412,20 +648,24 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
         if not wt_path or not branch_ref:
             continue
         branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
-        if not branch.startswith("cmru/release/"):
+        if not (branch.startswith("cmru/release/") or branch.startswith("cmru/build/")):
             continue
         path = Path(wt_path)
         if not path.is_dir():
-            print(
-                f"[WARN] cmru: retained release worktree {path} (branch {branch}) is not "
-                "visible from here (different bind-mount vantage point?) — skipping; "
-                "clean it up from wherever it IS visible.",
-                file=sys.stderr,
-            )
+            workspaces.append(ReleaseWorkspace(repo_root, path, branch, ""))
             continue
         base = _git(path, "rev-parse", "HEAD", check=False) or ""
         workspaces.append(ReleaseWorkspace(repo_root, path, branch, base))
     return workspaces
+
+
+def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
+    """Visible retained release worktrees, for release-resume machinery only."""
+    return [
+        workspace
+        for workspace in list_cmru_workspaces(repo_root)
+        if workspace.branch.startswith("cmru/release/") and workspace.path.is_dir()
+    ]
 
 
 def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:

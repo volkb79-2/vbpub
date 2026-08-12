@@ -16,12 +16,17 @@ touches is named `cmru.*` so the association is unambiguous.
 ```
 cmru status                 # 1. preview: what changed + the next version (read-only)
 cmru release                # 2. isolated transaction: prepare → gate → integrate → tag → build → publish
-   ├─ cmru build            #    retained transaction: prepare → gate → build_step only
+   ├─ cmru build            #    local-only transaction: prepare → gate → build_step → retain output
    └─ cmru publish          #    run an explicit project's push step
+cmru worktrees              # discover retained failed build/release worktrees (read-only)
 cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
 cmru cleanup --project P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
+cmru cleanup --project P --delete-build-output ID --yes
+                                  # delete one exact local non-release output record
+cmru cleanup --discard-build-worktree PATH --yes
+                                  # discard one exact inspected failed build worktree
 cmru version                      # print the CMRU version
 
 cmru resolve --project P    # consumer: highest-semver published version  (read-only)
@@ -42,6 +47,12 @@ KI-06.
 **S-CLI.3** Verbs that write to the host or source tree (`release`, `changelog`, `build`,
 `publish`, `run`) MUST be
 clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
+
+**S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
+current Git repository without loading a CMRU config. It MUST list every CMRU-managed
+`cmru/release/*` and `cmru/build/*` worktree, including a path not visible through the current
+bind-mount view. It MUST print the exact `--resume` or `--discard-build-worktree` command only
+for a visible path; it MUST never guess a cleanup target.
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
 working tree. It acquires a repository-local exclusive lock, rejects local-only commits on
@@ -292,6 +303,14 @@ explicit project namespace and confirmation (or `--dry-run`), deletes exactly on
 Release with that tag, and MUST NOT delete its Git tag. A managed release is rejected; normal
 project cleanup remains the sole operation allowed to delete managed Releases and tags.
 
+**S-REL.4d — Local-build cleanup.** `cmru cleanup --project P --delete-build-output ID --yes`
+deletes only the exact commit-addressed local build record identified by its `build.json`;
+`--dry-run` is the non-mutating preview. `cmru cleanup --discard-build-worktree PATH --yes`
+deletes only an exact, visible `cmru/build/*` worktree under this repository's managed
+`.worktrees/` directory. Neither operation accepts a glob, an age range, an inferred latest
+record, or a release worktree. A missing, incomplete, symlinked, or unauthenticated target MUST
+fail rather than widen deletion.
+
 **S-REL.4b — Release declaration.** `[project.release]` MUST contain `git_tag` and
 `build_step`. `build_step` MUST name an explicit `[steps.<name>]` command. Optional
 `commit_generated = ["<project-relative path>", …]` lists mechanical tracked outputs CMRU
@@ -525,8 +544,16 @@ and artifacts for inspection/resume. Successful release MUST remove the worktree
 `<project>/logs/cmru-release/<immutable-id>/`; `--retain-artifacts-on-release` moves the
 declared `project.release.artifact_dirs` to `<project>/artifacts/<immutable-id>/` and writes
 `release.json` with source commit and SHA-256 inventory. `cmru build` MUST use an isolated
-`cmru/build/<id>` worktree and retain it after either result; it MUST NOT copy unapproved
-build outputs into the caller checkout.
+`cmru/build/<id>` worktree. On child success it MUST copy that project's logs to
+`<project>/logs/<commit-date>_<full-commit>/` and every declared
+`project.release.artifact_dirs` directory to
+`<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256
+inventory, then remove the worktree. The coordinate is the built HEAD's UTC commit timestamp
+and full SHA; an existing coordinate is an error, never an overwrite. `build.json` MUST record
+that publication is forbidden and any tracked source-tree changes, so it cannot be confused with
+a release candidate. A child or retention failure MUST retain the worktree and print its exact
+path for debugging; use `cmru worktrees` to discover it and the exact cleanup verb after
+inspection.
 
 ---
 
@@ -537,8 +564,8 @@ then runs the selected project's explicit `push` step through the unified runner
 discover an artifact, choose a host, or infer a release-asset policy.
 
 `publish` is a low-level caller-worktree operation. It is not the second half of
-`cmru build`: a normal build deliberately retains artifacts only in its isolated
-worktree. The source-first composable operation is `cmru release`; see
+`cmru build`: a normal build retains artifacts as explicitly non-publishable local records,
+not at the caller's declared push input. The source-first composable operation is `cmru release`; see
 [`KI-10`](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
 
 **S4.2** A project command that publishes a GitHub Release asset MUST create a `.sha256`

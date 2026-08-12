@@ -1663,12 +1663,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
             "  1. status                  preview what changed + the next version (no writes)\n"
             "  2. release                 isolated: prepare → gate → integrate → tag → build → publish\n"
-            "       build alone creates a retained isolated diagnostic worktree\n"
+            "       build alone retains local non-release outputs; only a failed build keeps its worktree\n"
             "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
             "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
             "\n"
             "PLANNING (read-only)\n"
             "    status   [--project P] [--minor|--major]     preview next releases (dry-run)\n"
+            "    worktrees [--json]                           discover retained build/release worktrees\n"
             "\n"
             "RELEASE / HISTORY (writes)\n"
             "    release  [--project P] [--minor|--major|--set-version V] [--dry-run] [--resume WORKTREE]\n"
@@ -1676,7 +1677,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "                                                  isolated source-first transaction\n"
             "    changelog --project P --backfill-tag TAG    catalog an already-published tagged release\n"
             "    standards [--project P] [--update]         check/update CMRU project-framework markers\n"
-            "    build    [--project P]                        retained isolated build worktree\n"
+            "    build    [--project P]                        isolated local build; retains outputs on success\n"
             "    publish  [--project P]                        run the project 'push' step\n"
             "    run      [--project P] [--run-tests --build --push --validate]\n"
             "                                                  low-level: explicit steps × projects\n"
@@ -1689,6 +1690,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
             "    cleanup  --delete-unmanaged-release-tag TAG --project P --yes\n"
             "                                                delete one explicit old GitHub Release (not its tag)\n"
+            "    cleanup  --delete-build-output ID --project P --yes\n"
+            "                                                delete one exact retained local build record\n"
+            "    cleanup  --discard-build-worktree PATH --yes\n"
+            "                                                discard one exact inspected failed build worktree\n"
             "    version                                     print this CMRU version\n"
             f"    run-step --config C --step S                  execute one project {PROJECT_CONFIG_FILENAME} step\n"
         )
@@ -1704,6 +1709,47 @@ def main(argv: Optional[List[str]] = None) -> None:
     if verb == "run":
         _sys.argv = ["cmru"] + rest
         _orchestrate()
+
+    elif verb == "worktrees":
+        parser = argparse.ArgumentParser(
+            description=(
+                "List retained CMRU build/release worktrees.  This is read-only and derives "
+                "the repository from the current Git checkout; it does not require a CMRU config."
+            )
+        )
+        parser.add_argument("--json", action="store_true", help="Emit machine-readable records")
+        vargs = parser.parse_args(rest)
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False,
+        )
+        if result.returncode or not result.stdout.strip():
+            parser.error("cmru worktrees must run inside the repository whose worktrees you want to inspect")
+        repo_root = Path(result.stdout.strip()).resolve()
+        workspaces = transaction.list_cmru_workspaces(repo_root)
+        if vargs.json:
+            print(json.dumps([
+                {
+                    "purpose": workspace.branch.split("/", 2)[1],
+                    "branch": workspace.branch,
+                    "path": str(workspace.path),
+                    "source_commit": workspace.base or None,
+                    "visible": workspace.path.is_dir(),
+                }
+                for workspace in workspaces
+            ], indent=2, sort_keys=True))
+        elif not workspaces:
+            log_info("No retained CMRU build or release worktrees.")
+        else:
+            for workspace in workspaces:
+                purpose = workspace.branch.split("/", 2)[1]
+                source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
+                print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
+                if purpose == "release" and workspace.path.is_dir():
+                    print(f"  resume: cmru release --resume {workspace.path}")
+                elif purpose == "build" and workspace.path.is_dir():
+                    print(f"  discard: cmru cleanup --discard-build-worktree {workspace.path} --yes")
+                elif not workspace.path.is_dir():
+                    print("  action: unavailable here; inspect or clean it from the filesystem view that created it")
 
     elif verb == "run-step":
         # Raw single-step runner for the one project cmru.toml grammar.
@@ -1747,9 +1793,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if verb == "build" and not vargs._transaction_child:
             # A normal build uses the exact same isolated source boundary as a
-            # release, but intentionally stops after the build step.  Its worktree
-            # is retained on both success and failure: these are non-published
-            # diagnostic artifacts, never copied back into the caller checkout.
+            # release, but intentionally stops before every release action.  A
+            # successful build copies its local-only evidence to the caller tree
+            # and removes the worktree; a failure retains the worktree exactly
+            # where the diagnostic source/log/artifact state exists.
             try:
                 child_args = _child_release_args(rest, cfg_path, repo_root)
                 with transaction.release_lock(repo_root):
@@ -1780,12 +1827,40 @@ def main(argv: Optional[List[str]] = None) -> None:
                         f"at {workspace.path}"
                     )
                     rc = transaction.run_child(workspace, child_args, verb="build")
-                    state = "failed" if rc else "completed"
+                    if rc:
+                        log_error(
+                            f"Build transaction failed; worktree retained for debugging: {workspace.path}"
+                        )
+                        _sys.exit(rc)
+                    try:
+                        retained = transaction.retain_successful_build_outputs(
+                            repo_root, workspace, configs, names,
+                        )
+                    except Exception as exc:
+                        log_error(
+                            "Build completed but local-output retention failed; worktree retained for "
+                            f"debugging: {workspace.path}\n{exc}"
+                        )
+                        _sys.exit(1)
+                    try:
+                        transaction.remove_workspace(workspace)
+                    except Exception as exc:
+                        log_error(
+                            "Build outputs were retained but worktree cleanup failed; remove the exact "
+                            f"worktree after inspection: {workspace.path}\n{exc}"
+                        )
+                        _sys.exit(1)
                     log_info(
-                        f"Build transaction {state}; retained {workspace.path}. "
-                        "Logs and non-release artifacts remain in that worktree."
+                        "Build transaction complete; retained local non-release outputs:\n"
+                        + "\n".join(f"  {path}" for path in retained)
                     )
-                    _sys.exit(rc)
+                    output_id = retained[0].name
+                    for name in names:
+                        log_info(
+                            f"{name}: remove this local record only when no longer needed:\n"
+                            f"  cmru cleanup --project {name} --delete-build-output {output_id} --yes"
+                        )
+                    _sys.exit(0)
             except Exception as exc:
                 log_error(str(exc))
                 _sys.exit(1)
@@ -2122,7 +2197,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "  (keeps <prefix>-latest + keep_release_tags; deletes the rest).\n"
                 "With --remove-assets AGE: age-based cleanup.\n"
                 "With --delete-unmanaged-release-tag TAG: delete that exact old GitHub Release only; "
-                "requires --project and --yes (or --dry-run)."
+                "requires --project and --yes (or --dry-run).\n"
+                "With --delete-build-output ID: delete one verified local non-release build record; "
+                "requires --project and --yes (or --dry-run).\n"
+                "With --discard-build-worktree PATH: delete one inspected failed build worktree; "
+                "requires --yes (or --dry-run)."
             ),
             formatter_class=_ap.RawDescriptionHelpFormatter,
         )
@@ -2130,7 +2209,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "--remove-assets", metavar="AGE",
             help="Age-based cleanup: remove Releases/ghcr versions older than AGE (e.g. 30d, 2w)",
         )
-        parser.add_argument("--project", help="Limit to one project (project-aware mode only)")
+        parser.add_argument("--project", help="Limit or scope a project-aware cleanup operation")
         parser.add_argument("--dry-run", action="store_true",
                             help="List what would be deleted without deleting")
         parser.add_argument(
@@ -2138,8 +2217,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             help="Delete one explicitly named non-CMRU GitHub Release, never its Git tag",
         )
         parser.add_argument(
+            "--delete-build-output", metavar="ID",
+            help="Delete one exact local build record (<commit-date>_<40-hex-commit>)",
+        )
+        parser.add_argument(
+            "--discard-build-worktree", metavar="PATH",
+            help="Discard one exact inspected failed cmru/build/* worktree",
+        )
+        parser.add_argument(
             "--yes", action="store_true",
-            help="Confirm --delete-unmanaged-release-tag (not required with --dry-run)",
+            help="Confirm an exact destructive cleanup target (not required with --dry-run)",
         )
         parser.add_argument(
             "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
@@ -2151,8 +2238,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         (repo_root, configs, project_order, _default_projects, _default_steps,
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
 
-        if vargs.remove_assets and vargs.delete_unmanaged_release_tag:
-            parser.error("--remove-assets and --delete-unmanaged-release-tag are mutually exclusive")
+        exclusive_modes = [
+            ("--remove-assets", vargs.remove_assets),
+            ("--delete-unmanaged-release-tag", vargs.delete_unmanaged_release_tag),
+            ("--delete-build-output", vargs.delete_build_output),
+            ("--discard-build-worktree", vargs.discard_build_worktree),
+        ]
+        selected_modes = [name for name, value in exclusive_modes if value]
+        if len(selected_modes) > 1:
+            parser.error(f"{' and '.join(selected_modes)} are mutually exclusive")
 
         if vargs.delete_unmanaged_release_tag:
             if not vargs.project:
@@ -2180,6 +2274,31 @@ def main(argv: Optional[List[str]] = None) -> None:
                 github_config.owner, github_config.repo, github_config.token, tag,
                 dry_run=vargs.dry_run,
             )
+        elif vargs.delete_build_output:
+            if not vargs.project:
+                parser.error("--delete-build-output requires --project to scope the operation")
+            if not (vargs.yes or vargs.dry_run):
+                parser.error("--delete-build-output requires --yes (or --dry-run)")
+            project = configs.get(vargs.project)
+            if project is None:
+                parser.error(f"unknown project: {vargs.project}")
+            targets = transaction.delete_retained_build_output(
+                repo_root, project, vargs.project, vargs.delete_build_output,
+                dry_run=vargs.dry_run,
+            )
+            action = "Would delete" if vargs.dry_run else "Deleted"
+            for target in targets:
+                log_info(f"{action} retained local build output: {target}")
+        elif vargs.discard_build_worktree:
+            if vargs.project:
+                parser.error("--discard-build-worktree is already exactly scoped; do not pass --project")
+            if not (vargs.yes or vargs.dry_run):
+                parser.error("--discard-build-worktree requires --yes (or --dry-run)")
+            workspace = transaction.discard_build_workspace(
+                repo_root, Path(vargs.discard_build_worktree), dry_run=vargs.dry_run,
+            )
+            action = "Would discard" if vargs.dry_run else "Discarded"
+            log_info(f"{action} retained build worktree: {workspace.path} ({workspace.branch})")
         elif vargs.remove_assets:
             # Explicit age-based cleanup mode.
             remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)

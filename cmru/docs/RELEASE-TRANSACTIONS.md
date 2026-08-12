@@ -63,9 +63,15 @@ transaction removes the ephemeral branch/worktree by default. Add
 `<project>/artifacts/<immutable-id>/` with a `release.json` SHA-256 inventory before
 the worktree is removed.
 
-`cmru build` uses the same fetched snapshot but stops after build and always retains a
-separate `cmru/build/<id>` worktree. Its logs and outputs remain there; CMRU never
-copies an unapproved build artifact back into the caller checkout.
+`cmru build` uses the same fetched snapshot but stops before every release action. A successful
+build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
+directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
+SHA-256 inventory marked `publication: forbidden`, then removes its `cmru/build/<id>`
+worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
+or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
+`cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
+same commit requires explicit deletion of the existing output record with
+`cmru cleanup --project <name> --delete-build-output <id> --yes`.
 
 > **Current recovery limit:** a post-tag publication failure is not an automatic retry.
 > Preserve the worktree, the stable logs, and generated provenance; do not assume a plain
