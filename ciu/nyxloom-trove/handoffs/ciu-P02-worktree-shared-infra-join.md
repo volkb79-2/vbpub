@@ -5,7 +5,7 @@ project: ciu
 component: worktree
 title: "Join only a worktree's declared diverging services to live shared infrastructure"
 tier: implement-2
-input_revision: "202d292501fd11f440125900e981a4483e139e80"
+input_revision: "4756b6085b1d90dce0c04bcaf0325a7f349c0bd0"
 source: {kind: backlog, ref: "nyxloom-trove/backlog.md#CIU-22"}
 stack: none
 depends_on: []
@@ -119,11 +119,17 @@ def add(
     base: str = "main",
     profile: str | None = None,
     worktree_dir: str = DEFAULT_WORKTREE_DIR,
+    data_isolation: str | None = None,
+    provisioner: DataIsolationProvisioner | None = None,
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
 ) -> Path: ...
 ```
+
+`data_isolation`/`provisioner` are ciu-P01's own landed parameters (merged
+`4756b608`), shown here only so this package's normative block matches the
+real function it extends — they are not this package's to change.
 
 `parse_shared_infra_intent(values: Mapping[str, str]) -> SharedInfraIntent |
 None` is the sole reader for engine use. All four absent returns `None`. Any
