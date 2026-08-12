@@ -1152,6 +1152,12 @@ def main_execution(
                 )
             repo_root = Path(env_repo_root).resolve()
 
+        # S16.3/CIU-24 — the sole worktree-instance concurrency-budget cap,
+        # resolved once from the PRIMARY CIU root (never this stack's own
+        # render). Retained as data; enforced only around the real Compose
+        # start below (step 16), never here.
+        worktree_cap = worktree.resolve_worktree_cap(repo_root)
+
         # ---- Step 2: render global chain (S3.3) ----
         print("[STEP 2/17] Rendering global configuration...", flush=True)
         global_config = config_model.render_global_chain(working_dir, repo_root)
@@ -1426,9 +1432,23 @@ def main_execution(
             file_args = composefile.compose_file_args(working_dir, overlay_path)
             project = compose_project_name(global_config, working_dir)
             guard_legacy_compose_project(working_dir, project)
-            docker_result = execute_docker_compose_with_logs(
-                file_args, cwd=working_dir, env=compose_env, project=project
-            )
+            # S16.3/CIU-24 — the family-wide budget slot wraps ONLY the real
+            # Compose start: candidate identity is resolved and the lock is
+            # held/released entirely inside this context manager. P02's
+            # post-up shared-infra join (below) deliberately stays OUTSIDE
+            # it — it starts no new instance, so serializing it under the
+            # capacity lock would only add unrelated contention.
+            try:
+                with worktree.worktree_budget_slot(
+                    repo_root, worktree_cap,
+                    os.environ["DOCKER_NETWORK_INTERNAL"],
+                    working_dir.relative_to(repo_root),
+                ):
+                    docker_result = execute_docker_compose_with_logs(
+                        file_args, cwd=working_dir, env=compose_env, project=project
+                    )
+            except worktree.WorktreeError as exc:
+                raise ComposeError(str(exc)) from exc
             if docker_result["status"] == "error":
                 raise ComposeError(docker_result["message"])
             if docker_result["status"] == "interrupted":
@@ -1527,6 +1547,10 @@ def run_shipped(
                 )
             repo_root = Path(env_repo_root).resolve()
 
+        # S16.3/CIU-24 — same primary-CIU-root-only cap resolution as the
+        # native path; enforced only around the real Compose start below.
+        worktree_cap = worktree.resolve_worktree_cap(repo_root)
+
         # ---- Global chain only (no stack config in shipped mode) ----
         print("[SHIPPED 2/4] Rendering global configuration...", flush=True)
         global_config = config_model.render_global_chain(working_dir, repo_root)
@@ -1569,10 +1593,20 @@ def run_shipped(
             )
         if shipped_project is not None:
             guard_legacy_compose_project(working_dir, shipped_project)
-        docker_result = execute_docker_compose_with_logs(
-            ["-f", compose_file], cwd=working_dir, env=compose_env,
-            project=shipped_project,
-        )
+        # S16.3/CIU-24 — same budget-slot wiring as main_execution's native
+        # path (see the comment there): wraps ONLY the real Compose start.
+        try:
+            with worktree.worktree_budget_slot(
+                repo_root, worktree_cap,
+                os.environ["DOCKER_NETWORK_INTERNAL"],
+                working_dir.relative_to(repo_root),
+            ):
+                docker_result = execute_docker_compose_with_logs(
+                    ["-f", compose_file], cwd=working_dir, env=compose_env,
+                    project=shipped_project,
+                )
+        except worktree.WorktreeError as exc:
+            raise ComposeError(str(exc)) from exc
         if docker_result["status"] == "error":
             raise ComposeError(docker_result["message"])
         if docker_result["status"] == "interrupted":

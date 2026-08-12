@@ -480,6 +480,75 @@ def test_render_global_chain_merges_sparse_overrides_nearest_last(tmp_path, monk
 
 
 # ---------------------------------------------------------------------------
+# render_global_chain: write_rendered / environ (S16.3)
+# ---------------------------------------------------------------------------
+
+
+def test_render_global_chain_write_rendered_false_writes_nothing(tmp_path, monkeypatch):
+    """write_rendered=False returns the merged mapping without writing
+    ciu.global.toml -- a read-only policy probe must never race or clobber
+    the real rendered output another process/step relies on."""
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    _write_global_defaults(tmp_path, '[ciu]\nenv = "test"\n')
+    result = render_global_chain(tmp_path, tmp_path, write_rendered=False)
+    assert result["ciu"]["env"] == "test"
+    assert not (tmp_path / "ciu.global.toml").exists()
+
+
+def test_render_global_chain_write_rendered_default_true_preserves_existing_callers(tmp_path, monkeypatch):
+    """Omitting write_rendered keeps writing ciu.global.toml -- every existing
+    caller's behaviour is unchanged."""
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    _write_global_defaults(tmp_path, '[ciu]\nenv = "test"\n')
+    render_global_chain(tmp_path, tmp_path)
+    assert (tmp_path / "ciu.global.toml").exists()
+
+
+def test_render_global_chain_environ_used_for_var_expansion(tmp_path, monkeypatch):
+    """A supplied environ is used for $VAR expansion INSTEAD of os.environ --
+    a value only set in the caller's ambient environment must NOT leak into a
+    candidate's own render (S16.3's isolation requirement)."""
+    monkeypatch.delenv("ONLY_IN_CANDIDATE_ENV", raising=False)
+    monkeypatch.setenv("ONLY_IN_AMBIENT_ENV", "leaked")
+    _write_global_defaults(tmp_path, '[deploy]\nname = "$ONLY_IN_CANDIDATE_ENV"\n')
+    result = render_global_chain(
+        tmp_path, tmp_path, write_rendered=False,
+        environ={"ONLY_IN_CANDIDATE_ENV": "from-candidate"},
+    )
+    assert result["deploy"]["name"] == "from-candidate"
+
+
+def test_render_global_chain_environ_ambient_var_not_visible(tmp_path, monkeypatch):
+    """The inverse of the above: a $VAR only in the CALLER's os.environ must
+    be reported missing (never silently pulled in) once environ= is given."""
+    monkeypatch.setenv("ONLY_IN_AMBIENT_ENV", "leaked")
+    _write_global_defaults(tmp_path, '[deploy]\nname = "$ONLY_IN_AMBIENT_ENV"\n')
+    with pytest.raises(ValueError, match="ONLY_IN_AMBIENT_ENV"):
+        render_global_chain(tmp_path, tmp_path, write_rendered=False, environ={})
+
+
+def test_render_global_chain_environ_used_for_jinja_env_context(tmp_path, monkeypatch):
+    """A supplied environ also backs the Jinja `env.*` context, not just $VAR
+    expansion -- both mechanisms must read the SAME candidate-owned mapping."""
+    monkeypatch.delenv("JINJA_ONLY_VAR", raising=False)
+    _write_global_defaults(tmp_path, '[deploy]\nname = "{{ env.JINJA_ONLY_VAR }}"\n')
+    result = render_global_chain(
+        tmp_path, tmp_path, write_rendered=False,
+        environ={"JINJA_ONLY_VAR": "from-candidate-env"},
+    )
+    assert result["deploy"]["name"] == "from-candidate-env"
+
+
+def test_render_global_chain_environ_none_preserves_os_environ_default(tmp_path, monkeypatch):
+    """environ=None (the default) preserves the existing os.environ-backed
+    behaviour exactly -- every existing caller is unaffected."""
+    monkeypatch.setenv("PRE_EXISTING_CALLER_VAR", "ambient-value")
+    _write_global_defaults(tmp_path, '[deploy]\nname = "$PRE_EXISTING_CALLER_VAR"\n')
+    result = render_global_chain(tmp_path, tmp_path, write_rendered=False)
+    assert result["deploy"]["name"] == "ambient-value"
+
+
+# ---------------------------------------------------------------------------
 # render_stack (S3.1 + S3.4)
 # ---------------------------------------------------------------------------
 

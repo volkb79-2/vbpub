@@ -25,7 +25,7 @@ render_jinja2_text(template_text, context) -> str
 render_toml_template(path, context)  -> dict
 deep_merge(base, override)       -> dict   (S3.3: tables merge, lists replace)
 chain_dirs(repo_root, working_dir) -> list[Path]   (S3.3 fix of B11)
-render_global_chain(working_dir, repo_root) -> dict
+render_global_chain(working_dir, repo_root, *, write_rendered=True, environ=None) -> dict
 render_stack(working_dir, global_config, preserve_state=True) -> dict
 RESERVED_GLOBAL_NAMESPACES       frozenset[str]   (S3.7)
 validate_stack_shape(stack_config) -> str          (S3.5 + S3.7)
@@ -37,6 +37,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
+from typing import Mapping
 
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
@@ -117,8 +118,11 @@ def _split_toml_line_at_comment(line: str) -> tuple[str, str]:
     return line, ""
 
 
-def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
-    """Expand $VAR / ${VAR} using os.environ; fail-fast on missing/empty values.
+def expand_env_vars_or_fail(
+    raw_text: str, source: str, *, environ: Mapping[str, str] | None = None
+) -> str:
+    """Expand $VAR / ${VAR} using *environ* (default ``os.environ``); fail-fast
+    on missing/empty values.
 
     Reports ALL missing variable names in a single error (S3.2).
 
@@ -126,12 +130,18 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
     from an unquoted ``#`` to the end of the line) are NOT expanded and do NOT
     cause a missing-variable error.  A ``#`` that appears inside a quoted string
     value is correctly treated as part of the value, not as a comment delimiter.
+
+    *environ* (S16.3): when given, expansion consults ONLY this mapping —
+    never ``os.environ`` — so a candidate worktree's own ``ciu.env`` can be
+    rendered without leaking the caller's ambient process environment. ``None``
+    (the default) preserves every existing caller's behaviour exactly.
     """
+    env_source: Mapping[str, str] = os.environ if environ is None else environ
     missing: set[str] = set()
 
     def _replace(match: re.Match) -> str:
         var_name = match.group(1) or match.group(2)
-        value = os.environ.get(var_name)
+        value = env_source.get(var_name)
         if value is None or value == "":
             missing.add(var_name)
             return match.group(0)
@@ -277,11 +287,16 @@ def render_jinja2_text(template_text: str, context: dict) -> str:
         raise TemplateError(f"Jinja2 render error: {exc}") from exc
 
 
-def render_toml_template(path: Path, context: dict) -> dict:
+def render_toml_template(
+    path: Path, context: dict, *, environ: Mapping[str, str] | None = None
+) -> dict:
     """Full S3.2 pipeline for one template file.
 
     context should be {**config_so_far, 'env': dict(os.environ)}.
     Jinja2 render → $VAR expansion → TOML parse.
+
+    *environ* (S16.3) is forwarded verbatim to :func:`expand_env_vars_or_fail`
+    — ``None`` (the default) preserves the existing ``os.environ`` behaviour.
     """
     from jinja2 import TemplateError
 
@@ -294,13 +309,22 @@ def render_toml_template(path: Path, context: dict) -> dict:
     except TemplateError as exc:
         raise TemplateError(f"Failed to render template {path}: {exc}") from exc
 
-    expanded = expand_env_vars_or_fail(rendered, str(path))
+    expanded = expand_env_vars_or_fail(rendered, str(path), environ=environ)
     return parse_toml_string(expanded, str(path))
 
 
-def _make_render_context(config: dict) -> dict:
-    """Build the Jinja2 context: merged config + 'env' = process environment."""
-    return {**config, "env": dict(os.environ)}
+def _make_render_context(
+    config: dict, *, environ: Mapping[str, str] | None = None
+) -> dict:
+    """Build the Jinja2 context: merged config + 'env' = the process environment.
+
+    *environ* (S16.3): when given, the Jinja ``env`` context is built from this
+    mapping instead of ``os.environ`` — the same override *environ* must also
+    be threaded to :func:`render_toml_template` so a candidate worktree's
+    template never mixes its own ``ciu.env`` with the caller's ambient
+    environment. ``None`` (the default) preserves the existing behaviour.
+    """
+    return {**config, "env": dict(os.environ if environ is None else environ)}
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +388,13 @@ def chain_dirs(repo_root: Path, working_dir: Path) -> list[Path]:
 # S3.3 – global config chain render
 # ---------------------------------------------------------------------------
 
-def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
+def render_global_chain(
+    working_dir: Path,
+    repo_root: Path,
+    *,
+    write_rendered: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> dict:
     """Render and merge global config from *repo_root* down to *working_dir*.
 
     For each directory in chain_dirs(repo_root, working_dir):
@@ -382,6 +412,19 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
 
     S3.3 fix (B11): the leaf directory (working_dir) IS processed; repo_root
     is NOT processed twice.
+
+    *write_rendered* (S16.3): ``True`` (the default) preserves every existing
+    caller's behaviour — the merged result is written to
+    ``<repo_root>/ciu.global.toml``. ``False`` returns the same merged mapping
+    without writing anything, for a read-only policy probe (S16.3's worktree
+    capacity check) that must never race or clobber the real rendered output.
+
+    *environ* (S16.3): ``None`` (the default) preserves every existing
+    caller's behaviour — every template in the chain renders against
+    ``os.environ`` for both the Jinja ``env`` context and ``$VAR`` expansion.
+    A supplied mapping is used for BOTH in its place at every template in the
+    chain, so a worktree candidate's own ``ciu.env`` can be rendered without
+    ever consulting the calling process's ambient environment.
     """
     working_dir = Path(working_dir).resolve()
     repo_root = Path(repo_root).resolve()
@@ -401,7 +444,8 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
 
         if defaults_path.exists():
             defaults_config = render_toml_template(
-                defaults_path, _make_render_context(merged)
+                defaults_path, _make_render_context(merged, environ=environ),
+                environ=environ,
             )
             merged = deep_merge(merged, defaults_config)
 
@@ -409,7 +453,8 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
             raw_override = overrides_path.read_text(encoding="utf-8")
             scan_override_for_secrets(raw_override, str(overrides_path))
             overrides_config = render_toml_template(
-                overrides_path, _make_render_context(merged)
+                overrides_path, _make_render_context(merged, environ=environ),
+                environ=environ,
             )
             merged = deep_merge(merged, overrides_config)
 
@@ -419,8 +464,9 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
             f"Expected {GLOBAL_CONFIG_DEFAULTS} at repo root {repo_root}."
         )
 
-    output_path = repo_root / GLOBAL_CONFIG_RENDERED
-    write_rendered_toml(output_path, merged)
+    if write_rendered:
+        output_path = repo_root / GLOBAL_CONFIG_RENDERED
+        write_rendered_toml(output_path, merged)
     return merged
 
 

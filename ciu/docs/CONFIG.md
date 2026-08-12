@@ -110,6 +110,21 @@ key-level; scalars and lists **replace** (no list concatenation).
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
 
+### `[ciu.worktree]` — repository-wide instance capacity [S16.3]
+
+| Key | Default | Spec | Example |
+|---|---|---|---|
+| `max_concurrent_instances` | absent (no cap) | S16.3 | `3` — refuse a 4th simultaneous `ciu worktree` deployment |
+
+Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
+[S16.3](SPEC.md#s163--worktree-instance-concurrency-budget-ciu-24) for the
+full precedence, the git-root-to-CIU-root offset, and why this is
+deliberately not a `[governance]` value. `CIU_MAX_CONCURRENT_WORKTREES` is a
+process environment variable (ambient — never written by `ciu env generate`,
+so it is deliberately absent from the `ciu.env` Key Provenance Table below)
+that overrides the file value for that process; the file table is still
+validated even when the override is present.
+
 ### `[deploy]` — project identity [S7]
 
 | Key | Required | Spec |
