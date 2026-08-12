@@ -150,28 +150,32 @@ fallback, per the packet.
   and crash the whole `ciu deploy` run instead of failing just this stack.
 - `run_shipped`: identical wiring after its own compose call, using
   `shipped_project`.
-- **Judgment call, flagged for review rather than invented silently:**
-  `run_shipped` has a pre-existing S8.7 legacy-fallback path where
-  `compose_project_name` can raise (no `deploy.project_name`/
-  `environment_tag` configured) and `shipped_project` becomes `None` — Compose
-  then derives its own project from the cwd basename, a value CIU never
-  learns. The packet's flow says to call `connect_shared_infra_after_up` with
-  "the same exact `compose_project_name(...)` value passed to Compose", which
-  in this fallback is `None` — but `None` cannot build a
-  `label=com.docker.compose.project=<...>` filter (it would silently become
-  the literal string `"None"`, a real correctness bug, not a graceful
-  degradation). This exact combination (`--shipped` + no project config +
-  `--shared-infra` declared) is not named in any oracle, fixture, or
-  `escalate_if` line. Rather than either (a) silently skip the join on a
-  DECLARED intent, which the module's whole design philosophy refuses to do
-  elsewhere, or (b) pass a bogus value, I made it a loud `[S16.1]`
-  `ComposeError` naming the missing config, proven by
-  `test_unresolvable_compose_project_with_intent_refuses` in
-  `test_ciu_engine_shared_infra.py`, and left the PRE-EXISTING no-intent
+- **Judgment call, flagged for review rather than invented silently
+  (corrected after independent review — see "Round 2" below for what was
+  wrong in the first framing):** `run_shipped` has a pre-existing S8.7
+  legacy-fallback path where `compose_project_name` can raise (no
+  `deploy.project_name`/`environment_tag` configured) and `shipped_project`
+  becomes `None` — Compose then derives its own project from the cwd
+  basename, a value CIU never learns. The packet's flow says to call
+  `connect_shared_infra_after_up` with "the same exact
+  `compose_project_name(...)` value passed to Compose", which in this
+  fallback is `None`. This combination is arguably covered by the handoff's
+  own `escalate_if` #1 — "the post-up join cannot enumerate and connect only
+  containers carrying... the current compose-project label... through
+  `procutil.docker`" is literally true here, since there is no known
+  compose-project value to filter by at all. Rather than either (a) silently
+  skip the join on a DECLARED intent, which the module's whole design
+  philosophy refuses to do elsewhere, or (b) pass `None` through anyway
+  (which stringifies into `label=com.docker.compose.project=None`, matching
+  no real container and simply failing the existing "no running container"
+  check — a loud, harmless failure, not silent corruption), I made it a
+  separate, more specific `[S16.1]` `ComposeError` naming the missing config
+  directly, proven by `test_unresolvable_compose_project_with_intent_refuses`
+  in `test_ciu_engine_shared_infra.py`, and left the PRE-EXISTING no-intent
   fallback path completely unchanged (proven by the sibling
-  `..._without_intent_is_unaffected` test). Flagging this here per the
-  handoff's own instruction to report what was stopped on rather than invent
-  past — this is the one place I made a call the packet didn't fully specify.
+  `..._without_intent_is_unaffected` test). The actual case for refusing
+  here is that CIU cannot know the value Compose itself will choose to scope
+  the join to — not that a wrong value would corrupt anything.
 
 ### Tests
 
@@ -317,8 +321,113 @@ canary CLI in this repo; verified by grep):
   pre-existing legacy-fallback path (no `deploy.project_name`/
   `environment_tag`) now REFUSES with a `[S16.1]` `ComposeError` if a
   shared-infra join is declared, since the fallback provides no compose
-  project string to scope the join to. This combination is not named in any
-  oracle or `escalate_if` line; both branches (with and without a declared
-  intent) are tested.
+  project string to scope the join to — arguably covered by `escalate_if`
+  #1 (the join genuinely cannot enumerate/connect by compose-project label
+  without a known project value), decided inline as a fail-loud refusal
+  rather than escalated, per review. CIU refuses because it cannot know the
+  value Compose itself would choose, not because a wrong value would corrupt
+  anything (a `None`-derived filter just matches nothing and fails the
+  existing no-running-container check harmlessly). Both branches (with and
+  without a declared intent) are tested. Now also documented in SPEC.md
+  S16.1 itself (added in review round 2).
 - Nothing else required inventing an externally-visible interface, default,
   or bound. No BLOCKED condition was hit.
+
+## Round 2 — independent review findings and fixes (post `b5d1bd5a`)
+
+Independent review verdict: REJECT, five concrete defects, all narrowly
+scoped; core O1/O2/O3 design confirmed correct by mutation testing (verified
+the OR-instead-of-AND, snapshot-absence-rollback, and truncated-ID attacks
+are all genuinely caught). Fixed exactly the five defects named, re-verified
+each by mutation testing myself, touched nothing else.
+
+1. **O2's "Docker STATE, not TEXT" discipline had zero test defense.** The
+   concurrent-join fixture's `stderr="endpoint already exists"` happened to
+   be exactly what a naive text-matcher would also key on, so a
+   state-check-to-text-match regression passed every test undetected. Fixed
+   by changing the fixture's `stderr` to `"context deadline exceeded"` (an
+   unrelated message) in `test_ciu_worktree_shared_infra.py`. Re-verified by
+   temporarily REPLACING the real state-based check with
+   `if "already exists" in detail: continue` in `worktree.py` — confirmed
+   the mutant now fails
+   `test_concurrent_join_fixture_non_zero_then_present_is_success_no_rollback`,
+   then reverted the mutation (clean `git diff` on `worktree.py` for this
+   change alone) and confirmed the real implementation still passes.
+2. **`_network_container_ids` didn't wrap `OSError`/`FileNotFoundError`.**
+   Every other Docker call site in this feature wraps it into
+   `WorktreeError`; this one didn't, so an `OSError` here would escape
+   `connect_shared_infra_after_up` raw, miss `engine`'s `except
+   worktree.WorktreeError`, and crash the whole `ciu deploy` run instead of
+   failing one stack. Fixed with the same `try/except (FileNotFoundError,
+   OSError)` pattern used everywhere else in the module. New test:
+   `test_membership_inspect_filenotfound_raises_worktree_error`.
+3. **`parse_shared_infra_intent(os.environ)` sat OUTSIDE the
+   `WorktreeError`→`ComposeError` translation** in both `main_execution` and
+   `run_shipped`, so a partial/malformed stored intent (a state the S16.1
+   decision table itself names) would also crash the whole run via the same
+   untranslated path. Fixed by moving both the parse call and the join call
+   inside one shared `try/except worktree.WorktreeError` block in each
+   function. New engine-level tests:
+   `test_malformed_stored_intent_translates_to_compose_error_not_whole_run_crash`
+   in both `TestMainExecutionSharedInfraWiring` and
+   `TestRunShippedSharedInfraWiring`, asserting `engine.ComposeError` (not a
+   bare `WorktreeError` or an uncaught exception) and that
+   `connect_shared_infra_after_up` is never reached. Re-verified by
+   temporarily moving `main_execution`'s parse call back outside the `try`
+   — confirmed the mutant's new malformed-intent test failed (a raw
+   `WorktreeError` escaped instead of `ComposeError`), then reverted and
+   confirmed a clean `git diff` restored the exact fixed form.
+4. **A failed re-inspect after a failed connect skipped rollback entirely.**
+   If target B connected successfully (a REAL membership created) and
+   target C's connect then failed AND the re-inspect call used to classify
+   that failure ALSO failed, the re-inspect's own (now correctly wrapped,
+   per #2) `WorktreeError` propagated straight past the rollback logic,
+   leaving B's membership stranded — a direct O3 violation ("a partial-connect
+   failure that leaves CIU-added memberships behind"). Fixed by wrapping
+   that specific re-inspect call in its own `try/except WorktreeError`,
+   running `_disconnect_rollback` on the accumulated `connected` list before
+   re-raising, and appending any rollback failure to the original message
+   (never swallowing either). New tests:
+   `test_reinspect_failure_after_failed_connect_still_rolls_back` and
+   `test_reinspect_failure_and_rollback_disconnect_failure_both_surface`
+   (the latter exercising a rollback disconnect that ALSO fails, so both
+   failure shapes surface in one message). Re-verified by temporarily
+   removing the wrapping try/except — confirmed both new tests failed, then
+   reverted and confirmed the real fix passes all 41 tests in the file.
+5. **The claimed test-pollution fix did not actually isolate.**
+   `monkeypatch.delenv(key, raising=False)` only records an undo action when
+   the key is ALREADY present at call time; on a clean worker it is a true
+   no-op with nothing registered, so `bootstrap_workspace_env`'s later
+   direct `os.environ[key] = value` write for the four
+   `CIU_SHARED_INFRA_*` keys was never cleaned up by `monkeypatch`'s
+   teardown. Fixed by replacing the per-test `_base_env` delenv loop with a
+   module-level `@pytest.fixture(autouse=True) def
+   _isolate_shared_infra_env()` that snapshots the real `os.environ` state
+   for these four keys before every test, clears them, yields, then
+   forcibly restores (or deletes) them after — independent of whatever
+   `monkeypatch` did or didn't track. Re-verified with the reviewer's own
+   exact attack: a standalone two-test probe where test 1 runs an ordinary
+   `with_intent=True` `main_execution` (leaking the four keys via
+   `bootstrap_workspace_env` under the OLD buggy fixture) and test 2 is a
+   plain no-intent `main_execution` that never mentions shared-infra at
+   all (mirroring a real, unrelated sibling test elsewhere in the repo).
+   Under the OLD (reintroduced) buggy fixture this reproduced the reviewer's
+   EXACT symptom verbatim: `ciu.engine.ComposeError: [S16] \`git worktree
+   list\` failed ... fatal: not a git repository`. Under the FIXED
+   `_isolate_shared_infra_env` autouse fixture, running the real
+   `test_success_calls_connect_with_project_and_intent` (the actual leaking
+   test) immediately before the same unrelated victim test: both pass.
+6. **Documentation gap:** SPEC.md's S16.1 section did not name the S8.7
+   legacy-fallback refusal as an intentional terminal state. Added one
+   paragraph (see above) naming it explicitly and correcting the "why" to
+   match the reviewer's finding: CIU cannot safely guess the compose project
+   Compose actually chose, not that a wrong value would silently corrupt
+   anything.
+
+All five defects were fixed with the SMALLEST change that closes them —
+`worktree.py`: two `try/except` additions (defects 2 and 4, ~15 lines each,
+no behavioral change to any already-passing path); `engine.py`: two
+`try/except` block re-scopes (defect 3, moving existing lines, not adding
+new logic); test files: fixture/fixture-data changes plus new tests, no
+production logic touched beyond the two files above. Nothing outside the
+five defects and the documentation gap was modified.

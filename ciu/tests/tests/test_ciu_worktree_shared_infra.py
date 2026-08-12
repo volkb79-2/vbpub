@@ -614,14 +614,20 @@ class TestConnectSharedInfraAfterUp:
         # 1st membership inspect (pre-connect snapshot): absent.
         # 2nd membership inspect (re-inspect after non-zero connect): present.
         fake.on(lambda a: _is_network_membership(a, ref_network), [_proc(0, stdout=""), _proc(0, stdout=f"{cid} ")])
-        fake.on(lambda a: _is_connect(a, ref_network, cid), _proc(1, stderr="endpoint already exists"))
+        # Deliberately NOT an "already exists"-shaped message: this must be
+        # proven by STATE (the re-inspect below), not by a text-matcher a
+        # regression could satisfy just as easily. A text-matching mutant
+        # keyed on "already exists" would fail this fixture; only the real,
+        # state-based implementation passes it.
+        fake.on(lambda a: _is_connect(a, ref_network, cid), _proc(1, stderr="context deadline exceeded"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
 
         worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)  # must not raise
 
         assert not any(c[:2] == ["network", "disconnect"] for c in fake.calls)
         # Docker's diagnostic text is never inspected: the fake's stderr text
-        # ("endpoint already exists") is irrelevant to the state-based verdict.
+        # ("context deadline exceeded") looks nothing like an already-exists
+        # message and is irrelevant to the state-based verdict either way.
 
     def test_genuine_failure_fixture_non_zero_then_absent_raises_and_no_rollback_needed(
         self, tmp_repo, ref_worktree, monkeypatch
@@ -684,6 +690,75 @@ class TestConnectSharedInfraAfterUp:
             ["network", "connect", ref_network, cid_c],
         ]
         assert disconnect_calls == [["network", "disconnect", ref_network, cid_b]]
+
+    def test_reinspect_failure_after_failed_connect_still_rolls_back(
+        self, tmp_repo, ref_worktree, monkeypatch
+    ):
+        """REQUIRED (defect 4 fix): B connects successfully (real membership
+        created); C's connect then fails AND the re-inspect call issued to
+        classify that failure ALSO fails (non-zero). This must still roll
+        back B -- the earlier bug let the re-inspect's own WorktreeError
+        propagate straight past the rollback logic, leaving a real,
+        CIU-created membership stranded on the reference network."""
+        ref_path, ref_network = ref_worktree
+        intent = worktree.SharedInfraIntent(
+            ref_path=ref_path, network=ref_network,
+            services=("svc-b", "svc-c"), ref_projects=("idp-dev-idp",),
+        )
+        cid_b, cid_c = "7" * 64, "8" * 64
+
+        fake = _base_fake(ref_network)
+        fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "svc-b"), _proc(0, stdout=f"{cid_b}\tchild-b\n"))
+        fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "svc-c"), _proc(0, stdout=f"{cid_c}\tchild-c\n"))
+        # 1st membership inspect (pre-connect snapshot): both absent.
+        # 2nd membership inspect (re-inspect after C's failed connect): the
+        # inspect call ITSELF fails.
+        fake.on(
+            lambda a: _is_network_membership(a, ref_network),
+            [_proc(0, stdout=""), _proc(1, stderr="no such network")],
+        )
+        fake.on(lambda a: _is_connect(a, ref_network, cid_b), _proc(0))
+        fake.on(lambda a: _is_connect(a, ref_network, cid_c), _proc(1, stderr="no such container"))
+        fake.on(lambda a: _is_disconnect(a, ref_network, cid_b), _proc(0))
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+
+        with pytest.raises(worktree.WorktreeError, match="could not inspect shared-infra network"):
+            worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
+
+        disconnect_calls = [c for c in fake.calls if c[:2] == ["network", "disconnect"]]
+        assert disconnect_calls == [["network", "disconnect", ref_network, cid_b]]
+
+    def test_reinspect_failure_and_rollback_disconnect_failure_both_surface(
+        self, tmp_repo, ref_worktree, monkeypatch
+    ):
+        """Same as above, but the rollback disconnect ALSO fails -- both
+        failures must surface in the final message, never silently dropped."""
+        ref_path, ref_network = ref_worktree
+        intent = worktree.SharedInfraIntent(
+            ref_path=ref_path, network=ref_network,
+            services=("svc-b", "svc-c"), ref_projects=("idp-dev-idp",),
+        )
+        cid_b, cid_c = "9" * 64, "0" * 64
+
+        fake = _base_fake(ref_network)
+        fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "svc-b"), _proc(0, stdout=f"{cid_b}\tchild-b\n"))
+        fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "svc-c"), _proc(0, stdout=f"{cid_c}\tchild-c\n"))
+        fake.on(
+            lambda a: _is_network_membership(a, ref_network),
+            [_proc(0, stdout=""), _proc(1, stderr="daemon unreachable")],
+        )
+        fake.on(lambda a: _is_connect(a, ref_network, cid_b), _proc(0))
+        fake.on(lambda a: _is_connect(a, ref_network, cid_c), _proc(1, stderr="no such container"))
+        fake.on(lambda a: _is_disconnect(a, ref_network, cid_b), _proc(1, stderr="endpoint not found"))
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+
+        with pytest.raises(worktree.WorktreeError) as exc_info:
+            worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
+
+        message = str(exc_info.value)
+        assert "could not inspect shared-infra network" in message
+        assert "rollback also failed for" in message
+        assert cid_b in message and "endpoint not found" in message
 
     def test_ref_no_longer_registered_fails_before_any_docker_call(self, tmp_repo, tmp_path, monkeypatch):
         intent = worktree.SharedInfraIntent(
@@ -805,6 +880,28 @@ class TestConnectSharedInfraAfterUp:
         fake = _base_fake(ref_network)
         fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "api"), _proc(0, stdout=f"{cid}\tchild-api\n"))
         fake.on(lambda a: _is_network_membership(a, ref_network), _proc(1, stderr="no such network"))
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        with pytest.raises(worktree.WorktreeError, match="could not inspect shared-infra network"):
+            worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
+
+    def test_membership_inspect_filenotfound_raises_worktree_error(
+        self, tmp_repo, ref_worktree, monkeypatch
+    ):
+        """REQUIRED (defect 2 fix): `_network_container_ids` must wrap
+        FileNotFoundError/OSError into WorktreeError like every other Docker
+        call site in this feature -- an unwrapped OSError here would escape
+        connect_shared_infra_after_up raw, miss engine's `except
+        worktree.WorktreeError` translation, and crash the whole `ciu
+        deploy` run instead of failing just this one stack."""
+        ref_path, ref_network = ref_worktree
+        intent = worktree.SharedInfraIntent(
+            ref_path=ref_path, network=ref_network,
+            services=("api",), ref_projects=("idp-dev-idp",),
+        )
+        cid = "6" * 64
+        fake = _base_fake(ref_network)
+        fake.on(lambda a: _is_service_ps(a, COMPOSE_PROJECT, "api"), _proc(0, stdout=f"{cid}\tchild-api\n"))
+        fake.on(lambda a: _is_network_membership(a, ref_network), FileNotFoundError("docker missing"))
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match="could not inspect shared-infra network"):
             worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)

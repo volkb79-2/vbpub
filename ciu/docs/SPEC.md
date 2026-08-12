@@ -2163,6 +2163,19 @@ above — liveness, target discovery, the concurrent-connect state check, and
 rollback — is proven against a scripted fake at the `procutil.docker`
 boundary, the same seam S16.2's provisioner tests use.
 
+**`--shipped` (S8.5/S8.7) with no derivable compose project is a deliberate
+additional refusal.** When `deploy.project_name`/`environment_tag` are unset,
+`run_shipped`'s pre-existing legacy fallback lets Compose derive its own
+project from the cwd basename — a value CIU itself never learns, so it
+cannot scope the `com.docker.compose.project=<...>` label filters this join
+depends on. A shared-infra join declared on such a stack therefore fails
+loud with `[S16.1]` rather than silently skipping a declared join or joining
+against an unscoped/incorrect filter: CIU refuses because it cannot know
+which value Compose actually chose, not because a wrong value would corrupt
+anything (an unmatched filter just finds zero containers and fails the
+existing "no running container" check harmlessly). The ordinary no-intent
+legacy fallback is completely unaffected.
+
 ### S16.2 — Namespaced data isolation (CIU-23)
 
 `worktree add --data-isolation <profile>` provisions a database/schema

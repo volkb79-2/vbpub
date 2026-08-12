@@ -779,13 +779,19 @@ def _network_container_ids(network: str) -> set[str]:
     absent. ``--no-trunc`` on the ``ps`` side is what keeps this comparison
     valid.
     """
-    res = procutil.docker(
-        [
-            "network", "inspect", network,
-            "--format", "{{range $id, $c := .Containers}}{{$id}} {{end}}",
-        ],
-        capture=True, check=False,
-    )
+    try:
+        res = procutil.docker(
+            [
+                "network", "inspect", network,
+                "--format", "{{range $id, $c := .Containers}}{{$id}} {{end}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.1] could not inspect shared-infra network {network!r} "
+            f"membership: {exc}"
+        ) from exc
     if res.returncode != 0:
         raise WorktreeError(
             f"[S16.1] could not inspect shared-infra network {network!r} "
@@ -963,8 +969,17 @@ def connect_shared_infra_after_up(
             continue
 
         # Non-zero: Docker STATE, not Docker diagnostic TEXT, decides the
-        # outcome. Re-inspect membership for this SAME target ID.
-        members_now = _network_container_ids(intent.network)
+        # outcome. Re-inspect membership for this SAME target ID. A failure
+        # HERE must still roll back this invocation's own earlier successful
+        # connects (`connected`) rather than propagate straight past them.
+        try:
+            members_now = _network_container_ids(intent.network)
+        except WorktreeError as exc:
+            rollback_failures = _disconnect_rollback(intent.network, connected)
+            message = str(exc)
+            if rollback_failures:
+                message += "; rollback also failed for: " + "; ".join(rollback_failures)
+            raise WorktreeError(message) from exc
         if cid in members_now:
             # Another actor joined it between the snapshot and this connect
             # call: a successful concurrent no-op. This invocation never

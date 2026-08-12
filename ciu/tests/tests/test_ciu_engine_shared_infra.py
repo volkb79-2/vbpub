@@ -95,6 +95,45 @@ EXPECTED_INTENT = worktree.SharedInfraIntent(
     ref_projects=("idp-dev-idp",),
 )
 
+# A PARTIAL intent (only one of the four fields) -- parse_shared_infra_intent
+# must raise on this (S16.1 decision table: "Partial/malformed stored fields
+# | [S16.1] error"), and the engine must translate that raise into a
+# ComposeError, not let it escape untranslated.
+MALFORMED_INTENT_ENV_LINES = (
+    '\nexport CIU_SHARED_INFRA_REF_PATH="/repo/.worktrees/primary-ref"\n'
+)
+
+SHARED_INFRA_ENV_KEYS = (
+    "CIU_SHARED_INFRA_REF_PATH", "CIU_SHARED_INFRA_NETWORK",
+    "CIU_SHARED_INFRA_SERVICES", "CIU_SHARED_INFRA_REF_PROJECTS",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_infra_env():
+    """`bootstrap_workspace_env(define_root=...)` writes every parsed
+    ciu.env key straight into the REAL os.environ, not through `monkeypatch`
+    -- so a `with_intent=True` test's four `CIU_SHARED_INFRA_*` keys would
+    otherwise leak into whichever test runs next on the same xdist worker.
+
+    `monkeypatch.delenv(key, raising=False)` does NOT defend against this:
+    it only records an undo action when the key is ALREADY present at call
+    time, so on a clean worker (nothing set yet) it is a true no-op with
+    nothing registered to restore, and bootstrap's later direct write is
+    never cleaned up. Snapshot and forcibly restore the real `os.environ`
+    state for these four keys around every test in this module instead, so
+    cleanup happens regardless of what monkeypatch did or didn't track.
+    """
+    saved = {key: os.environ.get(key) for key in SHARED_INFRA_ENV_KEYS}
+    for key in SHARED_INFRA_ENV_KEYS:
+        os.environ.pop(key, None)
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
 
 def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
@@ -105,20 +144,9 @@ def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCKER_GID", str(os.getgid()))
     monkeypatch.setenv("SKIP_DEPENDENCY_CHECK", "1")
     monkeypatch.setenv("CIU_SKIP_DOOD_PREFLIGHT", "1")
-    # `bootstrap_workspace_env(define_root=...)` writes every parsed ciu.env
-    # key straight into the REAL os.environ (not through monkeypatch), so a
-    # PRIOR test's "with_intent=True" run can otherwise leak these four keys
-    # into this one regardless of test order. Pre-registering them with
-    # monkeypatch (even as a no-op delete) makes monkeypatch own their
-    # teardown, so this test both starts and ends clean.
-    for key in (
-        "CIU_SHARED_INFRA_REF_PATH", "CIU_SHARED_INFRA_NETWORK",
-        "CIU_SHARED_INFRA_SERVICES", "CIU_SHARED_INFRA_REF_PROJECTS",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
 
-def _write_ciu_env(tmp_path: Path, *, with_intent: bool) -> None:
+def _write_ciu_env(tmp_path: Path, *, with_intent: bool = False, malformed_intent: bool = False) -> None:
     body = "\n".join(
         f'export {key}="{os.environ[key]}"'
         for key in (
@@ -126,18 +154,20 @@ def _write_ciu_env(tmp_path: Path, *, with_intent: bool) -> None:
             "CONTAINER_UID", "CONTAINER_GID", "DOCKER_GID",
         )
     ) + "\n"
-    if with_intent:
+    if malformed_intent:
+        body += MALFORMED_INTENT_ENV_LINES
+    elif with_intent:
         body += INTENT_ENV_LINES
     (tmp_path / "ciu.env").write_text(body)
 
 
 def _write_native_repo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_intent: bool,
-    global_defaults: str = GLOBAL_DEFAULTS,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_intent: bool = False,
+    malformed_intent: bool = False, global_defaults: str = GLOBAL_DEFAULTS,
 ) -> Path:
     _base_env(tmp_path, monkeypatch)
     (tmp_path / "ciu.global.defaults.toml.j2").write_text(global_defaults)
-    _write_ciu_env(tmp_path, with_intent=with_intent)
+    _write_ciu_env(tmp_path, with_intent=with_intent, malformed_intent=malformed_intent)
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
     stack = tmp_path / "applications" / "demo"
     stack.mkdir(parents=True)
@@ -147,12 +177,12 @@ def _write_native_repo(
 
 
 def _write_shipped_repo(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_intent: bool,
-    global_defaults: str = GLOBAL_DEFAULTS,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_intent: bool = False,
+    malformed_intent: bool = False, global_defaults: str = GLOBAL_DEFAULTS,
 ) -> Path:
     _base_env(tmp_path, monkeypatch)
     (tmp_path / "ciu.global.defaults.toml.j2").write_text(global_defaults)
-    _write_ciu_env(tmp_path, with_intent=with_intent)
+    _write_ciu_env(tmp_path, with_intent=with_intent, malformed_intent=malformed_intent)
     stack = tmp_path / "vendor" / "legacy"
     stack.mkdir(parents=True)
     (stack / SHIPPED_COMPOSE).write_text(SHIPPED_COMPOSE_BODY)
@@ -252,6 +282,29 @@ class TestMainExecutionSharedInfraWiring:
             )
         assert len(spy.calls) == 1
 
+    def test_malformed_stored_intent_translates_to_compose_error_not_whole_run_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """REQUIRED (defect 3 fix): `parse_shared_infra_intent(os.environ)`
+        itself can raise `WorktreeError` (a partial/malformed stored
+        intent -- S16.1's own decision table names this state). That parse
+        call must go through the SAME translation as a failed join: a bare
+        `WorktreeError` would miss `deploy._run_stack`'s `except
+        engine.ComposeError` catch and crash the entire `ciu deploy` run
+        instead of failing just this one stack. `connect_shared_infra_after_up`
+        must never even be reached."""
+        stack = _write_native_repo(tmp_path, monkeypatch, malformed_intent=True)
+        monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
+        monkeypatch.setattr(engine, "execute_docker_compose_with_logs", _success_compose)
+        spy = SpyConnect()
+        monkeypatch.setattr(engine.worktree, "connect_shared_infra_after_up", spy)
+
+        with pytest.raises(engine.ComposeError, match=r"\[S16\.1\] partial shared-infra intent"):
+            engine.main_execution(
+                working_dir=stack, define_root=tmp_path, skip_hostdir_check=True,
+            )
+        assert spy.calls == []
+
 
 # ---------------------------------------------------------------------------
 # engine.run_shipped
@@ -304,6 +357,21 @@ class TestRunShippedSharedInfraWiring:
         with pytest.raises(engine.ComposeError, match=r"\[S16\.1\] target service absent"):
             engine.run_shipped(stack, define_root=tmp_path)
         assert len(spy.calls) == 1
+
+    def test_malformed_stored_intent_translates_to_compose_error_not_whole_run_crash(
+        self, tmp_path, monkeypatch
+    ):
+        """REQUIRED (defect 3 fix): same as the main_execution sibling test,
+        for the shipped path's own parse_shared_infra_intent call site."""
+        stack = _write_shipped_repo(tmp_path, monkeypatch, malformed_intent=True)
+        monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
+        monkeypatch.setattr(engine, "execute_docker_compose_with_logs", _success_compose)
+        spy = SpyConnect()
+        monkeypatch.setattr(engine.worktree, "connect_shared_infra_after_up", spy)
+
+        with pytest.raises(engine.ComposeError, match=r"\[S16\.1\] partial shared-infra intent"):
+            engine.run_shipped(stack, define_root=tmp_path)
+        assert spy.calls == []
 
     def test_unresolvable_compose_project_with_intent_refuses(self, tmp_path, monkeypatch):
         """S8.5 legacy fallback: no deploy.project_name/environment_tag means
