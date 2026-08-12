@@ -5,7 +5,7 @@ project: ciu
 component: worktree
 title: "Enforce a repository worktree-instance capacity before Compose starts"
 tier: implement-2
-input_revision: "202d292501fd11f440125900e981a4483e139e80"
+input_revision: "5cb4a9a8e710095c902dadcad0c9504cd84f616e"
 source: {kind: backlog, ref: "nyxloom-trove/backlog.md#CIU-24"}
 stack: none
 depends_on: [ciu-P02-worktree-shared-infra-join]
