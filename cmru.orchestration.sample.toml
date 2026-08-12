@@ -1,0 +1,21 @@
+# Estate coordination only — save as <repository-root>/cmru.orchestration.toml.
+# Project facts/commands are forbidden here; each entry points to a portable
+# project-local cmru.toml.
+schema_version = 1
+
+[orchestration]
+project_order = ["example-wheel"]
+default_projects = ["example-wheel"]
+default_steps = ["run-tests", "build", "push"]
+execution_mode = "project-first"
+auth_project = "example-wheel"
+
+[orchestration.project.example-wheel]
+config = "example-wheel/cmru.toml"
+depends_on = []
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = ["example-wheel-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []

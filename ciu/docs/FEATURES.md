@@ -160,6 +160,12 @@ work and to **assay** for proving a live lane exercised the intended image.
 CMRU remains responsible for releases: it runs CIU's `tester-unified` gate and
 records the project-scoped source history in [../CHANGES.md](../CHANGES.md).
 
+The boundary is intentional: CIU provisions and identifies the live lane;
+Assay records a declared test/evidence result and may consume the JSON verdict;
+Nyxloom coordinates work, rather than either tool silently dispatching a remote
+CIU workload. A remote lane needs an explicit worker/credential/teardown
+contract, not a hidden side effect of `ciu provenance`.
+
 ---
 
 ## Provisioning graph workflows

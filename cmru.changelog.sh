@@ -6,10 +6,11 @@
 # for review and an explicit follow-up commit. It never moves or recreates the tag.
 #
 #   What/why:  cmru/docs/SPEC.md S-REL.4a
-#   Config:    cmru.toml   (no token required)
+#   Config:    cmru.orchestration.toml
 #   All verbs: ./cmru.py --help
 #   Example:   ./cmru.changelog.sh --project assay --backfill-tag assay-v0.1.0
 #
 # Args pass straight through to cmru.
 set -euo pipefail
-exec "$(dirname "$(readlink -f "$0")")/cmru.py" changelog "$@"
+repo_dir="$(dirname "$(readlink -f "$0")")"
+exec "$repo_dir/cmru.py" changelog --config "$repo_dir/cmru.orchestration.toml" "$@"

@@ -463,6 +463,25 @@ items:
   component: gate
   context_estimate: medium
   folds_into: F008
+- id: B45
+  title: 'structured issue-ledger standard (PROPOSAL ONLY -- do not migrate
+    consumers yet): replace free-form mutable backlog state with one tracked
+    Markdown file per issue at `nyxloom-trove/issues/<project>-KI-<NNN>-<slug>.md`.
+    Require YAML frontmatter for stable id, title, status (open|blocked|carved|
+    merged|shipped|wontfix), type, component, priority, created/updated dates,
+    decision links, successor/duplicate links and optional owning handoff; retain
+    a readable Markdown body for context, acceptance, evidence and history. The
+    canonical index becomes derived, never another editable source. Add lint for
+    filename/id agreement, unique ids, allowed transitions, required blocked
+    reason and references; add CLI views such as `nyxloom issues list --status
+    open`, `--status blocked`, `--component`, `show <id>`, and deterministic
+    render/export. Design a deliberate importer from existing backlog.md/spine
+    items, then migrate only after the grammar, compatibility/export policy and
+    human workflow have been reviewed across consumers.'
+  type: feature
+  component: spine
+  context_estimate: medium
+  folds_into: F001
 
 ---
 

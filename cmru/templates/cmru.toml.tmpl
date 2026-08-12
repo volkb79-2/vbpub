@@ -1,0 +1,47 @@
+# cmru-project-template-revision: 2
+# Complete portable CMRU project contract. Copy to <project>/cmru.toml.
+schema_version = 1
+
+[github]
+owner = "your-github-owner"
+repo = "your-repository"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[project]
+id = "example"
+description = "Describe the product and consumer."
+template_revision = 2
+prefix = "example-v"
+artifacts = ["wheel"]
+scm_dist = "example"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "example: tester-unified gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "example: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "example: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+]

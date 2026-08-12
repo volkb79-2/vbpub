@@ -1,0 +1,57 @@
+# Project CMRU contract — save as <project>/cmru.toml.
+# This file travels with the project: it contains its complete release, build,
+# test, publication, logging, and artifact-retention contract. Secrets never
+# belong here; use GITHUB_PUSH_PAT / GITHUB_TOKEN or <project>/cmru.secret.toml.
+schema_version = 1
+
+[github]
+owner = "your-github-owner"
+repo = "your-repository"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+EXAMPLE_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-wheel-*.whl`."
+
+[project]
+id = "example-wheel"
+description = "One sentence describing the product and its consumer."
+template_revision = 2
+prefix = "example-wheel-v"
+artifacts = ["wheel"]
+scm_dist = "example-wheel"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+# CMRU generates CHANGES.md before the gate by default.
+artifact_dirs = ["dist"]
+
+# Every release phase is project-owned and explicit. A meaningful gate always
+# runs through tester-unified.
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "example-wheel: tester-unified gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "example-wheel: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "example-wheel: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
+]

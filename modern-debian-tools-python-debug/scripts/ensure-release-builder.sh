@@ -65,7 +65,7 @@ if [[ "${driver}" != "docker-container" || \
       "${actual_shares}" != "${CPU_SHARES}" || \
       "${actual_quota}" != "${CPU_QUOTA}" || \
       "${actual_period}" != "${CPU_PERIOD}" ]]; then
-    echo "[WARN] Builder '${BUILDER}' does not match cmru.build.toml; recreating it." >&2
+    echo "[WARN] Builder '${BUILDER}' does not match cmru.toml; recreating it." >&2
     echo "[WARN] actual: driver=${driver} memory=${actual_memory} memory+swap=${actual_swap} shares=${actual_shares} cpu=${actual_quota}/${actual_period}" >&2
     docker buildx rm "${BUILDER}" >/dev/null
     create_builder

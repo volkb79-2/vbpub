@@ -8,63 +8,88 @@ import pytest
 from cmru.standards import standards_main
 
 
-CONFIG = """
-[github]
-owner = "octocat"
-repo = "demo"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = []
-
+ORCHESTRATION = """schema_version = 1
 [orchestration]
 project_order = ["demo"]
 default_projects = ["demo"]
-default_steps = ["run-tests", "build"]
+default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
-
+auth_project = "demo"
+[orchestration.project.demo]
+config = "demo/cmru.toml"
+depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = []
 ghcr_packages = ["*"]
 ghcr_delete_packages = []
+"""
 
-[project.demo]
+PROJECT = """schema_version = 1
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = []
+[project]
+id = "demo"
+description = "demo"
 prefix = "demo-v"
 artifacts = ["wheel"]
-cwd = "demo"
-[project.demo.version]
+[project.version]
 strategy = "scm"
-[project.demo.steps.run-tests]
+bump = "conventional"
+[project.release]
+git_tag = true
+build_step = "build"
+[steps.run-tests]
+quiet = true
 commands = [{ label = "gate", argv = ["true"], cwd = "." }]
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """
 
 
-def _config(tmp_path: Path) -> Path:
-    path = tmp_path / "cmru.toml"
-    path.write_text(CONFIG, encoding="utf-8")
-    return path
+def _config(tmp_path: Path) -> tuple[Path, Path]:
+    path = tmp_path / "cmru.orchestration.toml"
+    path.write_text(ORCHESTRATION, encoding="utf-8")
+    project = tmp_path / "demo" / "cmru.toml"
+    project.parent.mkdir()
+    project.write_text(PROJECT, encoding="utf-8")
+    return path, project
 
 
 def test_standards_reports_missing_project_marker(tmp_path):
-    config = _config(tmp_path)
+    config, _project = _config(tmp_path)
     with pytest.raises(SystemExit) as exc:
         standards_main(["--config", str(config), "--project", "demo"])
     assert exc.value.code == 2
 
 
-def test_standards_update_only_touches_markers_and_rechecks(tmp_path):
-    config = _config(tmp_path)
-    runner_config = tmp_path / "demo" / "cmru.build.toml"
-    runner_config.parent.mkdir()
-    runner_config.write_text("project_root = \".\"\n", encoding="utf-8")
+def test_standards_update_only_touches_project_marker_and_rechecks(tmp_path):
+    config, project = _config(tmp_path)
 
     standards_main(["--config", str(config), "--project", "demo", "--update"])
 
-    updated = config.read_text(encoding="utf-8")
-    assert "[project.demo]\ntemplate_revision = 1\n" in updated
-    assert runner_config.read_text(encoding="utf-8").startswith(
-        "# cmru-runner-template: build-config\n# cmru-runner-template-revision: 1\n"
+    updated = project.read_text(encoding="utf-8")
+    assert "[project]\ntemplate_revision = 2\n" in updated
+    assert "commands = [{ label = \"gate\", argv = [\"true\"], cwd = \".\" }]" in updated
+
+
+def test_standards_rejects_noisy_default_step_output(tmp_path):
+    config, project = _config(tmp_path)
+    project.write_text(
+        project.read_text(encoding="utf-8").replace("quiet = true", "quiet = false", 1),
+        encoding="utf-8",
     )
-    assert "project_root = \".\"" in runner_config.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        standards_main(["--config", str(config), "--project", "demo"])
+
+    assert exc.value.code == 2

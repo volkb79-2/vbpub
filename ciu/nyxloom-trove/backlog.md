@@ -1,16 +1,17 @@
 # ciu dev backlog — un-carved ideas
 
-## Split out of `ciu-P01-worktree-isolation-primitives` (2026-08-11, round 3)
+## Historical carve record: CIU-22 and CIU-24 are shipped
 
-`ciu-P01` originally packaged five items (CIU-20..24). Two returned **NOT
-READY** twice because they carry unresolved architecture, not naming gaps, and
-were split out here rather than force a design that does not fit. Both stay
-**OPEN** in `KNOWN_ISSUES_TODO_BACKLOG.md`. They are un-carved because the design
-decision below has to be made *before* a falsifiable oracle can exist — carving
-them now would ship an observable whose deliverability is refutable in advance
-(the exact defect the adversarial review flagged).
+`ciu-P01` originally packaged CIU-20..24. The early review correctly split
+CIU-22 and CIU-24 until their observable contracts were designed. Those designs
+are now implemented and released: CIU-22 is S16.1's shared-infra join and
+CIU-24 is S16.3's primary-config concurrency budget. Their historical reasoning
+remains below because it explains why the shipped mechanism is imperative
+post-up joining and a repo-level policy, rather than the inert alternatives
+initially proposed. The current status board is
+[`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md).
 
-### CIU-22 — shared-infra join for `ciu worktree` (needs design)
+### CIU-22 — shared-infra join for `ciu worktree` (historical design record)
 
 **Why it is not carvable as written.** The round-2 handoff proposed "`ciu.env`
 gains a list of extra networks to join." That mechanism is **inert**: ciu writes
@@ -33,7 +34,7 @@ S16's cross-instance isolation), idempotency of the connect, how a
 ref-not-running / unresolvable-ref failure surfaces, and how connectivity is
 proven in a gate that has **no docker socket**.
 
-### CIU-24 — worktree instance concurrency budget (needs design)
+### CIU-24 — worktree instance concurrency budget (historical design record)
 
 **Why it is not carvable as written.** The proposed key
 `governance.max_concurrent_worktrees` lives in a **per-stack**
@@ -50,10 +51,9 @@ multi-stack repo — and reconcile with **CIU-13**'s established global
 count semantics (primary counts; only registered-AND-deployed worktrees count;
 unset at both levels = NO cap) carvable.
 
-## O4 deferred proof (tracked, filed on CIU-P01 landing as CIU-26)
+## O4 deferred proof (CIU-26 remains open)
 
-`ciu-P01`'s O4 (CIU-23) ships an injectable data-isolation provisioner tested
-in-gate against a **fake** (the gate cannot supply a live Postgres). The
-real-Postgres integration proof is deliberately deferred and must be filed as
-**CIU-26** when P01 lands, so the deferral has an owner rather than living only
-in memory.
+CIU-23's injectable data-isolation provisioner is tested in-gate against a
+**fake** because the package gate does not supply a live Postgres. The real
+Postgres integration proof is filed as **CIU-26** and remains open until an
+explicit external integration lane proves `PostgresProvisioner.provision/drop`.

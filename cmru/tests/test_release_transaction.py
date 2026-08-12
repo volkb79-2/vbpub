@@ -89,6 +89,7 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
         cwd=name,
         paths=paths or [name],
         steps=steps or {},
+        project_root=Path(name),
     )
 
 
@@ -254,7 +255,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -289,7 +290,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
         monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-        monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+        monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
@@ -333,7 +334,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
@@ -380,7 +381,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: calls.append("secret"))
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
     # Child fails (e.g. build/publish) after it already promoted origin/main.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: calls.append("checked-promotion") or True)
@@ -432,7 +433,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 1)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: False)
@@ -500,7 +501,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
@@ -559,7 +560,7 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
@@ -611,7 +612,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: fresh_workspace)
-    monkeypatch.setattr(transaction, "copy_secret_overlay", lambda *_args: None)
+    monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda ws, args: calls.append(("ran", ws.branch)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
@@ -1445,7 +1446,17 @@ def test_revert_promotion_scoped_to_from_sha_leaves_earlier_commits_alone():
         assert b_present.returncode != 0  # project B's in-flight commit was reverted
 
 
-def _seq_project(name, *, prefix=None, mint_tag=True, strategy="scm", steps=None, commit_generated=()):
+@pytest.fixture(autouse=True)
+def _explicit_publish_credential(monkeypatch):
+    """Transaction tests exercise release mechanics, not secret resolution."""
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "test-credential")
+
+
+def _seq_project(
+    name, *, prefix=None, git_tag=True, strategy="scm", steps=None,
+    commit_generated=(), build_step="build",
+):
+    declared_steps = steps or {}
     return SimpleNamespace(
         name=name,
         cwd=name,
@@ -1453,10 +1464,17 @@ def _seq_project(name, *, prefix=None, mint_tag=True, strategy="scm", steps=None
         prefix=prefix,
         scm_dist=None,
         artifacts=[],
-        mint_tag=mint_tag,
+        git_tag=git_tag,
         version=SimpleNamespace(strategy=strategy),
-        steps=steps or {},
+        steps=declared_steps,
+        runner_steps={
+            step_name: cli._build_step_config(step_name, commands)
+            for step_name, commands in declared_steps.items()
+        },
         env={},
+        build_metadata={},
+        artifact_dirs=(),
+        build_step=build_step,
         commit_generated=commit_generated,
     )
 
@@ -1490,7 +1508,7 @@ def test_resolve_versions_from_git_skips_projects_not_exactly_tagged_on_head():
 
 def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag():
     """The actual bug this whole feature exists to fix: an OCI-image-style project
-    (here 'beta', mint_tag=False) that resolves a sibling wheel-style project's
+    (here 'beta', git_tag=False) that resolves a sibling wheel-style project's
     (here 'alpha') release must see alpha's tag as ALREADY published — not the
     previous run's — because alpha's entire cycle (prepare/gate/promote/tag/
     build/publish) finishes before beta's cycle starts."""
@@ -1507,21 +1525,27 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
         workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/seq", base)
 
         alpha = _seq_project(
-            "alpha", prefix="alpha-v", mint_tag=True, strategy="scm",
-            steps={"run-tests": [cli.Command(label="t", argv=["true"], cwd=".")]},
+            "alpha", prefix="alpha-v", git_tag=True, strategy="scm",
+            steps={
+                "run-tests": [cli.Command(label="t", argv=["true"], cwd=".")],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
+            },
         )
         beta = _seq_project(
-            "beta", mint_tag=False,
+            "beta", git_tag=False, build_step="prepare",
             steps={
                 "run-tests": [cli.Command(label="t", argv=["true"], cwd=".")],
                 # This is beta standing in for mdt: its own "prepare" (which is
                 # where mdt's real image build lives) resolves alpha's release —
                 # the assertion below checks it saw alpha's tag, not "(none)".
-                "prepare": [cli.Command(
-                    label="resolve alpha",
-                    argv=["bash", "-c", "git tag --list 'alpha-v*' > seen_alpha_tag.txt"],
-                    cwd="beta",
+                    "prepare": [cli.Command(
+                        label="resolve alpha",
+                        argv=["bash", "-c", "git tag --list 'alpha-v*' > seen_alpha_tag.txt"],
+                    cwd=".",
                 )],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
             },
             commit_generated=("seen_alpha_tag.txt",),
         )
@@ -1531,7 +1555,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
             workspace_path, configs, workspace, ["alpha", "beta"],
         )
 
-        assert released == ["alpha (alpha-v0.1.0)", "beta (image)"]
+        assert released == ["alpha (alpha-v0.1.0)", "beta (no git tag)"]
         seen = (workspace_path / "beta" / "seen_alpha_tag.txt").read_text().strip()
         assert seen == "alpha-v0.1.0"  # beta's prepare saw alpha's brand-new tag, live
 
@@ -1564,16 +1588,22 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
         workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/partial", base)
 
         alpha = _seq_project(
-            "alpha", prefix="alpha-v", mint_tag=True, strategy="scm",
-            steps={"run-tests": [cli.Command(label="t", argv=["true"], cwd=".")]},
+            "alpha", prefix="alpha-v", git_tag=True, strategy="scm",
+            steps={
+                "run-tests": [cli.Command(label="t", argv=["true"], cwd=".")],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
+            },
         )
         beta = _seq_project(
-            "beta", mint_tag=False,
+            "beta", git_tag=False, build_step="prepare",
             steps={
                 "run-tests": [cli.Command(label="t", argv=["false"], cwd=".")],
-                "prepare": [cli.Command(
-                    label="write", argv=["bash", "-c", "echo prepared > output.txt"], cwd="beta",
+                    "prepare": [cli.Command(
+                        label="write", argv=["bash", "-c", "echo prepared > output.txt"], cwd=".",
                 )],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
             },
             commit_generated=("output.txt",),
         )
@@ -1628,8 +1658,12 @@ def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_
         workspace = transaction.ReleaseWorkspace(h.repo_root, workspace_path, "cmru/release/resume-token", new_base)
 
         gamma = _seq_project(
-            "gamma", mint_tag=False,
-            steps={"run-tests": [cli.Command(label="t", argv=["false"], cwd=".")]},
+            "gamma", git_tag=False,
+            steps={
+                "run-tests": [cli.Command(label="t", argv=["false"], cwd=".")],
+                "build": [cli.Command(label="build", argv=["true"], cwd=".")],
+                "push": [cli.Command(label="push", argv=["true"], cwd=".")],
+            },
         )
         with pytest.raises(subprocess.CalledProcessError):
             cli._release_projects_sequentially(workspace_path, {"gamma": gamma}, workspace, ["gamma"])

@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -17,8 +17,9 @@ from urllib.request import Request, urlopen
 
 import tomllib
 
-from cmru.runner import StepConfig, execute_step
+from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_step
 from cmru import transaction
+from cmru import exit_codes
 from cmru.config import load_forge_config
 
 
@@ -40,16 +41,6 @@ class VersionSpec:
 
 
 @dataclass(frozen=True)
-class OCIConfig:
-    """OCI build configuration (``[project.<name>.oci]`` section)."""
-    bake_file: str                     # path to docker-bake.hcl (relative to project cwd)
-    target: str                        # bake target name
-    repack: bool = False               # reserved; built-in repack is fail-closed (S14.3)
-    repack_target_size: str = "2GB"    # target size per layer (e.g. "100MB", "2GB")
-    repack_compression: int = 9       # zstd compression level (1-22)
-
-
-@dataclass(frozen=True)
 class ProjectConfig:
     name: str
     env: Mapping[str, str]
@@ -60,16 +51,19 @@ class ProjectConfig:
     cwd: Optional[str] = None       # build working dir (relative to repo root); default = name
     version: Optional[VersionSpec] = None
     paths: Optional[List[str]] = None  # change-detection watch paths; default = [cwd]
-    # Publish profile (S-REL): what `cmru release` emits. Resolved from `artifacts`
-    # presets + [project.X.release] overrides. cmru is the orchestrator — these only
-    # control cmru's *generic* git side-effects; project step commands own the rest.
-    artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image","bundle")
-    mint_tag: bool = True           # does cmru mint+push <prefix><semver> at HEAD?
+    # Declared released-output vocabulary. It is descriptive and retention-facing;
+    # an artifact name never selects a runner or a publication implementation.
+    artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image", "bundle")
+    git_tag: bool = True            # does cmru mint+push <prefix><semver> at HEAD?
     commit_generated: tuple = ()    # project-relative paths cmru commits after build
     # Every managed project gets source-first release history unless it explicitly
-    # declines it with ``[project.X.release] changelog = false``.
+    # declines it with ``[project.release] changelog = false``.
     changelog: Optional[str] = "CHANGES.md"
-    oci: Optional[OCIConfig] = None  # OCI build settings (from [project.<name>.oci])
+    project_root: Optional[Path] = None  # absolute directory containing this project's cmru.toml
+    runner_steps: Mapping[str, StepConfig] = None  # strict project-local runner controls
+    build_metadata: Mapping[str, str] = None
+    artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
+    build_step: str = ""                # explicit [project.release].build_step
 
 
 @dataclass(frozen=True)
@@ -112,15 +106,6 @@ def _apply_output_options(args: object) -> None:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if getattr(args, "log_append", False):
         os.environ["CMRU_LOG_APPEND"] = "1"
-
-
-def _set_release_step_log_root(repo_root: Path) -> None:
-    """Keep project logs outside a disposable release worktree.
-
-    A transaction child inherits this concrete root path, so successful release
-    cleanup never removes the diagnostic evidence it just produced.
-    """
-    os.environ["CMRU_STEP_LOG_ROOT"] = str(repo_root / "logs")
 
 
 def parse_duration(value: str) -> timedelta:
@@ -201,7 +186,7 @@ def load_json(url: str, token: str) -> tuple[list, dict]:
 def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
     """Convert orchestrator Command objects to a StepConfig for the unified runner.
 
-    Every project subprocess defaults to a durable detailed log and concise outer
+    Every project subprocess uses a durable detailed log and concise outer
     progress. ``--show-run-details`` disables this policy for an interactive
     diagnosis without changing project configuration.
     """
@@ -231,24 +216,29 @@ def run_project_step(
 ) -> None:
     """Route a project step through the unified runner contract (S3).
 
-    An explicit ``[steps.<step>]`` wins; if absent, a profile built-in (e.g. the wheel
-    handler) is synthesized so a project declaring ``artifacts=["wheel"]`` needs no
-    script. Falls through silently when neither exists."""
-    commands = list(project.steps.get(step_name, []))
-    if not commands:
-        builtin = _builtin_step_command(project, step_name, repo_root)
-        if builtin is not None:
-            commands = [builtin]
-    if not commands:
-        return
-    step = _build_step_config(step_name, commands)
-    configured_log_root = (os.getenv("CMRU_STEP_LOG_ROOT") or "").strip()
-    stable_log_root = Path(configured_log_root).expanduser() if configured_log_root else log_dir
+    Every phase is declared in the project's strict ``[steps.<name>]`` contract.
+    CMRU never synthesizes an artifact-specific command or silently skips a
+    requested phase."""
+    # ``cwd`` is derived from the declared project config's location by
+    # load_config. Derive the execution root again from the selected repository
+    # snapshot so the same contract always targets the child worktree, never the
+    # caller checkout.
+    if not project.cwd:
+        raise RuntimeError(f"{project.name}: derived project working directory is absent")
+    project_root = resolve_cwd(repo_root, project.cwd)
+    step = (project.runner_steps or {}).get(step_name)
+    if step is None:
+        raise RuntimeError(f"{project.name}: required declared step {step_name!r} is absent")
+    # Detailed records are project-local.  A successful release removes the
+    # transaction worktree (and therefore these logs) unless the caller elected
+    # to retain them after verified completion.
+    stable_log_root = project_root / "logs" / "cmru"
     execute_step(
         step,
-        repo_root,
-        stable_log_root / project.name,
+        project_root,
+        stable_log_root,
         extra_env=dict(project.env) if project.env else None,
+        build_metadata=project.build_metadata,
     )
 
 
@@ -286,29 +276,6 @@ def parse_commands(config_path: Path, repo_root: Path, step_name: str, raw_comma
     return commands
 
 
-def _resolve_token(config: dict, config_path: Path) -> str:
-    """Resolve the GitHub token per SPEC S2.4 (env → cmru.secret.toml → config).
-
-    Keeps ``cmru.toml`` secret-free: the committed config carries no token; the live
-    token comes from the environment or a gitignored ``cmru.secret.toml`` overlay.
-    """
-    for env_name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN"):
-        val = (os.getenv(env_name) or "").strip()
-        if val:
-            return val
-    secret_path = config_path.parent / "cmru.secret.toml"
-    if secret_path.exists():
-        try:
-            with secret_path.open("rb") as fh:
-                secret = tomllib.load(fh)
-            tok = ((secret.get("github") or {}).get("token") or "").strip()
-            if tok:
-                return tok
-        except Exception as exc:  # malformed secret file should not crash reads
-            log_warn(f"Could not read {secret_path.name}: {exc}")
-    return ((config.get("github") or {}).get("token") or "").strip()
-
-
 def _parse_version_spec(raw: object, name: str) -> Optional[VersionSpec]:
     if raw is None:
         return None
@@ -325,29 +292,15 @@ def _parse_version_spec(raw: object, name: str) -> Optional[VersionSpec]:
                        base_version=base_version, file=version_file)
 
 
-# Publish-profile presets (S-REL). Each artifact profile expands to release
-# capabilities; cmru only acts on `mint_tag` + `commit_generated` itself — everything
-# else (GitHub Release, asset upload, ghcr push, latest.json) is the project's push
-# step. A project may list several artifacts; their capabilities union.
-_PROFILE_PRESETS = {
-    "wheel": {"mint_tag": True},
-    "bundle": {"mint_tag": True},
-    "tarball": {"mint_tag": True},
-    "oci-image": {"mint_tag": False},
-}
-
-
-def _resolve_release_profile(
+def _parse_release_policy(
     project: dict, name: str, version_spec: Optional[VersionSpec]
 ) -> tuple[tuple, bool, tuple]:
-    """Resolve (artifacts, mint_tag, commit_generated) for a project (S-REL).
+    """Resolve (artifacts, git_tag, commit_generated) for a project (S-REL).
 
-    - artifacts: canonical ``[project.X].artifacts`` list.
-    - mint_tag:  union of preset ``mint_tag`` over artifacts, overridden by
-      ``[project.X.release].git_tag``; forced False for version strategy
-      ``none`` (no cmru-owned tag). ``external:VAR`` remains
-      cmru-owned: a prepare step derives the version but cmru owns the tag.
-    - commit_generated: ``[project.X.release].commit_generated`` (project-relative).
+    - artifacts: canonical ``[project].artifacts`` list.
+    - git_tag: explicit ``[project.release].git_tag``. Artifact kind never
+      silently decides publication semantics.
+    - commit_generated: ``[project.release].commit_generated`` (project-relative).
     """
     raw = project.get("artifacts")
     if not isinstance(raw, list):
@@ -357,134 +310,38 @@ def _resolve_release_profile(
         value = str(item).strip()
         if value:
             artifacts.append(value)
-    unknown = [a for a in artifacts if a not in _PROFILE_PRESETS]
+    valid_artifacts = {"wheel", "bundle", "tarball", "oci-image"}
+    unknown = [a for a in artifacts if a not in valid_artifacts]
     if unknown:
         raise ValueError(
-            f"project.{name}: unknown artifact/profile {unknown}; "
-                f"valid: {sorted(_PROFILE_PRESETS)}"
+            f"project.{name}: unknown artifact type {unknown}; "
+                f"valid: {sorted(valid_artifacts)}"
         )
 
     strategy = getattr(version_spec, "strategy", "scm") if version_spec else "scm"
-    mint_tag = any(_PROFILE_PRESETS[a]["mint_tag"] for a in artifacts) if artifacts else True
 
     release_cfg = project.get("release") or {}
     if not isinstance(release_cfg, dict):
         raise ValueError(f"project.{name}.release must be a table")
-    if "git_tag" in release_cfg:
-        mint_tag = bool(release_cfg["git_tag"])
+    if not isinstance(release_cfg.get("git_tag"), bool):
+        raise ValueError(f"project.{name}.release.git_tag must be explicitly true or false")
+    git_tag = release_cfg["git_tag"]
     commit_generated = release_cfg.get("commit_generated") or []
     if not isinstance(commit_generated, list):
         raise ValueError(f"project.{name}.release.commit_generated must be a list")
 
-    if strategy == "none":
-        mint_tag = False
-
-    # Guard against the bug that produced modern-debian-tools-python-debug-v0.1.0:
-    # an OCI-only project must not pair with a semver-tagging strategy.
-    if artifacts and all(a == "oci-image" for a in artifacts) and strategy != "none":
+    if strategy == "none" and git_tag:
         raise ValueError(
-            f"project.{name}: oci-image artifact must use version.strategy='none' "
-            f"not '{strategy}' — OCI images are published to a registry, "
-            "not git-tagged / GitHub-Released."
+            f"project.{name}: version.strategy='none' requires release.git_tag=false"
         )
 
-    return tuple(artifacts), mint_tag, tuple(str(p) for p in commit_generated)
-
-
-# ─── built-in profile steps (S-REL "batteries included") ─────────────────────
-# Profiles whose build/publish/validate cmru implements itself (see cmru/handlers.py).
-# A project that declares such a profile may OMIT the matching [steps.<step>] — cmru
-# synthesizes a step that runs the built-in handler. Any explicit step overrides it.
-_PROFILE_BUILTIN_STEPS = {
-    "wheel":     ("build", "push", "validate"),
-    "tarball":   ("push", "validate"),          # build stays project-owned
-    "oci-image": ("build", "push"),
-}
-_OCI_REPACK_DISABLED = (
-    "cmru built-in OCI repack is experimental and not production-ready; "
-    "repack=true is disabled until the S14.3 production-equivalence requirements are met"
-)
-# Absolute path so the step works whether cmru is pip-installed or run from a checkout
-# (a bare `-m cmru.handlers` would fail in a subprocess that didn't inherit sys.path).
-_HANDLERS_PY = Path(__file__).resolve().parent / "handlers.py"
+    return tuple(artifacts), git_tag, tuple(str(p) for p in commit_generated)
 
 
 def _bare_prefix(prefix: Optional[str]) -> str:
-    """`ciu-v` → `ciu` (the release prefix the keystone/handlers expect)."""
+    """`ciu-v` → `ciu` for release-cleanup API calls."""
     prefix = prefix or ""
     return prefix[:-2] if prefix.endswith("-v") else prefix
-
-
-def _builtin_step_command(
-    project: "ProjectConfig", step_name: str, repo_root: Path
-) -> Optional[Command]:
-    """Synthesized Command for a profile's built-in ``step_name``, or None.
-
-    Returns None when no declared artifact profile provides a built-in for this step,
-    so callers fall back to "no step" (skip). cmru stays the orchestrator: the built-in
-    is just a default *step command*, run through the same runner as a project script.
-    """
-    cwd_rel = project.cwd or project.name
-    cwd_abs = resolve_cwd(repo_root, cwd_rel)
-    bare = _bare_prefix(project.prefix)
-    notes_env = f"{bare.upper().replace('-', '_')}_RELEASE_NOTES" if bare else None
-    for artifact in project.artifacts:
-        if artifact not in _PROFILE_BUILTIN_STEPS:
-            continue
-        if step_name not in _PROFILE_BUILTIN_STEPS[artifact]:
-            continue
-        base = [sys.executable, str(_HANDLERS_PY)]
-        if artifact == "wheel":
-            if step_name == "build":
-                argv = base + ["wheel-build", "--cwd", str(cwd_abs)]
-            elif step_name == "push":
-                argv = base + ["wheel-publish", "--prefix", bare, "--cwd", str(cwd_abs)]
-                if notes_env:
-                    argv += ["--notes-env", notes_env]
-            else:  # validate
-                argv = base + ["wheel-validate", "--prefix", bare]
-            return Command(
-                label=f"{project.name}: wheel {step_name} (cmru built-in)",
-                argv=argv, cwd=cwd_abs,
-            )
-        elif artifact == "tarball":
-            if step_name == "push":
-                argv = (base + ["tarball-publish", "--prefix", bare,
-                                "--cwd", str(cwd_abs),
-                                "--glob", f"{bare}-v*.tar.xz",
-                                "--version-file", "VERSION"])
-                if notes_env:
-                    argv += ["--notes-env", notes_env]
-            else:  # validate
-                argv = base + ["tarball-validate", "--prefix", bare]
-            return Command(
-                label=f"{project.name}: tarball {step_name} (cmru built-in)",
-                argv=argv, cwd=cwd_abs,
-            )
-        elif artifact == "oci-image":
-            oci_cfg = getattr(project, "oci", None)
-            if oci_cfg is None:
-                raise ValueError(
-                    f"project.{project.name}: oci-image requires explicit [project.{project.name}.oci]"
-                )
-            bake_file = oci_cfg.bake_file
-            target = oci_cfg.target
-            repack = oci_cfg.repack
-            if repack:
-                # Defence in depth for callers that construct ProjectConfig directly
-                # instead of going through load_config(), which rejects this setting.
-                raise ValueError(f"project.{project.name}.oci.repack: {_OCI_REPACK_DISABLED}")
-            if step_name == "build":
-                argv = base + ["oci-image-build", "--cwd", str(cwd_abs),
-                               "--bake-file", bake_file, "--target", target]
-            else:  # push
-                argv = base + ["oci-image-push", "--cwd", str(cwd_abs),
-                               "--bake-file", bake_file, "--target", target]
-            return Command(
-                label=f"{project.name}: oci-image {step_name} (cmru built-in)",
-                argv=argv, cwd=cwd_abs,
-            )
-    return None
 
 
 def load_config(
@@ -501,200 +358,85 @@ def load_config(
     GitHubConfig,
     ReleaseEnvConfig,
 ]:
-    """Load the canonical, already strictly-validated S2 ``cmru.toml``."""
-    # This is deliberately before the execution-model mapping below.  ``get``,
-    # ``status`` and ``release`` accept precisely the same configuration grammar.
-    # It also gives a missing config the same deliberate exit code and diagnostic
-    # as every other invalid configuration, rather than a Python traceback.
-    load_forge_config(config_path, require_orchestration=True)
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
+    """Map the strict project documents into the execution model.
 
-    repo_root = config_path.parent
-
-    orchestration = config.get("orchestration")
-    if not isinstance(orchestration, dict):
-        raise ValueError("[orchestration] is required for orchestration verbs")
-
-    projects_section = config.get("project")
-    if not projects_section or not isinstance(projects_section, dict):
-        raise ValueError("[project.<name>] section is required in config")
-
+    ``load_forge_config`` owns validation.  This function deliberately only maps
+    that validated grammar; it accepts no retired central ``[project.<name>]``
+    shape and no second build-runner document.
+    """
+    forge = load_forge_config(config_path)
+    orchestration = forge.orchestration
+    if orchestration is None:  # defensive: both strict loaders always supply one
+        raise ValueError("cmru configuration has no project selection")
+    repo_root = forge.repo_root
     projects: dict[str, ProjectConfig] = {}
-    for name, project in projects_section.items():
-        if not isinstance(project, dict):
-            raise ValueError(f"project.{name} must be a table")
-
-        project_env = project.get("env") or {}
-        if not isinstance(project_env, dict):
-            raise ValueError(f"project.{name}.env must be a table")
-
-        # steps are OPTIONAL when an artifacts profile provides built-ins (checked below).
-        steps_section = project.get("steps")
-        if steps_section is not None and not isinstance(steps_section, dict):
-            raise ValueError(f"project.{name}.steps must be a table")
-        steps: dict[str, List[Command]] = {}
-        for step_name, step_config in (steps_section or {}).items():
-            commands_config = step_config.get("commands") if isinstance(step_config, dict) else None
-            if commands_config is None:
-                raise ValueError(f"project.{name}.steps.{step_name}.commands is required")
-            steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
-
-        proj_prefix = project["prefix"].strip()
-        proj_scm_dist = (project.get("scm_dist") or "").strip() or None
-        proj_cwd = project["cwd"].strip()
-        version_spec = _parse_version_spec(project.get("version"), name)
-        artifacts, mint_tag, commit_generated = _resolve_release_profile(
-            project, name, version_spec
+    for name, parsed in forge.projects.items():
+        project_config_path = orchestration.project_configs[name]
+        with project_config_path.open("rb") as handle:
+            document = tomllib.load(handle)
+        project_raw = document["project"]
+        steps_raw = document["steps"]
+        project_root = project_config_path.parent.resolve()
+        try:
+            project_rel = project_root.relative_to(repo_root)
+        except ValueError as exc:  # should already be prohibited by config validation
+            raise ValueError(f"{name}: project root is outside orchestration root") from exc
+        cwd = project_rel.as_posix() if project_rel.parts else "."
+        version_spec = _parse_version_spec(project_raw["version"], name)
+        artifacts, git_tag, commit_generated = _parse_release_policy(
+            project_raw, name, version_spec
         )
-        release_cfg = project.get("release") or {}
-        if not isinstance(release_cfg, dict):
-            raise ValueError(f"project.{name}.release must be a table")
-        # Release history is part of every CMRU-managed release by default.  A
-        # project-specific filename remains supported; ``false`` is the deliberate,
-        # reviewable exception for an externally-owned release flow.
-        changelog: Optional[str] = "CHANGES.md"
-        if "changelog" in release_cfg:
-            raw_changelog = release_cfg["changelog"]
-            if raw_changelog is False:
-                changelog = None
-            elif not isinstance(raw_changelog, str) or not raw_changelog.strip():
-                raise ValueError(
-                    f"project.{name}.release.changelog must be a non-empty string or false"
-                )
-            else:
-                changelog_path = Path(raw_changelog)
-                if (changelog_path.is_absolute() or ".." in changelog_path.parts
-                        or changelog_path.name in ("", ".")):
-                    raise ValueError(
-                        f"project.{name}.release.changelog must be project-relative"
-                    )
-                changelog = raw_changelog.strip()
-        # A project must be runnable: either it declares steps, or it declares an
-        # artifacts profile cmru can build/publish itself (S-REL batteries-included).
-        if not steps and not any(a in _PROFILE_BUILTIN_STEPS for a in artifacts):
-            raise ValueError(
-                f"project.{name}: define [steps.*] or declare an artifacts profile with "
-                f"built-in steps {sorted(_PROFILE_BUILTIN_STEPS)}"
+        commands = {
+            step_name: parse_commands(project_config_path, project_root, step_name, step_raw["commands"])
+            for step_name, step_raw in steps_raw.items()
+        }
+        runner_steps = {
+            step_name: replace(
+                _runner_parse_step({"steps": steps_raw}, step_name),
+                registries=list(forge.targets.registry),
             )
-        # Tarball profile has no built-in build — the project must supply its own.
-        # (build stays project-owned; there is no universal tarball build command.)
-        if "tarball" in artifacts and "build" not in steps:
-            raise ValueError(
-                f"project.{name}: tarball artifact requires a project-owned build step — "
-                f"define [steps.build] (no universal tarball build; only push/validate are built-in)"
-            )
-        # Change-detection watches the project cwd plus any extra version.paths (S12.3).
-        extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
-        watch_paths = [proj_cwd] + extra_paths
-        # Parse the explicit OCI handler settings where this profile is present.
-        oci_cfg: Optional[OCIConfig] = None
-        oci_raw = project.get("oci")
-        if oci_raw is not None:
-            if not isinstance(oci_raw, dict):
-                raise ValueError(f"project.{name}.oci must be a table")
-            bake_file = str(oci_raw["bake_file"])
-            target = str(oci_raw["target"])
-            repack = bool(oci_raw["repack"])
-            repack_target_size = "2GB"
-            repack_compression_raw = oci_raw.get("repack_compression")
-            if repack_compression_raw is not None:
-                try:
-                    repack_compression = int(repack_compression_raw)
-                except (ValueError, TypeError):
-                    raise ValueError(
-                        f"project.{name}.oci.repack_compression must be an integer"
-                    )
-                if repack_compression < 1 or repack_compression > 22:
-                    raise ValueError(
-                        f"project.{name}.oci.repack_compression must be between 1 and 22"
-                    )
-            else:
-                repack_compression = 9  # only relevant to the disabled repack feature
-            # V18: validate repack_target_size format (accepts e.g. 500MB, 2GB, 1.5GB)
-            raw_size = str(oci_raw.get("repack_target_size", "")).strip()
-            if raw_size:
-                if not re.fullmatch(r"\d+(\.\d+)?\s*[KMGTP]?B?", raw_size, re.IGNORECASE):
-                    raise ValueError(
-                        f"project.{name}.oci.repack_target_size must be a valid size "
-                        f"string (e.g. '2GB', '500MB'), got {raw_size!r}"
-                    )
-                repack_target_size = raw_size
-            oci_cfg = OCIConfig(
-                bake_file=bake_file, target=target,
-                repack=repack,
-                repack_target_size=repack_target_size,
-                repack_compression=repack_compression,
-            )
-            if repack:
-                raise ValueError(f"project.{name}.oci.repack: {_OCI_REPACK_DISABLED}")
-
+            for step_name in steps_raw
+        }
+        extra_paths = list(version_spec.paths) if version_spec else []
+        watch_paths = [cwd] + [
+            (project_rel / Path(path)).as_posix() if project_rel.parts else path
+            for path in extra_paths
+        ]
         projects[name] = ProjectConfig(
-            name=name, template_revision=project.get("template_revision"), env=project_env, steps=steps,
-            prefix=proj_prefix, scm_dist=proj_scm_dist,
-            cwd=proj_cwd,
-            version=version_spec, paths=watch_paths,
-            artifacts=artifacts, mint_tag=mint_tag, commit_generated=commit_generated,
-            changelog=changelog,
-            oci=oci_cfg,
+            name=name, template_revision=parsed.template_revision, env=parsed.env,
+            steps=commands, prefix=parsed.prefix, scm_dist=parsed.scm_dist,
+            cwd=cwd, version=version_spec, paths=watch_paths,
+            artifacts=artifacts, git_tag=git_tag, commit_generated=commit_generated,
+            changelog=parsed.changelog, project_root=project_root,
+            runner_steps=runner_steps, build_metadata=parsed.build_metadata,
+            artifact_dirs=tuple(parsed.artifact_dirs),
+            build_step=parsed.build_step,
         )
 
-    project_order = list(orchestration["project_order"])
-    default_projects = list(orchestration["default_projects"])
-    default_steps = list(orchestration["default_steps"])
-    execution_mode = orchestration["execution_mode"]
-
-    step_project_order_raw = orchestration.get("step_project_order", {})
-    step_project_order: dict[str, list[str]] = {}
-    for step_name, step_projects in step_project_order_raw.items():
-        if not isinstance(step_projects, list) or not all(isinstance(i, str) for i in step_projects):
-            raise ValueError(f"orchestration.step_project_order.{step_name} must be a list")
-        step_project_order[step_name] = step_projects
-
-    cleanup_section = config.get("cleanup")
-    if not isinstance(cleanup_section, dict):
-        raise ValueError("[cleanup] is required for orchestration verbs")
+    cleanup_raw = forge.cleanup
     cleanup = CleanupConfig(
-        release_tag_prefixes=list(cleanup_section["release_tag_prefixes"]),
-        keep_release_tags=list(cleanup_section["keep_release_tags"]),
-        ghcr_packages=list(cleanup_section["ghcr_packages"]),
-        ghcr_delete_packages=list(cleanup_section["ghcr_delete_packages"]),
+        release_tag_prefixes=list(cleanup_raw.release_tag_prefixes) if cleanup_raw else [],
+        keep_release_tags=list(cleanup_raw.keep_release_tags) if cleanup_raw else [],
+        ghcr_packages=list(cleanup_raw.ghcr_packages) if cleanup_raw else [],
+        ghcr_delete_packages=list(cleanup_raw.ghcr_delete_packages) if cleanup_raw else [],
     )
-
-    github = config.get("github")
-    if not github or not isinstance(github, dict):
-        raise ValueError("[github] section is required in config")
-    owner = (github.get("owner") or "").strip()
-    repo = (github.get("repo") or "").strip()
-    owner_type = (github.get("owner_type") or "").strip()
-    token = _resolve_token(config, config_path)
-    if not owner or not repo:
-        raise ValueError("github.owner and github.repo are required in config")
-    if owner_type not in ("user", "org"):
-        raise ValueError("github.owner_type must be \"user\" or \"org\" (V03)")
-
-    github_config = GitHubConfig(owner=owner, repo=repo, token=token, owner_type=owner_type)
-
-    registry_url = None
-    targets = config["targets"]
-    reg = targets["registry"]
-    if reg:
-        registry_url = str(reg[0]).strip()
-
-    env_section = config.get("env") or {}
-    if not isinstance(env_section, dict):
-        raise ValueError("[env] must be a table of key/value pairs")
-
-    env_config = ReleaseEnvConfig(env=env_section, registry_url=registry_url)
+    github_config = GitHubConfig(
+        owner=forge.github.owner, repo=forge.github.repo,
+        token=forge.github.token or "", owner_type=forge.github.owner_type,
+    )
+    env_config = ReleaseEnvConfig(
+        env=forge.env,
+        registry_url=forge.targets.registry[0] if forge.targets.registry else None,
+    )
 
     return (
         repo_root,
         projects,
-        project_order,
-        default_projects,
-        default_steps,
-        execution_mode,
-        step_project_order,
+        orchestration.project_order,
+        orchestration.default_projects,
+        orchestration.default_steps,
+        orchestration.execution_mode,
+        {},
         cleanup,
         github_config,
         env_config,
@@ -703,21 +445,41 @@ def load_config(
 
 def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> None:
     if github.owner:
-        os.environ.setdefault("GITHUB_USERNAME", github.owner)
+        os.environ["GITHUB_USERNAME"] = github.owner
     if github.repo:
-        os.environ.setdefault("GITHUB_REPO", github.repo)
+        os.environ["GITHUB_REPO"] = github.repo
     if github.token:
-        os.environ.setdefault("GITHUB_PUSH_PAT", github.token)
-    os.environ.setdefault("GITHUB_OWNER_TYPE", github.owner_type)
+        os.environ["GITHUB_PUSH_PAT"] = github.token
+    os.environ["GITHUB_OWNER_TYPE"] = github.owner_type
     if env_config.registry_url:
-        os.environ.setdefault("REGISTRY", env_config.registry_url)
+        os.environ["REGISTRY"] = env_config.registry_url
 
     for key, value in env_config.env.items():
         if value is None:
             continue
-        value_str = str(value).strip()
-        if value_str:
-            os.environ.setdefault(key, value_str)
+        # An explicit empty value clears an inherited shell value.  Skipping it
+        # would silently turn a declared project environment into ambient
+        # fallback state.
+        os.environ[key] = str(value)
+
+
+def require_publish_credential() -> None:
+    """Refuse a publishing transaction before it can create source-side state."""
+    if (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip():
+        return
+    raise RuntimeError(
+        "Publishing requires GITHUB_PUSH_PAT or GITHUB_TOKEN. Set one explicitly, "
+        "or provide the selected project's gitignored cmru.secret.toml before retrying."
+    )
+
+
+def _enforce_publish_credential() -> None:
+    """Emit one stable prerequisite failure before a command can publish."""
+    try:
+        require_publish_credential()
+    except RuntimeError as exc:
+        log_error(str(exc))
+        raise SystemExit(exit_codes.PREREQ_MISSING) from exc
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -759,12 +521,12 @@ def resolve_versions_from_git(
     """
     epoch = _git(repo_root, "log", "-1", "--format=%ct")
     if epoch:
-        os.environ.setdefault("SOURCE_DATE_EPOCH", epoch)
+        os.environ["SOURCE_DATE_EPOCH"] = epoch
         created = datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        os.environ.setdefault("OCI_CREATED", created)
+        os.environ["OCI_CREATED"] = created
     revision = _git(repo_root, "rev-parse", "HEAD")
     if revision:
-        os.environ.setdefault("OCI_REVISION", revision)
+        os.environ["OCI_REVISION"] = revision
 
     if not projects:
         return
@@ -788,7 +550,7 @@ def resolve_versions_from_git(
             continue
         semver = exact[len(prefix_tag):]
         env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + project.scm_dist.upper().replace("-", "_")
-        os.environ.setdefault(env_name, semver)
+        os.environ[env_name] = semver
         log_info(f"{project.scm_dist}: HEAD on {exact} → {env_name}={semver}")
 
 
@@ -1343,6 +1105,9 @@ def _orchestrate() -> None:
     if not steps and not args.remove_assets:
         steps = default_steps
 
+    if "push" in steps:
+        _enforce_publish_credential()
+
     log_dir = repo_root / "logs"
 
     if steps:
@@ -1378,13 +1143,17 @@ def _cmru_version() -> str:
 
 
 def _default_config_path() -> Path:
-    """Repo-root ``cmru.toml`` (S2)."""
-    root = Path(__file__).resolve().parents[3]
-    return root / "cmru.toml"
+    """A standalone invocation owns the project config in its current directory.
+
+    An estate launcher must pass ``cmru.orchestration.toml`` explicitly.  Guessing
+    a parent repository's orchestration file would make a copied project silently
+    depend on the old checkout, exactly the boundary this contract removes.
+    """
+    return Path.cwd() / "cmru.toml"
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
-    raw = config_opt or os.getenv("CMRU_CONFIG") or str(_default_config_path())
+    raw = config_opt or str(_default_config_path())
     return Path(raw).expanduser().resolve()
 
 
@@ -1432,49 +1201,66 @@ def _run_project_steps(
     """Run ``steps`` (in order) for each named project through the unified runner (S3).
 
     Seeds reproducible-build + SETUPTOOLS_SCM pretend-version env first so a wheel
-    built here matches the tag on HEAD. Missing steps are skipped with a note."""
+    built here matches the tag on HEAD. A requested missing step is a configuration
+    error; it is never treated as a successful no-op."""
     resolve_versions_from_git(repo_root, dict(configs))
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
         for step in steps:
-            if step in project.steps:
-                log_info(f"{name}: running step '{step}'")
-                run_project_step(project, step, repo_root, log_dir)
-            elif _builtin_step_command(project, step, repo_root) is not None:
-                log_info(f"{name}: running step '{step}' (cmru built-in)")
-                run_project_step(project, step, repo_root, log_dir)
-            else:
-                log_info(f"{name}: no '{step}' step — skipping")
+            if step not in (project.runner_steps or {}):
+                raise RuntimeError(f"{name}: requested step {step!r} is not declared in cmru.toml")
+            log_info(f"{name}: running step '{step}'")
+            run_project_step(project, step, repo_root, log_dir)
 
 
-def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
-    """Release a registry/OCI project (e.g. modern-debian-tools-python-debug): build
-    (which regenerates the project's manifests) → commit the declared generated paths →
-    push images. No git tag, no GitHub Release — the deliverable is the ghcr image; the
-    committed manifests are the build's documentation inputs for next time.
+def _run_isolated_build_projects(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+) -> None:
+    """Run the non-publishing half of each project's declared release contract.
 
-    cmru stays generic here: it only commits the paths the project declared in
-    ``[project.X.release].commit_generated`` and runs the project's own build/push steps.
-    Uses built-in ``oci-image`` handlers when no explicit ``[steps.*]`` are defined.
+    A retained ``cmru build`` performs source preparation (when declared), the
+    required gate, and the project-selected artifact-producing step.  It never
+    tags, publishes, or copies outputs back to the caller checkout.
+    """
+    for name in project_names:
+        project = configs[name]
+        artifact_step = project.build_step
+        if not artifact_step:
+            raise RuntimeError(f"{name}: project.release.build_step is absent")
+        phases: list[str] = []
+        if "prepare" in (project.runner_steps or {}):
+            phases.append("prepare")
+        phases.append("run-tests")
+        if artifact_step not in phases:
+            phases.append(artifact_step)
+        _run_project_steps(repo_root, configs, [name], phases)
+
+
+def _run_untagged_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
+    """Run the build/push half of a declared no-Git-tag release contract.
+
+    The project owns what it publishes (registry image, external package, or another
+    declared artifact). CMRU only enforces its selected build step and required push step.
     """
     resolve_versions_from_git(repo_root, dict(configs))
     log_dir = repo_root / "logs"
     project = configs[name]
-    cwd = getattr(project, "cwd", None) or name
-
     # Projects that extract tracked provenance must do their private build in
     # ``prepare``. It has already been committed, gated and promoted before cmru
     # creates any tags for this transaction; rebuilding here would both waste work
     # and risk producing artifacts from a post-tag HEAD.
-    prepared_build = "prepare" in project.steps
+    artifact_step = project.build_step
+    if not artifact_step:
+        raise RuntimeError(f"{name}: project.release.build_step is absent")
+    prepared_build = artifact_step == "prepare"
     if prepared_build:
-        log_info(f"{name}: using private build prepared before tagging")
-    elif "build" in project.steps or _builtin_step_command(project, "build", repo_root) is not None:
-        log_info(f"{name}: running step 'build'")
-        run_project_step(project, "build", repo_root, log_dir)
+        log_info(f"{name}: using artifact output deliberately produced by steps.prepare")
     else:
-        log_info(f"{name}: no 'build' step — skipping")
+        log_info(f"{name}: running artifact step {artifact_step!r}")
+        run_project_step(project, artifact_step, repo_root, log_dir)
 
     if not prepared_build and _worktree_changed_paths(repo_root):
         raise RuntimeError(
@@ -1482,11 +1268,11 @@ def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
             "and declare its outputs in release.commit_generated"
         )
 
-    if "push" in project.steps or _builtin_step_command(project, "push", repo_root) is not None:
+    if "push" in (project.runner_steps or {}):
         log_info(f"{name}: running step 'push'")
         run_project_step(project, "push", repo_root, log_dir)
-    else:
-        log_info(f"{name}: no 'push' step — skipping")
+    else:  # config validation requires it; keep the runtime guard for direct callers.
+        raise RuntimeError(f"{name}: required push step is absent")
 
 
 def _version_strategy(proj: "ProjectConfig") -> str:
@@ -1546,11 +1332,14 @@ def _release_projects_sequentially(
         transaction.push_backup_branch(workspace)
 
         strategy = _version_strategy(project)
-        if not getattr(project, "mint_tag", True):
+        if not getattr(project, "git_tag", True):
             if not no_build:
-                log_info(f"Building + pushing {name} (oci-image — registry, no tag)")
-                _run_registry_project(repo_root, configs, name)
-                released.append(f"{name} (image)")
+                log_info(f"Building + publishing {name} (no git tag)")
+                _run_untagged_project(repo_root, configs, name)
+                released.append(f"{name} (no git tag)")
+                transaction.write_release_result(
+                    repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
+                )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
         else:
@@ -1565,14 +1354,17 @@ def _release_projects_sequentially(
                 _push_tags(repo_root, [tag])
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
-                    _run_project_steps(repo_root, configs, [name], ["build", "push"])
+                    artifact_phases = [] if project.build_step == "prepare" else [project.build_step]
+                    _run_project_steps(repo_root, configs, [name], [*artifact_phases, "push"])
                     released.append(f"{name} ({tag})")
+                    transaction.write_release_result(repo_root, workspace, name, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
+                    transaction.write_release_result(repo_root, workspace, name, tag)
             elif not no_build:
                 raise RuntimeError(
                     f"{name}: gate passed and it was in this run's changed-project scope, "
-                    "but no tag ended up on HEAD (mint_tag strategy produced nothing to "
+                    "but no tag ended up on HEAD (release.git_tag produced nothing to "
                     "build/publish) — this should not happen; investigate before retrying"
                 )
 
@@ -1756,9 +1548,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
     Verb dispatch. Normal release path:  ``status`` → ``release`` (→ ``cleanup``).
-    ``release`` is the one-shot (tag → push → build → publish); ``build``/``publish``
-    are the same two steps split out, operating on the tag at HEAD. ``run`` is the
-    explicit-steps escape hatch; ``run-step`` is the raw single-step runner.
+    ``release`` is the one-shot (tag → push → build → publish). ``build`` is an
+    isolated, retained diagnostic build; ``publish`` remains an explicit project
+    push step. ``run`` is the explicit-steps escape hatch; ``run-step`` is the raw
+    single-step runner.
     """
     import sys as _sys
 
@@ -1766,12 +1559,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     if not av or av[0] in ("-h", "--help"):
         print(
             f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            "Config: cmru.toml (repo root) — override with --config / CMRU_CONFIG\n"
+            "Config: project cmru.toml, or explicit cmru.orchestration.toml — select with --config\n"
             "\n"
             "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
             "  1. status                  preview what changed + the next version (no writes)\n"
             "  2. release                 isolated: prepare → gate → integrate → tag → build → publish\n"
-            "       step-by-step instead: build  then  publish   (act on the tag at HEAD)\n"
+            "       build alone creates a retained isolated diagnostic worktree\n"
             "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
             "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
             "\n"
@@ -1784,8 +1577,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             "                                                  isolated source-first transaction\n"
             "    changelog --project P --backfill-tag TAG    catalog an already-published tagged release\n"
             "    standards [--project P] [--update]         check/update CMRU project-framework markers\n"
-            "    build    [--project P]                        run the 'build' step (artifact only)\n"
-            "    publish  [--project P]                        run the 'push' step (upload + .sha256)\n"
+            "    build    [--project P]                        retained isolated build worktree\n"
+            "    publish  [--project P]                        run the project 'push' step\n"
             "    run      [--project P] [--run-tests --build --push --validate]\n"
             "                                                  low-level: explicit steps × projects\n"
             "\n"
@@ -1795,7 +1588,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "\n"
             "MAINTENANCE\n"
             "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
-            "    run-step --config C --step S                  execute one cmru.build.toml step (raw)\n"
+            "    run-step --config C --step S                  execute one project cmru.toml step\n"
         )
         return
 
@@ -1811,9 +1604,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         _orchestrate()
 
     elif verb == "run-step":
-        # Raw single-step runner (was the old `cmru build`): needs --config + --step.
+        # Raw single-step runner for the one project cmru.toml grammar.
         from cmru.runner import main as runner_main
         runner_main(rest)
+
+    elif verb == "handler":
+        # Stable CLI access to the explicit project-step command library.
+        from cmru.handlers import main as handlers_main
+        handlers_main(rest)
 
     elif verb == "tester-gate":
         from cmru.tester_gate import main as tester_gate_main
@@ -1824,6 +1622,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
         parser.add_argument("--config", help="Path to cmru.toml")
+        parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         parser.add_argument("--show-run-details", action="store_true")
         parser.add_argument("--log-append", action="store_true")
         vargs = parser.parse_args(rest)
@@ -1838,8 +1637,58 @@ def main(argv: Optional[List[str]] = None) -> None:
         if missing:
             log_error(f"Unknown project(s): {', '.join(missing)}")
             _sys.exit(2)
+        if verb == "publish":
+            _enforce_publish_credential()
         step = "build" if verb == "build" else "push"
-        _run_project_steps(repo_root, configs, names, [step])
+
+        if verb == "build" and not vargs._transaction_child:
+            # A normal build uses the exact same isolated source boundary as a
+            # release, but intentionally stops after the build step.  Its worktree
+            # is retained on both success and failure: these are non-published
+            # diagnostic artifacts, never copied back into the caller checkout.
+            try:
+                child_args = _child_release_args(rest, cfg_path, repo_root)
+                with transaction.release_lock(repo_root):
+                    dirty = _uncommitted_release_paths(repo_root, configs, names)
+                    if dirty:
+                        for project_name, files in dirty.items():
+                            log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
+                        raise RuntimeError(
+                            "cmru build snapshots origin/main; commit and push the selected project "
+                            "changes first so the isolated build cannot silently omit them."
+                        )
+                    base = transaction.fetch_origin_main(repo_root)
+                    behind = transaction.assert_local_main_not_ahead(repo_root)
+                    if behind:
+                        log_warn(
+                            f"Local main is {behind} commit(s) behind origin/main; "
+                            f"build uses fetched origin/main {base[:12]}."
+                        )
+                    workspace = transaction.create_workspace(repo_root, base=base, purpose="build")
+                    transaction.copy_secret_overlays(
+                        repo_root,
+                        workspace,
+                        [Path(project.project_root) / "cmru.toml" for project in configs.values()
+                         if project.project_root is not None],
+                    )
+                    log_info(
+                        f"Build transaction {workspace.branch}: snapshot {workspace.base[:12]} "
+                        f"at {workspace.path}"
+                    )
+                    rc = transaction.run_child(workspace, child_args, verb="build")
+                    state = "failed" if rc else "completed"
+                    log_info(
+                        f"Build transaction {state}; retained {workspace.path}. "
+                        "Logs and non-release artifacts remain in that worktree."
+                    )
+                    _sys.exit(rc)
+            except Exception as exc:
+                log_error(str(exc))
+                _sys.exit(1)
+        if verb == "build":
+            _run_isolated_build_projects(repo_root, configs, names)
+        else:
+            _run_project_steps(repo_root, configs, names, [step])
         log_info(f"cmru {verb} complete")
 
     elif verb == "resolve":
@@ -1918,6 +1767,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             "--log-append", action="store_true",
             help="Append a divider and retain existing stable per-step logs",
         )
+        parser.add_argument(
+            "--retain-logs-on-release", action="store_true",
+            help="After a successful release, move project logs into <project>/logs/cmru-release/<tag>",
+        )
+        parser.add_argument(
+            "--retain-artifacts-on-release", action="store_true",
+            help="After a successful release, move declared artifacts into <project>/artifacts/<tag>",
+        )
         vargs = parser.parse_args(rest)
         _apply_output_options(vargs)
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
@@ -1929,9 +1786,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         default_projects = _rest[0]
         github_config, env_config = _rest[-2], _rest[-1]
         apply_release_env(github_config, env_config)
-        if not vargs._transaction_child:
-            _set_release_step_log_root(repo_root)
-
         # Restrict versioning verbs to the orchestrated set so un-migrated projects
         # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
         ordered = _ordered_configs(configs, project_order)
@@ -1953,6 +1807,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         if vargs.project and vargs.project not in ordered:
             log_error(f"Unknown or non-orchestrated project: {vargs.project}")
             _sys.exit(2)
+
+        if not vargs.dry_run:
+            _enforce_publish_credential()
 
         # The normal command is a launcher, never a publisher from the caller's
         # checkout: origin/main is the only release source, built in an isolated
@@ -2010,13 +1867,30 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 f"release uses fetched origin/main {base[:12]}."
                             )
                         workspace = transaction.create_workspace(repo_root, base=base)
-                    transaction.copy_secret_overlay(repo_root, workspace)
+                    transaction.copy_secret_overlays(
+                        repo_root,
+                        workspace,
+                        [Path(project.project_root) / "cmru.toml" for project in configs.values()
+                         if project.project_root is not None],
+                    )
                     log_info(
                         f"Release transaction {workspace.branch}: "
                         f"snapshot {workspace.base[:12]} at {workspace.path}"
                     )
                     rc = transaction.run_child(workspace, child_args)
                     if rc == 0:
+                        retained: list[Path] = []
+                        if vargs.retain_logs_on_release or vargs.retain_artifacts_on_release:
+                            retained = transaction.retain_success_outputs(
+                                repo_root,
+                                workspace,
+                                configs,
+                                transaction.read_release_results(repo_root, workspace),
+                                retain_logs=vargs.retain_logs_on_release,
+                                retain_artifacts=vargs.retain_artifacts_on_release,
+                            )
+                        for path in retained:
+                            log_info(f"Retained release output: {path}")
                         transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
                         transaction.forget_release_scope(repo_root, workspace)

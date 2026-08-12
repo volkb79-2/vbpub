@@ -1,5 +1,9 @@
 # Plan: cmru multi-capable release modes + fresh re-release
 
+> Historical design record. Named artifact profiles and implicit handlers described
+> below were deliberately removed. Current behavior is the strict explicit-step model in
+> [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md); do not use this document for new work.
+
 **Status:** PROPOSED 2026-06-18 — awaiting go-ahead. Decisions captured from the
 user (Q1/Q2/Q3 below). Destructive steps (P0) need an explicit final confirm.
 

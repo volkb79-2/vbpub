@@ -1,0 +1,19 @@
+# cmru-orchestration-template-revision: 1
+schema_version = 1
+
+[orchestration]
+project_order = ["example"]
+default_projects = ["example"]
+default_steps = ["run-tests", "build", "push"]
+execution_mode = "project-first"
+auth_project = "example"
+
+[orchestration.project.example]
+config = "example/cmru.toml"
+depends_on = []
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = ["example-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []

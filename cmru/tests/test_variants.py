@@ -34,6 +34,8 @@ from cmru.getpy import render_get_py, render_from_config
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 MINIMAL_GITHUB = """
+schema_version = 1
+
 [github]
 owner = "octocat"
 repo = "demo"
@@ -45,16 +47,36 @@ registry = []
 """
 
 
-def _base_toml(extra_project: str = "") -> str:
+def _base_toml(extra_project: str = "", release_extra: str = "") -> str:
     return (
         MINIMAL_GITHUB
         + """
-[project.naf]
+[project]
+id = "naf"
+description = "test bundle product"
+template_revision = 2
 prefix    = "naf-v"
 artifacts = ["bundle"]
-cwd       = "naf"
-[project.naf.version]
+[project.version]
 strategy = "file:VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+""" + release_extra + """
+
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
+
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """
         + extra_project
     )
@@ -111,27 +133,18 @@ class TestVariantConfig:
         assert load_forge_config(cfg).projects["naf"].changelog == "CHANGES.md"
 
     def test_release_changelog_is_parsed_as_project_relative_output(self, tmp_path):
-        cfg = _write(tmp_path, _base_toml("""
-[project.naf.release]
-changelog = "CHANGES.md"
-"""))
+        cfg = _write(tmp_path, _base_toml(release_extra='changelog = "CHANGES.md"\n'))
 
         assert load_forge_config(cfg).projects["naf"].changelog == "CHANGES.md"
 
     def test_release_changelog_accepts_explicit_opt_out(self, tmp_path):
-        cfg = _write(tmp_path, _base_toml("""
-[project.naf.release]
-changelog = false
-"""))
+        cfg = _write(tmp_path, _base_toml(release_extra="changelog = false\n"))
 
         assert load_forge_config(cfg).projects["naf"].changelog is None
 
     @pytest.mark.parametrize("value", ['"../CHANGES.md"', '"/tmp/CHANGES.md"', '""', 'true'])
     def test_release_changelog_rejects_unsafe_or_empty_path(self, tmp_path, value):
-        cfg = _write(tmp_path, _base_toml(f"""
-[project.naf.release]
-changelog = {value}
-"""))
+        cfg = _write(tmp_path, _base_toml(release_extra=f"changelog = {value}\n"))
 
         with pytest.raises(SystemExit) as exc:
             load_forge_config(cfg)
@@ -139,12 +152,12 @@ changelog = {value}
 
     def test_variants_parsed(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 name      = "py39"
 build_arg = "PYTHON=3.9"
 label     = "Python 3.9"
 
-[[project.naf.variants]]
+[[project.variants]]
 name = "py311"
 """))
         proj = load_forge_config(cfg).projects["naf"]
@@ -161,7 +174,7 @@ name = "py311"
 
     def test_unknown_variant_key_rejected(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 name  = "py39"
 bogus = "nope"
 """))
@@ -171,7 +184,7 @@ bogus = "nope"
 
     def test_missing_name_rejected(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 label = "no name here"
 """))
         with pytest.raises(SystemExit) as exc:
@@ -180,9 +193,9 @@ label = "no name here"
 
     def test_duplicate_variant_name_rejected(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 name = "py39"
-[[project.naf.variants]]
+[[project.variants]]
 name = "py39"
 """))
         with pytest.raises(SystemExit) as exc:
@@ -191,7 +204,7 @@ name = "py39"
 
     def test_invalid_variant_name_rejected(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 name = "py 3.9/../etc"
 """))
         with pytest.raises(SystemExit) as exc:
@@ -418,13 +431,13 @@ class TestInstallerVariantRender:
 
     def test_render_from_config_injects_variants(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
-[[project.naf.variants]]
+[[project.variants]]
 name  = "py39"
 label = "Python 3.9"
-[[project.naf.variants]]
+[[project.variants]]
 name = "py311"
 
-[project.naf.installer]
+[project.installer]
 install_dir_system = "/opt/naf"
 install_dir_user   = "naf"
 """))

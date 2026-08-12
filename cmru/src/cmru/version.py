@@ -47,7 +47,7 @@ def _git(repo_root: Path, *args: str) -> str:
 # editing them (e.g. repointing release_config during a migration) MUST NOT trigger a
 # version bump for that product. Excluded from change detection (S12.2).
 _RELEASE_CONTROL_EXCLUDES = (
-    ":(exclude,glob)**/cmru.build.toml",
+    ":(exclude,glob)**/cmru.toml",
     ":(exclude,glob)**/cmru.vars",
     # CMRU's source-first history is release metadata, not a product change that
     # should by itself schedule the following release.  Custom configured history
@@ -316,10 +316,11 @@ def status_cmd(
             print(f"  {name:<38} {(last_tag or '(none)'):<30} {'prepare':<8} (derived by {variable})")
             continue
 
-        if not getattr(proj, "mint_tag", True):
-            # oci-image / version='none': published to a registry (ghcr), no git tag.
-            note = "(registry publish — ghcr, no tag)"
-            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'image':<8} {note}")
+        if not getattr(proj, "git_tag", True):
+            # The project owns its no-tag publication convention through explicit
+            # build/push commands; CMRU only reports the tag policy.
+            note = "(project-owned publication, no git tag)"
+            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'no-tag':<8} {note}")
             continue
 
         if set_version:
@@ -382,7 +383,7 @@ def release_cmd(
         version_file = getattr(version_cfg, "file", "VERSION") if version_cfg else "VERSION"
         project_cwd = repo_root / (getattr(proj, "cwd", None) or name)
 
-        if not getattr(proj, "mint_tag", True):
+        if not getattr(proj, "git_tag", True):
             # No cmru tag. A no-tag project owns its publish convention; CMRU still
             # runs its declared build/push steps through the unified runner.
             why = f"{strategy} / project-owned publish"

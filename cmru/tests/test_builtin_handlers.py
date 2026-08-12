@@ -1,8 +1,7 @@
-"""Tests for S-REL batteries-included profile handlers (P8).
+"""Tests for explicit CMRU command-library handlers and strict project config.
 
-Covers the reusable wheel glue in cmru.release, the built-in step synthesis in
-cmru.cli, and the load_config relaxation that lets a profile-only project omit steps.
-Stdlib + tmp files only — no network, no git, no subprocess.
+Projects compose handler commands in their own required step declarations; the
+orchestrator never infers a step from an artifact label. Stdlib + tmp files only.
 """
 from __future__ import annotations
 
@@ -150,19 +149,20 @@ def test_host_bind_source_resolves_bind_mount(monkeypatch):
         "/home/vb/volkb79-2/vbpub"
 
 
-def test_host_bind_source_falls_back_without_mountinfo(monkeypatch):
+def test_host_bind_source_rejects_unavailable_mountinfo(monkeypatch):
     def fake_read_text(self, encoding="utf-8"):
         raise OSError("no such file")
 
     monkeypatch.setattr(Path, "read_text", fake_read_text)
-    assert handlers._host_bind_source(Path("/workspaces/vbpub/cmru")) == \
-        "/workspaces/vbpub/cmru"
+    with pytest.raises(RuntimeError, match="refuses to guess"):
+        handlers._host_bind_source(Path("/workspaces/vbpub/cmru"))
 
 
 def test_cmd_wheel_build_direct_mode_unchanged(tmp_path, monkeypatch):
     monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
     project = tmp_path / "cmru"
     project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     calls = []
     monkeypatch.setattr(
         handlers.subprocess, "run",
@@ -180,8 +180,9 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
-    monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _cwd_parent: [])
+    monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])
     calls = []
     monkeypatch.setattr(
         handlers.subprocess, "run",
@@ -206,10 +207,11 @@ def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, 
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(
         handlers, "_wheel_builder_git_mount_args",
-        lambda cwd_parent: ["-v", f"/host/common-git-dir:{tmp_path / '.gitcommon'}"],
+        lambda _source, **_kw: ["-v", f"/host/common-git-dir:{tmp_path / '.gitcommon'}"],
     )
     calls = []
     monkeypatch.setattr(
@@ -267,72 +269,29 @@ def test_wheel_builder_git_mount_args_mounts_when_common_dir_is_outside_cwd_pare
     ]
 
 
-def test_wheel_builder_git_mount_args_empty_when_git_common_dir_unresolvable(tmp_path, monkeypatch):
+def test_wheel_builder_git_mount_args_uses_project_git_for_a_standalone_project(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    common_dir = project / ".git"
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda source: common_dir if source == project else None)
+
+    # The builder mounts the parent but resolves Git from the project itself.
+    assert handlers._wheel_builder_git_mount_args(project, mount_root=tmp_path) == []
+
+
+def test_wheel_builder_git_mount_args_rejects_unresolvable_git_common_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _p: None)
-    assert handlers._wheel_builder_git_mount_args(tmp_path) == []
+    with pytest.raises(RuntimeError, match="requires a Git worktree"):
+        handlers._wheel_builder_git_mount_args(tmp_path)
 
 
-# ─── built-in step synthesis (cmru.cli) ──────────────────────────────────────
-def test_bare_prefix():
-    assert cli._bare_prefix("ciu-v") == "ciu"
-    assert cli._bare_prefix("tls-edge-v") == "tls-edge"
-    assert cli._bare_prefix(None) == ""
+def test_cmd_wheel_build_rejects_non_git_source(tmp_path, monkeypatch):
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: None)
 
-
-def _wheel_project(tmp_path):
-    return cli.ProjectConfig(
-        name="demo", env={}, steps={}, prefix="demo-v", cwd="demo",
-        artifacts=("wheel",),
-    )
-
-
-def test_builtin_step_command_wheel(tmp_path):
-    proj = _wheel_project(tmp_path)
-    build = cli._builtin_step_command(proj, "build", tmp_path)
-    push = cli._builtin_step_command(proj, "push", tmp_path)
-    validate = cli._builtin_step_command(proj, "validate", tmp_path)
-
-    assert build.argv[1:] == [str(cli._HANDLERS_PY), "wheel-build",
-                              "--cwd", str((tmp_path / "demo").resolve())]
-    assert "wheel-publish" in push.argv
-    assert "--prefix" in push.argv and "demo" in push.argv
-    assert "--notes-env" in push.argv and "DEMO_RELEASE_NOTES" in push.argv
-    assert validate.argv[1:] == [str(cli._HANDLERS_PY), "wheel-validate", "--prefix", "demo"]
-
-
-def test_builtin_step_command_unknown_step_is_none(tmp_path):
-    proj = _wheel_project(tmp_path)
-    assert cli._builtin_step_command(proj, "run-tests", tmp_path) is None
-
-
-def test_builtin_step_command_oci_uses_explicit_oci_config(tmp_path):
-    proj = cli.ProjectConfig(name="img", env={}, steps={}, prefix="img-v",
-                             cwd="img", artifacts=("oci-image",), mint_tag=False,
-                             oci=cli.OCIConfig("docker-bake.hcl", "img", False))
-    build = cli._builtin_step_command(proj, "build", tmp_path)
-    push = cli._builtin_step_command(proj, "push", tmp_path)
-
-    assert build.argv[1:] == [
-        str(cli._HANDLERS_PY), "oci-image-build",
-        "--cwd", str((tmp_path / "img").resolve()),
-        "--bake-file", "docker-bake.hcl", "--target", "img",
-    ]
-    assert push.argv[1:] == [
-        str(cli._HANDLERS_PY), "oci-image-push",
-        "--cwd", str((tmp_path / "img").resolve()),
-        "--bake-file", "docker-bake.hcl", "--target", "img",
-    ]
-
-
-def test_builtin_step_command_oci_repack_fails_closed(tmp_path):
-    proj = cli.ProjectConfig(
-        name="img", env={}, steps={}, prefix="img-v", cwd="img",
-        artifacts=("oci-image",), mint_tag=False,
-        oci=cli.OCIConfig(bake_file="docker-bake.hcl", target="img", repack=True),
-    )
-
-    with pytest.raises(ValueError, match="experimental and not production-ready"):
-        cli._builtin_step_command(proj, "build", tmp_path)
+    with pytest.raises(RuntimeError, match="requires a Git worktree"):
+        handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
 
 
 @pytest.mark.parametrize("command", [handlers.cmd_oci_image_build, handlers.cmd_oci_image_push])
@@ -391,8 +350,10 @@ def test_direct_oci_non_repack_handler_keeps_standard_bake_flow(
     assert kwargs == {"cwd": str(tmp_path), "check": True}
 
 
-# ─── load_config relaxation ──────────────────────────────────────────────────
+# ─── strict project-local config ─────────────────────────────────────────────
 _BASE = """
+schema_version = 1
+
 [github]
 owner = "octocat"
 repo = "demo"
@@ -400,76 +361,93 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
-[orchestration]
-project_order = ["p"]
-default_projects = ["p"]
-default_steps = ["build", "push"]
-execution_mode = "project-first"
-[cleanup]
-release_tag_prefixes = ["*"]
-keep_release_tags = ["p-latest"]
-ghcr_packages = ["*"]
-ghcr_delete_packages = []
+
+[project]
+id = "p"
+description = "test product"
+template_revision = 2
 """
 
+_RUN_TESTS = """
+[project.release]
+git_tag = true
+build_step = "build"
 
-def test_wheel_project_without_steps_loads(tmp_path):
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
+"""
+
+_OCI_RUN_TESTS = _RUN_TESTS.replace("git_tag = true", "git_tag = false")
+
+
+def test_project_without_steps_is_rejected(tmp_path):
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
-[project.p]
 prefix = "p-v"
 artifacts = ["wheel"]
-cwd = "p"
-[project.p.version]
+[project.version]
 strategy = "scm"
+
+[project.release]
+git_tag = true
+build_step = "build"
 """)
-    _, projects, *_ = cli.load_config(cfg)
-    assert projects["p"].steps == {}            # no inline steps
-    assert projects["p"].artifacts == ("wheel",)
-    # the built-in supplies the build step
-    assert cli._builtin_step_command(projects["p"], "build", tmp_path) is not None
+    # Removing the required project-owned step contract is a configuration error;
+    # CMRU does not infer a build profile from an artifact type.
+    with pytest.raises(SystemExit) as exc:
+        cli.load_config(cfg)
+    assert exc.value.code == 2
 
 
-def test_oci_project_without_steps_loads(tmp_path):
+def test_explicit_oci_steps_load(tmp_path):
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
-[project.p]
 prefix = "p-v"
 artifacts = ["oci-image"]
-cwd = "p"
-[project.p.version]
+[project.version]
 strategy = "none"
-[project.p.oci]
-bake_file = "docker-bake.hcl"
-target = "p"
-repack = false
-""")
+bump = "conventional"
+
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
+""" + _OCI_RUN_TESTS)
     _, projects, *_ = cli.load_config(cfg)
-    assert projects["p"].steps == {}
+    assert set(projects["p"].steps) == {"run-tests", "build", "push"}
     assert projects["p"].artifacts == ("oci-image",)
-    assert cli._builtin_step_command(projects["p"], "build", tmp_path) is not None
-    assert cli._builtin_step_command(projects["p"], "push", tmp_path) is not None
 
 
-def test_oci_project_repack_config_fails_closed(tmp_path):
+def test_project_oci_table_is_rejected_as_inert_configuration(tmp_path):
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
-[project.p]
 prefix = "p-v"
 artifacts = ["oci-image"]
-cwd = "p"
-[project.p.version]
+[project.version]
 strategy = "none"
-[project.p.oci]
+[project.oci]
 bake_file = "docker-bake.hcl"
 target = "p"
 repack = true
 repack_target_size = "2GB"
 repack_compression = 9
-""")
 
-    with pytest.raises(ValueError, match="experimental and not production-ready"):
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
+""" + _OCI_RUN_TESTS)
+
+    with pytest.raises(SystemExit) as exc:
         cli.load_config(cfg)
+    assert exc.value.code == 2
 
 
 # ─── find_artifact (generic discovery) ───────────────────────────────────────
@@ -505,87 +483,43 @@ def test_find_built_wheel_alias(tmp_path):
     assert release.find_built_wheel(dist, "pkg-*.whl") == w
 
 
-# ─── tarball built-in step synthesis ─────────────────────────────────────────
-def _tarball_project(tmp_path):
-    """A synthetic tarball project (prefix=myapp-v, cwd=myapp, artifacts=(tarball,))."""
-    return cli.ProjectConfig(
-        name="myapp", env={}, steps={}, prefix="myapp-v", cwd="myapp",
-        artifacts=("tarball",),
-    )
-
-
-def test_builtin_step_command_tarball_push(tmp_path):
-    proj = _tarball_project(tmp_path)
-    push = cli._builtin_step_command(proj, "push", tmp_path)
-    assert push is not None
-    assert "tarball-publish" in push.argv
-    assert "--prefix" in push.argv
-    assert "myapp" in push.argv
-    assert "--glob" in push.argv
-    # glob contains bare prefix and v*.tar.xz pattern
-    glob_idx = push.argv.index("--glob") + 1
-    assert "myapp-v*.tar.xz" == push.argv[glob_idx]
-    assert "--version-file" in push.argv
-    assert "--notes-env" in push.argv
-    assert "MYAPP_RELEASE_NOTES" in push.argv
-
-
-def test_builtin_step_command_tarball_validate(tmp_path):
-    proj = _tarball_project(tmp_path)
-    validate = cli._builtin_step_command(proj, "validate", tmp_path)
-    assert validate is not None
-    assert "tarball-validate" in validate.argv
-    assert "--prefix" in validate.argv
-    assert "myapp" in validate.argv
-
-
-def test_builtin_step_command_tarball_build_is_none(tmp_path):
-    proj = _tarball_project(tmp_path)
-    # tarball has no built-in build
-    assert cli._builtin_step_command(proj, "build", tmp_path) is None
-
-
-# ─── load_config: tarball project validation ─────────────────────────────────
+# ─── explicit tarball-step validation ────────────────────────────────────────
 _BUILD_STEP = """
-[[project.p.steps.build.commands]]
-label = "build tarball"
-argv = ["bash", "scripts/build-artifact.sh"]
-cwd = "p"
+[steps.build]
+quiet = true
+commands = [{ label = "build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." }]
+
+[steps.push]
+quiet = true
+commands = [{ label = "push tarball", argv = ["true"], cwd = "." }]
 """
 
 
-def test_tarball_project_without_build_step_rejected(tmp_path):
-    """A tarball project with no [steps.build] is rejected at config load time."""
+def test_project_without_a_required_release_phase_is_rejected(tmp_path):
+    """Artifact kind never supplies a missing build phase implicitly."""
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
-[project.p]
 prefix = "p-v"
 artifacts = ["tarball"]
-cwd = "p"
-[project.p.version]
+[project.version]
 strategy = "file:VERSION"
-""")
-    with pytest.raises(ValueError, match="define \\[steps"):
+bump = "conventional"
+""" + _RUN_TESTS)
+    with pytest.raises(SystemExit) as exc:
         cli.load_config(cfg)
+    assert exc.value.code == 2
 
 
 def test_tarball_project_with_build_step_loads(tmp_path):
     """A tarball project WITH a [steps.build] loads successfully."""
-    # Create the project cwd so resolve_cwd doesn't fail
-    (tmp_path / "p").mkdir()
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
-[project.p]
 prefix = "p-v"
 artifacts = ["tarball"]
-cwd = "p"
-[project.p.version]
+[project.version]
 strategy = "file:VERSION"
-""" + _BUILD_STEP)
+bump = "conventional"
+""" + _BUILD_STEP + _RUN_TESTS)
     _, projects, *_ = cli.load_config(cfg)
     assert projects["p"].artifacts == ("tarball",)
     assert "build" in projects["p"].steps
-    # push and validate are built-in
-    assert cli._builtin_step_command(projects["p"], "push", tmp_path) is not None
-    assert cli._builtin_step_command(projects["p"], "validate", tmp_path) is not None
-    assert cli._builtin_step_command(projects["p"], "build", tmp_path) is None

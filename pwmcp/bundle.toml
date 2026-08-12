@@ -10,7 +10,7 @@ version_env = "PWMCP_VERSION"
 
 [copy]
 # Consumer-facing stack files only. Maintainer-only files (Dockerfile, docker-bake.hcl,
-# cmru.build.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
+# cmru.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
 #
 # NOT vendored: ciu.global.defaults.toml.j2 / ciu.global.toml.j2. Those carry
 # standalone_root=true and are the image SOURCE's OWN build-test ciu root — shipping

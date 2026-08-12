@@ -1,0 +1,52 @@
+schema_version = 1
+
+# Estate-only coordination. Every project owns its own release/build/test
+# contract in <project>/cmru.toml and remains runnable after being moved into a
+# fresh repository root.
+[orchestration]
+project_order = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_projects = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_steps = ["run-tests", "build", "push"]
+execution_mode = "project-first"
+# Authentication is selected deliberately, never inferred from the first project
+# in release order. The selected project may hold a gitignored cmru.secret.toml;
+# $GITHUB_PUSH_PAT remains the preferred estate-wide credential source.
+auth_project = "ciu"
+
+[orchestration.project.ciu]
+config = "ciu/cmru.toml"
+depends_on = []
+
+[orchestration.project.cmru]
+config = "cmru/cmru.toml"
+depends_on = []
+
+[orchestration.project.nyxloom]
+config = "nyxloom/cmru.toml"
+depends_on = ["cmru"]
+
+[orchestration.project.assay]
+config = "assay/cmru.toml"
+depends_on = ["cmru"]
+
+[orchestration.project.topos]
+config = "topos/cmru.toml"
+depends_on = ["cmru"]
+
+[orchestration.project.modern-debian-tools-python-debug]
+config = "modern-debian-tools-python-debug/cmru.toml"
+depends_on = ["ciu", "nyxloom"]
+
+[orchestration.project.pwmcp]
+config = "pwmcp/cmru.toml"
+depends_on = ["cmru"]
+
+[orchestration.project.tls-edge]
+config = "tls-edge/cmru.toml"
+depends_on = ["cmru"]
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]

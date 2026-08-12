@@ -34,6 +34,8 @@ import pytest
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 MINIMAL_GITHUB = """
+schema_version = 1
+
 [github]
 owner = "octocat"
 repo = "demo"
@@ -49,12 +51,31 @@ def _minimal_toml(extra_project: str = "") -> str:
     return (
         MINIMAL_GITHUB
         + """
-[project.demo]
+[project]
+id = "demo"
+description = "test installer product"
+template_revision = 2
 prefix    = "demo-v"
 artifacts = ["tarball"]
-cwd       = "demo"
-[project.demo.version]
+[project.version]
 strategy = "file:VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
+
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """
         + extra_project
     )
@@ -71,7 +92,7 @@ def _write(tmp_path: Path, body: str, name: str = "cmru.toml") -> Path:
 class TestInstallerSchema:
     def test_valid_installer_section_accepted(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 asset_suffix       = ".tar.xz"
@@ -80,7 +101,7 @@ preserve           = ["shared/host.toml"]
 manifest_name      = "manifest.json"
 signature_name     = "manifest.json.minisig"
 
-[[project.demo.installer.wheels]]
+[[project.installer.wheels]]
 path         = "vendor/cmru-*.whl"
 distribution = "cmru"
 """)
@@ -103,7 +124,7 @@ distribution = "cmru"
     def test_installer_no_wheels_no_entrypoint(self, tmp_path):
         """tls-edge minimal path: no wheels, no entrypoint."""
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 """)
@@ -117,7 +138,7 @@ install_dir_user   = "demo"
     def test_getsh_key_rejected_exit_2(self, tmp_path):
         """V09: surviving [getsh] key is exit 2."""
         toml = _minimal_toml("""
-[project.demo.getsh]
+[project.getsh]
 install_dir = "/opt/demo-src"
 preserve    = []
 """)
@@ -129,7 +150,7 @@ preserve    = []
 
     def test_missing_required_field_install_dir_system(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_user = "demo"
 """)
         cfg_path = _write(tmp_path, toml)
@@ -140,7 +161,7 @@ install_dir_user = "demo"
 
     def test_missing_required_field_install_dir_user(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 """)
         cfg_path = _write(tmp_path, toml)
@@ -152,7 +173,7 @@ install_dir_system = "/opt/demo"
     def test_unknown_installer_key_rejected(self, tmp_path):
         """V09: unknown key in [installer] is exit 2."""
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 bogus_key          = "should-fail"
@@ -165,11 +186,11 @@ bogus_key          = "should-fail"
 
     def test_unknown_wheel_subkey_rejected(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 
-[[project.demo.installer.wheels]]
+[[project.installer.wheels]]
 path         = "vendor/cmru-*.whl"
 distribution = "cmru"
 extra_field  = "bad"
@@ -182,15 +203,15 @@ extra_field  = "bad"
 
     def test_two_wheels(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 
-[[project.demo.installer.wheels]]
+[[project.installer.wheels]]
 path         = "vendor/cmru-*.whl"
 distribution = "cmru"
 
-[[project.demo.installer.wheels]]
+[[project.installer.wheels]]
 path         = "vendor/ciu-*.whl"
 distribution = "ciu"
 """)
@@ -276,7 +297,7 @@ class TestGenerator:
 
     def test_render_from_config(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 required_commands  = ["python3", "docker"]
@@ -1202,7 +1223,7 @@ class TestGetPyCLI:
 
     def test_getpy_main_to_stdout(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 """)
@@ -1219,7 +1240,7 @@ install_dir_user   = "demo"
 
     def test_getpy_main_to_file(self, tmp_path):
         toml = _minimal_toml("""
-[project.demo.installer]
+[project.installer]
 install_dir_system = "/opt/demo"
 install_dir_user   = "demo"
 """)
@@ -1242,7 +1263,7 @@ install_dir_user   = "demo"
     def test_getpy_getsh_rejected_exit_2(self, tmp_path):
         """cmru get-py with [getsh] config exits 2."""
         toml = _minimal_toml("""
-[project.demo.getsh]
+[project.getsh]
 install_dir = "/opt/demo"
 """)
         cfg_path = _write(tmp_path, toml)

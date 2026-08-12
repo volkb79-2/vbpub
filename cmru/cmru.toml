@@ -1,0 +1,52 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration for portable CMRU projects.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
+PYTHONPATH = "src"
+
+[project]
+id = "cmru"
+description = "Configurable Multi Release Utility."
+template_revision = 2
+prefix = "cmru-v"
+artifacts = ["wheel"]
+scm_dist = "cmru"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "cmru: tester-unified suite", argv = ["python3", "-m", "cmru.tester_gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "cmru: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "cmru: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "cmru", "--cwd", ".", "--notes-env", "CMRU_RELEASE_NOTES"], cwd = "." },
+]

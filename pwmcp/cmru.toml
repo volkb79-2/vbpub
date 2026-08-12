@@ -1,0 +1,65 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+
+[project]
+id = "pwmcp"
+description = "Playwright MCP server OCI image and deployable stack bundle."
+template_revision = 2
+prefix = "pwmcp-v"
+artifacts = ["oci-image", "bundle"]
+
+[project.version]
+strategy = "external:PWMCP_VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "pwmcp.contract.json"]
+artifact_dirs = ["dist"]
+
+[project_metadata.builder]
+name = "pwmcp-governed-v1"
+memory = "4g"
+memory_swap = "12g"
+cpu_shares = 128
+cpu_quota = 400000
+cpu_period = 100000
+
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "pwmcp: resolve and pin publishable Playwright inputs", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "pwmcp: resolver and build-contract tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "pwmcp: build Playwright server image", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+  { label = "pwmcp: build stack bundle", argv = ["python3", "scripts/build-bundle.py"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "pwmcp: push Playwright server image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
+  { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "." },
+]

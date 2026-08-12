@@ -72,7 +72,7 @@ def _project_release_plan(
     prefix = getattr(project, "prefix", None) or f"{name}-v"
     version_cfg = getattr(project, "version", None)
     strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
-    if not getattr(project, "mint_tag", True):
+    if not getattr(project, "git_tag", True):
         return None, None
     if strategy.startswith("external:"):
         variable = strategy.split(":", 1)[1].strip()

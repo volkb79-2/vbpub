@@ -437,11 +437,11 @@ def publish_versioned_variants(
     return result
 
 
-# ─── profile glue (was duplicated across project publish scripts) ─────────────
+# ─── reusable publication glue ────────────────────────────────────────────────
 # These are the per-artifact helpers every wheel project re-implemented (find the
 # built wheel, read its version, assert the published "latest" is well-formed). They
-# now live here once so a project can route through cmru's built-in handlers (see
-# cmru.handlers) instead of carrying its own copy.
+# now live here once so a project can route through cmru.handlers instead of
+# carrying its own copy.
 def _die(message: str) -> None:
     print(f"[ERROR] {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -462,8 +462,8 @@ def find_artifact(directory: Path, glob: str, *, variant: Optional[str] = None,
     """Return the single artifact the build step produced (never rebuilds — a rebuild
     would differ in bytes/version from what was tested). Errors if 0 or >1 match.
 
-    Generic over artifact type (wheel ``.whl``, tarball ``.tar.xz``, …) — every profile
-    can route through this rather than carrying its own discovery logic.
+    Generic over artifact type (wheel ``.whl``, tarball ``.tar.xz``, …) so explicit
+    project commands can reuse discovery logic rather than carrying a copy.
 
     Multi-variant (S-REL.6): when ``variant`` is given, the glob matches are further
     narrowed to the single asset named ``<base>-<variant><suffix>``. This is why a
@@ -517,7 +517,7 @@ def validate_latest_release(
     absorb GitHub's brief releases-list eventual-consistency right after a publish.
 
     Returns ``{version, tag, asset, url, sha256_url}``. Generic over artifact type
-    (wheel ``.whl``, tarball ``.tar.xz``, …) so every profile can reuse it.
+    (wheel ``.whl``, tarball ``.tar.xz``, …) so explicit project commands can reuse it.
     """
     import time
 

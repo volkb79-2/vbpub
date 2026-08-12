@@ -3,12 +3,12 @@
 This document describes how `modern-debian-tools-python-debug` resolves,
 builds, repacks, and publishes its image families, and where each phase consumes
 CPU, memory, swap, and I/O. The release configuration is code: defaults and
-limits live in [`cmru.build.toml`](../cmru.build.toml), not in an operator's
+limits live in [`cmru.toml`](../cmru.toml), not in an operator's
 shell history.
 
 Current registry publication uses OCI media types and forced native zstd level
 3 compression. BuildKit preserves the normal layer topology and attaches max
-provenance plus an SPDX SBOM. These settings live in `cmru.build.toml`. See
+provenance plus an SPDX SBOM. These settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
 between OCI manifests, attestations and MDT's human manifest.
@@ -242,18 +242,19 @@ kill; the number alone does not identify which one.
 
 The repository-wide release entry point is `./cmru.release.sh`; direct MDT
 diagnostics use `./build-push.py --build` or `--rebuild`. Both select unbuffered
-Python. When preserving a transcript, enable `pipefail` so a failed release is
-not mistaken for a successful `tee` process:
+Python. CMRU writes the complete transcript to the stable `cmru.release.log`
+itself (overwriting the prior run by default), while its outer console shows a
+timely phase/result summary. No shell pipeline is needed:
 
 ```bash
-set -o pipefail
-./cmru.release.sh 2>&1 | tee cmru.release.log
+./cmru.release.sh --project modern-debian-tools-python-debug
 ```
 
-Without `pipefail`, the pipeline status is normally `tee`'s status. The log can
-therefore end in `[ERROR]` while the shell reports zero. `stdbuf` is not needed
-for the Python release path; subprocesses that render progress using terminal
-control sequences can still look different in a file than on a TTY.
+Use `--show-run-details` when live Docker/pytest lines are wanted at the outer
+console too. Use `--log-append` to retain prior root transcripts with a `---`
+divider. `stdbuf` is not needed for the Python release path; subprocesses that
+render progress using terminal control sequences can still look different in a
+file than on a TTY.
 
 ## Reading load correctly
 
@@ -301,7 +302,7 @@ Useful live checks:
 # Resolve names from release configuration; do not copy a generated container
 # name from another host or an old run.
 builder=$(python3 -c \
-  'import tomllib; print(tomllib.load(open("cmru.build.toml", "rb"))["env"]["BUILDX_BUILDER"])')
+  'import tomllib; print(tomllib.load(open("cmru.toml", "rb"))["env"]["BUILDX_BUILDER"])')
 builder_container="buildx_buildkit_${builder}0"
 
 # Builder identity, driver and current endpoint
@@ -326,7 +327,7 @@ systemctl show dev-interactive.slice dev-background.slice \
 Run the name-resolution commands from the
 `modern-debian-tools-python-debug` directory. The generated container name is
 an implementation detail of the Docker-container driver; the configured
-builder name in `cmru.build.toml` is the durable interface used by the release
+builder name in `cmru.toml` is the durable interface used by the release
 scripts.
 
 Run the `ps` and `systemctl` checks on the host. A container commonly has a
@@ -412,7 +413,7 @@ while repack validation is blocked.
 ## Configuration and prerequisites
 
 The governed defaults are in the `[env]` table of
-[`cmru.build.toml`](../cmru.build.toml):
+[`cmru.toml`](../cmru.toml):
 
 - `BUILDX_BUILDER` and `MDT_BUILDER_*` control the BuildKit worker.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,

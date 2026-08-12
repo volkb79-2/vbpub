@@ -16,7 +16,7 @@ SPEC.loader.exec_module(build_push)
 
 
 def test_load_builder_config(tmp_path: Path) -> None:
-    config_path = tmp_path / "cmru.build.toml"
+    config_path = tmp_path / "cmru.toml"
     config_path.write_text(
         """[project_metadata.builder]
 name = "test-builder"
@@ -45,7 +45,7 @@ def test_docker_size_bytes(value: str, expected: int) -> None:
 
 
 def test_missing_builder_setting_is_fatal(tmp_path: Path) -> None:
-    config_path = tmp_path / "cmru.build.toml"
+    config_path = tmp_path / "cmru.toml"
     config_path.write_text("[project_metadata.builder]\nname='incomplete'\n", encoding="utf-8")
 
     with pytest.raises(SystemExit):

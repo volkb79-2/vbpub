@@ -1,0 +1,51 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+CMRU_RELEASE_NOTES = "## topos wheel\n\nHost pressure inspector and cgroup forensics console.\n\n**Install**\n```bash\npipx install topos-*.whl\n```"
+
+[project]
+id = "topos"
+description = "Host pressure inspector and cgroup forensics console."
+template_revision = 2
+prefix = "topos-v"
+artifacts = ["wheel"]
+scm_dist = "topos"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "topos: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=src:. ; /opt/tester-venv/bin/python -m pytest tests -q -n auto"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "topos: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "topos: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
+]

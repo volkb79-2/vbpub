@@ -1,5 +1,11 @@
 # SPEC A — CMRU Installer Contract v2 (`get.py`)
 
+> Historical, superseded proposal. It predates CMRU's strict configuration
+> split and refers to retired root `cmru.toml`/sample layouts. It is retained as
+> design history only; do not implement its migration instructions. The current
+> contract is [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) and the portable
+> project template is [`cmru.project.sample.toml`](../cmru.project.sample.toml).
+
 | | |
 |---|---|
 | **Spec ID** | A |
@@ -7,7 +13,7 @@
 | **Owns** | Seam 1 — installer config schema + project-adapter invocation contract |
 | **Depends on** | Seam 3 — release manifest JSON (SPEC B, `vbpub/docs/spec-cmru-bundle-manifest-sign.md`) |
 | **Consumed by** | SPEC F (dstdns adapter + release product), SPEC G (agent installs via this library) |
-| **Status** | Ready to implement |
+| **Status** | Superseded — design history only |
 | **Master plan** | `/workspaces/dstdns/docs/plan-cmru-remote-deployment.md` (v2) — §3.3, §6 (A), §8 |
 
 > This doc is self-contained. You do **not** need the master plan to implement it, but §8

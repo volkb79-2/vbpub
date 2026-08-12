@@ -123,18 +123,17 @@ ciu up --profile <host-profile>                  # orchestrate many
 
 `ciu --help` and `ciu <verb> --help` list the public commands and their options.
 
-## Release: driven by cmru's built-in wheel handlers
+## Release: portable CMRU project contract
 
-ciu is a standard Python wheel project, so the parent **cmru** pipeline builds,
-publishes, and validates it with its **built-in wheel handlers** — ciu carries **no
-release scripts of its own**. The repo-root `cmru.toml` declares
-`[project.ciu] artifacts = ["wheel"]` with only two ciu-specific inputs: the test
-command and `CIU_RELEASE_NOTES` (see [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md)
-and [`../cmru/README.md`](../cmru/README.md) → *Built-in profiles*).
+[`cmru.toml`](cmru.toml) travels with CIU. It declares CIU's identity, SemVer policy,
+automatic `CHANGES.md`, tester-unified gate, explicit wheel build command, and explicit
+wheel publication command. CMRU owns the isolated release transaction; CIU owns the commands
+and consumer behavior. `artifacts = ["wheel"]` records the released output—it does not select
+hidden behavior (see [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md)).
 
 ```bash
-cmru release --project ciu     # run-tests (ciu) → build → publish → validate (built-in)
-cmru build   --project ciu     # build the wheel only (cmru built-in)
+cmru release --project ciu     # gate → tag → explicit build → explicit publish
+cmru build   --project ciu     # retained worktree: gate + wheel build, no publish
 cmru resolve --project ciu     # resolve the current latest (version / url / sha256)
 ```
 
@@ -148,7 +147,7 @@ venv result is not a release signal.
 
 ### Release scheme
 
-The built-in handler routes through the shared `cmru` release host
+The explicit wheel-publish command routes through the shared `cmru` release host
 (`cmru/src/cmru/release.py`), which enforces a uniform scheme across the monorepo:
 
 - **Dev build** (`5.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer

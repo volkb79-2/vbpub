@@ -135,7 +135,7 @@ python3 build-push.py --build
 GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> python3 build-push.py --push
 ```
 
-`build-push.py` reads `[project_metadata.builder]` from `cmru.build.toml`, creates or repairs the
+`build-push.py` reads `[project_metadata.builder]` from `cmru.toml`, creates or repairs the
 named `docker-container` BuildKit builder, verifies the applied Docker limits,
 and passes that builder explicitly to Bake. The defaults permit 4 GiB RAM,
 12 GiB combined RAM+swap (therefore up to 8 GiB swap), and four CPUs. Edit the

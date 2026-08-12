@@ -1,0 +1,30 @@
+# Assay consumer template — copy to <your-project>/assay.toml, then replace every fact.
+# A lane declares exactly what it can prove; do not claim R1/R2/R3 until the
+# required coverage/mutation/canary contract and its dedicated gate are real.
+schema_version = 1
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
+env = {}
+env_passthrough = []
+budget = "20m"
+allow_argv_append = false
+
+# To adopt changed-line coverage, change the command to emit coverage JSON and
+# declare R1 plus this judge. Keep the artifact under an ignored directory.
+#
+# [lanes.unit]
+# rigor = ["R0", "R1"]
+# argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=your_package", "--cov-report=json:.assay/coverage.json"]
+# [lanes.unit.judge]
+# language = "python"
+# source_roots = ["src"]
+# fail_under = 100.0
+# allow_excluded = false
+# base = "origin/main"
+# [lanes.unit.judge.coverage]
+# format = "coverage-py-json"
+# artifact = ".assay/coverage.json"

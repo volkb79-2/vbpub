@@ -39,11 +39,11 @@ second one; there is no override for the first (push your commits instead).
 
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
-audit log and stable `logs/<project>/<step>.log` files in the caller checkout;
-use `--show-run-details` to stream raw child output to the terminal too. It copies
-the optional `cmru.secret.toml` overlay into
-that worktree with mode `0600`; the copy is removed with a successful
-worktree and is never staged.
+audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
+`--show-run-details` to stream raw child output to the terminal too. It copies only
+the selected project-local `<project>/cmru.secret.toml` overlay(s) into that worktree
+with mode `0600`; those copies are removed with a successful worktree and are never
+staged. The retired repository-root secret overlay is not read.
 
 The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
@@ -56,7 +56,16 @@ can be inspected, deliberately corrected, re-gated, and resumed there:
 ```
 
 Do not copy generated files back into the caller's dirty checkout. A successful
-transaction removes the ephemeral branch/worktree.
+transaction removes the ephemeral branch/worktree by default. Add
+`--retain-logs-on-release` to move logs into
+`<project>/logs/cmru-release/<immutable-id>/`, or
+`--retain-artifacts-on-release` to move explicitly declared artifact directories into
+`<project>/artifacts/<immutable-id>/` with a `release.json` SHA-256 inventory before
+the worktree is removed.
+
+`cmru build` uses the same fetched snapshot but stops after build and always retains a
+separate `cmru/build/<id>` worktree. Its logs and outputs remain there; CMRU never
+copies an unapproved build artifact back into the caller checkout.
 
 > **Current recovery limit:** a post-tag publication failure is not an automatic retry.
 > Preserve the worktree, the stable logs, and generated provenance; do not assume a plain
@@ -131,7 +140,7 @@ earlier project in the same run succeeded (tags/artifacts are the source of
 truth for that, not the checkpoint).
 
 In every case the worktree/branch is retained for inspection and `--resume`.
-Re-running (the default `--abandon all-previous` behavior) is also safe:
+Starting a fresh release after an explicit `--abandon all-previous` is also safe:
 `detect_changed_projects` is tag-based, so any project that already fully
 released in the failed attempt shows as unchanged on the next run and is
 skipped — only the failed project (now reverted) and anything after it in

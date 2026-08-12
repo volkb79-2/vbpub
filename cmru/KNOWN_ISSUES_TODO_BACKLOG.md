@@ -35,15 +35,14 @@ inside the container went from failing closed-ish (silent `fallback_version`) to
 correctly reporting `ciu-v4.9.0-156-gb57a4fc1`.
 
 ### FEAT-02 — mdt `load` flow: single-build, digest-verified OCI publish — *shipped*
-**Status:** landed (code + tests + spec doc in lockstep). Delegated script only —
-does **not** enable the built-in OCI handler; see `KI-02`.
+**Status:** landed (code + tests + spec doc in lockstep). This is a project-owned
+MDT release command, not an implicit CMRU OCI profile; see `KI-02`.
 **Why:** `RELEASE_IMAGE_FLOW=load` (mdt's default) built the image privately once
 (`--load`) to extract the manifest, then built it **again, independently**
 (`registry_bake()`, `type=registry`) at push time. Nothing compared the two, so the
 manifest committed to `package-manifests-versioned/` documented a different build
-than what actually reached GHCR — a silent build-on-push fallback, exactly what
-`S14.3.6` forbids for the (still-unbuilt) built-in handler, just not yet enforced
-for this delegated script.
+than what actually reached GHCR — a silent build-on-push fallback. The correction
+is project-owned and establishes the evidence an eventual generic command would need.
 **Fix:** `oci_layout_bake()` (`modern-debian-tools-python-debug/scripts/release-bake.sh`)
 builds once to a local OCI layout (`type=oci,dest=...`) per bake target.
 `extract_manifests()` reads the manifest straight out of that layout via
@@ -107,12 +106,15 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ### KI-03 — S2's single strict configuration contract was not used by `release` — *shipped*
 **Status:** resolved as an intentional breaking configuration change. `cli.load_config()` and
-the raw step runner now invoke `config.load_forge_config()` before mapping any values; all
-CMRU verbs therefore use one grammar. Retired `[projects]`, `github.username`, `[registry]`,
-singular `artifact`, `oci` alias, `delegated` strategy/table, `release.toml`, and
-`RELEASE_MANAGER_CONFIG` are rejected/removed rather than warned about. Unknown fields now
-exit 2. The checked-in root configuration and all nine project declarations pass
-`cmru standards`; tests lock the retired-key failure down.
+the raw step runner invoke `config.load_forge_config()` before mapping any values; all CMRU
+verbs therefore use one grammar. A project owns exactly `cmru.toml`; the estate owns exactly
+`cmru.orchestration.toml`. Retired central `[projects]`, `github.username`, `[registry]`,
+singular `artifact`, `[project.oci]`, delegated strategy/table, old config filenames,
+environment-selected config paths, shell sourcing, and aliases are rejected or removed.
+Unknown fields and omitted required release/runner fields exit 2. A committed
+`[github].token` and inert `[project.publish]`/`[project.resolve]` tables are rejected too.
+The checked-in estate and
+the standalone empyrion declaration pass `cmru standards`; tests lock failures down.
 
 ### KI-04 — S7 delegated-tool configuration is unreachable and has incompatible shapes — *open*
 **Status:** S2/S7 now deliberately reject the unimplemented config surface; no release can
@@ -146,9 +148,10 @@ path until its security policy is a concrete reviewed project contract. Then eva
 minisign as a separate artifact/installer change; do not bundle both into one generic switch.
 
 ### KI-05 — S-CLI.4 legacy configuration support remained in the runtime — *shipped*
-**Status:** resolved as part of KI-03. CMRU now accepts only `cmru.toml` / `CMRU_CONFIG` and
-canonical S2 names. The remaining estate use of the retired `pwmcp/build-push.toml` filename
-was migrated into `pwmcp/cmru.build.toml`; no CMRU runtime fallback remains.
+**Status:** resolved as part of KI-03. CMRU accepts only a current-directory `cmru.toml` or
+an explicit `--config` path to `cmru.toml` / `cmru.orchestration.toml`. Every project migrated
+from `cmru.build.toml` to `cmru.toml`; there is no alternate parser, sourceable configuration,
+environment config override, or compatibility alias in the release path.
 
 ### KI-06 — Durable post-tag publication resume — *open; scoped deliberately*
 **Status:** the documented promise was narrowed to current behavior: `--resume` is useful for
@@ -183,56 +186,65 @@ be more dangerous than a fresh release.
 MDT’s OCI layout/digest contract; do not promise a universal resume mechanism first.
 
 ### KI-07 — Runner log location conflicted with S3.4 — *shipped*
-**Status:** resolved. Every runner step now writes a line-flushed stable
-`logs/<project>/<step>.log`, overwriting by default and inserting `\n---\n` with
-`--log-append`. Transaction children inherit the caller checkout’s log root, so successful
-worktree cleanup cannot erase them. `cmru.release.sh` also creates/overwrites the full
-`cmru.release.log`; `--show-run-details` restores raw console flow without duplicating that
-transcript.
+**Status:** resolved. Every runner step writes a line-flushed project-local
+`<project>/logs/cmru/<step>.log`, overwriting by default and inserting `\n---\n` with
+`--log-append`. In a transaction that path is inside the retained worktree, so a failed
+release or a normal `cmru build` is self-contained for debugging. Successful releases remove
+it with the worktree unless `--retain-logs-on-release` moves it project-side. The root wrapper
+also creates/overwrites the full `cmru.release.log`; `--show-run-details` restores raw console
+flow without duplicating that transcript.
 
-### KI-08 — S4 overstates what the `cmru publish` verb implements — *open*
-**Status:** specification/code mismatch. **SPEC:** `S4.1`–`S4.4`.
-**Evidence:** the CLI's `publish` verb selects each project's `push` step and runs it;
-it does not itself discover an artifact, calculate a sidecar, create a Release, or update
-`latest.json`. Those actions occur only when the selected project uses a built-in handler or
-when its project-owned push command implements them. This follows S-REL.3's project-owned
-artifact mechanics, but contradicts the unconditional language in S4.1–S4.4.
-**Decision required:** either make a generic publish profile/config truly own those operations,
-or scope S4's MUSTs to the built-in wheel/tarball handlers and describe custom push commands
-as responsible for equivalent publication guarantees. Do not silently make arbitrary custom
-projects publish from guessed `dist/` paths.
+### KI-08 — S4 overstates what the `cmru publish` verb implements — *shipped*
+**Status:** SPEC S4 now matches the intentional implementation. `cmru publish` fail-fast
+checks the publication credential and runs the declared project `push` step. It does not
+guess artifact paths or invent a host operation. CMRU's explicit wheel/tarball command
+library implements the GitHub Release + checksum convention; another project-owned publisher
+must provide equivalent consumer-verifiable evidence itself.
 
-### KI-09 — S3.2's runner-config example does not match the implemented grammar — *open*
-**Status:** specification/code mismatch, raised rather than silently papered over.
-**Evidence:** `runner.parse_step()` implements `bake_set_prefix`, `bake_set_vars`,
-`no_cache_env`, and list-valued `env_command`; S3.2 currently documents incompatible
-`bake_set`, `bake_targets`, boolean `no_cache`, and a shell-string `env_command`. The strict
-runner validation added with KI-03 rejects those non-implemented forms before executing a
-project step.
-**Decision required:** either promote the S3.2 example's higher-level controls into a real,
-tested runner feature (including a safe shell/no-shell decision for environment loading), or
-amend S3.2 to the current explicit argv/list grammar and remove those unimplemented claims.
-Do not add aliases: that would recreate the compatibility surface KI-05 removed.
+### KI-09 — S3.2's runner-config example did not match the implemented grammar — *shipped*
+**Status:** SPEC S3.2 now documents only the validated grammar: `bake_set_prefix`,
+`bake_set_vars`, `no_cache_env`, and argv-valued `env_command`. There is no shell-string
+environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
-### KI-02 — Built-in OCI repack is disabled pending production equivalence — *fail-closed*
+### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
+**Evidence:** `cmru build` correctly creates and retains an isolated
+`cmru/build/<id>` worktree, runs its gate/build phases there, and deliberately does
+not copy unapproved artifacts into the caller checkout. `cmru publish`, by contrast,
+runs the project's declared `push` step in the caller checkout. Consequently the
+seemingly natural sequence `cmru build --project X` then `cmru publish --project X`
+does not publish the reviewed build; it finds no artifact or can publish a different
+caller-side artifact.
+
+**Current safe workflow:** use `cmru release`, whose one source-first transaction
+performs gate → tag policy → build → push in one worktree. `cmru build` is a
+diagnostic/inspection verb, not a pre-publication staging verb.
+
+**Decision required:** either keep `publish` as a low-level caller-worktree command
+and make that non-composability explicit (recommended for now), or design a
+`publish --worktree <path>` / immutable build-record protocol. The latter must bind
+the retained worktree, source SHA, artifact digests, gate evidence, and remote
+publication idempotency; copying `dist/` back merely to make the command chain work
+would defeat the isolation rule. Do not auto-fix this as a convenience alias.
+
+### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
-**SPEC:** `S14.3`, `V21`.
+**SPEC:** `S14`.
 **Symptom:** the prototype used shared `/tmp/oci-src` and `/tmp/oci-dst` paths, blurred
 OCI layout-directory and archive/build-context semantics, and its push branch could
 fall back to a second bake rather than proving that the validated repacked artifact
 was the object published.
-**Guard:** `[project.X.oci].repack = true` and direct built-in `--repack` invocations
-fail with exit 2 before authentication, Docker execution, or scratch mutation. Normal
-non-repack OCI builds and pushes are unaffected.
+**Guard:** direct CMRU command-library `--repack` invocations fail with exit 2 before
+authentication, Docker execution, or scratch mutation. `[project.oci]` was removed because
+it did not drive execution. Normal explicit OCI build and push commands are unaffected.
 **Enablement gate:** unique scratch lifecycle; explicit OCI tar/layout handling;
 governed builder resources and concurrency; structural plus runtime validation; final
-registry digest verification; and ideally a single-build flow. See `S14.3` for the
-normative definition of done.
+registry digest verification; and ideally a single-build flow. See `S14` for the
+current command-library boundary.
 **Related:** `FEAT-02` validates the single-build + digest-verification mechanism
 (`type=oci` layout build → `crane push` the layout directly → `crane digest`/`regctl
-manifest digest` equality check) end-to-end against a real registry, for mdt's
-*delegated* script. The same mechanism is a candidate building block for eventually
-closing this item for the built-in handler — it is not itself that closure.
+manifest digest` equality check) end-to-end against a real registry, for MDT's
+project-owned script. The same mechanism is a candidate building block for an eventual
+evidence-complete CMRU command; it is not itself that closure.
 
 ### KI-01 — GHCR package visibility cannot be set via API (platform limitation) — *worked around*
 **Status:** worked around (cmru no longer fails the release); full automation is upstream-blocked.

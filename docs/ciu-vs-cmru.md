@@ -24,7 +24,7 @@ Two tools in this monorepo both "build things," which invites confusion. They si
 | Audience | this host (dev or deploy) | external consumers (Releases page / ghcr) |
 | Lifecycle | build → run | version → tag → build → publish |
 | Git | none — it acts on the deployed-to state | authoritative — tags, commits, `latest.json` |
-| Config | stack manifests (`ciu.*.j2`, host profiles) | `cmru.toml` + per-project `cmru.build.toml` |
+| Config | stack manifests (`ciu.*.j2`, host profiles) | per-project `cmru.toml` + optional root `cmru.orchestration.toml` |
 | Verbs | `env` `render` `up` `down` `health` `bake` `dev` `secrets` | `status` `release` `build` `publish` `resolve` `cleanup` |
 | dstdns uses | ✅ `bake` + `up` + `dev` | ❌ never (it's a consumer, not a producer) |
 
@@ -35,8 +35,8 @@ build definition** (`docker-bake.hcl`) and **two terminal actions** over it:
 
 - `ciu bake [targets]` → `docker buildx bake --load` → image lands in the local daemon so
   `ciu up` / `ciu dev` can **run** it.
-- cmru's `oci-image` profile → build the same targets → **push** to ghcr (+ commit
-  manifests). No run.
+- an explicit CMRU project `build`/`push` contract → build the same targets → **push**
+  to ghcr (+ commit manifests, when the project declares them). No run.
 
 Same inputs → **bit-identical image** → "build locally to get the same image we publish, so
 no surprises in prod" is **guaranteed by construction**, not hoped for.
@@ -62,19 +62,18 @@ secrets, host-aware paths, multi-stack/multi-host). Relevant build verbs:
 
 ## cmru in detail (outer loop)
 
-cmru is the **release orchestrator** for a monorepo of independently-versioned products
-sharing one GitHub Releases page. It owns the generic git/host mechanics (tags, commits,
-Releases, ghcr pruning, the per-product `latest.json` pointer) and calls each project's
-`build`/`push`/`clean` steps — or, for standard profiles, its **own built-in handlers** (see
-[`cmru/README.md`](../cmru/README.md) → *Built-in profiles*). Two-axis model:
-**versioning** (`scm | counter | file | delegated | none`) × **publish profile**
-(`wheel | bundle | tarball | oci-image`). See [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md)
-*S-REL*.
+cmru is the **release orchestrator** for independently-versioned products sharing one
+GitHub Releases page. It owns generic source mechanics (isolated worktrees, generated
+history, declared generated-source commits, optional tags) and executes each portable
+project's explicit `prepare`, `run-tests`, selected `build_step`, and `push` commands.
+`artifacts = [...]` is an output inventory, not a behavior profile. Its small command library
+can be composed explicitly for wheel/tarball/normal OCI operations; it never replaces a
+project's declared command. See [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) *S-REL*.
 
-- **`cmru build --project X`** runs X's *release* build (the publishable artifact) — **not**
-  a local dev image. It's the "dry build" a release author runs; distinct from `ciu dev`
-  (run the app). For an `oci-image` project that build *is* a docker build, but as the
-  release artifact destined for ghcr.
+- **`cmru build --project X`** creates a retained isolated `cmru/build/<id>` worktree and
+  runs X's `prepare` (if declared), release gate, and explicit `build_step`—never `push`.
+  It is a release-contract diagnostic, not a local dev image. Its logs and artifacts stay in
+  that worktree; the console names the exact location.
 
 ## Worked examples
 
@@ -82,14 +81,14 @@ Releases, ghcr pruning, the per-product `latest.json` pointer) and calls each pr
   run the stack**, never released. → **ciu only** (`ciu bake all-services` → `ciu up`;
   `ciu dev <stack>` for HMR). The React app's extra build step is a multi-stage step **inside**
   `applications/webapp-ui-react/Dockerfile`, driven by `ciu bake`. **No cmru** — until/unless
-  one of those images is published to ghcr for outside consumers, at which point *that* image
-  gets a cmru `oci-image` entry in `cmru.toml`.
-- **modern-debian-tools-python-debug (mdt)** — the deliverable *is* the ghcr image(s). →
-  **cmru `oci-image` profile**: build the bake targets, push to ghcr, commit the regenerated
-  manifests. **No git tag, no GitHub Release** (the version is the image tag / `BUILD_DATE`).
-- **ciu / cmru themselves** — Python wheels. → **cmru `wheel` profile** (semver tag + GitHub
-  Release + `latest.json`). cmru dogfoods its own built-in wheel handler (zero release
-  scripts).
+  one of those images is published to ghcr for outside consumers, at which point that product
+  gets a portable `cmru.toml` with explicit image build/push steps.
+- **modern-debian-tools-python-debug (mdt)** — the deliverable *is* the ghcr image(s). Its
+  explicit CMRU contract prepares one digest-verified OCI layout, commits regenerated
+  manifests, and pushes it. `git_tag = false`; image identity is project-owned.
+- **ciu / cmru themselves** — Python wheels. Their project contracts explicitly compose the
+  CMRU wheel build/publish commands, yielding SemVer tags, GitHub Releases, checksums, and
+  `latest.json` without a private release implementation.
 
 ## Frequently confused
 
@@ -102,7 +101,7 @@ Releases, ghcr pruning, the per-product `latest.json` pointer) and calls each pr
 
 ## See also
 
-- [`cmru/README.md`](../cmru/README.md) — cmru's model, verbs, built-in profiles.
+- [`cmru/README.md`](../cmru/README.md) — cmru's model, verbs, command library, and templates.
 - [`docs/RELEASE-TOOLING.md`](RELEASE-TOOLING.md) — cmru file/verb overview.
 - [`ciu/README.md`](../ciu/README.md), `ciu/docs/SPEC.md` (S5a `dev`) — ciu's surface.
 - [`docs/plan-cmru-release-modes.md`](plan-cmru-release-modes.md) — the release-modes design.

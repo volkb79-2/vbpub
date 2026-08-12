@@ -389,25 +389,20 @@ bash scripts/verify.sh
 
 ## Cutting a release
 
-`scripts/release.sh` handles the full release pipeline in one step:
+`scripts/release.sh` is a thin project-local entry point to CMRU's complete
+source-first transaction: isolated worktree, generated history, gate, `VERSION`
+commit, tag, tarball build, checksum publication, and cleanup. It does not carry
+a second tag/build/publish implementation.
 
-1. Validates git state (on `main`, clean working tree, tag not taken)
-2. Updates `VERSION`, commits, creates annotated tag `tls-edge-v<version>`
-3. Runs `scripts/build-artifact.sh` to package `dist/tls-edge-v<ver>.tar.xz`
-4. Runs `scripts/publish-release.py` to create the GitHub Release with the
-   artifact + `.sha256` sidecar, and refreshes the `tls-edge-latest` pointer
-
-Credentials for the publish step are read from (in priority order):
-environment → `cmru.secret.toml [github].token` → `cmru.toml [github]`.
+CMRU resolves credentials from `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` or this project's
+ignored `cmru.secret.toml [github].token`; a committed credential is rejected.
 
 ### Standalone (simplest)
 
 ```bash
 bash tls-edge/scripts/release.sh 0.2.0
-# → bumps VERSION, commits, tags, builds artifact, publishes release
-# → prints the push command when done
-
-git push origin main tls-edge-v0.2.0
+# → isolated CMRU transaction: gate, commits VERSION + CHANGES, tags, builds,
+#   publishes, and synchronises main
 ```
 
 Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
@@ -415,14 +410,9 @@ Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
 ### Via cmru (consistent with other vbpub projects)
 
 ```bash
-echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/cmru.vars
-./cmru.publish.sh --project tls-edge   # run from the repo root
-# → runs scripts/release.sh, same outcome as above
-
-git push origin main tls-edge-v0.2.0
+./cmru.release.sh --project tls-edge --set-version 0.2.0
+# → same declared project contract, with the root audit log
 ```
-
-`cmru.vars` is gitignored; remove it after the release.
 
 ### What happens after publish
 

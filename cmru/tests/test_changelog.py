@@ -28,7 +28,7 @@ def _project() -> SimpleNamespace:
         cwd="demo",
         paths=["demo"],
         prefix="demo-v",
-        mint_tag=True,
+        git_tag=True,
         changelog="CHANGES.md",
         version=SimpleNamespace(strategy="scm", bump="conventional"),
     )
@@ -40,7 +40,7 @@ def _image_project() -> SimpleNamespace:
         cwd="image",
         paths=["image"],
         prefix="image-v",
-        mint_tag=False,
+        git_tag=False,
         changelog="CHANGES.md",
         commit_generated=(),
         version=SimpleNamespace(strategy="none", bump="conventional"),

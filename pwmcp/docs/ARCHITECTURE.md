@@ -103,7 +103,7 @@ See [SECURITY.md](SECURITY.md) for the host-allowlist gap analysis.
 ### Build execution boundary
 
 The release plane is separate from the runtime container. `build-push.py`
-selects the named BuildKit `docker-container` builder from `cmru.build.toml` and
+selects the named BuildKit `docker-container` builder from `cmru.toml` and
 verifies its memory, combined memory+swap, CPU-share, and CPU-quota settings
 before Bake runs. Build executors therefore appear as descendants of the
 `buildx_buildkit_pwmcp-governed-v10` container cgroup under `system.slice`.

@@ -1,0 +1,59 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\n\nEdge proxy and TLS termination stack for vbpub infrastructure.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
+
+[project]
+id = "tls-edge"
+description = "Edge proxy and TLS termination stack."
+template_revision = 2
+prefix = "tls-edge-v"
+artifacts = ["tarball"]
+
+[project.version]
+strategy = "file:VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[project.installer]
+install_dir_system = "/opt/tls-edge"
+install_dir_user = "tls-edge"
+asset_suffix = ".tar.xz"
+required_commands = ["python3", "docker"]
+preserve = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
+manifest_name = "manifest.json"
+signature_name = "manifest.json.minisig"
+wheels = []
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "tls-edge: standalone render validation", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "tls-edge: publish tarball", argv = ["python3", "-m", "cmru.handlers", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES"], cwd = "." },
+]

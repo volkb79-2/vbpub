@@ -12,14 +12,16 @@ One config, one CLI, `cmru.*`-named files. The normative contract is
 
 | File | Tracked? | Purpose |
 |---|---|---|
-| [`cmru.toml`](../cmru.toml) | committed | The one config: github, targets, orchestration, projects. **No secrets.** |
-| `cmru.secret.toml` | gitignored | Token overlay: `[github] token = "…"` (or use `$GITHUB_PUSH_PAT`). |
-| [`cmru.sample.toml`](../cmru.sample.toml) | committed | Template for `cmru.toml`. |
-| `<project>/cmru.build.toml` | committed | Per-project step config a project's build script consumes. |
+| `cmru.orchestration.toml` | committed | Estate selection, dependency order, cleanup, and explicit credential project. No project commands. |
+| `<project>/cmru.secret.toml` | gitignored | Project-local token overlay: `[github] token = "…"` (or use `$GITHUB_PUSH_PAT`). |
+| [`cmru.project.sample.toml`](../cmru.project.sample.toml) | committed | Template for a portable project `cmru.toml`. |
+| `<project>/cmru.toml` | committed | Complete project release and step contract. |
+| [`cmru.orchestration.toml`](../cmru.orchestration.toml) | committed | Estate order/dependencies/cleanup only. |
 | `<project>/cmru.vars` | gitignored | Generated `KEY=VALUE` build vars passed between steps. |
 | `cmru.py` / `cmru.*.sh` | committed | Entry point + discoverable per-verb shims. |
 
-Token resolution (SPEC S2.4): `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN` → `cmru.secret.toml` → never `cmru.toml`.
+Token resolution (SPEC S2.4): `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN` → project-local
+`cmru.secret.toml`; a committed `cmru.toml` credential is rejected.
 
 ## Workflow
 
@@ -28,8 +30,8 @@ Token resolution (SPEC S2.4): `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN` → `cmru.secre
 ./cmru.release.sh                      # one-shot: detect → tag → push → build → publish
 ./cmru.release.sh --dry-run            # preview tags, no writes
 ./cmru.changelog.sh --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-./cmru.build.sh   --project cmru       # build artifact only
-./cmru.publish.sh --project cmru       # upload artifact + .sha256
+./cmru.build.sh   --project cmru       # retained isolated gate + build_step; no publish
+./cmru.publish.sh --project cmru       # run the declared push step
 ./cmru.cleanup.sh --remove-assets 30d  # prune old releases/GHCR versions
 ./cmru.py --help                       # all verbs
 ```
@@ -52,18 +54,17 @@ backfill command when a tag predates this policy.
 
 ## Auto-released set vs. on-demand
 
-`orchestration.project_order` in `cmru.toml` lists what `status`/`release` act on:
+`orchestration.project_order` in `cmru.orchestration.toml` lists what `status`/`release` act on:
 **ciu, cmru, nyxloom, assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge**.
 Empyrion translation remains delegated and on-demand:
 
-- **empyrion-translation** — date-tagged game asset; `./cmru.build.sh`/`./cmru.publish.sh --project empyrion-translation`.
+- **empyrion-translation** — portable on-demand project contract; invoke from its directory,
+  or add it to orchestration only after reviewing its release policy.
 
 ## Notes
 
-- GitHub credentials come from env or `cmru.secret.toml`, never committed.
+- GitHub credentials come from env or the selected project's `cmru.secret.toml`, never committed.
 - The pipeline is config-driven; no project logic is hardcoded in the orchestrator.
-- **Legacy status:** the pre-cmru `release-manager/` package and the
-  `release-all.py` / `release-runner.py` shims are gone. A runtime fallback for
-  `release.toml` still exists, however; it conflicts with the stricter S-CLI.4 claim
-  and is tracked as [CMRU KI-05](../cmru/KNOWN_ISSUES_TODO_BACKLOG.md#ki-05--s-cli4-says-legacy-release-configuration-is-removed-while-the-runtime-preserves-it--open).
-  New projects must use `cmru.toml`.
+- **Strict configuration:** CMRU accepts only a project `cmru.toml` or an explicit
+  `cmru.orchestration.toml` selected with `--config`. Old config filenames, aliases, and
+  shell-sourced runner settings are rejected.

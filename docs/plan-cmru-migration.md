@@ -1,5 +1,9 @@
 # Plan: migrate all of vbpub fully to cmru
 
+> Historical migration record. It predates the project-local `cmru.toml` /
+> root `cmru.orchestration.toml` split and the removal of implicit profiles. The
+> normative current contract is [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md).
+
 **Status:** APPROVED 2026-06-18 — full migration P1–P5, then release ALL products.
 Naming locked: every user-facing file is `cmru.*` (see SPEC S-CLI). Spec written first.
 **Date:** 2026-06-18.

@@ -16,8 +16,8 @@ touches is named `cmru.*` so the association is unambiguous.
 ```
 cmru status                 # 1. preview: what changed + the next version (read-only)
 cmru release                # 2. isolated transaction: prepare → gate → integrate → tag → build → publish
-   ├─ cmru build            #    (same two steps, split out: artifact only)
-   └─ cmru publish          #    (upload artifact + .sha256 to the release)
+   ├─ cmru build            #    retained transaction: prepare → gate → build_step only
+   └─ cmru publish          #    run an explicit project's push step
 cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
 
@@ -28,9 +28,10 @@ cmru run-step --config C --step S  # raw single-step runner (rarely needed)
 ```
 
 **S-CLI.1** `release` is the normal path. A failed transaction retains its worktree for
-inspection; `--resume <worktree>` is an explicit continuation of a **pre-tag** failure only.
-cmru MUST NOT silently reuse, move, or republish an existing tag. Durable post-tag
-publication recovery is not implemented; see KI-06.
+inspection; `--resume <worktree>` is an explicit attempt to continue that exact retained
+source transaction, not a durable publish-phase retry. cmru MUST NOT silently reuse, move,
+or republish an existing tag. Durable post-tag publication recovery is not implemented; see
+KI-06.
 
 **S-CLI.2** `status` and `release` MUST operate only on the orchestrated set
 (`orchestration.project_order`); a project is released only once it is listed there.
@@ -150,9 +151,9 @@ attempt's gates ran, if at all, before promote, so there is nothing there to und
 abandons every retained worktree whose recorded project scope overlaps this run's — `--project X`
 narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
 retained before this feature existed (no recorded scope) are left for an explicit `--abandon
-<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru.release.sh` passes
-`--abandon all-previous` by default unless the caller already passed `--resume` or `--abandon`
-themselves, so routine use always starts clean without extra flags.
+<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru.release.sh` never abandons
+a failed worktree implicitly: inspect it, resume it explicitly when appropriate, or explicitly
+request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
 
 The secret overlay is copied mode `0600`, never committed.
 
@@ -160,11 +161,11 @@ The secret overlay is copied mode `0600`, never committed.
 
 | File | Tracked? | Purpose |
 |---|---|---|
-| `cmru.toml` | committed | The one config (S2 schema): github, targets, orchestration, projects. **No secrets.** |
-| `cmru.secret.toml` | gitignored | Token only: `[github] token = "…"`. Optional — env wins (see S2.4). |
-| `cmru.sample.toml` | committed | Template for `cmru.toml` (no secrets). |
+| `<project>/cmru.toml` | committed | Complete portable product contract. **No secrets.** |
+| `cmru.orchestration.toml` | committed | Optional estate ordering/dependencies/cleanup only. |
+| `<project>/cmru.secret.toml` | gitignored | Token only: `[github] token = "…"`. Optional — env wins (see S2.4). |
+| `cmru.project.sample.toml` | committed | Template for a project contract (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps. |
-| `<project>/cmru.build.toml` | committed | Per-project step config consumed by that project's build script. |
 | `cmru.py` | committed | Repo-root entry point (`./cmru.py <verb>` ≡ `cmru <verb>`); `cmru.*.sh` shims cover common release verbs. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
@@ -203,14 +204,14 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 | Type | Description | Source |
 |---|---|---|
 | `wheel` | Python distribution wheel (`.whl`) | `python -m build` |
-| `oci` | Container image | Docker buildx bake (or built-in handler, see S14) |
+| `oci-image` | Container image | a project-declared image build command |
 | `tarball` | Archive (`.tar.xz`, `.tar.gz`) | `tar` + custom build |
 | `bundle` | Deterministic release bundle (`.tar.xz`) + `manifest.json` + `manifest.json.minisig` | project allowlist + cmru bundler |
 
-**S1.3** Each **GitHub-Release** profile (`wheel`/`bundle`/`tarball`) MUST upload:
-- The artifact file itself (immutable, content-addressed by version+hash in release notes).
-- A `.sha256` sidecar containing one line in `sha256sum -c` format.
-(The `oci-image` profile creates no GitHub Release — see S-REL.)
+**S1.3** An artifact name is an inventory label, not a release-host profile. A project
+MUST state its real publication behavior in its explicit `push` command. Where that
+command publishes a GitHub Release asset, it MUST upload the artifact and a `.sha256`
+sidecar containing one `sha256sum -c`-compatible line.
 
 **S1.6** The `bundle` artifact is a **triple**: a deterministic `<name>.tar.xz` archive
 (byte-identical across builds from the same commit and `SOURCE_DATE_EPOCH`), a canonical
@@ -227,50 +228,35 @@ named `<tag>-<variant>.tar.xz` (+ its `.sha256`, and for `bundle` its `manifest.
 `manifest.json.minisig`). With **no** declared variants the artifact is a single
 `<tag>.tar.xz` triple exactly as before.
 
-**S1.4** OCI images are published to a registry (ghcr) with a dated immutable tag plus a
-floating `:latest`; their manifest digest is the content address. They are **not**
-git-tagged and create **no** GitHub Release (S-REL).
+**S1.4** OCI image projects SHOULD publish an immutable image reference and verify its
+manifest digest. Whether CMRU also mints a Git tag is controlled only by
+`project.release.git_tag`; `oci-image` does not silently choose either policy.
 
 **S1.5** N projects, one Releases page is the first differentiator. The `prefix` mechanism is the key: the resolver (S5) and get.py (S6) filter by prefix, so projects never interfere with each other.
 
 ---
 
-## S-REL — Release model (two axes)
+## S-REL — Release model
 
-A `cmru release` is governed by **two independent axes**, so the same versioning can drive
-very different publishing:
+A `cmru release` separates generic source policy from project-owned artifact behavior:
 
-**S-REL.1 — Versioning** (`[project.X.version].strategy`): `scm` | `counter` | `file:PATH`
-| `external:VAR` | `none`. Determines the version string and whether cmru owns a git tag.
-`none` = no version/tag at all (identity is the artifact's own tag, e.g. an OCI image
-tag / BUILD_DATE); `external:VAR` reads `VAR` from transaction-local `cmru.vars` written by
-`steps.prepare`, then cmru mints the tag. `none` leaves artifact identity and publication
-conventions to the declared project steps; cmru mints no tag.
+**S-REL.1 — Versioning** (`[project.version].strategy`): `scm` | `counter` | `file:PATH`
+| `external:VAR` | `none`. It determines version discovery only. `external:VAR` reads its
+value from transaction-local `cmru.vars` written by `steps.prepare`; `none` leaves identity
+to the declared project commands.
 
-**S-REL.2 — Publish profile** (`[project.X].artifacts`): a list of artifact profiles. Each
-profile expands to a capability set; a project may list **several** (their capabilities
-union). Presets:
+**S-REL.2 — Outputs and tag policy.** `[project].artifacts` is a non-empty inventory of
+`wheel`, `oci-image`, `tarball`, and/or `bundle`. It never produces a command. The required
+`[project.release].git_tag` boolean alone determines whether CMRU mints and pushes
+`<prefix><version>`. `version.strategy = "none"` requires `git_tag = false`; every other
+combination is deliberate project policy.
 
-| profile | git tag | GitHub Release + assets | registry push | latest.json | commit generated |
-|---|:--:|:--:|:--:|:--:|:--:|
-| `wheel` | ✓ | ✓ | — | ✓ | — |
-| `bundle` | ✓ | ✓ | — | ✓ | — |
-| `tarball` | ✓ | ✓ | — | ✓ | — |
-| `oci-image` | — | — | ✓ ghcr | — | ✓ |
-
-Example — pwmcp emits both:
-`artifacts = ["oci-image", "bundle"]`.
-
-For `oci-image`, cmru provides a built-in handler (S14) that manages `build` and `push`
-steps — projects MAY omit `[steps.*]` and rely on the handler instead of a custom script.
-
-**S-REL.3 — cmru is the orchestrator; the project owns the *how*.** cmru only performs the
+**S-REL.3 — CMRU is the orchestrator; the project owns the *how*.** cmru only performs the
 **generic** git/host side-effects it can do for any project — mint+push `<prefix><semver>`,
 commit declared generated paths, push the commit. The artifact-specific work (build the
 wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, write
-`latest.json`) is performed by the **project's own `build`/`push` step commands** (or, for
-`oci-image`, by cmru's built-in handler — see S14). cmru never hardcodes a project's file
-paths.
+`latest.json`) is performed by the **project's own required step commands**. cmru never
+hardcodes a project's file paths or infers a step from an artifact label.
 
 **S-REL.4a — Prepared source is source-first and fail-closed.** A `steps.prepare` command
 MAY derive a version or regenerate mechanical source inputs. Every tracked output MUST be
@@ -296,17 +282,16 @@ tag that predates source-first history. It writes a generated `backfilled-after-
 to the current source tree and never moves the immutable tag; the caller reviews and commits
 that migration explicitly.
 
-**S-REL.4b — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
-the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
-mechanical tracked outputs cmru may commit. Prepare outputs commit before the gate; private
-OCI-build provenance commits and promotes before the registry push. An `oci-image`-only project paired with a tagging strategy
-(`scm`/`counter`/`file`) is a config error (exit 2) — OCI images are not git-tagged.
+**S-REL.4b — Release declaration.** `[project.release]` MUST contain `git_tag` and
+`build_step`. `build_step` MUST name an explicit `[steps.<name>]` command. Optional
+`commit_generated = ["<project-relative path>", …]` lists mechanical tracked outputs CMRU
+may commit; optional `artifact_dirs` lists directories eligible for explicit retention.
 
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
-declared mechanical outputs, never hand-edited source. OCI flow: private build → commit →
-backup-push → promote generated provenance → registry push. Wheel flow: prepare → gate →
-backup-push → promote → tag at HEAD → build → push tag → Release + asset + `latest.json`.
+declared mechanical outputs, never hand-edited source. Every project follows the same
+prepare → gate → backup-push → promote → optional tag → `build_step` → `push` frame;
+the project commands define what the last two phases do.
 `backup-push` (S-CLI.5) is a durability step only — it pushes the validated branch to origin
 under its own name, never touching `main`; the fast-forward of `main` remains a separate,
 subsequent step.
@@ -317,7 +302,7 @@ artifact per variant. This exists for artifacts that cannot be interpreter-agnos
 a bundle that carries version-locked C-extension wheels, where a single archive cannot serve
 both a py39 and a py311 host.
 
-- **Declaration** (`[[project.<name>.variants]]`, S2): each entry has a required, filename-safe
+- **Declaration** (`[[project.variants]]`, S2): each entry has a required, filename-safe
   `name` (V22), and optional `build_arg` (a build-time knob the project's build step consumes)
   and `label` (a human description surfaced by the installer). **Zero declared variants ⇒ the
   exact single-asset behaviour of prior versions** (no naming, latest.json, or installer change).
@@ -341,68 +326,69 @@ separate keystone (`publish_versioned_variants`) so the legacy path is provably 
 
 ## S2 — Config Schema
 
-cmru reads `cmru.toml` at the repo root (override with `--config` or `CMRU_CONFIG`).
-Secrets are **never** in `cmru.toml`: the token is resolved per S2.4. Per-project build
-details that a project's own build script needs live in `<project>/cmru.build.toml`.
+CMRU has exactly two non-overlapping documents (select a non-default path only with
+`--config`). A portable product owns `<project>/cmru.toml`; it contains every fact
+and command needed to test, build, publish, retain, and release that product in a fresh
+repository root. An optional repository-root `cmru.orchestration.toml` names only those
+project documents, their order/dependencies, cleanup policy, and an explicit credential
+source. Secrets are never committed.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
-**S2.2** Top-level tables:
+**S2.2 — Project document** (`<project>/cmru.toml`):
 
 ```toml
-[github]
-owner      = "volkb79-2"          # required
-repo       = "vbpub"              # required
-owner_type = "user"               # required: "user" | "org"
-token      = "..."                # required for publish; read from env if omitted
+schema_version = 1
 
-[orchestration]
-project_order = ["example"]       # required release order
-default_projects = ["example"]    # required default selection
-default_steps = ["run-tests", "build", "push", "validate"]
-execution_mode = "project-first"  # project-first | step-first
+[github]
+owner = "your-github-owner"        # required
+repo = "your-repository"           # required
+owner_type = "user"                # required: user | org
 
 [targets]
 host     = "github"               # required: provider for releases
 registry = ["ghcr.io"]            # list: image registries to push to (S11)
 
-[cleanup]
-release_tag_prefixes = ["*"]
-keep_release_tags = ["example-latest"]
-ghcr_packages = ["*"]
-ghcr_delete_packages = []
-
-[project.<name>]
-template_revision = 1             # required for `cmru standards` conformance
+[project]
+id          = "example"           # required, lowercase project id
+description = "consumer-facing product summary"
+template_revision = 2              # required for `cmru standards` conformance
 prefix      = "<name>-v"          # required: tag prefix
 artifacts   = ["wheel"]           # required: wheel | oci-image | tarball | bundle
 scm_dist    = "<name>"            # optional: python dist name (for wheel type)
-cwd         = "<name>/"           # required: build working directory
 
-[project.<name>.version]
+[project.version]
 strategy = "scm"                  # scm | file:PATH | counter | external:VAR | none
-paths    = ["<name>/"]            # paths to watch for changes (change detection)
+paths    = ["shared-input/"]      # optional project-relative extra watch paths
 bump     = "conventional"         # conventional | patch
 
-[project.<name>.steps.<step>]
-commands = [{ label = "example", argv = ["python3", "build.py"], cwd = "example" }]
-
-[project.<name>.steps.prepare]     # optional: derive version / mechanical source inputs
-# outputs MUST be allowlisted below; it runs before the required run-tests gate.
-
-[project.<name>.release]
+[project.release]
+git_tag = true                              # required; only source of tag policy
+build_step = "build"                         # required; one declared [steps.<name>]
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
+artifact_dirs = ["dist"]                     # required only when retaining artifacts
 # changelog defaults to "CHANGES.md". Override only for another project-relative path;
 # `changelog = false` is the explicit opt-out.
 
-[project.<name>.publish]
-source      = "dist/*.whl"        # glob for artifact file(s)
-latest_json = true                # emit latest.json pointer
+[steps.run-tests]
+quiet = true                        # every step MUST declare console detail policy
+commands = [{ label = "example gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." }]
 
-[project.<name>.resolve]
-asset_glob = "*.whl"              # glob to match asset in release
+[steps.build]
+quiet = true
+commands = [{ label = "example build", argv = ["python3", "build.py"], cwd = "." }]
+clean_dirs = ["dist"]
+required_env = ["SOURCE_DATE_EPOCH"]
+env_command = ["python3", "scripts/derived-env.py"] # argv; stdout must be KEY=VALUE
+bake_set_prefix = "base.args."
+bake_set_vars = ["OCI_VERSION"]
+no_cache_env = "BUILD_NO_CACHE"
 
-[project.<name>.installer]         # inputs for the emitted get.py installer (S6)
+[steps.push]
+quiet = true
+commands = [{ label = "example publish", argv = ["python3", "publish.py"], cwd = "." }]
+
+[project.installer]                 # inputs for the emitted get.py installer (S6)
 install_dir_system = "/opt/<name>"        # system-scope root
 install_dir_user   = "<name>"             # leaf under $XDG_DATA_HOME/<name>
 asset_suffix       = ".tar.xz"            # release asset filename suffix
@@ -412,47 +398,69 @@ preserve           = ["shared/host.toml"] # paths kept in <root>/shared/ across 
 manifest_name      = "manifest.json"      # manifest file inside the bundle
 signature_name     = "manifest.json.minisig"  # minisign signature for manifest
 
-[[project.<name>.installer.wheels]]  # bundled wheels to install into private venv
+[[project.installer.wheels]]         # bundled wheels to install into private venv
 path         = "vendor/cmru-*.whl"  # glob inside the release bundle
 distribution = "cmru"               # pip distribution name
 
-[[project.<name>.installer.wheels]]
+[[project.installer.wheels]]
 path         = "vendor/ciu-*.whl"
 distribution = "ciu"
 
 # Optional per-interpreter variants (S-REL.6). Zero entries ⇒ single-asset behaviour.
 # Each variant publishes one asset (<prefix>-v<version>-<name><suffix>) under the same tag;
 # the operator selects one at install time via get.py --variant <name>.
-[[project.<name>.variants]]
+[[project.variants]]
 name      = "py39"                 # required: filename-safe token (V22); used in the asset name
 build_arg = "PYTHON_VERSION=3.9"   # optional: build knob the project's build step consumes
 label     = "Python 3.9 (glibc)"   # optional: human description shown by the installer prompt
 
-[[project.<name>.variants]]
+[[project.variants]]
 name      = "py311"
 build_arg = "PYTHON_VERSION=3.11"
 label     = "Python 3.11 (glibc)"
 
-# NOTE: [project.<name>.getsh], [projects], `artifact`, `oci`, and
-# [project.<name>.delegated] are removed and rejected. There is no compatibility parser.
+# NOTE: `[projects]`, `artifact`, `cwd`, project aliases, `[project.oci]`, and
+# cmru.build.toml are retired and rejected. There is no compatibility parser.
+```
 
-# OCI image handler config (see S14):
-[project.<name>.oci]
-bake_file = "docker-bake.hcl"    # required for oci-image
-target = "all"                   # required for oci-image
-repack = false                    # required; true is fail-closed until S14.3 is complete
+**S2.2a — Orchestration document** (`cmru.orchestration.toml`) is a separate,
+strictly estate-level document:
+
+```toml
+schema_version = 1
+[orchestration]
+project_order = ["example"]
+default_projects = ["example"]
+default_steps = ["run-tests", "build", "push"]
+execution_mode = "project-first"
+auth_project = "example"            # explicit, never inferred from order
+
+[orchestration.project.example]
+config = "example/cmru.toml"         # project-relative, exact filename
+depends_on = []
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = ["example-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []
 ```
 
 **S2.3** One strict reader validates every CMRU verb before it interprets the config.
 Unknown and retired keys MUST be rejected (exit 2); required fields MUST be present.
 `cmru standards` additionally reports the project-template revision, release-history policy,
-required release gate, and any project-local runner-template revision. `--update` may update
-only CMRU-owned revision markers; it MUST NOT rewrite project-owned command bodies.
+required release gate, and summary-only default step output. `--update` may update only the
+project TOML revision marker; it MUST NOT rewrite project-owned command bodies. A project document MUST explicitly declare
+`run-tests`, `push`, and the named `release.build_step`; every step MUST explicitly set
+`quiet = true|false`. A standards-conforming project MUST set `quiet = true` for every
+declared step; `--show-run-details` is the explicit live-detail override.
 
-**S2.4** Token resolution order (first hit wins), so `cmru.toml` stays secret-free:
+**S2.4** Token resolution order (first hit wins), so project `cmru.toml` stays secret-free:
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
-2. `cmru.secret.toml` → `[github].token` (a gitignored overlay next to `cmru.toml`).
-3. `[github].token` in `cmru.toml` itself — DISCOURAGED; allowed only for throwaway repos.
+2. `<project>/cmru.secret.toml` → `[github].token` (a gitignored overlay next to that project's config).
+
+`[github].token` in a committed `cmru.toml` is rejected. There is no fallback
+credential source.
 
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 
@@ -469,30 +477,30 @@ Every build step MUST be executed through the cmru runner. The orchestrator MUST
 | `login` | Pre-step registry/host authentication |
 | `required_env` | Fail if listed env vars are absent (exit 3, S8) |
 | `clean_dirs` | Wipe output directories before build |
-| `env_command` | Shell command to source additional env vars |
+| `env_command` | Explicit argv which prints `KEY=VALUE` lines; no shell sourcing |
 | `bake --set` | Inject build args into Docker buildx bake |
-| `no_cache` | Force cache invalidation for reproducible builds |
+| `no_cache_env` | An explicit env flag which appends `--no-cache` |
 | `per-step logs` | Each step writes to its own log file |
 | `reproducible-env` | Set `SOURCE_DATE_EPOCH` from HEAD commit timestamp |
 
-**S3.2** Central `cmru.toml` steps use an explicit `commands` list. A project-local
-`cmru.build.toml` may also use the runner controls below:
+**S3.2** The project document’s `[steps.<name>]` uses an explicit `commands` list and
+may use the runner controls below. No second runner config exists:
 
 ```toml
 commands      = [{ label = "build", argv = ["docker", "buildx", "bake", "all"], cwd = "." }]
 login         = { registry = "ghcr.io", username_env = "GITHUB_USERNAME", token_env = "GITHUB_PUSH_PAT", required = true }
 required_env  = ["GITHUB_TOKEN"]
 clean_dirs    = ["dist/"]
-env_command   = "source .env"
-no_cache      = false
-bake_targets  = ["image"]
-bake_set      = ["*.tags=ghcr.io/foo/bar:latest"]
+env_command   = ["python3", "scripts/derived-env.py"]
+no_cache_env  = "BUILD_NO_CACHE"
+bake_set_prefix = "base.args."
+bake_set_vars = ["OCI_VERSION"]
 ```
 
 **S3.3** The runner MUST set `SOURCE_DATE_EPOCH` to the Unix timestamp of the HEAD commit before every step.
 
 **S3.4** Step logs MUST be line-flushed and written to the stable path
-`<log_dir>/<project>/<step>.log`; a normal run overwrites that path. `--log-append`
+`<project>/logs/cmru/<step>.log`; a normal run overwrites that path. `--log-append`
 MUST insert `\n---\n` before the new record. The root `cmru.release.sh` wrapper overwrites
 `cmru.release.log` by default and includes the full subprocess transcript even while the
 console is quiet. By default the orchestration console shows labels, elapsed time, known
@@ -501,23 +509,47 @@ the raw project output to the console as well. The runner MUST flush every recei
 it sets `PYTHONUNBUFFERED=1` for Python children, while non-Python programs remain responsible
 for their own stdout buffering.
 
+**S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
+and artifacts for inspection/resume. Successful release MUST remove the worktree by default.
+`--retain-logs-on-release` moves its project logs to
+`<project>/logs/cmru-release/<immutable-id>/`; `--retain-artifacts-on-release` moves the
+declared `project.release.artifact_dirs` to `<project>/artifacts/<immutable-id>/` and writes
+`release.json` with source commit and SHA-256 inventory. `cmru build` MUST use an isolated
+`cmru/build/<id>` worktree and retain it after either result; it MUST NOT copy unapproved
+build outputs into the caller checkout.
+
 ---
 
-## S4 — Publish
+## S4 — Publication boundary
 
-**S4.1** `cmru publish` uploads the artifact and sidecar to the release host (S11).
+**S4.1** `cmru publish` requires a resolved publication credential (exit 3 when absent),
+then runs the selected project's explicit `push` step through the unified runner. It does not
+discover an artifact, choose a host, or infer a release-asset policy.
 
-**S4.2** Before uploading, cmru MUST compute `sha256sum` of the artifact and write a `.sha256` sidecar in `sha256sum -c` compatible format (one line: `<hash>  <filename>`).
+`publish` is a low-level caller-worktree operation. It is not the second half of
+`cmru build`: a normal build deliberately retains artifacts only in its isolated
+worktree. The source-first composable operation is `cmru release`; see
+[`KI-10`](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
 
-**S4.3** The release notes body MUST include the artifact's SHA-256 digest and, for OCI artifacts, the manifest digest.
+**S4.2** A project command that publishes a GitHub Release asset MUST create a `.sha256`
+sidecar in `sha256sum -c` format and bind the release to the build commit. It SHOULD include
+the artifact digest in release notes; an OCI publisher SHOULD also verify the final registry
+manifest digest.
 
-**S4.4** If `latest_json = true`, cmru MUST create or update `<prefix>latest/latest.json` (see S5.3) as a separate release (or asset on a `<prefix>latest` tag).
+**S4.3** A project that maintains a `<prefix>latest/latest.json` pointer MUST update it in
+the same explicit push contract. `cmru resolve` can consume that pointer, but CMRU does not
+invent one for a project that did not choose it.
 
-**S4.5** Dev builds (untagged commits, version contains `.dev`) MUST NOT mint a `<prefix>-v` release. They MAY upload to a `<prefix>-dev` pre-release slot.
+**S4.4** CMRU's reusable wheel/tarball handler commands implement the S4.2/S4.3 GitHub
+Release convention. Projects with another publication mechanism must provide equivalent
+consumer-verifiable evidence in their own step and documentation.
 
-**S4.6** `target_commitish` in the GitHub release MUST be set to the commit SHA at build time.
+**S4.5** Dev builds (untagged commits, version contains `.dev`) MUST NOT mint a `<prefix>-v`
+release. They MAY publish to a project-owned development channel.
 
-**S4.7** OCI publishes to GHCR SHOULD reconcile package visibility with the source repository visibility after push, on a **best-effort** basis. The repository visibility is authoritative (a public repo should yield public GHCR packages). **Platform limitation (verified 2026-06-21):** GitHub exposes **no REST or GraphQL API** to change a container package's visibility — the `PATCH …/packages/container/<name>` route returns `404`, classic PATs have **no `admin:packages` scope** (only `read:`/`write:`/`delete:packages`), and **fine-grained PATs cannot use the Packages API at all** (github/roadmap#558). Therefore the reconciler MUST treat a failed visibility change as a **non-fatal warning** — it MUST NOT fail a release whose image already pushed — and MUST emit the one-time manual remediation: *Your packages → `<pkg>` → Package settings → Danger Zone → Change visibility*. Visibility set once in the UI **persists across all future pushes**, so this is a one-time action per package, not per release.
+**S4.6** A project that publishes OCI to GHCR SHOULD document the one-time package-visibility
+operation. GitHub currently offers no usable API for changing container-package visibility;
+CMRU must not report a visibility change as an enforced release guarantee.
 
 ---
 
@@ -569,7 +601,7 @@ one entry per interpreter variant, each with its own `asset`, `sha256`, `url`, a
 The emitted `get.py` is a per-project **transactional** bootstrap that handles install,
 update, rollback, and status. Unlike a curl-only bootstrap, `get.py` ships **inside** the
 release artifact, so `<project> update` works out of the box. Configuration lives in
-`[project.<name>.installer]` (see S2).
+`[project.installer]` (see S2).
 
 **S6.1** `cmru get-py --project <name> --config cmru.toml` emits a standalone Python 3
 installer to stdout. The output is a rendering of `templates/get.py.tmpl` with
@@ -679,7 +711,7 @@ asset `<tag><asset_suffix>`).
 
 ## S7 — External supply-chain tooling (not yet a CMRU config feature)
 
-CMRU does **not** accept a `[project.<name>.delegated]` table. Earlier documentation
+CMRU does **not** accept a `[project.delegated]` table. Earlier documentation
 advertised one even though no release lifecycle invoked it; the strict schema rejects it.
 No missing-tool path may silently skip a requested security or packaging operation.
 
@@ -756,19 +788,19 @@ _This section enumerates all config validation rules. Each rule references the s
 | V02 | `[github].repo` is present and non-empty | 2 |
 | V03 | `[github].owner_type` is `"user"` or `"org"` | 2 |
 | V04 | `[targets].host` is a known provider (S11) | 2 |
-| V05 | Each `[project.<name>]` has a unique `prefix` | 2 |
+| V05 | Each project document has a unique `prefix` in an orchestration set | 2 |
 | V06 | `artifacts` contains only `wheel\|oci-image\|tarball\|bundle` | 2 |
 | V07 | `version.strategy` is `scm`, `file:<path>`, `counter`, `external:<VAR>`, or `none` | 2 |
 | V08 | `version.bump` is `conventional` or `patch` | 2 |
 | V09 | No unknown keys at any config level (including `[getsh]` — retired; use `[installer]`) | 2 |
-| V10 | `github.token` present or `GITHUB_TOKEN` env var set (for publish) | 3 |
+| V10 | `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` env var or project-local ignored token overlay present (for publish) | 3 |
 | V11 | All `required_env` vars present before step execution | 3 |
 | V13 | `[installer].install_dir_system` is required when `[installer]` is present | 2 |
 | V14 | `[installer].install_dir_user` is required when `[installer]` is present | 2 |
 | V15 | `[installer.wheels[*]].path` and `.distribution` are required | 2 |
 | V16 | `installer.required_commands` are checked before network I/O (exit 3) | 3 |
 | V17 | Token file for `--github-token-file` must be owned by current user and chmod 600 | 2 |
-| V22 | `[[project.<name>.variants]].name` is present, unique, and filename-safe (`[A-Za-z0-9][A-Za-z0-9._-]*`); unknown variant keys are rejected | 2 |
+| V22 | `[[project.variants]].name` is present, unique, and filename-safe (`[A-Za-z0-9][A-Za-z0-9._-]*`); unknown variant keys are rejected | 2 |
 
 ---
 
@@ -799,7 +831,7 @@ class ReleaseHost:
 
 **S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` is non-empty after excluding CMRU release-control files and generated release-history documents. If no prior tag exists, the project is always eligible (first release).
 
-**S12.3** `<paths>` defaults to `[project.<name>.cwd]`. Additional shared paths MAY be listed in `version.paths`.
+**S12.3** Change detection always watches the project directory. Additional project-relative shared paths MAY be listed in `project.version.paths`.
 
 **S12.4** Version bump rules (in priority order):
 1. `--set-version <v>` — explicit override.
@@ -826,119 +858,22 @@ except for declared generated paths at their permitted lifecycle point.
 
 ---
 
-## S14 — OCI Image Handler (Built-in)
+## S14 — Explicit OCI Command Library
 
-Design a built-in handler for the `oci-image` artifact profile. Some OCI projects currently use
-custom scripts (build-push.py, release-repack.sh). The new handler makes this a
-first-class cmru capability.
+`python3 -m cmru.handlers oci-image-build --cwd . --bake-file docker-bake.hcl --target all`
+and `oci-image-push` are optional commands a project may place in its required build and
+push steps. CMRU never selects them automatically and has no `[project.oci]` table.
 
-### S14.1 — Handler Profile
+The normal helper path verifies Docker/Buildx, uses Docker's native credential store, then
+runs `docker buildx bake -f <bake-file> <target> --load` or `--push`. A publishing
+transaction preflights its GitHub credential before source or host state changes; a handler
+also refuses missing Docker prerequisites with exit 3.
 
-When a project declares `artifacts = ["oci-image"]`, cmru's built-in handler takes over the
-`build` and `push` steps — no explicit `[steps.*]` needed. The handler is registered in
-`handlers.py` as `cmd_oci_image_build()` and `cmd_oci_image_push()`.
-
-### S14.2 — Build Flow (no repack)
-
-1. Resolve token → `docker login ghcr.io` (reuses `runner.py`'s existing `_docker_login()`).
-2. Run `docker buildx bake -f docker-bake.hcl <target> --load` (or to OCI layout output directly).
-3. No skopeo needed — the image is in the Docker daemon (or exported to OCI layout).
-
-### S14.3 — Repack Flow (experimental, fail closed)
-
-The built-in repack flow is **not production-ready and MUST NOT run**. A configuration
-with `[project.X.oci].repack = true`, or a direct built-in handler invocation with
-`--repack`, MUST fail with exit 2 before login, Docker execution, or scratch-path
-mutation. Project-owned explicit steps remain the escape hatch for experiments, but
-are not claimed to be equivalent to cmru's production OCI publish path.
-
-The built-in path may be enabled only after it meets all of this definition of done:
-
-1. Every invocation owns unique, automatically-cleaned scratch storage; no global
-   `/tmp/oci-src` or `/tmp/oci-dst` can leak state between projects or runs.
-2. BuildKit output and repacker input/output formats are proven compatible. OCI image
-   layout directories and OCI tar archives MUST be distinguished and converted
-   deliberately rather than treated as interchangeable paths.
-3. The build/repack/push work runs through the governed builder and resource policy,
-   including configured CPU, memory, I/O priority, and bounded repack concurrency.
-4. The result passes structural OCI validation and runtime smoke validation, including
-   expected platform, config, labels, entrypoint, filesystem semantics, and startup.
-5. After push, cmru resolves the registry reference and verifies the final manifest
-   digest against the validated local repacked artifact.
-6. The design SHOULD build the image only once. If tooling forces a second build, that
-   cost and the equivalence proof MUST be explicit; a silent build-on-push fallback is
-   forbidden.
-
-### S14.4 — Auth Flow (no more .ghcr-auth.json)
-
-CMRU uses one configured release identity and Docker's native credential store:
-
-1. cmru resolves the GitHub token (S2.4 order: env → cmru.secret.toml → cmru.toml).
-2. `runner.py`'s `_docker_login()` runs `docker login ghcr.io -u <owner> --password-stdin` with the token.
-3. Docker credential store holds the auth. Both `docker buildx bake --push` and `docker-repack` (if used) read Docker credentials natively — no `.ghcr-auth.json` required.
-4. Workspace-local auth files are not supported by CMRU.
-
-### S14.5 — Preflight Prerequisites
-
-Before the build step runs, the handler MUST validate:
-
-| Tool | Condition | Error |
-|---|---|---|
-| `docker` | on PATH | exit 3, "docker not found" |
-| `docker buildx` | `docker buildx version` succeeds | exit 3, "buildx not available" |
-| `docker-repack` | reserved for a future enabled repack flow | `repack = true` currently fails earlier with exit 2 (S14.3) |
-| GitHub token | resolved (S2.4) | exit 3 (V10) |
-
-These checks happen in `runner.py` or a new `prerequisites` step.
-
-### S14.6 — TOML Config Schema
-
-Add these optional keys under `[project.<name>.oci]`:
-
-```toml
-[project.<name>.oci]
-repack              = false       # reserved; true is rejected while S14.3 is experimental
-repack_target_size  = "2GB"       # --target-size for docker-repack
-repack_compression  = 9           # zstd compression level (1-22, default 9)
-```
-
-`repack = false` selects the supported simple bake flow (S14.2). `repack = true` is
-accepted as a documented schema key but rejected by validation until the S14.3
-production-equivalence definition of done is met.
-
-### S14.7 — Push Step (separate from build)
-
-Push is a **separate step** from build, executed by `cmd_oci_image_push()`:
-
-- **Non-repack mode**: runs `docker buildx bake -f <bake_file> <target> --push` — the standard bake push.
-- **Repack mode**: disabled and fail-closed as specified by S14.3. It MUST NOT
-  reinterpret a local OCI path as a Docker build context, silently fall back to a
-  non-repack bake push, or perform a second unvalidated build.
-
-Tags pushed:
-- Immutable tag: `<debian>-py<python>-<image_version>` (from build args, not git).
-- Floating tag: `<debian>-py<python>-latest`.
-- Tags are pushed to each registry in `[targets].registry`.
-- The handler also commits the `commit_generated` paths (manifest files) after build.
-
-### S14.8 — Validation Rules
-
-Add to the validation catalog (S10):
-
-| ID | Rule | Exit |
-|---|---|---|
-| V18 | `[project.<name>.oci].repack_target_size` must be a valid size string (e.g. "2GB", "500MB") when `repack = true` | 2 |
-| V19 | `[project.<name>.oci].repack_compression` must be 1-22 when `repack = true` | 2 |
-| V20 | CMRU projects use the configured Docker credential flow; no workspace-local auth-file interface | 2 |
-| V21 | Built-in `[project.<name>.oci].repack = true` is rejected while S14.3 remains experimental | 2 |
-
-### S14.9 — Migration Path
-
-Existing projects can opt in incrementally:
-
-1. Keep their existing `[steps.build]` and `[steps.push]` commands as-is.
-2. Add `[project.<name>.oci]` config and remove `[steps.*]` to use the built-in handler.
-3. The `.ghcr-auth.json` file and skopeo remain available for manual use but are no longer required by the cmru release path.
+`--repack` remains deliberately fail-closed with exit 2 before login, Docker, or filesystem
+mutation. It is not a supported CMRU release feature. A project that needs OCI repacking
+MUST own an explicit tested command and its reproducibility, resource-governance, digest
+verification, and runtime-smoke evidence. MDT is the estate example; its implementation is
+not silently generalized as a CMRU profile.
 
 ---
 

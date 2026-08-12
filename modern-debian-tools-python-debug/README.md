@@ -21,7 +21,7 @@ explained in [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md).
 | Path | What lives there |
 |---|---|
 | [`Dockerfile`](Dockerfile), [`docker-bake.hcl`](docker-bake.hcl) | The image and the build matrix — bake is the source of truth for what gets built |
-| [`build-push.py`](build-push.py), [`cmru.build.toml`](cmru.build.toml) | Release entry point and its step/env configuration |
+| [`build-push.py`](build-push.py), [`cmru.toml`](cmru.toml) | Release entry point and its complete project contract |
 | [`scripts/`](scripts/) | Release-time machinery: base resolver, bake/repack lanes, tool staging, OCI validation, benchmarks |
 | [`requirements/`](requirements/), [`apt/`](apt/), [`pip/`](pip/), [`ai-cli-tools.list`](ai-cli-tools.list) | What goes *into* the image: venv toolkit, Debian packages, first-party wheels, AI CLIs |
 | [`customization/`](customization/README.md) | Shipped shell/profile/editor assets (`zshrc`, `aliases.sh`, `ai.env.example`, `htoprc`, …) |
@@ -339,9 +339,9 @@ BuildKit builders are governed separately; see
 ./build-push.py --rebuild    # build then push
 ```
 
-Step and environment configuration is [`cmru.build.toml`](cmru.build.toml); the build
+Step and environment configuration is [`cmru.toml`](cmru.toml); the build
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds run on the resource-confined
-named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.build.toml`.
+named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.toml`.
 
 ### Release caches
 
@@ -421,7 +421,7 @@ newer Python streams already visible on other Debian variants.
 
 The resolver exports `DEVCONTAINERS_RELEASE_STABLE`, `DEVCONTAINERS_VERSION_STABLE`,
 `DEVCONTAINERS_BASE_DYNAMIC_LATEST`, `DEVCONTAINERS_DYNAMIC_LATEST_PYTHON`, and
-`DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN`; `cmru.build.toml` passes them into bake args, then
+`DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN`; `cmru.toml` passes them into bake args, then
 into Dockerfile metadata and manifest content.
 
 `docker-bake.hcl` declares `LATEST_KNOWN_DEBIAN` (`trixie`) and `LATEST_KNOWN_PYTHON`
@@ -478,7 +478,7 @@ docker image inspect <image> \
 
 ### Compression and layer topology
 
-BuildKit's generic registry exporter defaults to gzip. `cmru.build.toml` overrides that:
+BuildKit's generic registry exporter defaults to gzip. `cmru.toml` overrides that:
 release publication uses OCI media types, forced **zstd level 3**, and the original layer
 topology. The level is deliberately modest — cold time-to-connect and governed export cost
 matter more than the last few compressed bytes.

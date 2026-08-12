@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -158,78 +160,149 @@ def test_execute_step_log_append_inserts_exact_divider(tmp_path, monkeypatch):
     assert contents.startswith("previous\n\n---\n")
 
 
+def test_execute_step_explicit_empty_env_masks_ambient_then_restores_it(tmp_path, monkeypatch):
+    """A declared empty value must not silently inherit the caller's shell value."""
+    monkeypatch.setenv("CMRU_TEST_MASKED", "stale-shell-value")
+    step = replace(
+        _step(),
+        commands=[{
+            "label": "assert masked env",
+            "argv": ["bash", "-c", 'test -z "${CMRU_TEST_MASKED}"'],
+            "cwd": ".",
+        }],
+        step_env={"CMRU_TEST_MASKED": ""},
+    )
+
+    runner.execute_step(step, tmp_path, tmp_path / "logs")
+
+    assert os.environ["CMRU_TEST_MASKED"] == "stale-shell-value"
+
+
+@pytest.mark.parametrize("missing", ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"])
+def test_additional_registry_login_requires_explicit_credentials(monkeypatch, missing):
+    """A declared second registry must never turn into a skipped publication."""
+    monkeypatch.setenv("GITHUB_USERNAME", "octocat")
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "token")
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(runner, "maybe_login", lambda _login: None)
+
+    with pytest.raises(RuntimeError, match=missing):
+        runner.maybe_login_multi(None, ["ghcr.io", "registry.example.test"])
+
+
 def test_project_runner_config_rejects_unknown_execution_key():
-    config = {
-        "project_root": ".",
-        "release_config": "../cmru.toml",
-        "log_dir": "logs",
-        "steps": {
-            "build": {
-                "quiet": True,
-                "commands": [{"label": "build", "argv": ["true"], "cwd": "."}],
-                "no_cache": False,
-            }
-        },
-    }
+    from cmru.config import load_forge_config
 
-    with pytest.raises(ValueError, match=r"unknown keys \['no_cache'\]"):
-        runner.validate_build_config(config)
-
-
-def test_project_runner_config_allows_explicit_project_metadata_namespace():
-    config = {
-        "project_root": ".",
-        "release_config": "../cmru.toml",
-        "log_dir": "logs",
-        "project_metadata": {"builder": {"name": "owned-by-project"}},
-        "steps": {
-            "build": {
-                "quiet": True,
-                "commands": [{"label": "build", "argv": ["true"], "cwd": "."}],
-            }
-        },
-    }
-
-    runner.validate_build_config(config)
-
-
-def test_raw_runner_uses_transaction_stable_project_log_root(tmp_path, monkeypatch):
-    release_config = tmp_path / "cmru.toml"
-    release_config.write_text(
-        """[github]
+    with tempfile.TemporaryDirectory() as raw:
+        config = Path(raw) / "cmru.toml"
+        config.write_text(
+            """schema_version = 1
+[github]
 owner = "octocat"
 repo = "demo"
 owner_type = "user"
 [targets]
 host = "github"
 registry = []
-[project.demo]
+[project]
+id = "demo"
+description = "demo"
 prefix = "demo-v"
 artifacts = ["wheel"]
-cwd = "demo"
-[project.demo.version]
+[project.version]
 strategy = "scm"
+[steps.build]
+quiet = true
+no_cache = false
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
 """,
-        encoding="utf-8",
-    )
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit) as exc:
+            load_forge_config(config)
+    assert exc.value.code == 2
+
+
+def test_project_runner_config_allows_explicit_project_metadata_namespace():
+    from cmru.config import load_forge_config
+
+    with tempfile.TemporaryDirectory() as raw:
+        config = Path(raw) / "cmru.toml"
+        config.write_text(
+            """schema_version = 1
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = []
+[project]
+id = "demo"
+description = "demo"
+prefix = "demo-v"
+artifacts = ["wheel"]
+[project.version]
+strategy = "scm"
+bump = "conventional"
+[project.release]
+git_tag = true
+build_step = "build"
+[project_metadata.builder]
+name = "owned-by-project"
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
+""",
+            encoding="utf-8",
+        )
+        assert "demo" in load_forge_config(config).projects
+
+
+def test_raw_runner_uses_project_local_log_root(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()
-    build_config = project / "cmru.build.toml"
-    build_config.write_text(
-        """project_root = "."
-release_config = "../cmru.toml"
-log_dir = "local-logs"
+    project_config = project / "cmru.toml"
+    project_config.write_text(
+        """schema_version = 1
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = []
+[project]
+id = "demo"
+description = "demo"
+prefix = "demo-v"
+artifacts = ["wheel"]
+[project.version]
+strategy = "scm"
+bump = "conventional"
+[project.release]
+git_tag = true
+build_step = "build"
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
 [steps.build]
 quiet = true
 commands = [{ label = "build", argv = ["bash", "-c", "echo inner detail"], cwd = "." }]
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
 """,
         encoding="utf-8",
     )
-    stable_root = tmp_path / "caller-logs"
-    monkeypatch.setenv("CMRU_STEP_LOG_ROOT", str(stable_root))
     monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
 
-    runner.run_step(build_config, "build", None)
+    runner.run_step(project_config, "build")
 
-    assert (stable_root / "demo" / "build.log").exists()
-    assert not (project / "local-logs" / "build.log").exists()
+    assert (project / "logs" / "cmru" / "build.log").exists()

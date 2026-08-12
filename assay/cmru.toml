@@ -1,0 +1,50 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\n\nDeclared test lanes and machine-readable verdicts for a commit.\n\n**Install (wheel)**\n```bash\npipx install assay-*.whl\n```\n\n**No package manager? Use the zipapp**\n```bash\nchmod +x assay-*.pyz && ./assay-*.pyz --help\n```"
+
+[project]
+id = "assay"
+description = "Reproducible, lane-aware software testing and evidence tool."
+template_revision = 2
+prefix = "assay-v"
+artifacts = ["wheel"]
+scm_dist = "assay"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "assay: registered self-hosted gate", argv = ["bash", "tools/tester-unified-gate.sh", ".."], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "assay: hash-bound wheel and zipapp build", argv = ["python3", "gate/distribution/build_release.py", "--repo", "..", "--outdir", "dist"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "assay: publish wheel, zipapp, and manifest", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "assay", "--cwd", ".", "--notes-env", "ASSAY_RELEASE_NOTES", "--extra-asset", "dist/assay-*.pyz", "--extra-asset", "dist/assay-*.pyz.sha256", "--extra-asset", "dist/release-manifest.json", "--extra-asset", "dist/release-manifest.json.sha256"], cwd = "." },
+]

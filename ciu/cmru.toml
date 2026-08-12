@@ -1,0 +1,51 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+CIU_RELEASE_NOTES = "## CIU CLI wheel\n\nRelease history is generated from the project-scoped source range in `CHANGES.md`.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+
+[project]
+id = "ciu"
+description = "Compose inventory and update tooling for vbpub deployments."
+template_revision = 2
+prefix = "ciu-v"
+artifacts = ["wheel"]
+scm_dist = "ciu"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "CIU: tester-unified coverage gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "run-ciu-tests.py"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "CIU: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES"], cwd = "." },
+]

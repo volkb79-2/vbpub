@@ -55,7 +55,7 @@ has a corresponding file here:
 # Editable install (development)
 pip install -e /path/to/vbpub/ciu
 
-# Build + publish the wheel via cmru's built-in handler (from the repo root)
+# Build + publish the wheel through CIU's explicit CMRU contract (from the repo root)
 cmru build   --project ciu   # python -m build --wheel
 cmru publish --project ciu   # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
 ```

@@ -40,8 +40,8 @@ Retired & removed: `release-manager/`, `release-all.py`, `release-runner.py`,
 
 - **Products:** `ciu/`, `cmru/`, `modern-debian-tools-python-debug/`, `pwmcp/`,
   `tls-edge/`, `game_stuff/empyrion/`, `plesk-mailbox-create/`, `vsc-devcontainer/`.
-- **cmru toolchain:** `cmru.toml`, `cmru.sample.toml`, `cmru.secret.toml` (gitignored),
-  `cmru.py`, `cmru.*.sh`.
+- **cmru toolchain:** `cmru.orchestration.toml`, project-local `*/cmru.toml`,
+  project-local `cmru.secret.toml` (gitignored), `cmru.py`, `cmru.*.sh`.
 - `scripts/` (ops scripts incl. the relocated `scripts/truenas/`), `docs/`, `.github/`,
   `.vscode/`, `.claude/`, `install-debian.json`, `requirements.txt`.
 

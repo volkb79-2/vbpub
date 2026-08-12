@@ -224,7 +224,7 @@ assumed baseline.
 ## 5. `ensure-release-builder.sh` and consumer wiring
 
 **Postponed, TBD** — this plan installs the host-side service; wiring
-`cmru.build.toml`'s `BUILDX_BUILDER`, `ensure-release-builder.sh`'s own
+`cmru.toml`'s `BUILDX_BUILDER`, `ensure-release-builder.sh`'s own
 health-check contract (now "is the remote reachable and the right version,"
 not "recreate the container on drift" — there's no longer a
 per-consumer container to drift), and pwmcp's equivalent are explicitly

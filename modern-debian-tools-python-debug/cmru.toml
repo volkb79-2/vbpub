@@ -1,0 +1,90 @@
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+RELEASE_IMAGE_FLOW = "load"
+IMAGE_COMPRESSION = "zstd"
+IMAGE_COMPRESSION_LEVEL = "3"
+IMAGE_FORCE_COMPRESSION = "true"
+IMAGE_OCI_MEDIA_TYPES = "true"
+IMAGE_PROVENANCE_MODE = "max"
+IMAGE_SBOM = "true"
+BUILDX_BUILDER = "mdt-governed-v1"
+MDT_BUILDER_MEMORY = "6g"
+MDT_BUILDER_MEMORY_SWAP = "16g"
+MDT_BUILDER_CPU_SHARES = "128"
+MDT_BUILDER_CPU_QUOTA = "400000"
+MDT_BUILDER_CPU_PERIOD = "100000"
+REPACK_WORK_DIR = "build/repack"
+REPACK_TARGET_SIZE = "2GB"
+REPACK_COMPRESSION_LEVEL = "9"
+REPACK_JOBS = "1"
+REPACK_CONCURRENCY = "2"
+REPACK_VMEM_KB = "unlimited"
+REPACK_KEEP_FAILED = "true"
+DOCKER_REPACK_LOG = "warn"
+OCI_VENDOR = "Volker Badziong"
+OCI_DESCRIPTION = "Modern Debian Tools + Python Debug image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
+OCI_DESCRIPTION_BASE = "Modern Debian Tools + Python Debug base image."
+OCI_DESCRIPTION_VSC = "Modern Debian Tools + Python Debug VS Code devcontainer image."
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+
+[project]
+id = "modern-debian-tools-python-debug"
+description = "Curated Debian and Python development/debug container images."
+template_revision = 2
+prefix = "modern-debian-tools-python-debug-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "none"
+bump = "conventional"
+
+[project.release]
+git_tag = false
+build_step = "prepare"
+commit_generated = ["package-manifests-versioned"]
+artifact_dirs = ["package-manifests-versioned"]
+
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "modern-debian-tools-python-debug: private build and manifest extraction", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging", "scripts.test_oci_layout_push"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+no_cache_env = "BUILD_NO_CACHE"
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "AIDER_VERSION", "REASONIX_VERSION", "OPENCLAW_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+commands = [
+  { label = "modern-debian-tools-python-debug: build images", argv = ["bash", "scripts/release-bake.sh", "build"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "AIDER_VERSION", "REASONIX_VERSION", "OPENCLAW_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  { label = "modern-debian-tools-python-debug: push images", argv = ["bash", "scripts/release-bake.sh", "push"], cwd = "." },
+]

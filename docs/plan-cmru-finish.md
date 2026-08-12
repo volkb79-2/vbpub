@@ -1,5 +1,10 @@
 # Execution plan — finish cmru release-modes (post P8 Phase B)
 
+> Historical planning record. The profile/default-handler and `cmru.build.toml`
+> proposals below are superseded by the strict current contract in
+> [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md): project-local `cmru.toml`, explicit
+> required steps, and `artifacts` as an output inventory. Do not implement from this plan.
+
 Self-contained specs for a Sonnet-subagent Workflow + the supervised final cut. Sub-agents
 cannot see the chat — everything they need is here. Companion: `plan-cmru-release-modes.md`
 (design), `ciu-vs-cmru.md` (roles). **Work directly on `main` in `/workspaces/vbpub`** (no

@@ -133,7 +133,7 @@ class OciToolStagingTests(unittest.TestCase):
         bake = (ROOT / "docker-bake.hcl").read_text()
         manifest = (ROOT / "scripts" / "manifest_sections.py").read_text()
         resolver = (ROOT / "scripts" / "resolve-devcontainers-release.py").read_text()
-        config = tomllib.loads((ROOT / "cmru.build.toml").read_text())
+        config = tomllib.loads((ROOT / "cmru.toml").read_text())
 
         for requested, resolved, binary in (
             ("CRANE_VERSION", "CRANE_VER", "crane"),
@@ -144,7 +144,7 @@ class OciToolStagingTests(unittest.TestCase):
             self.assertIn(resolved, dockerfile)
             self.assertIn(f'"{binary}"', manifest)
             self.assertIn(resolved, resolver)
-            for step in ("build-images", "push-images"):
+            for step in ("build", "push"):
                 self.assertIn(requested, config["steps"][step]["bake_set_vars"])
 
         self.assertIn(

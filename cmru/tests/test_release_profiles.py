@@ -1,4 +1,4 @@
-"""Tests for the publish-profile resolution (S-REL): artifacts → (mint_tag,
+"""Tests for the release-policy resolution (S-REL): artifacts → (git_tag,
 commit_generated), the OCI-vs-tag guard, multi-output union, and overrides.
 
 Stdlib only — no network, no git.
@@ -14,52 +14,57 @@ def _vspec(strategy: str = "scm"):
     return cli.VersionSpec(strategy=strategy)
 
 
-def test_wheel_profile_mints_tag():
-    artifacts, mint_tag, gen = cli._resolve_release_profile(
-        {"artifacts": ["wheel"]}, "ciu", _vspec("scm")
+def test_explicit_wheel_release_mints_tag():
+    artifacts, git_tag, gen = cli._parse_release_policy(
+        {"artifacts": ["wheel"], "release": {"git_tag": True}}, "ciu", _vspec("scm")
     )
     assert artifacts == ("wheel",)
-    assert mint_tag is True
+    assert git_tag is True
     assert gen == ()
 
 
 def test_retired_singular_artifact_is_rejected():
     with pytest.raises(ValueError, match="artifacts must be a list"):
-        cli._resolve_release_profile({"artifact": "wheel"}, "ciu", _vspec("scm"))
+        cli._parse_release_policy({"artifact": "wheel"}, "ciu", _vspec("scm"))
 
 
 def test_oci_image_and_none_strategy_no_tag():
-    artifacts, mint_tag, gen = cli._resolve_release_profile(
-        {"artifacts": ["oci-image"], "release": {"commit_generated": ["package-manifests-versioned"]}},
+    artifacts, git_tag, gen = cli._parse_release_policy(
+        {"artifacts": ["oci-image"], "release": {"git_tag": False, "commit_generated": ["package-manifests-versioned"]}},
         "mdt",
         _vspec("none"),
     )
     assert artifacts == ("oci-image",)          # alias normalized
-    assert mint_tag is False                     # registry publish, no git tag
+    assert git_tag is False                      # registry publish, no git tag
     assert gen == ("package-manifests-versioned",)
 
 
-def test_oci_with_scm_is_rejected():
-    """The exact bug that produced modern-debian-tools-python-debug-v0.1.0."""
-    with pytest.raises(ValueError, match="oci-image artifact must use version.strategy='none'"):
-        cli._resolve_release_profile({"artifacts": ["oci-image"]}, "mdt", _vspec("scm"))
-
-
-def test_multi_output_unions_capabilities():
-    # oci-image + bundle: bundle wants a tag, so the union mints one.
-    _, mint_tag, _ = cli._resolve_release_profile(
-        {"artifacts": ["oci-image", "bundle"]}, "pwmcp", _vspec("scm")
+def test_oci_with_scm_can_tag_only_when_the_project_explicitly_says_so():
+    _, git_tag, _ = cli._parse_release_policy(
+        {"artifacts": ["oci-image"], "release": {"git_tag": True}}, "image", _vspec("scm")
     )
-    assert mint_tag is True
+    assert git_tag is True
+
+
+def test_multi_output_uses_its_explicit_tag_policy():
+    _, git_tag, _ = cli._parse_release_policy(
+        {"artifacts": ["oci-image", "bundle"], "release": {"git_tag": True}}, "pwmcp", _vspec("scm")
+    )
+    assert git_tag is True
 
 
 def test_release_git_tag_override():
-    _, mint_tag, _ = cli._resolve_release_profile(
+    _, git_tag, _ = cli._parse_release_policy(
         {"artifacts": ["wheel"], "release": {"git_tag": False}}, "x", _vspec("scm")
     )
-    assert mint_tag is False
+    assert git_tag is False
+
+
+def test_release_git_tag_is_required():
+    with pytest.raises(ValueError, match="must be explicitly true or false"):
+        cli._parse_release_policy({"artifacts": ["wheel"]}, "x", _vspec("scm"))
 
 
 def test_unknown_artifact_rejected():
-    with pytest.raises(ValueError, match="unknown artifact/profile"):
-        cli._resolve_release_profile({"artifacts": ["sdist"]}, "x", _vspec("scm"))
+    with pytest.raises(ValueError, match="unknown artifact type"):
+        cli._parse_release_policy({"artifacts": ["sdist"]}, "x", _vspec("scm"))

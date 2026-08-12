@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.config = tomllib.loads((ROOT / "cmru.build.toml").read_text())
+        cls.config = tomllib.loads((ROOT / "cmru.toml").read_text())
         cls.env = cls.config["env"]
 
     def test_private_build_then_source_first_push_is_the_release_default(self) -> None:

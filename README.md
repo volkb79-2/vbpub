@@ -30,26 +30,24 @@ pointer to a `cmru` verb):
 ./cmru.release.sh                      # one-shot: detect changed → tag → push → build → publish
 ./cmru.release.sh --dry-run            # preview tags only, no writes
 ./cmru.changelog.sh --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-./cmru.build.sh   --project <name>     # build artifact only
-./cmru.publish.sh --project <name>     # upload artifact + .sha256
+./cmru.build.sh   --project <name>     # retained isolated gate + build; no publish
+./cmru.publish.sh --project <name>     # run the project's declared publish step
 ./cmru.cleanup.sh --remove-assets 30d  # prune old releases / GHCR versions
 ./cmru.py --help                       # all verbs
 ```
 
-To keep a live transcript and preserve release failures through the pipeline:
+`./cmru.release.sh` creates a line-flushed full `cmru.release.log` by default while the
+console shows concise orchestration summaries. Add `--show-run-details` to stream raw
+Docker/test output too; add `--log-append` to retain prior transcripts with a divider.
 
-```bash
-set -o pipefail
-./cmru.release.sh 2>&1 | tee cmru.release.log
-```
-
-- **Config:** [`cmru.toml`](cmru.toml) (committed, no secrets). Template: `cmru.sample.toml`.
-- **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or a gitignored `cmru.secret.toml`
-  (`[github] token = "…"`). Never commit a token. (SPEC S2.4)
-- **Per-project step config:** `<product>/cmru.build.toml`; generated build vars: `cmru.vars`.
+- **Config:** [`cmru.orchestration.toml`](cmru.orchestration.toml) coordinates only; every product owns a portable `cmru.toml` (committed, no secrets). Templates: `cmru.project.sample.toml`, `cmru.orchestration.sample.toml`.
+- **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or a gitignored project-local
+  `cmru.secret.toml` (`[github] token = "…"`). A committed `cmru.toml` token is
+  rejected. (SPEC S2.4)
+- **Per-project contract:** `<product>/cmru.toml` includes release facts and runner steps; generated build vars: `cmru.vars`.
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
-- **Auto-released set** (`orchestration.project_order` in `cmru.toml`): ciu, cmru,
+- **Auto-released set** (`orchestration.project_order` in `cmru.orchestration.toml`): ciu, cmru,
   nyxloom, assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
@@ -63,7 +61,7 @@ ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
 docs/            release tooling, versioning, plans
-cmru.toml  cmru.*.sh  cmru.py        the release toolchain entry points
+cmru.orchestration.toml  cmru.*.sh  cmru.py  estate release-toolchain entry points
 ```
 
 > Housekeeping: see [`docs/plan-cleanup.md`](docs/plan-cleanup.md) for the leftover-file cleanup plan.

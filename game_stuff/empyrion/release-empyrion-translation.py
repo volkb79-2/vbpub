@@ -28,47 +28,6 @@ SUCCESS_REPORT_NAME = "translation-success.md"
 WORKFLOW_LOG_DEFAULT = "workflow.latest.log"
 
 
-def load_cmru_credentials(repo_root: Path) -> None:
-    """Populate GITHUB_USERNAME / GITHUB_REPO from cmru.toml and token from
-    cmru.secret.toml.  Mirrors the pattern in tls-edge/scripts/publish-release.py.
-
-    Credential resolution order: env > cmru.secret.toml > cmru.toml
-    - Identity (owner→GITHUB_USERNAME, repo→GITHUB_REPO) comes from cmru.toml [github].
-    - Token comes from env (GITHUB_PUSH_PAT / GITHUB_TOKEN) first, then
-      cmru.secret.toml [github].token.  cmru.toml never contains a token.
-    """
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ImportError:
-            return  # Best-effort; fallback to env vars
-
-    def _load_toml(path: Path) -> dict:
-        if not path.exists():
-            return {}
-        try:
-            with path.open("rb") as fh:
-                return tomllib.load(fh)
-        except Exception as exc:
-            print(f"[WARN] Could not parse {path.name}: {exc}", file=sys.stderr)
-            return {}
-
-    # cmru.toml — identity only (no token)
-    cmru_github = _load_toml(repo_root / "cmru.toml").get("github", {})
-    if not os.environ.get("GITHUB_USERNAME") and cmru_github.get("owner"):
-        os.environ["GITHUB_USERNAME"] = str(cmru_github["owner"])
-    if not os.environ.get("GITHUB_REPO") and cmru_github.get("repo"):
-        os.environ["GITHUB_REPO"] = str(cmru_github["repo"])
-
-    # cmru.secret.toml — token only; never stored in cmru.toml
-    secret_github = _load_toml(repo_root / "cmru.secret.toml").get("github", {})
-    if not os.environ.get("GITHUB_PUSH_PAT") and not os.environ.get("GITHUB_TOKEN"):
-        if secret_github.get("token"):
-            os.environ["GITHUB_PUSH_PAT"] = str(secret_github["token"])
-
-
 def load_release_metadata_from_env() -> dict:
     github_username = (os.getenv("GITHUB_USERNAME") or "unknown").strip()
     github_repo = (os.getenv("GITHUB_REPO") or "unknown").strip()
@@ -116,7 +75,7 @@ def publish_github_release_assets(
     if not token:
         raise ValueError(
             "A GitHub token is required (GITHUB_PUSH_PAT or GITHUB_TOKEN).\n"
-            "  Set it in the environment or in cmru.secret.toml [github].token."
+            "  Set it in the environment before invoking this standalone script."
         )
 
     owner, repo = parse_repo(metadata)
@@ -357,8 +316,6 @@ def main() -> None:
     # ── Credential resolution: env > cmru.secret.toml > cmru.toml ────────────
     # parents[2] from game_stuff/empyrion/ == the vbpub repo root.
     repo_root = script_dir.parents[1]
-    load_cmru_credentials(repo_root)
-
     metadata = load_release_metadata_from_env()
     workflow_log_path = _resolve_workflow_log_path(script_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

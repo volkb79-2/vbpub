@@ -13,24 +13,18 @@ pip install -e cmru          # provides the `cmru` console script
 ./cmru.py <verb>             # ≡ cmru <verb>   (discoverable cmru.*.sh shims cover common release verbs)
 ```
 
-## The model: two independent axes (S-REL)
+## The model: declared outputs and explicit behavior
 
-A release is governed by two orthogonal choices, so the *same* versioning can publish very differently:
+Each project declares its released output vocabulary in `artifacts = [...]` (`wheel`,
+`oci-image`, `tarball`, or `bundle`). That is a machine-readable inventory for release
+history and retained artifacts—not a profile that injects build, Docker, or publishing
+behavior. Every action is an explicit project step.
 
-1. **Versioning** — `version.strategy`: `scm` | `counter` | `file:PATH` | `external:VAR` | `none`. Computes the version string and whether cmru owns a git tag.
-2. **Publish profile** — `artifacts = [...]`: one or more artifact profiles, each a preset
-   capability bundle. A project may list **several** (their capabilities union).
-
-| profile | git tag | GitHub Release + assets | ghcr push | `latest.json` | commit generated |
-|---|:--:|:--:|:--:|:--:|:--:|
-| `wheel` | ✓ | ✓ | — | ✓ | — |
-| `bundle` | ✓ | ✓ | — | ✓ | — |
-| `tarball` | ✓ | ✓ | — | ✓ | — |
-| `oci-image` | — | — | ✓ | — | ✓ |
-
-So a **wheel** (`ciu`, `cmru`) gets a semver tag + GitHub Release + `latest.json`; an **OCI image** (`modern-debian-tools-python-debug`) is pushed to ghcr with **no git tag and no Release** (its version is the image tag / `BUILD_DATE`), and cmru commits the regenerated manifests; GHCR package visibility is then reconciled to the source repository visibility; **pwmcp** emits *both* (`["oci-image", "bundle"]`).
-
-`[project.X.release]` overrides a preset: `git_tag = false`, or `commit_generated = ["<project-relative path>"]` for build outputs cmru should commit.
+`[project.version].strategy` determines version discovery. `[project.release].git_tag`
+separately states whether CMRU mints and pushes an annotated Git tag. `build_step` names
+the step which makes retained outputs. `commit_generated` lists the only mechanical tracked
+outputs CMRU may commit before its gate. This permits a GitHub wheel release, an image-only
+registry publication, or a combined image+bundle release without hidden behavior.
 
 ## Verbs
 
@@ -42,17 +36,20 @@ cmru release --project ciu        # one project
 cmru changelog --project assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
 cmru standards --project pwmcp --update  # safely update CMRU-owned revision markers
-cmru build   --project <name>     # run the project's build step
-cmru publish --project <name>     # run the project's push step
+cmru build   --project <name>     # isolated build worktree; retained for inspection
+cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
-`release` detects changed projects, tags the tag-minting ones, then builds+publishes each by
-its profile (wheel → Release; oci-image → ghcr + provenance commit). A retained transaction
-is the pre-tag debug/recovery path. CMRU deliberately does not claim to complete a failed
-post-tag publish yet; see [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
+`release` detects changed projects, runs their explicit prepare/gate/promote/tag/build/push
+contract in dependency order, and retains a failed transaction for diagnosis. A retained
+transaction is the pre-publish debug/recovery path; see
+[KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
+`build` is diagnostic only; do not chain it to `publish` expecting the retained artifact to
+be published. The safe end-to-end verb is `release`; the deliberate design question is tracked
+in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
 
 ## Logging and live diagnostics
 
@@ -65,8 +62,12 @@ Use the root wrapper directly—no `2>&1 | tee ...` is required:
 It overwrites the root `cmru.release.log` with the complete release transcript.
 The terminal stays readable: CMRU reports command labels, duration, known test-framework
 success evidence, and concise failure excerpts. Detailed subprocess output is line-flushed to
-both that audit log and stable per-project files such as `logs/assay/run-tests.log`; successful
-release-worktree cleanup does not remove them.
+the audit log and the transaction-local project files such as
+`assay/logs/cmru/run-tests.log`. On a successful release those project logs disappear with
+the worktree by default; `--retain-logs-on-release` moves them to
+`assay/logs/cmru-release/<immutable-tag>/`. `--retain-artifacts-on-release` moves the
+declared directories into `assay/artifacts/<immutable-tag>/` and writes a hash inventory in
+`release.json` before the worktree is removed.
 
 ```bash
 ./cmru.release.sh --project modern-debian-tools-python-debug --show-run-details
@@ -80,18 +81,21 @@ non-Python tools must still flush their own output.
 
 ## Project framework and templates
 
-CMRU’s central `cmru.toml` is the project integration point. Each project carries
-`template_revision = 1`, which lets `cmru standards` identify stale adoption without inventing
-project behavior. A bespoke local runner config uses the matching two-line revision header in
-`cmru.build.toml`. Ready-to-copy examples are
-[`templates/project-release.toml.tmpl`](templates/project-release.toml.tmpl) and
-[`templates/cmru.build.toml.tmpl`](templates/cmru.build.toml.tmpl).
+Each project owns one complete `cmru.toml` contract: identity, versioning, release artifacts,
+environment, and every runner step. That file is portable to a fresh repository root. A
+monorepo's `cmru.orchestration.toml` contains only selection, order/dependencies, cleanup, and
+an explicit `auth_project`; it cannot contain project commands. `template_revision = 2` lets
+`cmru standards` identify stale adoption without inventing project behavior. Ready-to-copy
+examples are [`templates/cmru.toml.tmpl`](templates/cmru.toml.tmpl) and
+[`templates/cmru.orchestration.toml.tmpl`](templates/cmru.orchestration.toml.tmpl).
 
 `cmru standards --update` changes only those CMRU-owned markers. It never rewrites a project’s
 build/publish commands; a remaining warning is a real policy decision to review.
-Project-local runner controls are strict too: required `project_root`, `release_config`, and
-`log_dir`, explicit `quiet`, and no unknown execution keys. Put project-only data beneath
-`[project_metadata]` so a misspelled runner setting fails before it can alter a release.
+Runner controls live in the project’s `[steps.<name>]` table, require explicit `quiet`, and
+require `quiet = true` for the normal summary-only transcript; use `--show-run-details` when
+live subprocess output is required. They reject unknown keys. Put project-only data beneath `[project_metadata]` so a misspelled
+execution setting fails before it can alter a release. `cmru.build.toml`, shell sourcing, and
+configuration aliases are retired; there is no compatibility parser.
 
 ## Release history is automatic
 
@@ -106,7 +110,7 @@ If an image's private `prepare` step changed declared provenance but has no new 
 commit, CMRU records a metadata-only history entry for that real new image; a clean
 retained resume adds nothing.
 
-Use `[project.X.release] changelog = "docs/CHANGES.md"` only to choose another
+Use `[project.release] changelog = "docs/CHANGES.md"` only to choose another
 project-relative filename. `changelog = false` is the deliberate, reviewable opt-out.
 Never add the usual `CHANGES.md` opt-in just to enable the feature—it is already on.
 
@@ -139,7 +143,12 @@ enter the remote snapshot. It instead rejects only committed local `main` change
 worktree, cmru runs each changed project's required `run-tests` gate, then
 fast-forwards `origin/main` from the validated branch before creating tags or publishing.
 If another writer advanced remote main, the release fails before publication. A failure keeps
-the branch/worktree for diagnosis; success removes both.
+the branch/worktree for diagnosis; success removes both (after optional evidence retention).
+
+`cmru build` uses the same remote snapshot and transaction mechanics but stops before release:
+it always retains a `cmru/build/<id>` worktree. Its console output names the worktree, whose
+project `logs/cmru/` and declared artifact directories are the authoritative non-release
+outputs. CMRU never copies those unapproved artifacts into the caller checkout.
 
 `steps.prepare` is for deterministic source preparation, such as resolving an upstream
 version. It may change only paths declared in `release.commit_generated`; cmru commits those
@@ -153,31 +162,38 @@ project-author requirements, and the current gate-adoption audit.
 
 | file | committed? | purpose |
 |---|---|---|
-| `cmru.toml` | yes | the one config (projects, profiles, orchestration) — **no secrets** |
-| `cmru.sample.toml` | yes | template |
-| `cmru.secret.toml` | no (gitignored) | `[github] token = "…"` overlay (optional; env wins) |
-| `<project>/cmru.build.toml` | yes | per-project step config a project's build script reads |
+| `<project>/cmru.toml` | yes | complete portable project contract — **no secrets** |
+| `cmru.orchestration.toml` | yes | optional monorepo ordering/dependencies/cleanup only |
+| `<project>/cmru.secret.toml` | no (gitignored) | `[github] token = "…"` overlay (optional; env wins) |
 | `cmru.vars` | no (gitignored) | `KEY=VALUE` build vars a step emits for later steps |
 
-**Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → `cmru.secret.toml [github].token` → `cmru.toml [github].token` (discouraged). Never commit a token.
+**Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → the selected
+project's gitignored `cmru.secret.toml [github].token`. A committed `cmru.toml`
+token is rejected.
+The monorepo selects this credential source explicitly with `orchestration.auth_project`; it is
+never inferred from release order. Never commit a token.
 
 **Why `cmru.vars` is gitignored (and not a missing "starting point"):** it is a *generated scratchpad* — a build step writes computed values (e.g. pwmcp's playwright-driven version) for a *later* step in the **same** run to read. The committed starting point is git tags + `VERSION` files + `cmru.toml`; `cmru status`/`release` read those and never read `cmru.vars`. A fresh clone regenerates it on the next build. Committing it would turn a derived cache into an authoritative-looking input that drifts from the tags — the opposite of reproducible.
 
-## Built-in profiles ("batteries included")
+## Reusable project-step commands
 
-For a standard `wheel` project, declaring the profile is enough — cmru runs its own `build`/`push`/`validate` (see `cmru/handlers.py`), so the project needs **no release scripts**. cmru itself is the dogfood (`[project.cmru]` has `artifacts = ["wheel"]` and zero `[steps.*]`; only a `CMRU_RELEASE_NOTES` string). The single project-specific input is the release-notes text. An explicit `[project.X.steps.<step>]` always overrides the built-in — the escape hatch for multi-wheel repos, bespoke validation, or extra assets.
+`python3 -m cmru.handlers` is a small command library, not an implicit profile system.
+The templates show explicit `wheel-build` and `wheel-publish` calls, while projects such as
+MDT and pwmcp retain their own image/bundle commands. This is useful for third-party
+consumers: install a pinned CMRU wheel, copy the project template, and either compose the
+library commands or use a project-owned tool. CMRU never guesses which choice is correct.
 
-The built-in `oci-image` profile supports the normal Buildx bake load/push flow. Its
-`[project.X.oci].repack = true` switch is currently **experimental and fail-closed**:
-cmru rejects it before authentication or Docker work. The complete safety and
-production-equivalence requirements are tracked in [SPEC S14.3](docs/SPEC.md#s143--repack-flow-experimental-fail-closed).
+The OCI helper has an explicit normal Buildx bake load/push command. Its `--repack` argument
+is intentionally fail-closed while production-equivalence evidence is absent; use a
+project-owned, tested flow such as MDT's for real OCI repacking.
 
 ## Differentiators
 
 1. **N products, one Releases page** via per-product `prefix` (`ciu-v…`, `pwmcp-v…`).
 2. **Per-product "latest"** — `cmru resolve` returns the highest-semver release for a prefix; `<prefix>-latest` holds a thin `latest.json` pointer, not a duplicated asset.
-3. **Profile-driven publishing** — wheels, OCI images, bundles and tarballs each release correctly from one config, with cmru as the generic orchestrator.
-4. **Per-interpreter variants** (S-REL.6) — a `bundle`/`tarball` may declare `[[project.X.variants]]` so one tag publishes one asset per variant (`<tag>-<variant><suffix>`); the generated `get.py` installer selects one explicitly with `--variant NAME`. Zero declared variants keeps the single-asset path unchanged.
+3. **Explicit publication contracts** — wheels, OCI images, bundles and tarballs use one
+   strict runner grammar, while each project owns its artifact-specific commands.
+4. **Per-interpreter variants** (S-REL.6) — a `bundle`/`tarball` may declare `[[project.variants]]` so one tag publishes one asset per variant (`<tag>-<variant><suffix>`); the generated `get.py` installer selects one explicitly with `--variant NAME`. Zero declared variants keeps the single-asset path unchanged.
 
 ## cmru vs ciu
 

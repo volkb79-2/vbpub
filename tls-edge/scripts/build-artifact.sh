@@ -18,7 +18,7 @@
 # EXCLUDE:
 #   scripts/update-rendered.sh (maintainer-only)
 #   __pycache__/, *.pyc
-#   cmru.vars, .claude/, .git/
+#   .claude/, .git/
 #   Gitignored runtime files: ciu-stack/ciu.toml.j2, ciu-stack/ciu.toml,
 #   ciu-stack/ciu.compose.yml, ciu-stack/traefik.yml, edge-proxy/.env,
 #   *.bak, certs-dev/, .ciu/
@@ -150,4 +150,4 @@ tar -C "$STAGE" \
 
 ok "Artifact ready: $TARBALL"
 echo "  Size: $(du -sh "$TARBALL" | cut -f1)"
-echo "  Next: python3 scripts/publish-release.py"
+echo "  Next: cmru release --config ../cmru.toml --project tls-edge"

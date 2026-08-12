@@ -110,8 +110,8 @@ def test_the_tag_glob_is_the_same_one_pyproject_and_cmru_use():
     assert pyproject["tool"]["setuptools_scm"]["tag_regex"].startswith(
         "^" + build_release.TAG_GLOB.rstrip("*")
     )
-    cmru = tomllib.loads((REPO_ROOT / "cmru.toml").read_text(encoding="utf-8"))
-    assert cmru["project"]["assay"]["prefix"] == build_release.TAG_GLOB.rstrip("*")
+    cmru = tomllib.loads((PROJECT_ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    assert cmru["project"]["prefix"] == build_release.TAG_GLOB.rstrip("*")
 
 
 def test_the_generated_zipapp_entry_point_propagates_the_exit_code():

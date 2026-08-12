@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
-"""Built-in profile step handlers for cmru (S-REL "batteries-included" profiles).
+"""Reusable CMRU command-library handlers.
 
-These implement the *default* build / publish / validate behaviour for standard
-artifact profiles, so a project can declare ``artifacts = ["wheel"]`` and OMIT the
-matching ``[steps.*]`` entirely — cmru runs these instead of a per-project script.
+A project opts in by putting one of these argv calls in its explicit required
+``[steps.*]`` contract. They never synthesize a build or publication phase from
+an artifact name. Invoke them through the installed module, for example:
 
-They are invoked as subprocess steps by the orchestrator, by absolute path:
+    python3 -m cmru.handlers wheel-build --cwd .
+    python3 -m cmru.handlers wheel-publish --prefix example --cwd .
 
-    <python> <…>/cmru/handlers.py wheel-build   --cwd <project-dir>
-    <python> <…>/cmru/handlers.py wheel-publish --prefix <bare> --cwd <project-dir> [--notes-env VAR]
-    <python> <…>/cmru/handlers.py wheel-validate --prefix <bare>
-
-The orchestrator exports GITHUB_USERNAME / GITHUB_REPO / GITHUB_PUSH_PAT into the
-environment before running steps (see cli.apply_release_env, SPEC S2.4); these handlers
-read that same contract — identical to the hand-written scripts they replace.
-
-Any explicit ``[project.X.steps.<step>]`` overrides the built-in — the escape hatch for
-projects with non-standard needs (multi-wheel, bespoke validation, extra assets).
-
-Stdlib only. Works whether cmru is pip-installed or run from a checkout (the sys.path
-fallback below makes ``import cmru.release`` resolve when invoked by file path).
+The runner provides GITHUB_USERNAME, GITHUB_REPO, and GITHUB_PUSH_PAT from the
+selected explicit credential contract. A direct caller must provide the same
+environment; handlers do not read a convenience credentials file.
 """
 from __future__ import annotations
 
@@ -32,25 +23,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-try:
-    from cmru.release import (
-        GitHubReleases,
-        find_artifact,
-        find_built_wheel,
-        publish_versioned,
-        read_wheel_version,
-        validate_latest_release,
-    )
-except ModuleNotFoundError:  # invoked by file path from a checkout without install
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from cmru.release import (  # noqa: E402
-        GitHubReleases,
-        find_artifact,
-        find_built_wheel,
-        publish_versioned,
-        read_wheel_version,
-        validate_latest_release,
-    )
+from cmru.release import (
+    GitHubReleases,
+    find_artifact,
+    find_built_wheel,
+    publish_versioned,
+    read_wheel_version,
+    validate_latest_release,
+)
 
 
 def _require_env(name: str) -> str:
@@ -61,31 +41,12 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _load_env_file(path: str | None) -> None:
-    """Optional standalone convenience: seed GITHUB_* etc. from a KEY=VALUE .env file.
-
-    ``setdefault`` semantics — a value already in the environment WINS (SPEC S2.4),
-    so this only fills gaps when the script is run outside cmru orchestration. No-op if
-    the path is unset or absent."""
-    if not path:
-        return
-    p = Path(path)
-    if not p.exists():
-        return
-    for line in p.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or "=" not in s:
-            continue
-        key, value = s.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
 def _wheel_glob(prefix: str) -> str:
     """Default wheel glob for a project prefix (PEP 503 dist-name normalisation)."""
     return f"{prefix.replace('-', '_')}-*.whl"
 
 
-# ─── wheel profile ────────────────────────────────────────────────────────────
+# ─── wheel commands ───────────────────────────────────────────────────────────
 _WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
 
 
@@ -125,15 +86,20 @@ def _host_bind_source(container_path: Path) -> str:
     docker daemon (docker-outside-of-docker), so a `-v` source must be a host path —
     this container's own view (e.g. `/workspaces/vbpub`) may itself be a bind mount
     from a differently-named host directory. Reads `/proc/self/mountinfo` for the
-    longest matching mount point and substitutes its root. Falls back to the path
-    unchanged when no bind-mount entry is found (e.g. already running directly on
-    the host, where the two paths are identical)."""
+    longest matching mount point and substitutes its root. A missing or
+    unresolvable mapping is a configuration error: a sibling Docker daemon sees
+    the host namespace, so guessing that the two paths are identical could mount
+    an empty host directory and build the wrong source. On a real host the `/`
+    mount is an explicit identity mapping, not a fallback. """
     path_str = str(container_path)
     best: Optional[tuple[str, str]] = None
     try:
         lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return path_str
+    except OSError as exc:
+        raise RuntimeError(
+            "Cannot resolve the host bind source: /proc/self/mountinfo is unavailable. "
+            "CMRU refuses to guess a host path for a sibling Docker build."
+        ) from exc
     for line in lines:
         fields = line.split(" - ", 1)[0].split()
         if len(fields) < 5:
@@ -143,7 +109,9 @@ def _host_bind_source(container_path: Path) -> str:
             if best is None or len(mount_point) > len(best[1]):
                 best = (mount_root, mount_point)
     if best is None:
-        return path_str
+        raise RuntimeError(
+            f"Cannot resolve host bind source for {container_path}; no matching mount exists."
+        )
     mount_root, mount_point = best
     rel = path_str[len(mount_point):].lstrip("/")
     return f"{mount_root}/{rel}" if rel else mount_root
@@ -171,15 +139,27 @@ def _git_common_dir(cwd_parent: Path) -> Optional[Path]:
     return raw if raw.is_absolute() else (cwd_parent / raw).resolve()
 
 
-def _wheel_builder_git_mount_args(cwd_parent: Path) -> list[str]:
-    """Extra `-v` args so the wheel-builder container can resolve git history —
-    see `_git_common_dir`. Omitted (not just harmless-duplicate) when the common
-    git dir is already inside `cwd_parent`, since that's already mounted."""
-    common_dir = _git_common_dir(cwd_parent)
+def _wheel_builder_git_mount_args(
+    source_dir: Path, *, mount_root: Optional[Path] = None,
+) -> list[str]:
+    """Extra `-v` args so the wheel-builder container can resolve git history.
+
+    ``source_dir`` is the project whose version is being built. ``mount_root``
+    is the directory the sibling container already receives; callers building
+    from a parent directory set it explicitly. This distinction makes a copied
+    one-project repository work just like an in-tree monorepo project. The
+    extra mount is omitted (not just harmless-duplicate) when the common git
+    dir is already inside ``mount_root``. A
+    wheel build is source-derived evidence, so a non-Git directory is rejected
+    instead of allowing setuptools-scm to fabricate its fallback version."""
+    mount_root = mount_root or source_dir
+    common_dir = _git_common_dir(source_dir)
     if common_dir is None:
-        return []
+        raise RuntimeError(
+            f"Wheel build requires a Git worktree: cannot resolve git common directory for {source_dir}."
+        )
     try:
-        common_dir.relative_to(cwd_parent)
+        common_dir.relative_to(mount_root)
         return []  # already covered by the cwd_parent mount
     except ValueError:
         pass
@@ -191,11 +171,15 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
     _check_build_prerequisites()
     cwd = Path(args.cwd).resolve()
+    if _git_common_dir(cwd) is None:
+        raise RuntimeError(
+            f"Wheel build requires a Git worktree: cannot resolve git common directory for {cwd}."
+        )
     dist = cwd / "dist"
     if dist.exists():
         for stale in dist.glob("*.whl"):
             stale.unlink()
-    print(f"[INFO] cmru built-in: building wheel in {cwd}")
+    print(f"[INFO] cmru handler: building wheel in {cwd}")
 
     image = os.getenv(_WHEEL_BUILDER_IMAGE_ENV)
     if image:
@@ -207,7 +191,7 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
             [
                 "docker", "run", "--rm",
                 "-v", f"{host_parent}:{cwd.parent}",
-                *_wheel_builder_git_mount_args(cwd.parent),
+                *_wheel_builder_git_mount_args(cwd, mount_root=cwd.parent),
                 "-w", str(cwd.parent),
                 image,
                 "/opt/wheel-builder-venv/bin/python", "-m", "build",
@@ -227,7 +211,6 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
 
 def cmd_wheel_publish(args: argparse.Namespace) -> None:
     """Find the built wheel, read its METADATA version, publish via the keystone."""
-    _load_env_file(getattr(args, "env_file", None))
     cwd = Path(args.cwd).resolve()
     token = _require_env("GITHUB_PUSH_PAT")
     owner = _require_env("GITHUB_USERNAME")
@@ -273,10 +256,9 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
 
 def cmd_wheel_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a wheel + .sha256."""
-    _load_env_file(getattr(args, "env_file", None))
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
-    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT") or ""
+    token = os.getenv("GITHUB_PUSH_PAT") or ""
 
     gh = GitHubReleases(owner, repo, token)
     info = validate_latest_release(gh, args.prefix, artifact_suffix=".whl")
@@ -292,7 +274,6 @@ def cmd_wheel_validate(args: argparse.Namespace) -> None:
 
 def cmd_tarball_publish(args: argparse.Namespace) -> None:
     """Find the built tarball, read the version, publish via the keystone."""
-    _load_env_file(getattr(args, "env_file", None))
     cwd = Path(args.cwd).resolve()
     token = _require_env("GITHUB_PUSH_PAT")
     owner = _require_env("GITHUB_USERNAME")
@@ -318,10 +299,9 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
 
 def cmd_tarball_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
-    _load_env_file(getattr(args, "env_file", None))
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
-    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT") or ""
+    token = os.getenv("GITHUB_PUSH_PAT") or ""
 
     artifact_suffix = getattr(args, "artifact_suffix", None) or ".tar.xz"
     gh = GitHubReleases(owner, repo, token)
@@ -336,11 +316,11 @@ def cmd_tarball_validate(args: argparse.Namespace) -> None:
               f"&& sha256sum -c {info['asset']}.sha256")
 
 
-# ─── OCI image profile ───────────────────────────────────────────────────────
+# ─── OCI image commands ───────────────────────────────────────────────────────
 
 _OCI_REPACK_DISABLED = (
-    "cmru built-in OCI repack is experimental and not production-ready; "
-    "the path is disabled until the S14.3 production-equivalence requirements are met"
+    "cmru OCI repack is experimental and not production-ready; "
+    "the path is disabled until its production-equivalence requirements are met"
 )
 
 
@@ -374,7 +354,7 @@ def _check_prerequisites() -> None:
 
 def _docker_login() -> None:
     """Login to the container registry using GITHUB_USERNAME / GITHUB_PUSH_PAT / REGISTRY env."""
-    registry = os.getenv("REGISTRY") or "ghcr.io"
+    registry = _require_env("REGISTRY")
     username = _require_env("GITHUB_USERNAME")
     token = _require_env("GITHUB_PUSH_PAT")
     print(f"[INFO] Logging into {registry} as {username}")
@@ -395,7 +375,7 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
 
     _reject_experimental_repack(repack)
 
-    print(f"[INFO] cmru built-in: building OCI image in {cwd}")
+    print(f"[INFO] cmru handler: building OCI image in {cwd}")
     print(f"[INFO]   bake_file={bake_file}  target={target}  repack={repack}")
 
     _check_prerequisites()
@@ -418,7 +398,7 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 
     _reject_experimental_repack(args.repack)
 
-    print(f"[INFO] cmru built-in: pushing OCI image in {cwd}")
+    print(f"[INFO] cmru handler: pushing OCI image in {cwd}")
     _docker_login()
 
     subprocess.run(
@@ -431,7 +411,7 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 def main(argv: list | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="cmru.handlers",
-        description="cmru built-in profile step handlers (invoked by the orchestrator).",
+        description="cmru explicit project-step command library",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -448,14 +428,10 @@ def main(argv: list | None = None) -> None:
     p_pub.add_argument("--extra-asset", dest="extra_asset", action="append", default=[],
                        metavar="PATH",
                        help="additional file to attach to the same release; repeatable")
-    p_pub.add_argument("--env-file", dest="env_file",
-                       help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_pub.set_defaults(func=cmd_wheel_publish)
 
     p_val = sub.add_parser("wheel-validate", help="validate the resolved latest wheel release")
     p_val.add_argument("--prefix", required=True, help="release prefix, e.g. 'ciu' (no -v)")
-    p_val.add_argument("--env-file", dest="env_file",
-                       help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_val.set_defaults(func=cmd_wheel_validate)
 
     p_tpub = sub.add_parser("tarball-publish", help="publish the built tarball to GitHub Releases")
@@ -469,16 +445,12 @@ def main(argv: list | None = None) -> None:
                        help="env var holding the version string")
     p_tpub.add_argument("--notes-env", dest="notes_env",
                         help="env var holding release notes (optional)")
-    p_tpub.add_argument("--env-file", dest="env_file",
-                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_tpub.set_defaults(func=cmd_tarball_publish)
 
     p_tval = sub.add_parser("tarball-validate", help="validate the resolved latest tarball release")
     p_tval.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
     p_tval.add_argument("--artifact-suffix", dest="artifact_suffix", default=".tar.xz",
                         help="expected artifact file extension (default: .tar.xz)")
-    p_tval.add_argument("--env-file", dest="env_file",
-                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_tval.set_defaults(func=cmd_tarball_validate)
 
     # ── oci-image subcommands ──────────────────────────────────────────────

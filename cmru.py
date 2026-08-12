@@ -2,7 +2,8 @@
 """cmru — repo-root entry point for the Configurable Multi Release Utility.
 
 Run from the repo root:  ``./cmru.py <verb> [args]``  ≡  ``cmru <verb> [args]``.
-``./cmru.py --help`` lists the verbs and the typical workflow. Config is ``cmru.toml``
+``./cmru.py --help`` lists the verbs and the typical workflow. A standalone project
+uses its own ``cmru.toml``; this multi-project checkout uses ``cmru.orchestration.toml``.
 (secrets via cmru.secret.toml / $GITHUB_PUSH_PAT — see cmru/docs/SPEC.md S2.4).
 
 Named ``cmru.py`` (not ``cmru``) because the ``cmru/`` package dir occupies that name.

@@ -72,8 +72,8 @@ def _read_bake_default(var_name: str) -> str | None:
 
 
 def _read_cmru_env_default(var_name: str) -> str | None:
-    """Read a default from cmru.build.toml [env]."""
-    build_path = ROOT / "cmru.build.toml"
+    """Read a default from this project's strict cmru.toml [env]."""
+    build_path = ROOT / "cmru.toml"
     if not build_path.exists():
         return None
     content = build_path.read_text(encoding="utf-8")
@@ -330,9 +330,9 @@ def do_build(ignore_new_releases: bool) -> None:
     sys.stderr.write(
         f"[INFO] Step 3/3: Running release bake flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
     )
-    config_path = ROOT / "cmru.build.toml"
+    config_path = ROOT / "cmru.toml"
     try:
-        run_step(config_path, "build-images", None)
+        run_step(config_path, "build")
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 3:
             sys.stderr.write(
@@ -400,8 +400,8 @@ def _enumerate_bake_targets() -> tuple[dict, list[str]]:
 def _push_oci_layouts(env_vars: dict[str, str]) -> None:
     """Push each target's OCI layout built by oci_layout_bake(), verifying that
     the registry ends up reporting the exact digest that was built and
-    manifest-extracted (S9.4 / S14.3.5's "same checksum" guarantee, applied to
-    the load flow's delegated script rather than the not-yet-built S14 handler).
+    manifest-extracted (the CMRU S14 command-boundary's same-digest guarantee,
+    applied to MDT's project-owned flow rather than an implicit handler).
     """
     _require_crane_regctl()
     layout_root = _oci_layout_dir()
@@ -654,9 +654,9 @@ def do_push() -> None:
         # built — not a bash step, so the double-build it replaces cannot come back.
         _push_oci_layouts(env_vars)
     else:
-        config_path = ROOT / "cmru.build.toml"
+        config_path = ROOT / "cmru.toml"
         try:
-            run_step(config_path, "push-images", None)
+            run_step(config_path, "push")
         except subprocess.CalledProcessError as exc:
             sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
             raise SystemExit(exc.returncode) from None

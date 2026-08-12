@@ -9,13 +9,14 @@ The estate's "one recipe, two drivers" split: `ciu` drives --build to run the
 stack locally; `cmru`'s oci-image profile drives --build then --push for release.
 Both bake the SAME docker-bake.hcl.
 
-Version: resolved from `git describe --tags --match 'nyxloom-v*'` (the tag cmru
+Version: resolved from `git describe --tags --match 'nyxloom-v*'` (the tag CMRU
 mints and setuptools-scm reads), prefix stripped, injected as NYXLOOM_VERSION into
 docker-bake.hcl — which both tags the images and passes it as the daemon wheel's
-setuptools-scm pretend-version. Falls back to 0.0.0-dev when no tag exists yet.
+setuptools-scm pretend-version. A checkout without a matching tag must supply
+NYXLOOM_VERSION explicitly; CMRU release always supplies a tagged source revision.
 
-Credentials for --push (env first, then cmru.toml / cmru.secret.toml [github]):
-  GITHUB_USERNAME, GITHUB_PUSH_PAT
+Credentials for --push: explicit environment only
+  GITHUB_USERNAME, GITHUB_REPO, GITHUB_OWNER_TYPE, GITHUB_PUSH_PAT (or GITHUB_TOKEN)
 """
 from __future__ import annotations
 
@@ -24,7 +25,6 @@ import os
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 NYXLOOM_DIR = Path(__file__).resolve().parent
@@ -48,8 +48,8 @@ def resolve_version() -> str:
 
     Honours an explicit NYXLOOM_VERSION env override; otherwise derives it from
     the `nyxloom-v*` git tag (`git describe`), stripping the prefix. Sanitised to
-    a docker-tag-safe string. No tag yet → 0.0.0-dev (same sentinel the bake and
-    the local ciu build default to)."""
+    a docker-tag-safe string. A checkout without a matching tag has no derivable
+    image version, so it fails rather than inventing a sentinel."""
     override = os.environ.get("NYXLOOM_VERSION")
     if override:
         return override
@@ -60,47 +60,31 @@ def resolve_version() -> str:
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
-    except subprocess.CalledProcessError:
-        return "0.0.0-dev"
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Cannot derive NYXLOOM_VERSION: no nyxloom-v* tag is reachable. "
+            "Set NYXLOOM_VERSION explicitly for this non-release build."
+        ) from exc
     ver = desc[len("nyxloom-v"):] if desc.startswith("nyxloom-v") else desc
     # docker tags allow [A-Za-z0-9_.-]; git describe already uses '-', but guard.
-    return re.sub(r"[^A-Za-z0-9_.-]", "-", ver) or "0.0.0-dev"
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "-", ver)
+    if not sanitized:
+        raise RuntimeError("Cannot derive NYXLOOM_VERSION from the matching Git tag")
+    return sanitized
 
 
-def load_cmru_credentials() -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO / GITHUB_OWNER_TYPE
-    from cmru.toml / cmru.secret.toml when not already in the environment (mirrors
-    pwmcp/build-push.py). Missing files are silently skipped."""
-    if (
-        os.environ.get("GITHUB_USERNAME")
-        and os.environ.get("GITHUB_PUSH_PAT")
-        and os.environ.get("GITHUB_OWNER_TYPE")
-    ):
-        return
-    try:
-        cmru_toml = REPO_ROOT / "cmru.toml"
-        if cmru_toml.exists():
-            with cmru_toml.open("rb") as fh:
-                config = tomllib.load(fh)
-            github = config.get("github", {})
-            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
-                os.environ["GITHUB_USERNAME"] = str(github["owner"])
-            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-                os.environ["GITHUB_REPO"] = str(github["repo"])
-            if not os.environ.get("GITHUB_OWNER_TYPE") and github.get("owner_type"):
-                os.environ["GITHUB_OWNER_TYPE"] = str(github["owner_type"])
-        if not os.environ.get("GITHUB_PUSH_PAT"):
-            token = os.environ.get("GITHUB_TOKEN", "")
-            if not token:
-                secret_toml = REPO_ROOT / "cmru.secret.toml"
-                if secret_toml.exists():
-                    with secret_toml.open("rb") as fh:
-                        secret = tomllib.load(fh)
-                    token = str(secret.get("github", {}).get("token", ""))
-            if token:
-                os.environ["GITHUB_PUSH_PAT"] = token
-    except Exception:
-        pass
+def require_push_environment() -> None:
+    """Require the explicit release context CMRU supplies to project commands."""
+    token = (os.environ.get("GITHUB_PUSH_PAT") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    if token:
+        os.environ["GITHUB_PUSH_PAT"] = token
+    required = ("GITHUB_USERNAME", "GITHUB_REPO", "GITHUB_OWNER_TYPE", "GITHUB_PUSH_PAT")
+    missing = [name for name in required if not os.environ.get(name, "").strip()]
+    if missing:
+        fail(
+            "nyxloom OCI push requires explicit environment: " + ", ".join(missing) + ". "
+            "Run through CMRU or set these values before invoking build-push.py --push."
+        )
 
 
 def sync_ghcr_package_visibility(package_names: list[str]) -> None:
@@ -141,11 +125,9 @@ def do_build() -> None:
 
 def do_push() -> None:
     version = resolve_version()
-    load_cmru_credentials()
-    username = os.environ.get("GITHUB_USERNAME", "")
-    pat = os.environ.get("GITHUB_PUSH_PAT", "")
-    if not username or not pat:
-        fail("GITHUB_USERNAME and GITHUB_PUSH_PAT are required for push")
+    require_push_environment()
+    username = os.environ["GITHUB_USERNAME"]
+    pat = os.environ["GITHUB_PUSH_PAT"]
     log(f"Logging in to ghcr.io as {username}")
     subprocess.run(
         ["docker", "login", "ghcr.io", "-u", username, "--password-stdin"],

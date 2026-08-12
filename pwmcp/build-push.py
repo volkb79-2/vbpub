@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PWMCP_DIR = Path(__file__).resolve().parent
-BUILD_CONFIG = PWMCP_DIR / "cmru.build.toml"
+BUILD_CONFIG = PWMCP_DIR / "cmru.toml"
 
 # Strict prepared-coordinate loader (pwmcp/scripts/_vars.py).
 sys.path.insert(0, str(PWMCP_DIR / "scripts"))

@@ -155,7 +155,9 @@ Two more CLI verbs round out the surface:
 ## Installing
 
 assay is distributed as an estate-local wheel (decision A-001 — not
-published to a public package index). Build or obtain the wheel, then:
+published to a public package index). Obtain one immutable release wheel, verify its
+`release-manifest.json`, then install it with `pip --require-hashes`; the exact workflow is in
+[Consuming Assay from another repository](docs/CONSUMERS.md). For local development only:
 
 ```bash
 pip install ./assay-*.whl
@@ -176,6 +178,10 @@ all-in-one platform:
   judgment (HOW). They're deliberately not merged — see
   [§4 of the design guide](docs/DESIGN-GUIDE.md#4-the-boundary-with-ciu-and-why-they-are-not-one-tool)
   for why that boundary is topological, not just organizational.
+- **`cmru`** owns release transactions and project gates. A consumer's
+  `cmru.toml` can invoke a pinned Assay wheel or zipapp through `tester-gate`; CMRU does not
+  reinterpret the lane or bake an ambient Assay version into `tester-unified`. See the
+  [consumer guide](docs/CONSUMERS.md#cmru--tester-unified-integration).
 - **`nyxloom`** orchestrates the *development* of assay itself (and other
   estate projects) through a handoff/carve/review/gate/merge pipeline — see
   [Contributing / development process](#contributing--development-process).

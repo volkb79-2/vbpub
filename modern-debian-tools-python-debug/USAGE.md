@@ -34,14 +34,14 @@ controls the slice size used by the repack flow.
 ### Builder governance (`BUILDX_BUILDER`)
 
 Release builds use a resource-confined, **named** buildx builder rather than
-whatever builder happens to be the current default. `cmru.build.toml` owns the
+whatever builder happens to be the current default. `cmru.toml` owns the
 limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
 automatically recreates a project-owned builder whose driver or limits drifted,
 and fails closed if Docker does not apply the configured values.
 
 Do not create or update the release builder by copying a `docker buildx create`
 command from this guide. Run the normal build entry point; it reads the current
-name and limits from `cmru.build.toml`, creates the builder when absent, repairs
+name and limits from `cmru.toml`, creates the builder when absent, repairs
 configuration drift, and verifies Docker's applied limits before building.
 
 Caveats:
@@ -59,14 +59,14 @@ Caveats:
 - Seeing `dockerd` in `system.slice/docker.service` is normal. The governed
   `docker-container` builder puts the CPU- and memory-heavy BuildKit worker in
   a separate generated container scope, where Docker enforces the values from
-  `cmru.build.toml`. Plain `docker build` does not select this named builder and
+  `cmru.toml`. Plain `docker build` does not select this named builder and
   therefore bypasses that project-owned confinement.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
   `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
   priority, and the caller's cgroup. The default does not impose a virtual
   address-space ceiling because the merged filesystem is much larger than the
   process's resident memory; `REPACK_VMEM_KB` remains available as an explicit
-  diagnostic override. All values live in `cmru.build.toml`.
+  diagnostic override. All values live in `cmru.toml`.
 
 This section is the operator quick reference. The architecture document covers
 the important distinction between the builder's Docker cgroup leaf, the
