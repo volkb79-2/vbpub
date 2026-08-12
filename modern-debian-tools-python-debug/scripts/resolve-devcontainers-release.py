@@ -1213,6 +1213,29 @@ def family_latest_relpath(package_name: str) -> str:
 
 BAKE_FILE = PACKAGE_DOCS_ROOT.parent / "docker-bake.hcl"
 
+
+def _bake_default(name: str) -> str:
+    """Read a required literal variable default from the authoritative bake file."""
+    content = BAKE_FILE.read_text(encoding="utf-8")
+    match = re.search(
+        rf'variable\s+"{re.escape(name)}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"',
+        content,
+        re.DOTALL,
+    )
+    if not match or not match.group(1).strip():
+        raise RuntimeError(f"{name} must have a literal default in {BAKE_FILE}")
+    return match.group(1).strip()
+
+
+def base_images_from_bake() -> tuple[str, str]:
+    """Derive both base-image coordinates from the single bake-file baseline."""
+    python_version = _bake_default("LATEST_KNOWN_PYTHON")
+    debian = _bake_default("LATEST_KNOWN_DEBIAN")
+    return (
+        f"mcr.microsoft.com/devcontainers/python:{python_version}-{debian}",
+        f"mcr.microsoft.com/devcontainers/python:dev-{python_version}-{debian}",
+    )
+
 _FAMILY_TITLES = {
     "modern-debian-tools-python-debug": "Modern Debian Tools + Python Debug",
     "modern-debian-tools-python-debug-vsc-devcontainer": (
@@ -1681,10 +1704,10 @@ def write_package_docs(
     *,
     tool_metadata: dict | None,
     ciu_wheel_version: str,
+    username: str,
+    repo: str,
     first_party_wheels: list[dict[str, str]] | None = None,
 ) -> list[str]:
-    username = os.getenv("GITHUB_USERNAME") or "volkb79-2"
-    repo = os.getenv("GITHUB_REPO") or "vbpub"
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
     description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
 
@@ -1757,15 +1780,22 @@ def write_package_docs(
 
 
 def main() -> int:
-    stable_image = (
-        os.getenv("DEVCONTAINERS_BASE_PINNED")
-        or os.getenv("DEVCONTAINERS_BASE_STABLE")
-        or "mcr.microsoft.com/devcontainers/python:3.14-trixie"
-    )
-    dev_image = os.getenv(
-        "DEVCONTAINERS_BASE_DEV",
-        "mcr.microsoft.com/devcontainers/python:dev-3.14-trixie",
-    )
+    baked_stable_image, baked_dev_image = base_images_from_bake()
+    stable_image = os.getenv("DEVCONTAINERS_BASE_PINNED") or baked_stable_image
+    dev_image = os.getenv("DEVCONTAINERS_BASE_DEV") or baked_dev_image
+    github_owner = (os.getenv("GITHUB_USERNAME") or "").strip()
+    github_repo = (os.getenv("GITHUB_REPO") or "").strip()
+    if not github_owner or not github_repo:
+        missing = [
+            name for name, value in {
+                "GITHUB_USERNAME": github_owner,
+                "GITHUB_REPO": github_repo,
+            }.items() if not value
+        ]
+        raise RuntimeError(
+            "Package-manifest generation requires " + ", ".join(missing) +
+            "; run through CMRU or export the release identity explicitly"
+        )
 
     # Startup progress
     sys.stderr.write("[INFO] Checking MCR registry for newer devcontainers/python releases...\n")
@@ -1816,10 +1846,8 @@ def main() -> int:
     # Resolve first-party wheels (cmru and any future entries in pip/wheels.list).
     # Non-fatal when a release is not yet published (skip with [WARN]).
     # The actual rebuild happens in the FINAL CUT after cmru's P7 re-release.
-    _github_owner = os.getenv("GITHUB_USERNAME") or "volkb79-2"
-    _github_repo = os.getenv("GITHUB_REPO") or "vbpub"
     sys.stderr.write("[INFO] Resolving first-party wheels from pip/wheels.list...\n")
-    first_party_wheels = resolve_first_party_wheels(_github_owner, _github_repo)
+    first_party_wheels = resolve_first_party_wheels(github_owner, github_repo)
 
     package_names = write_package_docs(
         build_date,
@@ -1827,6 +1855,8 @@ def main() -> int:
         latest_debian,
         tool_metadata=tool_metadata,
         ciu_wheel_version=ciu_wheel_version,
+        username=github_owner,
+        repo=github_repo,
         first_party_wheels=first_party_wheels,
     )
 

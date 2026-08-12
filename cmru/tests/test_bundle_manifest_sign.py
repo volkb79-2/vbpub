@@ -483,52 +483,6 @@ class TestTrustedComment:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Missing secret key → clear error
-# ---------------------------------------------------------------------------
-
-class TestMissingSecretKey:
-    def test_minisign_in_delegated_config_missing_key_exits(self, tmp_path: Path) -> None:
-        """delegated.run_delegated_config with minisign enabled but no key → exit CONFIG_ERROR."""
-        from cmru import delegated, exit_codes
-
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text('{"schema_version":1}\n', encoding="utf-8")
-
-        minisign_cfg = {
-            "minisign": {
-                "enabled": True,
-                # Neither secret_key_env nor secret_key_file provided → error.
-            }
-        }
-
-        env = {k: v for k, v in os.environ.items() if not k.startswith("MINISIGN")}
-        with mock.patch.dict(os.environ, env, clear=True):
-            with pytest.raises(SystemExit) as exc_info:
-                delegated.run_delegated_config(minisign_cfg, artifact=manifest)
-            assert exc_info.value.code == exit_codes.CONFIG_ERROR
-
-    def test_minisign_in_delegated_config_missing_env_var_exits(self, tmp_path: Path) -> None:
-        """If secret_key_env is set in config but env var is absent and no file fallback → error."""
-        from cmru import delegated, exit_codes
-
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text('{"schema_version":1}\n', encoding="utf-8")
-
-        minisign_cfg = {
-            "minisign": {
-                "enabled": True,
-                "secret_key_env": "MINISIGN_KEY_THAT_DOES_NOT_EXIST",
-            }
-        }
-
-        env = {k: v for k, v in os.environ.items() if k != "MINISIGN_KEY_THAT_DOES_NOT_EXIST"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            with pytest.raises(SystemExit) as exc_info:
-                delegated.run_delegated_config(minisign_cfg, artifact=manifest)
-            assert exc_info.value.code == exit_codes.CONFIG_ERROR
-
-
-# ---------------------------------------------------------------------------
 # Test 7: Image map is input, not invented
 # ---------------------------------------------------------------------------
 
@@ -637,12 +591,12 @@ class TestMinisignRoundTrip:
             project="test", tag="test-v1.0.0", manifest_path=blob
         )
 
-        minisign_sign(blob, secret_key=str(sec), trusted_comment=trusted_comment, required=True)
+        minisign_sign(blob, secret_key=str(sec), trusted_comment=trusted_comment)
 
         sig_file = tmp_path / "manifest.json.minisig"
         assert sig_file.exists(), "minisign must produce <blob>.minisig"
 
-        result = minisign_verify(blob, public_key=str(pub), required=True)
+        result = minisign_verify(blob, public_key=str(pub))
         assert result is True, "verify must return True for a valid signature"
 
     def test_mutated_blob_verify_fails(self, tmp_path: Path) -> None:
@@ -693,35 +647,21 @@ class TestMinisignRoundTrip:
 
 @pytest.mark.skipif(_minisign_available(), reason="minisign IS available — this tests the absent case")
 class TestMinisignAbsent:
-    def test_sign_absent_required_false_skips(self, tmp_path: Path) -> None:
-        """When minisign is absent and required=False, sign must skip (no exit)."""
-        from cmru.delegated import minisign_sign
-        blob = tmp_path / "manifest.json"
-        blob.write_text("{}\n", encoding="utf-8")
-        # Should not raise or exit.
-        minisign_sign(blob, secret_key="/nonexistent.key", trusted_comment="test", required=False)
-
-    def test_verify_absent_required_false_returns_false(self, tmp_path: Path) -> None:
-        from cmru.delegated import minisign_verify
-        blob = tmp_path / "manifest.json"
-        blob.write_text("{}\n", encoding="utf-8")
-        result = minisign_verify(blob, public_key="/nonexistent.pub", required=False)
-        assert result is False
-
-    def test_sign_absent_required_true_exits_3(self, tmp_path: Path) -> None:
+    def test_sign_absent_fails_closed(self, tmp_path: Path) -> None:
+        """A requested signature cannot silently become an unsigned bundle."""
         from cmru import exit_codes
         from cmru.delegated import minisign_sign
         blob = tmp_path / "manifest.json"
         blob.write_text("{}\n", encoding="utf-8")
         with pytest.raises(SystemExit) as exc_info:
-            minisign_sign(blob, secret_key="/nonexistent.key", trusted_comment="test", required=True)
+            minisign_sign(blob, secret_key="/nonexistent.key", trusted_comment="test")
         assert exc_info.value.code == exit_codes.PREREQ_MISSING
 
-    def test_verify_absent_required_true_exits_3(self, tmp_path: Path) -> None:
+    def test_verify_absent_fails_closed(self, tmp_path: Path) -> None:
         from cmru import exit_codes
         from cmru.delegated import minisign_verify
         blob = tmp_path / "manifest.json"
         blob.write_text("{}\n", encoding="utf-8")
         with pytest.raises(SystemExit) as exc_info:
-            minisign_verify(blob, public_key="/nonexistent.pub", required=True)
+            minisign_verify(blob, public_key="/nonexistent.pub")
         assert exc_info.value.code == exit_codes.PREREQ_MISSING

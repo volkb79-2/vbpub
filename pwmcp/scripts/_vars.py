@@ -1,31 +1,22 @@
-"""Shared helper — load pwmcp cmru.vars with self-heal.
+"""Load the prepared pwmcp release coordinate from ``cmru.vars``.
 
-If cmru.vars is missing or incomplete (a required key is absent),
-``resolve-playwright-version.py`` is run as a subprocess (idempotent) to
-regenerate it, then the file is reloaded.
-
-Env-wins: any key already present in os.environ is **not** overwritten.
+CMRU's explicit ``prepare`` phase owns the resolver and the generated file.
+Build/publish phases consume that exact coordinate; they never silently invoke
+network discovery or replace it with an environment value.
 """
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 # Keys that must be present in cmru.vars for downstream scripts to work.
-# PLAYWRIGHT_VERSION and PWMCP_VERSION are backwards-compat aliases for the PyPI variants.
 _REQUIRED_KEYS = (
-    "PLAYWRIGHT_VERSION_PYPI",
-    "PLAYWRIGHT_VERSION_NPM",
     "PLAYWRIGHT_VERSION",
     "PLAYWRIGHT_DISTRO",
     "PLAYWRIGHT_MCP_VERSION",
     "CHROME_DEVTOOLS_MCP_VERSION",
     "MCP_PROXY_VERSION",
     "LIGHTHOUSE_VERSION",
-    "PWMCP_VERSION_PYPI",
-    "PWMCP_VERSION_NPM",
     "PWMCP_VERSION",
 )
 
@@ -35,7 +26,6 @@ _REQUIRED_KEYS = (
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _PWMCP_DIR = _SCRIPTS_DIR.parent
 _VARS_FILE = _PWMCP_DIR / "cmru.vars"
-_RESOLVER = _SCRIPTS_DIR / "resolve-playwright-version.py"
 
 
 def _parse_vars_file(path: Path) -> dict[str, str]:
@@ -50,75 +40,39 @@ def _parse_vars_file(path: Path) -> dict[str, str]:
     return result
 
 
-def _run_resolver() -> None:
-    """Run resolve-playwright-version.py as a subprocess.  Propagates non-zero exit."""
-    print("[INFO] cmru.vars missing or incomplete — running resolve-playwright-version.py …",
-          file=sys.stderr)
-    result = subprocess.run(
-        [sys.executable, str(_RESOLVER)],
-        check=False,
-    )
-    if result.returncode != 0:
-        print(
-            f"[ERROR] resolve-playwright-version.py exited with code {result.returncode}.",
-            file=sys.stderr,
-        )
-        raise SystemExit(result.returncode)
-
-
 def _is_complete(vars_map: dict[str, str]) -> bool:
     return all(vars_map.get(k) for k in _REQUIRED_KEYS)
 
 
 def load_vars() -> dict[str, str]:
-    """Load cmru.vars, self-healing if absent or incomplete.
+    """Load the exact prepared coordinate or fail with an actionable remedy.
 
-    Returns a dict of all KEY→value pairs found in cmru.vars *after* the
-    self-heal step (if triggered).  Also applies env-wins: for each key
-    already set in os.environ the returned dict reflects the env value, and
-    os.environ is left unchanged for keys not present in cmru.vars.
-
-    Side-effect: sets os.environ.setdefault for every key found in the file
-    so callers that read os.environ directly continue to work as before.
+    The file is intentionally authoritative over shell values.  If it is
+    absent or malformed, start a new CMRU release transaction (or run the
+    project's explicit prepare command) rather than discovering a newer
+    upstream halfway through a build or push.
     """
-    # First pass — try reading the existing file.
-    if _VARS_FILE.exists():
-        vars_map = _parse_vars_file(_VARS_FILE)
-        if _is_complete(vars_map):
-            _apply_to_env(vars_map)
-            return _env_merged(vars_map)
-
-    # File absent or incomplete — regenerate.
-    _run_resolver()
-
-    # Second pass — the resolver must have written the file.
     if not _VARS_FILE.exists():
-        print(f"[ERROR] {_VARS_FILE} still absent after resolve step.", file=sys.stderr)
+        print(
+            f"[ERROR] {_VARS_FILE} is absent; run CMRU's pwmcp prepare phase first.",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     vars_map = _parse_vars_file(_VARS_FILE)
     if not _is_complete(vars_map):
         missing = [k for k in _REQUIRED_KEYS if not vars_map.get(k)]
         print(
-            f"[ERROR] cmru.vars still missing required keys after resolve: {missing}",
+            f"[ERROR] cmru.vars is missing required prepared keys: {missing}",
             file=sys.stderr,
         )
         raise SystemExit(1)
 
     _apply_to_env(vars_map)
-    return _env_merged(vars_map)
+    return dict(vars_map)
 
 
 def _apply_to_env(vars_map: dict[str, str]) -> None:
-    """Set os.environ for any key not already present (env-wins)."""
+    """Apply the prepared coordinate as the authoritative process environment."""
     for key, value in vars_map.items():
-        os.environ.setdefault(key, value)
-
-
-def _env_merged(vars_map: dict[str, str]) -> dict[str, str]:
-    """Return vars_map with env-override applied (env value wins if key already set)."""
-    merged = dict(vars_map)
-    for key in vars_map:
-        if key in os.environ:
-            merged[key] = os.environ[key]
-    return merged
+        os.environ[key] = value

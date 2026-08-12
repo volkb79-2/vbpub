@@ -3,15 +3,14 @@ dist_dir = "dist"
 bundle_dir = "bundle"
 
 [archive]
-# PWMCP_VERSION is written by scripts/resolve-playwright-version.py (e.g. "1.60.0-r2").
+# PWMCP_VERSION is written by CMRU's explicit pwmcp prepare phase (e.g. "1.60.0-r2").
 name_template = "pwmcp-{version}.tar.xz"
 format = "xztar"
 version_env = "PWMCP_VERSION"
-fallback_env = "BUILD_DATE"
 
 [copy]
 # Consumer-facing stack files only. Maintainer-only files (Dockerfile, docker-bake.hcl,
-# build-push.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
+# cmru.build.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
 #
 # NOT vendored: ciu.global.defaults.toml.j2 / ciu.global.toml.j2. Those carry
 # standalone_root=true and are the image SOURCE's OWN build-test ciu root — shipping

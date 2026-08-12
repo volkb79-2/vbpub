@@ -17,8 +17,6 @@ Design (see docs/SPEC.md S4–S5):
 Stdlib only (urllib/json/hashlib) so project publish scripts can import it without
 installing anything — they just add ``cmru/src`` to ``sys.path``.
 
-Moved from ``release_manager.github_release`` in P1; ``release_manager.github_release``
-is now a re-export shim kept for backwards compatibility until P6.
 """
 from __future__ import annotations
 

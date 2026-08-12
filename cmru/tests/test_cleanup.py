@@ -39,7 +39,7 @@ def _make_cleanup_config(
 
 def _make_github_config(token: str = "tok") -> cli.GitHubConfig:
     return cli.GitHubConfig(
-        username="owner", repo="repo", token=token, owner_type="user"
+        owner="owner", repo="repo", token=token, owner_type="user"
     )
 
 

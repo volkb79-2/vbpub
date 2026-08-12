@@ -463,10 +463,10 @@ one reason flavors are tag variants rather than new package names: no new family
 new visibility state to sync.
 
 The canonical direct-push release path publishes through BuildKit and does **not** call
-`skopeo`. When using the cmru oci-image handler (`cmru.toml [project.xxx.oci]`), cmru
-handles Docker login. The `.ghcr-auth.json` fallback (`REGISTRY_AUTH_FILE`) is only for
-manual/local use outside cmru, such as the historical compression benchmark — keep that
-file untracked.
+`skopeo`. CMRU supplies the release identity and performs Docker login. Manual release
+commands must export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
+`GITHUB_OWNER_TYPE`, and `GITHUB_PUSH_PAT` inputs; workspace-local credential-file
+fallbacks are not supported.
 
 Built images carry `net.volkb79.base-devcontainers-release` and
 `net.volkb79.base-devcontainers-version` labels:

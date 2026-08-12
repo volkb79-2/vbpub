@@ -1,9 +1,8 @@
-"""cmru unified config schema (S2) — strict parser for cmru.toml, used by ``cmru get``.
+"""cmru unified config schema (S2) — the one strict reader for ``cmru.toml``.
 
-The orchestrator (``cli.py:load_config``) reads the same ``cmru.toml`` via a more
-lenient loader that maps it onto the runner model; this module is the strict S2 reader
-(full validation) consumed by getpy. Both read one file: cmru.toml, and both accept the
-same artifact schema (``artifacts = [...]`` list, ``oci`` → ``oci-image`` alias).
+Every CMRU verb validates this file through this module before it interprets a value.
+There is no compatibility parser: retired keys, misspellings, and partial sections are
+configuration errors rather than facts silently supplied by defaults.
 
 S2 top-level tables: [github], [orchestration], [targets], [cleanup], [project.<name>]
 See docs/SPEC.md S2 for the full schema.
@@ -83,14 +82,6 @@ class InstallerConfig:
 
 
 @dataclass(frozen=True)
-class DelegatedConfig:
-    sign: bool               # cosign (S7)
-    sbom: bool               # syft + grype (S7)
-    changelog: bool          # git-cliff (S7)
-    nfpm: bool               # nfpm deb/rpm (S7)
-
-
-@dataclass(frozen=True)
 class VariantConfig:
     """A named per-interpreter artifact variant (S-REL.6).
 
@@ -107,6 +98,7 @@ class VariantConfig:
 @dataclass(frozen=True)
 class ProjectS2Config:
     name: str
+    template_revision: Optional[int]
     prefix: str              # git tag prefix, e.g. "tls-edge-v"
     artifact: str            # "wheel" | "oci" | "tarball" | "bundle"
     cwd: str                 # build working directory
@@ -115,7 +107,6 @@ class ProjectS2Config:
     publish: Optional[PublishConfig]
     resolve: Optional[ResolveConfig]
     installer: Optional[InstallerConfig]
-    delegated: Optional[DelegatedConfig]
     steps: Mapping[str, list]
     # Source-first release history defaults to this project-relative document.
     # ``[project.X.release] changelog = false`` is the explicit opt-out.
@@ -157,47 +148,70 @@ def _require(d: dict, key: str, section: str) -> object:
     return val
 
 
+def _error(message: str) -> "None":
+    print(f"[ERROR] {message}", flush=True)
+    raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _reject_unknown(raw: dict, known: set[str], where: str) -> None:
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        _error(f"{where}: unknown keys {unknown}")
+
+
+def _require_table(raw: dict, key: str, where: str) -> dict:
+    value = _require(raw, key, where)
+    if not isinstance(value, dict):
+        _error(f"{where}.{key} must be a table")
+    return value
+
+
+def _string_list(value: object, where: str) -> List[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        _error(f"{where} must be a list of non-empty strings")
+    return list(value)
+
+
 def _parse_version(raw: dict, project_name: str) -> VersionConfig:
-    strategy = str(_require(raw, "strategy", f"project.{project_name}.version"))
+    where = f"project.{project_name}.version"
+    _reject_unknown(raw, {"strategy", "bump", "paths", "base_version", "file"}, where)
+    strategy = str(_require(raw, "strategy", where)).strip()
+    if not (
+        strategy in {"scm", "counter", "none"}
+        or strategy.startswith("file:") and len(strategy) > len("file:")
+        or strategy.startswith("external:") and len(strategy) > len("external:")
+    ):
+        _error(
+            f"{where}.strategy must be scm, counter, none, "
+            "file:<PATH>, or external:<ENV_VAR>"
+        )
     bump = str(raw.get("bump") or "conventional")
     if bump not in ("conventional", "patch"):
-        print(f"[ERROR] project.{project_name}.version.bump must be 'conventional' or 'patch'")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"{where}.bump must be 'conventional' or 'patch'")
     paths = raw.get("paths") or []
     if not isinstance(paths, list):
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"{where}.paths must be a list")
     return VersionConfig(strategy=strategy, paths=[str(p) for p in paths], bump=bump)
 
 
-_ARTIFACT_ALIASES = {"oci": "oci-image"}
 _VALID_ARTIFACTS = {"wheel", "tarball", "oci-image", "bundle"}
 
 
 def _parse_artifacts(name: str, raw: dict) -> List[str]:
-    """Resolve a project's artifact profiles, mirroring cli.py's orchestrator loader.
+    """Read the canonical project artifact profile list.
 
-    Accepts the canonical ``artifacts = [...]`` list (with the legacy singular
-    ``artifact`` as a fallback) and applies the ``oci`` → ``oci-image`` alias so both
-    readers stay in lock-step against one cmru.toml."""
-    items = raw.get("artifacts")
-    if items is None:
-        single = str(raw.get("artifact") or "").strip()
-        items = [single] if single else []
+    ``artifact`` and the ``oci`` spelling were retired with the strict S2 contract.
+    Their presence is rejected by the project-key validator before this function runs.
+    """
+    items = _require(raw, "artifacts", f"project.{name}")
     if not isinstance(items, list):
-        print(f"[ERROR] project.{name}.artifacts must be a list")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
-    artifacts = [
-        _ARTIFACT_ALIASES.get(str(i).strip(), str(i).strip())
-        for i in items if str(i).strip()
-    ]
+        _error(f"project.{name}.artifacts must be a list")
+    artifacts = [str(i).strip() for i in items if str(i).strip()]
     if not artifacts:
-        print(f"[ERROR] project.{name}.artifacts is required (or legacy 'artifact')")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.artifacts must not be empty")
     unknown = [a for a in artifacts if a not in _VALID_ARTIFACTS]
     if unknown:
-        print(f"[ERROR] project.{name}.artifacts: unknown {unknown}; "
-              f"valid: {sorted(_VALID_ARTIFACTS)} (alias: 'oci'→'oci-image')")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.artifacts: unknown {unknown}; valid: {sorted(_VALID_ARTIFACTS)}")
     return artifacts
 
 
@@ -322,23 +336,124 @@ def _parse_variants(name: str, raw: dict) -> List[VariantConfig]:
     return variants
 
 
-def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
-    # V09: reject the retired [getsh] key
-    if "getsh" in raw:
-        print(
-            f"[ERROR] project.{name}.getsh is no longer supported (V09). "
-            "Migrate to [project.<name>.installer] — see docs/SPEC.md S2."
+def _validate_commands(name: str, step_name: str, raw: object) -> None:
+    where = f"project.{name}.steps.{step_name}"
+    if not isinstance(raw, dict):
+        _error(f"{where} must be a table")
+    _reject_unknown(raw, {"commands"}, where)
+    commands = _require(raw, "commands", where)
+    if not isinstance(commands, list) or not commands:
+        _error(f"{where}.commands must be a non-empty list")
+    for index, command in enumerate(commands):
+        command_where = f"{where}.commands[{index}]"
+        if not isinstance(command, dict):
+            _error(f"{command_where} must be a table")
+        _reject_unknown(command, {"label", "argv", "cwd"}, command_where)
+        label = _require(command, "label", command_where)
+        cwd = _require(command, "cwd", command_where)
+        if not isinstance(label, str) or not label.strip():
+            _error(f"{command_where}.label must be a non-empty string")
+        if not isinstance(cwd, str) or not cwd.strip():
+            _error(f"{command_where}.cwd must be a non-empty string")
+        _string_list(_require(command, "argv", command_where), f"{command_where}.argv")
+
+
+def _validate_project_shape(name: str, raw: dict) -> None:
+    """Validate every CMRU-owned project key before a consumer maps it.
+
+    Keep this separate from the dataclass conversion below: ``cli.load_config`` has
+    a richer execution model than ``get`` but MUST see the exact same accepted input.
+    """
+    where = f"project.{name}"
+    _reject_unknown(
+        raw,
+        {
+            "prefix", "artifacts", "scm_dist", "cwd", "version", "steps", "release",
+            "installer", "variants", "oci", "publish", "resolve", "env",
+            "template_revision",
+        },
+        where,
+    )
+    for key in ("prefix", "cwd"):
+        value = _require(raw, key, where)
+        if not isinstance(value, str) or not value.strip():
+            _error(f"{where}.{key} must be a non-empty string")
+    _parse_artifacts(name, raw)
+    if "template_revision" in raw and (
+        not isinstance(raw["template_revision"], int) or raw["template_revision"] < 1
+    ):
+        _error(f"{where}.template_revision must be a positive integer")
+    if "scm_dist" in raw and (not isinstance(raw["scm_dist"], str) or not raw["scm_dist"].strip()):
+        _error(f"{where}.scm_dist must be a non-empty string")
+
+    version = _require_table(raw, "version", where)
+    _parse_version(version, name)
+
+    if "env" in raw and not isinstance(raw["env"], dict):
+        _error(f"{where}.env must be a table")
+
+    steps = raw.get("steps", {})
+    if not isinstance(steps, dict):
+        _error(f"{where}.steps must be a table")
+    for step_name, step in steps.items():
+        if not isinstance(step_name, str) or not step_name:
+            _error(f"{where}.steps has an invalid step name")
+        _validate_commands(name, step_name, step)
+
+    release = raw.get("release")
+    if release is not None:
+        if not isinstance(release, dict):
+            _error(f"{where}.release must be a table")
+        _reject_unknown(release, {"git_tag", "commit_generated", "changelog"}, f"{where}.release")
+        if "git_tag" in release and not isinstance(release["git_tag"], bool):
+            _error(f"{where}.release.git_tag must be a boolean")
+        if "commit_generated" in release:
+            _string_list(release["commit_generated"], f"{where}.release.commit_generated")
+
+    installer = raw.get("installer")
+    if installer is not None and not isinstance(installer, dict):
+        _error(f"{where}.installer must be a table")
+
+    oci = raw.get("oci")
+    if "oci-image" in _parse_artifacts(name, raw) and oci is None:
+        _error(f"{where}.oci is required for an oci-image artifact")
+    if oci is not None:
+        if not isinstance(oci, dict):
+            _error(f"{where}.oci must be a table")
+        _reject_unknown(
+            oci, {"bake_file", "target", "repack", "repack_target_size", "repack_compression"},
+            f"{where}.oci",
         )
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        for key in ("bake_file", "target", "repack"):
+            if key not in oci:
+                _error(f"{where}.oci.{key} is required")
+        for key in ("bake_file", "target"):
+            if not isinstance(oci[key], str) or not oci[key].strip():
+                _error(f"{where}.oci.{key} must be a non-empty string")
+        if not isinstance(oci["repack"], bool):
+            _error(f"{where}.oci.repack must be a boolean")
+
+    publish = raw.get("publish")
+    if publish is not None:
+        if not isinstance(publish, dict):
+            _error(f"{where}.publish must be a table")
+        _reject_unknown(publish, {"source", "latest_json"}, f"{where}.publish")
+    resolve = raw.get("resolve")
+    if resolve is not None:
+        if not isinstance(resolve, dict):
+            _error(f"{where}.resolve must be a table")
+        _reject_unknown(resolve, {"asset_glob"}, f"{where}.resolve")
+
+
+def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
+    _validate_project_shape(name, raw)
 
     prefix = str(_require(raw, "prefix", f"project.{name}"))
     artifact = _parse_artifacts(name, raw)[0]   # primary profile (getpy doesn't use it)
     cwd = str(_require(raw, "cwd", f"project.{name}"))
     scm_dist = raw.get("scm_dist")
 
-    version: Optional[VersionConfig] = None
-    if "version" in raw:
-        version = _parse_version(raw["version"], name)
+    version = _parse_version(raw["version"], name)
 
     publish: Optional[PublishConfig] = None
     if "publish" in raw:
@@ -356,16 +471,6 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
     installer: Optional[InstallerConfig] = None
     if "installer" in raw:
         installer = _parse_installer(name, raw["installer"])
-
-    delegated: Optional[DelegatedConfig] = None
-    if "delegated" in raw:
-        d = raw["delegated"]
-        delegated = DelegatedConfig(
-            sign=bool(d.get("sign", False)),
-            sbom=bool(d.get("sbom", False)),
-            changelog=bool(d.get("changelog", False)),
-            nfpm=bool(d.get("nfpm", False)),
-        )
 
     changelog: Optional[str] = "CHANGES.md"
     release = raw.get("release")
@@ -391,14 +496,12 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
                 changelog = value.strip()
 
     steps = raw.get("steps") or {}
-    if not isinstance(steps, dict):
-        print(f"[ERROR] project.{name}.steps must be a table")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
 
     variants = _parse_variants(name, raw)
 
     return ProjectS2Config(
         name=name,
+        template_revision=raw.get("template_revision"),
         prefix=prefix,
         artifact=artifact,
         cwd=cwd,
@@ -407,61 +510,112 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         publish=publish,
         resolve=resolve,
         installer=installer,
-        delegated=delegated,
         steps=steps,
         changelog=changelog,
         variants=variants,
     )
 
 
-def load_forge_config(config_path: Path) -> ForgeConfig:
-    """Parse a cmru.toml file (S2 schema). Exits with code 2 on config errors."""
+def load_forge_config(config_path: Path, *, require_orchestration: bool = False) -> ForgeConfig:
+    """Parse a cmru.toml file.
+
+    ``get`` only needs project publication metadata, while orchestration verbs need
+    an explicit release plan and cleanup policy.  The caller states which contract
+    it needs; neither path invents missing values.
+    """
     if not config_path.exists():
         print(f"[ERROR] Config file not found: {config_path}")
         raise SystemExit(exit_codes.CONFIG_ERROR)
     with config_path.open("rb") as fh:
         raw = tomllib.load(fh)
 
+    _reject_unknown(raw, {"github", "targets", "orchestration", "cleanup", "env", "project"}, "cmru.toml")
+
     # [github]
     gh_raw = raw.get("github")
     if not gh_raw or not isinstance(gh_raw, dict):
-        print("[ERROR] [github] section is required")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error("[github] section is required")
+    _reject_unknown(gh_raw, {"owner", "repo", "owner_type", "token"}, "github")
     owner = str(_require(gh_raw, "owner", "github"))
     repo = str(_require(gh_raw, "repo", "github"))
     owner_type = str(_require(gh_raw, "owner_type", "github"))
+    if not owner.strip() or not repo.strip():
+        _error("github.owner and github.repo must be non-empty strings")
     if owner_type not in ("user", "org"):
-        print("[ERROR] github.owner_type must be 'user' or 'org'")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error("github.owner_type must be 'user' or 'org'")
     token = gh_raw.get("token") or None
 
     github = GitHubS2Config(owner=owner, repo=repo, owner_type=owner_type, token=token)
 
     # [targets]
-    tgt_raw = raw.get("targets") or {}
-    host = str(tgt_raw.get("host") or "github")
-    registry = tgt_raw.get("registry") or []
-    if not isinstance(registry, list):
-        print("[ERROR] targets.registry must be a list")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
-    targets = TargetsConfig(host=host, registry=[str(r) for r in registry])
+    tgt_raw = raw.get("targets")
+    if not isinstance(tgt_raw, dict):
+        _error("[targets] section is required")
+    _reject_unknown(tgt_raw, {"host", "registry"}, "targets")
+    host = _require(tgt_raw, "host", "targets")
+    if not isinstance(host, str) or not host.strip():
+        _error("targets.host must be a non-empty string")
+    registry = _require(tgt_raw, "registry", "targets")
+    if not isinstance(registry, list) or not all(isinstance(item, str) and item.strip() for item in registry):
+        _error("targets.registry must be a list of non-empty strings")
+    targets = TargetsConfig(host=host, registry=list(registry))
 
     # [orchestration] (optional for non-orchestrator use)
     orch_raw = raw.get("orchestration")
     orchestration: Optional[OrchestrationConfig] = None
-    if orch_raw and isinstance(orch_raw, dict):
+    if orch_raw is not None:
+        if not isinstance(orch_raw, dict):
+            _error("[orchestration] must be a table")
+        _reject_unknown(
+            orch_raw,
+            {"project_order", "default_projects", "default_steps", "execution_mode", "step_project_order"},
+            "orchestration",
+        )
+        for key in ("project_order", "default_projects", "default_steps"):
+            _string_list(_require(orch_raw, key, "orchestration"), f"orchestration.{key}")
+        execution_mode = _require(orch_raw, "execution_mode", "orchestration")
+        if execution_mode not in {"project-first", "step-first"}:
+            _error("orchestration.execution_mode must be 'project-first' or 'step-first'")
+        step_project_order = orch_raw.get("step_project_order", {})
+        if not isinstance(step_project_order, dict):
+            _error("orchestration.step_project_order must be a table")
+        for step, names in step_project_order.items():
+            if not isinstance(step, str) or not step:
+                _error("orchestration.step_project_order has an invalid step name")
+            _string_list(names, f"orchestration.step_project_order.{step}")
         orchestration = OrchestrationConfig(
-            project_order=list(orch_raw.get("project_order") or []),
-            default_projects=list(orch_raw.get("default_projects") or []),
-            default_steps=list(orch_raw.get("default_steps") or []),
-            execution_mode=str(orch_raw.get("execution_mode") or "step-first"),
+            project_order=list(orch_raw["project_order"]),
+            default_projects=list(orch_raw["default_projects"]),
+            default_steps=list(orch_raw["default_steps"]),
+            execution_mode=str(execution_mode),
         )
 
     # [cleanup]
     cleanup_raw = raw.get("cleanup")
     cleanup: Optional[CleanupS2Config] = None
-    if cleanup_raw and isinstance(cleanup_raw, dict):
+    if cleanup_raw is not None:
+        if not isinstance(cleanup_raw, dict):
+            _error("[cleanup] must be a table")
+        _reject_unknown(
+            cleanup_raw,
+            {"max_age_days", "release_tag_prefixes", "keep_release_tags", "ghcr_packages", "ghcr_delete_packages"},
+            "cleanup",
+        )
+        for key in ("release_tag_prefixes", "keep_release_tags", "ghcr_packages", "ghcr_delete_packages"):
+            if key in cleanup_raw:
+                _string_list(cleanup_raw[key], f"cleanup.{key}")
+        if "max_age_days" in cleanup_raw and (
+            not isinstance(cleanup_raw["max_age_days"], int) or cleanup_raw["max_age_days"] <= 0
+        ):
+            _error("cleanup.max_age_days must be a positive integer")
         cleanup = CleanupS2Config(max_age_days=cleanup_raw.get("max_age_days"))
+
+    env_raw = raw.get("env", {})
+    if not isinstance(env_raw, dict):
+        _error("[env] must be a table")
+    for key, value in env_raw.items():
+        if not isinstance(key, str) or not key or not isinstance(value, (str, int, float, bool)):
+            _error("[env] must contain string keys and scalar values")
 
     # [project.*]
     projects_raw = raw.get("project") or {}
@@ -480,6 +634,36 @@ def load_forge_config(config_path: Path) -> ForgeConfig:
             raise SystemExit(exit_codes.CONFIG_ERROR)
         seen_prefixes.add(proj.prefix)
         projects[proj_name] = proj
+
+    if not projects:
+        _error("[project] must declare at least one project")
+
+    if orchestration is not None:
+        known_projects = set(projects)
+        for field_name, names in (
+            ("project_order", orchestration.project_order),
+            ("default_projects", orchestration.default_projects),
+        ):
+            unknown = sorted(set(names) - known_projects)
+            if unknown:
+                _error(f"orchestration.{field_name} names unknown project(s): {unknown}")
+        step_orders = orch_raw.get("step_project_order", {}) if isinstance(orch_raw, dict) else {}
+        for step, names in step_orders.items():
+            unknown = sorted(set(names) - known_projects)
+            if unknown:
+                _error(f"orchestration.step_project_order.{step} names unknown project(s): {unknown}")
+
+    if require_orchestration:
+        if orchestration is None:
+            _error("[orchestration] is required for this CMRU verb")
+        if cleanup is None:
+            _error("[cleanup] is required for this CMRU verb")
+        cleanup_raw = raw["cleanup"]
+        for key in (
+            "release_tag_prefixes", "keep_release_tags", "ghcr_packages", "ghcr_delete_packages",
+        ):
+            if key not in cleanup_raw:
+                _error(f"cleanup.{key} is required for this CMRU verb")
 
     return ForgeConfig(
         github=github,

@@ -305,9 +305,10 @@ def test_builtin_step_command_unknown_step_is_none(tmp_path):
     assert cli._builtin_step_command(proj, "run-tests", tmp_path) is None
 
 
-def test_builtin_step_command_oci_uses_oci_defaults(tmp_path):
+def test_builtin_step_command_oci_uses_explicit_oci_config(tmp_path):
     proj = cli.ProjectConfig(name="img", env={}, steps={}, prefix="img-v",
-                             cwd="img", artifacts=("oci-image",), mint_tag=False)
+                             cwd="img", artifacts=("oci-image",), mint_tag=False,
+                             oci=cli.OCIConfig("docker-bake.hcl", "img", False))
     build = cli._builtin_step_command(proj, "build", tmp_path)
     push = cli._builtin_step_command(proj, "push", tmp_path)
 
@@ -401,10 +402,14 @@ host = "github"
 registry = ["ghcr.io"]
 [orchestration]
 project_order = ["p"]
+default_projects = ["p"]
 default_steps = ["build", "push"]
 execution_mode = "project-first"
 [cleanup]
+release_tag_prefixes = ["*"]
 keep_release_tags = ["p-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []
 """
 
 
@@ -434,6 +439,10 @@ artifacts = ["oci-image"]
 cwd = "p"
 [project.p.version]
 strategy = "none"
+[project.p.oci]
+bake_file = "docker-bake.hcl"
+target = "p"
+repack = false
 """)
     _, projects, *_ = cli.load_config(cfg)
     assert projects["p"].steps == {}
@@ -452,6 +461,8 @@ cwd = "p"
 [project.p.version]
 strategy = "none"
 [project.p.oci]
+bake_file = "docker-bake.hcl"
+target = "p"
 repack = true
 repack_target_size = "2GB"
 repack_compression = 9

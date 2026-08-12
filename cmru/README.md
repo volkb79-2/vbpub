@@ -17,7 +17,7 @@ pip install -e cmru          # provides the `cmru` console script
 
 A release is governed by two orthogonal choices, so the *same* versioning can publish very differently:
 
-1. **Versioning** — `version.strategy`: `scm` | `counter` | `file:PATH` | `delegated` |  `none`. Computes the version string and whether cmru owns a git tag.
+1. **Versioning** — `version.strategy`: `scm` | `counter` | `file:PATH` | `external:VAR` | `none`. Computes the version string and whether cmru owns a git tag.
 2. **Publish profile** — `artifacts = [...]`: one or more artifact profiles, each a preset
    capability bundle. A project may list **several** (their capabilities union).
 
@@ -40,6 +40,8 @@ cmru release                      # isolated: prepare → gate → integrate →
 cmru release --dry-run            # show tags only, no writes
 cmru release --project ciu        # one project
 cmru changelog --project assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
+cmru standards                    # strict config + project-framework conformance
+cmru standards --project pwmcp --update  # safely update CMRU-owned revision markers
 cmru build   --project <name>     # run the project's build step
 cmru publish --project <name>     # run the project's push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
@@ -49,8 +51,47 @@ cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 
 `release` detects changed projects, tags the tag-minting ones, then builds+publishes each by
 its profile (wheel → Release; oci-image → ghcr + provenance commit). A retained transaction
-is the recovery path; the documented post-tag resume guarantee is currently under audit as
-[KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--retained-release-resume-does-not-satisfy-the-documented-already-tagged-idempotency--open).
+is the pre-tag debug/recovery path. CMRU deliberately does not claim to complete a failed
+post-tag publish yet; see [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
+
+## Logging and live diagnostics
+
+Use the root wrapper directly—no `2>&1 | tee ...` is required:
+
+```bash
+./cmru.release.sh --project assay
+```
+
+It overwrites the root `cmru.release.log` with the complete release transcript.
+The terminal stays readable: CMRU reports command labels, duration, known test-framework
+success evidence, and concise failure excerpts. Detailed subprocess output is line-flushed to
+both that audit log and stable per-project files such as `logs/assay/run-tests.log`; successful
+release-worktree cleanup does not remove them.
+
+```bash
+./cmru.release.sh --project modern-debian-tools-python-debug --show-run-details
+./cmru.release.sh --project assay --log-append
+```
+
+`--show-run-details` also streams raw Docker/test output to the terminal. `--log-append`
+preserves the prior root and per-step logs, adding an exact `---` divider before the new run.
+CMRU sets `PYTHONUNBUFFERED=1` for Python child processes and flushes every received line;
+non-Python tools must still flush their own output.
+
+## Project framework and templates
+
+CMRU’s central `cmru.toml` is the project integration point. Each project carries
+`template_revision = 1`, which lets `cmru standards` identify stale adoption without inventing
+project behavior. A bespoke local runner config uses the matching two-line revision header in
+`cmru.build.toml`. Ready-to-copy examples are
+[`templates/project-release.toml.tmpl`](templates/project-release.toml.tmpl) and
+[`templates/cmru.build.toml.tmpl`](templates/cmru.build.toml.tmpl).
+
+`cmru standards --update` changes only those CMRU-owned markers. It never rewrites a project’s
+build/publish commands; a remaining warning is a real policy decision to review.
+Project-local runner controls are strict too: required `project_root`, `release_config`, and
+`log_dir`, explicit `quiet`, and no unknown execution keys. Put project-only data beneath
+`[project_metadata]` so a misspelled runner setting fails before it can alter a release.
 
 ## Release history is automatic
 
@@ -58,7 +99,7 @@ Every CMRU-managed project gets a project-local `CHANGES.md` by default. No proj
 script, config opt-in, or pre-created file is required. During `cmru release`, CMRU
 derives the project-scoped git range, writes one marked entry, commits it with any
 declared mechanical inputs, and runs the release gate against that commit. A tagged
-release is headed by its pending version; an image-only or delegated release is headed
+release is headed by its pending version; an image-only release is headed
 by the source revision it describes and advances a persisted source cursor. Generated
 history and other declared mechanical outputs are excluded from the next source range.
 If an image's private `prepare` step changed declared provenance but has no new source

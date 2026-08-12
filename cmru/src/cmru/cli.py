@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Unified release orchestration for vbpub projects.
-
-Moved from ``release_manager.cli`` in P1; ``release_manager.cli``
-is now a re-export shim kept for backwards compatibility until P6.
-
-NOTE: This module currently contains the legacy ``vbpub-release`` CLI (P1 faithful move).
-The new ``cmru`` CLI verb structure (run/build/publish/resolve/get/release/status)
-is introduced in P3. Until P3, the ``cmru`` entry point invokes this same ``main``.
-"""
+"""Unified release orchestration for vbpub projects."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +11,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional
+from typing import List, Mapping, Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -27,6 +19,7 @@ import tomllib
 
 from cmru.runner import StepConfig, execute_step
 from cmru import transaction
+from cmru.config import load_forge_config
 
 
 @dataclass(frozen=True)
@@ -43,7 +36,7 @@ class VersionSpec:
     bump: str = "conventional"       # "conventional" | "patch"
     paths: tuple = ()                # extra subtrees to watch for change detection
     base_version: str = "1.0.0"      # counter strategy: <base>-r<N>
-    file: str = "VERSION"            # file strategy fallback filename
+    file: str = "VERSION"            # filename for direct file-strategy construction
 
 
 @dataclass(frozen=True)
@@ -61,10 +54,10 @@ class ProjectConfig:
     name: str
     env: Mapping[str, str]
     steps: Mapping[str, List[Command]]
+    template_revision: Optional[int] = None
     prefix: Optional[str] = None    # git tag prefix, e.g. "ciu-v"  (S12; required for auto-version)
     scm_dist: Optional[str] = None  # setuptools dist name for SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*
     cwd: Optional[str] = None       # build working dir (relative to repo root); default = name
-    artifact: Optional[str] = None  # legacy singular; superseded by `artifacts` (S1.2)
     version: Optional[VersionSpec] = None
     paths: Optional[List[str]] = None  # change-detection watch paths; default = [cwd]
     # Publish profile (S-REL): what `cmru release` emits. Resolved from `artifacts`
@@ -89,7 +82,7 @@ class CleanupConfig:
 
 @dataclass(frozen=True)
 class GitHubConfig:
-    username: str
+    owner: str
     repo: str
     token: str
     owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
@@ -102,15 +95,32 @@ class ReleaseEnvConfig:
 
 
 def log_info(message: str) -> None:
-    print(f"[INFO] {message}")
+    print(f"[INFO] {message}", flush=True)
 
 
 def log_warn(message: str) -> None:
-    print(f"[WARN] {message}")
+    print(f"[WARN] {message}", flush=True)
 
 
 def log_error(message: str) -> None:
-    print(f"[ERROR] {message}", file=sys.stderr)
+    print(f"[ERROR] {message}", file=sys.stderr, flush=True)
+
+
+def _apply_output_options(args: object) -> None:
+    """Carry explicit console/logging choices into all child step processes."""
+    if getattr(args, "show_run_details", False):
+        os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
+    if getattr(args, "log_append", False):
+        os.environ["CMRU_LOG_APPEND"] = "1"
+
+
+def _set_release_step_log_root(repo_root: Path) -> None:
+    """Keep project logs outside a disposable release worktree.
+
+    A transaction child inherits this concrete root path, so successful release
+    cleanup never removes the diagnostic evidence it just produced.
+    """
+    os.environ["CMRU_STEP_LOG_ROOT"] = str(repo_root / "logs")
 
 
 def parse_duration(value: str) -> timedelta:
@@ -188,30 +198,12 @@ def load_json(url: str, token: str) -> tuple[list, dict]:
     return json.loads(body), headers
 
 
-def run_commands(commands: Iterable[Command], project_env: Optional[Mapping[str, str]] = None) -> None:
-    """Legacy direct runner. Kept for backwards compatibility; new callers use execute_step."""
-    merged_env = os.environ.copy()
-    if project_env:
-        for key, value in project_env.items():
-            if value is None:
-                continue
-            value_str = str(value).strip()
-            if value_str:
-                merged_env.setdefault(key, value_str)
-
-    for command in commands:
-        log_info(command.label)
-        subprocess.run(command.argv, check=True, cwd=str(command.cwd), env=merged_env)
-
-
 def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
     """Convert orchestrator Command objects to a StepConfig for the unified runner.
 
-    ``run-tests`` defaults to quiet (log file + pointer, no live line-by-line
-    echo) regardless of how a project declares its command — a real gate run
-    (tester-unified, coverage reports, etc.) is exactly the kind of noisy
-    subprocess `quiet` exists for, same as a `docker buildx bake`; no per-project
-    opt-in should be needed to get a readable top-level release log.
+    Every project subprocess defaults to a durable detailed log and concise outer
+    progress. ``--show-run-details`` disables this policy for an interactive
+    diagnosis without changing project configuration.
     """
     return StepConfig(
         name=step_name,
@@ -227,7 +219,7 @@ def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
         login=None,
         step_env={},
         env_command=None,
-        quiet=(step_name == "run-tests"),
+        quiet=True,
     )
 
 
@@ -250,7 +242,14 @@ def run_project_step(
     if not commands:
         return
     step = _build_step_config(step_name, commands)
-    execute_step(step, repo_root, log_dir, extra_env=dict(project.env) if project.env else None)
+    configured_log_root = (os.getenv("CMRU_STEP_LOG_ROOT") or "").strip()
+    stable_log_root = Path(configured_log_root).expanduser() if configured_log_root else log_dir
+    execute_step(
+        step,
+        repo_root,
+        stable_log_root / project.name,
+        extra_env=dict(project.env) if project.env else None,
+    )
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -336,7 +335,6 @@ _PROFILE_PRESETS = {
     "tarball": {"mint_tag": True},
     "oci-image": {"mint_tag": False},
 }
-_ARTIFACT_ALIASES = {"oci": "oci-image"}
 
 
 def _resolve_release_profile(
@@ -344,29 +342,26 @@ def _resolve_release_profile(
 ) -> tuple[tuple, bool, tuple]:
     """Resolve (artifacts, mint_tag, commit_generated) for a project (S-REL).
 
-    - artifacts: ``[project.X].artifacts`` (list) or the legacy singular ``artifact``.
+    - artifacts: canonical ``[project.X].artifacts`` list.
     - mint_tag:  union of preset ``mint_tag`` over artifacts, overridden by
       ``[project.X.release].git_tag``; forced False for version strategy
-      ``none``/``delegated`` (no cmru-owned tag). ``external:VAR`` remains
+      ``none`` (no cmru-owned tag). ``external:VAR`` remains
       cmru-owned: a prepare step derives the version but cmru owns the tag.
     - commit_generated: ``[project.X.release].commit_generated`` (project-relative).
     """
     raw = project.get("artifacts")
-    if raw is None:
-        single = (project.get("artifact") or "").strip()
-        raw = [single] if single else []
     if not isinstance(raw, list):
         raise ValueError(f"project.{name}.artifacts must be a list")
     artifacts: list[str] = []
     for item in raw:
-        norm = _ARTIFACT_ALIASES.get(str(item).strip(), str(item).strip())
-        if norm:
-            artifacts.append(norm)
+        value = str(item).strip()
+        if value:
+            artifacts.append(value)
     unknown = [a for a in artifacts if a not in _PROFILE_PRESETS]
     if unknown:
         raise ValueError(
             f"project.{name}: unknown artifact/profile {unknown}; "
-            f"valid: {sorted(_PROFILE_PRESETS)} (alias: 'oci'→'oci-image')"
+                f"valid: {sorted(_PROFILE_PRESETS)}"
         )
 
     strategy = getattr(version_spec, "strategy", "scm") if version_spec else "scm"
@@ -381,15 +376,15 @@ def _resolve_release_profile(
     if not isinstance(commit_generated, list):
         raise ValueError(f"project.{name}.release.commit_generated must be a list")
 
-    if strategy in ("none", "delegated"):
+    if strategy == "none":
         mint_tag = False
 
     # Guard against the bug that produced modern-debian-tools-python-debug-v0.1.0:
     # an OCI-only project must not pair with a semver-tagging strategy.
-    if artifacts and all(a == "oci-image" for a in artifacts) and strategy not in ("none", "delegated"):
+    if artifacts and all(a == "oci-image" for a in artifacts) and strategy != "none":
         raise ValueError(
             f"project.{name}: oci-image artifact must use version.strategy='none' "
-            f"(or 'delegated'), not '{strategy}' — OCI images are published to a registry, "
+            f"not '{strategy}' — OCI images are published to a registry, "
             "not git-tagged / GitHub-Released."
         )
 
@@ -468,9 +463,13 @@ def _builtin_step_command(
             )
         elif artifact == "oci-image":
             oci_cfg = getattr(project, "oci", None)
-            bake_file = oci_cfg.bake_file if oci_cfg else "docker-bake.hcl"
-            target = oci_cfg.target if oci_cfg else project.name
-            repack = oci_cfg.repack if oci_cfg else False
+            if oci_cfg is None:
+                raise ValueError(
+                    f"project.{project.name}: oci-image requires explicit [project.{project.name}.oci]"
+                )
+            bake_file = oci_cfg.bake_file
+            target = oci_cfg.target
+            repack = oci_cfg.repack
             if repack:
                 # Defence in depth for callers that construct ProjectConfig directly
                 # instead of going through load_config(), which rejects this setting.
@@ -502,24 +501,22 @@ def load_config(
     GitHubConfig,
     ReleaseEnvConfig,
 ]:
-    """Load the cmru config (S2 ``cmru.toml``). Tolerant of the retired legacy keys
-    (``[projects]`` plural, ``github.username``, ``[registry].url``) for one deprecation
-    release so an old ``release.toml`` still works (S-CLI.4)."""
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    """Load the canonical, already strictly-validated S2 ``cmru.toml``."""
+    # This is deliberately before the execution-model mapping below.  ``get``,
+    # ``status`` and ``release`` accept precisely the same configuration grammar.
+    # It also gives a missing config the same deliberate exit code and diagnostic
+    # as every other invalid configuration, rather than a Python traceback.
+    load_forge_config(config_path, require_orchestration=True)
     with config_path.open("rb") as handle:
         config = tomllib.load(handle)
 
-    # repo_root: explicit, else the directory holding the config (cmru.toml lives at root).
-    repo_root_value = config.get("repo_root")
-    repo_root = resolve_repo_root(config_path, repo_root_value) if repo_root_value else config_path.parent
+    repo_root = config_path.parent
 
-    orchestration = config.get("orchestration") or {}
+    orchestration = config.get("orchestration")
     if not isinstance(orchestration, dict):
-        raise ValueError("[orchestration] must be a table")
+        raise ValueError("[orchestration] is required for orchestration verbs")
 
-    # projects: S2 [project.<name>] (singular) preferred; legacy [projects] accepted.
-    projects_section = config.get("project") or config.get("projects")
+    projects_section = config.get("project")
     if not projects_section or not isinstance(projects_section, dict):
         raise ValueError("[project.<name>] section is required in config")
 
@@ -543,10 +540,9 @@ def load_config(
                 raise ValueError(f"project.{name}.steps.{step_name}.commands is required")
             steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
 
-        proj_prefix = (project.get("prefix") or "").strip() or None
+        proj_prefix = project["prefix"].strip()
         proj_scm_dist = (project.get("scm_dist") or "").strip() or None
-        proj_cwd = (project.get("cwd") or "").strip() or None
-        proj_artifact = (project.get("artifact") or "").strip() or None
+        proj_cwd = project["cwd"].strip()
         version_spec = _parse_version_spec(project.get("version"), name)
         artifacts, mint_tag, commit_generated = _resolve_release_profile(
             project, name, version_spec
@@ -590,17 +586,17 @@ def load_config(
             )
         # Change-detection watches the project cwd plus any extra version.paths (S12.3).
         extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
-        watch_paths = [proj_cwd or name] + extra_paths
-        # Parse optional [project.<name>.oci] section
+        watch_paths = [proj_cwd] + extra_paths
+        # Parse the explicit OCI handler settings where this profile is present.
         oci_cfg: Optional[OCIConfig] = None
         oci_raw = project.get("oci")
         if oci_raw is not None:
             if not isinstance(oci_raw, dict):
                 raise ValueError(f"project.{name}.oci must be a table")
-            bake_file = str(oci_raw.get("bake_file") or "docker-bake.hcl")
-            target = str(oci_raw.get("target") or name)
-            repack = bool(oci_raw.get("repack", False))
-            repack_target_size = str(oci_raw.get("repack_target_size") or "2GB")
+            bake_file = str(oci_raw["bake_file"])
+            target = str(oci_raw["target"])
+            repack = bool(oci_raw["repack"])
+            repack_target_size = "2GB"
             repack_compression_raw = oci_raw.get("repack_compression")
             if repack_compression_raw is not None:
                 try:
@@ -614,7 +610,7 @@ def load_config(
                         f"project.{name}.oci.repack_compression must be between 1 and 22"
                     )
             else:
-                repack_compression = 9  # default
+                repack_compression = 9  # only relevant to the disabled repack feature
             # V18: validate repack_target_size format (accepts e.g. 500MB, 2GB, 1.5GB)
             raw_size = str(oci_raw.get("repack_target_size", "")).strip()
             if raw_size:
@@ -624,8 +620,6 @@ def load_config(
                         f"string (e.g. '2GB', '500MB'), got {raw_size!r}"
                     )
                 repack_target_size = raw_size
-            else:
-                repack_target_size = "2GB"
             oci_cfg = OCIConfig(
                 bake_file=bake_file, target=target,
                 repack=repack,
@@ -636,53 +630,41 @@ def load_config(
                 raise ValueError(f"project.{name}.oci.repack: {_OCI_REPACK_DISABLED}")
 
         projects[name] = ProjectConfig(
-            name=name, env=project_env, steps=steps,
+            name=name, template_revision=project.get("template_revision"), env=project_env, steps=steps,
             prefix=proj_prefix, scm_dist=proj_scm_dist,
-            cwd=proj_cwd, artifact=proj_artifact,
+            cwd=proj_cwd,
             version=version_spec, paths=watch_paths,
             artifacts=artifacts, mint_tag=mint_tag, commit_generated=commit_generated,
             changelog=changelog,
             oci=oci_cfg,
         )
 
-    # orchestration: sensible defaults so a minimal cmru.toml still works.
-    project_order = orchestration.get("project_order") or list(projects.keys())
-    if not isinstance(project_order, list):
-        raise ValueError("orchestration.project_order must be a list")
-    default_projects = orchestration.get("default_projects") or list(project_order)
-    if not isinstance(default_projects, list):
-        raise ValueError("orchestration.default_projects must be a list")
-    default_steps = orchestration.get("default_steps") or ["build", "push"]
-    if not isinstance(default_steps, list):
-        raise ValueError("orchestration.default_steps must be a list")
-    execution_mode = (orchestration.get("execution_mode") or "project-first").strip()
-    if execution_mode not in {"step-first", "project-first"}:
-        raise ValueError("orchestration.execution_mode must be 'step-first' or 'project-first'")
+    project_order = list(orchestration["project_order"])
+    default_projects = list(orchestration["default_projects"])
+    default_steps = list(orchestration["default_steps"])
+    execution_mode = orchestration["execution_mode"]
 
-    step_project_order_raw = orchestration.get("step_project_order") or {}
-    if not isinstance(step_project_order_raw, dict):
-        raise ValueError("orchestration.step_project_order must be a table")
+    step_project_order_raw = orchestration.get("step_project_order", {})
     step_project_order: dict[str, list[str]] = {}
     for step_name, step_projects in step_project_order_raw.items():
         if not isinstance(step_projects, list) or not all(isinstance(i, str) for i in step_projects):
             raise ValueError(f"orchestration.step_project_order.{step_name} must be a list")
         step_project_order[step_name] = step_projects
 
-    # cleanup: optional; wildcards by default.
-    cleanup_section = config.get("cleanup") or {}
+    cleanup_section = config.get("cleanup")
     if not isinstance(cleanup_section, dict):
-        raise ValueError("[cleanup] must be a table")
+        raise ValueError("[cleanup] is required for orchestration verbs")
     cleanup = CleanupConfig(
-        release_tag_prefixes=cleanup_section.get("release_tag_prefixes") or ["*"],
-        keep_release_tags=cleanup_section.get("keep_release_tags") or [],
-        ghcr_packages=cleanup_section.get("ghcr_packages") or ["*"],
-        ghcr_delete_packages=cleanup_section.get("ghcr_delete_packages") or [],
+        release_tag_prefixes=list(cleanup_section["release_tag_prefixes"]),
+        keep_release_tags=list(cleanup_section["keep_release_tags"]),
+        ghcr_packages=list(cleanup_section["ghcr_packages"]),
+        ghcr_delete_packages=list(cleanup_section["ghcr_delete_packages"]),
     )
 
     github = config.get("github")
     if not github or not isinstance(github, dict):
         raise ValueError("[github] section is required in config")
-    owner = (github.get("owner") or github.get("username") or "").strip()
+    owner = (github.get("owner") or "").strip()
     repo = (github.get("repo") or "").strip()
     owner_type = (github.get("owner_type") or "").strip()
     token = _resolve_token(config, config_path)
@@ -691,21 +673,13 @@ def load_config(
     if owner_type not in ("user", "org"):
         raise ValueError("github.owner_type must be \"user\" or \"org\" (V03)")
 
-    github_config = GitHubConfig(username=owner, repo=repo, token=token, owner_type=owner_type)
+    github_config = GitHubConfig(owner=owner, repo=repo, token=token, owner_type=owner_type)
 
-    # registry: S2 [targets].registry (list) preferred; legacy [registry].url accepted.
     registry_url = None
-    targets = config.get("targets") or {}
-    if isinstance(targets, dict):
-        reg = targets.get("registry")
-        if isinstance(reg, list) and reg:
-            registry_url = str(reg[0]).strip() or None
-        elif isinstance(reg, str) and reg.strip():
-            registry_url = reg.strip()
-    if not registry_url:
-        legacy_registry = config.get("registry") or {}
-        if isinstance(legacy_registry, dict):
-            registry_url = (legacy_registry.get("url") or "").strip() or None
+    targets = config["targets"]
+    reg = targets["registry"]
+    if reg:
+        registry_url = str(reg[0]).strip()
 
     env_section = config.get("env") or {}
     if not isinstance(env_section, dict):
@@ -728,8 +702,8 @@ def load_config(
 
 
 def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> None:
-    if github.username:
-        os.environ.setdefault("GITHUB_USERNAME", github.username)
+    if github.owner:
+        os.environ.setdefault("GITHUB_USERNAME", github.owner)
     if github.repo:
         os.environ.setdefault("GITHUB_REPO", github.repo)
     if github.token:
@@ -997,7 +971,7 @@ def remove_assets(
     cutoff = datetime.now(timezone.utc) - duration
 
     apply_release_env(github, env_config)
-    owner = github.username
+    owner = github.owner
     repo = github.repo
     token = github.token
     if not token:
@@ -1225,7 +1199,7 @@ def run_cleanup_verb(
     Everything is idempotent: missing targets are skipped, not errors.
     """
     apply_release_env(github_config, env_config)
-    owner = github_config.username
+    owner = github_config.owner
     repo = github_config.repo
     token = github_config.token
     if not token:
@@ -1294,10 +1268,10 @@ def run_cleanup_verb(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="vbpub release manager")
+    parser = argparse.ArgumentParser(description="cmru explicit step orchestration")
     parser.add_argument(
         "--config",
-        help="Path to release manager config TOML",
+        help="Path to cmru.toml",
     )
     parser.add_argument(
         "--project",
@@ -1311,12 +1285,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validate", action="store_true", help="Validate releases")
     parser.add_argument("--remove-assets", metavar="AGE", help="Remove assets/images older than AGE (e.g., 1h, 2d)")
     parser.add_argument("--dry-run", action="store_true", help="Show cleanup actions without deleting")
+    parser.add_argument(
+        "--show-run-details", action="store_true",
+        help="Stream full project subprocess output to this console",
+    )
+    parser.add_argument(
+        "--log-append", action="store_true",
+        help="Append a divider and retain existing stable per-step logs",
+    )
     return parser
 
 
 def _orchestrate() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+    _apply_output_options(args)
 
     config_path = _resolve_config(args.config)
 
@@ -1395,21 +1378,13 @@ def _cmru_version() -> str:
 
 
 def _default_config_path() -> Path:
-    """Repo-root ``cmru.toml`` (S2). Falls back to a legacy ``release.toml`` for one
-    deprecation release (S-CLI.4). Override with ``--config`` / ``RELEASE_MANAGER_CONFIG``."""
+    """Repo-root ``cmru.toml`` (S2)."""
     root = Path(__file__).resolve().parents[3]
-    cmru_toml = root / "cmru.toml"
-    if cmru_toml.exists():
-        return cmru_toml
-    legacy = root / "release.toml"
-    if legacy.exists():
-        log_warn("Using legacy release.toml — rename it to cmru.toml (see SPEC S-CLI.4).")
-        return legacy
-    return cmru_toml
+    return root / "cmru.toml"
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
-    raw = config_opt or os.getenv("RELEASE_MANAGER_CONFIG") or str(_default_config_path())
+    raw = config_opt or os.getenv("CMRU_CONFIG") or str(_default_config_path())
     return Path(raw).expanduser().resolve()
 
 
@@ -1471,45 +1446,6 @@ def _run_project_steps(
                 run_project_step(project, step, repo_root, log_dir)
             else:
                 log_info(f"{name}: no '{step}' step — skipping")
-
-
-def _run_delegated_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
-    """Release a delegated-versioned project (e.g. pwmcp): build → commit & push any
-    build-input edits the build produced → publish. Committing+pushing before publish
-    keeps the working tree clean and ensures the release tag points at the exact commit
-    whose inputs were built (no tree-dirtying, tag == published version)."""
-    resolve_versions_from_git(repo_root, dict(configs))
-    log_dir = repo_root / "logs"
-    project = configs[name]
-    cwd = getattr(project, "cwd", None) or name
-
-    if "build" in project.steps:
-        log_info(f"{name}: running step 'build'")
-        run_project_step(project, "build", repo_root, log_dir)
-
-    # The build may rewrite tracked inputs (pwmcp's resolver bumps the playwright pin).
-    # Commit just this project's subtree (cmru.vars is gitignored) and push before publish.
-    dirty = _git(repo_root, "status", "--porcelain", "--", cwd)
-    if dirty:
-        subprocess.run(["git", "-C", str(repo_root), "add", "--", cwd], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo_root), "commit", "-m", f"chore({name}): release build inputs"],
-            check=True,
-        )
-        log_info(f"{name}: committed build-input changes")
-
-    # Push even when the resolver produced no new diff. Remote main may have
-    # advanced after the caller's last fetch; publishing in that state would
-    # let GitHub create the delegated tag from a different tree. Fail closed.
-    subprocess.run(
-        ["git", "-C", str(repo_root), "push", "origin", "HEAD"],
-        check=True,
-    )
-    log_info(f"{name}: source HEAD is present on origin before publish")
-
-    if "push" in project.steps:
-        log_info(f"{name}: running step 'push'")
-        run_project_step(project, "push", repo_root, log_dir)
 
 
 def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
@@ -1610,14 +1546,7 @@ def _release_projects_sequentially(
         transaction.push_backup_branch(workspace)
 
         strategy = _version_strategy(project)
-        if strategy == "delegated":
-            if not no_build:
-                log_info(f"Building + publishing {name} (delegated versioning)")
-                _run_delegated_project(repo_root, configs, name)
-                released.append(f"{name} (delegated)")
-            else:
-                log_info(f"{name}: --no-build — skipped delegated build/publish")
-        elif not getattr(project, "mint_tag", True):
+        if not getattr(project, "mint_tag", True):
             if not no_build:
                 log_info(f"Building + pushing {name} (oci-image — registry, no tag)")
                 _run_registry_project(repo_root, configs, name)
@@ -1837,7 +1766,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if not av or av[0] in ("-h", "--help"):
         print(
             f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            "Config: cmru.toml (repo root) — override with --config / RELEASE_MANAGER_CONFIG\n"
+            "Config: cmru.toml (repo root) — override with --config / CMRU_CONFIG\n"
             "\n"
             "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
             "  1. status                  preview what changed + the next version (no writes)\n"
@@ -1851,8 +1780,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             "\n"
             "RELEASE / HISTORY (writes)\n"
             "    release  [--project P] [--minor|--major|--set-version V] [--dry-run] [--resume WORKTREE]\n"
+            "             [--show-run-details] [--log-append]\n"
             "                                                  isolated source-first transaction\n"
             "    changelog --project P --backfill-tag TAG    catalog an already-published tagged release\n"
+            "    standards [--project P] [--update]         check/update CMRU project-framework markers\n"
             "    build    [--project P]                        run the 'build' step (artifact only)\n"
             "    publish  [--project P]                        run the 'push' step (upload + .sha256)\n"
             "    run      [--project P] [--run-tests --build --push --validate]\n"
@@ -1893,12 +1824,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
         parser.add_argument("--config", help="Path to cmru.toml")
-        # Back-compat: `cmru build --config C --step S` still hits the raw runner.
-        if verb == "build" and ("--step" in rest):
-            from cmru.runner import main as runner_main
-            runner_main(rest)
-            return
+        parser.add_argument("--show-run-details", action="store_true")
+        parser.add_argument("--log-append", action="store_true")
         vargs = parser.parse_args(rest)
+        _apply_output_options(vargs)
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
         github_config, env_config = _rest[-2], _rest[-1]
@@ -1956,6 +1885,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             log_info(f"{vargs.project}: {project.changelog} already records {vargs.backfill_tag}")
 
+    elif verb == "standards":
+        from cmru.standards import standards_main
+        standards_main(rest)
+
     elif verb in ("release", "status"):
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
@@ -1977,7 +1910,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                             help="release: proceed even though a released project's path has "
                                  "local uncommitted changes (which origin/main won't include)")
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
+        parser.add_argument(
+            "--show-run-details", action="store_true",
+            help="Stream full project subprocess output to this console",
+        )
+        parser.add_argument(
+            "--log-append", action="store_true",
+            help="Append a divider and retain existing stable per-step logs",
+        )
         vargs = parser.parse_args(rest)
+        _apply_output_options(vargs)
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
             log_error("--resume and --abandon are mutually exclusive.")
             _sys.exit(2)
@@ -1987,6 +1929,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         default_projects = _rest[0]
         github_config, env_config = _rest[-2], _rest[-1]
         apply_release_env(github_config, env_config)
+        if not vargs._transaction_child:
+            _set_release_step_log_root(repo_root)
 
         # Restrict versioning verbs to the orchestrated set so un-migrated projects
         # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
@@ -2194,7 +2138,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 "cmru cleanup — delete old Releases, stale tags, and prune ghcr.\n\n"
                 "Without --remove-assets: project-aware cleanup driven by [cleanup] config\n"
                 "  (keeps <prefix>-latest + keep_release_tags; deletes the rest).\n"
-                "With --remove-assets AGE: age-based legacy cleanup (backwards-compat)."
+                "With --remove-assets AGE: age-based cleanup."
             ),
             formatter_class=_ap.RawDescriptionHelpFormatter,
         )
@@ -2205,7 +2149,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--project", help="Limit to one project (project-aware mode only)")
         parser.add_argument("--dry-run", action="store_true",
                             help="List what would be deleted without deleting")
-        parser.add_argument("--config", help="Path to cmru.toml or release.toml")
+        parser.add_argument("--config", help="Path to cmru.toml")
         vargs = parser.parse_args(rest)
 
         cfg_path = _resolve_config(vargs.config)
@@ -2214,7 +2158,7 @@ def main(argv: Optional[List[str]] = None) -> None:
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
 
         if vargs.remove_assets:
-            # Legacy age-based path (backwards-compatible).
+            # Explicit age-based cleanup mode.
             remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
         else:
             # New project-aware cleanup: keep -latest + keep_release_tags, delete the rest.

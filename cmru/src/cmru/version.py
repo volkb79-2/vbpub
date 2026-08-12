@@ -47,10 +47,8 @@ def _git(repo_root: Path, *args: str) -> str:
 # editing them (e.g. repointing release_config during a migration) MUST NOT trigger a
 # version bump for that product. Excluded from change detection (S12.2).
 _RELEASE_CONTROL_EXCLUDES = (
-    ":(exclude,glob)**/build-push.toml",
     ":(exclude,glob)**/cmru.build.toml",
     ":(exclude,glob)**/cmru.vars",
-    ":(exclude,glob)**/.release-vars",
     # CMRU's source-first history is release metadata, not a product change that
     # should by itself schedule the following release.  Custom configured history
     # paths are additionally excluded by changelog.py while rendering entries.
@@ -313,12 +311,6 @@ def status_cmd(
         version_cfg = getattr(proj, "version", None)
         strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
 
-        if strategy == "delegated":
-            # The project computes its own version during build/publish (e.g. pwmcp's
-            # playwright-driven -r<N>). cmru reports "changed" but mints no tag here.
-            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'deleg.':<8} (self-versioned at build)")
-            continue
-
         if strategy.startswith("external:"):
             variable = strategy.split(":", 1)[1] or "VERSION"
             print(f"  {name:<38} {(last_tag or '(none)'):<30} {'prepare':<8} (derived by {variable})")
@@ -390,10 +382,10 @@ def release_cmd(
         version_file = getattr(version_cfg, "file", "VERSION") if version_cfg else "VERSION"
         project_cwd = repo_root / (getattr(proj, "cwd", None) or name)
 
-        if strategy == "delegated" or not getattr(proj, "mint_tag", True):
-            # No cmru tag. delegated → project owns the tag; oci-image/none → published
-            # to a registry, never git-tagged. build/publish steps do the work.
-            why = "delegated versioning" if strategy == "delegated" else f"{strategy} / registry publish"
+        if not getattr(proj, "mint_tag", True):
+            # No cmru tag. A no-tag project owns its publish convention; CMRU still
+            # runs its declared build/push steps through the unified runner.
+            why = f"{strategy} / project-owned publish"
             print(f"[INFO] {name}: {why} — cmru mints no tag; build/publish steps own publishing.")
             continue
 

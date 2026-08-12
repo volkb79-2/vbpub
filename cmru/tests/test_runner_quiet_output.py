@@ -84,3 +84,152 @@ def test_non_quiet_mode_echoes_every_line_live_unchanged():
         with contextlib.redirect_stdout(out):
             runner.run_command(["bash", "-c", "echo hello"], tmp, handle)
     assert "hello" in out.getvalue()
+
+
+def _step(*, quiet: bool = True) -> runner.StepConfig:
+    return runner.StepConfig(
+        name="run-tests",
+        commands=[{
+            "label": "gate",
+            "argv": ["bash", "-c", "echo detail; echo '==== 3 passed in 0.1s ===='"],
+            "cwd": ".",
+        }],
+        bake_set_prefix=None,
+        bake_set_vars=[],
+        no_cache_env=None,
+        clean_dirs=[],
+        required_env=[],
+        login=None,
+        step_env={},
+        env_command=None,
+        quiet=quiet,
+    )
+
+
+def test_execute_step_overwrites_stable_log_mirrors_quiet_detail_and_summarizes(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs" / "demo"
+    step_log = log_dir / "run-tests.log"
+    step_log.parent.mkdir(parents=True)
+    step_log.write_text("old output\n", encoding="utf-8")
+    full_log = tmp_path / "cmru.release.log"
+    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
+    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
+    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        runner.execute_step(_step(), tmp_path, log_dir)
+
+    console = out.getvalue()
+    assert "detail\n" not in console
+    assert "3 passed in 0.1s" in console
+    assert "old output" not in step_log.read_text(encoding="utf-8")
+    assert "detail\n" in step_log.read_text(encoding="utf-8")
+    assert "detail\n" in full_log.read_text(encoding="utf-8")
+
+
+def test_execute_step_show_details_streams_without_duplicate_aggregate(tmp_path, monkeypatch):
+    full_log = tmp_path / "cmru.release.log"
+    full_log.write_text("outer tee owns this stream\n", encoding="utf-8")
+    monkeypatch.setenv("CMRU_RUN_LOG", str(full_log))
+    monkeypatch.setenv("CMRU_SHOW_RUN_DETAILS", "1")
+    monkeypatch.delenv("CMRU_LOG_APPEND", raising=False)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        runner.execute_step(_step(), tmp_path, tmp_path / "logs" / "demo")
+
+    assert "detail\n" in out.getvalue()
+    assert full_log.read_text(encoding="utf-8") == "outer tee owns this stream\n"
+
+
+def test_execute_step_log_append_inserts_exact_divider(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs" / "demo"
+    log_file = log_dir / "run-tests.log"
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("previous\n", encoding="utf-8")
+    monkeypatch.setenv("CMRU_LOG_APPEND", "1")
+    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
+    monkeypatch.delenv("CMRU_SHOW_RUN_DETAILS", raising=False)
+
+    runner.execute_step(_step(), tmp_path, log_dir)
+
+    contents = log_file.read_text(encoding="utf-8")
+    assert contents.startswith("previous\n\n---\n")
+
+
+def test_project_runner_config_rejects_unknown_execution_key():
+    config = {
+        "project_root": ".",
+        "release_config": "../cmru.toml",
+        "log_dir": "logs",
+        "steps": {
+            "build": {
+                "quiet": True,
+                "commands": [{"label": "build", "argv": ["true"], "cwd": "."}],
+                "no_cache": False,
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match=r"unknown keys \['no_cache'\]"):
+        runner.validate_build_config(config)
+
+
+def test_project_runner_config_allows_explicit_project_metadata_namespace():
+    config = {
+        "project_root": ".",
+        "release_config": "../cmru.toml",
+        "log_dir": "logs",
+        "project_metadata": {"builder": {"name": "owned-by-project"}},
+        "steps": {
+            "build": {
+                "quiet": True,
+                "commands": [{"label": "build", "argv": ["true"], "cwd": "."}],
+            }
+        },
+    }
+
+    runner.validate_build_config(config)
+
+
+def test_raw_runner_uses_transaction_stable_project_log_root(tmp_path, monkeypatch):
+    release_config = tmp_path / "cmru.toml"
+    release_config.write_text(
+        """[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = []
+[project.demo]
+prefix = "demo-v"
+artifacts = ["wheel"]
+cwd = "demo"
+[project.demo.version]
+strategy = "scm"
+""",
+        encoding="utf-8",
+    )
+    project = tmp_path / "demo"
+    project.mkdir()
+    build_config = project / "cmru.build.toml"
+    build_config.write_text(
+        """project_root = "."
+release_config = "../cmru.toml"
+log_dir = "local-logs"
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["bash", "-c", "echo inner detail"], cwd = "." }]
+""",
+        encoding="utf-8",
+    )
+    stable_root = tmp_path / "caller-logs"
+    monkeypatch.setenv("CMRU_STEP_LOG_ROOT", str(stable_root))
+    monkeypatch.delenv("CMRU_RUN_LOG", raising=False)
+
+    runner.run_step(build_config, "build", None)
+
+    assert (stable_root / "demo" / "build.log").exists()
+    assert not (project / "local-logs" / "build.log").exists()

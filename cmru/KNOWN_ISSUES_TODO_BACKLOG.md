@@ -105,64 +105,90 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ## Known Issues
 
-### KI-03 — S2's single strict configuration contract is not used by `release` — *open*
-**Status:** specification/code mismatch; do not rely on `cmru get` validation as proof that a
-release will parse identically. **SPEC:** `S2.1`, `S2.3`, `V09`.
-**Evidence:** `cmru/src/cmru/config.py` is explicitly the strict reader used by `cmru get`,
-while `cmru/src/cmru/cli.py:load_config()` is the release/status reader and deliberately
-lenient. It accepts legacy `[projects]`, `github.username`, and `[registry]` forms (covered by
-`tests/test_cli_dispatch.py::test_load_config_legacy_keys_still_accepted`) and does not
-reject unknown top-level/project/release keys. Therefore a misspelled release key can be
-silently ignored even though S2.3 says unknown keys MUST be rejected on startup.
-**Decision required:** either make the release path use one strict shared schema (and publish a
-bounded migration/removal policy for legacy configs), or relax S2.1/S2.3 to specify the two
-parsers and their intentionally different guarantees. Do not silently tighten the parser: it
-would be a potentially breaking config migration.
+### KI-03 — S2's single strict configuration contract was not used by `release` — *shipped*
+**Status:** resolved as an intentional breaking configuration change. `cli.load_config()` and
+the raw step runner now invoke `config.load_forge_config()` before mapping any values; all
+CMRU verbs therefore use one grammar. Retired `[projects]`, `github.username`, `[registry]`,
+singular `artifact`, `oci` alias, `delegated` strategy/table, `release.toml`, and
+`RELEASE_MANAGER_CONFIG` are rejected/removed rather than warned about. Unknown fields now
+exit 2. The checked-in root configuration and all nine project declarations pass
+`cmru standards`; tests lock the retired-key failure down.
 
 ### KI-04 — S7 delegated-tool configuration is unreachable and has incompatible shapes — *open*
-**Status:** specification/code mismatch; `delegated` config is not a working release feature.
-**SPEC:** `S7.1`–`S7.4`.
-**Evidence:** `cmru/src/cmru/delegated.py:run_delegated_config()` expects nested mappings such
-as `changelog = { enabled = true, required = true }`, but the strict S2 model reduces
-`[project.X.delegated]` values to booleans. No production CLI/release path calls
-`run_delegated_config()` at all. Existing tests exercise the helper directly, not an actual
-release transaction. Consequently `cosign`, `syft`/`grype`, `git-cliff`, `nfpm`, and minisign
-cannot be enabled through the documented project config during `cmru release`.
-**Decision required:** wire a single typed delegated schema into the release lifecycle with an
-artifact-selection contract and end-to-end gate, or withdraw the advertised S7 config surface
-until it is designed. This must not be "fixed" by guessing which artifact/path each tool should
-receive.
+**Status:** S2/S7 now deliberately reject the unimplemented config surface; no release can
+claim it performed an optional tool step. This remains a product-design backlog, not a silent
+fallback. A future tool must be an explicit release phase with an artifact/digest input,
+published output, prerequisite policy, provenance binding, and end-to-end release oracle.
 
-### KI-05 — S-CLI.4 says legacy release configuration is removed, while the runtime preserves it — *open*
-**Status:** specification/code mismatch. **SPEC:** `S-CLI.4`.
-**Evidence:** `cmru/src/cmru/runner.py:run_step()` falls back from `cmru.toml` to
-`release.toml`, and CLI help still labels `--config` as a release.toml path. The lenient release
-loader also accepts legacy table/key spellings (KI-03). This contradicts “no legacy remains.”
-**Decision required:** remove the fallback and aliases in a deliberate breaking release, or
-amend S-CLI.4 with a supported compatibility window and retirement date. The audit leaves the
-behavior unchanged.
+**High-value candidates, in priority order:**
 
-### KI-06 — Retained release resume does not satisfy the documented already-tagged idempotency — *open*
-**Status:** potential publication-recovery defect. **SPEC:** `S-CLI.1`, `S-CLI.5`.
-**Evidence:** `detect_changed_projects()` reports no change once a version tag is on HEAD;
-`cli.main()` then produces an empty `release_names` list. A failure after tag creation but before
-artifact publication retains a worktree, yet `--resume` re-enters the same tag-based selection
-and does not select that half-finished project for build/publish. This does not implement the
-promise that re-running on a HEAD already carrying the tag reuses it to finish the release.
-**Decision required:** add durable per-project publication checkpoints and a tested resume path,
-or narrow S-CLI.1 to the transaction states that are actually resumable. Do not retag, move, or
-republish an existing tag speculatively.
+1. **MDT OCI SBOM + vulnerability policy** (`syft` + `grype`) is the clearest near-term value:
+   MDT already has a digest-verified local OCI layout, so an SPDX SBOM can be generated from
+   the exact layout and attached/published alongside that digest. It is *not* ready to enable
+   until we define severity threshold, allowlist expiry, database freshness, scan output
+   retention, and whether a transient scanner/database outage blocks a release. Without those,
+   a `required = false` scan would only produce security theatre.
+2. **TLS-edge bundle minisign** is high value when its public key is distributed as a trusted
+   deployment/enrollment input and the installer requires verification. The contract must bind
+   the signature to the release manifest hash, name the key rotation path, and require the
+   secret signing key at release time. It is not safe to let a missing key/tool silently omit a
+   signature.
+3. **OCI cosign** is valuable after identity is decided. Keyless signing wants CI OIDC; the
+   current local interactive release workflow has no stable OIDC issuer. Key-based signing
+   instead needs protected key storage, passphrase handling, verification policy, and registry
+   referrer/digest support. Do not add it merely because `cosign` exists.
+4. **git-cliff** has low value here: it duplicates the source-first, gated `CHANGES.md` and
+   risks two disagreeing histories. **nfpm** has no present consumer; none of the estate ships
+   a deb/rpm contract. Do not adopt either now.
 
-### KI-07 — Runner log location conflicts with S3.4 — *open*
-**Status:** specification/code mismatch. **SPEC:** `S3.4`.
-**Evidence:** S3.4 requires `<log_dir>/<project>/<step>.log`, while
-`runner.execute_step()` writes `<log_dir>/<step>-<UTC timestamp>.log`; the orchestrator passes
-one shared repository `logs/` directory. Project identity is absent from the filename, so the
-spec's stable per-project path and the implementation's timestamped collision-avoidance design
-are different interfaces.
-**Decision required:** choose stable project-scoped logs (and define retention/overwrite), or
-amend S3.4 to the timestamped shared-log contract. Do not change paths without deciding how
-existing operators and automation locate logs.
+**Recommendation:** design the MDT SBOM phase first, but do not implement it in the release
+path until its security policy is a concrete reviewed project contract. Then evaluate TLS-edge
+minisign as a separate artifact/installer change; do not bundle both into one generic switch.
+
+### KI-05 — S-CLI.4 legacy configuration support remained in the runtime — *shipped*
+**Status:** resolved as part of KI-03. CMRU now accepts only `cmru.toml` / `CMRU_CONFIG` and
+canonical S2 names. The remaining estate use of the retired `pwmcp/build-push.toml` filename
+was migrated into `pwmcp/cmru.build.toml`; no CMRU runtime fallback remains.
+
+### KI-06 — Durable post-tag publication resume — *open; scoped deliberately*
+**Status:** the documented promise was narrowed to current behavior: `--resume` is useful for
+investigating/correcting a retained **pre-tag** transaction worktree; it is not an automatic
+post-tag publish retry. It remains useful when a prepare step or the tester gate fails: inspect
+the isolated source tree, make a deliberate correction there, re-run the required gate, then
+resume. The worktree is also the right forensic location for logs and generated provenance;
+do not copy unreviewed files into the caller checkout.
+
+**Why this matters for MDT:** its `prepare` phase can spend substantial time downloading/staging
+tools and producing exact OCI layouts before it extracts and commits manifest provenance. A
+retry that simply repeats prepare is safe but expensive. A real resume could reuse that work
+only after proving that the retained layout digest, prepared source commit, build arguments,
+tool downloads, and target list still match the pending publication.
+
+**What a safe implementation requires:** a durable per-project phase record outside the source
+tree (`prepared`, `gated`, `promoted`, `tagged`, `built`, `published`, `validated`), exact
+source and artifact/digest identities, remote tag/release/registry reconciliation, and explicit
+invalidation when an operator edits the worktree. Tagged GitHub assets need idempotent
+existence/checksum checks; OCI pushes need local-versus-registry digest checks; a pruned local
+layout must force a rebuild rather than invent success. A parent failure/revert also means a
+resume has to prove the prepared commit can be promoted again, not merely replay a push.
+
+**Incompatibilities/complexity:** generic source preparation, wheel assets, GitHub uploads,
+bundle manifests, and no-tag OCI flows do not share one meaningful “done” bit. Preserving
+private image layouts consumes disk and crosses retention/cleanup policy; reusing a worktree
+after debugging invalidates previous gate evidence. A simplistic `--resume` would therefore
+be more dangerous than a fresh release.
+
+**Recommendation:** retain the current pre-tag debug use case and add a separately designed
+`resume-publish` state machine only when MDT’s elapsed prepare time justifies it. Start with
+MDT’s OCI layout/digest contract; do not promise a universal resume mechanism first.
+
+### KI-07 — Runner log location conflicted with S3.4 — *shipped*
+**Status:** resolved. Every runner step now writes a line-flushed stable
+`logs/<project>/<step>.log`, overwriting by default and inserting `\n---\n` with
+`--log-append`. Transaction children inherit the caller checkout’s log root, so successful
+worktree cleanup cannot erase them. `cmru.release.sh` also creates/overwrites the full
+`cmru.release.log`; `--show-run-details` restores raw console flow without duplicating that
+transcript.
 
 ### KI-08 — S4 overstates what the `cmru publish` verb implements — *open*
 **Status:** specification/code mismatch. **SPEC:** `S4.1`–`S4.4`.
@@ -175,6 +201,18 @@ artifact mechanics, but contradicts the unconditional language in S4.1–S4.4.
 or scope S4's MUSTs to the built-in wheel/tarball handlers and describe custom push commands
 as responsible for equivalent publication guarantees. Do not silently make arbitrary custom
 projects publish from guessed `dist/` paths.
+
+### KI-09 — S3.2's runner-config example does not match the implemented grammar — *open*
+**Status:** specification/code mismatch, raised rather than silently papered over.
+**Evidence:** `runner.parse_step()` implements `bake_set_prefix`, `bake_set_vars`,
+`no_cache_env`, and list-valued `env_command`; S3.2 currently documents incompatible
+`bake_set`, `bake_targets`, boolean `no_cache`, and a shell-string `env_command`. The strict
+runner validation added with KI-03 rejects those non-implemented forms before executing a
+project step.
+**Decision required:** either promote the S3.2 example's higher-level controls into a real,
+tested runner feature (including a safe shell/no-shell decision for environment loading), or
+amend S3.2 to the current explicit argv/list grammar and remove those unimplemented claims.
+Do not add aliases: that would recreate the compatibility surface KI-05 removed.
 
 ### KI-02 — Built-in OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.

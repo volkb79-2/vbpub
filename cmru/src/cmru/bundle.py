@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Generic bundle builder for stack artifacts (config-driven).
 
-Moved from ``release_manager.bundle_builder`` in P1; ``release_manager.bundle_builder``
-is now a re-export shim kept for backwards compatibility until P6.
-
 Deterministic archive support (SPEC B §4)
 ------------------------------------------
 ``write_deterministic_tar(members, out_path, source_date_epoch)`` produces a
@@ -98,7 +95,6 @@ class BundleConfig:
     wheel_find_links: Optional[Path]
     archive_template: str
     archive_version_env: str
-    archive_fallback_env: str
     archive_format: str
     copy_files: list[str]
     copy_dirs: list[str]
@@ -295,9 +291,10 @@ def parse_config(config_path: Path) -> BundleConfig:
     archive = config.get("archive")
     if not archive or not isinstance(archive, dict):
         raise ValueError("[archive] section is required in bundle config")
-    archive_template = str(archive.get("name_template") or "bundle-{version}.tar.gz")
-    archive_version_env = str(archive.get("version_env") or "VERSION")
-    archive_fallback_env = str(archive.get("fallback_env") or "BUILD_DATE")
+    archive_template = str(archive.get("name_template") or "").strip()
+    archive_version_env = str(archive.get("version_env") or "").strip()
+    if not archive_template or not archive_version_env:
+        raise ValueError("[archive].name_template and [archive].version_env are required")
     _valid_formats = {"tar", "gztar", "bztar", "xztar", "zip"}
     archive_format = str(archive.get("format") or "gztar")
     if archive_format not in _valid_formats:
@@ -322,7 +319,6 @@ def parse_config(config_path: Path) -> BundleConfig:
         wheel_find_links=wheel_find_links,
         archive_template=archive_template,
         archive_version_env=archive_version_env,
-        archive_fallback_env=archive_fallback_env,
         archive_format=archive_format,
         copy_files=[str(item) for item in copy_files],
         copy_dirs=[str(item) for item in copy_dirs],
@@ -379,10 +375,8 @@ def copy_sources(config: BundleConfig) -> None:
 def create_archive(config: BundleConfig) -> Path:
     version_value = os.getenv(config.archive_version_env) if config.archive_version_env else None
     if not version_value:
-        version_value = os.getenv(config.archive_fallback_env)
-    if not version_value:
         raise RuntimeError(
-            f"{config.archive_version_env} or {config.archive_fallback_env} must be set for archive naming"
+            f"{config.archive_version_env} must be set for archive naming"
         )
 
     tarball_name = config.archive_template.format(version=version_value)

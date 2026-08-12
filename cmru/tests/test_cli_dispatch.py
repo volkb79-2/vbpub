@@ -27,15 +27,19 @@ registry = ["ghcr.io"]
 
 [orchestration]
 project_order = ["alpha"]
+default_projects = ["alpha"]
 default_steps = ["build", "push"]
 execution_mode = "project-first"
 
 [cleanup]
+release_tag_prefixes = ["*"]
 keep_release_tags = ["alpha-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []
 
 [project.alpha]
 prefix = "alpha-v"
-artifact = "wheel"
+artifacts = ["wheel"]
 scm_dist = "alpha"
 cwd = "alpha"
 [project.alpha.version]
@@ -66,13 +70,13 @@ def test_load_config_s2_schema(tmp_path):
     assert default_projects == ["alpha"]          # defaults to project_order
     assert default_steps == ["build", "push"]
     assert execution_mode == "project-first"
-    assert github.username == "octocat" and github.repo == "demo"
+    assert github.owner == "octocat" and github.repo == "demo"
     assert github.owner_type == "user"
     assert env_config.registry_url == "ghcr.io"   # from [targets].registry
 
     alpha = projects["alpha"]
     assert alpha.prefix == "alpha-v"
-    assert alpha.artifact == "wheel"
+    assert alpha.artifacts == ("wheel",)
     assert alpha.version.strategy == "scm"
     # change-detection watches cwd plus extra version.paths (S12.3)
     assert alpha.paths == ["alpha", "shared"]
@@ -127,8 +131,8 @@ def test_changelog_backfill_dispatches_to_the_migration_helper(tmp_path, monkeyp
     assert calls == [(tmp_path, project, "alpha-v1.0.0")]
 
 
-def test_load_config_legacy_keys_still_accepted(tmp_path):
-    """One-release back-compat: [projects] plural + github.username + [registry].url."""
+def test_load_config_rejects_retired_config_keys(tmp_path):
+    """There is one strict grammar; retired keys must not be silently reinterpreted."""
     legacy = """
 repo_root = "."
 [github]
@@ -152,10 +156,9 @@ prefix = "a-v"
 commands = [ { label = "b", argv = ["true"], cwd = "a" } ]
 """
     cfg = _write(tmp_path, legacy, name="release.toml")
-    _, projects, _, _, _, _, _, _, github, env_config = cli.load_config(cfg)
-    assert list(projects) == ["a"]
-    assert github.username == "octocat"
-    assert env_config.registry_url == "ghcr.io"
+    with pytest.raises(SystemExit) as exc:
+        cli.load_config(cfg)
+    assert exc.value.code == 2
 
 
 def test_token_resolution_order(tmp_path, monkeypatch):
@@ -194,33 +197,6 @@ def test_unknown_verb_exits_2():
     assert exc.value.code == 2
 
 
-def test_delegated_release_stops_before_publish_when_source_push_fails(
-    tmp_path, monkeypatch
-):
-    project = SimpleNamespace(cwd="pwmcp", steps={"build": object(), "push": object()})
-    calls: list[str] = []
-
-    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_args: None)
-    monkeypatch.setattr(cli, "_git", lambda *_args: "")
-    monkeypatch.setattr(
-        cli,
-        "run_project_step",
-        lambda _project, step, *_args: calls.append(step),
-    )
-
-    def fake_run(argv, **kwargs):
-        if argv[-3:] == ["push", "origin", "HEAD"]:
-            raise subprocess.CalledProcessError(1, argv)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
-    with pytest.raises(subprocess.CalledProcessError):
-        cli._run_delegated_project(tmp_path, {"pwmcp": project}, "pwmcp")
-
-    assert calls == ["build"]
-
-
 def test_invalid_config_missing_github(tmp_path):
     bad = """
 [orchestration]
@@ -231,5 +207,6 @@ prefix = "a-v"
 commands = [ { label = "b", argv = ["true"], cwd = "a" } ]
 """
     cfg = _write(tmp_path, bad)
-    with pytest.raises(ValueError):
+    with pytest.raises(SystemExit) as exc:
         cli.load_config(cfg)
+    assert exc.value.code == 2

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build the pwmcp stack bundle (consumer-facing tar.gz).
 
-Reads PWMCP_VERSION from cmru.vars (written by resolve-playwright-version.py).
-Delegates to release_manager.bundle_builder for the actual archive creation.
+Reads PWMCP_VERSION from cmru.vars (written by CMRU's pwmcp prepare phase).
+Uses cmru.bundle for the actual archive creation.
 
 Output: pwmcp/dist/pwmcp-<version>.tar.gz
 """
@@ -17,7 +17,7 @@ BUNDLE_TOML = PWMCP_DIR / "bundle.toml"
 
 CIU_FORGE_SRC = PWMCP_DIR.parent / "cmru" / "src"
 
-# Shared self-healing vars loader (sibling _vars.py in pwmcp/scripts/).
+# Strict prepared-coordinate loader (sibling _vars.py in pwmcp/scripts/).
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # ensure script dir wins for _vars
 from _vars import load_vars  # noqa: E402
 

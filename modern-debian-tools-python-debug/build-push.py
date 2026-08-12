@@ -87,10 +87,6 @@ def _read_cmru_env_default(var_name: str) -> str | None:
 
 def ensure_devcontainers_base_from_bake_defaults() -> None:
     """Set DEVCONTAINERS_BASE_PINNED/DEV from bake defaults if not in env."""
-    legacy_pinned = os.getenv("DEVCONTAINERS_BASE_STABLE")
-    if legacy_pinned and not os.getenv("DEVCONTAINERS_BASE_PINNED"):
-        os.environ.setdefault("DEVCONTAINERS_BASE_PINNED", legacy_pinned)
-
     if os.getenv("DEVCONTAINERS_BASE_PINNED") and os.getenv("DEVCONTAINERS_BASE_DEV"):
         return
 
@@ -109,46 +105,6 @@ def ensure_devcontainers_base_from_bake_defaults() -> None:
     )
 
 
-def load_cmru_credentials() -> None:
-    """Seed GitHub identity from cmru.toml / cmru.secret.toml when running standalone."""
-    if (
-        os.environ.get("GITHUB_USERNAME")
-        and os.environ.get("GITHUB_REPO")
-        and os.environ.get("GITHUB_OWNER_TYPE")
-        and os.environ.get("GITHUB_PUSH_PAT")
-    ):
-        return
-
-    repo_root = ROOT.parent
-    try:
-        import tomllib
-
-        cmru_toml = repo_root / "cmru.toml"
-        if cmru_toml.exists():
-            with cmru_toml.open("rb") as fh:
-                config = tomllib.load(fh)
-            github = config.get("github", {})
-            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
-                os.environ["GITHUB_USERNAME"] = str(github["owner"])
-            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-                os.environ["GITHUB_REPO"] = str(github["repo"])
-            if not os.environ.get("GITHUB_OWNER_TYPE") and github.get("owner_type"):
-                os.environ["GITHUB_OWNER_TYPE"] = str(github["owner_type"])
-
-        if not os.environ.get("GITHUB_PUSH_PAT"):
-            token = os.environ.get("GITHUB_TOKEN", "")
-            if not token:
-                secret_toml = repo_root / "cmru.secret.toml"
-                if secret_toml.exists():
-                    with secret_toml.open("rb") as fh:
-                        secret = tomllib.load(fh)
-                    token = str(secret.get("github", {}).get("token", ""))
-            if token:
-                os.environ["GITHUB_PUSH_PAT"] = token
-    except Exception:
-        pass
-
-
 def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     """Mirror repo visibility onto GHCR packages that this release just pushed."""
     names = [name.strip() for name in package_names if name and str(name).strip()]
@@ -160,8 +116,18 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
     owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
     if not username or not repo or not token or not owner_type:
-        sys.stderr.write("[WARN] Skipping GHCR visibility sync (missing GitHub identity/token)\n")
-        return
+        missing = [
+            name for name, value in {
+                "GITHUB_USERNAME": username,
+                "GITHUB_REPO": repo,
+                "GITHUB_PUSH_PAT": token,
+                "GITHUB_OWNER_TYPE": owner_type,
+            }.items() if not value
+        ]
+        raise SystemExit(
+            "[ERROR] GHCR visibility sync requires " + ", ".join(missing) +
+            "; run through CMRU or export the release identity explicitly."
+        )
 
     ghcr = GitHubPackages(username, repo, token, owner_type)
     repo_visibility = ghcr.repo_visibility()
@@ -304,7 +270,6 @@ def do_build(ignore_new_releases: bool) -> None:
     sys.stderr.write("[INFO] === modern-debian-tools-python-debug: build ===\n")
 
     ensure_devcontainers_base_from_bake_defaults()
-    load_cmru_credentials()
     release_image_flow = (
         os.getenv("RELEASE_IMAGE_FLOW")
         or _read_cmru_env_default("RELEASE_IMAGE_FLOW")
@@ -506,8 +471,13 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     registry publication; registry flows read the published image through the
     governed builder.
     """
-    username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME", "volkb79-2")
-    repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO", "vbpub")
+    username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME")
+    repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO")
+    if not username or not repo:
+        raise SystemExit(
+            "[ERROR] Manifest extraction requires GITHUB_USERNAME and GITHUB_REPO; "
+            "run through CMRU or export both explicitly."
+        )
 
     # Enumerate bake targets from the bake group.
     BAKE_FILE = ROOT / "docker-bake.hcl"
@@ -670,8 +640,6 @@ def do_push() -> None:
     """Push phase: load saved env, push to registry (no resolver re-run)."""
     sys.stderr.write("[INFO] === modern-debian-tools-python-debug: push ===\n")
     sys.stderr.write("[INFO] Step 1/3: Loading saved build environment...\n")
-
-    load_cmru_credentials()
 
     # Load and apply saved env vars
     env_vars = load_build_env()

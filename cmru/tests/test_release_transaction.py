@@ -116,16 +116,14 @@ def test_required_gate_rejects_project_without_run_tests(tmp_path):
         cli._run_release_gates(tmp_path, {"alpha": _project("alpha")}, ["alpha"])
 
 
-def test_build_step_config_defaults_run_tests_to_quiet_but_not_other_steps():
-    """No per-project opt-in should be needed to get a readable top-level release
-    log out of a real test-gate run (coverage reports, hundreds of test IDs, ...) —
-    same treatment `quiet` already gives a noisy `docker buildx bake`."""
+def test_build_step_config_defaults_every_project_subprocess_to_quiet():
+    """The normal orchestration console is summary-only for every project step."""
     command = cli.Command(label="t", argv=["true"], cwd=".")
 
     assert cli._build_step_config("run-tests", [command]).quiet is True
-    assert cli._build_step_config("prepare", [command]).quiet is False
-    assert cli._build_step_config("build", [command]).quiet is False
-    assert cli._build_step_config("push", [command]).quiet is False
+    assert cli._build_step_config("prepare", [command]).quiet is True
+    assert cli._build_step_config("build", [command]).quiet is True
+    assert cli._build_step_config("push", [command]).quiet is True
 
 
 def test_required_gate_runs_declared_command(tmp_path, monkeypatch):

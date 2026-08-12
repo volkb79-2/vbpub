@@ -23,17 +23,14 @@ def test_wheel_profile_mints_tag():
     assert gen == ()
 
 
-def test_legacy_singular_artifact_maps_to_profile():
-    artifacts, mint_tag, _ = cli._resolve_release_profile(
-        {"artifact": "wheel"}, "ciu", _vspec("scm")
-    )
-    assert artifacts == ("wheel",)
-    assert mint_tag is True
+def test_retired_singular_artifact_is_rejected():
+    with pytest.raises(ValueError, match="artifacts must be a list"):
+        cli._resolve_release_profile({"artifact": "wheel"}, "ciu", _vspec("scm"))
 
 
-def test_oci_alias_and_none_strategy_no_tag():
+def test_oci_image_and_none_strategy_no_tag():
     artifacts, mint_tag, gen = cli._resolve_release_profile(
-        {"artifacts": ["oci"], "release": {"commit_generated": ["package-manifests-versioned"]}},
+        {"artifacts": ["oci-image"], "release": {"commit_generated": ["package-manifests-versioned"]}},
         "mdt",
         _vspec("none"),
     )
@@ -49,18 +46,11 @@ def test_oci_with_scm_is_rejected():
 
 
 def test_multi_output_unions_capabilities():
-    # oci-image + bundle: bundle wants a tag, so the union mints one (unless delegated).
+    # oci-image + bundle: bundle wants a tag, so the union mints one.
     _, mint_tag, _ = cli._resolve_release_profile(
         {"artifacts": ["oci-image", "bundle"]}, "pwmcp", _vspec("scm")
     )
     assert mint_tag is True
-
-
-def test_delegated_forces_no_tag_even_with_taggy_artifact():
-    _, mint_tag, _ = cli._resolve_release_profile(
-        {"artifacts": ["oci-image", "bundle"]}, "pwmcp", _vspec("delegated")
-    )
-    assert mint_tag is False                      # delegated → project owns the tag
 
 
 def test_release_git_tag_override():

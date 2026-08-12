@@ -1,0 +1,21 @@
+# cmru-project-template-revision: 1
+#
+# Add this declaration to the central repository cmru.toml.  The revision is an
+# adoption marker, not a release behaviour switch: current CMRU supplies stable
+# per-project logging, source-first CHANGES.md, and the --show-run-details /
+# --log-append controls without each project reimplementing them.
+
+[project.example]
+template_revision = 1
+prefix = "example-v"
+artifacts = ["wheel"]
+cwd = "example"
+
+[project.example.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.example.steps.run-tests]
+commands = [
+  { label = "example: tester-unified gate", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "example", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+]

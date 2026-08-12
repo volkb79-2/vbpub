@@ -57,6 +57,7 @@ CMRU_TESTER_MEMORY_SWAP = "16g"
 # build/push/validate come from cmru's built-in wheel handlers (cmru/handlers.py).
 # The only project-specific inputs are the test command and the release-notes text.
 [project.ciu]
+template_revision = 1
 prefix    = "ciu-v"
 artifacts = ["wheel"]        # → wheel profile: semver tag + GitHub Release + latest.json
 scm_dist  = "ciu"
@@ -77,6 +78,7 @@ commands = [
 # release-notes text below (read by wheel-publish via --notes-env CMRU_RELEASE_NOTES).
 # Proof that a standard Python wheel project needs ~7 lines of config and no scripts.
 [project.cmru]
+template_revision = 1
 prefix    = "cmru-v"
 artifacts = ["wheel"]
 scm_dist  = "cmru"
@@ -100,6 +102,7 @@ commands = [
 # resync/daemon) ships in the wheel. OCI images (daemon + agent-cli bundle) are a
 # SEPARATE step-driven addition (nyxloom/build-push.py) added when that lands.
 [project.nyxloom]
+template_revision = 1
 prefix    = "nyxloom-v"
 artifacts = ["wheel", "oci-image"]   # wheel → GH Release + latest.json; images → ghcr
 scm_dist  = "nyxloom"
@@ -110,6 +113,10 @@ cwd       = "nyxloom"
 # AND both image tags — single-source versioning across all three artifacts.
 strategy = "scm"
 bump     = "conventional"
+[project.nyxloom.oci]
+bake_file = "docker-bake.hcl"
+target = "all"
+repack = false
 [project.nyxloom.steps.run-tests]
 commands = [
   { label = "nyxloom: tester-unified parallel suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "nyxloom", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q"], cwd = "." },
@@ -166,6 +173,7 @@ NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\nFiles-first, daemon-supervised contro
 # together, because the monorepo shares one tag line and a mismatch would
 # version an assay release off another product's tag.
 [project.assay]
+template_revision = 1
 prefix    = "assay-v"
 artifacts = ["wheel"]
 scm_dist  = "assay"
@@ -197,10 +205,12 @@ ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\nHow to judge a change: declared 
 # (build inputs/docs) via the generic commit_generated path. cmru orchestrates; the
 # build step (build-push.py) owns what an image build + manifest regen actually means.
 [project.modern-debian-tools-python-debug]
+template_revision = 1
 prefix    = "modern-debian-tools-python-debug-v"   # kept for resolve/cleanup symmetry; unused for tagging
 artifacts = ["oci-image"]
 cwd       = "modern-debian-tools-python-debug"
 [project.modern-debian-tools-python-debug.oci]
+bake_file = "docker-bake.hcl"
 target = "all"
 # Explicit project steps below own MDT's guarded push/repack flow. Keep the
 # generic handler disabled until CMRU's built-in OCI path reaches equivalent
@@ -239,11 +249,16 @@ commands = [
 # step resolves and commits its pinned inputs, then writes PWMCP_VERSION to the
 # transaction-local cmru.vars. cmru owns the annotated tag for that prepared commit.
 [project.pwmcp]
+template_revision = 1
 prefix    = "pwmcp-v"
 artifacts = ["oci-image", "bundle"]   # emits BOTH a ghcr image and a GitHub-Release bundle
 cwd       = "pwmcp"
 [project.pwmcp.version]
 strategy = "external:PWMCP_VERSION"    # derived by prepare; cmru owns the tag
+[project.pwmcp.oci]
+bake_file = "docker-bake.hcl"
+target = "all"
+repack = false
 [project.pwmcp.release]
 commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "pwmcp.contract.json"]
 [project.pwmcp.steps.prepare]
@@ -273,6 +288,7 @@ commands = [
 # [project.tls-edge.installer] is the single source for the emitted get.py installer:
 #   `cmru get-py --project tls-edge --config cmru.toml` regenerates tls-edge/get.py.
 [project.tls-edge]
+template_revision = 1
 prefix    = "tls-edge-v"
 artifacts = ["tarball"]
 cwd       = "tls-edge"
@@ -302,6 +318,7 @@ commands = [
 # The package is a wheel.  Its optional root daemon is deployed through the
 # packaged systemd unit/tmpfiles/slice templates, not a privileged OCI image.
 [project.topos]
+template_revision = 1
 prefix    = "topos-v"
 artifacts = ["wheel"]
 scm_dist  = "topos"
@@ -320,15 +337,16 @@ commands = [
   { label = "topos: tester-unified parallel suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=topos/src:topos; /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto"], cwd = "." },
 ]
 
-# ─── empyrion-translation — game asset (delegated; NOT in project_order) ────────
+# ─── empyrion-translation — game asset (manual; NOT in project_order) ──────────
 # Self-managed, date-tagged (empyrion-de-translation-YYYYMMDD); not a CIU-family product.
 # Released on demand via ./cmru.build.sh / ./cmru.publish.sh --project empyrion-translation.
 [project.empyrion-translation]
+template_revision = 1
 prefix    = "empyrion-translation-v"
 artifacts = ["tarball"]
 cwd       = "game_stuff/empyrion"
 [project.empyrion-translation.version]
-strategy = "delegated"
+strategy = "none"             # project owns its date-tagged publication; CMRU mints none
 [project.empyrion-translation.steps.build]
 commands = [
   { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },

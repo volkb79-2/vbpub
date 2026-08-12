@@ -192,36 +192,18 @@ def update_toml_j2(path: Path, pw_version: str, image_tag: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def update_bake_hcl(
-    path: Path,
-    npm_version: str,
-    pypi_version: str,
-    pwmcp_version_npm: str,
-    pwmcp_version_pypi: str,
-) -> None:
+def update_bake_hcl(path: Path, playwright_version: str, pwmcp_version: str) -> None:
     content = path.read_text(encoding="utf-8")
 
     content = re.sub(
-        r'(variable\s+"PLAYWRIGHT_VERSION_NPM"\s*\{[^}]*default\s*=\s*)"[^"]+"',
-        f'\\1"{npm_version}"',
+        r'(variable\s+"PLAYWRIGHT_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
+        f'\\1"{playwright_version}"',
         content,
         flags=re.DOTALL,
     )
     content = re.sub(
-        r'(variable\s+"PLAYWRIGHT_VERSION_PYPI"\s*\{[^}]*default\s*=\s*)"[^"]+"',
-        f'\\1"{pypi_version}"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(variable\s+"PWMCP_VERSION_NPM"\s*\{[^}]*default\s*=\s*)"[^"]+"',
-        f'\\1"{pwmcp_version_npm}"',
-        content,
-        flags=re.DOTALL,
-    )
-    content = re.sub(
-        r'(variable\s+"PWMCP_VERSION_PYPI"\s*\{[^}]*default\s*=\s*)"[^"]+"',
-        f'\\1"{pwmcp_version_pypi}"',
+        r'(variable\s+"PWMCP_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
+        f'\\1"{pwmcp_version}"',
         content,
         flags=re.DOTALL,
     )
@@ -247,30 +229,22 @@ def _read_bake_var(name: str) -> str:
 
 
 def write_release_vars(
-    npm_version: str,
-    pypi_version: str,
+    playwright_version: str,
     distro: str,
-    pwmcp_version_npm: str,
-    pwmcp_version_pypi: str,
+    pwmcp_version: str,
     playwrght_mcp_version: str,
     chrome_devtools_mcp_version: str,
     mcp_proxy_version: str,
     lighthouse_version: str,
 ) -> None:
-    # PLAYWRIGHT_VERSION is kept as alias for PLAYWRIGHT_VERSION_PYPI for backwards compat
-    # (consumed by _vars.py which checks for PLAYWRIGHT_VERSION key).
     RELEASE_VARS_FILE.write_text(
-        f"PLAYWRIGHT_VERSION_NPM={npm_version}\n"
-        f"PLAYWRIGHT_VERSION_PYPI={pypi_version}\n"
-        f"PLAYWRIGHT_VERSION={pypi_version}\n"
+        f"PLAYWRIGHT_VERSION={playwright_version}\n"
         f"PLAYWRIGHT_DISTRO={distro}\n"
         f"PLAYWRIGHT_MCP_VERSION={playwrght_mcp_version}\n"
         f"CHROME_DEVTOOLS_MCP_VERSION={chrome_devtools_mcp_version}\n"
         f"MCP_PROXY_VERSION={mcp_proxy_version}\n"
         f"LIGHTHOUSE_VERSION={lighthouse_version}\n"
-        f"PWMCP_VERSION_NPM={pwmcp_version_npm}\n"
-        f"PWMCP_VERSION_PYPI={pwmcp_version_pypi}\n"
-        f"PWMCP_VERSION={pwmcp_version_pypi}\n"
+        f"PWMCP_VERSION={pwmcp_version}\n"
         "GHCR_PACKAGE_NAMES=pwmcp\n",
         encoding="utf-8",
     )
@@ -309,7 +283,7 @@ def main() -> None:
         update_toml_j2(TOML_OVERRIDE_FILE, agreed_version, pwmcp_version)
 
     log(f"Updating {BAKE_FILE.name}...")
-    update_bake_hcl(BAKE_FILE, agreed_version, agreed_version, pwmcp_version, pwmcp_version)
+    update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version)
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
@@ -319,12 +293,11 @@ def main() -> None:
     cdt_mcp_ver = _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION")
     mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
     lh_ver = _read_bake_var("LIGHTHOUSE_VERSION")
-    write_release_vars(agreed_version, agreed_version, distro, pwmcp_version, pwmcp_version,
+    write_release_vars(agreed_version, distro, pwmcp_version,
                        pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver)
 
     log(
-        f"Done. PLAYWRIGHT_VERSION_NPM={agreed_version}  PLAYWRIGHT_VERSION_PYPI={agreed_version}  "
-        f"PWMCP_VERSION_NPM={pwmcp_version}  PWMCP_VERSION_PYPI={pwmcp_version}"
+        f"Done. PLAYWRIGHT_VERSION={agreed_version} PWMCP_VERSION={pwmcp_version}"
     )
     log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
 

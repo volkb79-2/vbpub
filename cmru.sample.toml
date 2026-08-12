@@ -1,6 +1,8 @@
 # Minimal CMRU configuration — copy to cmru.toml and replace every placeholder.
 # Secrets never belong here: use GITHUB_PUSH_PAT / GITHUB_TOKEN or the gitignored
 # cmru.secret.toml overlay.  See cmru/docs/SPEC.md S2 for the full schema.
+# `cmru standards` validates this config plus project template revisions; the root
+# cmru.release.sh wrapper supplies stable logs and quiet/default detail handling.
 
 [github]
 owner      = "your-github-owner"
@@ -21,10 +23,12 @@ execution_mode   = "project-first"
 release_tag_prefixes = ["*"]
 keep_release_tags    = ["example-wheel-latest"]
 ghcr_packages        = ["*"]
+ghcr_delete_packages = []
 
 # A normal Python wheel needs only its profile, versioning policy, release notes,
 # and a real isolated gate. CMRU supplies build/push/validate handlers.
 [project.example-wheel]
+template_revision = 1
 prefix    = "example-wheel-v"
 artifacts = ["wheel"]
 scm_dist  = "example-wheel"
@@ -51,11 +55,16 @@ commands = [
 # tracked outputs, and let CMRU commit/gate them before the registry push:
 #
 # [project.example-image]
+# template_revision = 1
 # prefix    = "example-image-v"
 # artifacts = ["oci-image"]
 # cwd       = "example-image"
 # [project.example-image.version]
 # strategy = "none"
+# [project.example-image.oci]
+# bake_file = "docker-bake.hcl"
+# target = "all"
+# repack = false
 # [project.example-image.release]
 # commit_generated = ["provenance.json"]
 
@@ -63,6 +72,7 @@ commands = [
 # The generated installer refuses to guess a variant on a non-interactive host.
 #
 # [project.example-bundle]
+# template_revision = 1
 # prefix    = "example-bundle-v"
 # artifacts = ["bundle"]
 # cwd       = "example-bundle"

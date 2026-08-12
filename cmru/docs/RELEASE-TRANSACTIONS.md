@@ -9,7 +9,8 @@ order" below).
 
 ## Operator contract
 
-Use the ordinary entry point:
+Use the ordinary entry point. It creates/overwrites `cmru.release.log`; do not
+wrap it in `tee` yourself:
 
 ```bash
 ./cmru.release.sh --project <project>
@@ -36,16 +37,19 @@ checkout before it creates the release worktree:
 Both are fail-closed by default; `--allow-uncommitted` only overrides the
 second one; there is no override for the first (push your commits instead).
 
-cmru then creates the release worktree and streams the child process output
-back to your terminal. It copies the optional `cmru.secret.toml` overlay into
+cmru then creates the release worktree and reports concise orchestration progress
+to your terminal. Full project subprocess output is line-flushed into the root
+audit log and stable `logs/<project>/<step>.log` files in the caller checkout;
+use `--show-run-details` to stream raw child output to the terminal too. It copies
+the optional `cmru.secret.toml` overlay into
 that worktree with mode `0600`; the copy is removed with a successful
 worktree and is never staged.
 
 The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
-Failure retains the worktree and prints its path and branch. Inspect and commit
-the correction there, then resume it explicitly:
+Failure retains the worktree and prints its path and branch. A **pre-tag** failure
+can be inspected, deliberately corrected, re-gated, and resumed there:
 
 ```bash
 ./cmru.release.sh --resume /path/reported/by/cmru --project <project>
@@ -54,11 +58,10 @@ the correction there, then resume it explicitly:
 Do not copy generated files back into the caller's dirty checkout. A successful
 transaction removes the ephemeral branch/worktree.
 
-> **Current recovery limit:** a failure before tag creation can be resumed through the
-> retained worktree. A post-tag publication failure is tracked in
-> [KI-06](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--retained-release-resume-does-not-satisfy-the-documented-already-tagged-idempotency--open):
-> current tag-based selection does not yet reliably re-select that project. Preserve the
-> worktree and escalate rather than assuming a plain resume will publish an existing tag.
+> **Current recovery limit:** a post-tag publication failure is not an automatic retry.
+> Preserve the worktree, the stable logs, and generated provenance; do not assume a plain
+> resume will publish an existing tag. The deliberately scoped follow-up is
+> [KI-06](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
 
 ## Transaction order
 
@@ -258,7 +261,7 @@ CMRU also generates `CHANGES.md` for every project unless it explicitly configur
 `release.changelog = false`. It writes the history after `steps.prepare`, before the
 gate, and commits it with the declared mechanical outputs. Do not list the default
 history file in `commit_generated`; it is already an allowed generated output. Tagged
-releases carry a version heading. No-tag image/delegated flows carry a source-revision
+releases carry a version heading. No-tag image flows carry a source-revision
 heading and resume from the source cursor recorded in the prior generated entry.
 
 **Known sharp edge (build-all-projects-after-another):** the clean-tree guards

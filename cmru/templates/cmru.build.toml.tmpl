@@ -1,0 +1,31 @@
+# cmru-runner-template: build-config
+# cmru-runner-template-revision: 1
+#
+# Project-local adapter for a bespoke build or publish flow.  Copy this only when
+# central [project.<name>.steps.*] declarations are not sufficient.  CMRU invokes
+# it through `cmru run-step`; normal `cmru release` already gives every central
+# project stable logs, quiet outer output, --show-run-details, and --log-append.
+#
+# `cmru standards --project <name>` verifies this revision.  It updates only the
+# two header lines above; command bodies remain project-owned and are never
+# rewritten by CMRU.
+#
+# Runner keys are strict. Put project-only data under [project_metadata], never
+# beside runner controls, so a misspelled execution key fails before a build.
+
+project_root = "."
+release_config = "../cmru.toml"
+log_dir = "logs"
+
+[steps.build]
+quiet = true
+commands = [
+  # { label = "example: build", argv = ["python3", "build.py", "--build"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  # { label = "example: publish", argv = ["python3", "build.py", "--push"], cwd = "." },
+]

@@ -135,7 +135,7 @@ python3 build-push.py --build
 GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> python3 build-push.py --push
 ```
 
-`build-push.py` reads `[builder]` from `build-push.toml`, creates or repairs the
+`build-push.py` reads `[project_metadata.builder]` from `cmru.build.toml`, creates or repairs the
 named `docker-container` BuildKit builder, verifies the applied Docker limits,
 and passes that builder explicitly to Bake. The defaults permit 4 GiB RAM,
 12 GiB combined RAM+swap (therefore up to 8 GiB swap), and four CPUs. Edit the
@@ -179,7 +179,7 @@ The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, 
 ./cmru.build.sh   --project pwmcp
 ./cmru.publish.sh --project pwmcp
 
-# Or perform the complete delegated release in one operation:
+# Or perform the complete isolated release in one operation:
 ./cmru.release.sh --project pwmcp
 ```
 

@@ -60,18 +60,12 @@ ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.1
 }
 ```
 
-### Local auth file fallback:
-Some release helpers call `skopeo` directly and may run in a shell that cannot read the
-current user's Docker config. In that case, point `REGISTRY_AUTH_FILE` at a workspace-local
-auth file such as `./.ghcr-auth.json`. Treat it as disposable runtime state:
+### Release authentication
 
-> **Note:** When using the new cmru oci-image handler (cmru.toml `[project.xxx.oci]`),
-> cmru handles Docker login via `GITHUB_USERNAME`/`GITHUB_PUSH_PAT` automatically.
-> The `.ghcr-auth.json` fallback is no longer required for cmru-driven releases.
-
-- do not commit it
-- do not check it into the project
-- do not fold the token itself into `cmru`
+CMRU resolves the configured release identity and logs Docker into GHCR. A manual release
+must export `GITHUB_USERNAME`, `GITHUB_REPO`, `GITHUB_OWNER_TYPE`, and `GITHUB_PUSH_PAT`
+before invoking a release command. Workspace-local credential files are not a supported
+release input.
 
 ### How to authenticate:
 

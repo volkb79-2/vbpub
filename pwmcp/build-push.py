@@ -5,12 +5,11 @@ Usage:
   python3 build-push.py --build   # Build images locally (docker buildx bake --load)
   python3 build-push.py --push    # Login to GHCR and push images
 
-Reads PLAYWRIGHT_VERSION_PYPI, PLAYWRIGHT_VERSION_NPM, PWMCP_VERSION_PYPI, and
-PWMCP_VERSION_NPM from cmru.vars (written by scripts/resolve-playwright-version.py).
-PLAYWRIGHT_VERSION and PWMCP_VERSION are kept as aliases for the PyPI variants for
-backwards compatibility.
+Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from cmru.vars (written by
+scripts/resolve-playwright-version.py).  CMRU's prepare phase is the sole writer;
+this script refuses an absent or incomplete prepared coordinate.
 
-Credentials for push (from environment or cmru.toml / cmru.secret.toml [github]):
+Credentials for push (from the CMRU environment or explicitly exported):
   GITHUB_USERNAME
   GITHUB_PUSH_PAT
 """
@@ -25,9 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PWMCP_DIR = Path(__file__).resolve().parent
-BUILD_CONFIG = PWMCP_DIR / "build-push.toml"
+BUILD_CONFIG = PWMCP_DIR / "cmru.build.toml"
 
-# Shared self-healing vars loader (pwmcp/scripts/_vars.py).
+# Strict prepared-coordinate loader (pwmcp/scripts/_vars.py).
 sys.path.insert(0, str(PWMCP_DIR / "scripts"))
 from _vars import load_vars  # noqa: E402
 sys.path.insert(0, str(PWMCP_DIR.parent / "cmru" / "src"))
@@ -43,53 +42,6 @@ def fail(msg: str) -> None:
     raise SystemExit(1)
 
 
-def load_cmru_credentials() -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT from cmru.toml / cmru.secret.toml if not already set.
-
-    Resolution order:
-      - GITHUB_USERNAME: env, then cmru.toml [github].owner
-      - GITHUB_REPO:     env, then cmru.toml [github].repo
-      - GITHUB_OWNER_TYPE: env, then cmru.toml [github].owner_type
-      - GITHUB_PUSH_PAT: env GITHUB_PUSH_PAT, then env GITHUB_TOKEN,
-                         then cmru.secret.toml [github].token
-    Missing config files are silently skipped.
-    """
-    if (
-        os.environ.get("GITHUB_USERNAME")
-        and os.environ.get("GITHUB_PUSH_PAT")
-        and os.environ.get("GITHUB_OWNER_TYPE")
-    ):
-        return
-    repo_root = PWMCP_DIR.parent
-    try:
-        import tomllib
-        # Load identity from cmru.toml (no token here).
-        cmru_toml = repo_root / "cmru.toml"
-        if cmru_toml.exists():
-            with cmru_toml.open("rb") as fh:
-                config = tomllib.load(fh)
-            github = config.get("github", {})
-            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
-                os.environ["GITHUB_USERNAME"] = str(github["owner"])
-            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-                os.environ["GITHUB_REPO"] = str(github["repo"])
-            if not os.environ.get("GITHUB_OWNER_TYPE") and github.get("owner_type"):
-                os.environ["GITHUB_OWNER_TYPE"] = str(github["owner_type"])
-        # Resolve token: env vars first, then cmru.secret.toml.
-        if not os.environ.get("GITHUB_PUSH_PAT"):
-            token = os.environ.get("GITHUB_TOKEN", "")
-            if not token:
-                secret_toml = repo_root / "cmru.secret.toml"
-                if secret_toml.exists():
-                    with secret_toml.open("rb") as fh:
-                        secret = tomllib.load(fh)
-                    token = str(secret.get("github", {}).get("token", ""))
-            if token:
-                os.environ["GITHUB_PUSH_PAT"] = token
-    except Exception:
-        pass
-
-
 def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     """Mirror repo visibility onto GHCR packages that this release just pushed."""
     names = [name.strip() for name in package_names if name and str(name).strip()]
@@ -101,8 +53,18 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
     owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
     if not username or not repo or not token or not owner_type:
-        log("Skipping GHCR visibility sync (missing GitHub identity/token)")
-        return
+        missing = [
+            name for name, value in {
+                "GITHUB_USERNAME": username,
+                "GITHUB_REPO": repo,
+                "GITHUB_PUSH_PAT": token,
+                "GITHUB_OWNER_TYPE": owner_type,
+            }.items() if not value
+        ]
+        fail(
+            "GHCR visibility sync requires " + ", ".join(missing) +
+            "; run through CMRU or export the release identity explicitly"
+        )
 
     ghcr = GitHubPackages(username, repo, token, owner_type)
     repo_visibility = ghcr.repo_visibility()
@@ -129,11 +91,11 @@ class BuilderConfig:
 
 def load_builder_config(path: Path = BUILD_CONFIG) -> BuilderConfig:
     with path.open("rb") as handle:
-        raw = tomllib.load(handle).get("builder", {})
+        raw = tomllib.load(handle).get("project_metadata", {}).get("builder", {})
     required = ("name", "memory", "memory_swap", "cpu_shares", "cpu_quota", "cpu_period")
     missing = [key for key in required if key not in raw]
     if missing:
-        fail(f"{path.name} [builder] is missing: {', '.join(missing)}")
+        fail(f"{path.name} [project_metadata.builder] is missing: {', '.join(missing)}")
     return BuilderConfig(
         name=str(raw["name"]),
         memory=str(raw["memory"]),
@@ -229,14 +191,11 @@ def do_build() -> None:
     load_vars()
     builder = load_builder_config()
     ensure_builder(builder)
-    pw_pypi = os.environ.get("PLAYWRIGHT_VERSION_PYPI") or os.environ.get("PLAYWRIGHT_VERSION", "?")
-    pw_npm = os.environ.get("PLAYWRIGHT_VERSION_NPM", "?")
-    pwmcp_pypi = os.environ.get("PWMCP_VERSION_PYPI") or os.environ.get("PWMCP_VERSION", "?")
-    pwmcp_npm = os.environ.get("PWMCP_VERSION_NPM", "?")
+    pw_version = os.environ.get("PLAYWRIGHT_VERSION", "?")
+    pwmcp_version = os.environ.get("PWMCP_VERSION", "?")
     log(
-        f"Building pwmcp matrix  "
-        f"PW_PYPI={pw_pypi}  PWMCP_PYPI={pwmcp_pypi}  "
-        f"PW_NPM={pw_npm}  PWMCP_NPM={pwmcp_npm}"
+        f"Building pwmcp coordinated release "
+        f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
     run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--load"], cwd=PWMCP_DIR)
     log("Build complete.")
@@ -244,14 +203,13 @@ def do_build() -> None:
 
 def do_push() -> None:
     load_vars()
-    load_cmru_credentials()
     builder = load_builder_config()
     ensure_builder(builder)
 
     username = os.environ.get("GITHUB_USERNAME", "")
     pat = os.environ.get("GITHUB_PUSH_PAT", "")
     if not username or not pat:
-        fail("GITHUB_USERNAME and GITHUB_PUSH_PAT are required for push")
+        fail("GITHUB_USERNAME and GITHUB_PUSH_PAT are required for push; run through CMRU or export both")
 
     log(f"Logging in to ghcr.io as {username}")
     proc = subprocess.run(
@@ -260,14 +218,11 @@ def do_push() -> None:
     )
     del proc
 
-    pw_pypi = os.environ.get("PLAYWRIGHT_VERSION_PYPI") or os.environ.get("PLAYWRIGHT_VERSION", "?")
-    pw_npm = os.environ.get("PLAYWRIGHT_VERSION_NPM", "?")
-    pwmcp_pypi = os.environ.get("PWMCP_VERSION_PYPI") or os.environ.get("PWMCP_VERSION", "?")
-    pwmcp_npm = os.environ.get("PWMCP_VERSION_NPM", "?")
+    pw_version = os.environ.get("PLAYWRIGHT_VERSION", "?")
+    pwmcp_version = os.environ.get("PWMCP_VERSION", "?")
     log(
-        f"Pushing pwmcp matrix  "
-        f"PW_PYPI={pw_pypi}  PWMCP_PYPI={pwmcp_pypi}  "
-        f"PW_NPM={pw_npm}  PWMCP_NPM={pwmcp_npm}"
+        f"Pushing pwmcp coordinated release "
+        f"PLAYWRIGHT_VERSION={pw_version} PWMCP_VERSION={pwmcp_version}"
     )
     run(["docker", "buildx", "bake", "--builder", builder.name, "all", "--push"], cwd=PWMCP_DIR)
     package_names = [

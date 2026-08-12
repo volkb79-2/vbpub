@@ -4,14 +4,14 @@
 Routes through cmru.release (cmru/src/cmru/release.py).
 so the release scheme stays uniform across all vbpub projects.
 
-Required environment (from cmru.toml / cmru.secret.toml or shell):
+Required environment (from CMRU or explicitly exported by the caller):
   GITHUB_PUSH_PAT
   GITHUB_USERNAME
   GITHUB_REPO  (default: vbpub)
 
-Reads PWMCP_VERSION from cmru.vars (written by resolve-playwright-version.py).
+Reads PWMCP_VERSION from cmru.vars (written by CMRU's pwmcp prepare phase).
 
-Publish strategy (delegated to publish_versioned in the keystone):
+Publish strategy (implemented by publish_versioned in the keystone):
   - Immutable release  pwmcp-v<version>  with the versioned bundle + .sha256 sidecar.
   - Thin pointer       pwmcp-latest       containing only latest.json (no asset dup).
   - SHA256 written to release notes for reproducibility verification.
@@ -27,9 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
 from cmru.release import GitHubReleases, publish_versioned  # noqa: E402
 
-# Shared self-healing vars loader (sibling _vars.py in pwmcp/scripts/).
-# Insert the script dir explicitly: the cmru/src insert above pushed sys.path[0] off the
-# script dir, so a bare ``import _vars`` would otherwise be fragile.
+# Strict prepared-coordinate loader. Insert the script dir explicitly: the cmru/src
+# insert above pushed sys.path[0] off it, so a bare ``import _vars`` would be fragile.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _vars import load_vars  # noqa: E402
 
@@ -50,77 +49,15 @@ def fail(msg: str, status: int | None = None, body: str | None = None) -> None:
     raise SystemExit(1)
 
 
-def load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        os.environ[key] = value
-
-
-def load_cmru_credentials(repo_root: Path) -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO from cmru.toml / cmru.secret.toml.
-
-    Resolution order:
-      - GITHUB_USERNAME: env, then cmru.toml [github].owner
-      - GITHUB_REPO:     env, then cmru.toml [github].repo
-      - GITHUB_PUSH_PAT: env GITHUB_PUSH_PAT, then env GITHUB_TOKEN,
-                         then cmru.secret.toml [github].token
-    Missing config files are silently skipped.
-    """
-    if os.environ.get("GITHUB_USERNAME") and os.environ.get("GITHUB_PUSH_PAT"):
-        return
-    try:
-        import tomllib
-        # Load identity from cmru.toml (no token here).
-        cmru_toml = repo_root / "cmru.toml"
-        if cmru_toml.exists():
-            with cmru_toml.open("rb") as fh:
-                config = tomllib.load(fh)
-            github = config.get("github", {})
-            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
-                os.environ["GITHUB_USERNAME"] = str(github["owner"])
-            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-                os.environ["GITHUB_REPO"] = str(github["repo"])
-        # Resolve token: env vars first, then cmru.secret.toml.
-        if not os.environ.get("GITHUB_PUSH_PAT"):
-            token = os.environ.get("GITHUB_TOKEN", "")
-            if not token:
-                secret_toml = repo_root / "cmru.secret.toml"
-                if secret_toml.exists():
-                    with secret_toml.open("rb") as fh:
-                        secret = tomllib.load(fh)
-                    token = str(secret.get("github", {}).get("token", ""))
-            if token:
-                os.environ["GITHUB_PUSH_PAT"] = token
-    except Exception:
-        pass
-
-
 def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     expected = dist_dir / f"pwmcp-{pwmcp_version}.tar.xz"
     if not expected.exists():
-        candidates = sorted(dist_dir.glob("pwmcp-*.tar.xz"))
-        if not candidates:
-            fail(f"No bundle in {dist_dir}. Run build-bundle.py first.")
-        if len(candidates) > 1:
-            fail(f"Multiple bundles in {dist_dir}: {[c.name for c in candidates]}; clean + rebuild.")
-        return candidates[0]
+        fail(f"Expected prepared bundle {expected}; run CMRU's pwmcp build phase first.")
     return expected
 
 
 def main() -> None:
     load_vars()
-
-    repo_root = PWMCP_DIR.parent
-    for env_path in [repo_root / ".env", PWMCP_DIR / ".env"]:
-        load_env_file(env_path)
-    load_cmru_credentials(repo_root)
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
     if not pwmcp_version:
@@ -130,9 +67,9 @@ def main() -> None:
     if not token:
         fail("GITHUB_PUSH_PAT is required")
     owner = os.environ.get("GITHUB_USERNAME", "")
-    repo = os.environ.get("GITHUB_REPO", "vbpub")
-    if not owner:
-        fail("GITHUB_USERNAME is required")
+    repo = os.environ.get("GITHUB_REPO", "")
+    if not owner or not repo:
+        fail("GITHUB_USERNAME and GITHUB_REPO are required")
 
     bundle_path = find_bundle(DIST_DIR, pwmcp_version)
 

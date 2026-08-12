@@ -6,14 +6,8 @@ variable "NAMESPACE" {
   default = "volkb79-2"
 }
 
-// Coordinated Playwright version, available from npm, PyPI, and MCR.
-// Compatibility variable name retained for downstream tooling.
-variable "PLAYWRIGHT_VERSION_PYPI" {
-  default = "1.62.0"
-}
-
-// Compatibility alias for the coordinated version above.
-variable "PLAYWRIGHT_VERSION_NPM" {
+// One version is released only when npm, PyPI, and MCR all provide it.
+variable "PLAYWRIGHT_VERSION" {
   default = "1.62.0"
 }
 
@@ -42,13 +36,8 @@ variable "LIGHTHOUSE_VERSION" {
   default = "13.4.0"
 }
 
-// Compatibility alias for the coordinated pwmcp release (e.g. 1.60.0-r1).
-variable "PWMCP_VERSION_PYPI" {
-  default = "1.62.0-r1"
-}
-
-// Compatibility alias for the coordinated pwmcp release.
-variable "PWMCP_VERSION_NPM" {
+// CMRU's prepared, Playwright-driven pwmcp release coordinate.
+variable "PWMCP_VERSION" {
   default = "1.62.0-r1"
 }
 
@@ -66,7 +55,7 @@ target "pwmcp-latest" {
   context    = "."
   dockerfile = "containers/pwmcp/Dockerfile"
   args = {
-    PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION_PYPI}"
+    PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION}"
     PLAYWRIGHT_DISTRO           = "${PLAYWRIGHT_DISTRO}"
     PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
     CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
@@ -74,8 +63,8 @@ target "pwmcp-latest" {
     LIGHTHOUSE_VERSION          = "${LIGHTHOUSE_VERSION}"
   }
   tags = [
-    "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_PYPI}",
-    "${REGISTRY}/${NAMESPACE}/pwmcp:${PLAYWRIGHT_VERSION_PYPI}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp:${PLAYWRIGHT_VERSION}",
     "${REGISTRY}/${NAMESPACE}/pwmcp:latest",
     "${REGISTRY}/${NAMESPACE}/pwmcp:latest-npm",
   ]

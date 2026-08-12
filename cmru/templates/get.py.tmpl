@@ -63,7 +63,7 @@ ENTRYPOINT       = "[[ENTRYPOINT]]"           # "" means no adapter
 REQUIRED_COMMANDS: List[str] = [[REQUIRED_COMMANDS_LIST]]
 PRESERVE_PATHS: List[str]    = [[PRESERVE_PATHS_LIST]]
 WHEEL_SPECS: List[Tuple[str, str]] = [[WHEEL_SPECS_LIST]]  # [(glob, distribution), ...]
-# Per-interpreter variants (S-REL.6). [] ⇒ single-asset release (legacy path, unchanged).
+# Per-interpreter variants (S-REL.6). [] ⇒ one unambiguous single-asset release.
 # When non-empty the release carries one asset per variant, named <tag>-<name><suffix>,
 # and the operator MUST select one at install time with --variant NAME (no silent default).
 VARIANTS: List[dict] = [[VARIANTS_LIST]]  # e.g. [{"name": "py39", "label": "Python 3.9"}, ...]
@@ -337,8 +337,8 @@ def _installed_variant(root: Path) -> Optional[str]:
 def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
     """Resolve which per-interpreter variant to install/update (S6.12).
 
-    Returns None for a single-asset release (VARIANTS empty) — the byte-for-byte legacy
-    path. Otherwise, in priority order: an explicit --variant (validated); a variant
+    Returns None for a single-asset release (VARIANTS empty). Otherwise, in priority order:
+    an explicit --variant (validated); a variant
     remembered from a prior install (so `update` stays on the same interpreter); an
     interactive prompt on a TTY; else a fatal error listing the choices. No silent default.
     """
@@ -491,7 +491,7 @@ def download_and_verify(
     """Download the bundle + sidecar; verify SHA256 + minisign; return bundle path.
 
     ``variant`` (S-REL.6) selects the per-interpreter asset ``<tag>-<variant>{suffix}``;
-    ``None`` keeps the single-asset name ``<tag>{suffix}`` (legacy path, unchanged)."""
+    ``None`` uses the single-asset name ``<tag>{suffix}``."""
     asset_name   = f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
     sidecar_name = f"{asset_name}.sha256"
     asset   = workdir / asset_name

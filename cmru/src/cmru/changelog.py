@@ -51,7 +51,7 @@ def _project_release_plan(
 ) -> tuple[str | None, str | None]:
     """Return the pending ``(version, previous_tag)`` for a release.
 
-    ``version`` is ``None`` for no-tag and delegated releases.  Their source-revision
+    ``version`` is ``None`` for no-tag releases.  Their source-revision
     heading is selected later, after the previous generated source cursor is
     available.  Tagged flows mirror ``cmru.version.release_cmd`` instead of trusting
     an operator-supplied version.
@@ -72,7 +72,7 @@ def _project_release_plan(
     prefix = getattr(project, "prefix", None) or f"{name}-v"
     version_cfg = getattr(project, "version", None)
     strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
-    if strategy == "delegated" or not getattr(project, "mint_tag", True):
+    if not getattr(project, "mint_tag", True):
         return None, None
     if strategy.startswith("external:"):
         variable = strategy.split(":", 1)[1].strip()

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Generic step runner for build/push scripts (config-driven).
-
-Moved from ``release_manager.step_runner`` in P1; ``release_manager.step_runner``
-is now a re-export shim kept for backwards compatibility until P6.
-"""
+"""Generic step runner for CMRU build/push scripts (config-driven)."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Iterable, Mapping, Optional
 
 import tomllib
@@ -49,12 +46,19 @@ class StepConfig:
     quiet: bool = False  # suppress live line-by-line stdout tee; log file only + tail-on-failure
 
 
+@dataclass(frozen=True)
+class CommandResult:
+    """Compact, non-invented command outcome for the orchestration console."""
+    elapsed_seconds: float
+    evidence: Optional[str]
+
+
 def log_info(message: str) -> None:
-    print(f"[INFO] {message}")
+    print(f"[INFO] {message}", flush=True)
 
 
 def log_error(message: str) -> None:
-    print(f"[ERROR] {message}", file=sys.stderr)
+    print(f"[ERROR] {message}", file=sys.stderr, flush=True)
 
 
 def resolve_path(base: Path, raw: str) -> Path:
@@ -69,6 +73,116 @@ def load_toml(path: Path) -> dict:
         raise FileNotFoundError(f"Config file not found: {path}")
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def _runner_error(message: str) -> "None":
+    raise ValueError(f"Invalid cmru.build.toml: {message}")
+
+
+def _require_nonempty_string(raw: object, where: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        _runner_error(f"{where} must be a non-empty string")
+    return raw.strip()
+
+
+def _require_string_list(raw: object, where: str) -> list[str]:
+    if not isinstance(raw, list) or not all(isinstance(item, str) and item.strip() for item in raw):
+        _runner_error(f"{where} must be a list of non-empty strings")
+    return list(raw)
+
+
+def validate_build_config(config: dict) -> None:
+    """Validate the strict, canonical project-local runner grammar.
+
+    Project-specific data has one explicit escape hatch: ``[project_metadata]``.
+    The runner never interprets that table.  It is deliberately separate from
+    runner controls so a typo in an execution setting cannot be ignored as
+    project metadata.
+    """
+    known_top_level = {
+        "project_root", "project_name", "release_config", "log_dir", "env",
+        "build_metadata", "steps", "project_metadata",
+    }
+    unknown = sorted(set(config) - known_top_level)
+    if unknown:
+        _runner_error(f"unknown top-level key(s): {unknown}")
+    for key in ("project_root", "release_config", "log_dir"):
+        _require_nonempty_string(config.get(key), key)
+    if "project_name" in config:
+        _require_nonempty_string(config["project_name"], "project_name")
+
+    env = config.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(key, str) and key and isinstance(value, (str, int, float, bool))
+        for key, value in env.items()
+    ):
+        _runner_error("[env] must contain string keys and scalar values")
+
+    metadata = config.get("build_metadata")
+    if metadata is not None:
+        if not isinstance(metadata, dict):
+            _runner_error("[build_metadata] must be a table")
+        metadata_unknown = sorted(set(metadata) - {"date_env", "date_format"})
+        if metadata_unknown:
+            _runner_error(f"build_metadata: unknown keys {metadata_unknown}")
+        for key, value in metadata.items():
+            _require_nonempty_string(value, f"build_metadata.{key}")
+
+    if "project_metadata" in config and not isinstance(config["project_metadata"], dict):
+        _runner_error("[project_metadata] must be a table")
+
+    steps = config.get("steps")
+    if not isinstance(steps, dict) or not steps:
+        _runner_error("[steps] must be a non-empty table")
+    known_step_keys = {
+        "commands", "bake_set_prefix", "bake_set_vars", "no_cache_env", "clean_dirs",
+        "required_env", "login", "env", "env_command", "quiet",
+    }
+    for step_name, step in steps.items():
+        if not isinstance(step_name, str) or not step_name or not isinstance(step, dict):
+            _runner_error("[steps.<name>] entries must be tables with non-empty names")
+        step_unknown = sorted(set(step) - known_step_keys)
+        if step_unknown:
+            _runner_error(f"steps.{step_name}: unknown keys {step_unknown}")
+        commands = step.get("commands")
+        if not isinstance(commands, list) or not commands:
+            _runner_error(f"steps.{step_name}.commands must be a non-empty list")
+        for index, command in enumerate(commands, start=1):
+            if not isinstance(command, dict):
+                _runner_error(f"steps.{step_name}.commands[{index}] must be a table")
+            command_unknown = sorted(set(command) - {"label", "argv", "cwd"})
+            if command_unknown:
+                _runner_error(
+                    f"steps.{step_name}.commands[{index}]: unknown keys {command_unknown}"
+                )
+            _require_nonempty_string(command.get("label"), f"steps.{step_name}.commands[{index}].label")
+            _require_string_list(command.get("argv"), f"steps.{step_name}.commands[{index}].argv")
+            _require_nonempty_string(command.get("cwd"), f"steps.{step_name}.commands[{index}].cwd")
+        for key in ("bake_set_vars", "clean_dirs", "required_env", "env_command"):
+            if key in step:
+                _require_string_list(step[key], f"steps.{step_name}.{key}")
+        for key in ("bake_set_prefix", "no_cache_env"):
+            if key in step:
+                _require_nonempty_string(step[key], f"steps.{step_name}.{key}")
+        if "quiet" not in step or not isinstance(step["quiet"], bool):
+            _runner_error(f"steps.{step_name}.quiet must be explicitly true or false")
+        step_env = step.get("env", {})
+        if not isinstance(step_env, dict) or not all(
+            isinstance(key, str) and key and isinstance(value, (str, int, float, bool))
+            for key, value in step_env.items()
+        ):
+            _runner_error(f"steps.{step_name}.env must contain string keys and scalar values")
+        login = step.get("login")
+        if login is not None:
+            if not isinstance(login, dict):
+                _runner_error(f"steps.{step_name}.login must be a table")
+            login_unknown = sorted(set(login) - {"registry", "username_env", "token_env", "required"})
+            if login_unknown:
+                _runner_error(f"steps.{step_name}.login: unknown keys {login_unknown}")
+            for key in ("registry", "username_env", "token_env"):
+                _require_nonempty_string(login.get(key), f"steps.{step_name}.login.{key}")
+            if not isinstance(login.get("required"), bool):
+                _runner_error(f"steps.{step_name}.login.required must be true or false")
 
 
 def _resolve_token(config: dict, github: dict, config_path: Path) -> str:
@@ -97,25 +211,19 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
     if not github or not isinstance(github, dict):
         raise ValueError("[github] section required in release config")
 
-    username = (github.get("username") or github.get("owner") or "").strip()
+    username = (github.get("owner") or "").strip()
     repo = (github.get("repo") or "").strip()
     token = _resolve_token(config, github, release_path)
     owner_type = (github.get("owner_type") or "").strip() or None
 
-    registry = config.get("registry", {})
     registry_url = None
-    if isinstance(registry, dict):
-        registry_url = (registry.get("url") or "").strip() or None
-
-    # [targets].registry supersedes [registry].url when present (S11 multi-push)
     registries: list = []
     targets = config.get("targets", {})
     if isinstance(targets, dict):
-        reg_list = targets.get("registry")
-        if isinstance(reg_list, list):
-            registries = [str(r) for r in reg_list if r]
-        elif isinstance(reg_list, str) and reg_list:
-            registries = [reg_list]
+        reg_list = targets.get("registry", [])
+        if not isinstance(reg_list, list):
+            raise ValueError("targets.registry must be a list")
+        registries = [str(r) for r in reg_list if r]
     if registries and not registry_url:
         registry_url = registries[0]
 
@@ -127,19 +235,19 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
 
     project_env: Mapping[str, str] = {}
     if project_name:
-        projects_section = config.get("project") or config.get("projects")
+        projects_section = config.get("project")
         if projects_section is not None and not isinstance(projects_section, dict):
-            raise ValueError("[projects] must be a table")
+            raise ValueError("[project] must be a table")
         if isinstance(projects_section, dict):
             project_section = projects_section.get(project_name)
             if project_section is not None and not isinstance(project_section, dict):
-                raise ValueError(f"projects.{project_name} must be a table")
+                raise ValueError(f"project.{project_name} must be a table")
             if isinstance(project_section, dict):
                 project_env = project_section.get("env") or {}
                 if project_env is None:
                     project_env = {}
                 if not isinstance(project_env, dict):
-                    raise ValueError(f"projects.{project_name}.env must be a table")
+                    raise ValueError(f"project.{project_name}.env must be a table")
 
     return ReleaseSecrets(
         github_username=username,
@@ -382,6 +490,51 @@ ERROR_LINES_ON_FAILURE = 20
 # e.g. after a buildkit "#63 89.30 " progress prefix) and docker/buildkit's own
 # top-level "ERROR: target ... failed to solve" summary line.
 _ERROR_LINE_RE = re.compile(r"\[ERROR\]|^ERROR:")
+_PYTEST_SUCCESS_RE = re.compile(r"=+ .*?\b\d+ passed(?:, \d+ skipped)? in [^=]+ =+")
+_UNITTEST_RUN_RE = re.compile(r"^Ran \d+ tests? in .+$")
+_UNITTEST_OK_RE = re.compile(r"^OK(?: \(.+\))?$")
+
+
+def _success_evidence(lines: Iterable[str]) -> Optional[str]:
+    """Return only a known test-framework success fact; never guess from tool noise."""
+    recent = list(lines)
+    for line in reversed(recent):
+        normalized = line.strip()
+        if _PYTEST_SUCCESS_RE.search(normalized):
+            return normalized.strip("= ")
+    for index, line in enumerate(recent):
+        if _UNITTEST_RUN_RE.match(line.strip()):
+            for candidate in recent[index + 1:index + 4]:
+                if _UNITTEST_OK_RE.match(candidate.strip()):
+                    return f"{line.strip()}; {candidate.strip()}"
+    return None
+
+
+def _truthy_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _write_line(handle, line: str) -> None:
+    handle.write(line)
+    handle.flush()
+
+
+def _open_aggregate_log(local_log: Path, *, quiet: bool):
+    """Open the wrapper-owned full run log only while details are console-quiet.
+
+    In ``--show-run-details`` mode the root wrapper's tee already receives the raw
+    stream; mirroring again would duplicate every line.  A direct CMRU invocation
+    without the wrapper still has its stable per-step file and does not invent a
+    repository-wide log path.
+    """
+    raw_path = (os.getenv("CMRU_RUN_LOG") or "").strip()
+    if not quiet or not raw_path:
+        return None
+    aggregate_path = Path(raw_path).expanduser().resolve()
+    if aggregate_path == local_log.resolve():
+        return None
+    aggregate_path.parent.mkdir(parents=True, exist_ok=True)
+    return aggregate_path.open("a", encoding="utf-8", buffering=1)
 
 
 def run_command(
@@ -391,7 +544,8 @@ def run_command(
     *,
     quiet: bool = False,
     log_path: Optional[Path] = None,
-) -> None:
+    mirror_handle=None,
+) -> CommandResult:
     """Run argv, streaming its combined stdout/stderr into log_handle.
 
     When ``quiet`` is set (build/push steps whose subprocess is itself very
@@ -405,6 +559,11 @@ def run_command(
     """
     location = f" (full output: {log_path})" if (quiet and log_path) else ""
     log_info(f"Running: {' '.join(argv)}{location}")
+    command_env = os.environ.copy()
+    # Pipes make Python programs block-buffer by default.  This makes the common
+    # case immediate; arbitrary child tools still control their own buffering.
+    command_env.setdefault("PYTHONUNBUFFERED", "1")
+    start = monotonic()
     process = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -412,6 +571,7 @@ def run_command(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=command_env,
     )
     assert process.stdout is not None
     tail: deque[str] = deque(maxlen=TAIL_LINES_ON_FAILURE) if quiet else deque(maxlen=0)
@@ -420,15 +580,20 @@ def run_command(
     # that crowd out an earlier, actually-informative "[ERROR] ..." line once a
     # failure produces more than ERROR_LINES_ON_FAILURE matches.
     error_lines: list[str] = []
+    evidence_lines: deque[str] = deque(maxlen=300)
     for line in process.stdout:
-        log_handle.write(line)
+        _write_line(log_handle, line)
+        if mirror_handle is not None:
+            _write_line(mirror_handle, line)
+        evidence_lines.append(line)
         if quiet:
             tail.append(line)
             if len(error_lines) < ERROR_LINES_ON_FAILURE and _ERROR_LINE_RE.search(line):
                 error_lines.append(line)
         else:
-            print(line, end="")
+            print(line, end="", flush=True)
     exit_code = process.wait()
+    elapsed_seconds = monotonic() - start
     if exit_code != 0:
         if quiet and error_lines:
             sys.stderr.write(f"[ERROR] {len(error_lines)} error-looking line(s) from the output:\n")
@@ -437,7 +602,9 @@ def run_command(
             context_note = " (context)" if error_lines else ""
             sys.stderr.write(f"[ERROR] Last {len(tail)} line(s) of output{context_note}:\n")
             sys.stderr.write("".join(tail))
+        sys.stderr.flush()
         raise subprocess.CalledProcessError(exit_code, argv)
+    return CommandResult(elapsed_seconds=elapsed_seconds, evidence=_success_evidence(evidence_lines))
 
 
 def execute_step(
@@ -479,66 +646,89 @@ def execute_step(
         if clean_path.exists():
             shutil.rmtree(clean_path)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    log_file = log_dir / f"{step.name}-{timestamp}.log"
-    if step.quiet:
-        log_info(f"Logging to {log_file} (full output kept quiet here; check that file for detail)")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log_file = log_dir / f"{step.name}.log"
+    quiet = step.quiet and not _truthy_env("CMRU_SHOW_RUN_DETAILS")
+    append = _truthy_env("CMRU_LOG_APPEND")
+    if quiet:
+        log_info(f"Details: {log_file} (kept out of the console; use --show-run-details to stream them)")
     else:
         log_info(f"Logging to {log_file}")
 
-    with log_file.open("a", encoding="utf-8") as handle:
-        for command in step.commands:
-            if not isinstance(command, dict):
-                raise ValueError(f"Command entry must be a table in step '{step.name}'")
-            label = command.get("label") or "command"
-            argv = command.get("argv")
-            cwd_raw = command.get("cwd")
-            if not argv or not isinstance(argv, list):
-                raise ValueError(f"Command '{label}' must define argv list")
-            if not cwd_raw:
-                raise ValueError(f"Command '{label}' must define cwd")
-            cwd = resolve_path(project_root, str(cwd_raw))
+    mode = "a" if append else "w"
+    aggregate_handle = _open_aggregate_log(log_file, quiet=quiet)
+    try:
+        with log_file.open(mode, encoding="utf-8", buffering=1) as handle:
+            header = f"[cmru] {timestamp} step={step.name} project_root={project_root}\n"
+            if append:
+                _write_line(handle, "\n---\n")
+            _write_line(handle, header)
+            if aggregate_handle is not None:
+                _write_line(aggregate_handle, f"\n---\n{header}")
+            for command in step.commands:
+                if not isinstance(command, dict):
+                    raise ValueError(f"Command entry must be a table in step '{step.name}'")
+                label = command.get("label") or "command"
+                argv = command.get("argv")
+                cwd_raw = command.get("cwd")
+                if not argv or not isinstance(argv, list):
+                    raise ValueError(f"Command '{label}' must define argv list")
+                if not cwd_raw:
+                    raise ValueError(f"Command '{label}' must define cwd")
+                cwd = resolve_path(project_root, str(cwd_raw))
 
-            effective_argv = [str(item) for item in argv]
-            if step.bake_set_prefix and step.bake_set_vars:
-                for var_name in step.bake_set_vars:
-                    value = os.getenv(var_name)
-                    if value:
-                        effective_argv.extend([
-                            "--set",
-                            f"{step.bake_set_prefix}{var_name}={value}",
-                        ])
+                effective_argv = [str(item) for item in argv]
+                if step.bake_set_prefix and step.bake_set_vars:
+                    for var_name in step.bake_set_vars:
+                        value = os.getenv(var_name)
+                        if value:
+                            effective_argv.extend([
+                                "--set",
+                                f"{step.bake_set_prefix}{var_name}={value}",
+                            ])
 
-            if step.no_cache_env and os.getenv(step.no_cache_env) == "1":
-                effective_argv.append("--no-cache")
+                if step.no_cache_env and os.getenv(step.no_cache_env) == "1":
+                    effective_argv.append("--no-cache")
 
-            log_info(label)
-            run_command(effective_argv, cwd, handle, quiet=step.quiet, log_path=log_file)
+                command_header = f"[cmru] command label={label!r} argv={effective_argv!r}\n"
+                _write_line(handle, command_header)
+                if aggregate_handle is not None:
+                    _write_line(aggregate_handle, command_header)
+                log_info(label)
+                result = run_command(
+                    effective_argv,
+                    cwd,
+                    handle,
+                    quiet=quiet,
+                    log_path=log_file,
+                    mirror_handle=aggregate_handle,
+                )
+                evidence = f"; {result.evidence}" if result.evidence else ""
+                log_info(
+                    f"{label}: succeeded in {result.elapsed_seconds:.1f}s{evidence} "
+                    f"(details: {log_file})"
+                )
+    finally:
+        if aggregate_handle is not None:
+            aggregate_handle.close()
 
 
 def run_step(build_config_path: Path, step_name: str, release_config_path: Optional[Path]) -> None:
     build_config = load_toml(build_config_path)
-    project_root_raw = build_config.get("project_root")
-    if not project_root_raw:
-        raise ValueError("project_root is required in build-push config")
-    project_root = resolve_path(build_config_path.parent, str(project_root_raw))
+    validate_build_config(build_config)
+    project_root = resolve_path(build_config_path.parent, str(build_config["project_root"]))
     project_name_raw = (build_config.get("project_name") or "").strip()
     project_name = project_name_raw or project_root.name
 
-    release_config_raw = None
     if release_config_path:
         release_config = release_config_path
     else:
-        release_config_raw = build_config.get("release_config") or os.getenv("RELEASE_MANAGER_CONFIG")
-        if release_config_raw:
-            release_config = resolve_path(build_config_path.parent, str(release_config_raw))
-        else:
-            parent = project_root.parent
-            release_config = parent / "cmru.toml"
-            if not release_config.exists() and (parent / "release.toml").exists():
-                release_config = parent / "release.toml"  # legacy fallback (S-CLI.4)
+        release_config = resolve_path(build_config_path.parent, str(build_config["release_config"]))
     release_config = release_config.expanduser().resolve()
 
+    # The raw runner is also bound to the one strict configuration contract.
+    from cmru.config import load_forge_config
+    load_forge_config(release_config)
     secrets = load_release_secrets(release_config, project_name=project_name)
     apply_release_env(secrets)
 
@@ -554,8 +744,14 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
         if value_str:
             os.environ.setdefault(key, value_str)
 
-    log_dir_raw = build_config.get("log_dir") or "logs"
-    log_dir = resolve_path(project_root, str(log_dir_raw))
+    configured_log_root = (os.getenv("CMRU_STEP_LOG_ROOT") or "").strip()
+    if configured_log_root:
+        # A transaction child inherits the caller checkout's root.  Keep an
+        # adapter's inner Docker/test evidence beside the outer project-step
+        # log rather than in a release worktree that is deleted on success.
+        log_dir = Path(configured_log_root).expanduser().resolve() / project_name
+    else:
+        log_dir = resolve_path(project_root, str(build_config["log_dir"]))
 
     compute_build_date(build_config, project_root)
 
@@ -567,13 +763,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run build/push steps from TOML config")
     parser.add_argument("--config", required=True, help="Path to build-push TOML config")
     parser.add_argument("--step", required=True, help="Step name to execute")
-    parser.add_argument("--release-config", help="Path to release.toml")
+    parser.add_argument("--release-config", help="Path to cmru.toml")
+    parser.add_argument(
+        "--show-run-details", action="store_true",
+        help="Stream full subprocess output to this console",
+    )
+    parser.add_argument(
+        "--log-append", action="store_true",
+        help="Append a divider and retain the stable step log",
+    )
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.show_run_details:
+        os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
+    if args.log_append:
+        os.environ["CMRU_LOG_APPEND"] = "1"
     run_step(
         Path(args.config).expanduser().resolve(),
         args.step,

@@ -3,4 +3,4 @@
 OK = 0
 FAILURE = 1        # build / publish / upload error
 CONFIG_ERROR = 2   # missing required field, unknown key, parse error
-PREREQ_MISSING = 3 # required env var absent, required delegated tool absent
+PREREQ_MISSING = 3 # required env var absent, required external tool absent

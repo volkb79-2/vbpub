@@ -1,3 +1,5 @@
+# cmru-runner-template: build-config
+# cmru-runner-template-revision: 1
 project_root = "."
 log_dir = "logs"
 release_config = "../cmru.toml"
