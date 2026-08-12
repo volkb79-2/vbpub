@@ -34,16 +34,16 @@ scope:
     - "../nyxloom"
 oracles:
   - id: O1
-    observable: "CIU-22/S16.1. `ciu worktree add NAME --profile P1[,P2] --shared-infra REF --shared-infra-services S1[,S2] --shared-infra-ref-projects R1[,R2]` validates REF before `git worktree add`: REF is an existing registered worktree resolved by the same basename-or-absolute-path rule as `find_worktree`; its explicit `ciu.env` has a non-empty `DOCKER_NETWORK_INTERNAL`; and every declared reference Compose project has a running container on that network. Only then does add create the new checkout, generate its OWN `ciu.env`, and append the four complete intent fields `CIU_SHARED_INFRA_REF_PATH`, `CIU_SHARED_INFRA_NETWORK`, `CIU_SHARED_INFRA_SERVICES`, and `CIU_SHARED_INFRA_REF_PROJECTS`. The stored path is the resolved reference path, the network is the value read from the reference's env, and both comma-split lists are non-empty, duplicate-free names in supplied order. `--shared-infra`, both list flags, and a non-empty `--profile` are an all-or-nothing group; no mode may infer either tier from a compose file. An unresolved REF, absent/malformed reference env, absent/non-running declared reference project, a missing partner flag, an empty list item, or a duplicate item is exit 2 before checkout creation."
-    negative: "Appending only a network name without a consumer, resolving REF after a checkout has already been created, accepting `--shared-infra` without explicit diverging services/reference projects/profile, treating a previously joined child as proof that the reference is deployed, or replacing the new instance's own `DOCKER_NETWORK_INTERNAL` with the reference network each fail this oracle. The gate fakes `worktree.procutil.docker` exactly at the Docker boundary; it must prove the invalid-reference paths make no git-add call and write no child `ciu.env` intent."
+    observable: "CIU-22/S16.1. `ciu worktree add NAME --profile P1[,P2] --shared-infra REF --shared-infra-services S1[,S2] --shared-infra-ref-projects R1[,R2]` validates REF before `git worktree add`: REF is an existing registered worktree resolved by the same basename-or-absolute-path rule as `find_worktree`; its explicit `ciu.env` has a non-empty `DOCKER_NETWORK_INTERNAL`; and every declared reference Compose project has a running container on that network. This proves only that something carrying each operator-supplied R label is running; R is not derived or independently authenticated by CIU. Only then does add create the new checkout, generate its OWN `ciu.env`, and append the four complete intent fields `CIU_SHARED_INFRA_REF_PATH`, `CIU_SHARED_INFRA_NETWORK`, `CIU_SHARED_INFRA_SERVICES`, and `CIU_SHARED_INFRA_REF_PROJECTS`. The stored path is the resolved reference path, the network is the value read from the reference's env, and both comma-split lists are non-empty, duplicate-free names in supplied order. `--shared-infra`, both list flags, and a non-empty `--profile` are an all-or-nothing group; no mode may infer either tier from a compose file. An unresolved REF, absent/malformed reference env, absent/non-running declared reference project, a missing partner flag, an empty list item, or a duplicate item is exit 2 before checkout creation."
+    negative: "Appending only a network name without a consumer, resolving REF after a checkout has already been created, accepting `--shared-infra` without explicit diverging services/reference projects/profile, treating a previously joined child as proof that the reference is deployed, accepting a bare count of labelled containers when none carry a declared reference-project label, or replacing the new instance's own `DOCKER_NETWORK_INTERNAL` with the reference network each fail this oracle. The gate fakes `worktree.procutil.docker` exactly at the Docker boundary; it must prove the invalid-reference paths make no git-add call and write no child `ciu.env` intent."
     gate: tester-unified
   - id: O2
-    observable: "CIU-22/S16.1. After a successful non-dry-run `docker compose up`, both native `engine.main_execution` and `engine.run_shipped` parse the complete intent from the new worktree's already-loaded environment and call `worktree.connect_shared_infra_after_up(repo_root, compose_project, intent)`. It re-resolves the recorded absolute REF against `git worktree list`, re-reads that worktree's explicit `ciu.env`, and refuses if the registered path disappeared or its network no longer equals the recorded network. It proves the reference is still deployed by requiring a running container for EVERY recorded reference Compose project on that network (and refusing a recorded reference project equal to the current project), obtains every *running* container of each declared diverging service from THIS compose project with Docker's `com.docker.compose.project=<compose_project>` and `com.docker.compose.service=<service>` label filters, and fails before any connect if any declared service has zero running containers. It then inspects the reference network membership and calls `docker network connect <recorded-network> <container-id>` only for declared-service containers absent from that network. Thus a second `ciu up` with all memberships already present succeeds without a connect call. Neither `DOCKER_NETWORK_INTERNAL` nor the base compose/overlay network declarations change; the declared diverging services gain a SECOND membership and all other new-instance containers remain only on their own instance network."
-    negative: "Putting the join in a compose `networks:` overlay, attaching every container in the compose project, attaching a reference-tier container, changing `DOCKER_NETWORK_INTERNAL`, joining before Compose succeeds, or treating an already-connected container as a Docker error each fail this oracle. The no-socket gate monkeypatches `worktree.procutil.docker` and the compose executor: a combined-axis test with two requested services, one already attached, and a third unrequested service proves exactly one connect is issued and the unrequested service is never named."
+    observable: "CIU-22/S16.1. After a successful non-dry-run `docker compose up`, both native `engine.main_execution` and `engine.run_shipped` parse the complete intent from the new worktree's already-loaded environment and call `worktree.connect_shared_infra_after_up(repo_root, compose_project, intent)`. It re-resolves the recorded absolute REF against `git worktree list`, re-reads that worktree's explicit `ciu.env`, and refuses if the registered path disappeared or its network no longer equals the recorded network. It requires a running container for EVERY operator-declared reference Compose project on that network (and refuses a recorded reference project equal to the current project); this proves only that something carrying each declared label is running, not that R was derived from the reference path. It obtains every *running* container of each declared diverging service from THIS compose project with Docker's `com.docker.compose.project=<compose_project>` and `com.docker.compose.service=<service>` label filters, and fails before any connect if any declared service has zero running containers. It then snapshots the reference network membership and calls `docker network connect <recorded-network> <container-id>` only for declared-service containers absent from that snapshot. A non-zero connect result whose Docker diagnostic is the endpoint-already-exists condition is a SUCCESSFUL concurrent no-op: do not raise and do not add that ID to the rollback list, because this invocation never connected it. Thus a second `ciu up` with all memberships already present succeeds without a connect call. Neither `DOCKER_NETWORK_INTERNAL` nor the base compose/overlay network declarations change; the declared diverging services gain a SECOND membership and all other new-instance containers remain only on their own instance network."
+    negative: "Putting the join in a compose `networks:` overlay, attaching every container in the compose project, attaching a reference-tier container, changing `DOCKER_NETWORK_INTERNAL`, joining before Compose succeeds, treating an endpoint-already-exists connect result as an error, or adding that concurrent no-op to rollback each fail this oracle. The no-socket gate monkeypatches `worktree.procutil.docker` and the compose executor: a combined-axis test with two requested services, one already attached, and a third unrequested service proves exactly one connect is issued and the unrequested service is never named; a separate snapshot-absent/endpoint-already-exists reply proves no disconnect is attempted."
     gate: tester-unified
   - id: O3
-    observable: "CIU-22/S16.1 failure and terminal-state contract. A reference that was live at `worktree add` but has no Compose-labelled container at post-up revalidation, a recorded reference path no longer registered, a changed reference network, an absent declared target service, or a non-zero Docker inspect/connect result makes `ciu up` fail with an `[S16.1]` error naming the reference path/network or target service. No connect is attempted before all reference and target preconditions pass. If a later connect fails after earlier new memberships were made, CIU disconnects only those memberships it added in reverse connection order; previously present memberships are never removed. CIU does not run `docker compose down` on this failure: its own stack remains up on its OWN network, clearly not joined, so the operator may restore the reference and retry or explicitly `ciu down`. Dry runs never inspect or connect Docker networks."
-    negative: "A ref-down race that silently leaves a running but unjoined instance, a missing second target that still lets the first target connect, a partial-connect failure that leaves CIU-added memberships behind, rollback that removes a pre-existing membership, or dry-run Docker traffic each fail this oracle. Tests use ordered fake Docker replies to assert preconditions precede every side effect, to witness reverse-order rollback, and to distinguish a pre-existing membership from one created by this invocation."
+    observable: "CIU-22/S16.1 failure and terminal-state contract. A reference that was live at `worktree add` but has no declared-Compose-project-labelled container at post-up revalidation, a recorded reference path no longer registered, a changed reference network, an absent declared target service, or a non-zero Docker inspect/connect result other than endpoint-already-exists makes `ciu up` fail with an `[S16.1]` error naming the reference path/network or target service. No connect is attempted before all reference and target preconditions pass. If a later connect fails after earlier new memberships were made, CIU disconnects only IDs whose connect returned zero in this invocation, in reverse connection order; memberships in the pre-connect snapshot and endpoint-already-exists no-ops are never removed. CIU does not run `docker compose down` on this failure: its own stack remains up on its OWN network, clearly not joined, so the operator may restore the reference and retry or explicitly `ciu down`. Dry runs never inspect or connect Docker networks."
+    negative: "A ref-down race that silently leaves a running but unjoined instance, a missing second target that still lets the first target connect, a partial-connect failure that leaves CIU-added memberships behind, rollback that removes a pre-existing membership or an endpoint-already-exists no-op, or dry-run Docker traffic each fail this oracle. Tests use ordered fake Docker replies to assert preconditions precede every side effect, to witness reverse-order rollback, and to distinguish a pre-existing membership from one created by this invocation."
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -53,7 +53,7 @@ escalate_if:
 mutexes: [merge-lane]
 review_focus:
   - "Reject any route that mutates compose network declarations or replaces the worktree's own network identity."
-  - "Attack reference liveness between add and up, idempotent rerun, and partial-connect rollback."
+  - "Attack reference liveness between add and up, an endpoint-already-exists race, idempotent rerun, and partial-connect rollback."
 ---
 
 # ciu-P02-worktree-shared-infra-join — make the two-verb join real
@@ -66,6 +66,9 @@ review_focus:
    `ciu.env` handling in `_clean_in`, and `add`'s pre-side-effect ordering.
 3. `src/ciu/engine.py` — `main_execution` steps 1–17 and `run_shipped`'s
    compose-up path; the join is after their successful compose invocation.
+   `ciu-P01-worktree-isolation-primitives` is the already-READY sibling that
+   also changes `worktree.py` and `engine.py`; it lands before this package, so
+   re-orient to its implementation before dispatching P02.
 4. `src/ciu/workspace_env.py` — `parse_workspace_env` and
    `_connect_devcontainer_to_network`; the latter is imperative-connect
    precedent only, not the ownership model for this feature.
@@ -159,10 +162,10 @@ worktree add (PRIMARY process)
   Docker-check every declared REF Compose project on ref network is running
   git worktree add -> child ciu env generate -> append immutable intent
 
-ciu up (CHILD process)
+ciu up (CHILD process; with P03 when it has landed)
   bootstrap loads CHILD/ciu.env -> CHILD keeps own DOCKER_NETWORK_INTERNAL
-  docker compose up succeeds for CHILD project
-  re-resolve recorded REF -> re-read REF/ciu.env -> re-prove it is live
+  acquire P03 budget flock -> count -> docker compose up succeeds -> release flock
+  re-resolve recorded REF -> re-read REF/ciu.env -> re-prove declared labels live
   list only CHILD project + declared service containers
   docker network connect REF network to each absent CHILD target container
 ```
@@ -174,7 +177,7 @@ primary's ambient `REPO_ROOT`. Use these Docker invocations through
 `worktree.procutil.docker(..., capture=True, check=False)`:
 
 1. `docker network inspect <ref-network>` must return zero.
-2. For every declared reference project R, `docker ps --filter
+2. For every operator-declared reference project R, `docker ps --filter
    network=<ref-network> --filter label=com.docker.compose.project=R --format
    {{.ID}}` must return zero and at least one nonblank ID.
 
@@ -193,7 +196,9 @@ preflight nor join. The helper receives `repo_root`, the same exact
    absence is an `[S16.1]` failure. Re-read its explicit env, require its
    current network equal `intent.network`, reject any reference project equal
    to the current project, then perform the two reference-live Docker checks
-   above for every declared reference project. This catches ref removal, a
+   above for every declared reference project. It establishes only that a
+   container carrying each operator-supplied R label is running; CIU has no
+   independent derivation of R from the reference path. This catches ref removal, a
    stale recording, a previously joined child masquerading as a live ref, and a
    ref stopped between verbs.
 2. For every declared service, query running containers with both filters
@@ -204,11 +209,16 @@ preflight nor join. The helper receives `repo_root`, the same exact
    effects.
 3. Inspect `intent.network` once and derive its current container names. For
    each gathered target absent from that membership, run `docker network connect
-   <intent.network> <container-id>`. Existing membership is success/no-op.
-4. If any connect fails, disconnect only IDs connected in this call, in reverse
-   order, with `docker network disconnect <intent.network> <container-id>`;
-   retain the original failure and append any rollback failure. Never disconnect
-   a member discovered before this invocation.
+   <intent.network> <container-id>`. Existing membership is success/no-op. If
+   the snapshot says absent but the connect returns non-zero with Docker's
+   `endpoint with name ... already exists in network ...` diagnostic, another
+   actor joined it between those operations: treat that result as success/no-op
+   and do not record it as this call's work.
+4. If any other connect fails, disconnect only IDs whose connect returned zero
+   in this call, in reverse order, with `docker network disconnect
+   <intent.network> <container-id>`; retain the original failure and append any
+   rollback failure. Never disconnect a member discovered before this invocation
+   or an endpoint-already-exists no-op.
 
 Translate a `WorktreeError` from this post-up helper to the engine's normal
 up-error surface while retaining its complete `[S16.1]` message. Do not
@@ -227,6 +237,7 @@ been moved off its own network.
 | Up: ref no longer registered/live or network differs | Error after successful compose up | No connect; child remains own-network-only |
 | Up: any named target has no running container | `[S16.1]` error | No connect |
 | Up: target already in ref network | Success | No connect for that target |
+| Up: target absent in snapshot, then connect says endpoint already exists | Success | No disconnect/rollback entry for that target |
 | Up: all connects succeed | Success | Each absent declared target gains second membership |
 | Up: later connect fails | Error | Reverse-disconnect only memberships added by this call |
 | Dry run | Current dry-run result | No reference Docker query or join |
@@ -235,9 +246,9 @@ been moved off its own network.
 
 | Work | Owner | Oracle | Required proof / controlled break |
 |---|---|---|---|
-| CLI and add recording | `worktree.py`, `cli.py` | O1 | Fake docker marks a ref live; parse child env and compare every field. Break: missing profile/service/ref must make no git-add call. |
-| Ref liveness and target selection | `worktree.py`, `engine.py` | O2 | Fake Compose succeeds; fake Docker provides two selected services, one already attached, and one unselected service. Assert exactly the absent selected ID is connected. |
-| Failure cleanup | `worktree.py`, `engine.py` | O3 | Ordered fake replies cover ref-down-after-add, absent second target, failing second connect, and failing rollback; assert no premature or over-broad disconnect. |
+| CLI and add recording | `worktree.py`, `cli.py` | O1 | Fake docker marks a ref live; parse child env and compare every field. Required masquerader fixture: the ref network has one running container labelled with an undeclared project, while every declared R query is empty; it MUST refuse before git-add, proving a bare labelled-container count is not liveness. Break: missing profile/service/ref must make no git-add call. |
+| Ref liveness and target selection | `worktree.py`, `engine.py` | O2 | Fake Compose succeeds; fake Docker provides two selected services, one already attached, and one unselected service. Assert exactly the absent selected ID is connected. Required concurrent-join fixture: a target is absent from the one membership snapshot, then its `connect` returns the endpoint-already-exists non-zero diagnostic; assert success, zero disconnects, and no rollback-list entry for that target. |
+| Failure cleanup | `worktree.py`, `engine.py` | O3 | Ordered fake replies cover ref-down-after-add, absent second target, failing second connect, and failing rollback; assert no premature or over-broad disconnect. Required rollback discriminator: target A is in the pre-connect membership snapshot, target B is absent and its connect fails; assert the disconnect set never contains A (and is empty when B was never connected). |
 | Docs/status/LOG | docs + tracker + LOG | O1–O3 | Add S16.1 and configuration/CLI examples; mark CIU-22 FIXED with code/test/SPEC evidence. |
 
 Test the real `worktree.add` and env-file parser flow in a temporary git repo;

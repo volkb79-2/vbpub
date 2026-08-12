@@ -8,7 +8,7 @@ tier: implement-2
 input_revision: "202d292501fd11f440125900e981a4483e139e80"
 source: {kind: backlog, ref: "nyxloom-trove/backlog.md#CIU-24"}
 stack: none
-depends_on: []
+depends_on: [ciu-P02-worktree-shared-infra-join]
 session: fresh
 scope:
   touch:
@@ -35,16 +35,16 @@ scope:
     - "../nyxloom"
 oracles:
   - id: O1
-    observable: "CIU-24/S16.3. The sole file configuration is the PRIMARY worktree's repository-root global table `[ciu.worktree] max_concurrent_instances = N`, where N is a positive TOML integer. `worktree.primary_worktree_root(repo_root)` derives that one registered primary root from `git worktree list`; CIU renders only that root (never an intermediate/stack global layer) with `config_model.render_global_chain(primary_root, primary_root, write_rendered=False)`. This prevents linked worktrees on different branches from silently applying different capacity policy. It is deliberately NOT a `[governance]` or `[<root>.governance]` value and does not participate in CIU-13's global-over-stack governance merge: capacity is one policy for the git-worktree family, not a property of one stack. `CIU_MAX_CONCURRENT_WORKTREES`, when present, is a positive decimal integer and overrides the validated file value for that process. Both sources absent means no cap and makes no Docker or lock call. A blank, zero, negative, non-decimal, boolean/non-integer TOML value, unknown `[ciu.worktree]` key, or invalid ambient override fails `[S16.3]` loudly; an ambient override does not mask an invalid file table."
-    negative: "A per-stack governance key, a default cap, a leaf/global-chain override that lets one stack raise its own host budget, silently treating `0`/empty/typo as unlimited, or consulting Docker when both sources are absent each fail this oracle. Tests load root and leaf global templates with conflicting values and prove only the root policy is seen; separate invalid file and invalid ambient cases prove no unsafe fallback."
+    observable: "CIU-24/S16.3. The sole file configuration is the PRIMARY worktree's repository-root global table `[ciu.worktree] max_concurrent_instances = N`, where N is a positive TOML integer. `worktree.primary_worktree_root(repo_root)` derives that one registered primary root from `git worktree list`; CIU renders only that root (never an intermediate/stack global layer) with `config_model.render_global_chain(primary_root, primary_root, write_rendered=False)`. Catch only that function's specific `ValueError` whose message begins `[ERROR] No global configuration found.` and treat it as an absent file-level policy, then continue to the ambient override; all other `ValueError`s still fail `[S16.3]`. A primary Git worktree without a global template is normal when a CIU project lives below a larger monorepo checkout, not bad policy configuration, and this catch is what makes the required absent-means-no-cap path reachable. This prevents linked worktrees on different branches from silently applying different capacity policy. It is deliberately NOT a `[governance]` or `[<root>.governance]` value and does not participate in CIU-13's global-over-stack governance merge: capacity is one policy for the git-worktree family, not a property of one stack. `CIU_MAX_CONCURRENT_WORKTREES`, when present, is a positive decimal integer and overrides the validated file value for that process. Both sources absent means no cap and makes no Docker or lock call. A blank, zero, negative, non-decimal, boolean/non-integer TOML value, unknown `[ciu.worktree]` key, or invalid ambient override fails `[S16.3]` loudly; an ambient override does not mask an invalid file table."
+    negative: "A per-stack governance key, a default cap, a leaf/global-chain override that lets one stack raise its own host budget, treating the normal no-global-configuration `ValueError` as a policy error, swallowing any other render error, silently treating `0`/empty/typo as unlimited, or consulting Docker when both sources are absent each fail this oracle. Tests load root and leaf global templates with conflicting values and prove only the root policy is seen; a no-template primary-root test proves absent file policy reaches the no-Docker/no-lock outcome, while separate invalid file and invalid ambient cases prove no unsafe fallback."
     gate: tester-unified
   - id: O2
-    observable: "CIU-24/S16.3. With a configured cap, `worktree.worktree_budget_slot(repo_root, cap, current_network)` obtains an exclusive advisory lock at `<git-common-dir>/ciu-worktree-budget.lock` before reading deployment state and holds it through the caller's single `docker compose up` execution. It derives candidate instances exclusively from `git worktree list --porcelain`: the primary is included, and a non-primary entry counts only when its explicit `<worktree>/ciu.env` exists, parses, and supplies a distinct non-empty `DOCKER_NETWORK_INTERNAL`. One `procutil.docker(['ps', '--filter', 'label=com.docker.compose.project', '--format', '{{.Networks}}'])` query supplies the running Compose networks; an eligible registered instance is deployed exactly when its own network appears in that output. Docker unavailable/non-zero, malformed eligible env, or duplicate registered network is an `[S16.3]` error, never an empty count. If the current instance is already deployed it may rerun even at or above the cap; otherwise count >= cap refuses before Compose starts and names the observed count and cap. Containers on an unregistered/deleted worktree do not count (CIU-25 owns stale-leak handling)."
-    negative: "Counting every git checkout regardless of deployment, excluding the primary, counting a deleted/unregistered container, counting a network merely because Docker created it, letting a Docker-query error read as zero, or refusing an already-running current instance when a later cap was lowered each fail this oracle. The no-socket gate patches `worktree.procutil.docker` and `worktree._git`/temporary porcelain state to distinguish primary-only, registered-but-not-deployed, registered-and-deployed, and stale-unregistered containers."
+    observable: "CIU-24/S16.3. With a configured cap, `worktree.worktree_budget_slot(repo_root, cap, current_network, stack_rel)` obtains an exclusive advisory lock at `<git-common-dir>/ciu-worktree-budget.lock` before reading deployment state and holds it through the caller's single `docker compose up` execution. It derives candidate instances exclusively from `git worktree list --porcelain`: the primary is included, and a non-primary entry counts only when its explicit `<worktree>/ciu.env` exists, parses, and supplies a distinct non-empty `DOCKER_NETWORK_INTERNAL`. For each eligible entry, map the caller's `stack_rel` to that entry, render only that stack's global config without output, and derive its exact own label with the existing `engine.compose_project_name(config, candidate_stack)`. Query Docker with `docker ps --filter label=com.docker.compose.project=<that-exact-candidate-project> --format {{.Networks}}`; never use the bare existence filter. An eligible registered instance is deployed only when a container selected by ITS OWN exact project label lists ITS OWN network. This means a P02 child container carrying the reference network, but labelled with the child's project, cannot make the reference count as deployed. Docker unavailable/non-zero, an unrenderable candidate project identity, malformed eligible env, or duplicate registered network is an `[S16.3]` error, never an empty count. If the current instance is already deployed it may rerun even at or above the cap; otherwise count >= cap refuses before Compose starts and names the observed count and cap. Containers on an unregistered/deleted worktree do not count (CIU-25 owns stale-leak handling)."
+    negative: "Counting every git checkout regardless of deployment, excluding the primary, filtering only for the existence of `com.docker.compose.project`, counting a candidate's network from a container whose exact Compose project label belongs to another instance, counting a network merely because Docker created it, letting a Docker-query/identity-resolution error read as zero, or refusing an already-running current instance when a later cap was lowered each fail this oracle. The no-socket gate patches `worktree.procutil.docker` and `worktree._git`/temporary porcelain state to distinguish primary-only, registered-but-not-deployed, registered-and-deployed, and stale-unregistered containers. A required P02-composition fixture has one A-labelled container list both A's and B's networks; querying B's exact project label is empty, so B MUST NOT be counted deployed."
     gate: tester-unified
   - id: O3
-    observable: "CIU-24/S16.3. Both `engine.main_execution` and `engine.run_shipped` resolve the primary-root-only cap after bootstrap has established `repo_root`, but enforce it only for a real compose-up, immediately around their existing compose executor. They pass the same current `DOCKER_NETWORK_INTERNAL` that bootstrap loaded, hold `worktree_budget_slot` while `execute_docker_compose_with_logs` runs, and release it on every return/raise. `--dry-run` and render-only paths make no budget Docker/lock call. The exclusive lock serializes two cold starts in the same git worktree family: after the first Compose start makes its own network visible, the second waiter re-counts under the lock and is refused if it would exceed the cap. A Compose failure releases the lock and consumes no lasting reservation; normal Compose idempotence remains unchanged for an already deployed current instance."
-    negative: "Checking before an unlocked Compose start, releasing the lock before Compose returns, enforcing only native (not `--shipped`) up, reserving a slot at `worktree add`, or making dry-run require Docker each fail this oracle. Engine tests replace the compose executor with a deterministic callable and use a real temporary lock path plus controlled fake deployment state to prove the budget check encloses the executor and that refusal occurs before it is called."
+    observable: "CIU-24/S16.3. Both `engine.main_execution` and `engine.run_shipped` resolve the primary-root-only cap after bootstrap has established `repo_root`, but enforce it only for a real compose-up, immediately around their existing compose executor. They pass the same current `DOCKER_NETWORK_INTERNAL` and `working_dir.relative_to(repo_root)` that bootstrap established, hold `worktree_budget_slot` while `execute_docker_compose_with_logs` runs, and release it on every return/raise. In the combined P02/P03 call path, the release happens immediately after Compose returns successfully; only then does P02's `connect_shared_infra_after_up` run. The capacity slot protects count -> Compose start, whereas the post-up join does not create another instance and can make multiple Docker calls, so holding the family-wide flock across it would serialize unrelated joins without protecting the budget. `--dry-run` and render-only paths make no budget Docker/lock call. The exclusive lock serializes two cold starts in the same git worktree family: after the first Compose start makes its own network visible, the second waiter re-counts under the lock and is refused if it would exceed the cap. A Compose failure releases the lock and consumes no lasting reservation; normal Compose idempotence remains unchanged for an already deployed current instance."
+    negative: "Checking before an unlocked Compose start, releasing the lock before Compose returns, holding the budget flock across P02's post-up join, enforcing only native (not `--shipped`) up, reserving a slot at `worktree add`, or making dry-run require Docker each fail this oracle. Engine tests replace the compose executor with a deterministic callable and use a real temporary lock path plus controlled fake deployment state to prove one continuous held section from the count decision through the executor return: an instrumented `fcntl.flock` wrapper delegates to the real lock while recording transitions, and the executor asserts no `LOCK_UN` occurred after the count decision. A deliberately broken acquire -> count -> release -> re-acquire -> run arrangement therefore fails even though it is locked at both sampled endpoints. Refusal is before the executor is called."
     gate: tester-unified
 gates: ["tester-unified"]
 escalate_if:
@@ -71,6 +71,9 @@ review_focus:
 4. `src/ciu/engine.py` — `main_execution` and `run_shipped` from bootstrap to
    their existing Compose calls; `src/ciu/deploy.py:_running_containers` only as
    the `procutil.docker` precedent, not as a host-wide count implementation.
+   `ciu-P01-worktree-isolation-primitives` is the already-READY sibling that
+   also changes `worktree.py` and `engine.py`; it lands before P02/P03, so
+   re-orient to its implementation before dispatching either package.
 5. `src/ciu/config_model.py:367-424` — `render_global_chain`; and
    `docs/CONFIG.md` **Three-Layer Configuration Model** / **[ciu]**.
 6. `nyxloom-trove/nyxloom.toml` `[gates.tester-unified]`: no Docker socket.
@@ -85,6 +88,11 @@ review_focus:
 - Required roles: **implement-2 implementer -> fresh independent reviewer.**
 - Baseline: run the declared gate at `input_revision` and paste its actual
   output into the LOG before source changes; record the final gate likewise.
+- Dispatch order is **P02, then P03**. `depends_on` deliberately pins this
+  order because P03's classifier must account for P02's legitimate second
+  network membership. Before P03 dispatch, replace this handoff's
+  `input_revision` with the exact merge commit that implements P02; do not
+  dispatch it against the pre-P02 source pinned above.
 
 ## Implementation packet (normative)
 
@@ -107,6 +115,7 @@ def worktree_budget_slot(
     repo_root: Path,
     cap: int | None,
     current_network: str,
+    stack_rel: Path,
 ) -> Iterator[None]: ...
 ```
 
@@ -126,9 +135,14 @@ At every up path, obtain the sole policy root and `raw` with:
 
 ```python
 primary_root = worktree.primary_worktree_root(repo_root)
-root_global = config_model.render_global_chain(
-    primary_root, primary_root, write_rendered=False
-)
+try:
+    root_global = config_model.render_global_chain(
+        primary_root, primary_root, write_rendered=False
+    )
+except ValueError as exc:
+    if not str(exc).startswith("[ERROR] No global configuration found."):
+        raise
+    root_global = {}
 raw = root_global.get("ciu", {}).get("worktree")
 ```
 
@@ -138,7 +152,12 @@ output write, while `False` returns the same rendered/merged mapping without
 writing `ciu.global.toml`. Primary-root-only is intentional: do not substitute
 the normal `global_config` made for a nested stack, whose chain can contain a
 more-local configuration file, or the current linked worktree's root, whose
-branch may carry a conflicting policy.
+branch may carry a conflicting policy. The narrow no-global-configuration
+catch is also intentional: a Git primary at a monorepo checkout can have no CIU
+template at all, while the CIU project below it has its own templates. That is
+the normal "no repository-level cap file" case, not malformed configuration.
+Do not catch a different render `ValueError`: it is evidence of a real bad
+template/override and must remain loud.
 
 `resolve_max_concurrent_instances` validates the file table even if the
 ambient override exists. `raw is None` is valid. Otherwise it must be a mapping
@@ -176,14 +195,27 @@ a lock or calling Docker. Otherwise:
    eligible network name to be distinct, and require `current_network` to be
    one of them; a duplicate or an unregistered current network is a loud
    isolation/count failure, not one slot silently shared or silently omitted.
-3. Once, through `worktree.procutil.docker`, run exactly
-   `docker ps --filter label=com.docker.compose.project --format {{.Networks}}`.
-   `FileNotFoundError`, `OSError`, or non-zero is `[S16.3]` rather than zero.
-   Split the output's comma-separated network lists and mark an eligible entry
-   deployed when its own network occurs. Docker-created-but-empty networks do
-   not count; a stale container whose worktree is absent from Git does not
-   count; the primary is included because `list_worktrees` includes it.
-4. If `current_network` is deployed, yield even when the observed count is at
+3. `stack_rel` is the engine's exact `working_dir.relative_to(repo_root)` and
+   must be a relative, non-escaping path. For each eligible entry, map it to
+   `candidate_stack = entry.path / stack_rel`, render that stack's global config
+   with `render_global_chain(candidate_stack, entry.path,
+   write_rendered=False)`, and derive its exact Compose project through the
+   existing `engine.compose_project_name(candidate_global, candidate_stack)`.
+   This is the same authoritative naming rule used by its `ciu up`, not a
+   guessed network-name-to-project conversion. A missing/unrenderable candidate
+   project identity is `[S16.3]`, not evidence of an inactive instance.
+4. Through `worktree.procutil.docker`, for each candidate's exact project run
+   `docker ps --filter label=com.docker.compose.project=<candidate-project>
+   --format {{.Networks}}`. `FileNotFoundError`, `OSError`, or non-zero is
+   `[S16.3]` rather than zero. Split only that project's output into its
+   comma-separated network lists and mark the eligible candidate deployed only
+   when its **own** network occurs. The filter is deliberately value-qualified:
+   a P02 child container may list the reference network, but it carries the
+   child's project label and cannot satisfy the reference candidate's query.
+   Docker-created-but-empty networks do not count; a stale container whose
+   worktree is absent from Git does not count; the primary is included because
+   `list_worktrees` includes it.
+5. If `current_network` is deployed, yield even when the observed count is at
    or over cap — an already running instance may be reconciled after the
    policy is lowered. Otherwise, if the count is `>= cap`, raise `[S16.3]`
    naming count, cap, and the current network before Compose is called; else
@@ -207,14 +239,22 @@ with worktree.worktree_budget_slot(
     repo_root,
     cap,
     os.environ["DOCKER_NETWORK_INTERNAL"],
+    working_dir.relative_to(repo_root),
 ):
     docker_result = execute_docker_compose_with_logs(...)
+
+# only after the context has released its flock:
+if shared_infra_intent is not None:
+    worktree.connect_shared_infra_after_up(...)
 ```
 
 No budget check occurs for `dry_run`, `render_toml`, or any path that does not
 call the executor. The lock begins after all normal render/preflight work and
 ends directly after the executor; this protects the count -> start transition
-without serialising the rest of CIU's pipeline. A Compose error/interruption
+without serialising the rest of CIU's pipeline. P02 is deliberately outside
+this flock: it starts no instance, and holding a repository-wide capacity lock
+across an arbitrary sequence of post-up network connects would create unrelated
+contention without making the count/start decision safer. A Compose error/interruption
 uses existing engine behaviour, but the context manager must release the lock
 on it; there is no separate reservation artifact to leak.
 
@@ -223,6 +263,7 @@ on it; there is no separate reservation artifact to leak.
 | Root file value | ambient value | current deployment state | outcome |
 |---|---|---|---|
 | absent | absent | any | no cap; no Docker/lock call |
+| no primary-root global template | absent | any | no file policy; no cap and no Docker/lock call |
 | valid N | absent | current already deployed | allow rerun, even if total >= N |
 | valid N | absent | current absent, total < N | lock then allow Compose start |
 | valid N | absent | current absent, total >= N | refuse before executor |
@@ -236,10 +277,10 @@ on it; there is no separate reservation artifact to leak.
 
 | Work | Owner | Oracle | Required proof / controlled break |
 |---|---|---|---|
-| Primary-root-only policy resolution | `config_model.py`, `worktree.py` | O1 | Primary, linked-worktree root, and nested templates disagree; `write_rendered=False` returns the primary value without writing an artifact. Break invalid type/key/environment and assert refusal. |
-| Instance classifier | `worktree.py` | O2 | Temporary Git porcelain lists primary, eligible children, raw child without env, and an absent stale path. Fake one Docker network list and assert only primary + deployed eligible child count. |
-| Lock and capacity | `worktree.py` | O2/O3 | Patch Docker state and use a temporary common Git dir. Assert flock acquisition surrounds the count and executor boundary; lower cap after current deployment and assert rerun is allowed. |
-| Native and shipped wiring | `engine.py` | O3 | Fake executor plus `worktree_budget_slot`; assert cap refusal occurs before executor, both paths use the current network, and dry-run does not invoke Docker/slot. |
+| Primary-root-only policy resolution | `config_model.py`, `worktree.py` | O1 | Primary, linked-worktree root, and nested templates disagree; `write_rendered=False` returns the primary value without writing an artifact. Required monorepo fixture: the primary root has no global template, so the exact no-global-configuration `ValueError` is treated as absent file policy and absent ambient reaches no Docker/lock. Break other render errors plus invalid type/key/environment and assert refusal. |
+| Instance classifier | `worktree.py` | O2 | Temporary Git porcelain lists primary, eligible children, raw child without env, and an absent stale path. Fake exact-project Docker responses and assert only primary + deployed eligible child count. Required P02 composition fixture: container A has `com.docker.compose.project=A-project` and lists `A-network,B-network`; B's exact-project query is empty, so B is not deployed. |
+| Lock and capacity | `worktree.py` | O2/O3 | Patch Docker state and use a temporary common Git dir. Wrap real `fcntl.flock` to record every transition; the controlled executor asserts no `LOCK_UN` occurred after the count decision, and the test observes the first unlock only after executor return. A deliberately broken count -> unlock -> re-lock -> executor arrangement must fail. Lower cap after current deployment and assert rerun is allowed. |
+| Native and shipped wiring | `engine.py` | O3 | Fake executor plus `worktree_budget_slot`; assert cap refusal occurs before executor, both paths use the current network and stack-relative identity, dry-run does not invoke Docker/slot, and P02 join runs only after the budget context exits. |
 | Docs/status/LOG | docs + tracker + LOG | O1–O3 | Add S16.3 and configuration precedence; mark CIU-24 FIXED with code/test/SPEC evidence. |
 
 The Docker test seam is only
