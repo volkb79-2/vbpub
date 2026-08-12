@@ -213,6 +213,29 @@ class TestCliProvenanceDispatch:
     def _patch_repo_root(self, monkeypatch, tmp_path):
         monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
 
+    def test_no_preflight_skips_before_any_provenance_input(
+        self, monkeypatch, capsys
+    ):
+        """Break-glass must not require config, Git, or Docker to be available."""
+        monkeypatch.setattr(
+            deploy, "load_global_config",
+            lambda *_a, **_kw: pytest.fail("--no-preflight loaded configuration"),
+        )
+        monkeypatch.setattr(
+            deploy, "verify_running_provenance",
+            lambda *_a, **_kw: pytest.fail("--no-preflight inspected Docker"),
+        )
+        assert cli._provenance(["--no-preflight"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out == "[INFO] --no-preflight: skipping provenance check\n"
+        assert captured.err == ""
+
+    def test_no_preflight_rejects_json_without_inventing_a_verdict(self, capsys):
+        with pytest.raises(SystemExit) as raised:
+            cli._provenance(["--no-preflight", "--json"])
+        assert raised.value.code == 2
+        assert "no provenance verdict is produced" in capsys.readouterr().err
+
     def test_json_flag_is_store_true_like_diagnose(self, monkeypatch, tmp_path, capsys):
         """Precedent: cli.py:726's `ciu diagnose --json` (store_true) — NOT a
         [PATH|-] positional. `--json` alone must be a complete, valid parse."""

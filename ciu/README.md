@@ -137,9 +137,10 @@ cmru build   --project ciu     # retained worktree: gate + wheel build, no publi
 cmru resolve --project ciu     # resolve the current latest (version / url / sha256)
 ```
 
-The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). The `tools/`
-directory keeps `cleanup-legacy-releases.sh` / `cleanup-and-validate.sh` for one-off
-maintenance.
+The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
+unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
+`cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
+then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 
 `run-ciu-tests.py` enforces **100% total line and branch coverage** in the
 isolated `tester-unified` gate. The devcontainer is only the cockpit; a local

@@ -46,7 +46,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
 | **Isolated worktree instances** | `ciu worktree` creates checkout-local identity, network, Compose project, and volumes; optional shared-infra join, namespaced data, and a primary-config concurrency cap cover parallel real lanes. | S16 |
-| **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer. | S17 |
+| **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 
 ---
 
@@ -77,7 +77,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 | `ciu worktree` | Create, remove, or list isolated CIU instances | `add NAME --base REF --profile P1,P2`; `rm NAME -y`; `list`; optional data isolation/shared infra (S16) |
-| `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--json`, `--define-root PATH` |
+| `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
 index and `ciu <verb> --help` for the verb's accepted options. The help output

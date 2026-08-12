@@ -46,7 +46,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree list               registered worktrees
 
   EVIDENCE
-    provenance [--ignore-mismatch]
+    provenance [--ignore-mismatch | --no-preflight] [--json]
                                 verify RUNNING containers were built from the
                                 commit under test, before a live lane runs (S17.2)
 
@@ -374,7 +374,7 @@ def _ksm(rest: list[str]) -> int:
 
 
 def _provenance(rest: list[str]) -> int:
-    """Handle `ciu provenance [--ignore-mismatch] [--json]` (S17.2/S17.3, CIU-20).
+    """Handle `ciu provenance [--ignore-mismatch] [--no-preflight] [--json]`.
 
     Verify that the RUNNING containers were built from the commit under test,
     before a live/integration lane is allowed to produce evidence. Standalone
@@ -400,9 +400,21 @@ def _provenance(rest: list[str]) -> int:
     p = _ap.ArgumentParser(prog="ciu provenance", add_help=False)
     p.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                    action="store_true", default=False)
+    p.add_argument("--no-preflight", action="store_true", default=False)
     p.add_argument("--json", dest="json_output", action="store_true", default=False)
     p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
     opts = p.parse_args(rest)
+
+    # This is an explicit break-glass bypass, not a lesser provenance verdict.
+    # It must happen before configuration, Git, and Docker access: each of those
+    # could independently refuse or fail while the operator requested no check.
+    # A JSON result would falsely look like evidence, so reject that combination
+    # rather than inventing a synthetic "skipped" verdict outside S17.3's grammar.
+    if opts.no_preflight:
+        if opts.json_output:
+            p.error("--no-preflight cannot be combined with --json: no provenance verdict is produced")
+        print("[INFO] --no-preflight: skipping provenance check")
+        return 0
 
     repo_root = resolve_repo_root(opts.define_root, Path.cwd())
     try:

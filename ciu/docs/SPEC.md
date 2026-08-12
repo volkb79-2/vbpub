@@ -2365,7 +2365,7 @@ answer and would be trusted as one.
 
 ### S17.2 — Enforcement at TEST time (`ciu provenance`, fail CLOSED)
 
-`ciu provenance [--ignore-mismatch] [--json]` refuses (S10.3 exit 2) when a
+`ciu provenance [--ignore-mismatch] [--no-preflight] [--json]` refuses (S10.3 exit 2) when a
 RUNNING container's image carries a revision label differing from the commit
 under test. `deploy.verify_running_provenance` builds the verdict (S17.3);
 `cli._provenance` is the SOLE place that turns it into a refusal, a warning,
@@ -2402,8 +2402,12 @@ Scope is self-selecting, and the non-refusals are as normative as the refusal:
   dev-loop deploy and be disabled permanently, and a rule nobody can keep
   enforces nothing.
 
-`--ignore-mismatch` (alias `--force`) downgrades the refusal to a warning;
-`--no-preflight` skips the check entirely, like its sibling preflights.
+`--ignore-mismatch` (alias `--force`) downgrades the refusal to a warning.
+`--no-preflight` is an explicit break-glass bypass: it prints an informational
+line, returns 0, and performs no configuration, Git, or Docker access. It cannot
+be combined with `--json`, because the command then produced no provenance
+verdict and must not manufacture a machine-readable evidence document. It has the
+same bypass meaning as CIU's sibling preflights.
 
 ### S17.3 — Machine-readable provenance verdict (`ciu provenance --json`, CIU-20)
 
