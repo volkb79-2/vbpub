@@ -10,8 +10,13 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 ```bash
 pip install -e cmru          # provides the `cmru` console script
 # or, from the repo root, with no install:
-./cmru.py <verb>             # ≡ cmru <verb>   (discoverable cmru.*.sh shims cover common release verbs)
+./cmru.py <verb>             # vbpub estate wrapper: supplies cmru.orchestration.toml
 ```
+
+The installed `cmru` executable is portable: run it from a project directory
+or pass `--config /path/to/cmru.toml`. Only this repository's `./cmru.py`
+knows the explicit root orchestration path; it never makes the reusable CLI
+search parent directories.
 
 ## The model: declared outputs and explicit behavior
 

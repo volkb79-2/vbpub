@@ -1134,7 +1134,33 @@ def _orchestrate() -> None:
     log_info("Release manager complete")
 
 
+def _source_tree_version() -> Optional[str]:
+    """Return CMRU's exact source tag when this import is from its source tree.
+
+    A repository shim puts ``cmru/src`` ahead of an editable installation. In
+    that situation package metadata can describe an older installed wheel even
+    though the source tree being executed is tagged differently. Git is the
+    authoritative source for an exact source checkout; installed wheels simply
+    have no adjacent ``pyproject.toml`` and use distribution metadata below.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    if not (project_root / "pyproject.toml").is_file():
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(project_root), "describe", "--exact-match", "--tags", "--match", "cmru-v*"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    tag = result.stdout.strip()
+    match = re.fullmatch(r"cmru-v([0-9][0-9A-Za-z.+-]*)", tag)
+    return match.group(1) if match else None
+
+
 def _cmru_version() -> str:
+    source_version = _source_tree_version()
+    if source_version:
+        return source_version
     try:
         from importlib.metadata import version as _mv
         return _mv("cmru")

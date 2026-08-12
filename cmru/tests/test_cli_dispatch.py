@@ -5,6 +5,7 @@ Stdlib + tmp files only — no network, no git side effects.
 from __future__ import annotations
 
 import io
+import importlib.util
 import subprocess
 from types import SimpleNamespace
 from contextlib import redirect_stdout
@@ -13,6 +14,36 @@ from pathlib import Path
 import pytest
 
 from cmru import cli
+
+
+_ROOT_SHIM = Path(__file__).resolve().parents[2] / "cmru.py"
+
+
+def _load_root_shim():
+    spec = importlib.util.spec_from_file_location("cmru_root_shim_test", _ROOT_SHIM)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_root_shim_explicitly_selects_estate_orchestration_without_changing_portable_cli():
+    shim = _load_root_shim()
+    expected = str(_ROOT_SHIM.parent / "cmru.orchestration.toml")
+    assert shim._root_argv(["status", "--project", "ciu"]) == [
+        "status", "--project", "ciu", "--config", expected,
+    ]
+    assert shim._root_argv(["status", "--config", "ciu/cmru.toml"]) == [
+        "status", "--config", "ciu/cmru.toml",
+    ]
+    assert shim._root_argv(["run-step", "--config", "ciu/cmru.toml", "--step", "build"]) == [
+        "run-step", "--config", "ciu/cmru.toml", "--step", "build",
+    ]
+
+
+def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
+    monkeypatch.setattr(cli, "_source_tree_version", lambda: "2.0.0")
+    assert cli._cmru_version() == "2.0.0"
 
 
 MINIMAL_S2 = """schema_version = 1

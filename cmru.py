@@ -21,10 +21,32 @@ sys.path.insert(0, str(ROOT / "cmru" / "src"))
 from cmru.cli import main  # noqa: E402
 
 
+_ESTATE_CONFIG_VERBS = frozenset({
+    "build", "changelog", "cleanup", "publish", "release", "resolve",
+    "run", "standards", "status",
+})
+
+
+def _root_argv(argv: list[str]) -> list[str]:
+    """Make this repository-specific shim select its explicit orchestration file.
+
+    The installed ``cmru`` executable remains portable and therefore defaults to
+    ``$PWD/cmru.toml``. This file is different: it is the vbpub estate launcher,
+    and its root config is an explicit, known fact. Injecting the absolute path
+    here keeps the convenience at the wrapper boundary without making the core
+    CLI discover a parent checkout or add a compatibility fallback.
+    """
+    if not argv or argv[0] not in _ESTATE_CONFIG_VERBS:
+        return argv
+    if any(arg == "--config" or arg.startswith("--config=") for arg in argv[1:]):
+        return argv
+    return [*argv, "--config", str(ROOT / "cmru.orchestration.toml")]
+
+
 if __name__ == "__main__":
     # Keep progress visible through `2>&1 | tee ...`; otherwise Python switches
     # stdout to block buffering because the pipeline is not a TTY.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
-    main()
+    main(_root_argv(sys.argv[1:]))
