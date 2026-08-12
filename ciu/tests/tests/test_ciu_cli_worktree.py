@@ -1,10 +1,12 @@
 """Tests for cli._worktree (S16 `ciu worktree add|rm|list` dispatch),
-including the new `--data-isolation` flag (S16.2/CIU-23, O4).
+including `--data-isolation` (S16.2/CIU-23, O4) and the shared-infra flags
+`--shared-infra`/`--shared-infra-services`/`--shared-infra-ref-projects`
+(S16.1/CIU-22, O1).
 
 These drive `cli._worktree` directly with synthetic argv and a monkeypatched
 `ciu.worktree` module — no real git, no docker; that machinery is covered by
-test_ciu_worktree.py. This file's job is the CLI's own argument forwarding
-and error-to-exit-code mapping.
+test_ciu_worktree_shared_infra.py / test_ciu_worktree.py. This file's job is
+the CLI's own argument forwarding and error-to-exit-code mapping.
 """
 from __future__ import annotations
 
@@ -29,10 +31,16 @@ class TestWorktreeAddDispatch:
     def test_forwards_all_options_including_data_isolation(self, monkeypatch, capsys):
         seen = {}
 
-        def fake_add(repo_root, name, *, base, profile, worktree_dir, data_isolation):
+        def fake_add(
+            repo_root, name, *, base, profile, worktree_dir, data_isolation,
+            shared_infra, shared_infra_services, shared_infra_ref_projects,
+        ):
             seen.update(
                 repo_root=repo_root, name=name, base=base, profile=profile,
                 worktree_dir=worktree_dir, data_isolation=data_isolation,
+                shared_infra=shared_infra,
+                shared_infra_services=shared_infra_services,
+                shared_infra_ref_projects=shared_infra_ref_projects,
             )
             return Path("/tmp/repo/.worktrees/mypkg")
 
@@ -46,6 +54,8 @@ class TestWorktreeAddDispatch:
             "repo_root": seen["repo_root"],  # identity checked below
             "name": "mypkg", "base": "develop", "profile": "core,db",
             "worktree_dir": ".wt", "data_isolation": "postgres",
+            "shared_infra": None, "shared_infra_services": None,
+            "shared_infra_ref_projects": None,
         }
         out = capsys.readouterr().out
         assert "worktree ready:" in out
@@ -53,7 +63,10 @@ class TestWorktreeAddDispatch:
     def test_data_isolation_defaults_to_none(self, monkeypatch):
         seen = {}
 
-        def fake_add(repo_root, name, *, base, profile, worktree_dir, data_isolation):
+        def fake_add(
+            repo_root, name, *, base, profile, worktree_dir, data_isolation,
+            shared_infra, shared_infra_services, shared_infra_ref_projects,
+        ):
             seen["data_isolation"] = data_isolation
             return Path("/tmp/repo/.worktrees/mypkg")
 
@@ -82,6 +95,78 @@ class TestWorktreeAddDispatch:
         code = cli._worktree(["add", "mypkg", "--data-isolation", "postgres"])
         assert code == 2
         assert "provisioning the isolated database failed" in capsys.readouterr().err
+
+
+class TestWorktreeAddSharedInfraDispatch:
+    """S16.1/CIU-22, O1 — CLI forwarding for the three `--shared-infra*`
+    flags. The validation/Docker-preflight contract itself lives in
+    worktree.add (test_ciu_worktree_shared_infra.py); this file only proves
+    the CLI parses and forwards the raw values unchanged."""
+
+    def test_forwards_shared_infra_flags(self, monkeypatch, capsys):
+        seen = {}
+
+        def fake_add(
+            repo_root, name, *, base, profile, worktree_dir, data_isolation,
+            shared_infra, shared_infra_services, shared_infra_ref_projects,
+        ):
+            seen.update(
+                shared_infra=shared_infra,
+                shared_infra_services=shared_infra_services,
+                shared_infra_ref_projects=shared_infra_ref_projects,
+            )
+            return Path("/tmp/repo/.worktrees/mypkg")
+
+        monkeypatch.setattr(wt_mod, "add", fake_add)
+        code = cli._worktree([
+            "add", "mypkg", "--profile", "core,db",
+            "--shared-infra", "primary",
+            "--shared-infra-services", "api,worker",
+            "--shared-infra-ref-projects", "idp-dev-idp,vault-dev-vault",
+        ])
+        assert code == 0
+        assert seen == {
+            "shared_infra": "primary",
+            "shared_infra_services": "api,worker",
+            "shared_infra_ref_projects": "idp-dev-idp,vault-dev-vault",
+        }
+        assert "worktree ready:" in capsys.readouterr().out
+
+    def test_shared_infra_flags_default_to_none(self, monkeypatch):
+        seen = {}
+
+        def fake_add(
+            repo_root, name, *, base, profile, worktree_dir, data_isolation,
+            shared_infra, shared_infra_services, shared_infra_ref_projects,
+        ):
+            seen.update(
+                shared_infra=shared_infra,
+                shared_infra_services=shared_infra_services,
+                shared_infra_ref_projects=shared_infra_ref_projects,
+            )
+            return Path("/tmp/repo/.worktrees/mypkg")
+
+        monkeypatch.setattr(wt_mod, "add", fake_add)
+        cli._worktree(["add", "mypkg"])
+        assert seen == {
+            "shared_infra": None, "shared_infra_services": None,
+            "shared_infra_ref_projects": None,
+        }
+
+    def test_partial_shared_infra_group_error_surfaces_as_exit_2(self, monkeypatch, capsys):
+        """The all-or-nothing group is worktree.add's own contract (O1); the
+        CLI layer just needs to map that WorktreeError to exit 2 like any
+        other, without adding a parallel check of its own."""
+        def fake_add(*_a, **_kw):
+            raise wt_mod.WorktreeError(
+                "[S16.1] --shared-infra requires --shared-infra-services, "
+                "--shared-infra-ref-projects, and a non-empty --profile all "
+                "together; got a partial group."
+            )
+        monkeypatch.setattr(wt_mod, "add", fake_add)
+        code = cli._worktree(["add", "mypkg", "--shared-infra", "primary"])
+        assert code == 2
+        assert "partial group" in capsys.readouterr().err
 
 
 class TestWorktreeRmDispatch:
