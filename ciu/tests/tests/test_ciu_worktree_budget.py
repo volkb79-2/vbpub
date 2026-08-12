@@ -216,6 +216,33 @@ def test_git_common_dir_failure_raises(tmp_git_repo, monkeypatch):
         worktree._git_common_dir(_ciu_root(tmp_git_repo))
 
 
+def test_git_common_dir_resolves_a_relative_result_against_repo_root(tmp_git_repo, monkeypatch):
+    """`git rev-parse --git-common-dir` reports a RELATIVE path from the
+    PRIMARY checkout (confirmed with real git: plain `.git`) -- must be
+    resolved against repo_root, never returned as-is (which would be
+    meaningless once the lock path is later joined onto it)."""
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda args, cwd: subprocess.CompletedProcess(args, 0, stdout=".git\n", stderr=""),
+    )
+    result = worktree._git_common_dir(_ciu_root(tmp_git_repo))
+    assert result == (_ciu_root(tmp_git_repo) / ".git").resolve()
+    assert result.is_absolute()
+
+
+def test_git_common_dir_absolute_result_used_as_is(tmp_git_repo, monkeypatch):
+    """`git rev-parse --git-common-dir` reports an ABSOLUTE path from a
+    LINKED worktree (confirmed with real git) -- used verbatim, never
+    re-joined onto repo_root (which would produce a bogus nested path)."""
+    absolute_common = str((tmp_git_repo / ".git").resolve())
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda args, cwd: subprocess.CompletedProcess(args, 0, stdout=absolute_common + "\n", stderr=""),
+    )
+    result = worktree._git_common_dir(_ciu_root(tmp_git_repo))
+    assert result == Path(absolute_common)
+
+
 # ---------------------------------------------------------------------------
 # primary_ciu_root -- the git-root-to-CIU-root offset (S16.3)
 # ---------------------------------------------------------------------------
@@ -281,6 +308,11 @@ def test_ciu_root_offset_repo_root_not_under_its_own_toplevel_raises(tmp_git_rep
 class TestResolveMaxConcurrentInstances:
     def test_both_absent_is_no_cap(self):
         assert worktree.resolve_max_concurrent_instances(None, environ={}) is None
+
+    def test_present_empty_table_is_valid_no_cap(self):
+        """`[ciu.worktree]` present but with none of its (optional) keys set
+        is a valid, empty table -- not an error, and not a cap."""
+        assert worktree.resolve_max_concurrent_instances({}, environ={}) is None
 
     def test_valid_file_value(self):
         assert worktree.resolve_max_concurrent_instances(
@@ -581,6 +613,14 @@ class TestCandidateDeployed:
 
     def test_no_matching_container_is_not_deployed(self, monkeypatch):
         fake = _deployed_docker({})
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        assert worktree._candidate_deployed(self._candidate()) is False
+
+    def test_own_project_container_on_a_different_network_is_not_deployed(self, monkeypatch):
+        """A container carrying the candidate's OWN exact project label, but
+        reporting only some OTHER network (never its own) -- e.g. a stale
+        reconnect elsewhere -- must not be counted deployed either."""
+        fake = _deployed_docker({"proj-a": "some-other-network"})
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         assert worktree._candidate_deployed(self._candidate()) is False
 
