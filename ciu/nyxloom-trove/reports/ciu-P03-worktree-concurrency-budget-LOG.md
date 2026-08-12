@@ -506,4 +506,46 @@ instruction to fix only the two defects above.
 
 ### Round 2 final gate
 
-Run after committing `<round-2 commit>`. See below.
+Committed at `647a4b65` (`git commit -- tests/tests/test_ciu_worktree_budget.py
+nyxloom-trove/reports/ciu-P03-worktree-concurrency-budget-LOG.md`; no other
+file touched this round). Real declared-gate output, same `-e
+CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice` addition documented in
+Baseline (the host-env-passthrough gap in the declared argv itself, still
+unrelated to this package):
+
+```
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/cli.py                                     399     27    128      4    94%   350-373, 595-600, 814, 817, 820
+src/ciu/composefile.py                             344     14    168      2    96%   809-833, 924
+src/ciu/deploy.py                                 1027      3    422      1    99%   725, 745-746
+src/ciu/engine.py                                  854      0    278      0   100%
+src/ciu/governance.py                              382      1    158      2    99%   189, 197->201
+src/ciu/ksm.py                                     180     56     64      6    68%   86, 118-120, 133-134, 140, 151, 159, 165-166, 214, 260-261, 292-307, 327-385, 405-406, 414-415
+src/ciu/worktree.py                                485     23    172      3    96%   215, 421-431, 446-473, 565, 769
+--------------------------------------------------------------------------------------------
+TOTAL                                             6376    124   2500     18    98%
+Coverage JSON written to file coverage.json
+FAIL Required test coverage of 100% not reached. Total coverage: 98.13%
+============================ 1985 passed in 13.46s =============================
+```
+
+(every other module not listed is 100%.) `worktree.py`'s missing-line set
+(`215, 421-431, 446-473, 565, 769`) is IDENTICAL to the round-1 measurement
+— the two new tests added no missing lines/branches of their own; `engine.py`
+and `config_model.py` remain 100%. The blanket `--cov-fail-under=100`
+failure is the same pre-existing, unrelated shortfall documented throughout
+this LOG.
+
+Changed-line gate against that SAME `coverage.json`:
+
+```
+diff-coverage OK: 190/190 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+**Unchanged from round 1: 190/190 (100%) of this package's own changed
+executable lines are covered** — the two new tests are test-only additions
+(`tests/tests/test_ciu_worktree_budget.py`), so the changed-`src/`-line
+count and its coverage are identical to round 1's measurement; both round-2
+defects were proof gaps, not implementation gaps, exactly as the review
+verdict said. No `--allow-excluded`, no `pragma: no cover` anywhere.
