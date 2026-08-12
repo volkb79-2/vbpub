@@ -192,7 +192,67 @@ captured-prose; left `TestKsmToggle`, `TestMemoryProfile`,
 exactly-specified refactor, not a scope decision — flagged here rather than
 silently folded in, per AUTHORING.md's "trust git state" review expectation.
 
-## Gate — final run (after this package's full diff)
+## Gate — final run (after this package's full diff, committed)
 
-See below — pasted after `git commit`, since `nyxloom.coverage_gate` diffs
-against committed `HEAD`, not the working tree.
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=src python3 -m pytest
+tests -q -n auto`:
+
+```
+1827 passed, 8 warnings in 6.79s
+```
+
+(1749 at baseline; +78 net from four new test files and the extended
+`TestRunningProvenance` class — zero failures, zero regressions.)
+
+`PYTHONPATH=../nyxloom/src python3 -m nyxloom.coverage_gate --repo . --base
+main --coverage-json coverage.json --source src/ciu` — the REAL,
+changed-line-scoped gate this package is actually judged against:
+
+```
+diff-coverage OK: 172/172 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+One iteration was needed to get there: the first pass at 168/172 failed with
+`diff-coverage FAIL: 5 changed line(s) are EXCLUDED from coverage by
+'pragma: no cover'` — not a literal pragma I wrote, but coverage.py's own
+DEFAULT `exclude_lines` regex for bare `...` Protocol-stub bodies
+(`DataIsolationProvisioner.provision`/`.drop`), which the gate treats
+identically to a hand-added dodge (GA5's own stated policy: any excluded
+changed line fails unless `--allow-excluded`, a project-wide gate-argv
+change out of this package's scope). Fixed by giving both stub bodies a
+real, non-excluded body (`raise NotImplementedError(...)`) and adding two
+tests that instantiate a trivial subclass and assert the refusal — real
+coverage, not a workaround. See the second commit.
+
+The blanket, whole-repo `run-ciu-tests.py --cov-fail-under=100` step
+(the OTHER half of `[gates.tester-unified]`'s argv) still reports <100%
+overall (98.00%, TOTAL 6019 stmts/125 miss) — entirely PRE-EXISTING gaps
+this package does not touch (`ksm.py` 68%, scattered lines in `cli.py`/
+`composefile.py`/`deploy.py`/`governance.py`, and `worktree.py`'s remaining
+untouched S16 lines — `_generate_env_in`/`_clean_in` subprocess bodies and
+three git-failure `raise` branches that require simulating a real git/
+subprocess failure, none of them lines this package's diff modified).
+Verified line-by-line against `git show main:...` that every one of these
+was ALREADY in the baseline's missing list at its pre-shift line number —
+none are new. This blanket check was already failing at the true baseline
+(95.72%) before any code in this package changed; the two-step gate's
+actually-authoritative half (`nyxloom.coverage_gate`, changed-line-scoped)
+is the one reported above as passing.
+
+## Commits
+
+1. `ciu: CIU-20/21/23 — provenance verdict, in-container revision, worktree
+   data isolation` — the full implementation + tests + docs.
+2. `ciu: fix DataIsolationProvisioner stub bodies to avoid coverage-gate
+   exclusion` — the coverage-gate fix above.
+
+## Nothing was BLOCKED
+
+None of the three `escalate_if` triggers fired: O2's map reached
+`generate_overlay` as data with no docker import added to `composefile.py`;
+O4's fake-provisioner seam correctly discriminates a collision-safe
+implementation from a name-keyed one (the required two-clone test actually
+exercises this); O1's `not-verified-no-evidence`/`containers: null` grammar
+was producible entirely within `deploy.py`. No externally-visible interface,
+default, or bound needed inventing beyond what O4 explicitly delegated (the
+provisioner Protocol's shape, and the `--data-isolation` profile's meaning).
