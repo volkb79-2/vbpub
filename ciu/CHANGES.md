@@ -7,6 +7,14 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.0.0] - 2026-08-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=6fd3d88f764913c47570dbf4e36785658f33b650 -->
+
+### Added
+- feat(cmru)!: adopt strict portable project contracts (6abbc2e8)
+- feat(cmru)!: enforce strict release framework (8dd0e416)
+
 ## [5.0.0] - 2026-08-12
 <!-- cmru: generated -->
 
