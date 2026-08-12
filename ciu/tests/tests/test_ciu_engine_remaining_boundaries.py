@@ -34,6 +34,11 @@ def test_shipped_execution_falls_back_to_legacy_project_and_preserves_compose_bo
     (stack / "vendor.yml").write_text("services: {legacy: {image: alpine:3}}\n")
     calls: list[dict] = []
 
+    # S16.3/CIU-24: the budget-slot wiring reads DOCKER_NETWORK_INTERNAL
+    # directly from os.environ at the (now-reached) real compose-up step;
+    # a real ciu.env always carries it, but bootstrap_workspace_env is
+    # stubbed to a no-op below, so this fixture must supply it itself.
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "remaining-boundaries-net")
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **kwargs: None)
     monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *args: {"ciu": {}})

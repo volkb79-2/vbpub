@@ -129,6 +129,11 @@ def test_compose_keyboard_interrupt_without_process_returns_interrupted(
 
 
 def _stub_native_pipeline(monkeypatch: pytest.MonkeyPatch, merged: dict) -> None:
+    # S16.3/CIU-24: the budget-slot wiring reads DOCKER_NETWORK_INTERNAL
+    # directly from os.environ at the (now-reached) real compose-up step;
+    # a real ciu.env always carries it, but bootstrap_workspace_env is
+    # stubbed to a no-op below, so this fixture must supply it itself.
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "branch101-net")
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)
     monkeypatch.setattr(engine, "enforce_standalone_root", lambda _path: None)
