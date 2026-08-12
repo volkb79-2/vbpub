@@ -4,6 +4,8 @@ CIU renders and runs Docker Compose stacks from layered templates, with secrets,
 host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
+- identity and evidence: `ciu version`, `ciu provenance [--json]`
+- isolated instances: `ciu worktree add|rm|list`
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
 - failure explanation: `ciu diagnose [--project NAME] [--json]` (read-only)
@@ -13,10 +15,31 @@ verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/
 normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the task guides
 under [docs/](docs/README.md) are the place to start.
 
+CIU v5 intentionally removes the legacy top-level `ciu --version` form:
+use `ciu version`. See [CHANGES.md](CHANGES.md) for the historical release
+record and the change list generated for each future release.
+
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
 > products). For the full role/overlap map and the border question, see
 > [../docs/ciu-vs-cmru.md](../docs/ciu-vs-cmru.md).
+
+## Working with the rest of vbpub
+
+- **cmru** owns versioning, the isolated release gate, publication, and release
+  history generation. CIU owns the stack behavior that is being released; do
+  not hand-tag CIU releases.
+- **nyxloom** can put parallel implementation tasks in CIU worktrees. Each
+  worktree receives its own identity, Compose network, volumes, and optional
+  shared-infrastructure/data-isolation setup; CIU's primary-worktree capacity
+  policy protects the host when those tasks run concurrently.
+- **assay** can consume `ciu provenance --json` before a live evidence lane to
+  record the checked artifact identity. Keep `CIU_DATA_ISOLATION_DSN` out of
+  `env_passthrough`: it may contain credentials and would enter an evidence
+  artifact.
+- **modern-debian-tools-python-debug** provides the real host systemd slices
+  that governance uses. CIU verifies a configured slice rather than silently
+  letting Docker create an unbounded transient one.
 
 ## Two ways to ship a stack
 
@@ -119,20 +142,18 @@ The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). The 
 directory keeps `cleanup-legacy-releases.sh` / `cleanup-and-validate.sh` for one-off
 maintenance.
 
-`run-ciu-tests.py` also enforces a ratcheted total line-coverage floor (75% as
-of 2026-07-15). Coverage is increased by testing high-risk orchestration,
-diagnosis, configuration and failure branches rather than optimizing only for
-the aggregate percentage; after the measured baseline gains safe margin, the
-floor moves upward and is never lowered to accommodate a change.
+`run-ciu-tests.py` enforces **100% total line and branch coverage** in the
+isolated `tester-unified` gate. The devcontainer is only the cockpit; a local
+venv result is not a release signal.
 
 ### Release scheme
 
 The built-in handler routes through the shared `cmru` release host
 (`cmru/src/cmru/release.py`), which enforces a uniform scheme across the monorepo:
 
-- **Dev build** (`2.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer
+- **Dev build** (`5.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer
   only — no per-commit tag spam.
-- **Clean tagged release** (`2.0.1`): creates an immutable `ciu-v2.0.1` release
+- **Clean tagged release** (`5.0.0`): creates an immutable `ciu-v5.0.0` release
   carrying the wheel, a `.whl.sha256` sidecar, and the SHA256 digest in the
   release notes; then refreshes the thin `ciu-latest` redirect (`latest.json`
   only — no heavy asset duplication).
@@ -151,7 +172,7 @@ The built-in handler routes through the shared `cmru` release host
 pip install https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
 
 # Pin a specific version
-pip install https://github.com/<owner>/<repo>/releases/download/ciu-v2.0.1/ciu-2.0.1-py3-none-any.whl
+pip install https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
 
 # Verify checksum after download
 curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
@@ -170,23 +191,15 @@ cmru resolve --project ciu
 ### Cutting a new release (SemVer)
 
 ```bash
-# On the commit you want to release:
-git tag -a ciu-v2.0.1 -m "ciu 2.0.1"
-git push origin ciu-v2.0.1   # needs workflow scope — see PAT note below
+# From a clean, pushed main checkout:
+./cmru.release.sh --project ciu
 ```
 
-Then run the build+publish pipeline. `setuptools_scm` will produce clean version
-`2.0.1`, and the publish script will create:
-
-1. An immutable `ciu-v2.0.1` GitHub release with the wheel + `.sha256` sidecar.
-2. The thin `ciu-latest` redirect refreshed to point at `ciu-v2.0.1`.
-
-Version increment is not automatic — you must create the git tag. `setuptools_scm`
-reads tags; it does not write them. The `.devN` suffix is what you get between
-releases.
-
-Version increment is not automatic — you must create the git tag. setuptools_scm reads tags, it doesn't write
-them. The .devN suffix is what you get between releases.
+CMRU derives the SemVer increment from CIU's project-scoped conventional
+commits, creates the annotated `ciu-vX.Y.Z` tag, and commits the generated
+`CHANGES.md` entry before running CIU's isolated gate. It then publishes the
+wheel, its checksum sidecar, the immutable release, and the `ciu-latest`
+redirect. Do not create or push a CIU release tag by hand.
 
 
 ## Requirements
@@ -199,6 +212,7 @@ them. The .devN suffix is what you get between releases.
 
 - [docs/README.md](docs/README.md) — index, build/install, running tests, demo repo
 - [docs/SPEC.md](docs/SPEC.md) — the normative contract (`S-xx` IDs)
+- [CHANGES.md](CHANGES.md) — release-by-release history
 - [docs/CONFIG.md](docs/CONFIG.md) — config files, layering, secret directives
 - [docs/CIU.md](docs/CIU.md) — single-stack guide (`ciu`)
 - [docs/CIU-DEPLOY.md](docs/CIU-DEPLOY.md) — orchestration guide (`ciu up` and related verbs)
@@ -226,7 +240,7 @@ secrets-as-files and dual shipping out of the box.
 ## Manual install from wheel 
 
 ```bash
-WHEEL_URL="https://github.com/volkb79-2/vbpub/releases/download/ciu-v4.11.1/ciu-4.11.1-py3-none-any.whl"
+WHEEL_URL="https://github.com/volkb79-2/vbpub/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl"
 
 # this install to e.g. /home/vscode/.local/bin/ 
 python3 -m pip install --user --upgrade "$WHEEL_URL"

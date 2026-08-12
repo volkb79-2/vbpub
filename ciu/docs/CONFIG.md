@@ -268,16 +268,26 @@ opt-in:
 [app.governance]
 enabled = true
 cgroup_parent = "dev-background.slice"
-ksm_optin = "tools/ksm-optin/ksm-optin.so"  # repo-relative or absolute
+ksm_optin = "builtin"  # CIU builds/caches its shipped universal shim
 exempt_services = ["vault"]
+
+[app.governance.memory_profile.default]
+ksm = "preload"  # preload | off
+
+[app.governance.memory_profile.services.static-worker]
+ksm = "wrapper"  # re-states a verified image entrypoint; opt in deliberately
 ```
 
 `ksm_optin` must name an existing regular, universal (dependency-free) `.so`.
 CIU resolves repo-relative paths to the physical Docker-daemon path and fails
 `ciu render`/`ciu up` with a configuration error before writing an overlay
-when the file is missing, a directory, or a broken symlink. Set it to `""` to
-keep KSM disabled. See [SPEC S15.11](SPEC.md#s1511--ksm-opt-in-injection-ksm_optin)
-for the loader-compatibility and `LD_PRELOAD` rules.
+when the file is missing, a directory, or a broken symlink. `""` stops CIU's
+injection; it does **not** promise to disable KSM an image enables itself.
+`memory_profile` refines KSM per service without exempting that service from
+the rest of governance; `wrapper` is for a measured static-binary case and
+re-states the verified image entrypoint. See [SPEC S15.11](SPEC.md#s1511--ksm-opt-in-injection-ksm_optin),
+[S15.19](SPEC.md#s1519--per-service-memory-policy-governancememory_profile),
+and [S15.20](SPEC.md#s1520--the-exec-wrapper-ksm--wrapper) for the constraints.
 
 ### `[<root>.hooks]` — hook points [S9.1]
 

@@ -8,7 +8,8 @@ covered by `test_ciu_worktree_budget.py`. This file's job is narrower: prove
 the ENGINE calls it at the right moment, with the right arguments, and
 nowhere else --
 
-- the cap is resolved once, early, via `worktree.resolve_worktree_cap`;
+- the cap is resolved once, immediately before a real Compose start, via
+  `worktree.resolve_worktree_cap`;
 - the budget slot wraps ONLY the real `execute_docker_compose_with_logs`
   call -- never a dry run, never `--render-toml`;
 - it is called with the CURRENT `DOCKER_NETWORK_INTERNAL` and
@@ -233,11 +234,15 @@ class TestMainExecutionBudgetWiring:
             )
         assert executor_called == []
 
-    def test_dry_run_never_invokes_budget_slot(self, tmp_path, monkeypatch):
+    def test_dry_run_never_reads_or_invokes_worktree_budget(self, tmp_path, monkeypatch):
         stack = _write_native_repo(tmp_path, monkeypatch)
         monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
         spy = SpyBudgetSlot()
         monkeypatch.setattr(engine.worktree, "worktree_budget_slot", spy)
+        monkeypatch.setattr(
+            engine.worktree, "resolve_worktree_cap",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("dry-run must not resolve a cap")),
+        )
 
         result = engine.main_execution(
             working_dir=stack, define_root=tmp_path, skip_hostdir_check=True, dry_run=True,
@@ -246,10 +251,14 @@ class TestMainExecutionBudgetWiring:
         assert result["status"] == "success"
         assert spy.calls == []
 
-    def test_render_toml_never_invokes_budget_slot(self, tmp_path, monkeypatch):
+    def test_render_toml_never_reads_or_invokes_worktree_budget(self, tmp_path, monkeypatch):
         stack = _write_native_repo(tmp_path, monkeypatch)
         spy = SpyBudgetSlot()
         monkeypatch.setattr(engine.worktree, "worktree_budget_slot", spy)
+        monkeypatch.setattr(
+            engine.worktree, "resolve_worktree_cap",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("render-only must not resolve a cap")),
+        )
 
         result = engine.main_execution(
             working_dir=stack, define_root=tmp_path, skip_hostdir_check=True, render_toml=True,
@@ -352,11 +361,15 @@ class TestRunShippedBudgetWiring:
             engine.run_shipped(stack, define_root=tmp_path)
         assert executor_called == []
 
-    def test_dry_run_never_invokes_budget_slot(self, tmp_path, monkeypatch):
+    def test_dry_run_never_reads_or_invokes_worktree_budget(self, tmp_path, monkeypatch):
         stack = _write_shipped_repo(tmp_path, monkeypatch)
         monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
         spy = SpyBudgetSlot()
         monkeypatch.setattr(engine.worktree, "worktree_budget_slot", spy)
+        monkeypatch.setattr(
+            engine.worktree, "resolve_worktree_cap",
+            lambda *_args: (_ for _ in ()).throw(AssertionError("dry-run must not resolve a cap")),
+        )
 
         result = engine.run_shipped(stack, define_root=tmp_path, dry_run=True)
 

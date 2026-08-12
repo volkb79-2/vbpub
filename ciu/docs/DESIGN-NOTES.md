@@ -1,4 +1,4 @@
-# CIU v2 — Design Notes (non-normative)
+# CIU — Design Notes (non-normative)
 
 This file is for **considered-but-not-built** options and open design
 questions — things worth writing down so the next person (or session) doesn't

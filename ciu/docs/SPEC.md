@@ -1,22 +1,22 @@
-# CIU v4 Specification
+# CIU v5 Specification
 
 | | |
 |---|---|
 | **Status** | Active |
-| **Version** | 4.2.0 |
-| **Date** | 2026-06-23 |
+| **Version** | 5.0.0 |
+| **Date** | 2026-08-12 |
 | **Supersedes** | docs/CONFIG.md + docs/CIU.md + docs/CIU-DEPLOY.md as normative sources (those become non-normative guides) |
 
-This document is the **single normative contract** for CIU v4. Where any other
+This document is the **single normative contract** for CIU v5. Where any other
 document, example, or code comment conflicts with this specification, this
 specification wins.
 
 **Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
 (`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
-a breaking change to this contract bumps both. ciu **MAJOR bumped to `4.0.0`** for the
-breaking release (Seam 4: multi-profile env var rename + repeatable `--profile`),
-superseding the `3.x` line (last tag `ciu-v3.1.0`). The current minor is
-**4.2.0** (adds provisioning graph S13 + SSH transport S14).
+a breaking change to this contract bumps both. CIU **MAJOR bumps to `5.0.0`**
+because CIU-16 removed the top-level `ciu --version` option: `ciu version` is
+now the sole public version query. The matching release tag is
+`ciu-v5.0.0`; historical release detail is in [../CHANGES.md](../CHANGES.md).
 Untagged commits build as `X.Y.Z.devN+g<sha>`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
@@ -597,7 +597,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `ciu.env` (comma-separated ordered list, e.g. `core,db,worker-io`).
   `CIU_HOST_PROFILE` is **retired** (not aliased): if set, CIU MUST emit a
   deprecation error to stderr and exit 2 — it is never used as a fallback.
-  `[deploy.groups]` and `--groups` do **not** exist in v3 (greenfield — no
+  `[deploy.groups]` and `--groups` do **not** exist in the current CLI (greenfield — no
   aliases, no fallbacks); the validator rejects `[deploy.groups]` with a
   pointer to profiles.
   **Composition rules (Seam 4):**
@@ -819,9 +819,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 ## S10 — CLI surface (delta to v1)
 
 - **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
-  `env`, `render`, `profiles`, `up`, `down`, `clean`, `health`, `diagnose`,
-  `bake`, `dev`, `secrets`, `check`, `graph`, `ssh`, and `iops-baseline`.
-  Single-stack execution is `ciu up --dir PATH`; this public form forwards the
+  `version`, `env`, `render`, `profiles`, `up`, `down`, `clean`, `health`,
+  `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`, `graph`, `ssh`,
+  `iops-baseline`, `worktree`, and `provenance`. `ciu version` is the sole
+  public version query; the former top-level `ciu --version` option is
+  withdrawn. Single-stack execution is `ciu up --dir PATH`; this public form forwards the
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
   and `--print-context`). Profile-based orchestration is `ciu up --profile
   NAME`; environment generation is `ciu env generate`. Flat `ciu -d …` forms
@@ -833,11 +835,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
   keys, DooD preflight, dependencies).
-- **S10.4** v3 flat verb CLI (`ciu <verb> …`): each verb's `-h`/`--help` MUST
+- **S10.4** Flat verb CLI (`ciu <verb> …`): each verb's `-h`/`--help` MUST
   print that verb's **own** synopsis and options, never a withdrawn flat
   argparse surface. Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
   `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
-  `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9).
+  `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9), `ksm`
+  (S15.17), `worktree` (S16), and `provenance` (S17).
   The global modifier `--host <name>`
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
   (with `--host`) selects the docker-optional push→activate path on `up` and
@@ -2327,11 +2330,10 @@ re-counts under the lock only after the first's Compose start has made its
 own network observably live, and is refused if that would exceed the cap.
 
 **Wiring.** Both `engine.main_execution` and `engine.run_shipped` resolve the
-cap once via `worktree.resolve_worktree_cap(repo_root)` right after bootstrap
-establishes `repo_root`, then enforce it only around their own real Compose
-executor call, passing the current `DOCKER_NETWORK_INTERNAL` and
+cap only on the real Compose-start path, immediately before they enter their
+own budgeted Compose executor call, passing the current `DOCKER_NETWORK_INTERNAL` and
 `working_dir.relative_to(repo_root)`. `--dry-run` and `--render-toml` never
-reach the executor, so they never make a budget Docker/lock call either. A
+resolve the cap, reach the executor, or make a budget Docker/lock call. A
 `worktree.WorktreeError` from the budget slot (candidate resolution failure
 or a capacity refusal) is translated to `ComposeError`, the same translation
 S16.1's join already uses, so a multi-stack `ciu deploy` run fails only this

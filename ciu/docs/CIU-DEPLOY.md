@@ -91,7 +91,7 @@ phases = ["phase_2", "phase_3"]
 compose_profiles = ["monitoring", "debug"]   # → COMPOSE_PROFILES=monitoring,debug
 ```
 
-`[deploy.groups]` and `--groups` do **not** exist in v2. The validator rejects
+`[deploy.groups]` and `--groups` do **not** exist in the current CLI. The validator rejects
 `[deploy.groups]` with a pointer to profiles [S7.5].
 
 ---
@@ -270,7 +270,7 @@ os.environ (which includes ciu.env)
 ```
 
 TOML config flattening (`ENV_<KEY>` / `UPPER_SNAKE` placeholders) is
-**withdrawn** in v2 — all non-secret values reach the compose template via
+**withdrawn** from the current CLI — all non-secret values reach the compose template via
 Jinja2 at render time [S8.2].
 
 ---

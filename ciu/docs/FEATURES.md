@@ -43,16 +43,21 @@ now verbs (`ciu up/down/clean/health`).
 | **Push-deploy (`ciu up --host`)** | Render-on-target push: bundle-syncs the repo to the host, then runs `ciu env generate && ciu render && ciu up` remotely. Secrets never leave the target host. | S14.2 |
 | **Render-safe host inventory** | `.ciu.hosts.toml` / `~/.ciu/hosts.toml` — never touched by `ciu render` / `ciu clean`; SSH keys via `ASK_VAULT:` or filesystem path. | S14.3 |
 | **Fail-closed host-key pinning** | Connections are refused when no `known_host` is pinned; `CIU_SSH_INSECURE_TOFU=1` is a documented bootstrap-only escape hatch. | S14.4a |
+| **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
+| **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
+| **Isolated worktree instances** | `ciu worktree` creates checkout-local identity, network, Compose project, and volumes; optional shared-infra join, namespaced data, and a primary-config concurrency cap cover parallel real lanes. | S16 |
+| **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer. | S17 |
 
 ---
 
-## CLI reference (v3 verbs)
+## CLI reference
 
 `ciu <verb> -h` prints that verb's own options. Exit codes: `0` ok · `1` runtime
 failure · `2` config/validation error · `3` environment/bootstrap error (S10.3).
 
 | Verb | Purpose | Key options |
 |---|---|---|
+| `ciu version` | Print the CIU package version | Top-level `ciu --version` is withdrawn |
 | `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |
@@ -64,12 +69,15 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu bake` | `docker buildx bake --load` (production image) | `[targets …]`, `--no-cache` |
+| `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |
 | `ciu secrets reset` | Delete secret store files | `--name N`, `-y` |
 | `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
+| `ciu worktree` | Create, remove, or list isolated CIU instances | `add NAME --base REF --profile P1,P2`; `rm NAME -y`; `list`; optional data isolation/shared infra (S16) |
+| `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--json`, `--define-root PATH` |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
 index and `ciu <verb> --help` for the verb's accepted options. The help output
@@ -81,7 +89,7 @@ also documents legacy engine options that remain available only through
 The `ciu` dispatcher rejects the flat engine forms below. They are retained
 here only as a migration map; use the public verb in all scripts and docs.
 
-| Legacy | v3 verb |
+| Legacy | public verb |
 |---|---|
 | `ciu -d <stack>` | `ciu up --dir <stack>` |
 | `ciu -d <stack> --render-toml` | `ciu up --dir <stack> --render-toml` (single stack); `ciu render` for a profile selection |
@@ -89,6 +97,7 @@ here only as a migration map; use the public verb in all scripts and docs.
 | `ciu -d <stack> --reset` | `ciu up --dir <stack> --reset` (single stack); `ciu clean` for a profile selection |
 | `ciu -d <stack> --shipped` | `ciu up --dir <stack> --shipped` |
 | `ciu --generate-env` | `ciu env generate` |
+| `ciu --version` | `ciu version` |
 
 ---
 
@@ -116,6 +125,40 @@ ciu diagnose --project myproject
 # Tear everything down to a clean slate (disposable greenfield)
 ciu clean -y      # exits non-zero if any project container/volume survives (S6.4)
 ```
+
+---
+
+## Worktree and evidence workflows
+
+Use an isolated worktree when a parallel change needs a real stack without
+adopting the primary checkout's containers, network, or volumes:
+
+```bash
+# Prepare a separate instance; this does not start it.
+ciu worktree add feature-x --base main --profile dev
+cd ../.worktrees/feature-x
+source ciu.env
+ciu up --profile dev
+
+# Before a live test/evidence lane, record the artifact identity CIU inspected.
+ciu provenance --json
+
+# CIU cleans the instance before removing the checkout.
+cd -
+ciu worktree rm feature-x -y
+```
+
+For a diverging application tier that shares already-running identity, secret,
+or observability services, use `worktree add --shared-infra ...` exactly as
+shown in [CONFIG.md's shared-infra example](CONFIG.md#shared-infra-join-example-s161).
+For per-instance database/schema provisioning, add `--data-isolation <profile>`.
+The emitted `CIU_DATA_ISOLATION_DSN` can be credential-bearing: do not pass it
+to an assay or other evidence tool as an environment capture.
+
+This makes CIU a useful companion to **nyxloom** for parallel implementation
+work and to **assay** for proving a live lane exercised the intended image.
+CMRU remains responsible for releases: it runs CIU's `tester-unified` gate and
+records the project-scoped source history in [../CHANGES.md](../CHANGES.md).
 
 ---
 
@@ -213,10 +256,11 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
 - **Host-key pinning is fail-closed (S14.4a).** A missing `known_host` in the hosts
   inventory causes `ciu ssh` and `ciu up --host` to refuse the connection. Set
   `CIU_SSH_INSECURE_TOFU=1` only during initial bootstrap to discover and pin the key.
-- **KSM opt-in is fail-closed (S15.11).** When `governance.ksm_optin` is set,
-  `ciu render`/`ciu up` first checks the resolved physical path is an existing
-  regular file. A missing shim is a configuration error; CIU never lets Docker
-  phantom-mount an empty directory and report KSM as active.
+- **KSM opt-in is fail-closed (S15.11).** `ksm_optin = "builtin"` is the
+  recommended CIU-shipped shim. A custom shim must be an existing regular file
+  at CIU's logical source path; CIU maps it for Docker only after validation,
+  so Docker cannot phantom-mount an empty directory. `--no-ksm` is passthrough:
+  it stops CIU injection but cannot disable KSM an image enables itself.
 - **`--thin` is the docker-optional push→activate path (S14.6).** `ciu up --host <name>
   --thin` pushes an artifact to `bundle_dir` (rsync, with a tar+scp fallback for hosts
   without rsync) and runs the project's shell activation contract

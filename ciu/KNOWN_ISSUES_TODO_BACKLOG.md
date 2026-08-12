@@ -9,7 +9,9 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-12 (CIU-24 FIXED — code + tests + spec + docs,
+Last updated: 2026-08-12 (CIU-27 filed: S17.2 documents a `ciu provenance`
+`--no-preflight` option that the CLI does not accept; decision required before
+changing either contract or implementation. CIU-24 FIXED — code + tests + spec + docs,
 `ciu-P03-worktree-concurrency-budget`, S16.3. Earlier the same day: CIU-22
 FIXED, `ciu-P02-worktree-shared-infra-join`, S16.1; CIU-20/21/23 FIXED,
 `ciu-P01-worktree-isolation-primitives`; CIU-26 filed as the deferred
@@ -63,6 +65,19 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-24 | No concurrency budget for worktree instances: nothing caps how many can run at once against a host's actual capacity, so K parallel isolated real-lane gates can OOM or starve a shared host with no warning. FIXED (S16.3): the PRIMARY *Git* worktree's own CIU root's global `[ciu.worktree] max_concurrent_instances` (plus a `CIU_MAX_CONCURRENT_WORKTREES` ambient override) caps deployed instances; `ciu up`/`--shipped` enforce it under a `<git-common-dir>/ciu-worktree-budget.lock` held only across the exact-project-label Docker count decision and the real `docker compose up` call, resolved from candidates translated through the git-root-to-CIU-root offset and rendered against each candidate's OWN `ciu.env`. Deliberately NOT a `[governance]` value (does not participate in CIU-13's merge); an already-deployed current instance may always rerun even over cap | Low | FIXED |
 | CIU-25 | No leak detector for worktree instances: an orphaned stack (crashed child, killed session, forgotten `worktree rm`) is never reaped, silently consuming host resources indefinitely | Low | OPEN |
 | CIU-26 | CIU-23's `worktree.PostgresProvisioner` (the real, shipped S16.2 data-isolation default) has no live-server proof: its naming/ordering/force/idempotency contract is proven in-gate only against a FAKE `DataIsolationProvisioner`, because `tester-unified:local` has no live Postgres server to provision against. Needs an integration lane (outside this repo's own gate) that runs `PostgresProvisioner` against a real Postgres and confirms `provision`/`drop` actually create/remove a database, not just that the mechanism dispatches correctly | Low | OPEN |
+| CIU-27 | S17.2 states that `ciu provenance --no-preflight` skips the check, but the actual parser accepts only `--ignore-mismatch`/`--force`, `--json`, and `--define-root`; the documented behavior cannot be invoked | Medium | OPEN — product decision required |
+
+### CIU-27 — `provenance --no-preflight` is specified but not implemented
+
+**Evidence (2026-08-12 audit):** `docs/SPEC.md` S17.2 says
+`--no-preflight` skips the provenance check. The shipped `ciu provenance`
+parser rejects that option with argparse exit 2; its accepted options are
+`--ignore-mismatch` (alias `--force`), `--json`, and `--define-root`.
+
+**Decision required:** either implement a real `--no-preflight` behavior with
+tests, or withdraw/correct the normative S17.2 claim. This audit deliberately
+does neither: silently changing a test-evidence gate or rewriting its contract
+would make a product decision under the guise of documentation maintenance.
 
 ## Resolved / not-a-gap
 
