@@ -7,6 +7,63 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [5.0.0] - 2026-08-12
+<!-- cmru: generated -->
+
+### Added
+- feat(ciu)!: publish v5 interface and release history (37c9459b)
+- feat(ciu): S15.20 exec-wrapper -- the second KSM mechanism, opt-in per service (d87f028b)
+- feat(ciu): S15.19 governance.memory_profile -- per-service KSM strategy (5f2b378d)
+- feat(ciu): CIU-17 ad-hoc KSM override + CIU-18 provenance enforcement (S15.18, S16, S17) (8f8c2286)
+- feat(ciu): S16 `ciu worktree add|rm|list` + CIU-19 (clean crossed instance boundaries) (d977d3aa)
+- feat(ciu): S15.17 -- ship the KSM shim source, build+verify it on demand (285157d3)
+- feat(ciu): stamp org.opencontainers.image.revision on every baked image (ccd7a3fe)
+- feat(ciu)!: CIU-16 -- `version` is a verb; drop the `--version` flag (a624d78f)
+
+### Fixed
+- fix(ciu): S15.18 -- "off" means PASSTHROUGH, not "KSM disabled" (48f3ee9c)
+- fix(ciu): S17.2 is a TEST-time gate over RUNNING containers, not a deploy preflight (e37b4741)
+- fix(ciu): CIU-15 audit -- assert the configfile staging dir before binding it (2ac4e8e3)
+- fix(ciu): CIU-15 -- KSM shim existence check stat'd the daemon's path (6c60028d)
+
+### Changed
+- ciu: paste round-2 real gate output into ciu-P03 LOG (fd0a0060)
+- ciu: round 2 review fixes -- lock-location and pre-lock-render oracles (647a4b65)
+- ciu: finalize LOG with real gate output for ciu-P03 (ea05b9b6)
+- ciu: close 4 branch-coverage gaps found by the real gate's --cov-branch (b6fe04d3)
+- ciu: fix 6 pre-existing engine tests broken by S16.3's new required env read (d13bdec9)
+- ciu: implement S16.3 worktree instance concurrency budget (CIU-24) (74bad946)
+- ciu: re-pin ciu-P03 to post-P02 merge HEAD (controller mechanical step) (2fa57f20)
+- ciu: paste round-2 real gate output into ciu-P02 LOG (df82bff2)
+- ciu: fix five review-found defects in S16.1 shared-infra join (CIU-22) (861a35f3)
+- ciu: finalize LOG with real gate output for ciu-P02 (b5d1bd5a)
+- ciu: implement S16.1 shared-infra join for ciu worktree (CIU-22) (1664b4d5)
+- ciu: re-pin ciu-P02 to post-P01 HEAD, refresh add() signature (controller mechanical step) (4bf271ec)
+- Merge ciu-P01-worktree-isolation-primitives: worktree isolation primitives for real test lanes (4756b608)
+- ciu: final targeted fix for P02/P03 (2 of 2 allowed) — Docker-state detection, CIU-root vs git-root (77b31517)
+- ciu: finalize LOG with round-2 gate output and commit hashes (3bccb3af)
+- ciu: round 2 — fix PostgresProvisioner stdin delivery and restore byte-identical --ignore-mismatch prose (78e9cc44)
+- ciu: tighten P02 and P03 review contracts (4ccdb691)
+- ciu: finalize LOG with real post-commit gate output (4e576990)
+- ciu: fix DataIsolationProvisioner stub bodies to avoid coverage-gate exclusion (10f802ab)
+- ciu: CIU-20/21/23 — provenance verdict, in-container revision, worktree data isolation (3a71328e)
+- ciu: carve ciu-P02 (CIU-22, shared-infra join) and ciu-P03 (CIU-24, concurrency budget) (af0e24b1)
+- ciu: update ciu-P01-worktree-isolation-primitives's stale input_revision to READY HEAD (202d2925)
+- ciu: round 4 — close both round-3 mechanical findings (composefile.py:858 gap, 7th fixture) (1a891fac)
+- ciu: re-carve ciu-P01-worktree-isolation-primitives (round 3, split; answers C-sol-1's 2nd NOT READY) (53d86378)
+- ciu: re-carve ciu-P01-worktree-isolation-primitives (round 2, answers C-sol-1's NOT READY) (d747a4d3)
+- ciu: carve ciu-worktree-isolation-primitives (CIU-20/21/22/23/24, single package) (715b85d7)
+- ciu: file CIU-22..25 — worktree isolation gaps for real/integration test lanes (ab6b63bd)
+- ciu: update D7 — provenance precondition is done (S17), sketch the judged-result contract against assay's real one (0394bf4b)
+- ciu: file CIU-20/CIU-21 — machine-readable provenance verdict + in-container revision exposure (b18667c7)
+
+### Documentation
+- docs(ciu): D8 -- governance.memory_profile; KSM is one lever and ksm_optin is too narrow (c3bd4218)
+- docs(ciu): D7 -- where a project's test definitions belong (where/what/how) (ab919bfa)
+
+### Testing
+- test(ciu): close isolated coverage gaps (190f7dfe)
+
 ## [4.11.1] - 2026-08-05
 
 ### Fixed
