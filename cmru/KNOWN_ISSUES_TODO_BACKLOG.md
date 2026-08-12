@@ -245,6 +245,32 @@ alias until a concrete remote-qualification release policy requires it. At that 
 `release --from-candidate <id>` as a full immutable promotion state machine, not a generic
 retry. Copying `dist/` back merely to make the command chain work would defeat the isolation rule.
 
+### KI-11 — Project commands can invoke a different CMRU than the transaction engine — *open; strict runtime binding required*
+**Evidence:** an estate checkout's root `cmru.py` runs the source-tree CMRU engine, including
+inside its isolated release/build worktree. Several portable project contracts nevertheless use
+an argv beginning `cmru tester-gate` (CIU, MDT, TLS-edge, Nyxloom, Topos, PWMCP). That resolves
+through the worker's ambient `PATH`, which can be an older installed wheel. On 2026-08-12 the
+source engine reported `3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was installed
+as `2.0.1`; the latter does not even expose the current `cmru version` verb. A release can thus
+orchestrate with one CMRU contract but run its tester boundary with another.
+
+**Impact:** it invalidates the intended one-framework version boundary and makes a project gate's
+behaviour depend on ambient devcontainer state. Updating six project argv values to reference
+the repository-root shim would make standalone consumers depend on this monorepo, so it is not a
+valid fix.
+
+**Required design:** CMRU's transaction runtime must expose one explicit, portable self-command
+binding for project steps, and the project grammar/template must name that binding rather than
+re-resolve `cmru` through PATH. The child must prove the invoked command library's version and
+source/installed identity agree with the transaction engine before it runs a gate. A missing or
+mismatched binding must fail before container launch; it must never fall back to PATH. The design
+must work both for an installed third-party CMRU wheel and for the vbpub source wrapper without
+adding a sourceable config alias or a hidden environment default.
+
+**Immediate operational rule:** until KI-11 is resolved, install the last verified released CMRU
+wheel into the gate environment before an estate release and treat a source-versus-installed
+version mismatch as a release preflight failure. Do not paper over it by editing each consumer.
+
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
 **SPEC:** `S14`.
