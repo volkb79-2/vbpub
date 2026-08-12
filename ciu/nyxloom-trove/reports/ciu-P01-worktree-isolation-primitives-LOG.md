@@ -184,15 +184,29 @@ kwarg, `capsys`-captured prose from inside the function). O1's mandated
 signature change ("never raising internally... never bare `None`") is
 incompatible with that contract by construction — this is not a case of
 inventing a new interface, it is the DIRECT, fully-specified consequence of
-the one O1 already mandates. Updated the seven `TestRunningProvenance` tests
-to assert on the returned `ProvenanceResult`'s fields instead of a raise/
-captured-prose; left `TestKsmToggle`, `TestMemoryProfile`,
+the one O1 already mandates. The class went from TEN tests to NINE: nine
+migrated to assert on the returned `ProvenanceResult`'s fields instead of a
+raise/captured-prose, and one — `test_ignore_mismatch_downgrades_to_a_warning`
+— was DELETED outright, not migrated, because the behaviour it asserted
+(`verify_running_provenance` itself printing a warning on the ignore-mismatch
+path) no longer exists on this function at all under O1's contract; the
+equivalent assertion now belongs to, and lives in,
+`test_ciu_provenance_json.py`'s CLI-layer coverage of `cli._provenance`.
+Deleting an assertion is exactly the kind of thing a scope note has to
+disclose explicitly rather than let a paraphrase like "updated" quietly
+cover for — its disappearance from this file is directly connected to how
+the "provenance OK" line dropping out of `cli._provenance`'s
+`--ignore-mismatch` path (fixed after independent review; see the dedicated
+section below) went unnoticed the first time: the one test that used to
+exercise that exact combination was migrated away rather than re-homed
+alongside the behaviour it covered. Left `TestKsmToggle`, `TestMemoryProfile`,
 `TestExecWrapperEntrypoint`, `TestEntrypointDrift` in that file untouched
 (they don't touch provenance). Treated as mechanical test maintenance for an
 exactly-specified refactor, not a scope decision — flagged here rather than
 silently folded in, per AUTHORING.md's "trust git state" review expectation.
 
-## Gate — final run (after this package's full diff, committed)
+## Gate — round 1 (after this package's full diff, committed; superseded —
+see "Round 2" below for the post-review, actually-final numbers)
 
 `env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=src python3 -m pytest
 tests -q -n auto`:
@@ -239,12 +253,114 @@ none are new. This blanket check was already failing at the true baseline
 actually-authoritative half (`nyxloom.coverage_gate`, changed-line-scoped)
 is the one reported above as passing.
 
+## Round 2 — independent review fixes
+
+Verdict: REJECT, two concrete defects. Both fixed; nothing else touched
+(everything else, including all seven fixtures, the O2 governance-disabled
+discriminator, the O4 collision test, and the KSM-toggle scope excursion,
+was independently confirmed correct).
+
+### Defect 1 (O4) — `PostgresProvisioner.provision()` could not actually work
+
+Run live against a real Postgres, `psql -tAc "SELECT ... WHERE NOT EXISTS
+(...) \gexec"` fails with a syntax error 100% of the time: `-c` cannot mix a
+SQL statement with a `\gexec` meta-command in one argument. Every prior test
+of this path only asserted `argv[:3] == ["exec", "postgres", "psql"]` — argv
+shape, never the SQL content or how it was delivered — so the break was
+invisible to the suite.
+
+Fix, exactly as the review prescribed (feed the SQL on stdin, not `-c`;
+never fall back to a bare `CREATE DATABASE`, which would break the
+re-provisioning idempotency `DataIsolationProvisioner.provision`'s own
+contract requires):
+
+- `src/ciu/procutil.py`: `run_cmd` (and `docker`, which forwards `**kw`
+  unchanged) gained a new `input: str | None = None` keyword, passed straight
+  through to `subprocess.run`. Purely additive — `None` is identical to the
+  parameter not existing, so every pre-existing caller (100+ call sites) is
+  unaffected. This one file is outside the original `scope.touch`, but the
+  review's own prescribed fix is not expressible without it: `run_cmd` had no
+  way to pipe stdin to a child process at all before this.
+- `src/ciu/worktree.py`: `PostgresProvisioner` gained `_psql_script(container,
+  sql)`, running `docker exec -i <container> psql -U <user> -tA -f -` with
+  the SQL passed as `input=`. `-i` is required — without it `docker exec`
+  leaves stdin closed, so `-f -` would read EOF immediately: a *silent*
+  no-op that creates nothing, which is arguably worse than the original
+  syntax-error failure because it exits 0. `provision()` now calls
+  `_psql_script`, not `_psql`. `drop()` is UNCHANGED — a single
+  `DROP DATABASE IF EXISTS "<entity>"` has no meta-command to mix with `-c`,
+  and the review already confirmed it idempotent and correct.
+- `tests/tests/test_ciu_worktree.py`:
+  `test_provision_uses_docker_exec_psql_against_the_named_profile` rewritten
+  to capture `(cmd, kw)` instead of just `cmd`, and now asserts: `-i` present,
+  no `-c` anywhere in argv, argv ends `-f -`, no argv token contains
+  `gexec` (i.e. the meta-command is NOT in argv at all), and the actual SQL
+  delivered via `kw["input"]` contains the entity name, `CREATE DATABASE`,
+  `WHERE NOT EXISTS`, and `\gexec` — the exact shape the old test could not
+  have caught a syntax-broken implementation with.
+
+### Defect 2 (O1) — the "provenance OK" line silently dropped after `--ignore-mismatch`
+
+O1's own text promises `cli._provenance` is "BYTE-IDENTICAL in [prose]
+behaviour when `--json` is absent." The OLD CLI, on `--ignore-mismatch` over
+a genuine mismatch, warned AND then fell through to print
+`provenance OK — running containers match <rev>` (self-contradictory, but
+that is what it did: the old `verify_running_provenance` warned-and-returned
+normally on that path with no exception, so the old `cli._provenance`
+resumed past its `try/except` and hit the unconditional `print("provenance
+OK...")` at the bottom). The rewritten `cli._provenance` instead returned
+immediately after the warning, silently dropping that second line — a real
+behavioural change a script `grep`-ing stdout for "provenance OK" would see
+as a changed verdict, and one the LOG and `docs/SPEC.md` §S17.3 both
+(inaccurately, at the time) described as unchanged.
+
+**Choice: (a) — restored the exact old behaviour**, rather than (b) keep the
+new behaviour and rewrite the docs to disclose a deviation. Reasoning: O1's
+byte-identical promise is explicit and was the whole basis on which the
+fixture/grammar work was reviewed and accepted; "arguably better" (the
+reviewer's own words for the new, non-contradictory behaviour) is a product
+judgement call this package was never asked to make, and introducing it
+silently — discovered only because a review happened to run the CLI live —
+is a worse outcome than reproducing an admittedly odd old behaviour exactly.
+If the self-contradictory "WARN then OK" output is worth fixing on its own
+merits, that is a follow-up someone can decide on deliberately, not a
+side-effect of an unrelated refactor.
+
+- `src/ciu/cli.py`: the `mismatch` branch's `if opts.ignore_mismatch: warn(...);
+  return 0` became `if not opts.ignore_mismatch: print(...); return 2` with
+  no `return` in the `ignore_mismatch` case — it now falls through to the
+  same trailing `print("provenance OK — ...")` that `verified-match` also
+  reaches, exactly mirroring the old control flow (warn-and-fall-through vs.
+  warn-and-return were never actually equivalent; only the former is
+  byte-identical to the original).
+- `tests/tests/test_ciu_provenance_json.py`:
+  `test_mismatch_ignore_mismatch_downgrades_to_warning_exit_0` now asserts
+  `"provenance OK — running containers match abc12345" in out` in addition to
+  the `[WARN]` line, so this exact regression cannot silently recur.
+- `docs/SPEC.md` §S17.3 needed NO correction: its claim of byte-identical
+  behaviour is now actually true again (it was the CODE that drifted from
+  the doc, not the doc that overclaimed).
+
+### Minor items
+
+- `src/ciu/composefile.py`'s module-docstring `Public API` index line for
+  `generate_overlay` now lists `image_revisions` in its keyword-argument
+  summary (it was added to the real signature in round 1 but the docstring
+  index line was missed).
+- This LOG's own "Scope note" section corrected: `TestRunningProvenance`
+  went from TEN tests to NINE, not "seven" — nine migrated,
+  `test_ignore_mismatch_downgrades_to_a_warning` deleted outright (see that
+  section above for why, and its direct connection to Defect 2 above).
+
 ## Commits
 
 1. `ciu: CIU-20/21/23 — provenance verdict, in-container revision, worktree
    data isolation` — the full implementation + tests + docs.
 2. `ciu: fix DataIsolationProvisioner stub bodies to avoid coverage-gate
-   exclusion` — the coverage-gate fix above.
+   exclusion` — the coverage-gate fix from round 1.
+3. `ciu: round 2 — fix PostgresProvisioner stdin delivery and restore
+   byte-identical --ignore-mismatch prose` — the two review defects + minor
+   items above.
 
 ## Nothing was BLOCKED
 

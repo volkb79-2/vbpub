@@ -319,6 +319,13 @@ class TestCliProvenanceDispatch:
     def test_mismatch_ignore_mismatch_downgrades_to_warning_exit_0(
         self, monkeypatch, tmp_path, capsys
     ):
+        """Byte-identical to the OLD CLI (O1's own promise): the OLD
+        verify_running_provenance warned-and-returned-normally on this path,
+        so the old cli._provenance always fell through to print "provenance
+        OK" afterward. A warning immediately followed by "OK" reads as
+        self-contradictory, but that contradiction IS the documented old
+        behaviour -- silently dropping the OK line here would be an
+        undisclosed deviation from what O1/S17.3 promises."""
         self._patch_repo_root(monkeypatch, tmp_path)
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
@@ -333,6 +340,7 @@ class TestCliProvenanceDispatch:
         assert code == 0
         out = capsys.readouterr().out
         assert "[WARN]" in out and "S17" in out and "deadbeef" in out
+        assert "provenance OK — running containers match abc12345" in out
 
     def test_mismatch_json_exit_2_unless_ignore_mismatch(
         self, monkeypatch, tmp_path, capsys

@@ -45,7 +45,7 @@ render_compose(template_path, guarded_config) -> str
 leak_scan(rendered_text, materialized) -> None
 validate_consumption(compose_yaml_text, declared, *, configfile_mounts=(), hook_consumed=()) -> list[str]
 render_configfiles(stack_dir, root_key, config, secret_value_fn) -> list[ConfigFileMount]
-generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text, governance) -> Path | None
+generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text, governance, image_revisions) -> Path | None
 compose_process_env(specs, materialized, *, base, compose_profiles) -> dict
 compose_file_args(stack_dir, overlay_path) -> list[str]
 """

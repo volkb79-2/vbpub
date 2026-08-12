@@ -454,11 +454,19 @@ def _provenance(rest: list[str]) -> int:
             "the code under test, or pass --ignore-mismatch to run anyway (the "
             "result then describes the OLD artifact, whatever it says)."
         )
-        if opts.ignore_mismatch:
-            warn(message)
-            return 0
-        print(message, file=sys.stderr)
-        return 2
+        if not opts.ignore_mismatch:
+            print(message, file=sys.stderr)
+            return 2
+        # --ignore-mismatch downgrades the refusal to a warning and FALLS
+        # THROUGH to the "provenance OK" print at the bottom of this
+        # function — byte-identical to the OLD CLI: verify_running_provenance
+        # used to warn and return normally on this path, and the old
+        # cli._provenance then always printed the OK line afterward for any
+        # clean run that didn't raise. Yes, a warning immediately followed by
+        # "OK" reads as self-contradictory — that contradiction is the
+        # documented old behaviour this function promises to reproduce
+        # byte-for-byte (S17.3/O1), not a new design choice.
+        warn(message)
 
     if result.overall == "not-verified-dirty":
         warn(
@@ -484,10 +492,9 @@ def _provenance(rest: list[str]) -> int:
         )
         return 0
 
-    # verified-match: do NOT claim "OK" for a run that could not check
-    # anything — the branches above already returned for every case that
-    # didn't actually verify something, so reaching here means >=1 container
-    # was checked and matched.
+    # Reached for "verified-match", and for "mismatch" + --ignore-mismatch
+    # (the fall-through above). Every other case returned earlier, so this
+    # never claims "OK" for a run that could not check anything.
     print(f"provenance OK — running containers match {result.commit_under_test}")
     return 0
 

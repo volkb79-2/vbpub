@@ -424,10 +424,16 @@ class TestPostgresProvisionerShippedDefault:
         assert isinstance(worktree._default_provisioner(), worktree.PostgresProvisioner)
 
     def test_provision_uses_docker_exec_psql_against_the_named_profile(self, monkeypatch):
+        """`-c` cannot mix a SQL statement with a `\\gexec` meta-command in one
+        argument -- psql rejects that with a syntax error unconditionally, so
+        the create-if-not-exists SQL MUST travel on stdin (`-f -`), not as a
+        `-c` argv token. Asserting only argv[:3] (as an earlier version of
+        this test did) is exactly how a syntax-broken implementation passed:
+        it never looked at the SQL itself or how it was delivered."""
         calls = []
 
         def fake_docker(cmd, **kw):
-            calls.append(cmd)
+            calls.append((cmd, kw))
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         import ciu.procutil as procutil
@@ -435,7 +441,24 @@ class TestPostgresProvisionerShippedDefault:
 
         prov = worktree.PostgresProvisioner()
         dsn = prov.provision("ciu_abc123", "postgres")
-        assert calls[0][:3] == ["exec", "postgres", "psql"]
+
+        cmd, kw = calls[0]
+        # docker exec -i <container> ... -- -i is REQUIRED or stdin is closed
+        # and `-f -` reads EOF immediately (a silent no-op, never creates
+        # anything).
+        assert cmd[:4] == ["exec", "-i", "postgres", "psql"]
+        # The SQL is NOT embedded in argv anywhere (no `-c`) -- it travels via
+        # stdin, read from a script (`-f -`).
+        assert "-c" not in cmd
+        assert cmd[-2:] == ["-f", "-"]
+        assert not any("gexec" in arg for arg in cmd)
+        # The actual SQL content, delivered as `input=`, carries the real
+        # create-if-not-exists pattern -- entity-specific, idempotent shape.
+        sql = kw.get("input") or ""
+        assert "ciu_abc123" in sql
+        assert "CREATE DATABASE" in sql
+        assert "WHERE NOT EXISTS" in sql
+        assert "\\gexec" in sql
         assert "ciu_abc123" in dsn
 
     def test_drop_uses_if_exists_for_idempotency(self, monkeypatch):

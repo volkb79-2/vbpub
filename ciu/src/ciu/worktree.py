@@ -111,13 +111,30 @@ class PostgresProvisioner:
             capture=True, check=False,
         )
 
+    def _psql_script(self, container: str, sql: str):
+        """Run *sql* fed on STDIN (``-f -``), not ``-c``.
+
+        ``-c`` cannot mix a SQL statement with a ``\\gexec`` meta-command in
+        one argument — psql rejects it with a syntax error unconditionally.
+        Feeding the same text as a script on stdin has no such restriction.
+        ``docker exec -i`` is required so the daemon-side psql actually
+        receives what's piped in; without ``-i`` stdin is closed and ``-f -``
+        reads EOF immediately (an empty, silently-successful no-op that never
+        creates anything).
+        """
+        from . import procutil
+        return procutil.docker(
+            ["exec", "-i", container, "psql", "-U", self.admin_user, "-tA", "-f", "-"],
+            capture=True, check=False, input=sql,
+        )
+
     def provision(self, entity: str, profile: str) -> str:
         container = profile or "postgres"
-        result = self._psql(
-            container,
+        sql = (
             f"SELECT 'CREATE DATABASE \"{entity}\"' WHERE NOT EXISTS "
-            f"(SELECT FROM pg_database WHERE datname='{entity}')\\gexec",
+            f"(SELECT FROM pg_database WHERE datname='{entity}')\\gexec\n"
         )
+        result = self._psql_script(container, sql)
         if result.returncode != 0:
             raise DataIsolationError(
                 f"could not provision database {entity!r} on {container!r}: "
