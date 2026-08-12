@@ -352,15 +352,41 @@ side-effect of an unrelated refactor.
   `test_ignore_mismatch_downgrades_to_a_warning` deleted outright (see that
   section above for why, and its direct connection to Defect 2 above).
 
+## Gate — round 2 (final, after the review fixes above, committed)
+
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=src python3 -m pytest
+tests -q -n auto`:
+
+```
+1827 passed, 8 warnings in 6.31s
+```
+
+(Same count as round 1 — this round modified two existing tests' assertions
+rather than adding new ones; zero failures, zero regressions.)
+
+`PYTHONPATH=../nyxloom/src python3 -m nyxloom.coverage_gate --repo . --base
+main --coverage-json coverage.json --source src/ciu`:
+
+```
+diff-coverage OK: 176/176 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+176 vs round 1's 172 — the 4-line delta is `procutil.py`'s new `input`
+parameter plus `_psql_script`'s real lines in `worktree.py`, all exercised
+by the rewritten test. No exclusion-flag failure this time (no new `...`
+stub bodies were added). Committed as `78e9cc44`; `git diff-tree
+--no-commit-id --name-only -r 78e9cc44` confirms exactly the seven intended
+files and nothing swept in from vbpub's known concurrent-committer race.
+
 ## Commits
 
-1. `ciu: CIU-20/21/23 — provenance verdict, in-container revision, worktree
-   data isolation` — the full implementation + tests + docs.
-2. `ciu: fix DataIsolationProvisioner stub bodies to avoid coverage-gate
-   exclusion` — the coverage-gate fix from round 1.
-3. `ciu: round 2 — fix PostgresProvisioner stdin delivery and restore
-   byte-identical --ignore-mismatch prose` — the two review defects + minor
-   items above.
+1. `3a71328e` `ciu: CIU-20/21/23 — provenance verdict, in-container revision,
+   worktree data isolation` — the full implementation + tests + docs.
+2. `10f802ab` `ciu: fix DataIsolationProvisioner stub bodies to avoid
+   coverage-gate exclusion` — the coverage-gate fix from round 1.
+3. `78e9cc44` `ciu: round 2 — fix PostgresProvisioner stdin delivery and
+   restore byte-identical --ignore-mismatch prose` — the two review defects
+   + minor items above.
 
 ## Nothing was BLOCKED
 
