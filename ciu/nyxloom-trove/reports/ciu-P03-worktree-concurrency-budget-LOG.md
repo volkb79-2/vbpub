@@ -303,4 +303,128 @@ at the enforcement site, never a silently-ignored request).
 
 ## Final gate
 
-Run after committing. See below.
+Committed at `74bad946` (implementation), `d13bdec9` (fixed 6 pre-existing
+engine tests broken by the new unconditional `DOCKER_NETWORK_INTERNAL` read
+— see "A real regression the real gate caught" below), `b6fe04d3` (closed 4
+`--cov-branch` gaps the real gate's branch-coverage mode surfaced that a
+local non-branch run did not).
+
+### A real regression the real gate caught (worth recording)
+
+The FIRST real-gate run (after `74bad946`) failed 6 pre-existing tests in
+`test_ciu_engine_branch101.py`, `test_ciu_engine_direct94.py`,
+`test_ciu_engine_direct99.py`, and `test_ciu_engine_remaining_boundaries.py`
+— all a `KeyError: 'DOCKER_NETWORK_INTERNAL'` from the new budget-slot
+wiring's `os.environ["DOCKER_NETWORK_INTERNAL"]` read, which those fixtures
+never populate (they fully stub `bootstrap_workspace_env` to a no-op, and
+nothing read that key at that point in the pipeline before this change).
+**Every local `pytest` run I had done before that — including full-suite
+runs — passed clean**, because this devcontainer's own shell ambiently
+exports `DOCKER_NETWORK_INTERNAL` (ciu.env for a sibling project, sourced
+into the shell profile), silently supplying the missing key to every local
+test process. Confirmed by re-running locally with the key (and every other
+ambient `CIU_`/`DOCKER_`/`REPO_`/`CONTAINER_`/`INSTANCE_ID` variable this
+devcontainer happens to export) explicitly unset: all 6 failed there too.
+Fixed with a one-line `monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", ...)`
+per fixture (`d13bdec9`) — none of the 4 files are in this handoff's
+`scope.touch` list, but none are in `forbid` either, and leaving 6 tests
+broken was not an option. This is exactly why the task brief's insistence on
+the REAL gate (not the cockpit) matters: a devcontainer with a contaminated
+ambient environment is its own false-green risk, on top of the declared
+gate's env-passthrough gap documented in the Baseline section above.
+
+### Real declared-gate output (after `b6fe04d3`)
+
+`docker run --rm --cgroup-parent=nyxloom-gates.slice -e
+CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice -v
+/home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c
+'cd <worktree>/ciu && export PYTHONPATH=src && python run-ciu-tests.py && ...'`
+(the `-e CGROUP_PARENT_DEV_BACKGROUND` addition documented in Baseline —
+without it this specific host's declared argv cannot pass regardless of this
+package, same as the baseline measurement):
+
+```
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/cli.py                                     399     27    128      4    94%   350-373, 595-600, 814, 817, 820
+src/ciu/composefile.py                             344     14    168      2    96%   809-833, 924
+src/ciu/deploy.py                                 1027      3    422      1    99%   725, 745-746
+src/ciu/engine.py                                  854      0    278      0   100%
+src/ciu/governance.py                              382      1    158      2    99%   189, 197->201
+src/ciu/ksm.py                                     180     56     64      6    68%   86, 118-120, 133-134, 140, 151, 159, 165-166, 214, 260-261, 292-307, 327-385, 405-406, 414-415
+src/ciu/worktree.py                                485     23    172      3    96%   215, 421-431, 446-473, 565, 769
+--------------------------------------------------------------------------------------------
+TOTAL                                             6376    124   2500     18    98%
+Coverage JSON written to file coverage.json
+FAIL Required test coverage of 100% not reached. Total coverage: 98.13%
+============================ 1983 passed in 13.61s =============================
+```
+
+(every other module not listed is 100%.) `engine.py` — the ONLY file this
+package adds new statements to besides `worktree.py`/`config_model.py` — is
+**100%**. `worktree.py`'s 5 remaining missing-line groups (`215, 421-431,
+446-473, 565, 769`) are ciu-P02's own documented pre-existing baseline set
+(`210, 224, 416-426, 441-468, 560, 764`) shifted by the fixed +5-line offset
+this package's new imports at the top of the file introduce — same
+statements (`list_worktrees`, `_generate_env_in`, `_clean_in`, and the
+pre-existing tails of `add()`/`remove()`'s `git` failure branches), none of
+which this package touches; `224` from that set is now incidentally covered
+(not a regression — extra coverage, not missing coverage). `config_model.py`
+is **100%** (was already 100% pre-existing; this package's additions there
+are fully covered). The blanket `--cov-fail-under=100` failure is the SAME
+pre-existing, unrelated shortfall as every measurement in this LOG's
+Baseline section — `run-ciu-tests.py`'s own blanket check runs before the
+changed-line half ever does, and was already failing this way before
+ciu-P01.
+
+Changed-line gate against that SAME `coverage.json`:
+
+```
+diff-coverage OK: 190/190 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+**100% of this package's own changed executable lines are covered.** No
+`--allow-excluded`, no `pragma: no cover` on any changed line. Both numbers
+reported honestly, same as ciu-P01/P02: the declared gate cannot pass
+end-to-end on this host (two pre-existing, unrelated gaps — the blanket
+100% floor, and the `$CGROUP_PARENT_DEV_BACKGROUND` env-passthrough the
+declared `docker run` argv itself is missing), but the changed-line floor
+this package is actually accountable for is met, and every REQUIRED fixture
+named in the handoff's traceability table is present and passing:
+
+- O1: the nested-root fixture (`test_reads_from_primary_when_invoked_from_linked_worktree`,
+  `test_linked_branchs_own_conflicting_policy_is_ignored`), invalid file/
+  ambient-value refusals, the no-global-template and not-in-git soft paths,
+  an unrelated render error still raising
+  (`test_unrelated_render_error_still_raises`).
+- O2: the required nested-root fixture (`test_eligible_linked_worktree_included_with_own_env_and_project`),
+  the required missing-stack-sibling fixture
+  (`test_missing_stack_sibling_skipped_with_info_note_and_no_docker_query`),
+  the required P02-composition fixture
+  (`test_p02_composition_fixture_child_network_on_other_project_not_deployed`).
+- O3: the already-deployed-may-rerun rule under load
+  (`test_lowered_cap_after_current_deployed_still_allows_rerun_even_far_over`),
+  the instrumented-flock continuous-hold proof
+  (`test_lock_held_continuously_from_count_decision_through_executor`), the
+  genuine two-thread contention proof
+  (`test_two_concurrent_cold_starts_second_waiter_recounts_and_refuses`),
+  and the engine ordering proof
+  (`test_budget_context_exits_before_p02_join_runs`, both paths).
+
+## Summary
+
+- `ciu-P03-worktree-concurrency-budget` is landed on this branch at commit
+  `b6fe04d3` (implementation `74bad946`, test-fixture fix `d13bdec9`,
+  branch-coverage closure `b6fe04d3`).
+- CIU-24 marked FIXED in `KNOWN_ISSUES_TODO_BACKLOG.md` with code/test/SPEC
+  evidence pointers, per that file's own house rule.
+- SPEC.md gained S16.3; CONFIG.md gained `[ciu.worktree]` and a pointer to
+  the ambient `CIU_MAX_CONCURRENT_WORKTREES` override.
+- One judgment call made and flagged (not silently invented): "not inside a
+  git work tree" resolves to "no file policy" in `resolve_worktree_cap` —
+  see "Judgment call" above.
+- One real regression the real gate caught that no local run did (ambient
+  `DOCKER_NETWORK_INTERNAL` in this devcontainer's own shell masked it) —
+  see "A real regression the real gate caught" above.
+- Nothing else required inventing an externally-visible interface, default,
+  or bound. No BLOCKED condition was hit.
