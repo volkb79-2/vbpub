@@ -2215,6 +2215,141 @@ force semantics, and the idempotent-retry contract are proven against a FAKE
 implementation of `DataIsolationProvisioner`. A real-server proof against the
 shipped `PostgresProvisioner` is deliberately deferred — tracked as CIU-26.
 
+### S16.3 — Worktree instance concurrency budget (CIU-24)
+
+A repository's `ciu worktree` family shares one host, so nothing before this
+section capped how many instances could be deployed at once. `ciu up` (both
+the native path and `--shipped`) now enforces an optional cap immediately
+around its real `docker compose up` call, before any container starts.
+
+**The sole file-level configuration source** is the PRIMARY *Git* worktree's
+own CIU configuration root's global table:
+
+```toml
+[ciu.worktree]
+max_concurrent_instances = 3
+```
+
+"Primary Git worktree" (`worktree.primary_worktree_root`, the entry
+`git worktree list` marks primary) and "this process's own CIU configuration
+root" (`REPO_ROOT`, resolved by `dev.py:resolve_repo_root`'s CIU-marker walk)
+are NOT the same path in a monorepo — the CIU marker can sit below the git
+top-level (this project's own `ciu/` under the `vbpub` git root is exactly
+this shape). `worktree.primary_ciu_root(repo_root)` derives the offset once —
+`repo_root.resolve().relative_to(git_toplevel(repo_root))` — and re-applies
+that SAME offset to the registered primary worktree, never assuming a linked
+worktree's raw git path equals its own CIU root. `ciu up` renders only that
+derived primary CIU root, with `config_model.render_global_chain(root, root,
+write_rendered=False)` — never the git root, an intermediate global layer, or
+the CURRENT (possibly linked) worktree's own branch, which could carry a
+conflicting policy. `render_global_chain`'s narrow no-global-configuration
+`ValueError` (an absent `ciu.global.defaults.toml.j2` at the primary root) is
+the only render error treated as "no file policy"; every other render error
+(bad TOML, a secret-scan violation) still aborts loudly.
+
+This is deliberately **not** a `[governance]` / `[<root>.governance]` value
+and does **not** participate in CIU-13's global/stack governance merge
+(`governance.resolve_stack_governance`): an instance cap constrains every
+worktree in the repository's git family, never a property of the single
+stack being launched — a stack raising its own budget could starve every
+sibling instance on the host, which is exactly the fail-open CIU-13 fixed for
+a different value and must not be reintroduced here.
+
+`CIU_MAX_CONCURRENT_WORKTREES`, when present in the process environment, is a
+positive decimal integer (`[1-9][0-9]*`, no sign/leading zero/decimal
+point/surrounding whitespace) that OVERRIDES the validated file value for
+that process; the file table is validated even when the ambient override is
+also present — an ambient override never masks an invalid file table. There
+is no `0 == unlimited` sentinel: only absence at BOTH sources means no cap,
+in which case `ciu up` makes no Docker call and takes no lock at all. An
+unknown `[ciu.worktree]` key, or a `max_concurrent_instances` that is not a
+positive integer (including `true`/`false`, which are `int` subclasses in
+Python and are explicitly rejected), fails loudly.
+
+A CIU root that is not inside a git work tree at all (no worktree family is
+even possible) is treated the same as an absent global template: no file
+policy, consulted the same way a no-configuration render is — silently
+skipped rather than raised — mirroring this module's own pre-existing
+precedent for exactly this condition (`engine._check_gitignore`, S1.7). An
+explicit `CIU_MAX_CONCURRENT_WORKTREES` ambient override is still honoured
+even outside git; `worktree_budget_slot` itself then refuses loudly the
+moment it tries to enumerate worktrees for a cap it cannot actually honour,
+rather than silently treating a real ambient request as "no cap".
+
+**The deployment classifier.** Candidates are exclusively the entries in
+`git worktree list --porcelain`; the primary is always included. A candidate
+is *registered* only when its own `<git-worktree>/ciu.env` exists, parses,
+and supplies a distinct, non-empty `DOCKER_NETWORK_INTERNAL` — the same file
+location `worktree.add` already writes to and S16.1's shared-infra join
+already reads from (a per-worktree machine-identity file, not something
+nested inside an offset-translated CIU root). For each registered candidate,
+its own CIU root is `entry.path / offset` and its own stack is that root plus
+the caller's relative `stack_rel` — a literal path append that retains every
+component of a nested CIU root. A candidate stack genuinely absent from a
+sibling's checked-out branch is not deployed: it is skipped with one
+deterministic `[INFO] [S16.3]` note, and no Docker query is made for it —
+never a hard error. Before any lock is taken, each remaining candidate's
+global config is rendered against ONLY that candidate's own explicit
+`ciu.env` mapping (never the caller's ambient environment, via
+`render_global_chain`'s new `environ=` parameter), and its exact Compose
+project is derived with `engine.compose_project_name` (a lazy import, to
+avoid the `worktree` ↔ `engine` cycle this wiring introduces). A present
+candidate stack whose config or project identity cannot be rendered is a
+loud `[S16.3]` failure, never evidence of an inactive instance.
+
+A candidate is *deployed* only when `docker ps --filter
+label=com.docker.compose.project=<that-exact-candidate-project> --format
+{{.Networks}}` lists a container carrying **its own** network — a
+value-qualified filter, never a bare label-presence check. This is load
+bearing against S16.1's shared-infra join: a joined child container may list
+the reference instance's network too, but it always carries the CHILD's own
+project label, never the reference's, so it can never make the reference
+candidate appear deployed. Docker unavailable or non-zero, a malformed
+eligible `ciu.env`, or a duplicate `DOCKER_NETWORK_INTERNAL` across
+candidates is a loud `[S16.3]` error, never an empty/zero count. Containers
+of a worktree no longer registered with git do not count (stale-orphan
+reaping is CIU-25's job, not this one's).
+
+**The locked critical section.** All of the above — candidate translation,
+per-candidate env/config rendering, project derivation — happens BEFORE any
+lock is acquired. Only the Docker queries, the count decision, and the
+caller's own `docker compose up` execution happen while
+`<git-common-dir>/ciu-worktree-budget.lock` is held (`fcntl.flock(...,
+LOCK_EX)`), shared by every worktree in the family regardless of which one
+takes it. If the CURRENT instance's own network is already deployed, `ciu up`
+proceeds even at or over cap (an already-running instance may be reconciled
+after the policy is later lowered); otherwise a count `>= cap` refuses before
+Compose ever starts, naming the observed count, the cap, and the current
+network. The lock is released in every case — success, refusal, or a Compose
+failure — leaving no separate reservation artifact to leak. Two overlapping
+cold starts in the same family are therefore serialized: the second waiter
+re-counts under the lock only after the first's Compose start has made its
+own network observably live, and is refused if that would exceed the cap.
+
+**Wiring.** Both `engine.main_execution` and `engine.run_shipped` resolve the
+cap once via `worktree.resolve_worktree_cap(repo_root)` right after bootstrap
+establishes `repo_root`, then enforce it only around their own real Compose
+executor call, passing the current `DOCKER_NETWORK_INTERNAL` and
+`working_dir.relative_to(repo_root)`. `--dry-run` and `--render-toml` never
+reach the executor, so they never make a budget Docker/lock call either. A
+`worktree.WorktreeError` from the budget slot (candidate resolution failure
+or a capacity refusal) is translated to `ComposeError`, the same translation
+S16.1's join already uses, so a multi-stack `ciu deploy` run fails only this
+one stack. S16.1's post-up shared-infra join runs strictly AFTER the budget
+context exits (never nested inside it): it starts no new instance, so
+holding the family-wide capacity lock across an arbitrary sequence of
+post-up network connects would only add unrelated contention without making
+the count/start decision any safer.
+
+The gate (`tester-unified:local`) has no Docker socket, so the classifier,
+the lock discipline, and both engine call sites are proven against the same
+scripted `worktree.procutil.docker` fake S16.1 and S16.2's tests use; the
+lock's held-continuously-across-the-executor discipline is proven by wrapping
+the real `fcntl.flock` and recording every transition, and genuine two-thread
+contention (real `fcntl.flock`, no sleeps) proves the second waiter of two
+simultaneous cold starts re-counts and refuses once the first's deployment
+becomes visible.
+
 ## S17 — Image provenance
 
 ### S17.1 — Stamping

@@ -34,12 +34,17 @@ container. This module refuses to remove a checkout it has not cleaned.
 
 from __future__ import annotations
 
+import fcntl
+import os
+import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from . import config_model
 from . import procutil
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
@@ -991,3 +996,415 @@ def connect_shared_infra_after_up(
         raise WorktreeError(
             _connect_failure_message(cname, cid, intent.network, detail, rollback_failures)
         )
+
+
+# ===========================================================================
+# S16.3 — worktree instance concurrency budget (CIU-24)
+# ===========================================================================
+#
+# A repository's git-worktree family shares one host, so nothing today caps
+# how many `ciu worktree` instances can be deployed at once against what the
+# host can actually sustain. This is deliberately NOT a `[governance]` /
+# `[<root>.governance]` value and does NOT participate in CIU-13's global/
+# stack governance merge (see governance.resolve_stack_governance): capacity
+# is one policy for the whole git-worktree family, never a property of the
+# single stack being launched — a stack that raised its own budget could
+# starve every sibling instance on the host.
+#
+# The ONLY file-level configuration source is the PRIMARY *Git* worktree's
+# own CIU root's global table:
+#
+#   [ciu.worktree]
+#   max_concurrent_instances = 3
+#
+# "Primary Git worktree" and "this process's own CIU configuration root" are
+# NOT the same path in a monorepo (dev.py:resolve_repo_root walks up to a CIU
+# marker, which may sit below `git rev-parse --show-toplevel`) — the offset
+# between them is derived once (`_ciu_root_offset`) and re-applied, verbatim,
+# to every linked worktree so a candidate's CIU root is never assumed to
+# equal its raw git worktree path.
+
+_MAX_CONCURRENT_ENV = "CIU_MAX_CONCURRENT_WORKTREES"
+_MAX_CONCURRENT_DECIMAL_RE = re.compile(r"^[1-9][0-9]*$")
+_BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
+
+
+def primary_worktree_root(repo_root: Path) -> Path:
+    """The registered PRIMARY **Git** worktree of *repo_root*'s family (S16.3).
+
+    This is the git-rooted checkout, NOT necessarily this process's own CIU
+    configuration root — see :func:`primary_ciu_root` for the translation.
+    Zero or multiple primary entries is a loud ``[S16.3]`` failure; the path
+    is never chosen by iteration order.
+    """
+    primaries = [wt for wt in list_worktrees(repo_root) if wt.is_primary]
+    if len(primaries) != 1:
+        raise WorktreeError(
+            f"[S16.3] expected exactly one primary git worktree under "
+            f"{repo_root}, found {len(primaries)}"
+        )
+    return primaries[0].path
+
+
+def git_toplevel(repo_root: Path) -> Path:
+    """``git rev-parse --show-toplevel`` from *repo_root* (S16.3).
+
+    This is the GIT root, which may sit ABOVE this process's own CIU root in
+    a monorepo (see :func:`primary_ciu_root`) — never substituted for it.
+    """
+    res = _git(["rev-parse", "--show-toplevel"], repo_root)
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.3] `git rev-parse --show-toplevel` failed in {repo_root}: "
+            f"{(res.stderr or res.stdout).strip()}"
+        )
+    out = (res.stdout or "").strip()
+    top = Path(out)
+    if not out or not top.is_absolute() or not top.is_dir():
+        raise WorktreeError(
+            f"[S16.3] `git rev-parse --show-toplevel` in {repo_root} did not "
+            f"return one absolute, existing directory: {out!r}"
+        )
+    return top
+
+
+def _ciu_root_offset(repo_root: Path) -> Path:
+    """The relative offset from this process's own git toplevel to its CIU
+    root (``Path(".")`` for a standalone CIU git repository). Computed once
+    here and re-applied, verbatim, to every linked worktree by both
+    :func:`primary_ciu_root` and the candidate translation in
+    :func:`worktree_budget_slot` — the sole namespace translation this
+    feature uses, never re-derived differently in two places.
+    """
+    repo_root = Path(repo_root).resolve()
+    top = git_toplevel(repo_root)
+    try:
+        return repo_root.relative_to(top)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.3] CIU root {repo_root} is not under its own git "
+            f"top-level {top}; cannot derive the git-root-to-CIU-root offset"
+        ) from exc
+
+
+def primary_ciu_root(repo_root: Path) -> Path:
+    """This process's family's PRIMARY CIU configuration root (S16.3).
+
+    Applies the EXACT relative offset between *repo_root* (this process's own
+    CIU root) and its git toplevel to the registered primary GIT worktree —
+    never the git root itself, and never a linked (non-primary) worktree's
+    own branch, which may carry a conflicting policy. Failure to derive the
+    offset, or an absent derived root, is a loud ``[S16.3]`` failure: silently
+    falling back to the git root is exactly the bug this function exists to
+    prevent in a monorepo where the CIU marker sits below the git top-level.
+    """
+    repo_root = Path(repo_root).resolve()
+    offset = _ciu_root_offset(repo_root)
+    primary = primary_worktree_root(repo_root)
+    candidate = primary / offset
+    if not candidate.is_dir():
+        raise WorktreeError(
+            f"[S16.3] derived primary CIU root {candidate} (primary "
+            f"worktree {primary} + offset {offset}) does not exist"
+        )
+    return candidate
+
+
+def resolve_max_concurrent_instances(
+    raw: Mapping[str, Any] | None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> int | None:
+    """S16.3 — validate the file-declared ``[ciu.worktree]`` table and apply
+    the ``CIU_MAX_CONCURRENT_WORKTREES`` ambient override.
+
+    *raw* is validated even when an ambient override is also present — an
+    ambient override never masks an invalid file table. There is no
+    ``0 == unlimited`` sentinel: only absence at BOTH sources means no cap.
+    """
+    file_value: int | None = None
+    if raw is not None:
+        if not isinstance(raw, Mapping):
+            raise WorktreeError(
+                f"[S16.3] [ciu.worktree] must be a table, got "
+                f"{type(raw).__name__}: {raw!r}"
+            )
+        unknown = set(raw) - {"max_concurrent_instances"}
+        if unknown:
+            raise WorktreeError(
+                f"[S16.3] unknown key(s) in [ciu.worktree]: "
+                f"{', '.join(sorted(unknown))}"
+            )
+        if "max_concurrent_instances" in raw:
+            value = raw["max_concurrent_instances"]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise WorktreeError(
+                    "[S16.3] [ciu.worktree] max_concurrent_instances must be "
+                    f"a positive integer, got {value!r}"
+                )
+            file_value = value
+
+    env = os.environ if environ is None else environ
+    ambient = env.get(_MAX_CONCURRENT_ENV)
+    if ambient is None:
+        return file_value
+    if not _MAX_CONCURRENT_DECIMAL_RE.match(ambient):
+        raise WorktreeError(
+            f"[S16.3] ${_MAX_CONCURRENT_ENV} must be a positive decimal "
+            f"integer (no sign, no leading zero, no decimal point, no "
+            f"surrounding whitespace), got {ambient!r}"
+        )
+    return int(ambient)
+
+
+def resolve_worktree_cap(repo_root: Path) -> int | None:
+    """S16.3/CIU-24 — the sole concurrency-budget cap for THIS process, read
+    once from the PRIMARY CIU root's global ``[ciu.worktree]`` table (never
+    the current stack's own render, and never governance.py's CIU-13 global/
+    stack merge — see the module banner above).
+
+    A *repo_root* that is not inside a git work tree at all has no worktree
+    family and therefore no file-level policy to read. This mirrors the
+    codebase's own existing precedent for exactly this condition
+    (``engine._check_gitignore``, S1.7): skip the file lookup silently
+    rather than raise. An explicit ``CIU_MAX_CONCURRENT_WORKTREES`` ambient
+    override is still honoured even then — a caller CAN set that outside
+    git — and :func:`worktree_budget_slot` itself will refuse loudly the
+    moment it tries to enumerate worktrees for a non-``None`` cap it cannot
+    actually honour.
+    """
+    repo_root = Path(repo_root).resolve()
+    raw: Any = None
+    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode == 0:
+        root = primary_ciu_root(repo_root)
+        try:
+            root_global = config_model.render_global_chain(
+                root, root, write_rendered=False
+            )
+        except ValueError as exc:
+            if not str(exc).startswith("[ERROR] No global configuration found."):
+                raise
+            root_global = {}
+        raw = root_global.get("ciu", {}).get("worktree")
+    return resolve_max_concurrent_instances(raw)
+
+
+@dataclass(frozen=True)
+class _BudgetCandidate:
+    """One registered, renderable worktree instance, resolved BEFORE the
+    S16.3 family lock is taken."""
+
+    worktree_path: Path
+    stack: Path
+    network: str
+    project: str
+
+
+def _candidate_project(candidate_global: dict, candidate_stack: Path) -> str:
+    # Lazy import: engine.py imports worktree.py for the budget slot, so a
+    # module-level `worktree -> engine` import would cycle.
+    from . import engine
+
+    return engine.compose_project_name(candidate_global, candidate_stack)
+
+
+def _resolve_budget_candidates(
+    repo_root: Path, stack_rel: Path
+) -> list[_BudgetCandidate]:
+    """S16.3 — pre-lock candidate resolution: translate every git-registered
+    worktree into its OWN CIU-root/stack/network/compose-project identity,
+    rendered against that candidate's OWN explicit ``ciu.env`` — never the
+    caller's ambient environment. A candidate whose stack is genuinely
+    absent on its checked-out branch is skipped (logged, not an error);
+    everything else that cannot be resolved truthfully is a loud ``[S16.3]``
+    failure, never evidence of an inactive instance.
+    """
+    from .workspace_env import WorkspaceEnvError, parse_workspace_env
+
+    offset = _ciu_root_offset(repo_root)
+
+    candidates: list[_BudgetCandidate] = []
+    network_owners: dict[str, Path] = {}
+    for entry in list_worktrees(repo_root):
+        candidate_ciu_root = entry.path / offset
+        candidate_stack = candidate_ciu_root / stack_rel
+        if not candidate_stack.is_dir():
+            print(
+                f"[INFO] [S16.3] {entry.path} has no stack at {stack_rel} on "
+                "its checked-out branch; not deployed, excluded from the "
+                "worktree capacity count.",
+                flush=True,
+            )
+            continue
+
+        env_file = entry.path / "ciu.env"
+        if not env_file.is_file():
+            # A raw git worktree, never registered as a CIU instance.
+            continue
+        try:
+            candidate_env = parse_workspace_env(env_file)
+        except (OSError, WorkspaceEnvError) as exc:
+            raise WorktreeError(
+                f"[S16.3] could not read/parse {env_file}: {exc}"
+            ) from exc
+        network = candidate_env.get("DOCKER_NETWORK_INTERNAL", "")
+        if not network:
+            raise WorktreeError(
+                f"[S16.3] {env_file} has no DOCKER_NETWORK_INTERNAL; "
+                f"{entry.path} looks like a registered CIU instance whose "
+                "deployment state cannot be truthfully counted."
+            )
+        if network in network_owners:
+            raise WorktreeError(
+                f"[S16.3] DOCKER_NETWORK_INTERNAL {network!r} is registered "
+                f"to both {network_owners[network]} and {entry.path}; "
+                "refusing to count worktree capacity against an ambiguous "
+                "network."
+            )
+        network_owners[network] = entry.path
+
+        try:
+            candidate_global = config_model.render_global_chain(
+                candidate_stack, candidate_ciu_root,
+                write_rendered=False, environ=candidate_env,
+            )
+        except ValueError as exc:
+            raise WorktreeError(
+                f"[S16.3] could not render the global configuration for "
+                f"candidate {candidate_stack}: {exc}"
+            ) from exc
+        try:
+            project = _candidate_project(candidate_global, candidate_stack)
+        except ValueError as exc:
+            raise WorktreeError(
+                f"[S16.3] could not derive the compose project for "
+                f"candidate {candidate_stack}: {exc}"
+            ) from exc
+
+        candidates.append(_BudgetCandidate(
+            worktree_path=entry.path, stack=candidate_stack,
+            network=network, project=project,
+        ))
+
+    return candidates
+
+
+def _candidate_deployed(candidate: _BudgetCandidate) -> bool:
+    """S16.3 — true only when a container carrying *candidate*'s OWN EXACT
+    compose-project label also lists *candidate*'s OWN network.
+
+    Value-qualified, never a bare label-presence check: a P02 child
+    container may list the reference network too, but it carries the
+    CHILD's project label, never the reference's, so it can never satisfy
+    the reference candidate's own query here.
+    """
+    try:
+        result = procutil.docker(
+            [
+                "ps",
+                "--filter", f"label=com.docker.compose.project={candidate.project}",
+                "--format", "{{.Networks}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.3] could not query Docker for candidate project "
+            f"{candidate.project!r}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise WorktreeError(
+            f"[S16.3] `docker ps` failed for candidate project "
+            f"{candidate.project!r}: "
+            f"{(result.stderr or result.stdout or '').strip()}"
+        )
+    for line in (result.stdout or "").splitlines():
+        networks = {n.strip() for n in line.split(",") if n.strip()}
+        if candidate.network in networks:
+            return True
+    return False
+
+
+def _git_common_dir(repo_root: Path) -> Path:
+    """The ``.git`` directory shared by every linked worktree of *repo_root*'s
+    family (S16.3) — the S16.3 lock lives here so it is visible to, and
+    shared by, every sibling worktree regardless of which one takes it."""
+    res = _git(["rev-parse", "--git-common-dir"], repo_root)
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.3] `git rev-parse --git-common-dir` failed in {repo_root}: "
+            f"{(res.stderr or res.stdout).strip()}"
+        )
+    out = (res.stdout or "").strip()
+    common = Path(out)
+    if not common.is_absolute():
+        common = (Path(repo_root) / common).resolve()
+    return common
+
+
+@contextmanager
+def worktree_budget_slot(
+    repo_root: Path,
+    cap: int | None,
+    current_network: str,
+    stack_rel: Path,
+) -> Iterator[None]:
+    """S16.3/CIU-24 — the locked count-and-start critical section.
+
+    ``cap is None`` (no configured budget) yields immediately: no candidate
+    resolution, no Docker call, no lock. Otherwise every candidate's identity
+    is resolved BEFORE the family-wide flock is acquired — only the Docker
+    queries, the count decision, and the caller's own compose executor
+    (invoked INSIDE this context, at the ``yield``) run while the lock is
+    held. The lock is released in a ``finally`` on every return or raise from
+    that caller code, so a Compose failure leaves no lasting reservation.
+
+    If *current_network* is already deployed, this yields even when the
+    observed count is at or over *cap* — an already-running instance may be
+    reconciled (e.g. re-``up``) after the policy is later lowered. Otherwise
+    a count ``>= cap`` refuses before the caller's executor ever runs.
+    """
+    if cap is None:
+        yield
+        return
+
+    repo_root = Path(repo_root).resolve()
+    if stack_rel.is_absolute():
+        raise WorktreeError(
+            f"[S16.3] stack_rel must be relative to repo_root, got {stack_rel!r}"
+        )
+
+    candidates = _resolve_budget_candidates(repo_root, stack_rel)
+    networks = {c.network for c in candidates}
+    if current_network not in networks:
+        raise WorktreeError(
+            f"[S16.3] current network {current_network!r} is not among the "
+            f"registered worktree instances' own DOCKER_NETWORK_INTERNAL "
+            f"values ({sorted(networks)}); cannot count capacity for an "
+            "unregistered instance."
+        )
+
+    lock_path = _git_common_dir(repo_root) / _BUDGET_LOCK_NAME
+    lock_fh = open(lock_path, "a+")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            deployed_count = 0
+            current_deployed = False
+            for candidate in candidates:
+                is_deployed = _candidate_deployed(candidate)
+                if candidate.network == current_network:
+                    current_deployed = is_deployed
+                elif is_deployed:
+                    deployed_count += 1
+            if not current_deployed and deployed_count >= cap:
+                raise WorktreeError(
+                    f"[S16.3] worktree capacity refused: {deployed_count} "
+                    f"other instance(s) already deployed >= cap {cap} "
+                    f"(current network {current_network!r} not yet deployed)"
+                )
+            yield
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_fh.close()
