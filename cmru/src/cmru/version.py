@@ -51,6 +51,11 @@ _RELEASE_CONTROL_EXCLUDES = (
     ":(exclude,glob)**/cmru.build.toml",
     ":(exclude,glob)**/cmru.vars",
     ":(exclude,glob)**/.release-vars",
+    # CMRU's source-first history is release metadata, not a product change that
+    # should by itself schedule the following release.  Custom configured history
+    # paths are additionally excluded by changelog.py while rendering entries.
+    ":(exclude,glob)**/CHANGES.md",
+    ":(exclude,glob)**/CHANGELOG.md",
 )
 
 

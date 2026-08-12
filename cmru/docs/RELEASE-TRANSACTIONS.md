@@ -54,6 +54,12 @@ the correction there, then resume it explicitly:
 Do not copy generated files back into the caller's dirty checkout. A successful
 transaction removes the ephemeral branch/worktree.
 
+> **Current recovery limit:** a failure before tag creation can be resumed through the
+> retained worktree. A post-tag publication failure is tracked in
+> [KI-06](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--retained-release-resume-does-not-satisfy-the-documented-already-tagged-idempotency--open):
+> current tag-based selection does not yet reliably re-select that project. Preserve the
+> worktree and escalate rather than assuming a plain resume will publish an existing tag.
+
 ## Transaction order
 
 Every changed project releases **one after another** — its own prepare, gate,
@@ -70,7 +76,7 @@ caller checkout
     ▼
 cmru/release/<id> worktree, one project at a time (project_order, changed only):
     ┌─────────────────────────────────────────────────────────────────────┐
-    │  optional prepare → commit its declared mechanical outputs          │
+    │  optional prepare → generate CHANGES.md → commit declared outputs  │
     │  required tester-unified gate                                      │
     │  fast-forward origin/main to current HEAD (or fail on a concurrent  │
     │    remote update)                                                  │
@@ -247,6 +253,13 @@ script or an implicit GitHub Release API side effect.
 
 OCI projects must not push while gathering generated provenance. Build privately
 first, commit/promote declared provenance, then run the separate registry push.
+
+CMRU also generates `CHANGES.md` for every project unless it explicitly configures
+`release.changelog = false`. It writes the history after `steps.prepare`, before the
+gate, and commits it with the declared mechanical outputs. Do not list the default
+history file in `commit_generated`; it is already an allowed generated output. Tagged
+releases carry a version heading. No-tag image/delegated flows carry a source-revision
+heading and resume from the source cursor recorded in the prior generated entry.
 
 **Known sharp edge (build-all-projects-after-another):** the clean-tree guards
 above (`release_cmd`'s dirty-tree check, `commit_generated`'s undeclared-write

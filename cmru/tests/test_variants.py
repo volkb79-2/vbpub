@@ -105,6 +105,11 @@ class _FakeGH:
 # ─── Config: variant parsing ─────────────────────────────────────────────────
 
 class TestVariantConfig:
+    def test_release_changelog_defaults_to_project_changes_file(self, tmp_path):
+        cfg = _write(tmp_path, _base_toml())
+
+        assert load_forge_config(cfg).projects["naf"].changelog == "CHANGES.md"
+
     def test_release_changelog_is_parsed_as_project_relative_output(self, tmp_path):
         cfg = _write(tmp_path, _base_toml("""
 [project.naf.release]
@@ -113,7 +118,15 @@ changelog = "CHANGES.md"
 
         assert load_forge_config(cfg).projects["naf"].changelog == "CHANGES.md"
 
-    @pytest.mark.parametrize("value", ['"../CHANGES.md"', '"/tmp/CHANGES.md"', '""'])
+    def test_release_changelog_accepts_explicit_opt_out(self, tmp_path):
+        cfg = _write(tmp_path, _base_toml("""
+[project.naf.release]
+changelog = false
+"""))
+
+        assert load_forge_config(cfg).projects["naf"].changelog is None
+
+    @pytest.mark.parametrize("value", ['"../CHANGES.md"', '"/tmp/CHANGES.md"', '""', 'true'])
     def test_release_changelog_rejects_unsafe_or_empty_path(self, tmp_path, value):
         cfg = _write(tmp_path, _base_toml(f"""
 [project.naf.release]

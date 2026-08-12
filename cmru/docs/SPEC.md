@@ -18,6 +18,7 @@ cmru status                 # 1. preview: what changed + the next version (read-
 cmru release                # 2. isolated transaction: prepare → gate → integrate → tag → build → publish
    ├─ cmru build            #    (same two steps, split out: artifact only)
    └─ cmru publish          #    (upload artifact + .sha256 to the release)
+cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
 
 cmru resolve --project P    # consumer: highest-semver published version  (read-only)
@@ -33,7 +34,8 @@ than minting a new one.
 **S-CLI.2** `status` and `release` MUST operate only on the orchestrated set
 (`orchestration.project_order`); a project is released only once it is listed there.
 
-**S-CLI.3** Verbs that write to the host (`release`, `build`, `publish`, `run`) MUST be
+**S-CLI.3** Verbs that write to the host or source tree (`release`, `changelog`, `build`,
+`publish`, `run`) MUST be
 clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
@@ -162,7 +164,7 @@ The secret overlay is copied mode `0600`, never committed.
 | `cmru.sample.toml` | committed | Template for `cmru.toml` (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps (was `.release-vars`). |
 | `<project>/cmru.build.toml` | committed | Per-project step config consumed by that project's build script (was `build-push.toml`). |
-| `cmru.py` | committed | Repo-root entry point (`./cmru.py <verb>` ≡ `cmru <verb>`); `cmru.*.sh` shims wrap each verb. |
+| `cmru.py` | committed | Repo-root entry point (`./cmru.py <verb>` ≡ `cmru <verb>`); `cmru.*.sh` shims cover common release verbs. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
 `build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
@@ -186,7 +188,7 @@ the installed `cmru` console script.
 | **host** | A release storage provider implementing the `ReleaseHost` interface (S11). |
 | **resolver** | The cmru component that returns `{version, tag, asset, sha256, url}` for the highest-semver release. |
 | **get.py** | A per-project emitted Python 3 bootstrap installer implementing the S6 contract (ships inside the artifact). |
-| **delegated step** | A commodity operation (sign, SBOM, changelog, package) delegated to an external OSS tool (S7). |
+| **delegated step** | A commodity operation (sign, SBOM, formatted secondary changelog, package) delegated to an external OSS tool (S7). |
 
 ---
 
@@ -274,13 +276,24 @@ MAY derive a version or regenerate mechanical source inputs. Every tracked outpu
 declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
 paths, gates that commit, fast-forwards remote main, and only then tags/builds/publishes.
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
-An optional `release.changelog` is an equally explicit, project-relative generated output:
-CMRU derives the pending version and project-scoped commit range, inserts one marked section
-at that document's `<!-- cmru: release history -->` marker, commits it before the gate, and
-refuses to guess an insertion point or overwrite a hand-authored same-version section. It is
-valid only for CMRU-owned tags; delegated and no-tag registry releases have no stable version
-for CMRU to record. A resumed retained transaction recognizes its marked section and does not
-duplicate it.
+Every managed project receives the project-relative `CHANGES.md` generated output by default.
+CMRU derives the project-scoped commit range, inserts one marked section at that document's
+`<!-- cmru: release history -->` marker (creating the document and marker when absent), commits
+it before the gate, and refuses to overwrite a hand-authored same-version section. A tagged
+release uses the pending version as its heading. A no-tag or delegated release uses a
+`source-<short-sha>` heading and persists the exact source end revision; its next entry starts
+after that cursor, excluding the generated history and every declared mechanical output. A
+no-tag release whose `steps.prepare` changed declared mechanical output still records a
+metadata-only entry even when its source range is empty; this distinguishes a real new image
+from a clean retained resume. A resumed retained transaction recognizes its marked entry (or
+finds no new source or generated output beyond the cursor) and does not duplicate it.
+`release.changelog = "path/CHANGES.md"` selects a different project-relative filename;
+`release.changelog = false` is the explicit opt-out.
+
+`cmru changelog --project P --backfill-tag <prefix><version>` is the one-time migration for a
+tag that predates source-first history. It writes a generated `backfilled-after-release` entry
+to the current source tree and never moves the immutable tag; the caller reviews and commits
+that migration explicitly.
 
 **S-REL.4b — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
@@ -371,7 +384,8 @@ bump     = "conventional"         # conventional | patch
 
 [project.<name>.release]
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
-changelog = "CHANGES.md"                     # optional project-relative generated history
+# changelog defaults to "CHANGES.md". Override only for another project-relative path;
+# `changelog = false` is the explicit opt-out.
 
 [project.<name>.publish]
 source      = "dist/*.whl"        # glob for artifact file(s)
@@ -650,6 +664,9 @@ asset `<tag><asset_suffix>`).
 ## S7 — Delegated Steps
 
 Commodity concerns are delegated to external OSS tools and MUST NOT be reimplemented in cmru.
+The standard source-first release history in S-REL.4a is a CMRU transaction record, not a
+delegated formatted changelog; it is deliberately generated by CMRU so the exact source range
+is committed and gated before publication.
 
 **S7.1** Delegated tools:
 
@@ -658,7 +675,7 @@ Commodity concerns are delegated to external OSS tools and MUST NOT be reimpleme
 | `sign` | `cosign` | OCI image signing (keyless or key-based); optional defense-in-depth for v1 |
 | `minisign` | `minisign` | Detached Ed25519 signing of `manifest.json` (the bundle release manifest) |
 | `sbom` | `syft` + `grype` | SBOM generation and vulnerability scan |
-| `changelog` | `git-cliff` | Changelog from conventional commits |
+| `changelog` | `git-cliff` | Optional formatted changelog, distinct from CMRU's mandatory source-first release history |
 | `nfpm` | `nfpm` | Build `.deb` / `.rpm` packages |
 
 **S7.5** `minisign` manifest signing (`[project.<name>.delegated.minisign]`):
@@ -793,7 +810,7 @@ class ReleaseHost:
 
 **S12.1** `cmru status` performs a dry-run: for each project, reports whether the subtree changed since last `<prefix>-v*` tag and what version would be minted.
 
-**S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` is non-empty. If no prior tag exists, the project is always eligible (first release).
+**S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` is non-empty after excluding CMRU release-control files and generated release-history documents. If no prior tag exists, the project is always eligible (first release).
 
 **S12.3** `<paths>` defaults to `[project.<name>.cwd]`. Additional shared paths MAY be listed in `version.paths`.
 
@@ -946,4 +963,5 @@ The following are explicitly **out of scope** for cmru v1 and MUST NOT be implem
 - FTP/SFTP deploy targets (e.g., netcup `deploy.zip`). These are deploy operations, not releases.
 - New release hosts beyond GitHub v1 (fast-follow, via S11 interface only).
 - Vendoring any delegated tool (S7).
-- Reimplementing changelog generation, SBOM, or signing logic.
+- Reimplementing third-party formatted changelog generation, SBOM, or signing logic. The
+  source-first release history required by S-REL.4a is CMRU's own transaction record.

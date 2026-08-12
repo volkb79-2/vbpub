@@ -117,7 +117,9 @@ class ProjectS2Config:
     installer: Optional[InstallerConfig]
     delegated: Optional[DelegatedConfig]
     steps: Mapping[str, list]
-    changelog: Optional[str] = None  # [project.X.release].changelog, release-only
+    # Source-first release history defaults to this project-relative document.
+    # ``[project.X.release] changelog = false`` is the explicit opt-out.
+    changelog: Optional[str] = "CHANGES.md"
     variants: List[VariantConfig] = field(default_factory=list)  # empty ⇒ single-asset (S-REL.6)
 
 
@@ -365,23 +367,28 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
             nfpm=bool(d.get("nfpm", False)),
         )
 
-    changelog: Optional[str] = None
+    changelog: Optional[str] = "CHANGES.md"
     release = raw.get("release")
     if release is not None:
         if not isinstance(release, dict):
             print(f"[ERROR] project.{name}.release must be a table")
             raise SystemExit(exit_codes.CONFIG_ERROR)
-        value = release.get("changelog")
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                print(f"[ERROR] project.{name}.release.changelog must be a non-empty string")
+        if "changelog" in release:
+            value = release["changelog"]
+            if value is False:
+                changelog = None
+            elif not isinstance(value, str) or not value.strip():
+                print(
+                    f"[ERROR] project.{name}.release.changelog must be a non-empty string or false"
+                )
                 raise SystemExit(exit_codes.CONFIG_ERROR)
-            candidate = Path(value)
-            if (candidate.is_absolute() or ".." in candidate.parts
-                    or candidate.name in ("", ".")):
-                print(f"[ERROR] project.{name}.release.changelog must be project-relative")
-                raise SystemExit(exit_codes.CONFIG_ERROR)
-            changelog = value.strip()
+            else:
+                candidate = Path(value)
+                if (candidate.is_absolute() or ".." in candidate.parts
+                        or candidate.name in ("", ".")):
+                    print(f"[ERROR] project.{name}.release.changelog must be project-relative")
+                    raise SystemExit(exit_codes.CONFIG_ERROR)
+                changelog = value.strip()
 
     steps = raw.get("steps") or {}
     if not isinstance(steps, dict):

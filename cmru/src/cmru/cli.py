@@ -73,7 +73,9 @@ class ProjectConfig:
     artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image","bundle")
     mint_tag: bool = True           # does cmru mint+push <prefix><semver> at HEAD?
     commit_generated: tuple = ()    # project-relative paths cmru commits after build
-    changelog: Optional[str] = None # optional generated release history, project-relative
+    # Every managed project gets source-first release history unless it explicitly
+    # declines it with ``[project.X.release] changelog = false``.
+    changelog: Optional[str] = "CHANGES.md"
     oci: Optional[OCIConfig] = None  # OCI build settings (from [project.<name>.oci])
 
 
@@ -550,17 +552,28 @@ def load_config(
             project, name, version_spec
         )
         release_cfg = project.get("release") or {}
-        changelog = release_cfg.get("changelog")
-        if changelog is not None:
-            if not isinstance(changelog, str) or not changelog.strip():
-                raise ValueError(f"project.{name}.release.changelog must be a non-empty string")
-            changelog_path = Path(changelog)
-            if (changelog_path.is_absolute() or ".." in changelog_path.parts
-                    or changelog_path.name in ("", ".")):
+        if not isinstance(release_cfg, dict):
+            raise ValueError(f"project.{name}.release must be a table")
+        # Release history is part of every CMRU-managed release by default.  A
+        # project-specific filename remains supported; ``false`` is the deliberate,
+        # reviewable exception for an externally-owned release flow.
+        changelog: Optional[str] = "CHANGES.md"
+        if "changelog" in release_cfg:
+            raw_changelog = release_cfg["changelog"]
+            if raw_changelog is False:
+                changelog = None
+            elif not isinstance(raw_changelog, str) or not raw_changelog.strip():
                 raise ValueError(
-                    f"project.{name}.release.changelog must be a project-relative path"
+                    f"project.{name}.release.changelog must be a non-empty string or false"
                 )
-            changelog = changelog.strip()
+            else:
+                changelog_path = Path(raw_changelog)
+                if (changelog_path.is_absolute() or ".." in changelog_path.parts
+                        or changelog_path.name in ("", ".")):
+                    raise ValueError(
+                        f"project.{name}.release.changelog must be project-relative"
+                    )
+                changelog = raw_changelog.strip()
         # A project must be runnable: either it declares steps, or it declares an
         # artifacts profile cmru can build/publish itself (S-REL batteries-included).
         if not steps and not any(a in _PROFILE_BUILTIN_STEPS for a in artifacts):
@@ -1836,9 +1849,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             "PLANNING (read-only)\n"
             "    status   [--project P] [--minor|--major]     preview next releases (dry-run)\n"
             "\n"
-            "RELEASE (writes to GitHub)\n"
+            "RELEASE / HISTORY (writes)\n"
             "    release  [--project P] [--minor|--major|--set-version V] [--dry-run] [--resume WORKTREE]\n"
             "                                                  isolated source-first transaction\n"
+            "    changelog --project P --backfill-tag TAG    catalog an already-published tagged release\n"
             "    build    [--project P]                        run the 'build' step (artifact only)\n"
             "    publish  [--project P]                        run the 'push' step (upload + .sha256)\n"
             "    run      [--project P] [--run-tests --build --push --validate]\n"
@@ -1878,7 +1892,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
-        parser.add_argument("--config", help="Path to release.toml")
+        parser.add_argument("--config", help="Path to cmru.toml")
         # Back-compat: `cmru build --config C --step S` still hits the raw runner.
         if verb == "build" and ("--step" in rest):
             from cmru.runner import main as runner_main
@@ -1907,6 +1921,41 @@ def main(argv: Optional[List[str]] = None) -> None:
         from cmru.getpy import getpy_main
         getpy_main(rest)
 
+    elif verb == "changelog":
+        import argparse as _ap
+        from cmru.changelog import backfill_release_changelog
+
+        parser = _ap.ArgumentParser(
+            description=(
+                "Backfill source-derived history for an already-published CMRU-tagged release. "
+                "Normal cmru release writes history automatically before its gate."
+            )
+        )
+        parser.add_argument("--project", required=True)
+        parser.add_argument("--backfill-tag", required=True, metavar="TAG")
+        parser.add_argument("--config", help="Path to cmru.toml")
+        vargs = parser.parse_args(rest)
+        cfg_path = _resolve_config(vargs.config)
+        repo_root, configs, *_ = load_config(cfg_path)
+        project = configs.get(vargs.project)
+        if project is None:
+            log_error(f"Unknown project: {vargs.project}")
+            _sys.exit(2)
+        if not project.changelog:
+            log_error(
+                f"{vargs.project}: release history is explicitly disabled; "
+                "remove release.changelog = false before backfilling"
+            )
+            _sys.exit(2)
+        changed = backfill_release_changelog(repo_root, project, vargs.backfill_tag)
+        if changed:
+            log_info(
+                f"{vargs.project}: backfilled {project.changelog} for {vargs.backfill_tag}; "
+                "review and commit this post-release migration explicitly"
+            )
+        else:
+            log_info(f"{vargs.project}: {project.changelog} already records {vargs.backfill_tag}")
+
     elif verb in ("release", "status"):
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
@@ -1917,7 +1966,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--no-build", action="store_true",
                             help="release: tag + push only; skip build/publish")
-        parser.add_argument("--config", help="Path to release.toml")
+        parser.add_argument("--config", help="Path to cmru.toml")
         parser.add_argument("--resume", metavar="WORKTREE",
                             help="Resume a retained failed release worktree")
         parser.add_argument("--abandon", metavar="WORKTREE|all-previous",

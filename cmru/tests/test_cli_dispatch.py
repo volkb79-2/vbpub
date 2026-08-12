@@ -46,8 +46,6 @@ paths = ["shared"]
 commands = [ { label = "build", argv = ["true"], cwd = "alpha" } ]
 [project.alpha.steps.push]
 commands = [ { label = "push", argv = ["true"], cwd = "alpha" } ]
-[project.alpha.release]
-changelog = "CHANGES.md"
 """
 
 
@@ -80,6 +78,53 @@ def test_load_config_s2_schema(tmp_path):
     assert alpha.paths == ["alpha", "shared"]
     assert alpha.changelog == "CHANGES.md"
     assert set(alpha.steps) == {"build", "push"}
+
+
+def test_checked_in_sample_uses_automatic_release_history():
+    sample = Path(__file__).resolve().parents[2] / "cmru.sample.toml"
+    _, projects, *_rest = cli.load_config(sample)
+
+    assert projects["example-wheel"].changelog == "CHANGES.md"
+
+
+def test_release_history_defaults_to_project_changes_file(tmp_path):
+    cfg = _write(tmp_path, MINIMAL_S2)
+    _, projects, *_rest = cli.load_config(cfg)
+
+    assert projects["alpha"].changelog == "CHANGES.md"
+
+
+def test_release_history_opt_out_must_be_explicit(tmp_path):
+    cfg = _write(tmp_path, MINIMAL_S2 + """
+[project.alpha.release]
+changelog = false
+""")
+    _, projects, *_rest = cli.load_config(cfg)
+
+    assert projects["alpha"].changelog is None
+
+
+def test_changelog_backfill_dispatches_to_the_migration_helper(tmp_path, monkeypatch):
+    config = _write(tmp_path, MINIMAL_S2)
+    project = SimpleNamespace(name="alpha", changelog="CHANGES.md")
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda _path: (tmp_path, {"alpha": project}),
+    )
+    import cmru.changelog
+    monkeypatch.setattr(
+        cmru.changelog,
+        "backfill_release_changelog",
+        lambda root, configured_project, tag: calls.append((root, configured_project, tag)) or True,
+    )
+
+    cli.main([
+        "changelog", "--config", str(config), "--project", "alpha", "--backfill-tag", "alpha-v1.0.0",
+    ])
+
+    assert calls == [(tmp_path, project, "alpha-v1.0.0")]
 
 
 def test_load_config_legacy_keys_still_accepted(tmp_path):
@@ -138,7 +183,7 @@ def test_help_lists_verbs_and_ordering():
     with redirect_stdout(out):
         cli.main(["--help"])
     text = out.getvalue()
-    for verb in ("status", "release", "build", "publish", "resolve", "get", "cleanup", "run-step"):
+    for verb in ("status", "release", "changelog", "build", "publish", "resolve", "get", "cleanup", "run-step"):
         assert verb in text, f"{verb} missing from help"
     assert "TYPICAL WORKFLOW" in text
 

@@ -11,9 +11,9 @@ one config, one CLI, all release files named `cmru.*`.
 | **cmru** | [`cmru/`](cmru/) | Python wheel | cmru (dogfood) — `cmru-v*` |
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
-| **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru *(delegated)* — `pwmcp-v<playwright>-r<N>` |
-| **nyxloom** (design/pilot) | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | not released yet |
-| **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru *(delegated, on-demand)* — `tls-edge-v*` |
+| **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
+| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
+| **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | vsc-devcontainer | [`vsc-devcontainer/`](vsc-devcontainer/) | devcontainer image | n/a |
@@ -29,6 +29,7 @@ pointer to a `cmru` verb):
 ./cmru.status.sh                       # preview what would be released (read-only)
 ./cmru.release.sh                      # one-shot: detect changed → tag → push → build → publish
 ./cmru.release.sh --dry-run            # preview tags only, no writes
+./cmru.changelog.sh --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
 ./cmru.build.sh   --project <name>     # build artifact only
 ./cmru.publish.sh --project <name>     # upload artifact + .sha256
 ./cmru.cleanup.sh --remove-assets 30d  # prune old releases / GHCR versions
@@ -46,9 +47,11 @@ set -o pipefail
 - **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or a gitignored `cmru.secret.toml`
   (`[github] token = "…"`). Never commit a token. (SPEC S2.4)
 - **Per-project step config:** `<product>/cmru.build.toml`; generated build vars: `cmru.vars`.
+- **Release history:** CMRU creates each managed product's `CHANGES.md` before its
+  isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
 - **Auto-released set** (`orchestration.project_order` in `cmru.toml`): ciu, cmru,
-  modern-debian-tools-python-debug, pwmcp. Delegated products (pwmcp self-versions;
-  tls-edge / empyrion-translation are on-demand) own their own versioning.
+  nyxloom, assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge.
+  Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
   Tooling overview: [`docs/RELEASE-TOOLING.md`](docs/RELEASE-TOOLING.md).
 

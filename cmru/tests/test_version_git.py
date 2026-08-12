@@ -177,6 +177,15 @@ class TestDetectChangedProjects(unittest.TestCase):
             projects = {"ciu": _ProjCfg("ciu-v", "ciu", paths=["ciu"])}
             self.assertEqual(detect_changed_projects(repo, projects), [])
 
+    def test_generated_history_after_tag_does_not_schedule_another_release(self):
+        """A post-release history migration is metadata, never a product bump trigger."""
+        with _TempRepo() as repo:
+            _commit(repo, "feat: initial ciu", {"ciu/main.py": "# ciu"})
+            _tag(repo, "ciu-v0.1.0")
+            _commit(repo, "docs: backfill generated history", {"ciu/CHANGES.md": "# Changelog\n"})
+            projects = {"ciu": _ProjCfg("ciu-v", "ciu", paths=["ciu"])}
+            self.assertEqual(detect_changed_projects(repo, projects), [])
+
     def test_changes_after_tag_included(self):
         """Commits touching project paths since last tag → project included."""
         with _TempRepo() as repo:

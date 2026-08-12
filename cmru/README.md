@@ -10,7 +10,7 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 ```bash
 pip install -e cmru          # provides the `cmru` console script
 # or, from the repo root, with no install:
-./cmru.py <verb>             # ≡ cmru <verb>   (discoverable cmru.*.sh shims wrap each verb)
+./cmru.py <verb>             # ≡ cmru <verb>   (discoverable cmru.*.sh shims cover common release verbs)
 ```
 
 ## The model: two independent axes (S-REL)
@@ -39,6 +39,7 @@ cmru status                       # preview changed projects + next versions (re
 cmru release                      # isolated: prepare → gate → integrate → tag → build → publish
 cmru release --dry-run            # show tags only, no writes
 cmru release --project ciu        # one project
+cmru changelog --project assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru build   --project <name>     # run the project's build step
 cmru publish --project <name>     # run the project's push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
@@ -46,7 +47,39 @@ cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
-`release` is idempotent: it detects changed projects, tags the tag-minting ones, then builds+publishes each by its profile (wheel → Release; oci-image → ghcr + provenance commit).
+`release` detects changed projects, tags the tag-minting ones, then builds+publishes each by
+its profile (wheel → Release; oci-image → ghcr + provenance commit). A retained transaction
+is the recovery path; the documented post-tag resume guarantee is currently under audit as
+[KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--retained-release-resume-does-not-satisfy-the-documented-already-tagged-idempotency--open).
+
+## Release history is automatic
+
+Every CMRU-managed project gets a project-local `CHANGES.md` by default. No project
+script, config opt-in, or pre-created file is required. During `cmru release`, CMRU
+derives the project-scoped git range, writes one marked entry, commits it with any
+declared mechanical inputs, and runs the release gate against that commit. A tagged
+release is headed by its pending version; an image-only or delegated release is headed
+by the source revision it describes and advances a persisted source cursor. Generated
+history and other declared mechanical outputs are excluded from the next source range.
+If an image's private `prepare` step changed declared provenance but has no new source
+commit, CMRU records a metadata-only history entry for that real new image; a clean
+retained resume adds nothing.
+
+Use `[project.X.release] changelog = "docs/CHANGES.md"` only to choose another
+project-relative filename. `changelog = false` is the deliberate, reviewable opt-out.
+Never add the usual `CHANGES.md` opt-in just to enable the feature—it is already on.
+
+For a release that was published before this default existed, use the migration helper:
+
+```bash
+cmru changelog --project assay --backfill-tag assay-v0.1.0
+git diff -- assay/CHANGES.md
+git commit --only -m "docs(assay): backfill v0.1.0 release history" -- assay/CHANGES.md
+```
+
+It does not move the immutable tag. The resulting entry is visibly marked
+`backfilled-after-release`; all future entries are source-first and carried by their
+release tag.
 
 ## Reproducibility & the commit model
 

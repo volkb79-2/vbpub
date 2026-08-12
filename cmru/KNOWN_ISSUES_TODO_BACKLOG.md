@@ -105,6 +105,77 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ## Known Issues
 
+### KI-03 — S2's single strict configuration contract is not used by `release` — *open*
+**Status:** specification/code mismatch; do not rely on `cmru get` validation as proof that a
+release will parse identically. **SPEC:** `S2.1`, `S2.3`, `V09`.
+**Evidence:** `cmru/src/cmru/config.py` is explicitly the strict reader used by `cmru get`,
+while `cmru/src/cmru/cli.py:load_config()` is the release/status reader and deliberately
+lenient. It accepts legacy `[projects]`, `github.username`, and `[registry]` forms (covered by
+`tests/test_cli_dispatch.py::test_load_config_legacy_keys_still_accepted`) and does not
+reject unknown top-level/project/release keys. Therefore a misspelled release key can be
+silently ignored even though S2.3 says unknown keys MUST be rejected on startup.
+**Decision required:** either make the release path use one strict shared schema (and publish a
+bounded migration/removal policy for legacy configs), or relax S2.1/S2.3 to specify the two
+parsers and their intentionally different guarantees. Do not silently tighten the parser: it
+would be a potentially breaking config migration.
+
+### KI-04 — S7 delegated-tool configuration is unreachable and has incompatible shapes — *open*
+**Status:** specification/code mismatch; `delegated` config is not a working release feature.
+**SPEC:** `S7.1`–`S7.4`.
+**Evidence:** `cmru/src/cmru/delegated.py:run_delegated_config()` expects nested mappings such
+as `changelog = { enabled = true, required = true }`, but the strict S2 model reduces
+`[project.X.delegated]` values to booleans. No production CLI/release path calls
+`run_delegated_config()` at all. Existing tests exercise the helper directly, not an actual
+release transaction. Consequently `cosign`, `syft`/`grype`, `git-cliff`, `nfpm`, and minisign
+cannot be enabled through the documented project config during `cmru release`.
+**Decision required:** wire a single typed delegated schema into the release lifecycle with an
+artifact-selection contract and end-to-end gate, or withdraw the advertised S7 config surface
+until it is designed. This must not be "fixed" by guessing which artifact/path each tool should
+receive.
+
+### KI-05 — S-CLI.4 says legacy release configuration is removed, while the runtime preserves it — *open*
+**Status:** specification/code mismatch. **SPEC:** `S-CLI.4`.
+**Evidence:** `cmru/src/cmru/runner.py:run_step()` falls back from `cmru.toml` to
+`release.toml`, and CLI help still labels `--config` as a release.toml path. The lenient release
+loader also accepts legacy table/key spellings (KI-03). This contradicts “no legacy remains.”
+**Decision required:** remove the fallback and aliases in a deliberate breaking release, or
+amend S-CLI.4 with a supported compatibility window and retirement date. The audit leaves the
+behavior unchanged.
+
+### KI-06 — Retained release resume does not satisfy the documented already-tagged idempotency — *open*
+**Status:** potential publication-recovery defect. **SPEC:** `S-CLI.1`, `S-CLI.5`.
+**Evidence:** `detect_changed_projects()` reports no change once a version tag is on HEAD;
+`cli.main()` then produces an empty `release_names` list. A failure after tag creation but before
+artifact publication retains a worktree, yet `--resume` re-enters the same tag-based selection
+and does not select that half-finished project for build/publish. This does not implement the
+promise that re-running on a HEAD already carrying the tag reuses it to finish the release.
+**Decision required:** add durable per-project publication checkpoints and a tested resume path,
+or narrow S-CLI.1 to the transaction states that are actually resumable. Do not retag, move, or
+republish an existing tag speculatively.
+
+### KI-07 — Runner log location conflicts with S3.4 — *open*
+**Status:** specification/code mismatch. **SPEC:** `S3.4`.
+**Evidence:** S3.4 requires `<log_dir>/<project>/<step>.log`, while
+`runner.execute_step()` writes `<log_dir>/<step>-<UTC timestamp>.log`; the orchestrator passes
+one shared repository `logs/` directory. Project identity is absent from the filename, so the
+spec's stable per-project path and the implementation's timestamped collision-avoidance design
+are different interfaces.
+**Decision required:** choose stable project-scoped logs (and define retention/overwrite), or
+amend S3.4 to the timestamped shared-log contract. Do not change paths without deciding how
+existing operators and automation locate logs.
+
+### KI-08 — S4 overstates what the `cmru publish` verb implements — *open*
+**Status:** specification/code mismatch. **SPEC:** `S4.1`–`S4.4`.
+**Evidence:** the CLI's `publish` verb selects each project's `push` step and runs it;
+it does not itself discover an artifact, calculate a sidecar, create a Release, or update
+`latest.json`. Those actions occur only when the selected project uses a built-in handler or
+when its project-owned push command implements them. This follows S-REL.3's project-owned
+artifact mechanics, but contradicts the unconditional language in S4.1–S4.4.
+**Decision required:** either make a generic publish profile/config truly own those operations,
+or scope S4's MUSTs to the built-in wheel/tarball handlers and describe custom push commands
+as responsible for equivalent publication guarantees. Do not silently make arbitrary custom
+projects publish from guessed `dist/` paths.
+
 ### KI-02 — Built-in OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
 **SPEC:** `S14.3`, `V21`.

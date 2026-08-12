@@ -1,159 +1,101 @@
-# cmru.sample.toml — committed template. Copy to cmru.toml and edit identity.
-# Provide the token via $GITHUB_PUSH_PAT or a gitignored cmru.secret.toml
-# ([github] token = "..."). NEVER put a token in cmru.toml. See SPEC S2.4.
-#
-# cmru.toml — the one config for releasing this monorepo (SPEC S2 schema).
-#
-# NO SECRETS here (this file is committed). The GitHub token is resolved at run time
-# from $GITHUB_PUSH_PAT / $GITHUB_TOKEN, or the gitignored cmru.secret.toml overlay
-# ([github].token). See SPEC S2.4 and cmru.sample.toml.
-#
-# Usage:  ./cmru status   ./cmru release   ./cmru cleanup --remove-assets 30d
+# Minimal CMRU configuration — copy to cmru.toml and replace every placeholder.
+# Secrets never belong here: use GITHUB_PUSH_PAT / GITHUB_TOKEN or the gitignored
+# cmru.secret.toml overlay.  See cmru/docs/SPEC.md S2 for the full schema.
 
 [github]
-owner      = "your-github-username"
-repo       = "your-repo"
-owner_type = "user"          # "user" | "org"  (V03)
+owner      = "your-github-owner"
+repo       = "your-monorepo"
+owner_type = "user" # "user" | "org"
 
 [targets]
-host     = "github"          # release host (S11)
-registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
+host     = "github"
+registry = ["ghcr.io"]
 
 [orchestration]
-# Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
-# tls-edge and empyrion-translation are defined below but not yet migrated in (P3/P4).
-project_order    = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
-default_projects = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
+project_order    = ["example-wheel"]
+default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push", "validate"]
 execution_mode   = "project-first"
 
-[orchestration.step_project_order]
-run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
-build     = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
-push      = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
-validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
-
 [cleanup]
 release_tag_prefixes = ["*"]
-keep_release_tags    = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
+keep_release_tags    = ["example-wheel-latest"]
 ghcr_packages        = ["*"]
-ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 
-[env]
-# Shared env for all projects. Per-project defaults live in <project>/cmru.build.toml [env].
-
-# ─── ciu — Python wheel (built-in handlers) ───────────────────────────────────
-# A standard wheel project: declare the profile, omit build/push/validate — cmru's
-# built-in wheel handlers do them. The only project-specific inputs are the test
-# command and the release-notes env (read by wheel-publish via --notes-env).
-[project.ciu]
-prefix   = "ciu-v"
+# A normal Python wheel needs only its profile, versioning policy, release notes,
+# and a real isolated gate. CMRU supplies build/push/validate handlers.
+[project.example-wheel]
+prefix    = "example-wheel-v"
 artifacts = ["wheel"]
-scm_dist = "ciu"
-cwd      = "ciu"
-[project.ciu.version]
+scm_dist  = "example-wheel"
+cwd       = "example-wheel"
+[project.example-wheel.version]
 strategy = "scm"
 bump     = "conventional"
-[project.ciu.env]
-CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-[project.ciu.steps.run-tests]
+[project.example-wheel.env]
+CMRU_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-wheel-*.whl`."
+[project.example-wheel.steps.run-tests]
 commands = [
-  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+  { label = "example-wheel: isolated gate", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "example-wheel", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
 ]
 
-# ─── cmru — Python wheel (dogfood: zero step scripts, cmru built-in handlers) ──
-[project.cmru]
-prefix   = "cmru-v"
-artifacts = ["wheel"]
-scm_dist = "cmru"
-cwd      = "cmru"
-[project.cmru.version]
-strategy = "scm"
-bump     = "conventional"
-[project.cmru.env]
-CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
+# CMRU automatically creates and updates example-wheel/CHANGES.md before the gate.
+# Do not add an opt-in. These are the only supported exceptions:
+#
+# [project.example-wheel.release]
+# changelog = "docs/CHANGES.md" # another project-relative location
+# # changelog = false            # explicit opt-out; avoid unless history is externally owned
 
-# ─── modern-debian-tools-python-debug — OCI images (no git tag, no Release) ────
-# GHCR package visibility is synced to the repository visibility after push.
-[project.modern-debian-tools-python-debug]
-prefix    = "modern-debian-tools-python-debug-v"   # for resolve/cleanup symmetry; not tagged
-artifacts = ["oci-image"]
-cwd       = "modern-debian-tools-python-debug"
-[project.modern-debian-tools-python-debug.version]
-strategy = "none"          # OCI images are published to ghcr, not git-tagged (S-REL)
-[project.modern-debian-tools-python-debug.release]
-commit_generated = ["package-manifests-versioned"]   # cmru commits these after build
-[project.modern-debian-tools-python-debug.steps.build]
-commands = [
-  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
-]
-[project.modern-debian-tools-python-debug.steps.push]
-commands = [
-  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
-]
+# Image-only projects use `strategy = "none"` and get source-revision history instead
+# of a semver heading. Keep their private provenance build in prepare, declare only its
+# tracked outputs, and let CMRU commit/gate them before the registry push:
+#
+# [project.example-image]
+# prefix    = "example-image-v"
+# artifacts = ["oci-image"]
+# cwd       = "example-image"
+# [project.example-image.version]
+# strategy = "none"
+# [project.example-image.release]
+# commit_generated = ["provenance.json"]
 
-# ─── pwmcp — OCI image + stack bundle (emits BOTH) ────────────────────────────
-# pwmcp's version is computed by scripts/resolve-playwright-version.py
-# (pwmcp-v<playwright>-r<N>), so versioning is "delegated": the project owns its tag,
-# while cmru orchestrates build/push of both the ghcr image and the Release bundle.
-[project.pwmcp]
-prefix    = "pwmcp-v"
-artifacts = ["oci-image", "bundle"]
-cwd       = "pwmcp"
-[project.pwmcp.version]
-strategy = "delegated"
-[project.pwmcp.steps.build]
-commands = [
-  { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
-  { label = "pwmcp: build playwright-server image", argv = ["python3", "build-push.py", "--build"], cwd = "pwmcp" },
-  { label = "pwmcp: build stack bundle", argv = ["python3", "scripts/build-bundle.py"], cwd = "pwmcp" },
-]
-[project.pwmcp.steps.push]
-commands = [
-  { label = "pwmcp: push playwright-server image", argv = ["python3", "build-push.py", "--push"], cwd = "pwmcp" },
-  { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
-]
+# A bundle/tarball may publish multiple ABI/interpreter variants under one semver tag.
+# The generated installer refuses to guess a variant on a non-interactive host.
+#
+# [project.example-bundle]
+# prefix    = "example-bundle-v"
+# artifacts = ["bundle"]
+# cwd       = "example-bundle"
+# [project.example-bundle.version]
+# strategy = "file:VERSION"
+# [project.example-bundle.installer]
+# install_dir_system = "/opt/example-bundle"
+# install_dir_user   = "example-bundle"
+# asset_suffix       = ".tar.xz"
+# entrypoint         = "scripts/adapter.py"
+# required_commands  = ["python3", "minisign"]
+# preserve           = ["shared/host.toml"]
+# manifest_name      = "manifest.json"
+# signature_name     = "manifest.json.minisig"
+# [[project.example-bundle.variants]]
+# name      = "py311"
+# build_arg = "PYTHON_VERSION=3.11"
+# label     = "Python 3.11"
+# [[project.example-bundle.variants]]
+# name      = "py312"
+# build_arg = "PYTHON_VERSION=3.12"
+# label     = "Python 3.12"
 
-# ─── tls-edge — tarball (built-in publish; build step is project-owned) ─────────
-# push + validate come from the tarball built-in (cmru/handlers.py tarball-publish /
-# tarball-validate). Only build is project-specific (build-artifact.sh).
-# The [installer] block is the single source for the emitted get.py installer (S6):
-#   `cmru get-py --project tls-edge --config cmru.toml` regenerates tls-edge/get.py.
-[project.tls-edge]
-prefix    = "tls-edge-v"
-artifacts = ["tarball"]
-cwd       = "tls-edge"
-[project.tls-edge.version]
-strategy = "file:VERSION"
-[project.tls-edge.installer]
-install_dir_system = "/opt/tls-edge"
-install_dir_user   = "tls-edge"
-asset_suffix       = ".tar.xz"
-# entrypoint not set — tls-edge has no bundled adapter (degrades cleanly)
-required_commands  = ["python3", "docker"]
-preserve           = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
-manifest_name      = "manifest.json"
-signature_name     = "manifest.json.minisig"
-[project.tls-edge.env]
-TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\nEdge proxy + TLS termination stack.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
-[project.tls-edge.steps.build]
-commands = [
-  { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "tls-edge" },
-]
-
-# ─── empyrion-translation — game asset (not yet in project_order; P4) ──────────
-[project.empyrion-translation]
-prefix   = "empyrion-translation-v"
-artifacts = ["tarball"]
-cwd      = "game_stuff/empyrion"
-[project.empyrion-translation.version]
-strategy = "scm"
-bump     = "patch"
-[project.empyrion-translation.steps.build]
-commands = [
-  { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },
-]
-[project.empyrion-translation.steps.push]
-commands = [
-  { label = "empyrion: publish DE translation artifact", argv = ["python3", "release-empyrion-translation.py", "--publish-github", "--publish-only"], cwd = "game_stuff/empyrion" },
-]
+# A prepare step may derive a version into <project>/cmru.vars. CMRU then owns the
+# annotated tag; never create a tag in the project script itself.
+#
+# [project.example-external-version]
+# prefix    = "example-external-version-v"
+# artifacts = ["wheel"]
+# cwd       = "example-external-version"
+# [project.example-external-version.version]
+# strategy = "external:EXAMPLE_VERSION"
+# [project.example-external-version.steps.prepare]
+# commands = [
+#   { label = "resolve exact upstream input", argv = ["python3", "scripts/resolve.py"], cwd = "example-external-version" },
+# ]
