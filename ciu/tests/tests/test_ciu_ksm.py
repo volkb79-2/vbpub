@@ -67,6 +67,17 @@ class TestCacheKey:
         host — CIU-14 from a different direction."""
         assert ksm.cache_path(tmp_path).is_relative_to(tmp_path)
 
+    def test_wrapper_cache_uses_its_own_source_digest_and_executable_name(self, tmp_path):
+        src = tmp_path / "wrapper.c"
+        src.write_text("int main(void) {}", encoding="utf-8")
+
+        target = ksm.wrapper_cache_path(tmp_path, src)
+
+        assert target.parent == tmp_path / ".ciu" / "ksm"
+        assert target.name.startswith("ksm-exec-")
+        src.write_text("int main(void) { return 1; }", encoding="utf-8")
+        assert ksm.wrapper_cache_path(tmp_path, src) != target
+
 
 class TestVerification:
     def test_dependency_free_object_is_accepted(self, tmp_path):
@@ -99,8 +110,75 @@ class TestVerification:
         with pytest.raises(ksm.KsmBuildError, match=r"cannot verify"):
             ksm._verify(so)
 
+    def test_dt_needed_parser_refuses_unreadable_and_32_bit_inputs(self, tmp_path):
+        assert ksm._dt_needed_count(tmp_path / "absent.so") is None
+        object_32 = bytearray(_elf64())
+        object_32[4] = 1
+        path = tmp_path / "32-bit.so"
+        path.write_bytes(object_32)
+        assert ksm._dt_needed_count(path) is None
+
+    def test_dt_needed_parser_refuses_truncated_program_or_dynamic_entries(self, tmp_path):
+        bad_header = bytearray(_elf64())
+        bad_header[32:40] = (10_000).to_bytes(8, "little")
+        header_path = tmp_path / "bad-header.so"
+        header_path.write_bytes(bad_header)
+        assert ksm._dt_needed_count(header_path) is None
+
+        bad_dynamic = bytearray(_elf64(dt_needed=1))
+        dynamic_offset = 64 + 56
+        bad_dynamic[dynamic_offset + 16:dynamic_offset + 24] = (1).to_bytes(8, "little")
+        bad_dynamic[64 + 32:64 + 40] = (48).to_bytes(8, "little")
+        dynamic_path = tmp_path / "bad-dynamic.so"
+        dynamic_path.write_bytes(bad_dynamic)
+        assert ksm._dt_needed_count(dynamic_path) is None
+
+    def test_dt_needed_parser_counts_a_segment_without_a_null_terminator(self, tmp_path):
+        unterminated = bytearray(_elf64(dt_needed=1))
+        dynamic_offset = 64 + 56
+        unterminated[dynamic_offset + 16:dynamic_offset + 24] = (1).to_bytes(8, "little")
+        path = tmp_path / "unterminated.so"
+        path.write_bytes(unterminated)
+        assert ksm._dt_needed_count(path) == 2
+
+    def test_dt_needed_parser_accepts_an_elf_with_no_dynamic_segment(self, tmp_path):
+        no_dynamic = bytearray(_elf64())
+        no_dynamic[64:68] = (1).to_bytes(4, "little")  # PT_LOAD, not PT_DYNAMIC
+        path = tmp_path / "static.so"
+        path.write_bytes(no_dynamic)
+        assert ksm._dt_needed_count(path) == 0
+
+
+class TestWrapperVerification:
+    def test_wrapper_verification_rejects_missing_empty_non_elf_and_non_executable(self, tmp_path, monkeypatch):
+        missing = tmp_path / "absent"
+        with pytest.raises(ksm.KsmBuildError, match="no file"):
+            ksm._verify_wrapper(missing)
+
+        empty = tmp_path / "empty"
+        empty.write_bytes(b"")
+        with pytest.raises(ksm.KsmBuildError, match="EMPTY"):
+            ksm._verify_wrapper(empty)
+
+        not_elf = tmp_path / "not-elf"
+        not_elf.write_bytes(b"text")
+        with pytest.raises(ksm.KsmBuildError, match="not an ELF"):
+            ksm._verify_wrapper(not_elf)
+
+        no_exec = tmp_path / "no-exec"
+        no_exec.write_bytes(b"\x7fELF")
+        monkeypatch.setattr(ksm.os, "access", lambda *_args: False)
+        with pytest.raises(ksm.KsmBuildError, match="not executable"):
+            ksm._verify_wrapper(no_exec)
+
 
 class TestBuild:
+    def test_shim_source_missing_refuses_before_docker(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ksm, "shim_source_path", lambda: tmp_path / "absent.c")
+
+        with pytest.raises(ksm.KsmBuildError, match="source is missing"):
+            ksm.build(tmp_path, "/host/repo")
+
     def test_cached_artifact_is_reused_without_invoking_docker(self, tmp_path, monkeypatch):
         target = ksm.cache_path(tmp_path)
         target.parent.mkdir(parents=True)
@@ -179,6 +257,101 @@ class TestBuild:
         monkeypatch.setattr(ksm.subprocess, "run", timeout)
         with pytest.raises(ksm.KsmBuildError, match=r"timed out"):
             ksm.build(tmp_path, "/host/repo")
+
+    def test_build_oserror_is_reported_not_swallowed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ksm.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(ksm.subprocess, "run", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("no docker")))
+
+        with pytest.raises(ksm.KsmBuildError, match=r"could not run docker"):
+            ksm.build(tmp_path, "/host/repo")
+
+
+class TestWrapperBuild:
+    def test_wrapper_source_missing_refuses_before_docker(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ksm, "wrapper_source_path", lambda: tmp_path / "absent.c")
+
+        with pytest.raises(ksm.KsmBuildError, match="source is missing"):
+            ksm.build_wrapper(tmp_path, "/host/repo")
+
+    def test_cached_wrapper_is_verified_and_reused(self, tmp_path, monkeypatch):
+        target = ksm.wrapper_cache_path(tmp_path)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"\x7fELF")
+        target.chmod(0o755)
+        monkeypatch.setattr(ksm.subprocess, "run", lambda *_a, **_kw: pytest.fail("docker invoked"))
+
+        assert ksm.build_wrapper(tmp_path, "/host/repo") == target
+
+    def test_wrapper_missing_docker_refuses(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ksm.shutil, "which", lambda _n: None)
+
+        with pytest.raises(ksm.KsmBuildError, match="docker is required"):
+            ksm.build_wrapper(tmp_path, "/host/repo")
+
+    def test_wrapper_build_mounts_physical_path_and_verifies_output(self, tmp_path, monkeypatch):
+        seen: list[list[str]] = []
+
+        def fake_run(cmd, **_kw):
+            seen.append(cmd)
+            target = ksm.wrapper_cache_path(tmp_path)
+            target.write_bytes(b"\x7fELF")
+            target.chmod(0o755)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ksm.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert ksm.build_wrapper(tmp_path, "/host/repo") == ksm.wrapper_cache_path(tmp_path)
+        mount = seen[0][seen[0].index("-v") + 1]
+        assert mount.startswith("/host/repo/")
+
+    def test_bad_wrapper_build_is_removed_from_cache(self, tmp_path, monkeypatch):
+        def fake_run(cmd, **_kw):
+            ksm.wrapper_cache_path(tmp_path).write_bytes(b"not an elf")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ksm.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        with pytest.raises(ksm.KsmBuildError, match="not an ELF"):
+            ksm.build_wrapper(tmp_path, "/host/repo")
+        assert not ksm.wrapper_cache_path(tmp_path).exists()
+
+    @pytest.mark.parametrize(
+        ("result", "message"),
+        [
+            (subprocess.CompletedProcess(["docker"], 1, "", "broken compiler"), "broken compiler"),
+            (subprocess.TimeoutExpired(["docker"], ksm.BUILD_TIMEOUT_SECONDS), "timed out"),
+            (OSError("docker unavailable"), "could not run docker"),
+        ],
+    )
+    def test_wrapper_build_surfaces_all_execution_failures(self, tmp_path, monkeypatch, result, message):
+        def fake_run(*_args, **_kwargs):
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        monkeypatch.setattr(ksm.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        with pytest.raises(ksm.KsmBuildError, match=message):
+            ksm.build_wrapper(tmp_path, "/host/repo")
+
+
+class TestImageEntrypointFailures:
+    @pytest.mark.parametrize("failure", [OSError("docker absent"), subprocess.TimeoutExpired(["docker"], 30)])
+    def test_image_entrypoint_returns_none_when_inspect_cannot_run(self, monkeypatch, failure):
+        monkeypatch.setattr(
+            ksm.subprocess, "run", lambda *_a, **_kw: (_ for _ in ()).throw(failure)
+        )
+        assert ksm.image_entrypoint("example:test") is None
+
+    def test_image_entrypoint_returns_none_for_malformed_json(self, monkeypatch):
+        monkeypatch.setattr(
+            ksm.subprocess, "run",
+            lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "not-json", ""),
+        )
+        assert ksm.image_entrypoint("example:test") is None
 
 
 def test_dt_needed_parser_discriminates_on_a_REAL_dynamic_binary():
