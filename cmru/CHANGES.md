@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.0.0] - 2026-08-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e98628c934f62fc08d1d89cfa9776b1f36a1fe0 -->
+
+### Added
+- feat(cmru)!: retain successful local build outputs (128a3da5)
+
+### Documentation
+- docs(cmru): record transaction self-binding defect (e320003f)
+
 ## [3.0.0] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=b5bd5497d2ba8a6322d3c595252de1a631432381 -->
