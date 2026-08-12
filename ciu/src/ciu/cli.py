@@ -389,14 +389,6 @@ def _provenance(rest: list[str]) -> int:
     import argparse as _ap
     import json as _json
 
-    from .deploy import (
-        ProvenanceResult,
-        load_global_config,
-        verify_running_provenance,
-        warn,
-    )
-    from .dev import resolve_repo_root
-
     p = _ap.ArgumentParser(prog="ciu provenance", add_help=False)
     p.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                    action="store_true", default=False)
@@ -415,6 +407,17 @@ def _provenance(rest: list[str]) -> int:
             p.error("--no-preflight cannot be combined with --json: no provenance verdict is produced")
         print("[INFO] --no-preflight: skipping provenance check")
         return 0
+
+    # The evidence path deliberately imports its deployment closure only after
+    # the break-glass return.  A requested no-check bypass must remain useful
+    # even when that closure (or its optional environment) is itself broken.
+    from .deploy import (
+        ProvenanceResult,
+        load_global_config,
+        verify_running_provenance,
+        warn,
+    )
+    from .dev import resolve_repo_root
 
     repo_root = resolve_repo_root(opts.define_root, Path.cwd())
     try:
