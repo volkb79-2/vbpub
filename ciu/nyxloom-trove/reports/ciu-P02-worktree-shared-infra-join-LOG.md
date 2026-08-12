@@ -213,3 +213,112 @@ fallback, per the packet.
   `monkeypatch.delenv(..., raising=False)` before bootstrap runs in every
   test, so monkeypatch owns their teardown regardless of what bootstrap later
   writes. Confirmed with repeated full-suite `-n auto` runs.
+
+## Final gate (after committing `1664b4d5`)
+
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=src python3 run-ciu-tests.py`:
+
+```
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/__init__.py                                  3      0      0      0   100%
+src/ciu/__main__.py                                  3      0      2      0   100%
+src/ciu/activate.py                                119      0     46      0   100%
+src/ciu/cli.py                                     399     27    128      4    94%   350-373, 595-600, 814, 817, 820
+src/ciu/cli_utils.py                                11      0      0      0   100%
+src/ciu/composefile.py                             344     14    168      2    96%   809-833, 924
+src/ciu/config_constants.py                         28      0      4      0   100%
+src/ciu/config_model.py                            237      0    106      0   100%
+src/ciu/deploy.py                                 1027      3    422      1    99%   725, 745-746
+src/ciu/deploy_pkg/__init__.py                       7      0      0      0   100%
+src/ciu/deploy_pkg/health.py                       192      0     98      0   100%
+src/ciu/deploy_pkg/http_util.py                     24      0      2      0   100%
+src/ciu/deploy_pkg/phases.py                        69      0     40      0   100%
+src/ciu/deploy_pkg/profiles.py                     123      0     60      0   100%
+src/ciu/deploy_pkg/registry.py                      38      0     20      0   100%
+src/ciu/dev.py                                     194      0     74      0   100%
+src/ciu/diagnose.py                                 79      0     34      0   100%
+src/ciu/engine.py                                  844      0    278      0   100%
+src/ciu/governance.py                              382      1    158      2    99%   189, 197->201
+src/ciu/hooks/__init__.py                            0      0      0      0   100%
+src/ciu/hooks/examples/__init__.py                   0      0      0      0   100%
+src/ciu/hooks/examples/post_compose_example.py       5      0      0      0   100%
+src/ciu/hooks/examples/pre_compose_example.py        4      0      0      0   100%
+src/ciu/hooks_runner.py                            115      0     52      0   100%
+src/ciu/hosts.py                                    35      0     16      0   100%
+src/ciu/ksm.py                                     180     56     64      6    68%   86, 118-120, 133-134, 140, 151, 159, 165-166, 214, 260-261, 292-307, 327-385, 405-406, 414-415
+src/ciu/paths.py                                    30      0     12      0   100%
+src/ciu/procutil.py                                 17      0      2      0   100%
+src/ciu/provisioning.py                            256      0    120      0   100%
+src/ciu/secrets/__init__.py                          3      0      0      0   100%
+src/ciu/secrets/directives.py                      131      0     72      0   100%
+src/ciu/secrets/materialize.py                     212      0     60      0   100%
+src/ciu/secrets/providers.py                       111      0     38      0   100%
+src/ciu/transport_ssh.py                           219      0     70      0   100%
+src/ciu/warn_policy.py                               9      0      2      0   100%
+src/ciu/workspace_env.py                           428      0    178      0   100%
+src/ciu/worktree.py                                311     24    110      4    93%   210, 224, 416-426, 441-468, 560, 764
+--------------------------------------------------------------------------------------------
+TOTAL                                             6189    125   2436     19    98%
+Coverage JSON written to file coverage.json
+FAIL Required test coverage of 100% not reached. Total coverage: 98.05%
+====================== 1879 passed, 8 warnings in 14.03s =======================
+```
+
+`engine.py` is at **100%** and `cli.py`'s missing lines are byte-identical to
+the pre-existing baseline set (shifted only by line-number offset from the
+new code inserted above them: `350-373`/`595-600` (was `586-591`)/`814, 817,
+820` (was `805, 808, 811`) — same statements, none of them mine).
+`worktree.py`'s 24 missing lines are its OWN pre-existing baseline set
+(`199, 213, 238-248, 263-290, 345, 534` before my edits), also only shifted
+by line-number offset (`210, 224, 416-426, 441-468, 560, 764` after) — every
+one of them inside `list_worktrees`, `_generate_env_in`, `_clean_in`, and the
+pre-existing tails of `add()`/`remove()`'s `git` failure branches, none of
+which this package touches. The blanket `--cov-fail-under=100` failure is
+therefore the SAME pre-existing shortfall the baseline measured (52 statements
+became 145 new ones, all 145 covered; 0 new misses), confirmed by the
+changed-line gate below.
+
+`env -u REPO_ROOT -u PHYSICAL_REPO_ROOT PYTHONPATH=../nyxloom/src python3 -m
+nyxloom.coverage_gate --repo . --base main --coverage-json coverage.json
+--source src/ciu`:
+
+```
+diff-coverage OK: 167/167 changed executable lines covered (100.0% ≥ 100.0% floor)
+```
+
+**100% of this package's own changed executable lines are covered.** No
+`--allow-excluded` used; no `pragma: no cover` on any changed line.
+
+Every REQUIRED fixture named in the handoff's traceability table is present
+and passing (satisfying `canary-verified`'s intent — there is no separate
+canary CLI in this repo; verified by grep):
+
+- O1: masquerader fixture (`test_masquerader_fixture_refuses_before_git_add`,
+  and its post-up mirror), all-R AND-combine fixture (`test_all_r_and_combined_fixture_refuses_before_git_add`,
+  and its post-up mirror).
+- O2: two-selected-one-unrequested-service fixture
+  (`test_success_connects_only_absent_selected_targets`), concurrent-join
+  fixture (`test_concurrent_join_fixture_non_zero_then_present_is_success_no_rollback`),
+  genuine-failure fixture (`test_genuine_failure_fixture_non_zero_then_absent_raises_and_no_rollback_needed`).
+- O3: three-target rollback discriminator
+  (`test_three_target_rollback_discriminator`), asserting the disconnect set
+  is exactly `[B]`.
+
+## Summary
+
+- `ciu-P02-worktree-shared-infra-join` is landed at commit `1664b4d5` on this
+  branch (was `4bf271ec`).
+- CIU-22 marked FIXED in `KNOWN_ISSUES_TODO_BACKLOG.md` with the code/test/
+  SPEC evidence pointers, per that file's own house rule.
+- SPEC.md gained S16.1; CONFIG.md gained the four `CIU_SHARED_INFRA_*` env
+  keys and a worked CLI example.
+- One judgment call made and flagged (not silently invented): `run_shipped`'s
+  pre-existing legacy-fallback path (no `deploy.project_name`/
+  `environment_tag`) now REFUSES with a `[S16.1]` `ComposeError` if a
+  shared-infra join is declared, since the fallback provides no compose
+  project string to scope the join to. This combination is not named in any
+  oracle or `escalate_if` line; both branches (with and without a declared
+  intent) are tested.
+- Nothing else required inventing an externally-visible interface, default,
+  or bound. No BLOCKED condition was hit.
