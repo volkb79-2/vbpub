@@ -272,6 +272,9 @@ cmru.secret.toml
 cmru.vars
 cmru/build/
 
+# assay / manual test
+.assay/
+
 # cleanup hardening (2026-06-18)
 core
 *.core
