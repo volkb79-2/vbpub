@@ -103,8 +103,9 @@ class TestVersionAndResolveBoundaries(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     version._parse_semver(raw)
 
-    def test_unknown_bump_is_patch_by_explicit_policy(self):
-        self.assertEqual(version.bump_version("1.2.3", "unknown"), "1.2.4")
+    def test_unknown_bump_is_refused_instead_of_inventing_a_patch(self):
+        with self.assertRaisesRegex(ValueError, "Unknown version bump level"):
+            version.bump_version("1.2.3", "unknown")
 
     def test_latest_json_uses_v_prefix_translation_and_rejects_incomplete_payload(self):
         class Response:
