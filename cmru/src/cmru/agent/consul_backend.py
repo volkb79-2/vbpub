@@ -286,13 +286,16 @@ class ConsulBackend(DesiredStateBackend):
             return None
         try:
             entries = json.loads(body)
-            if not entries:
+            if not isinstance(entries, list) or not entries:
                 return None
-            value_b64 = entries[0].get("Value")
+            entry = entries[0]
+            if not isinstance(entry, dict):
+                return None
+            value_b64 = entry.get("Value")
             if value_b64 is None:
                 return None
-            return base64.b64decode(value_b64).decode()
-        except (json.JSONDecodeError, ValueError):
+            return base64.b64decode(value_b64, validate=True).decode()
+        except (json.JSONDecodeError, ValueError, TypeError, UnicodeDecodeError):
             return None
 
     def read_desired_sig(self, node_id: str, landscape: str) -> Optional[bytes]:
@@ -305,9 +308,12 @@ class ConsulBackend(DesiredStateBackend):
             return None
         try:
             entries = json.loads(body)
-            if not entries:
+            if not isinstance(entries, list) or not entries:
                 return None
-            value_b64 = entries[0].get("Value")
+            entry = entries[0]
+            if not isinstance(entry, dict):
+                return None
+            value_b64 = entry.get("Value")
             if value_b64 is None:
                 return None
             return base64.b64decode(value_b64, validate=True)
