@@ -34,10 +34,9 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  # The installed CMRU executable is the canonical estate entry point. The
-  # command explicitly selects the root and then the cmru workdir; tester-gate
-  # still accepts only a contained workdir and mounts exactly that declared root.
-  { label = "cmru: tester-unified suite", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = ".." },
+  # The consumer-owned, hash-pinned zipapp makes the rigor claim explicit.
+  # tester-unified deliberately does not bake an ambient Assay version.
+  { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "tools/assay/assay-1.0.0.pyz", "run", "cmru", "--file", "assay.toml", "--verdict-json", ".assay/verdict-cmru.json"], cwd = ".." },
 ]
 
 # Initial standalone build (before cmru is installed):

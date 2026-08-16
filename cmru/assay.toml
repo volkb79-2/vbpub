@@ -1,0 +1,20 @@
+# CMRU's release-gate test claim.  The outer command in cmru.toml invokes the
+# pinned Assay zipapp in tester-unified; this lane's command is deliberately
+# the existing project test command, rather than recursively invoking CMRU's
+# tester-gate wrapper.
+#
+# R0 is the only honest declaration while whole-source coverage is below the
+# R1 100% floor.  R1/R2/R3 are promoted together with real coverage, bounded
+# mutation, and a cause-sensitive canary evidence record; do not add a rigor
+# level merely because the tool supports it.
+schema_version = 1
+
+[lanes.cmru]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
+env = {}
+env_passthrough = []
+budget = "20m"
+allow_argv_append = false
