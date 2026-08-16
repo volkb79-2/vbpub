@@ -548,36 +548,62 @@ def retain_success_outputs(
         project_root = Path(project_root).resolve()
         relative = project_root.relative_to(repo_root.resolve())
         child_root = workspace.path / relative
-        if retain_logs:
-            source_logs = child_root / "logs"
-            if source_logs.exists():
-                target_logs = project_root / "logs" / "cmru-release" / immutable_id
-                if target_logs.exists():
-                    raise RuntimeError(f"{name}: retained log destination already exists: {target_logs}")
-                target_logs.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source_logs), str(target_logs))
-                retained.append(target_logs)
+        source_logs = child_root / "logs"
+        target_logs = project_root / "logs" / "cmru-release" / immutable_id
+        if retain_logs and source_logs.exists() and target_logs.exists():
+            raise RuntimeError(f"{name}: retained log destination already exists: {target_logs}")
+
+        artifact_dirs: tuple[str, ...] = ()
+        target_root = project_root / "artifacts" / immutable_id
+        artifact_sources: list[tuple[str, Path, Path]] = []
         if retain_artifacts:
             artifact_dirs = tuple(getattr(project, "artifact_dirs", ()) or ())
             if not artifact_dirs:
                 raise RuntimeError(
                     f"{name}: --retain-artifacts-on-release requires project.release.artifact_dirs"
                 )
-            target_root = project_root / "artifacts" / immutable_id
             if target_root.exists():
                 raise RuntimeError(f"{name}: retained artifact destination already exists: {target_root}")
-            target_root.mkdir(parents=True)
+            seen_names: set[str] = set()
+            for raw_dir in artifact_dirs:
+                source = child_root / raw_dir
+                if not source.is_dir():
+                    raise RuntimeError(f"{name}: declared artifact directory is missing: {source}")
+                target_name = Path(raw_dir).name
+                if target_name in seen_names:
+                    raise RuntimeError(f"{name}: artifact directory name collision: {target_name}")
+                seen_names.add(target_name)
+                target = target_root / target_name
+                if target.exists():
+                    raise RuntimeError(f"{name}: artifact directory destination already exists: {target}")
+                artifact_sources.append((target_name, source, target))
+
+        log_parent = target_logs.parent
+        log_parent_existed = log_parent.exists()
+        artifact_parent = target_root.parent
+        artifact_parent_existed = artifact_parent.exists()
+        moved_sources: list[tuple[Path, Path]] = []
+        created_target_root = False
+        moved_logs = False
+        try:
+            # All destination creation is deliberately before the first move.
+            if retain_logs and source_logs.exists():
+                log_parent.mkdir(parents=True, exist_ok=True)
+            if retain_artifacts:
+                artifact_parent.mkdir(parents=True, exist_ok=True)
+                target_root.mkdir()
+                created_target_root = True
+
+            if retain_logs and source_logs.exists():
+                shutil.move(str(source_logs), str(target_logs))
+                moved_sources.append((source_logs, target_logs))
+                moved_logs = True
             moved: list[dict[str, object]] = []
-            try:
-                for raw_dir in artifact_dirs:
-                    source = child_root / raw_dir
-                    if not source.is_dir():
-                        raise RuntimeError(f"{name}: declared artifact directory is missing: {source}")
-                    target = target_root / Path(raw_dir).name
-                    if target.exists():
-                        raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
+            if retain_artifacts:
+                for target_name, source, target in artifact_sources:
                     shutil.move(str(source), str(target))
-                    moved.append({"directory": target.name, "files": _digest_tree(target)})
+                    moved_sources.append((source, target))
+                    moved.append({"directory": target_name, "files": _digest_tree(target)})
                 manifest = {
                     "schema_version": 1,
                     "project": name,
@@ -588,11 +614,35 @@ def retain_success_outputs(
                 (target_root / "release.json").write_text(
                     json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
-            except Exception:
-                # Never leave an ambiguous partial "immutable" artifact record.
-                shutil.rmtree(target_root, ignore_errors=True)
-                raise
-            retained.append(target_root)
+            if moved_logs:
+                retained.append(target_logs)
+            if retain_artifacts:
+                retained.append(target_root)
+        except Exception:
+            rollback_errors: list[Exception] = []
+            for source, target in reversed(moved_sources):
+                try:
+                    shutil.move(str(target), str(source))
+                except Exception as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if created_target_root and target_root.exists():
+                try:
+                    shutil.rmtree(target_root)
+                except Exception as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if not artifact_parent_existed and artifact_parent.exists():
+                try:
+                    artifact_parent.rmdir()
+                except OSError:
+                    pass
+            if not log_parent_existed and log_parent.exists():
+                try:
+                    log_parent.rmdir()
+                except OSError:
+                    pass
+            if rollback_errors:
+                raise RuntimeError(f"{name}: retention rollback failed") from rollback_errors[0]
+            raise
     return retained
 
 
