@@ -1,0 +1,50 @@
+SF:sample.py
+DA:4,1
+DA:5,1
+DA:6,1
+DA:7,0
+DA:10,1
+DA:11,1
+DA:12,1
+DA:13,1
+DA:14,0
+DA:17,1
+DA:18,0
+DA:19,0
+DA:20,0
+LF:13
+LH:8
+FN:4,7,classify
+FNDA:1,classify
+FN:10,14,first_two
+FNDA:1,first_two
+FN:17,20,never_called
+FNDA:0,never_called
+FNF:3
+FNH:2
+BRDA:5,0,jump to line 6,1
+BRDA:5,0,jump to line 7,0
+BRDA:11,0,jump to line 12,1
+BRDA:11,0,jump to line 14,0
+BRDA:12,0,jump to line 11,1
+BRDA:12,0,jump to line 13,1
+BRDA:18,0,jump to line 19,-
+BRDA:18,0,jump to line 20,-
+BRF:8
+BRH:4
+end_of_record
+SF:test_sample.py
+DA:1,1
+DA:4,1
+DA:5,1
+DA:8,1
+DA:9,1
+LF:5
+LH:5
+FN:4,5,test_classify_positive
+FNDA:1,test_classify_positive
+FN:8,9,test_first_two
+FNDA:1,test_first_two
+FNF:2
+FNH:2
+end_of_record

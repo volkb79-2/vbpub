@@ -1,0 +1,60 @@
+# Real coverage artifacts — carver-owned evidence, never hand-authored
+
+Six artifacts, three formats × (branch tracking ON / OFF), produced by a real
+`coverage.py` run over the two-file program in `probe/`. They exist because the
+branch-capability rules in the wave-1 specification are claims about what these
+tools **actually emit**, and this project's own record says a fixture invented
+to match a design is the shape of failure that survives a green suite
+(A-124, A-131, MEASUREMENTS.md).
+
+**The implementer must not edit any of these six files.** A branch parser that
+needs one of them changed is a parser that does not read the real format.
+
+## How they were produced
+
+Inside `probe/`, with `coverage 7.15.3` / `pytest 8.4.2` / CPython in this
+devcontainer, on 2026-08-16, driven by `probe/.coveragerc`
+(`source = .`, `relative_files = True`):
+
+```sh
+# branch tracking ON
+coverage run  --rcfile=.coveragerc --branch -m pytest test_sample.py -q
+coverage json --rcfile=.coveragerc -o ../coverage-py-json.branch.json --pretty-print
+coverage lcov --rcfile=.coveragerc -o ../lcov.branch.info
+coverage xml  --rcfile=.coveragerc -o ../cobertura.branch.xml
+
+# branch tracking OFF — same program, same tests, same commands minus --branch
+coverage run  --rcfile=.coveragerc -m pytest test_sample.py -q
+coverage json --rcfile=.coveragerc -o ../coverage-py-json.nobranch.json --pretty-print
+coverage lcov --rcfile=.coveragerc -o ../lcov.nobranch.info
+coverage xml  --rcfile=.coveragerc -o ../cobertura.nobranch.xml
+```
+
+**No file was edited afterwards** — including the Cobertura documents.
+`relative_files = True` is why: without it, `coverage xml` writes the producing
+machine's absolute directory into `<sources><source>`, and a fixture carrying
+this worktree's path would break for every other reader. With it, the two
+emitted `<source>` elements are the empty string and `.`.
+
+`probe/sample.py` is deliberately shaped so every branch state appears at once:
+`classify` has one taken and one untaken arc, `first_two` has a loop with both
+arcs of one branch taken, and `never_called` is never entered at all — which is
+the case `lcov` spells `-` rather than `0`.
+
+## What each artifact proves — the facts the specification depends on
+
+| fact | witness |
+|---|---|
+| coverage.py JSON states branch capability **explicitly** | `meta.branch_coverage` is `true` in `coverage-py-json.branch.json` and `false` in `coverage-py-json.nobranch.json` |
+| coverage.py JSON carries per-arc detail, not only totals | `files["sample.py"].executed_branches` = `[[5,6],[11,12],[12,11],[12,13]]`, `missing_branches` = `[[5,7],[11,14],[18,19],[18,20]]` |
+| its own totals can be cross-checked against that detail | `summary.num_branches` 8 = `covered_branches` 4 + `missing_branches` 4, and 4 = `len(executed_branches)` |
+| the combined line+branch percentage IS coverage.py's `percent_covered` | `(covered_lines 8 + covered_branches 4) / (num_statements 13 + num_branches 8)` = 57.14…, exactly `summary.percent_covered` — the metric `--cov-fail-under` compares against |
+| lcov states branch capability **nowhere** | `lcov.branch.info` and `lcov.nobranch.info` differ only by the presence of `BRDA`/`BRF`/`BRH` records |
+| an lcov record for a branch-free file omits those records **even when tracking is on** | in `lcov.branch.info`, `test_sample.py` carries no `BRF`/`BRH` at all while `sample.py` carries `BRF:8`/`BRH:4` — so a *per-file* capability rule would call this single real artifact "mixed" and refuse it |
+| lcov distinguishes "arc not taken" from "block never entered" | `BRDA:18,0,jump to line 19,-` uses `-`, not `0`, because line 18 never ran |
+| Cobertura states capability only as a **document-level count** | root `branches-valid="8"` with tracking on, `branches-valid="0"` with it off |
+| Cobertura's per-line branch detail is a ratio, not an arc list | `<line number="5" hits="1" branch="true" condition-coverage="50% (1/2)" missing-branches="7"/>` |
+| a never-entered branch line reports zero covered arcs in every format | line 18: coverage.py `[18,19]`/`[18,20]` both missing; lcov two `-`; Cobertura `condition-coverage="0% (0/2)"` |
+
+The last row is the invariant `FileCoverage` enforces once, in the model, for
+all formats: a line in `missing` can never carry a covered arc.
