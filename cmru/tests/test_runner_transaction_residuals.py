@@ -295,6 +295,34 @@ def test_transaction_release_retention_preserves_unexpected_log_parent_content(t
     assert (child / "dist-a" / "artifact.whl").is_file()
 
 
+def test_transaction_build_retention_refuses_disappeared_artifact_without_stale_records(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    (child / "dist").mkdir()
+    (child / "dist" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    output_id, _, _ = transaction.build_output_id(workspace)
+    original_replace = Path.replace
+    target_artifacts = root / "demo" / "artifacts" / output_id
+
+    def remove_promoted_artifacts_after_rename(source, target):
+        result = original_replace(source, target)
+        if Path(target) == target_artifacts:
+            transaction.shutil.rmtree(target_artifacts)
+        return result
+
+    with patch.object(Path, "replace", new=remove_promoted_artifacts_after_rename):
+        with pytest.raises(RuntimeError, match="artifact destination disappeared"):
+            transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+    assert (child / "logs" / "step.log").is_file()
+    assert (child / "dist" / "artifact.whl").is_file()
+    assert not (root / "demo" / "logs" / output_id).exists()
+    assert not target_artifacts.exists()
+
+
 def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, capsys, monkeypatch):
     config_path = tmp_path / "bundle.toml"
     config_path.write_text("placeholder", encoding="utf-8")
