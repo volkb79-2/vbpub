@@ -155,8 +155,6 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
         raise ValueError(f"steps.{step_name}.login must be a table")
 
     step_env = step.get("env") or {}
-    if step_env is None:
-        step_env = {}
     if not isinstance(step_env, dict):
         raise ValueError(f"steps.{step_name}.env must be a table")
 

@@ -199,6 +199,13 @@ def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, c
     with patch.object(bundle, "load_toml", return_value={"project_root": ".", "archive": {"name_template": "x"}, "copy": {}}):
         with pytest.raises(ValueError, match="name_template"):
             bundle.parse_config(config_path)
+    with patch.object(bundle, "load_toml", return_value={
+        "project_root": ".",
+        "archive": {"name_template": "x-{version}.tar", "version_env": "VERSION"},
+        "copy": None,
+    }):
+        with pytest.raises(ValueError, match=r"\[copy\]"):
+            bundle.parse_config(config_path)
     with patch.object(bundle, "run_bundle", return_value=tmp_path / "dist" / "bundle.tar.gz"):
         bundle.main(["--config", str(config_path)])
     assert "Done:" in capsys.readouterr().out
@@ -219,10 +226,28 @@ def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path,
     handlers.cmd_tarball_validate(args)
     assert "DEMO_TARBALL_SHA256_URL" in capsys.readouterr().out
 
+    (tmp_path / "dist").mkdir()
+    artifact = tmp_path / "dist" / "demo.tar.xz"
+    artifact.write_bytes(b"tarball")
+    monkeypatch.setenv("VERSION_FROM_ENV", "2.0.0")
+    monkeypatch.setattr(handlers, "find_artifact", lambda *_args: artifact)
+    monkeypatch.setattr(handlers, "publish_versioned", lambda *args, **kwargs: {"sha256": "abc"})
+    handlers.cmd_tarball_publish(SimpleNamespace(
+        cwd=str(tmp_path), version_file=None, version_env="VERSION_FROM_ENV",
+        prefix="demo", glob="*.tar.xz", notes_env=None,
+    ))
+    assert "Published demo 2.0.0" in capsys.readouterr().out
+
     with patch.object(tester_gate, "subprocess") as process:
         process.run.return_value = SimpleNamespace(returncode=0, stdout="/repo\n")
         with pytest.raises(ValueError, match="inside"):
             tester_gate._resolve_worktree_context(tmp_path, "../outside")
+    with patch.object(tester_gate, "subprocess") as process:
+        process.run.return_value = SimpleNamespace(returncode=0, stdout=str(tmp_path / "other") + "\n")
+        with pytest.raises(ValueError, match="inside"):
+            tester_gate._resolve_worktree_context(tmp_path, "child")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "3G")
+    assert tester_gate.resolve_memory_swap(None) == "3G"
     monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
     monkeypatch.setattr(tester_gate, "resolve_cgroup_parent", lambda explicit: explicit or "slice")
     monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda explicit: explicit or "probe")
@@ -237,3 +262,26 @@ def test_handlers_and_tester_gate_reject_or_report_boundary_conditions(tmp_path,
         ])
     assert exit_info.value.code == 0
     assert "probe unavailable" in capsys.readouterr().err
+
+    mountinfo = "malformed\n10 1 0:1 /host/repo /cockpit rw - bind ext4 /dev\n"
+    assert tester_gate._physical_path(Path("/cockpit/cmru"), mountinfo) == Path("/host/repo/cmru")
+
+
+def test_bundle_copy_sources_handles_external_allowlist_paths(tmp_path):
+    project = tmp_path / "project"
+    outside = tmp_path / "external"
+    project.mkdir()
+    outside.mkdir()
+    (outside / "input.txt").write_text("external", encoding="utf-8")
+    config_path = tmp_path / "bundle.toml"
+    config_path.write_text("placeholder", encoding="utf-8")
+    raw = {
+        "project_root": str(project),
+        "archive": {"name_template": "x-{version}.tar", "version_env": "VERSION"},
+        "copy": {"files": [], "dirs": [str(outside)]},
+    }
+    with patch.object(bundle, "load_toml", return_value=raw):
+        config = bundle.parse_config(config_path)
+    config.bundle_dir.mkdir(parents=True)
+    bundle.copy_sources(config)
+    assert (config.bundle_dir / "external" / "input.txt").read_text(encoding="utf-8") == "external"
