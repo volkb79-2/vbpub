@@ -20,13 +20,13 @@ devcontainer, on 2026-08-16, driven by `probe/.coveragerc`
 
 ```sh
 # branch tracking ON
-coverage run  --rcfile=.coveragerc --branch -m pytest test_sample.py -q
+coverage run  --rcfile=.coveragerc --branch -m pytest check_sample.py -q
 coverage json --rcfile=.coveragerc -o ../coverage-py-json.branch.json --pretty-print
 coverage lcov --rcfile=.coveragerc -o ../lcov.branch.info
 coverage xml  --rcfile=.coveragerc -o ../cobertura.branch.xml
 
 # branch tracking OFF — same program, same tests, same commands minus --branch
-coverage run  --rcfile=.coveragerc -m pytest test_sample.py -q
+coverage run  --rcfile=.coveragerc -m pytest check_sample.py -q
 coverage json --rcfile=.coveragerc -o ../coverage-py-json.nobranch.json --pretty-print
 coverage lcov --rcfile=.coveragerc -o ../lcov.nobranch.info
 coverage xml  --rcfile=.coveragerc -o ../cobertura.nobranch.xml
@@ -37,6 +37,15 @@ coverage xml  --rcfile=.coveragerc -o ../cobertura.nobranch.xml
 machine's absolute directory into `<sources><source>`, and a fixture carrying
 this worktree's path would break for every other reader. With it, the two
 emitted `<source>` elements are the empty string and `.`.
+
+**The driver files are named `check_*.py`, not `test_*.py`, and must stay that
+way.** `pyproject.toml` sets `testpaths = ["tests"]` with no `norecursedirs`
+override, so a `test_*.py` anywhere under `tests/fixtures/` is collected into
+the project's REAL suite — measured here: `pytest tests/fixtures/coverage
+--collect-only -q` reported `4 tests collected` under the original names and
+`no tests collected` under these. pytest still runs an explicitly named file
+regardless of the pattern, which is why the generating commands work unchanged.
+Renaming these back would quietly add fixture programs to the gate's own suite.
 
 `probe/sample.py` is deliberately shaped so every branch state appears at once:
 `classify` has one taken and one untaken arc, `first_two` has a loop with both
@@ -52,7 +61,7 @@ the case `lcov` spells `-` rather than `0`.
 | its own totals can be cross-checked against that detail | `summary.num_branches` 8 = `covered_branches` 4 + `missing_branches` 4, and 4 = `len(executed_branches)` |
 | the combined line+branch percentage IS coverage.py's `percent_covered` | `(covered_lines 8 + covered_branches 4) / (num_statements 13 + num_branches 8)` = 57.14…, exactly `summary.percent_covered` — the metric `--cov-fail-under` compares against |
 | lcov states branch capability **nowhere** | `lcov.branch.info` and `lcov.nobranch.info` differ only by the presence of `BRDA`/`BRF`/`BRH` records |
-| an lcov record for a branch-free file omits those records **even when tracking is on** | in `lcov.branch.info`, `test_sample.py` carries no `BRF`/`BRH` at all while `sample.py` carries `BRF:8`/`BRH:4` — so a *per-file* capability rule would call this single real artifact "mixed" and refuse it |
+| an lcov record for a branch-free file omits those records **even when tracking is on** | in `lcov.branch.info`, `check_sample.py` carries no `BRF`/`BRH` at all while `sample.py` carries `BRF:8`/`BRH:4` — so a *per-file* capability rule would call this single real artifact "mixed" and refuse it |
 | lcov distinguishes "arc not taken" from "block never entered" | `BRDA:18,0,jump to line 19,-` uses `-`, not `0`, because line 18 never ran |
 | Cobertura states capability only as a **document-level count** | root `branches-valid="8"` with tracking on, `branches-valid="0"` with it off |
 | Cobertura's per-line branch detail is a ratio, not an arc list | `<line number="5" hits="1" branch="true" condition-coverage="50% (1/2)" missing-branches="7"/>` |
@@ -67,7 +76,7 @@ all formats: a line in `missing` can never carry a covered arc.
 instead of reaching another line. Generated the same way, `--branch` only:
 
 ```sh
-coverage run  --rcfile=.coveragerc --branch -m pytest test_exits.py -q
+coverage run  --rcfile=.coveragerc --branch -m pytest check_exits.py -q
 coverage json --rcfile=.coveragerc -o ../coverage-py-json.exitarc.json --pretty-print
 coverage lcov --rcfile=.coveragerc -o ../lcov.exitarc.info
 ```
