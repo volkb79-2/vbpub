@@ -38,15 +38,23 @@ def test_planner_rejects_missing_plan_nodes_and_profile_entries():
 def test_output_stream_configure_flush_and_empty_write_contract(monkeypatch):
     stream = io.StringIO()
     wrapped = output.SeverityStream(stream, time_short=False, colour=False)
+    original_stderr = output.sys.stderr
+    monkeypatch.delenv(output._TIME_ENV, raising=False)
     wrapped.configure(time_short=True, colour=False)
     assert wrapped.write("") == 0
     wrapped.write("[INFO]")
     wrapped.flush()
     assert "[INFO]" in stream.getvalue()
-    assert output.consume_cli_flags(["--log-prefix-time-short", "build", "--", "--log-prefix-time-short"]) == ["build", "--", "--log-prefix-time-short"]
     assert wrapped.encoding == stream.encoding
     monkeypatch.setattr(output.sys, "stdout", wrapped)
-    output.configure(time_short=False)
+    try:
+        output.configure(time_short=False)
+        assert output.consume_cli_flags(["--log-prefix-time-short", "build", "--", "--log-prefix-time-short"]) == ["build", "--", "--log-prefix-time-short"]
+        assert output.os.environ[output._TIME_ENV] == "1"
+    finally:
+        output.sys.stderr = original_stderr
+        monkeypatch.delenv(output._TIME_ENV, raising=False)
+    assert output._TIME_ENV not in output.os.environ
 
 
 def test_dependencies_records_wheel_source_outside_repository(tmp_path):
