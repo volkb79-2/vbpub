@@ -787,7 +787,12 @@ def promote_workspace(workspace: ReleaseWorkspace) -> None:
         int(_git(workspace.path, "rev-list", "--count", f"{checkpoint}..HEAD"))
         if checkpoint else None
     )
-    for attempt in range(_PROMOTE_MAX_RETRIES + 1):
+    # Every iteration either succeeds or raises.  An explicit unbounded loop
+    # makes that contract structural: there is no phantom fall-through after
+    # the bounded retry policy for coverage (or callers) to mistake for a
+    # successful promotion.
+    attempt = 0
+    while True:
         result = subprocess.run(
             ["git", "push", "origin", "HEAD:refs/heads/main"],
             cwd=workspace.path, capture_output=True, text=True,
@@ -824,6 +829,7 @@ def promote_workspace(workspace: ReleaseWorkspace) -> None:
         if checkpoint_depth is not None:
             checkpoint = _git(workspace.path, "rev-parse", f"HEAD~{checkpoint_depth}")
             write_release_progress(workspace.repo_root, workspace, checkpoint)
+        attempt += 1
 
 
 def push_backup_branch(workspace: ReleaseWorkspace) -> None:
