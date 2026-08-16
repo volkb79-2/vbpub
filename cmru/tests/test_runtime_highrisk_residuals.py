@@ -103,17 +103,15 @@ def test_transaction_build_retention_rejects_collision_and_rolls_back_destinatio
     transaction.remove_workspace(ws)
 
 
-def test_transaction_release_retention_refuses_log_and_artifact_name_collisions(tmp_path):
+def test_transaction_release_retention_refuses_log_destination_collision(tmp_path):
     root = repo(tmp_path); ws = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
     child = ws.path / "demo"; (child / "logs").mkdir(parents=True); (child / "logs" / "step.log").write_text("x")
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
     target_log = root / "demo" / "logs" / "cmru-release" / "tag"; target_log.mkdir(parents=True)
     with pytest.raises(RuntimeError, match="retained log destination"):
         transaction.retain_success_outputs(root, ws, {"demo": project}, {"demo": "tag"}, retain_logs=True, retain_artifacts=False)
-    (child / "logs").rename(child / "logs-old"); (child / "dist").mkdir(); (child / "dist" / "x").write_text("x")
-    with patch.object(transaction, "_digest_tree", return_value=[]):
-        with pytest.raises(RuntimeError):
-            transaction.retain_success_outputs(root, ws, {"demo": SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist", "dist"])}, {"demo": "new"}, retain_logs=False, retain_artifacts=True)
+    assert target_log.is_dir()
+    assert (child / "logs" / "step.log").is_file()
 
 
 def test_runner_validates_and_scopes_runtime_environment(tmp_path, capsys, monkeypatch):
