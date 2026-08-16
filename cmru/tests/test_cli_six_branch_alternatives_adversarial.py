@@ -75,6 +75,16 @@ def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch,
     assert "action: unavailable here" in capsys.readouterr().out
 
 
+def test_worktrees_unknown_purpose_existing_path_has_no_action_hint(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "existing"
+    path.mkdir()
+    workspace = transaction.ReleaseWorkspace(tmp_path, path, "cmru/other/x", "a" * 40)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
+    cli.main(["worktrees"])
+    assert "other: cmru/other/x" in capsys.readouterr().out
+
+
 def test_status_without_project_delegates_all_ordered_projects(monkeypatch, tmp_path):
     config = _config(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
