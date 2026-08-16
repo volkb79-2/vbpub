@@ -53,19 +53,20 @@ def test_orchestrate_step_first_uses_step_order_and_rejects_unknown_project(monk
         cli._orchestrate()
 
 
-def test_untagged_release_requires_push_and_detects_post_build_source_mutation(monkeypatch, tmp_path):
+def test_untagged_release_refuses_missing_build_and_post_build_mutation(monkeypatch, tmp_path):
     project = _project(build_step=None, runner_steps={"push": object()})
     monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *a: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
     with pytest.raises(RuntimeError, match="build_step is absent"):
         cli._run_untagged_project(tmp_path, {"demo": project}, "demo", github_config=None, env_config=None)
     project.build_step = "build"
-    project.runner_steps = {"build": object()}
-    monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
-    monkeypatch.setattr(cli, "run_project_step", lambda *a: None)
-    monkeypatch.setattr(cli, "_worktree_changed_paths", lambda root: [])
-    with pytest.raises(RuntimeError, match="required push step is absent"):
+    project.runner_steps = {"build": object(), "push": object()}
+    calls = []
+    monkeypatch.setattr(cli, "run_project_step", lambda project, step, root, logs: calls.append(step))
+    monkeypatch.setattr(cli, "_worktree_changed_paths", lambda root: ["demo/generated.txt"])
+    with pytest.raises(RuntimeError, match="changed tracked source"):
         cli._run_untagged_project(tmp_path, {"demo": project}, "demo", github_config=None, env_config=None)
+    assert calls == ["build"]  # mutation refusal precedes the push boundary
 
 
 def test_cleanup_commit_deletions_commits_only_real_changes(tmp_path):
