@@ -25,8 +25,9 @@ must not be edited (see their `PROVENANCE.md`).
 
 ## 0. The rulings this wave rests on
 
-Operator decisions taken 2026-08-16, to be recorded as A-257…A-263 in
-`decisions.md` by the implementer as work item 0, in these words:
+Operator decisions taken 2026-08-16 (A-257…A-263), plus two the independent
+pre-dispatch review forced (A-264, A-265 — see Addendum B). All nine to be
+recorded in `decisions.md` by the implementer as work item 0, in these words:
 
 * **A-257 — the coverage model gains branch data, in all four formats.** A
   format that genuinely cannot express branch arcs declares that fact rather
@@ -58,10 +59,35 @@ Operator decisions taken 2026-08-16, to be recorded as A-257…A-263 in
   executable lines, which were not "changed" by anything; keeping the old name
   would put a false statement on the wire. This is the one rename v6 takes, and
   it is taken because a major bump is the only honest moment for it.
+* **A-264 — R1 records its policy whenever R1 was ATTEMPTED, for exactly two
+  new terminals.** Today `judgment.r1` is present iff the R1 claim carries a
+  coverage payload, enforced in the model (`verdict.py:2242`: "judgment.r1 is
+  present but no R1 claim rendered a coverage payload"). That makes the two new
+  payload-free refusals — `BRANCH_UNAVAILABLE` and `TARGET_NOT_MEASURED` —
+  incapable of recording which target was attempted or which floor was asked
+  for, which would gut B005's whole reason for existing (a rigor decision
+  invisible to the verdict is the thing it replaces). R2 already has exactly
+  this widening for `MUTATION_UNSUPPORTED` (A-183, `verdict.py:2256`: "R2 policy
+  is recorded whenever R2 was actually ATTEMPTED, which is one case wider than
+  rendered a payload"). R1 takes the same shape, narrowed to a CLOSED set of
+  two reason codes. Every other payload-free R1 terminal — `DIRTY_TREE`,
+  `BASE_IS_HEAD`, `GIT_FAILED`, `EMPTY_COVERAGE`, `FORMAT_MISMATCH`,
+  `UNREADABLE_ARTIFACT` — keeps today's rule and must have a negative test
+  proving it.
+* **A-265 — an artifact's branch DETAIL is authoritative over its capability
+  METADATA, and disagreement is a refusal.** Plus: arc identities are validated
+  for uniqueness and executed/missing disjointness BEFORE they are aggregated
+  into per-line counts, because aggregation destroys the evidence a duplicate
+  could be caught with. See §3.1a and §3.2.
 * **A-263 — `pct` is the COMBINED line+branch percentage.** `(covered +
   branches_covered) / (executable + branches_total)`, which is exactly
-  `coverage.py`'s own `summary.percent_covered` under `--cov-branch` and
-  therefore exactly what `--cov-fail-under` compares against. `covered` and
+  `coverage.py`'s own `summary.percent_covered` under `--cov-branch`. The METRIC
+  is identical; the COMPARISON is not, and the difference is stated rather than
+  glossed: coverage.py compares a value rounded to the configured precision
+  (`round(total, precision) < fail_under`), assay compares the unrounded value,
+  which is stricter and precision-independent. At the floor the consumer
+  actually uses they agree — measured here, `coverage report --fail-under=100`
+  over a 99.60% module printed `99%` and exited 2. `covered` and
   `executable` stay line-only; the branch side gets its own two integers, so an
   independent consumer can still re-derive `pct` from the payload alone. When
   branch capability is `"unavailable"`, `branches_total` is 0 and the formula
@@ -98,9 +124,19 @@ allow_escaping_symlinks = ["infra-global/reverse-proxy/etc-nginx/modules"]
   A-145 is the standing trap here: assay's project root is not its repository
   top, and every boundary crossing between the two must say which it speaks.
   Say it in the loader docstring and in the config error text.
+* **Refused at load time on an R0-only lane.** An R0-only lane runs by "direct
+  live-tree execution … no `assay.isolation` snapshot" (`runner.py:1857`), so no
+  symlink is ever checked and no waiver can apply. Declaring one there is
+  precisely A-062's inert configuration — "nothing consumes it, so if it is
+  wrong nothing fails" — and it would put a hermeticity waiver in an artifact
+  for machinery that never ran. Legal only on a lane declaring some rigor above
+  R0.
 * Load-time refusal (`ERROR`/`BAD_LANE_CONFIG`, before any Git work): a
   non-list, a non-string entry, an empty entry, an absolute path, any entry with
-  a `.` or `..` component, a backslash, or a duplicate.
+  a `.` or `..` component, a backslash, a duplicate, or **a non-canonical
+  spelling** — an entry whose `PurePosixPath` round-trip differs from the raw
+  string (`a//b`, `a/b/`) is refused rather than normalised, so the declared
+  waiver and the printed diagnostic are the same bytes.
 * Snapshot-time behaviour: an entry naming an escaping symlink causes that entry
   to be **omitted from the snapshot entirely** — never materialized, not even as
   a dangling link. It cannot be read, so it cannot exfiltrate; that is the whole
@@ -200,11 +236,55 @@ right independently):
 `ERROR`/`UNREADABLE_ARTIFACT`, exactly as the existing disjointness violations
 are wrapped today.
 
-### 3.2 Capability derivation is ARTIFACT-level, never per-file
+### 3.1a Arc identity is validated BEFORE it is aggregated (A-265)
+
+Aggregating `(covered, total)` per line throws the arc identities away, so every
+identity rule has to fire in the parser, before the counts exist. Without this,
+a tampered artifact that simply REPEATS a covered arc inflates the numerator,
+satisfies every totals cross-check below (because the stated totals were
+tampered to match), and is undetectable afterwards — the same reasoning
+`FileCoverage` already applies to executed/missing line arrays, which the model
+calls out as "three INDEPENDENT arrays straight from external, potentially
+adversarial input" (`model.py:47`).
+
+Per file, refuse `ERROR`/`UNREADABLE_ARTIFACT` when:
+
+* the same `(src, dst)` appears twice within `executed_branches`, or twice
+  within `missing_branches`; or
+* the same `(src, dst)` appears in BOTH arrays — an arc cannot be simultaneously
+  taken and not taken, exactly as a line cannot be both executed and missing;
+* (lcov) the same `(line, block, branch_id)` triple appears twice, whatever the
+  `taken` values — identical or contradictory, a repeated identity means the
+  record cannot be read without inventing a precedence rule;
+* (Cobertura) the same file+line is reported by two `<class>` elements with
+  DIFFERENT `(covered, total)` — see §3.3.
+
+### 3.2 Capability derivation is ARTIFACT-level, and DETAIL is the authority
 
 `coverage.py` gains `derive_branch_capability(profile)`, mirroring
 `derive_exclusion_capability` exactly: all-`None` ⇒ `"unavailable"`,
 none-`None` ⇒ `"reported"`, **mixed ⇒ `ERROR`/`UNREADABLE_ARTIFACT`**.
+
+**The authority rule, which every parser obeys (A-265):** an artifact's branch
+DETAIL decides its capability. Capability METADATA — coverage.py's
+`meta.branch_coverage`, Cobertura's root `branches-valid` — is a cross-check,
+and **any disagreement between metadata and detail is
+`ERROR`/`UNREADABLE_ARTIFACT`**, never a silent resolution in either direction.
+
+That rule exists because the obvious alternative — "metadata decides" — has a
+false-PASS hole in it: an artifact with `meta` absent (or `branch_coverage:
+false`) but real arc arrays present would be read as `"unavailable"`, its branch
+evidence silently dropped, and with `require_branch = false` the lane would
+report a line-only PASS over an artifact that had measured branches all along.
+A-258 says branches are judged *whenever the artifact reports them*; letting
+metadata veto present detail makes that sentence false. Concretely:
+
+| artifact says | capability |
+|---|---|
+| detail present, metadata agrees or is absent | `"reported"` |
+| no detail anywhere, metadata absent or says none | `"unavailable"` |
+| detail present, metadata says none | **refused** |
+| no detail anywhere, metadata claims branches exist | **refused** |
 
 That refusal is only safe because each parser decides capability once for the
 whole artifact and applies it to every file it emits. The trap, witnessed in
@@ -216,65 +296,83 @@ branch-free file in a branch-tracking artifact.
 
 ### 3.3 Per-format rules
 
-**`coverage-py-json` — capability is stated explicitly.**
-`meta.branch_coverage` is the authority: `true` ⇒ every file gets a
-`BranchCoverage`; `false` or the whole `meta` object absent ⇒ every file gets
-`None`. Then:
+**`coverage-py-json` — metadata and detail must agree.** Detail = any file
+record carrying `executed_branches` or `missing_branches`. Metadata =
+`meta.branch_coverage` when the `meta` object is present. Detail present ⇒
+`"reported"` for every file (a branch-free record gets an empty `by_line`, never
+`None`); no detail anywhere ⇒ `"unavailable"` for every file. `meta` present and
+disagreeing with that — `false` beside arrays, or `true` with no arrays anywhere
+— is `UNREADABLE_ARTIFACT`. Then:
 
 * `executed_branches` / `missing_branches` are arrays of `[src, dst]` pairs.
   Group by `src`: `total` = arcs with that source, `covered` = those in
-  `executed_branches`. `dst` is not otherwise used and is not stored — assay
-  judges branches at their source line.
-* When `meta.branch_coverage` is `true`, a file record MISSING either array is
-  `UNREADABLE_ARTIFACT` with a message naming the cause: the artifact was
-  produced by a coverage.py too old to report per-line arcs, and assay needs
-  them to attribute a branch to a changed line. Failing closed here is
-  deliberate — the alternative is judging a branch floor against file-level
-  totals that cannot be attributed to a line.
-* When `meta.branch_coverage` is `false` but a record carries either array, that
-  is a self-inconsistent artifact: `UNREADABLE_ARTIFACT`.
+  `executed_branches`. `dst` is used ONLY for §3.1a's identity checks and is not
+  stored — assay judges branches at their source line, but it must see the whole
+  identity before it collapses one.
+* In a `"reported"` artifact, a file record carrying ONE array and not the other
+  is `UNREADABLE_ARTIFACT`, with a message naming the likely cause: a
+  coverage.py too old to report per-line arcs. Failing closed is deliberate —
+  the alternative is judging a branch floor against file-level totals that
+  cannot be attributed to a line.
 * Cross-check, when `summary` carries them: `summary.num_branches` must equal
   the derived total and `summary.covered_branches` the derived covered.
   Mismatch is `UNREADABLE_ARTIFACT` — the artifact's own claims about itself
   disagree, which is the same refusal the normalized-key collision already
   makes. A `summary` that omits the branch keys is not malformed; skip the
   cross-check and say so in the docstring.
-* Malformed pair shapes (not a 2-element list, non-int, bool, non-positive) are
-  `UNREADABLE_ARTIFACT` per the existing `_int_list` discipline. Note `dst` may
-  legitimately be **negative or zero** in coverage.py's own output for an exit
-  arc (`[line, -line]` spellings appear in some versions) — so validate `src`
-  as a positive line and treat `dst` as an opaque integer identity. Prove
-  whichever is true against the real fixture before choosing; do not assume this
-  sentence is right.
+* Malformed pair shapes (not a 2-element list, non-int, bool) are
+  `UNREADABLE_ARTIFACT` per the existing `_int_list` discipline. `src` must be a
+  positive line; `dst` is an opaque integer and **is legitimately negative** —
+  `coverage-py-json.exitarc.json` carries `[11, -10]` for an arc that leaves the
+  function starting at line 10. A parser requiring both members positive rejects
+  that real artifact.
 
-**`lcov` — capability is inferred from the whole document.** If ANY record in
-the artifact carries `BRDA`, `BRF` or `BRH`, branch tracking was on: every file
-gets a `BranchCoverage`, empty for records with no branch lines. If NO record
-anywhere carries one, every file gets `None`.
+**`lcov` — detail is the only signal the format has.** If ANY record in the
+artifact carries `BRDA`, `BRF` or `BRH`, branch tracking was on: every file gets
+a `BranchCoverage`, empty for records with no branch lines. If NO record
+anywhere carries one, every file gets `None`. lcov has no capability metadata,
+so §3.2's disagreement case cannot arise here.
 
 * `BRDA:<line>,<block>,<branch>,<taken>` — group by `line`; `taken` is `-`
   (block never entered) or a decimal count. `covered` counts entries whose
   `taken` is a count `> 0`; `-` and `0` are both uncovered. `<block>` and
   `<branch>` are opaque identity fields, not numbers to sum — coverage.py writes
-  the human string `jump to line 6` in the `<branch>` field, so a parser that
-  requires an integer there rejects a real artifact.
+  the human strings `jump to line 6` and `return from function
+  'falls_off_the_end'` there, so a parser requiring an integer rejects a real
+  artifact.
+* Split the record as: `line` and `block` off the LEFT on the first two commas,
+  `taken` off the RIGHT with `rsplit(",", 1)`, branch id is the remainder.
+  **This is a defensive choice, not a fixture-proven necessity** — every
+  witnessed record has exactly three delimiter commas and would survive a
+  four-field split; no artifact here carries a comma inside a branch id. It is
+  specified this way because it is correct for every witnessed record AND
+  degrades safely for an unwitnessed one, and the reason is written down rather
+  than dressed up as evidence.
 * `BRF`/`BRH`, when present, must equal the derived total/covered for that
   record. Mismatch is `UNREADABLE_ARTIFACT`.
 
-**`cobertura` — capability is the document-level count.** Root
-`branches-valid` present and `> 0` ⇒ reported for all files; `0` or absent ⇒
-`None` for all. The acknowledged, documented edge: branch tracking on for a
-project with zero branches anywhere is indistinguishable from tracking off, and
-is treated as `"unavailable"`. That fails CLOSED — with `require_branch` it
-refuses rather than passing a vacuous branch floor.
+**`cobertura` — per-line detail decides, the root count cross-checks.** Any
+`<line branch="true" …>` anywhere ⇒ `"reported"` for every file; none anywhere ⇒
+`"unavailable"`. Root `branches-valid`, when present, must agree: `> 0` with no
+per-line detail, or `0`/absent with detail present, is `UNREADABLE_ARTIFACT` per
+§3.2. The acknowledged, documented edge remains: branch tracking on for a
+project with zero branches anywhere emits neither signal and is read as
+`"unavailable"`, which fails CLOSED under `require_branch`.
 
-* Per line: `branch="true"` with `condition-coverage="P% (C/T)"`. `C`/`T` are
-  the covered/total arcs; the percentage is redundant and must NOT be trusted —
-  parse `(C/T)`, and refuse a `condition-coverage` whose stated percentage is
-  inconsistent with `C/T` beyond rounding, or whose shape does not match.
-  `missing-branches` is a coverage.py extension and is not required.
+* Per line: `condition-coverage="P% (C/T)"`. Parse `(C/T)` for the covered/total
+  arcs and **ignore `P` entirely** — do not verify it. No fixture witnesses a
+  disagreement, `P`'s rounding grammar is unspecified by the DTD, and a
+  tolerance rule invented here would be behaviour nothing measured. A missing or
+  unparsable `(C/T)` on a `branch="true"` line IS refused. `missing-branches` is
+  a coverage.py extension and is not read.
 * `branches-valid`/`branches-covered` at the root must equal the summed derived
   totals across all files. Mismatch is `UNREADABLE_ARTIFACT`.
+* **Multiple `<class>` elements may name the same file** — the existing parser
+  permits it and merges line hits with "executed wins" (`cobertura.py:23`). For
+  branch data there is no safe merge: summing double-counts, taking a maximum
+  invents a measurement, and executed-wins has no meaning for a ratio. So a
+  file+line reported twice must carry IDENTICAL `(C, T)`; anything else is
+  `UNREADABLE_ARTIFACT`. The existing line-merge behaviour is untouched.
 
 **`go-cover` — always `None`.** The cover profile's records are
 `file:startLine.startCol,endLine.endCol numStmt count`: statement counts, no
@@ -368,7 +466,22 @@ targets = ["libs/common/src/common/redirect_chain.py"]
   floor is enforced when it is not). Project-relative file paths, the same
   spelling as `judge.coverage.artifact` and `judge.canary.target` (A-145 again).
   Load-time refusal for: non-list, non-string, empty, absolute, any `.`/`..`
-  component, backslash, duplicate.
+  component, backslash, duplicate, or a **non-canonical spelling** — an entry
+  whose `PurePosixPath` round-trip differs from the raw string. Without that
+  last rule `src/good.py` and `src//good.py` are two distinct strings naming one
+  file: a raw-string uniqueness check accepts both, the schema's `uniqueItems`
+  accepts both, and evaluation then counts a well-covered target TWICE, raising
+  the aggregate enough to carry a poorly covered sibling over the floor. That is
+  a false PASS reachable from a plausible typo. Uniqueness is additionally
+  re-checked after conversion to the repository-top-relative spelling, so two
+  different-but-equivalent declarations can never both be judged.
+* `require_branch` and `mode` interact with R3: `judge.canary.mechanism =
+  "uncovered-line"` proves "a changed-line coverage floor rejects an uncovered
+  line" (`canary.py:118`), a premise whole-target mode replaces. On a
+  `whole_target` lane that mechanism is **refused at load unless
+  `judge.canary.target` is itself one of `targets`** — inside the targets it
+  still means exactly what it says; outside them it proves nothing and would
+  produce an accidental `CANARY_SURVIVED` that looks like a real finding.
 * `base` is **refused at load time** for a `whole_target` lane that declares no
   R2 — it resolves nothing and recording it would imply a comparison that never
   happened. `JUDGE_FIELDS_BY_RIGOR` must be consulted rather than duplicated:
@@ -450,19 +563,24 @@ which is the blocker that put dstdns on the argv stopgap.
 | `files_with_missing_branch_lines` | NEW, required, same shape as `files_with_excluded_lines` |
 | everything else | unchanged |
 
-Schema-level invariants (`allOf`), each mirroring the exclusion-capability
-branch that already exists:
+**Exactly one of the new invariants belongs in the schema.** Draft 2020-12 has
+no `$data`, which the shipped schema states about itself
+(`verdict.schema.json:5`: "claiming those here would be a hollow contract"), and
+A-182 forbids crediting a layer with a relation it cannot express. So:
 
-* `branch_capability = "unavailable"` ⇒ `branches_total = 0`,
+* **Schema (`allOf`, mirroring the exclusion-capability branch that exists
+  today):** `branch_capability = "unavailable"` ⇒ `branches_total = 0`,
   `branches_covered = 0`, `missing_branch_lines` empty,
   `files_with_missing_branch_lines` empty. The converse is deliberately NOT a
   rule — `"reported"` with zero branches is a capable format truthfully finding
   none, and forbidding it re-collapses the very distinction A-008 keeps.
-* `branches_covered <= branches_total`.
-* `covered <= executable`.
-* `files_with_missing_branch_lines` and the key set of `missing_branch_lines`
-  are the same set — the identity check the existing pairs already get in
-  `Coverage._check_summaries_name_their_own_detail`.
+* **Model (`Coverage.__post_init__`) AND the raw verifier, independently:**
+  `branches_covered <= branches_total`; `covered <= executable`; and
+  `files_with_missing_branch_lines` equals the key set of `missing_branch_lines`
+  — the last joining the pairs already covered by
+  `Coverage._check_summaries_name_their_own_detail`. Both implementations must
+  be proven load-bearing by deleting each in turn and recording that a test goes
+  red, the same evidence O12 requires for the base conditional.
 
 ### `judgment.r1`
 
@@ -477,6 +595,18 @@ branch that already exists:
 The lane file records what a human declared; the artifact records what actually
 judged. That asymmetry is the point of `judgment` existing at all (P16, sol
 finding 2).
+
+**And `judgment.r1` must now survive two payload-free terminals (A-264).**
+Today the model requires `judgment.r1` present iff the R1 claim carries a
+coverage payload (`verdict.py:2242`), and the producer only builds one then
+(`runner.py:1368`). Widen BOTH — model, raw verifier, schema
+`dependentRequired`, and producer — so `judgment.r1` is ALSO present when the R1
+claim is payload-free with reason `BRANCH_UNAVAILABLE` or `TARGET_NOT_MEASURED`,
+and remains forbidden for every other payload-free R1 terminal. Copy A-183's R2
+wording and structure; do not invent a second shape for the same idea. Without
+this, a `TARGET_NOT_MEASURED` artifact cannot say which target it could not
+measure, and the whole-target judge records less than the argv stopgap it
+replaces.
 
 ### `judgment.resolved.base`
 
@@ -504,18 +634,35 @@ it does not move with it, leaving a *correct* fixture failing the suite.
 
 ### Migration
 
-Mechanical, and it must be auditable rather than 47 hand edits:
+Mechanical, and it must be auditable rather than 40-odd hand edits. **The unit
+of migration is a TYPED BUCKET, not a grep hit.** `git grep -l '"schema_version":
+5'` currently returns 56 tracked files and they are not 56 verdict documents:
+`carve-assets/P33/migration-manifest.json` carries its OWN manifest schema
+version, `tests/test_output_reservation.py` contains the literal string as
+expected output, and this specification matches itself. Transforming any of
+those corrupts unrelated data.
 
 * `nyxloom-trove/carve-assets/W1/migrate_v5_to_v6.py`, in the register of P33's
   `migrate_v4_to_v5.py`: a logged, itemised transform with a `--check` mode that
-  exits 0 **before and after** implementation, over `tests/fixtures/**`, the
-  schema, and every other v5 consumer.
-* `nyxloom-trove/carve-assets/W1/sweep_v5_consumers.py`, modelled on P33's
-  `sweep_v4_consumers.py` (read it — it exists because two review rounds each
-  found a consumer the previous closure missed, and round 3 pinned it with a
-  planted decoy). Same discipline: scan the git index, union with a content
-  scan, and pin the sweep itself with a planted decoy so a sweep that finds
-  nothing is distinguishable from a sweep that looks at nothing.
+  exits 0 **before and after** implementation. It classifies every matching file
+  into exactly one of four buckets and **refuses to run if any file falls into
+  none** — a fail-closed classifier is stronger than a sweep, because an
+  unclassifiable file stops the migration instead of being silently skipped:
+  1. **transform** — verdict documents that become v6 (`tests/fixtures/verdicts/**`);
+  2. **preserve byte-identical** — locked carver-owned evidence, including all
+     six `carve-assets/P33/expected/*-v5-template.json` and every earlier
+     package's frozen templates (A-222);
+  3. **hand-edit source** — `src/**`, the schema, `tests/conftest.py`, and the
+     tests that assert version-coupled facts;
+  4. **must not change** — files that merely mention the string, listed
+     explicitly with the reason each is exempt.
+* **Do not write `sweep_v5_consumers.py`.** P33's sweep answers a different
+  question — "does this file read a path under a carver-owned frozen tree and
+  compare it" (`sweep_v4_consumers.py:350`) — so it is an inventory of frozen-
+  asset consumers, not of schema-version consumers. RUN it (running a locked
+  asset is not editing it), paste its output into the LOG, and use it to check
+  bucket 2 is complete. The bucket classifier above is what closes the
+  schema-version question.
 * A-252's **differential** validity sweep, output pasted into the LOG: every
   committed artifact validated before and after. Under a hard cut the
   expectation is inverted from P33's — every migrated document must be valid
@@ -532,7 +679,18 @@ carver-owned asset that must not be edited**. Follow the exact precedent P33 set
 for P26: keep the module, `--deselect` only the tests genuinely coupled to the
 v5 artifact shape, add a new `carve-assets/W1/test_acceptance_v6.py` carrying
 that coverage forward, and write the reasoning into the script's comment block
-the way the existing four deselections are justified. The `--deselect` values are
+the way the existing four deselections are justified.
+
+**Derive the deselection list by MEASUREMENT, not by reading.** The coupling is
+wider than the six template-consuming tests: the suite also asserts the exact
+`$id`, the version constant, and byte-identical schema equality with
+`verdict.schema.v5.json` (`test_acceptance_v5.py:98`). So: implement v6, run the
+locked suite unmodified, list every red, and classify each one as
+"legitimately v5-coupled → deselect, with the v6 suite covering the same
+property" or "a real regression → fix the code". Paste both lists. A deselection
+without a named v6 successor test is coverage silently dropped. The v6 suite
+gets its OWN `expected/` templates — the six v5 templates stay frozen and are
+never rewritten into v6. The `--deselect` values are
 **rootdir-relative nodeids** — an absolute spelling silently deselects nothing,
 which leaves the gate looking wired while running the tests it claims to have
 suppressed.
@@ -543,7 +701,7 @@ suppressed.
 
 Each lands as its own commit. Do not batch.
 
-0. **Decisions first.** A-257…A-263 into `decisions.md`, verbatim from §0. A
+0. **Decisions first.** A-257…A-265 into `decisions.md`, verbatim from §0. A
    ruling that reaches only an agent message is not applied (A-072).
 1. **B006 (a)** — §1. Independent of everything else.
 2. **B006 (b)** — §2. Independent of everything else.
@@ -572,11 +730,12 @@ correctly in the same test that asserts the injected defect does not — because
 negative that cannot fail is this project's most expensive recurring defect
 (A-124, A-131).
 
-**O1 — the real artifacts parse to the real numbers.** For each of the six
+**O1 — the real artifacts parse to the real numbers.** For each of the EIGHT
 fixtures: the parsed profile's derived branch totals equal the artifact's own
 stated totals, and `sample.py`'s combined percentage equals `57.142857…`, which
 is `coverage.py`'s own `summary.percent_covered`. Not a hand-computed number —
-the one the tool printed.
+the one the tool printed. The two `*.exitarc.*` artifacts additionally parse
+without error, which is the negative-`dst` and free-text-branch-id proof.
 
 **O2 — capability is not inferred from emptiness.** `lcov.branch.info` parses to
 `"reported"` with `test_sample.py` carrying an EMPTY `by_line`, not `None`, and
@@ -588,14 +747,32 @@ returns `None` for the branch-free file fails this.
 `branch_capability = "unavailable"`, and a `require_branch = true` lane over it
 refuses with `NO_MEASUREMENT`/`BRANCH_UNAVAILABLE` rather than passing on lines.
 
-**O4 — the tamper invariants bite.** Six mutations of the real coverage.py JSON,
+**O4 — the tamper invariants bite.** Mutations of the real coverage.py JSON,
 each a one-key edit of a COPY (never the fixture): `covered_branches` off by
 one; `num_branches` off by one; an arc whose source line is not in
 `executed|missing`; an arc whose source line is in `missing` but appears in
 `executed_branches`; `meta.branch_coverage` flipped to `false` with the arrays
-left in place; a record missing `missing_branches` while `branch_coverage` is
-`true`. Each must raise `ERROR`/`UNREADABLE_ARTIFACT`, and the unmodified
+left in place; `meta` deleted entirely with the arrays left in place (this one
+must parse as `"reported"`, NOT refuse — detail is authoritative); `meta` saying
+`true` with every arc array removed; a record carrying `executed_branches` but
+not `missing_branches`; **a duplicated arc inside `executed_branches` with
+`covered_branches` incremented to match** (the coherent-tamper case: every
+totals cross-check passes, and only the identity rule catches it); and the same
+`(src,dst)` present in both arrays. Each must raise
+`ERROR`/`UNREADABLE_ARTIFACT` except the `meta`-deleted case, and the unmodified
 control must parse clean in the same test.
+
+**O4b — the other two formats' identity and merge rules.** An lcov copy with a
+repeated `(line, block, branch_id)` triple refuses. A Cobertura copy with two
+`<class>` elements naming one file, agreeing on `(C, T)` for a shared line,
+parses clean; the same document with those two disagreeing refuses. A Cobertura
+copy whose `condition-coverage` percentage text is nonsense but whose `(C/T)` is
+intact parses clean — the percentage is deliberately not read, and this test is
+what stops someone "helpfully" adding a tolerance rule later.
+
+**O4c — capability disagreement is a refusal in both directions.** A Cobertura
+copy with `branches-valid="0"` but per-line `branch="true"` detail refuses; one
+with `branches-valid="8"` and no per-line detail refuses.
 
 **O5 — an existing R1 lane's verdict actually changes.** Drive `assay run`
 end-to-end on a real fixture repository whose changed lines include a partially
@@ -637,6 +814,26 @@ parent still refuses; and a symlinked path component refuses in both.
 `assay verify` with a version diagnostic; a v6 document produced by `assay run`
 verifies clean; and every committed fixture is valid under v6 and invalid under
 v5 (the differential sweep, output pasted).
+
+**O13 — the two attempted-policy terminals record their policy, and no others
+do (A-264).** A `TARGET_NOT_MEASURED` artifact carries `judgment.r1` naming the
+targets it could not measure; a `BRANCH_UNAVAILABLE` artifact carries the
+`require_branch` that refused it; and an artifact for each of the six OTHER
+payload-free R1 terminals still carries no `judgment.r1` and is refused if one
+is injected. All through the real CLI plus the raw verifier.
+
+**O14 — two spellings of one target cannot both be judged.** A lane declaring
+`["src/a.py", "src//a.py"]` is refused at load; so is `["src/a.py/"]`. Prove the
+refusal is the loader's, not an accident of a later stage.
+
+**O15 — the isolation waiver is refused where it would be inert.** An R0-only
+lane declaring `[lanes.X.isolation]` is refused at load; the same table on an
+R1 lane loads and is recorded.
+
+**O16 — the whole-target/R3 interaction is deliberate.** A `whole_target` lane
+declaring an `uncovered-line` canary whose target is NOT in `targets` is refused
+at load; the same lane with the canary target inside `targets` loads and the
+canary still kills.
 
 **O12 — the base conditional holds in the model AND the raw verifier
 independently.** A whole-target artifact carrying a `resolved.base` is refused;
@@ -695,10 +892,14 @@ carries `missing_branches: [[5,7],[11,-10]]`, where `-10` encodes "this arc
 leaves the function that starts at line 10". Validate `src` as a positive line;
 treat `dst` as an opaque integer and never store it.
 
-**A2 — `BRDA` cannot be split by comma count.** `lcov.exitarc.info` carries
-`BRDA:11,0,return from function 'falls_off_the_end',0`. Split off `line` and
-`block` on the first two commas, take `taken` off the right with
-`rsplit(",", 1)`, and treat everything between as an opaque branch id.
+**A2 — the lcov branch id is free text. WITHDRAWN AS WRITTEN, see B8.** The
+original claim — that `lcov.exitarc.info` proves `BRDA` "cannot be split by
+comma count" — is false of the evidence: `BRDA:11,0,return from function
+'falls_off_the_end',0` contains exactly the three delimiter commas a four-field
+split expects. What it does prove is that the branch id is non-numeric free
+text, so a parser reading it as an integer refuses a real record. The
+`rsplit(",", 1)` rule stands in §3.3 as an explicitly DEFENSIVE choice with its
+reason stated, not as a fixture-proven necessity.
 
 **A3 — do NOT write `sweep_v5_consumers.py`.** §6's migration bullet asked for
 one. P33's `sweep_v4_consumers.py` is version-agnostic in its inventory role —
@@ -710,8 +911,14 @@ a locked asset is not editing it. Run it, paste its output into the LOG, and
 write a new sweep ONLY if its predicate proves genuinely v4-bound — in which
 case say which line proves that.
 
-**A4 — the migration is 55 tracked documents, not the ~47 in `tests/`, and six
-of them are LOCKED.** `git grep -l '"schema_version": 5'` returns 55, including
+**A4 — the migration is not the ~47 in `tests/`, and some matches are not
+verdicts at all. PARTLY WITHDRAWN, see B7 and §6's bucket rule.** The count in
+the original text (55) was taken before this file itself matched the grep; it is
+56 now, and — the part that actually matters and that this addendum got wrong —
+**they are not all verdict documents**. `git grep -l '"schema_version": 5'`
+includes files whose match is a manifest's own version or a literal string in a
+test. Migration is by typed bucket, never by grep hit. What survives from the
+original wording: six of the matches are LOCKED, including
 `nyxloom-trove/carve-assets/P33/expected/*-v5-template.json`. A-222 already
 ruled the analogous case for P26's v4 templates: **frozen historical evidence is
 not rewritten**. So: leave all six P33 templates byte-identical, give
@@ -758,7 +965,38 @@ and belongs beside `check_empty_coverage` in `evaluate_r1`'s guard sequence
 
 ---
 
-## 11. What must NOT change
+## 11. Addendum B — the independent pre-dispatch review, and what it changed
+
+An adversarial review by `codex gpt-5.6-sol` at high effort, against the
+worktree at `af918715`, returned **NOT READY — 9 blocking, 2 non-blocking**.
+Every finding is accepted; the body above is already rewritten for all of them.
+Recorded here so the reasoning is not lost and so nobody re-proposes a rejected
+shape. The controller independently verified the load-bearing citations before
+accepting — `git grep` really does return 56 with seven non-verdict members,
+`verdict.py:2242` really does reject `judgment.r1` beside a payload-free R1
+claim, and `verdict.py:2256` really is the R2 precedent A-264 copies.
+
+| # | finding | disposition |
+|---|---|---|
+| 1 | three "schema invariants" are inexpressible in Draft 2020-12 | §6 now assigns one to the schema and three to the model + raw verifier, with a delete-each-and-count-reds proof |
+| 2 | metadata could silently veto present branch detail → line-only PASS | A-265: detail is authoritative, disagreement refuses, with a four-row truth table |
+| 3 | arc identity discarded before uniqueness was checked, so a duplicated covered arc inflates the numerator undetectably | new §3.1a validates identity BEFORE aggregation; O4 gains the coherent-tamper case |
+| 4 | Cobertura multi-`<class>` branch merge undefined; percentage tolerance unwitnessed | identical `(C,T)` required or refuse; the percentage is now explicitly NOT read, with O4b pinning that so nobody adds a tolerance rule later |
+| 5 | the two new payload-free refusals could not record the policy they refused under | A-264, modelled verbatim on A-183's R2 widening; O13 proves the closed set of two |
+| 6 | the isolation waiver was legal and recorded on an R0-only lane, which never snapshots | refused at load per A-062; O15 |
+| 7 | the v5 inventory was wrong and the sweep had the wrong predicate | §6 replaced by a fail-closed four-bucket classifier; P33's sweep is RUN, not replaced; the deselection list is derived by measurement |
+| 8 | fixture lock said six while eight exist, and A2's oracle was vacuous | PROVENANCE and O1 normalised to eight; A2 withdrawn as written and the rule restated as defensive |
+| 9 | lexical duplicate rejection let `src//a.py` and `src/a.py` both be judged | canonical-spelling refusal plus post-conversion uniqueness; O14 |
+| 10 | "exactly what `--cov-fail-under` compares against" over-claimed | A-263 narrowed: same metric, different comparison; measured — 99.60% prints `99%` and exits 2 at `--fail-under=100`, so they agree at the consumer's floor |
+| 11 | no whole-target/R3 interaction rule | `uncovered-line` refused on a whole-target lane unless the canary target is one of `targets`; O16 |
+
+Two of the nine landed on the carver's own Addendum A rather than the body —
+which is the argument for commissioning a review the carver cannot overrule,
+stated again in evidence rather than in principle.
+
+---
+
+## 12. What must NOT change
 
 * `A-030`: assay never shells out to docker, and nothing here needs to.
 * `A-116`'s payload-free propagation shape, and the four hollow-PASS/FAIL

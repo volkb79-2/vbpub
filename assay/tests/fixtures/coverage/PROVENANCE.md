@@ -9,8 +9,9 @@ tools **actually emit**, and this project's own record says a fixture invented
 to match a design is the shape of failure that survives a green suite
 (A-124, A-131, MEASUREMENTS.md).
 
-**The implementer must not edit any of these six files.** A branch parser that
-needs one of them changed is a parser that does not read the real format.
+**The implementer must not edit any of these eight artifacts**, nor the four
+`probe*/` driver files that produce them. A branch parser that needs one of
+them changed is a parser that does not read the real format.
 
 ## How they were produced
 
@@ -85,8 +86,15 @@ coverage lcov --rcfile=.coveragerc -o ../lcov.exitarc.info
 |---|---|
 | a coverage.py branch **destination can be negative** | `missing_branches` = `[[5,7],[11,-10]]` — `-10` encodes "exit the function that starts at line 10" |
 | so `src` is a line number and `dst` is an opaque identity | a parser validating both members as positive line numbers rejects this real artifact. assay attributes a branch to its SOURCE line and never needs `dst` |
-| an lcov branch id is **free text**, not a number | `BRDA:11,0,return from function 'falls_off_the_end',0` — spaces and an apostrophe inside the third field |
-| so `BRDA` cannot be parsed by a bare `split(",")` count | split the line into `line`, `block`, and a remainder on the first two commas, then take `taken` off the remainder's RIGHT with `rsplit(",", 1)`. The branch id is whatever is left, opaque |
+| an lcov branch id is **free text**, not a number | `BRDA:11,0,return from function 'falls_off_the_end',0` — spaces and an apostrophe inside the third field, so a parser reading it as an integer rejects this real record |
+
+That last row proves the field is non-numeric free text. It does **not** prove
+the field can contain a comma — this record carries exactly the three delimiter
+commas a four-field split expects, and no artifact here witnesses an id with a
+comma in it. The specification still requires right-splitting `taken` off the
+end, but as a *defensive* choice with its own stated reason, not as something
+these bytes demonstrate. Saying otherwise would be the unfalsifiable-oracle
+mistake this directory exists to prevent.
 
 Both files carry the ordinary shapes too (`[5,6]`/`[5,7]`, `BRDA:5,0,jump to
 line 6,1`), so a test that reads them is not exercising only the exotic case.
