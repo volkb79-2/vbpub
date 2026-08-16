@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.0.1] - 2026-08-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=e126a1f73e239dd2dc33a51ca79cd5fb0c19cb01 -->
+
+### Changed
+- cmru: centralize estate release policy (2281181a)
+
 ## [4.0.0] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=9e98628c934f62fc08d1d89cfa9776b1f36a1fe0 -->
