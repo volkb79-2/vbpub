@@ -54,7 +54,7 @@ class DesiredStateBackend(abc.ABC):
     @abc.abstractmethod
     def enroll(self, seed: "EnrollmentSeed") -> NodeIdentity:
         """Register the node, write initial standby observed state; return identity."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.enroll must be implemented")
 
     @abc.abstractmethod
     def watch_desired(
@@ -69,19 +69,19 @@ class DesiredStateBackend(abc.ABC):
         raw_json_bytes is None when the key does not exist yet (standby).
         Blocks up to `wait` (e.g. '300s') on the Consul blocking-query endpoint.
         """
-        ...
+        raise NotImplementedError("DesiredStateBackend.watch_desired must be implemented")
 
     @abc.abstractmethod
     def acquire_lock(self, node_id: str, landscape: str, generation: int) -> LockHandle:
         """Create a Consul session and acquire a host lock for the given generation.
         Returns a LockHandle; caller must call release_lock() or let session TTL expire.
         """
-        ...
+        raise NotImplementedError("DesiredStateBackend.acquire_lock must be implemented")
 
     @abc.abstractmethod
     def release_lock(self, lock: LockHandle) -> None:
         """Release the lock and destroy the session."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.release_lock must be implemented")
 
     @abc.abstractmethod
     def publish_observed(
@@ -91,19 +91,19 @@ class DesiredStateBackend(abc.ABC):
         observed_json: str,
     ) -> None:
         """Write observed state JSON to the backend KV store."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.publish_observed must be implemented")
 
     @abc.abstractmethod
     def register_service(self, node_id: str) -> None:
         """Register/refresh cmru-agent service with a TTL health check."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.register_service must be implemented")
 
     @abc.abstractmethod
     def pass_health_check(self, node_id: str) -> None:
         """Mark the TTL health check as passing."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.pass_health_check must be implemented")
 
     @abc.abstractmethod
     def read_observed(self, node_id: str, landscape: str) -> Optional[str]:
         """Return current observed state JSON or None if absent."""
-        ...
+        raise NotImplementedError("DesiredStateBackend.read_observed must be implemented")

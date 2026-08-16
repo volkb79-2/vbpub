@@ -56,14 +56,14 @@ class ProjectAdapter(abc.ABC):
         """Validate that the desired state is applicable given the installed release.
         Raise ValueError if not.
         """
-        ...
+        raise NotImplementedError("ProjectAdapter.validate must be implemented")
 
     @abc.abstractmethod
     def prepare(self, desired: Any, release_root: Path) -> None:
         """Prepare the host for the new release.
         This includes any pre-network transport-join required for first bring-up.
         """
-        ...
+        raise NotImplementedError("ProjectAdapter.prepare must be implemented")
 
     @abc.abstractmethod
     def apply_step(self, step: Any) -> StepResult:
@@ -71,17 +71,17 @@ class ProjectAdapter(abc.ABC):
         The step object is opaque data from the desired state — the adapter owns
         the interpretation but MUST NOT execute arbitrary commands from it.
         """
-        ...
+        raise NotImplementedError("ProjectAdapter.apply_step must be implemented")
 
     @abc.abstractmethod
     def health(self, step: Any) -> HealthResult:
         """Check health of the service after a step; returns HealthResult."""
-        ...
+        raise NotImplementedError("ProjectAdapter.health must be implemented")
 
     @abc.abstractmethod
     def rollback(self, previous: Any) -> None:
         """Roll back to the previous release."""
-        ...
+        raise NotImplementedError("ProjectAdapter.rollback must be implemented")
 
 
 # ---------------------------------------------------------------------------
