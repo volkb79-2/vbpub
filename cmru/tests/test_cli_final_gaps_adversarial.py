@@ -72,4 +72,3 @@ def test_config_hint_is_actionable_only_when_config_exists(tmp_path, monkeypatch
     assert cli._config_hint(tmp_path) == ""
     (tmp_path / "cmru.toml").write_text("[project]\n")
     assert "--config" in cli._config_hint(tmp_path)
-
