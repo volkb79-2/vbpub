@@ -130,7 +130,8 @@ def validate_desired(raw_dict: dict) -> DesiredState:
 
     # generation
     generation = raw_dict.get("generation")
-    if not isinstance(generation, int) or generation < 0:
+    # ``bool`` is an ``int`` subclass in Python, but it is not a generation.
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
         raise DesiredStateError(f"invalid generation: {generation!r}")
 
     # action — no shell action allowed
