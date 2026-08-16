@@ -100,7 +100,6 @@ class GitHubPackages:
             0,
             body,
         )
-        return "private"  # unreachable
 
     def package_visibility(self, package_name: str) -> Optional[str]:
         """Return the current GHCR package visibility, or None if the package is not visible yet."""
@@ -192,4 +191,3 @@ class GitHubPackages:
                 json.dumps(updated),
             )
         return expected_visibility
-
