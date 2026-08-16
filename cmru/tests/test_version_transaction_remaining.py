@@ -81,9 +81,12 @@ def test_transaction_read_progress_handles_empty_and_write_result_rejects_corrup
 def test_transaction_sync_non_main_with_unrelated_local_main_returns_false(tmp_path):
     root = repo(tmp_path)
     git(root, "branch", "main-local")
-    with patch.object(transaction.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+    calls = []
+    with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(returncode=0)), \
          patch.object(transaction, "_git", side_effect=["feature", "local", "origin", "base"]):
-        assert transaction.sync_local_main(root) in (True, False)
+        assert transaction.sync_local_main(root) is False
+    assert not any(argv[:2] == ["git", "branch"] and "-f" in argv for argv in calls)
+    assert not any(argv[:2] == ["git", "checkout"] for argv in calls)
 
 
 def test_controller_cli_reports_missing_plan_and_engine_failure(tmp_path, capsys, monkeypatch):
