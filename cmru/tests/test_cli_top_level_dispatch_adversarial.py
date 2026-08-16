@@ -23,11 +23,18 @@ def _env():
 
 def test_run_cleanup_requires_project_credential_before_any_cleanup(monkeypatch, tmp_path):
     project = cli.ProjectConfig(name="demo", env={}, steps={}, prefix="demo-v", github_token="")
+    side_effects = []
     monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
     monkeypatch.setattr(cli, "github_for_project", lambda *_: cli.GitHubConfig("o", "r", "", "org"))
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
+    for name in (
+        "cleanup_project_releases_and_tags", "cleanup_project_step",
+        "cleanup_commit_deletions", "cleanup_releases", "cleanup_ghcr", "delete_package",
+    ):
+        monkeypatch.setattr(cli, name, lambda *args, _name=name, **kwargs: side_effects.append(_name))
     with pytest.raises(RuntimeError, match="requires GITHUB_PUSH_PAT"):
         cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], _cleanup(), _github(), _env(), None, False)
+    assert side_effects == []
 
 
 def test_run_cleanup_deletes_declared_ghcr_packages_and_dry_run_is_non_mutating(monkeypatch, tmp_path, capsys):
