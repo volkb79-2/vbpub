@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,7 +157,7 @@ def test_release_artifact_discovery_and_wheel_metadata_fail_closed(tmp_path):
     with pytest.raises(SystemExit) as multiple:
         release.find_artifact(tmp_path, "*.whl")
     assert multiple.value.code == 1
-    with pytest.raises(Exception):
+    with pytest.raises(zipfile.BadZipFile):
         release.read_wheel_version(tmp_path / "a.whl")
 
 
