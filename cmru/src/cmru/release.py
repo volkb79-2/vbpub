@@ -499,7 +499,6 @@ def read_wheel_version(wheel_path: Path) -> str:
             if line.startswith("Version:"):
                 return line.split(":", 1)[1].strip()
     _die(f"No Version field in {Path(wheel_path).name} METADATA")
-    return ""  # unreachable (_die raises)
 
 
 def validate_latest_release(
