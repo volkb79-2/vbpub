@@ -154,7 +154,7 @@ def test_transaction_release_lock_refuses_second_holder(tmp_path):
                 pass
 
 
-def test_transaction_release_retention_refuses_partial_artifact_and_restores_log(tmp_path):
+def test_transaction_release_retention_preflight_preserves_all_sources(tmp_path):
     root = repo(tmp_path)
     workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="release")
     project_root = root / "demo"
@@ -164,9 +164,8 @@ def test_transaction_release_retention_refuses_partial_artifact_and_restores_log
     project = SimpleNamespace(project_root=project_root, artifact_dirs=["dist"])
     with pytest.raises(RuntimeError, match="missing"):
         transaction.retain_success_outputs(root, workspace, {"demo": project}, {"demo": "tag"}, retain_logs=True, retain_artifacts=True)
-    # Release logs are independently retained before artifact validation; the
-    # failed artifact leg must not create an immutable artifact record.
-    assert (project_root / "logs" / "cmru-release" / "tag" / "step.log").is_file()
+    assert (child / "logs" / "step.log").is_file()
+    assert not (project_root / "logs" / "cmru-release" / "tag").exists()
     assert not (project_root / "artifacts" / "tag").exists()
     transaction.remove_workspace(workspace)
 

@@ -548,36 +548,48 @@ def retain_success_outputs(
         project_root = Path(project_root).resolve()
         relative = project_root.relative_to(repo_root.resolve())
         child_root = workspace.path / relative
-        if retain_logs:
-            source_logs = child_root / "logs"
-            if source_logs.exists():
-                target_logs = project_root / "logs" / "cmru-release" / immutable_id
-                if target_logs.exists():
-                    raise RuntimeError(f"{name}: retained log destination already exists: {target_logs}")
-                target_logs.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source_logs), str(target_logs))
-                retained.append(target_logs)
+        source_logs = child_root / "logs"
+        target_logs = project_root / "logs" / "cmru-release" / immutable_id
+        if retain_logs and source_logs.exists() and target_logs.exists():
+            raise RuntimeError(f"{name}: retained log destination already exists: {target_logs}")
+
+        artifact_dirs: tuple[str, ...] = ()
+        target_root = project_root / "artifacts" / immutable_id
+        artifact_sources: list[tuple[str, Path, Path]] = []
         if retain_artifacts:
             artifact_dirs = tuple(getattr(project, "artifact_dirs", ()) or ())
             if not artifact_dirs:
                 raise RuntimeError(
                     f"{name}: --retain-artifacts-on-release requires project.release.artifact_dirs"
                 )
-            target_root = project_root / "artifacts" / immutable_id
             if target_root.exists():
                 raise RuntimeError(f"{name}: retained artifact destination already exists: {target_root}")
+            seen_names: set[str] = set()
+            for raw_dir in artifact_dirs:
+                source = child_root / raw_dir
+                if not source.is_dir():
+                    raise RuntimeError(f"{name}: declared artifact directory is missing: {source}")
+                target_name = Path(raw_dir).name
+                if target_name in seen_names:
+                    raise RuntimeError(f"{name}: artifact directory name collision: {target_name}")
+                seen_names.add(target_name)
+                target = target_root / target_name
+                if target.exists():
+                    raise RuntimeError(f"{name}: artifact directory destination already exists: {target}")
+                artifact_sources.append((target_name, source, target))
+
+        if retain_logs:
+            if source_logs.exists():
+                target_logs.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source_logs), str(target_logs))
+                retained.append(target_logs)
+        if retain_artifacts:
             target_root.mkdir(parents=True)
             moved: list[dict[str, object]] = []
             try:
-                for raw_dir in artifact_dirs:
-                    source = child_root / raw_dir
-                    if not source.is_dir():
-                        raise RuntimeError(f"{name}: declared artifact directory is missing: {source}")
-                    target = target_root / Path(raw_dir).name
-                    if target.exists():
-                        raise RuntimeError(f"{name}: artifact directory name collision: {target.name}")
+                for target_name, source, target in artifact_sources:
                     shutil.move(str(source), str(target))
-                    moved.append({"directory": target.name, "files": _digest_tree(target)})
+                    moved.append({"directory": target_name, "files": _digest_tree(target)})
                 manifest = {
                     "schema_version": 1,
                     "project": name,
