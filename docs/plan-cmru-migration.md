@@ -72,7 +72,7 @@ CLI coherence in `cmru/src/cmru/cli.py` — done, tests green (75 passed):
 
 - **P0 ✅** CLI verb coherence (publish/build/release one-shot, clear usage) + wrapper scripts.
 - **P1 ✅** One schema: `cli.py:load_config` reads S2 `cmru.toml` (legacy keys tolerated one
-  release); `cmru.toml` + `cmru.secret.toml` + `cmru.sample.toml`; `./cmru.py` entry; token
+  release); `cmru.toml` + `cmru.secret.toml` + `cmru.sample.toml`; installed `cmru` entry; token
   resolution S2.4; +6 CLI dispatch tests.
 - **P2 ✅** pwmcp `version.strategy = "delegated"` — cmru detects the change and runs
   build/publish; `_run_delegated_project` builds → commits & pushes the resolver's build-input
@@ -85,7 +85,7 @@ CLI coherence in `cmru/src/cmru/cli.py` — done, tests green (75 passed):
   on-demand release documented.
 - **P5 ✅** Retired `release-manager/` (no code left; source already in `cmru/`); `cmru/build/`
   gitignored; rewrote `RELEASE-TOOLING.md`, updated `VERSIONING.md`; renamed every
-  `build-push.toml` → `cmru.build.toml`; discoverable `cmru.*.sh` shims + README section.
+  `build-push.toml` → `cmru.build.toml`; installed `cmru` command + README section.
 
 **Auto-release set (`project_order`): ciu, cmru, modern-debian-tools-python-debug, pwmcp.**
 Delegated/on-demand: pwmcp (in project_order, self-versioned), tls-edge, empyrion-translation.

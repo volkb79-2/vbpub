@@ -4,8 +4,9 @@
 
 ## Principle — no legacy remains
 
-The repo carries exactly **one** release toolchain (`cmru`) and one entry point
-(`cmru.py` + the `cmru.*.sh` shims). Superseded names are *removed*, not kept as
+The repo carries exactly **one** release toolchain (`cmru`) and one general entry point
+(the installed `cmru` command). `cmru.release.sh` is retained only as a convenience
+wrapper for the complete estate release. Superseded names are *removed*, not kept as
 shims: a returning user who greps the root must find only the current names.
 
 Retired & removed: `release-manager/`, `release-all.py`, `release-runner.py`,
@@ -41,7 +42,8 @@ Retired & removed: `release-manager/`, `release-all.py`, `release-runner.py`,
 - **Products:** `ciu/`, `cmru/`, `modern-debian-tools-python-debug/`, `pwmcp/`,
   `tls-edge/`, `game_stuff/empyrion/`, `plesk-mailbox-create/`, `vsc-devcontainer/`.
 - **cmru toolchain:** `cmru.orchestration.toml`, project-local `*/cmru.toml`,
-  project-local `cmru.secret.toml` (gitignored), `cmru.py`, `cmru.*.sh`.
+  repository-root `cmru.secret.toml` (gitignored, with optional project-local
+  overlays), and obsolete per-verb shell shims.
 - `scripts/` (ops scripts incl. the relocated `scripts/truenas/`), `docs/`, `.github/`,
   `.vscode/`, `.claude/`, `install-debian.json`, `requirements.txt`.
 

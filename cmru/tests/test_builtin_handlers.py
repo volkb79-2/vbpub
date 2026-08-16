@@ -97,21 +97,18 @@ def test_validate_latest_release_none_exits():
     assert gh.calls == 1
 
 
-def test_check_build_prerequisites_missing_module_exits(monkeypatch):
-    import importlib.util
-
+def test_check_build_prerequisites_requires_explicit_builder_image(monkeypatch):
     from cmru import exit_codes
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
     with pytest.raises(SystemExit) as exc:
         handlers._check_build_prerequisites()
     assert exc.value.code == exit_codes.PREREQ_MISSING
 
 
-def test_check_build_prerequisites_present_is_noop(monkeypatch):
-    import importlib.util
-
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+def test_check_build_prerequisites_explicit_builder_image_is_accepted(monkeypatch):
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:test")
+    monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")
     handlers._check_build_prerequisites()  # must not raise
 
 
@@ -158,28 +155,21 @@ def test_host_bind_source_rejects_unavailable_mountinfo(monkeypatch):
         handlers._host_bind_source(Path("/workspaces/vbpub/cmru"))
 
 
-def test_cmd_wheel_build_direct_mode_unchanged(tmp_path, monkeypatch):
+def test_cmd_wheel_build_refuses_the_retired_local_python_fallback(tmp_path, monkeypatch):
     monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
-    calls = []
-    monkeypatch.setattr(
-        handlers.subprocess, "run",
-        lambda argv, **kw: calls.append((argv, kw)),
-    )
-    handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
-    assert len(calls) == 1
-    argv, kw = calls[0]
-    assert argv[:3] == [handlers.sys.executable, "-m", "build"]
-    assert argv[-1] == str(project)
-    assert kw["cwd"] == str(project.parent)
+
+    with pytest.raises(SystemExit):
+        handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
 
 
 def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])
@@ -192,6 +182,7 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     assert len(calls) == 1
     argv, _kw = calls[0]
     assert argv[:3] == ["docker", "run", "--rm"]
+    assert argv[argv.index("--cgroup-parent") + 1] == "dev-background.slice"
     assert argv[argv.index("-v") + 1] == f"/host{project.parent}:{project.parent}"
     assert argv[argv.index("-w") + 1] == str(project.parent)
     assert "wheel-builder:local" in argv
@@ -201,12 +192,12 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
 def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, monkeypatch):
     """The regression this guards: a wheel built inside the isolated release
     worktree's container, with only the worktree bind-mounted, cannot resolve
-    git history at all (worktree .git is a pointer OUTSIDE that subtree) — so
-    setuptools_scm silently falls back to pyproject.toml's fallback_version
-    and a WRONG version gets baked into the published wheel undetected."""
+    git history at all (worktree .git is a pointer OUTSIDE that subtree). The
+    builder must have that history to derive the intended package version."""
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(
@@ -285,7 +276,8 @@ def test_wheel_builder_git_mount_args_rejects_unresolvable_git_common_dir(tmp_pa
 
 
 def test_cmd_wheel_build_rejects_non_git_source(tmp_path, monkeypatch):
-    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:test")
+    monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")
     project = tmp_path / "cmru"
     project.mkdir()
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: None)

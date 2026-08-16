@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -22,6 +23,8 @@ from cmru import transaction
 from cmru import exit_codes
 from cmru.config import load_forge_config
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.dependencies import build_report, render_text as render_dependency_report
+from cmru.output import consume_cli_flags
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class ProjectConfig:
     build_metadata: Mapping[str, str] = None
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
     build_step: str = ""                # explicit [project.release].build_step
+    github_token: str = ""              # root credential or explicit project-secret override
 
 
 @dataclass(frozen=True)
@@ -347,6 +351,8 @@ def _bare_prefix(prefix: Optional[str]) -> str:
 
 def load_config(
     config_path: Path,
+    *,
+    validate_dependencies: bool = True,
 ) -> tuple[
     Path,
     dict[str, ProjectConfig],
@@ -361,11 +367,23 @@ def load_config(
 ]:
     """Map the strict project documents into the execution model.
 
-    ``load_forge_config`` owns validation.  This function deliberately only maps
-    that validated grammar; it accepts no retired central ``[project.<name>]``
-    shape and no second build-runner document.
+    ``load_forge_config`` owns schema validation; orchestration loads additionally
+    run the dependency preflight before this execution model is returned. This
+    function deliberately only maps that validated grammar; it accepts no
+    retired central ``[project.<name>]`` shape and no second build-runner document.
     """
     forge = load_forge_config(config_path)
+    if validate_dependencies and config_path.name == ORCHESTRATION_CONFIG_FILENAME:
+        report = build_report(
+            repo_root=forge.repo_root,
+            project_order=forge.orchestration.project_order,
+            declared=forge.orchestration.dependencies,
+            projects=forge.projects,
+        )
+        if report.errors:
+            for error in report.errors:
+                print(f"[ERROR] dependency preflight: {error}", flush=True)
+            raise SystemExit(exit_codes.CONFIG_ERROR)
     orchestration = forge.orchestration
     if orchestration is None:  # defensive: both strict loaders always supply one
         raise ValueError("cmru configuration has no project selection")
@@ -412,6 +430,7 @@ def load_config(
             runner_steps=runner_steps, build_metadata=parsed.build_metadata,
             artifact_dirs=tuple(parsed.artifact_dirs),
             build_step=parsed.build_step,
+            github_token=forge.project_tokens.get(name, forge.github.token or ""),
         )
 
     cleanup_raw = forge.cleanup
@@ -449,6 +468,15 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         os.environ["GITHUB_USERNAME"] = github.owner
     if github.repo:
         os.environ["GITHUB_REPO"] = github.repo
+    # Each project operation receives exactly its already-resolved credential.
+    # This process can run several selected projects sequentially; merely
+    # skipping the assignment for a project with no credential leaves the
+    # previous project's token in the child environment.  Clear both accepted
+    # input spellings first, then export the one canonical handler spelling.
+    # Config loading has already captured an explicitly supplied environment
+    # credential, so this cannot discard a source of truth before resolution.
+    os.environ.pop("GITHUB_PUSH_PAT", None)
+    os.environ.pop("GITHUB_TOKEN", None)
     if github.token:
         os.environ["GITHUB_PUSH_PAT"] = github.token
     os.environ["GITHUB_OWNER_TYPE"] = github.owner_type
@@ -464,23 +492,41 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         os.environ[key] = str(value)
 
 
-def require_publish_credential() -> None:
-    """Refuse a publishing transaction before it can create source-side state."""
-    if (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip():
-        return
-    raise RuntimeError(
-        "Publishing requires GITHUB_PUSH_PAT or GITHUB_TOKEN. Set one explicitly, "
-        "or provide the selected project's gitignored cmru.secret.toml before retrying."
+def github_for_project(github: GitHubConfig, project: ProjectConfig) -> GitHubConfig:
+    """Bind the repository credential to one explicitly selected project.
+
+    Metadata is repository-wide.  ``ProjectConfig.github_token`` is already
+    resolved from the invocation environment or the strict root-plus-project
+    secret overlay, so this function never discovers a credential by fallback.
+    """
+    return replace(github, token=project.github_token)
+
+
+def apply_project_release_env(
+    github: GitHubConfig, env_config: ReleaseEnvConfig, project: ProjectConfig,
+) -> None:
+    # The project document is the authority for project-specific process
+    # settings.  An orchestration run supplies an explicit estate policy in
+    # ``[orchestration.defaults.env]``; preserve the direct-project shape as a
+    # merge so both entry points obey one contract.
+    project_env = dict(env_config.env)
+    project_env.update(project.env)
+    apply_release_env(
+        github_for_project(github, project),
+        replace(env_config, env=project_env),
     )
 
 
-def _enforce_publish_credential() -> None:
-    """Emit one stable prerequisite failure before a command can publish."""
-    try:
-        require_publish_credential()
-    except RuntimeError as exc:
-        log_error(str(exc))
-        raise SystemExit(exit_codes.PREREQ_MISSING) from exc
+def require_project_publish_credentials(
+    configs: Mapping[str, ProjectConfig], project_names: List[str],
+) -> None:
+    missing = [name for name in project_names if not configs[name].github_token.strip()]
+    if missing:
+        raise RuntimeError(
+            "Publishing requires GITHUB_PUSH_PAT/GITHUB_TOKEN, repository-root "
+            "cmru.secret.toml, or an explicit project cmru.secret.toml override "
+            "for project(s): " + ", ".join(missing)
+        )
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -631,7 +677,9 @@ def cleanup_releases(
     cleanup: CleanupConfig,
 ) -> None:
     releases = list_releases(owner, repo, token)
-    wildcard_prefixes = not cleanup.release_tag_prefixes or "*" in cleanup.release_tag_prefixes
+    # Cleanup is destructive. An empty declared selector means "select nothing",
+    # never "all releases"; an estate that means all must say "*" explicitly.
+    wildcard_prefixes = "*" in cleanup.release_tag_prefixes
     for release in releases:
         tag = release.get("tag_name") or ""
         if tag in cleanup.keep_release_tags:
@@ -745,7 +793,8 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
 
 def cleanup_ghcr(owner: str, token: str, owner_type: str, cutoff: datetime, dry_run: bool, cleanup: CleanupConfig) -> None:
 
-    wildcard_packages = not cleanup.ghcr_packages or "*" in cleanup.ghcr_packages
+    # Only an explicit "*" is an all-packages selector.
+    wildcard_packages = "*" in cleanup.ghcr_packages
     packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
     for package in packages:
         if package in cleanup.ghcr_delete_packages:
@@ -1003,13 +1052,6 @@ def run_cleanup_verb(
     Keeps ``<prefix>-latest`` and any tag in ``cleanup.keep_release_tags``.
     Everything is idempotent: missing targets are skipped, not errors.
     """
-    apply_release_env(github_config, env_config)
-    owner = github_config.owner
-    repo = github_config.repo
-    token = github_config.token
-    if not token:
-        raise RuntimeError("github.token is required for cleanup")
-
     # Export reproducible-build env (SOURCE_DATE_EPOCH / SETUPTOOLS_SCM_* / OCI_*) so any
     # [steps.clean] that rebuilds an artifact gets the same provenance as a release build.
     # NOTE: the per-project CMRU_VERSION is resolved separately below from the surviving
@@ -1026,6 +1068,16 @@ def run_cleanup_verb(
     any_deleted: list[str] = []
     for name in names:
         project = configs[name]
+        project_github = github_for_project(github_config, project)
+        apply_project_release_env(github_config, env_config, project)
+        if not project_github.token:
+            raise RuntimeError(
+                f"Cleanup for {name!r} requires GITHUB_PUSH_PAT/GITHUB_TOKEN, "
+                "repository-root cmru.secret.toml, or its explicit project override"
+            )
+        owner = project_github.owner
+        repo = project_github.repo
+        token = project_github.token
         prefix = project.prefix
         if not prefix:
             log_info(f"{name}: no prefix configured — skipping Release/tag cleanup")
@@ -1057,6 +1109,14 @@ def run_cleanup_verb(
     # ghcr pruning is age-based; use ``cmru cleanup --remove-assets AGE`` for that path.
     # Here we only prune packages declared in ghcr_delete_packages (explicit wipe list).
     if cleanup.ghcr_delete_packages:
+        # GHCR package deletion is repository-wide, so it deliberately uses the
+        # repository credential rather than choosing one project's override.
+        apply_release_env(github_config, env_config)
+        if not github_config.token:
+            raise RuntimeError(
+                "Repository-wide GHCR cleanup requires GITHUB_PUSH_PAT/GITHUB_TOKEN "
+                "or repository-root cmru.secret.toml"
+            )
         if dry_run:
             log_info(
                 f"[DRY RUN] Would delete GHCR packages: {', '.join(cleanup.ghcr_delete_packages)}"
@@ -1064,7 +1124,13 @@ def run_cleanup_verb(
         else:
             for pkg in cleanup.ghcr_delete_packages:
                 log_info(f"Cleanup: deleting GHCR package {pkg} (ghcr_delete_packages list)")
-                delete_package(owner, pkg, token, github_config.owner_type, dry_run=False)
+                delete_package(
+                    github_config.owner,
+                    pkg,
+                    github_config.token,
+                    github_config.owner_type,
+                    dry_run=False,
+                )
 
     if any_deleted:
         log_info(f"Cleanup complete. Deleted: {', '.join(any_deleted)}")
@@ -1121,8 +1187,6 @@ def _orchestrate() -> None:
         env_config,
     ) = load_config(config_path)
 
-    apply_release_env(github_config, env_config)
-
     projects = args.project or default_projects
     if "all" in projects:
         selected_names = project_order
@@ -1149,7 +1213,7 @@ def _orchestrate() -> None:
         steps = default_steps
 
     if "push" in steps:
-        _enforce_publish_credential()
+        require_project_publish_credentials(configs, selected_names)
 
     log_dir = repo_root / "logs"
 
@@ -1158,6 +1222,7 @@ def _orchestrate() -> None:
 
     if execution_mode == "project-first":
         for project in selected:
+            apply_project_release_env(github_config, env_config, project)
             for step in steps:
                 run_project_step(project, step, repo_root, log_dir)
     else:
@@ -1169,6 +1234,7 @@ def _orchestrate() -> None:
                 if project_name not in selected_names:
                     continue
                 project = configs[project_name]
+                apply_project_release_env(github_config, env_config, project)
                 run_project_step(project, step, repo_root, log_dir)
 
     if args.remove_assets:
@@ -1238,13 +1304,24 @@ def _cmru_version() -> str:
 
 
 def _default_config_path() -> Path:
-    """A standalone invocation owns the project config in its current directory.
+    """Select a config declared directly by the current working directory.
 
-    An estate launcher must pass ``cmru.orchestration.toml`` explicitly.  Guessing
-    a parent repository's orchestration file would make a copied project silently
-    depend on the old checkout, exactly the boundary this contract removes.
+    A portable project owns ``cmru.toml``.  A repository root may instead own
+    ``cmru.orchestration.toml``.  Looking only in the current directory keeps
+    the installed CLI independent of parent checkouts while allowing both the
+    portable and estate entry points to be used without a wrapper-specific
+    config injection.
     """
-    return Path.cwd() / PROJECT_CONFIG_FILENAME
+    cwd = Path.cwd()
+    project = cwd / PROJECT_CONFIG_FILENAME
+    if project.exists():
+        return project
+    orchestration = cwd / ORCHESTRATION_CONFIG_FILENAME
+    if orchestration.exists():
+        return orchestration
+    # Preserve the project-config error when neither source exists.  The
+    # resulting message remains actionable and stable for standalone callers.
+    return project
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:
@@ -1292,6 +1369,9 @@ def _run_project_steps(
     configs: Mapping[str, "ProjectConfig"],
     project_names: List[str],
     steps: List[str],
+    *,
+    github_config: Optional[GitHubConfig] = None,
+    env_config: Optional[ReleaseEnvConfig] = None,
 ) -> None:
     """Run ``steps`` (in order) for each named project through the unified runner (S3).
 
@@ -1302,6 +1382,8 @@ def _run_project_steps(
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
+        if github_config is not None and env_config is not None:
+            apply_project_release_env(github_config, env_config, project)
         for step in steps:
             if step not in (project.runner_steps or {}):
                 raise RuntimeError(
@@ -1337,7 +1419,14 @@ def _run_isolated_build_projects(
         _run_project_steps(repo_root, configs, [name], phases)
 
 
-def _run_untagged_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
+def _run_untagged_project(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    name: str,
+    *,
+    github_config: GitHubConfig,
+    env_config: ReleaseEnvConfig,
+) -> None:
     """Run the build/push half of a declared no-Git-tag release contract.
 
     The project owns what it publishes (registry image, external package, or another
@@ -1346,6 +1435,7 @@ def _run_untagged_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
     resolve_versions_from_git(repo_root, dict(configs))
     log_dir = repo_root / "logs"
     project = configs[name]
+    apply_project_release_env(github_config, env_config, project)
     # Projects that extract tracked provenance must do their private build in
     # ``prepare``. It has already been committed, gated and promoted before cmru
     # creates any tags for this transaction; rebuilding here would both waste work
@@ -1383,6 +1473,8 @@ def _release_projects_sequentially(
     workspace: transaction.ReleaseWorkspace,
     release_names: List[str],
     *,
+    github_config: GitHubConfig,
+    env_config: ReleaseEnvConfig,
     no_build: bool = False,
     minor: bool = False,
     major: bool = False,
@@ -1415,6 +1507,7 @@ def _release_projects_sequentially(
     released: List[str] = []
     for name in release_names:
         project = configs[name]
+        apply_project_release_env(github_config, env_config, project)
         log_info(f"=== {name}: releasing ===")
 
         _prepare_release_projects(
@@ -1433,7 +1526,10 @@ def _release_projects_sequentially(
         if not getattr(project, "git_tag", True):
             if not no_build:
                 log_info(f"Building + publishing {name} (no git tag)")
-                _run_untagged_project(repo_root, configs, name)
+                _run_untagged_project(
+                    repo_root, configs, name,
+                    github_config=github_config, env_config=env_config,
+                )
                 released.append(f"{name} (no git tag)")
                 transaction.write_release_result(
                     repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
@@ -1453,7 +1549,10 @@ def _release_projects_sequentially(
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
                     artifact_phases = [] if project.build_step == "prepare" else [project.build_step]
-                    _run_project_steps(repo_root, configs, [name], [*artifact_phases, "push"])
+                    _run_project_steps(
+                        repo_root, configs, [name], [*artifact_phases, "push"],
+                        github_config=github_config, env_config=env_config,
+                    )
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
                 else:
@@ -1642,6 +1741,79 @@ def _prepare_release_projects(
             _commit_prepared_generated(repo_root, project)
 
 
+def usage() -> str:
+    """Return the public CLI overview, including every user-facing option.
+
+    The verb implementations use focused parsers because their options have
+    different semantics.  Keep this overview as the single discoverability
+    surface, and include the complete option set for each of those parsers.
+    Internal transaction flags and the project-step implementation commands are
+    intentionally excluded; they are not supported operator interfaces.
+    """
+    return (
+        f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
+        f"Config: project {PROJECT_CONFIG_FILENAME}, or explicit "
+        f"{ORCHESTRATION_CONFIG_FILENAME} — select with --config\n"
+        "\n"
+        "TYPICAL WORKFLOW  (run from a project or repository root):\n"
+        "  1. status                  preview what changed + the next version (no writes)\n"
+        "  2. release                 isolated: prepare → gate → integrate → tag → build → publish\n"
+        "       build alone retains local non-release outputs; only a failed build keeps its worktree\n"
+        "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
+        "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
+        "\n"
+        "PLANNING (read-only)\n"
+        "    status   [--config C] [--project P] [--minor|--major] [--set-version V] [--dry-run]\n"
+        "    worktrees [--json]                                      discover retained worktrees\n"
+        "    dependencies [--config C] [--json] [--write]              graph + preflight\n"
+        "\n"
+        "RELEASE / HISTORY (writes)\n"
+        "    release  [--config C] [--project P] [--minor|--major|--set-version V] [--dry-run]\n"
+        "             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]\n"
+        "             [--allow-uncommitted] [--show-run-details] [--log-append]\n"
+        "             [--retain-logs-on-release] [--retain-artifacts-on-release]\n"
+        "                                                  isolated source-first transaction\n"
+        "    changelog --config C --project P --backfill-tag TAG\n"
+        "                                                  catalog an already-published tagged release\n"
+        "    standards [--config C] [--project P ...] [--update]\n"
+        "                                                  check/update CMRU framework markers\n"
+        "    build    [--config C] [--project P] [--show-run-details] [--log-append]\n"
+        "                                                  isolated local build; retains outputs on success\n"
+        "    publish  [--config C] [--project P] [--show-run-details] [--log-append]\n"
+        "                                                  run the project 'push' step\n"
+        "    run      [--config C] [--project P ...] [--run-tests] [--build] [--push] [--validate]\n"
+        "             [--remove-assets AGE] [--dry-run] [--show-run-details] [--log-append]\n"
+        "                                                  low-level: explicit steps × projects\n"
+        "\n"
+        "CONSUMPTION (read-only)\n"
+        "    resolve  [--config C] [--project P|--prefix PREFIX] [--format env|json|url]\n"
+        "    get|get-py --config C --project P [--output FILE]\n"
+        "                                                  emit standalone get.py installer\n"
+        "\n"
+        "MAINTENANCE\n"
+        "    cleanup  [--config C] [--remove-assets AGE] [--project P] [--dry-run]\n"
+        "             [--delete-unmanaged-release-tag TAG] [--delete-build-output ID]\n"
+        "             [--discard-build-worktree PATH] [--yes]\n"
+        "    run-step --config C --step S [--show-run-details] [--log-append]\n"
+        "                                                  execute one declared project step\n"
+        "    version                                     print this CMRU version\n"
+        "\n"
+        "OUTPUT\n"
+        "    -h, --help                                  show this complete command overview\n"
+        "    --log-prefix-time-short                       emit HH:MM:SS before severity prefixes\n"
+        "                                                  (interactive severities are colour-coded; pipes stay plain)\n"
+    )
+
+
+def _config_hint(repo_root: Path) -> str:
+    """Return an explicit config argument for commands printed to operators."""
+    for filename in (PROJECT_CONFIG_FILENAME, ORCHESTRATION_CONFIG_FILENAME):
+        candidate = repo_root / filename
+        if candidate.exists():
+            return f" --config {shlex.quote(str(candidate))}"
+    return ""
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
@@ -1653,50 +1825,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     """
     import sys as _sys
 
-    av = argv if argv is not None else _sys.argv[1:]
+    av = consume_cli_flags(list(argv) if argv is not None else _sys.argv[1:])
     if not av or av[0] in ("-h", "--help"):
-        print(
-            f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            f"Config: project {PROJECT_CONFIG_FILENAME}, or explicit "
-            f"{ORCHESTRATION_CONFIG_FILENAME} — select with --config\n"
-            "\n"
-            "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
-            "  1. status                  preview what changed + the next version (no writes)\n"
-            "  2. release                 isolated: prepare → gate → integrate → tag → build → publish\n"
-            "       build alone retains local non-release outputs; only a failed build keeps its worktree\n"
-            "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
-            "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
-            "\n"
-            "PLANNING (read-only)\n"
-            "    status   [--project P] [--minor|--major]     preview next releases (dry-run)\n"
-            "    worktrees [--json]                           discover retained build/release worktrees\n"
-            "\n"
-            "RELEASE / HISTORY (writes)\n"
-            "    release  [--project P] [--minor|--major|--set-version V] [--dry-run] [--resume WORKTREE]\n"
-            "             [--show-run-details] [--log-append]\n"
-            "                                                  isolated source-first transaction\n"
-            "    changelog --project P --backfill-tag TAG    catalog an already-published tagged release\n"
-            "    standards [--project P] [--update]         check/update CMRU project-framework markers\n"
-            "    build    [--project P]                        isolated local build; retains outputs on success\n"
-            "    publish  [--project P]                        run the project 'push' step\n"
-            "    run      [--project P] [--run-tests --build --push --validate]\n"
-            "                                                  low-level: explicit steps × projects\n"
-            "\n"
-            "CONSUMPTION (read-only)\n"
-            "    resolve  [--project P] [--format env|json|url]   resolve latest published version\n"
-            "    get      [--project P]                        emit standalone get.py installer\n"
-            "\n"
-            "MAINTENANCE\n"
-            "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
-            "    cleanup  --delete-unmanaged-release-tag TAG --project P --yes\n"
-            "                                                delete one explicit old GitHub Release (not its tag)\n"
-            "    cleanup  --delete-build-output ID --project P --yes\n"
-            "                                                delete one exact retained local build record\n"
-            "    cleanup  --discard-build-worktree PATH --yes\n"
-            "                                                discard one exact inspected failed build worktree\n"
-            "    version                                     print this CMRU version\n"
-            f"    run-step --config C --step S                  execute one project {PROJECT_CONFIG_FILENAME} step\n"
-        )
+        print(usage())
         return
 
     if av[0] == "version":
@@ -1740,14 +1871,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         elif not workspaces:
             log_info("No retained CMRU build or release worktrees.")
         else:
+            config_hint = _config_hint(repo_root)
             for workspace in workspaces:
                 purpose = workspace.branch.split("/", 2)[1]
                 source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
                 if purpose == "release" and workspace.path.is_dir():
-                    print(f"  resume: cmru release --resume {workspace.path}")
+                    print(f"  resume: cmru release{config_hint} --resume {shlex.quote(str(workspace.path))}")
                 elif purpose == "build" and workspace.path.is_dir():
-                    print(f"  discard: cmru cleanup --discard-build-worktree {workspace.path} --yes")
+                    print(
+                        "  discard: cmru cleanup"
+                        f"{config_hint} --discard-build-worktree {shlex.quote(str(workspace.path))} --yes"
+                    )
                 elif not workspace.path.is_dir():
                     print("  action: unavailable here; inspect or clean it from the filesystem view that created it")
 
@@ -1755,6 +1890,44 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Raw single-step runner for the one project cmru.toml grammar.
         from cmru.runner import main as runner_main
         runner_main(rest)
+
+    elif verb in ("dependencies", "dependency-graph", "graph"):
+        parser = argparse.ArgumentParser(
+            description=(
+                "Show and preflight the project dependency graph. Artifact inputs are "
+                "derived from first-party pip/wheels.list manifests; --write refreshes "
+                "the marked comment block in the orchestration document."
+            )
+        )
+        parser.add_argument(
+            "--config", help=f"Path to {ORCHESTRATION_CONFIG_FILENAME}"
+        )
+        parser.add_argument("--json", action="store_true", help="Emit machine-readable graph data")
+        parser.add_argument(
+            "--write", action="store_true",
+            help="Write the generated graph into the orchestration TOML comment block",
+        )
+        vargs = parser.parse_args(rest)
+        cfg_path = _resolve_config(vargs.config)
+        forge = load_forge_config(cfg_path)
+        if forge.orchestration is None or cfg_path.name != ORCHESTRATION_CONFIG_FILENAME:
+            parser.error(f"dependencies requires {ORCHESTRATION_CONFIG_FILENAME}")
+        report = build_report(
+            repo_root=forge.repo_root,
+            project_order=forge.orchestration.project_order,
+            declared=forge.orchestration.dependencies,
+            projects=forge.projects,
+        )
+        if vargs.write:
+            from cmru.dependencies import write_comment_block
+            write_comment_block(cfg_path, report)
+            print(f"[INFO] Wrote generated dependency graph to {cfg_path}")
+        if vargs.json:
+            print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+        else:
+            print(render_dependency_report(report))
+        if report.errors:
+            _sys.exit(exit_codes.CONFIG_ERROR)
 
     elif verb == "handler":
         # Stable CLI access to the explicit project-step command library.
@@ -1788,7 +1961,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             log_error(f"Unknown project(s): {', '.join(missing)}")
             _sys.exit(2)
         if verb == "publish":
-            _enforce_publish_credential()
+            require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
 
         if verb == "build" and not vargs._transaction_child:
@@ -1855,10 +2028,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                         + "\n".join(f"  {path}" for path in retained)
                     )
                     output_id = retained[0].name
+                    config_hint = f" --config {shlex.quote(str(cfg_path))}"
                     for name in names:
                         log_info(
                             f"{name}: remove this local record only when no longer needed:\n"
-                            f"  cmru cleanup --project {name} --delete-build-output {output_id} --yes"
+                            f"  cmru cleanup{config_hint} --project {name} "
+                            f"--delete-build-output {output_id} --yes"
                         )
                     _sys.exit(0)
             except Exception as exc:
@@ -1867,7 +2042,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         if verb == "build":
             _run_isolated_build_projects(repo_root, configs, names)
         else:
-            _run_project_steps(repo_root, configs, names, [step])
+            _run_project_steps(
+                repo_root, configs, names, [step],
+                github_config=github_config, env_config=env_config,
+            )
         log_info(f"cmru {verb} complete")
 
     elif verb == "resolve":
@@ -1991,8 +2169,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             log_error(f"Unknown or non-orchestrated project: {vargs.project}")
             _sys.exit(2)
 
+        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
         if not vargs.dry_run:
-            _enforce_publish_credential()
+            require_project_publish_credentials(configs, release_scope)
 
         # The normal command is a launcher, never a publisher from the caller's
         # checkout: origin/main is the only release source, built in an isolated
@@ -2177,6 +2356,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         released = _release_projects_sequentially(
             repo_root, configs, workspace, release_names,
+            github_config=github_config, env_config=env_config,
             no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
             set_version=vargs.set_version,
         )
@@ -2268,10 +2448,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     f"{tag!r} is CMRU-managed; use ordinary cleanup policy, not "
                     "--delete-unmanaged-release-tag"
                 )
-            if not github_config.token:
+            project_github = github_for_project(github_config, project)
+            if not project_github.token:
                 parser.error("an explicit CMRU publish credential is required to delete a GitHub Release")
             delete_unmanaged_release_tag(
-                github_config.owner, github_config.repo, github_config.token, tag,
+                project_github.owner, project_github.repo, project_github.token, tag,
                 dry_run=vargs.dry_run,
             )
         elif vargs.delete_build_output:

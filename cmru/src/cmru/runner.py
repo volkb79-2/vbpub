@@ -517,14 +517,14 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     executor as orchestration.  There is no standalone runner configuration,
     shell-evaluation adapter, or inferred release config to drift from it.
     """
-    from cmru.cli import apply_release_env, load_config
+    from cmru.cli import apply_project_release_env, load_config
 
     (repo_root, projects, _order, _defaults, _steps, _mode, _step_order,
      _cleanup, github, env) = load_config(project_config_path)
     if len(projects) != 1:
         raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
-    apply_release_env(github, env)
     project = next(iter(projects.values()))
+    apply_project_release_env(github, env, project)
     step = project.runner_steps.get(step_name) if project.runner_steps else None
     if step is None:
         raise ValueError(f"Step '{step_name}' is not declared in {project_config_path}")

@@ -1,8 +1,10 @@
 """The two CMRU configuration filenames.
 
 They are deliberately names, not discovery rules: a reusable ``cmru`` process
-defaults only to the project document in its current directory; vbpub's root
-shim explicitly supplies the orchestration document.
+selects the project document in its current directory, or the orchestration
+document when that is the only config present there. It never searches parent
+directories. The vbpub repository may pass the orchestration document explicitly
+with ``--config`` or through its release convenience wrapper.
 """
 from __future__ import annotations
 

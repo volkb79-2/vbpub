@@ -21,6 +21,13 @@ from ciu import cli
 def remote(monkeypatch, tmp_path):
     """Install deterministic inventory/transport fakes and select a repo root."""
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    # Remote command construction is the subject here; give it a successful
+    # config-load seam rather than relying on an unrelated on-disk fixture.
+    monkeypatch.setitem(
+        sys.modules,
+        "ciu.deploy",
+        SimpleNamespace(load_global_config=lambda _root: {}),
+    )
     host = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned"}
     seen = {"hosts": [], "exec": [], "sync": []}
 
@@ -82,8 +89,8 @@ def test_remote_up_quotes_bundle_and_selection_values(remote, monkeypatch):
     ]
 
 
-def test_remote_config_load_failure_falls_back_to_empty_config(remote, monkeypatch):
-    """Remote operations remain usable when local global config is absent/unreadable."""
+def test_remote_config_load_failure_stops_before_opening_transport(remote, monkeypatch, capsys):
+    """A remote operation never downgrades an unreadable config to `{}`."""
     seen, _ = remote
     # Supply only the import seam that CLI needs.  This keeps the contract test
     # independent of deploy's unrelated runtime closure.
@@ -92,8 +99,9 @@ def test_remote_config_load_failure_falls_back_to_empty_config(remote, monkeypat
         "ciu.deploy",
         SimpleNamespace(load_global_config=lambda root: (_ for _ in ()).throw(OSError("unreadable"))),
     )
-    assert _run(monkeypatch, ["render", "--host", "web"]) == 0
-    assert seen["exec"][0][2] == {}
+    assert _run(monkeypatch, ["render", "--host", "web"]) == 2
+    assert seen["exec"] == []
+    assert "could not load global configuration for remote operation" in capsys.readouterr().err
 
 
 def test_thin_health_passes_selection_to_activation_without_push(remote, monkeypatch):

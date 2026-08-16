@@ -2,7 +2,7 @@
 
 A monorepo of independently-versioned products that share **one** GitHub Releases page.
 Everything is built and released through **cmru** (Configurable Multi Release Utility):
-one config, one CLI, all release files named `cmru.*`.
+one config and one installed CLI.
 
 ## Products
 
@@ -20,20 +20,47 @@ one config, one CLI, all release files named `cmru.*`.
 
 Each product has its own README with product-specific detail.
 
-## Releasing (cmru)
+## Repository setup and initial CMRU build
 
-The discoverable front door is the `cmru.*.sh` shims (each is a thin, self-documenting
-pointer to a `cmru` verb):
+CMRU itself is the first wheel to build in a fresh checkout. The bootstrap script is
+deliberately independent of an installed CMRU: it uses the standalone `wheel-builder`
+image to build `cmru/dist/cmru-*.whl`, then prints the commands needed to install it.
 
 ```bash
-./cmru.status.sh                       # preview what would be released (read-only)
+./cmru/build-initial-standalone.sh
+
+# Run the install commands printed by the script, for example:
+python3 -m venv .venv-cmru
+.venv-cmru/bin/python -m pip install --no-deps cmru/dist/cmru-*.whl
+export PATH="$PWD/.venv-cmru/bin:$PATH"
+
+cmru --help
+cmru dependencies
+```
+
+The script builds `wheel-builder:local` automatically when that image is absent. It
+does not require `cmru.handlers` to be installed: it adds `cmru/src` only for the
+bootstrap process. After installation, the `cmru` console script is the canonical
+interface for this repository and for each individual project.
+
+Before running a release gate, ensure the dedicated gate image is built from
+[`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep Docker work under the
+configured `$CGROUP_PARENT_DEV_BACKGROUND` slice.
+
+## Releasing (cmru)
+
+Use the installed `cmru` command for all verbs. The repository keeps one optional
+convenience wrapper for the common full release:
+
+```bash
+cmru status                             # preview what would be released (read-only)
 ./cmru.release.sh                      # one-shot: detect changed → tag → push → build → publish
 ./cmru.release.sh --dry-run            # preview tags only, no writes
-./cmru.changelog.sh --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-./cmru.build.sh   --project <name>     # retained isolated gate + build; no publish
-./cmru.publish.sh --project <name>     # run the project's declared publish step
-./cmru.cleanup.sh --remove-assets 30d  # prune old releases / GHCR versions
-./cmru.py --help                       # all verbs
+cmru changelog --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
+cmru build --project <name>            # retained isolated gate + build; no publish
+cmru publish --project <name>          # run the project's declared publish step
+cmru cleanup --remove-assets 30d       # prune old releases / GHCR versions
+cmru --help                            # all verbs
 ```
 
 `./cmru.release.sh` creates a line-flushed full `cmru.release.log` by default while the
@@ -41,9 +68,10 @@ console shows concise orchestration summaries. Add `--show-run-details` to strea
 Docker/test output too; add `--log-append` to retain prior transcripts with a divider.
 
 - **Config:** [`cmru.orchestration.toml`](cmru.orchestration.toml) coordinates only; every product owns a portable `cmru.toml` (committed, no secrets). Templates: `cmru.project.sample.toml`, `cmru.orchestration.sample.toml`.
-- **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or a gitignored project-local
-  `cmru.secret.toml` (`[github] token = "…"`). A committed `cmru.toml` token is
-  rejected. (SPEC S2.4)
+- **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or the gitignored repository-root
+  `cmru.secret.toml` (`[github] token = "…"`), with an optional deep-merged
+  `<project>/cmru.secret.toml` override. A committed `cmru.toml` token is rejected.
+  (SPEC S2.4)
 - **Per-project contract:** `<product>/cmru.toml` includes release facts and runner steps; generated build vars: `cmru.vars`.
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
@@ -61,7 +89,8 @@ ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
 docs/            release tooling, versioning, plans
-cmru.orchestration.toml  cmru.*.sh  cmru.py  estate release-toolchain entry points
+cmru.orchestration.toml  cmru.release.sh  cmru/build-initial-standalone.sh
+                         estate release-toolchain configuration and bootstrap
 ```
 
 > Housekeeping: see [`docs/plan-cleanup.md`](docs/plan-cleanup.md) for the leftover-file cleanup plan.

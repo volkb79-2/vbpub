@@ -10,13 +10,11 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 
 [project]
 id = "pwmcp"
 description = "Playwright MCP server OCI image and deployable stack bundle."
-template_revision = 2
+template_revision = 4
 prefix = "pwmcp-v"
 artifacts = ["oci-image", "bundle"]
 

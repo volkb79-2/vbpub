@@ -246,7 +246,7 @@ alias until a concrete remote-qualification release policy requires it. At that 
 retry. Copying `dist/` back merely to make the command chain work would defeat the isolation rule.
 
 ### KI-11 — Project commands can invoke a different CMRU than the transaction engine — *open; strict runtime binding required*
-**Evidence:** an estate checkout's root `cmru.py` runs the source-tree CMRU engine, including
+**Evidence:** an estate checkout can run a source-tree CMRU engine, including
 inside its isolated release/build worktree. Several portable project contracts nevertheless use
 an argv beginning `cmru tester-gate` (CIU, MDT, TLS-edge, Nyxloom, Topos, PWMCP). That resolves
 through the worker's ambient `PATH`, which can be an older installed wheel. On 2026-08-12 the
@@ -255,9 +255,8 @@ as `2.0.1`; the latter does not even expose the current `cmru version` verb. A r
 orchestrate with one CMRU contract but run its tester boundary with another.
 
 **Impact:** it invalidates the intended one-framework version boundary and makes a project gate's
-behaviour depend on ambient devcontainer state. Updating six project argv values to reference
-the repository-root shim would make standalone consumers depend on this monorepo, so it is not a
-valid fix.
+behaviour depend on ambient devcontainer state. Referencing a repository-local source launcher
+would make standalone consumers depend on this monorepo, so it is not a valid fix.
 
 **Required design:** CMRU's transaction runtime must expose one explicit, portable self-command
 binding for project steps, and the project grammar/template must name that binding rather than

@@ -1,7 +1,9 @@
 # Project CMRU contract — save as <project>/cmru.toml.
 # This file travels with the project: it contains its complete release, build,
 # test, publication, logging, and artifact-retention contract. Secrets never
-# belong here; use GITHUB_PUSH_PAT / GITHUB_TOKEN or <project>/cmru.secret.toml.
+# belong here; use GITHUB_PUSH_PAT / GITHUB_TOKEN or a gitignored
+# <repository-root>/cmru.secret.toml.  A project that needs a distinct token
+# can instead add its own gitignored <project>/cmru.secret.toml overlay.
 schema_version = 1
 
 [github]
@@ -14,14 +16,18 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
+CMRU_TESTER_CPUS = "1.5"
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 EXAMPLE_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-wheel-*.whl`."
 
 [project]
 id = "example-wheel"
 description = "One sentence describing the product and its consumer."
-template_revision = 2
+template_revision = 4
 prefix = "example-wheel-v"
 artifacts = ["wheel"]
 scm_dist = "example-wheel"

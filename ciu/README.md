@@ -70,6 +70,9 @@ lacks (see [docs/CIU.md](docs/CIU.md)).
 5. **Hostdir provisioning & ownership.** Pre-creates volume dirs with correct owner/mode, can seed initial content, and fixes ownership via a helper container even when the operator isn't root (S6.3/S6.5/S6.6) — no chown-init-container boilerplate. Fixed-UID images (postgres 999) just work.
 6. **Multi-stack / multi-host orchestration.** `ciu up` runs stacks in numeric phase order, gates on health (`starting` ≠ healthy, S7.7), and supports host profiles with `topology_overrides` for cross-host addressing (S7.4/S7.5a).
 7. **Fail-fast before anything starts.** A static validation catalog (S11) and a typed exit-code contract (S10.3) catch errors pre-launch; a vault-backed stack aborts if no token resolves (S7.6).
+8. **Readable live diagnostics without corrupting logs.** Add `--log-prefix-time-short` to
+   any CIU invocation for `HH:MM:SS [INFO]`/`[WARN]`/`[ERROR]` output. Severity is coloured
+   on an interactive terminal only; redirected logs stay plain text.
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
 9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection.
 

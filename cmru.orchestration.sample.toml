@@ -1,6 +1,7 @@
 # Estate coordination only — save as <repository-root>/cmru.orchestration.toml.
-# Project facts/commands are forbidden here; each entry points to a portable
-# project-local cmru.toml.
+# Project commands and release facts are forbidden here; each entry points to a
+# portable project-local cmru.toml.  Estate-wide gate/build policy belongs in
+# [orchestration.defaults.env] below and is resolved before a project override.
 schema_version = 1
 
 [orchestration]
@@ -8,7 +9,18 @@ project_order = ["example-wheel"]
 default_projects = ["example-wheel"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
-auth_project = "example-wheel"
+# Repository credentials live in the gitignored root cmru.secret.toml; an
+# individual project may overlay it from <project>/cmru.secret.toml.
+
+# Estate policy for common gate/build inputs. Project [env] may override a
+# value only where it has a genuinely different requirement.
+[orchestration.defaults.env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+CMRU_TESTER_CPUS = "1.5"
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
 [orchestration.project.example-wheel]
 config = "example-wheel/cmru.toml"

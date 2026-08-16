@@ -80,7 +80,44 @@ def _git_common_dir(repo_root: Path) -> Path | None:
     return common
 
 
-_DIND_IMAGE = "docker:dind"
+def _resolve_worktree_context(invocation_root: Path, relative_cwd: str) -> tuple[Path, str]:
+    """Return the repository root and container-relative target directory.
+
+    Commands in a consumer's ``cmru.toml`` run with that consumer as their
+    process cwd.  Mounting that cwd as ``/worktree`` loses its siblings and,
+    crucially, the repository's ordinary ``.git`` directory.  Tests that use
+    repository history then see ``/`` as their parent and fail despite the
+    host checkout being complete.
+
+    Derive the actual Git worktree root rather than treating the caller's cwd
+    as an authoritative substitute.  ``relative_cwd`` remains relative to the
+    caller, preserving the public CLI contract while the container receives
+    the full checkout.
+    """
+    relative = Path(relative_cwd)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("--cwd must be a relative path inside the current worktree")
+
+    result = subprocess.run(
+        ["git", "-C", str(invocation_root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise SystemExit(
+            "tester-gate: refusing to launch — the caller is not inside a Git worktree; "
+            "the gate must mount the complete repository, not an inferred subtree."
+        )
+    repo_root = Path(result.stdout.strip()).resolve()
+    target = (invocation_root / relative).resolve()
+    try:
+        container_relative = target.relative_to(repo_root)
+    except ValueError as exc:
+        raise ValueError("--cwd must resolve inside the current Git worktree") from exc
+    return repo_root, str(container_relative) or "."
+
+
 _DIND_READY_TIMEOUT = 30.0
 
 # Flat, per-container safe bounds (host dev-tier cgroup governance rollout —
@@ -89,18 +126,12 @@ _DIND_READY_TIMEOUT = 30.0
 # container gets its own independent ceiling regardless of how many run
 # concurrently, on top of (not instead of) the tier's own aggregate cap.
 #
-# No hardcoded memory/memory-swap default here, deliberately (mirrors
-# resolve_cgroup_parent's no-hardcoded-fallbacks rule): the operative default
-# lives in cmru.toml's [env] (CMRU_TESTER_MEMORY / CMRU_TESTER_MEMORY_SWAP),
-# not in this module — see resolve_memory()/resolve_memory_swap().
-_DEFAULT_CPUS = "1.5"
-
-
 _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
-_DEFAULT_SLICE_PROBE_IMAGE = "debian:trixie-slim"
+_CPUS_ENV = "CMRU_TESTER_CPUS"
+_DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 
 
-def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
+def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is genuinely installed on the DOCKER
     HOST (not this process's own host/mount namespace).
 
@@ -154,7 +185,6 @@ def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
             "regardless of slice governance; skipping the slice-existence preflight"
         )
 
-    probe_image = os.environ.get(_SLICE_PROBE_IMAGE_ENV, _DEFAULT_SLICE_PROBE_IMAGE)
     try:
         result = subprocess.run(
             [
@@ -257,6 +287,33 @@ def resolve_memory_swap(explicit: str | None) -> str:
     return resolved
 
 
+def _resolve_required(explicit: str | None, env_name: str, label: str) -> str:
+    if explicit and explicit.strip():
+        return explicit.strip()
+    configured = (os.environ.get(env_name) or "").strip()
+    if configured:
+        return configured
+    raise SystemExit(
+        f"tester-gate: no {label} resolvable — pass the matching CLI option or set "
+        f"{env_name} explicitly in the project's cmru.toml [env]."
+    )
+
+
+def resolve_cpus(explicit: str | None) -> str:
+    """Resolve the per-container CPU ceiling without a hidden source default."""
+    return _resolve_required(explicit, _CPUS_ENV, "CPU limit")
+
+
+def resolve_cgroup_probe_image(explicit: str | None) -> str:
+    """Resolve the host-systemd probe image as an explicit, pinned input."""
+    return _resolve_required(explicit, _SLICE_PROBE_IMAGE_ENV, "cgroup probe image")
+
+
+def resolve_dind_image(explicit: str | None) -> str:
+    """Resolve the nested-Docker image only for an explicit Docker-enabled gate."""
+    return _resolve_required(explicit, _DIND_IMAGE_ENV, "nested Docker image")
+
+
 def _dind_ready(name: str) -> bool:
     probe = subprocess.run(
         ["docker", "exec", name, "docker", "version", "--format", "{{.Server.Version}}"],
@@ -266,7 +323,7 @@ def _dind_ready(name: str) -> bool:
 
 
 @contextmanager
-def dind_sidecar(image: str = _DIND_IMAGE, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iterator[str]:
+def dind_sidecar(image: str, ready_timeout: float = _DIND_READY_TIMEOUT) -> Iterator[str]:
     """Start an ephemeral, fully isolated nested Docker daemon; yield its
     container name once ready. Always torn down, even on failure.
 
@@ -302,13 +359,13 @@ def build_docker_command(
     relative_cwd: str,
     command: Sequence[str],
     *,
-    image: str = "tester-unified:local",
+    image: str,
     cgroup_parent: str = "",
     cgroup_parent_dev_background: str = "",
     sidecar_name: str | None = None,
     memory: str,
     memory_swap: str,
-    cpus: str = _DEFAULT_CPUS,
+    cpus: str,
     device_read_iops: str = "",
     device_write_iops: str = "",
     device_read_bps: str = "",
@@ -324,9 +381,10 @@ def build_docker_command(
     modern-debian-tools-python-debug/scripts/test_oci_layout_push.py) should
     request it. Every other project's gate is unaffected.
 
-    ``memory``/``memory_swap`` are required (see :func:`resolve_memory` /
-    :func:`resolve_memory_swap` — no hardcoded fallback here, matching
-    ``cgroup_parent``'s own no-implicit-default rule). ``cpus`` is a flat
+    ``memory``/``memory_swap``/``cpus`` are required (see :func:`resolve_memory`,
+    :func:`resolve_memory_swap`, and :func:`resolve_cpus` — no hardcoded
+    fallback here, matching ``cgroup_parent``'s own no-implicit-default rule).
+    ``cpus`` is a flat
     per-container safe bound, always applied (host dev-tier cgroup
     governance) — genuine per-container guarantees, distinct from and
     complementary to whatever aggregate tier ``cgroup_parent`` places this
@@ -390,7 +448,11 @@ def build_docker_command(
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run a command in tester-unified for this worktree")
     parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
-    parser.add_argument("--image", default=os.environ.get("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:local"))
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Required container image; otherwise read explicitly from $CMRU_TESTER_UNIFIED_IMAGE",
+    )
     parser.add_argument(
         "--cgroup-parent", default=None,
         help="Defaults to $CMRU_TESTER_CGROUP_PARENT, then $CGROUP_PARENT_DEV_BACKGROUND "
@@ -407,16 +469,32 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Defaults to $CMRU_TESTER_MEMORY_SWAP (normally set in cmru.toml's [env]); "
              "Docker's combined mem+swap total, not swap alone. No implicit fallback.",
     )
-    parser.add_argument("--cpus", default=os.environ.get("CMRU_TESTER_CPUS", _DEFAULT_CPUS))
+    parser.add_argument(
+        "--cpus", default=None,
+        help="Required CPU ceiling; otherwise read explicitly from $CMRU_TESTER_CPUS",
+    )
+    parser.add_argument(
+        "--cgroup-probe-image", default=None,
+        help=(
+            "Required host-systemd probe image; otherwise read explicitly from "
+            "$CMRU_TESTER_CGROUP_PROBE_IMAGE"
+        ),
+    )
+    parser.add_argument(
+        "--dind-image", default=None,
+        help=(
+            "Required only with --enable-docker; otherwise read explicitly from "
+            "$CMRU_TESTER_DIND_IMAGE"
+        ),
+    )
     parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""))
     parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""))
     parser.add_argument("--device-read-bps", default=os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", ""))
     parser.add_argument("--device-write-bps", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", ""))
     parser.add_argument(
         "--enable-docker", action="store_true",
-        default=os.environ.get("CMRU_TESTER_ENABLE_DOCKER", "").strip().lower() in {"1", "true", "yes"},
         help="Give this gate step an isolated, nested Docker daemon (docker:dind "
-             "sidecar) — only pass this for a step that actually needs it.",
+            "sidecar) — only pass this for a step that actually needs it.",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -424,8 +502,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     if command[:1] == ["--"]:
         command = command[1:]
 
+    image = (args.image or os.environ.get("CMRU_TESTER_UNIFIED_IMAGE") or "").strip()
+    if not image:
+        raise SystemExit(
+            "tester-gate: no test image configured — pass --image explicitly or set "
+            "CMRU_TESTER_UNIFIED_IMAGE in the project cmru.toml [env]."
+        )
+
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
-    exists, note = check_slice_unit(cgroup_parent)
+    probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
+    exists, note = check_slice_unit(cgroup_parent, probe_image)
     if exists is False:
         raise SystemExit(f"tester-gate: refusing to launch — {note}")
     if exists is None:
@@ -433,14 +519,15 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     memory = resolve_memory(args.memory)
     memory_swap = resolve_memory_swap(args.memory_swap)
+    cpus = resolve_cpus(args.cpus)
 
     build_kwargs = dict(
-        image=args.image,
+        image=image,
         cgroup_parent=cgroup_parent,
         cgroup_parent_dev_background=os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", ""),
         memory=memory,
         memory_swap=memory_swap,
-        cpus=args.cpus,
+        cpus=cpus,
         device_read_iops=args.device_read_iops,
         device_write_iops=args.device_write_iops,
         device_read_bps=args.device_read_bps,
@@ -448,11 +535,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     if args.enable_docker:
-        with dind_sidecar() as sidecar:
+        dind_image = resolve_dind_image(args.dind_image)
+        repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
+        with dind_sidecar(dind_image) as sidecar:
             docker_argv = build_docker_command(
-                Path.cwd(), args.cwd, command, sidecar_name=sidecar, **build_kwargs,
+                repo_root, container_cwd, command, sidecar_name=sidecar, **build_kwargs,
             )
             raise SystemExit(subprocess.run(docker_argv, check=False).returncode)
 
-    docker_argv = build_docker_command(Path.cwd(), args.cwd, command, **build_kwargs)
+    repo_root, container_cwd = _resolve_worktree_context(Path.cwd(), args.cwd)
+    docker_argv = build_docker_command(repo_root, container_cwd, command, **build_kwargs)
     raise SystemExit(subprocess.run(docker_argv, check=False).returncode)

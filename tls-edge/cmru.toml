@@ -10,14 +10,12 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\n\nEdge proxy and TLS termination stack for vbpub infrastructure.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
 
 [project]
 id = "tls-edge"
 description = "Edge proxy and TLS termination stack."
-template_revision = 2
+template_revision = 4
 prefix = "tls-edge-v"
 artifacts = ["tarball"]
 

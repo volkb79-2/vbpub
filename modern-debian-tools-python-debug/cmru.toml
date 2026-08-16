@@ -10,6 +10,7 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
+CMRU_TESTER_DIND_IMAGE = "docker:dind"
 RELEASE_IMAGE_FLOW = "load"
 IMAGE_COMPRESSION = "zstd"
 IMAGE_COMPRESSION_LEVEL = "3"
@@ -35,8 +36,6 @@ OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = "Modern Debian Tools + Python Debug image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
 OCI_DESCRIPTION_BASE = "Modern Debian Tools + Python Debug base image."
 OCI_DESCRIPTION_VSC = "Modern Debian Tools + Python Debug VS Code devcontainer image."
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 
 [build_metadata]
 date_env = "BUILD_DATE"
@@ -45,7 +44,7 @@ date_format = "%Y%m%d"
 [project]
 id = "modern-debian-tools-python-debug"
 description = "Curated Debian and Python development/debug container images."
-template_revision = 2
+template_revision = 4
 prefix = "modern-debian-tools-python-debug-v"
 artifacts = ["oci-image"]
 

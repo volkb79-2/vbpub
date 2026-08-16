@@ -37,6 +37,11 @@ from ciu import cli as cli_mod
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _successful_remote_config_load(monkeypatch):
+    """Give transport tests the successful config prerequisite explicitly."""
+    monkeypatch.setattr(cli_mod, "_load_remote_config", lambda _root: {})
+
 def _make_hosts_toml(tmp_path: Path, content: str) -> Path:
     p = tmp_path / ".ciu.hosts.toml"
     p.write_text(content)

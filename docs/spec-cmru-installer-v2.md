@@ -282,7 +282,7 @@ zero-coverage of get.py generation must be closed.** All must pass:
   aborts before the `current` swap.
 
 Run: `cd /tmp/vbpub-cmru-installer-v2/cmru && python -m pytest tests/ -v`
-(or the repo's `python3 cmru.py`-equivalent test entry). Confirm the existing suite still
+(or the installed `cmru` test entry). Confirm the existing suite still
 passes after the `getsh` removal.
 
 ---

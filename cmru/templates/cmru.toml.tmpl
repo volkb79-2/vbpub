@@ -1,4 +1,4 @@
-# cmru-project-template-revision: 2
+# cmru-project-template-revision: 4
 # Complete portable CMRU project contract. Copy to <project>/cmru.toml.
 schema_version = 1
 
@@ -11,10 +11,21 @@ owner_type = "user"
 host = "github"
 registry = ["ghcr.io"]
 
+[env]
+# These are required by the stock tester-gate and wheel-build commands below.
+# Pin image digests in a production project; CMRU deliberately has no source
+# fallback for images or resource limits.
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
+CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY_SWAP = "16g"
+CMRU_TESTER_CPUS = "1.5"
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+
 [project]
 id = "example"
 description = "Describe the product and consumer."
-template_revision = 2
+template_revision = 4
 prefix = "example-v"
 artifacts = ["wheel"]
 scm_dist = "example"

@@ -10,15 +10,12 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 CIU_RELEASE_NOTES = "## CIU CLI wheel\n\nRelease history is generated from the project-scoped source range in `CHANGES.md`.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 
 [project]
 id = "ciu"
 description = "Compose inventory and update tooling for vbpub deployments."
-template_revision = 2
+template_revision = 4
 prefix = "ciu-v"
 artifacts = ["wheel"]
 scm_dist = "ciu"

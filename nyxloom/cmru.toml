@@ -10,15 +10,12 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
 
 [project]
 id = "nyxloom"
 description = "Files-first daemon-supervised development control plane."
-template_revision = 2
+template_revision = 4
 prefix = "nyxloom-v"
 artifacts = ["wheel", "oci-image"]
 scm_dist = "nyxloom"

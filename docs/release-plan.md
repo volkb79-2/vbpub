@@ -25,15 +25,15 @@ any push.** Local `main` is ~30+ commits ahead of `origin/main` (nothing pushed 
 # 1. Push branch (makes ~30 commits public):
 git -C /workspaces/vbpub push origin HEAD:main          # CONFIRM FIRST
 # 2. Dry-run preview (safe):
-./cmru.py status ; ./cmru.py release --dry-run
+cmru status ; cmru release --dry-run
 # 3. (optional) install minisign for bundle signing
 # 4. Release in order:
-./cmru.py release --project cmru                          # -> cmru-v1.1.0 wheel + GitHub Release
-./cmru.py release --project ciu --set-version 4.0.0       # -> ciu-v4.0.0 wheel
-./cmru.py release --project tls-edge ; git -C /workspaces/vbpub push origin HEAD:main  # push VERSION commit
-./cmru.py release --project modern-debian-tools-python-debug   # -> ghcr images
-./cmru.py release --project pwmcp                         # -> ghcr 1.60+1.61 + bundle (minisign first!)
-# 5. Verify: ./cmru.py status  (should report no changes)
+cmru release --project cmru                          # -> cmru-v1.1.0 wheel + GitHub Release
+cmru release --project ciu --set-version 4.0.0       # -> ciu-v4.0.0 wheel
+cmru release --project tls-edge ; git -C /workspaces/vbpub push origin HEAD:main  # push VERSION commit
+cmru release --project modern-debian-tools-python-debug   # -> ghcr images
+cmru release --project pwmcp                         # -> ghcr 1.60+1.61 + bundle (minisign first!)
+# 5. Verify: cmru status  (should report no changes)
 ```
 
 ## Risk register (from scout)

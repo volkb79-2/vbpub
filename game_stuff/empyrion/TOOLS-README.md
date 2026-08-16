@@ -303,10 +303,10 @@ python3 qa_validate_tokens.py \
 
 # 6) Build release artifact (run from repository root)
 cd /workspaces/vbpub
-./cmru.build.sh --project empyrion-translation
+cmru build --project empyrion-translation
 
 # 7) Push release
-./cmru.publish.sh --project empyrion-translation
+cmru publish --project empyrion-translation
 ```
 
 ### Is previous “basic translation” required?
@@ -880,4 +880,3 @@ medium: 3764
 high: 7173
 medium+high (score >= 3): 10937
 Full histogram CSV: risk_distribution.v2.csv
-

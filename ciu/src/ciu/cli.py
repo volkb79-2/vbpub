@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .cli_utils import get_cli_version
 from .config_constants import WORKSPACE_ENV
+from .output import consume_cli_flags
 
 _USAGE = """\
 CIU {ver} — Container Infrastructure Utility (compose · init · up)
@@ -23,6 +24,8 @@ Run-scoped overrides (never written back to the TOML layer):
   --ksm / --no-ksm       inject / do not inject CIU's KSM shim, THIS run only.
                          --no-ksm is PASSTHROUGH: it stops CIU injecting, it
                          does NOT disable KSM an image enables itself (S15.18)
+  --log-prefix-time-short  prefix severity messages with HH:MM:SS. Interactive
+                           terminals colour INFO/WARN/ERROR; pipes and logs stay plain.
 
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
@@ -279,6 +282,25 @@ def _print_verb_help(verb: str) -> None:
     else:
         print(f"CIU {get_cli_version()}\n")
         print(block, end="")
+
+
+def _load_remote_config(repo_root: Path) -> dict:
+    """Load configuration before a remote SSH/activation operation.
+
+    Remote transports may need this configuration for Vault-backed host
+    credentials. Treating a malformed config as an empty mapping changes that
+    security contract, so failure stops before any transport is opened.
+    """
+    from .deploy import load_global_config
+
+    try:
+        return load_global_config(repo_root)
+    except Exception as exc:
+        print(
+            f"[ERROR] could not load global configuration for remote operation: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
 
 
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
@@ -586,7 +608,7 @@ def _worktree(rest: list[str]) -> int:
 
 
 def main() -> None:
-    raw = sys.argv[1:]
+    raw = consume_cli_flags(sys.argv[1:])
 
     if not raw or raw[0] in ("-h", "--help"):
         print(_USAGE.format(ver=get_cli_version()))
@@ -635,11 +657,7 @@ def main() -> None:
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
-            try:
-                from .deploy import load_global_config
-                config = load_global_config(repo_root)
-            except Exception:
-                config = {}
+            config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
@@ -667,11 +685,7 @@ def main() -> None:
             p.add_argument("--rollback", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
-            try:
-                from .deploy import load_global_config
-                config = load_global_config(repo_root)
-            except Exception:
-                config = {}
+            config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
             bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
@@ -748,11 +762,7 @@ def main() -> None:
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
-            try:
-                from .deploy import load_global_config
-                config = load_global_config(repo_root)
-            except Exception:
-                config = {}
+            config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
@@ -777,11 +787,7 @@ def main() -> None:
             p.add_argument("--thin", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
-            try:
-                from .deploy import load_global_config
-                config = load_global_config(repo_root)
-            except Exception:
-                config = {}
+            config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
             if opts.thin:
@@ -901,12 +907,7 @@ def main() -> None:
             raise SystemExit(2)
         # Resolve repo root from env
         repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
-        # Load config (best effort; transport will use repo_root for vault lazily)
-        try:
-            from .deploy import load_global_config
-            config = load_global_config(repo_root)
-        except Exception:
-            config = {}
+        config = _load_remote_config(repo_root)
         host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
         interactive = len(cmd_argv) == 0
         raise SystemExit(ssh_exec(

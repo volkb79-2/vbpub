@@ -24,7 +24,7 @@ worktree — the parallel phase touches disjoint files, see §Workflow).
 - Commit your phase with a `feat(cmru)`/`refactor`/`fix` message ending
   `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`. Stage only your phase's files.
 - `cmru` is editable-installed; `python -m cmru.handlers --help` works. The repo-root
-  `cmru.py` shim shadows the package — run python checks from `/tmp` with an absolute
+  root-level source launcher can shadow the package — run Python checks from `/tmp` with an absolute
   config path.
 
 ---

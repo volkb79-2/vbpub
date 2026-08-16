@@ -1,10 +1,15 @@
-"""Tests for format_result (resolve.py) — pure logic, no network."""
+"""Tests for resolve formatting and credential selection — no network."""
+import io
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import json
 import unittest
+from contextlib import redirect_stdout
+from types import SimpleNamespace
+
+from cmru import cli, resolve as resolve_module
 from cmru.resolve import format_result
 
 _RESULT = {
@@ -80,6 +85,30 @@ class TestFormatResultEnv(unittest.TestCase):
         result = {k: v for k, v in _RESULT.items() if k != "sha256"}
         out = format_result(result, "env")
         self.assertNotIn("SHA256", out)
+
+
+def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(monkeypatch):
+    project = SimpleNamespace(prefix="alpha-v", github_token="project-token")
+    loaded = (
+        Path("/repo"), {"alpha": project}, [], [], [], "project-first", {},
+        SimpleNamespace(), cli.GitHubConfig("owner", "repo", "root-token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+    captured: dict[str, str] = {}
+
+    class FakeHost:
+        def __init__(self, *, owner, repo, token):
+            captured.update(owner=owner, repo=repo, token=token)
+
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: Path("/repo/cmru.toml"))
+    monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", FakeHost)
+    monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: _RESULT)
+
+    with redirect_stdout(io.StringIO()):
+        resolve_module.resolve_main(["--project", "alpha", "--prefix", "custom-v"])
+
+    assert captured == {"owner": "owner", "repo": "repo", "token": "project-token"}
 
 
 if __name__ == "__main__":

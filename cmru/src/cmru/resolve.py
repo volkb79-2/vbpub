@@ -91,7 +91,6 @@ def resolve_main(argv: Optional[list] = None) -> None:
     guessed from an incomplete environment.
     """
     import argparse
-    import os
     parser = argparse.ArgumentParser(description="Resolve latest release for a project (S5)")
     parser.add_argument("--project", help="Project name (maps to prefix via config)")
     parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
@@ -110,22 +109,23 @@ def resolve_main(argv: Optional[list] = None) -> None:
     configs = result_tuple[1]
     github_cfg = result_tuple[8]
 
-    # Owner/repo are source facts in the strict config. S2.4 still permits an
-    # explicit secret env source ahead of the secret overlay/config value.
+    # Owner/repo are source facts in the strict config. ``load_config`` has
+    # already resolved the one S2.4 credential contract, including a selected
+    # project's local override; do not reopen a second credential precedence
+    # path here.
     owner = github_cfg.owner
     repo = github_cfg.repo
-    token = (
-        os.environ.get("GITHUB_PUSH_PAT")
-        or os.environ.get("GITHUB_TOKEN")
-        or github_cfg.token
-    )
+
+    proj = configs.get(args.project) if args.project else None
+    if args.project and proj is None:
+        parser.error(f"unknown project: {args.project}")
 
     prefix = args.prefix
+    project_token = proj.github_token if proj is not None else ""
     if not prefix:
-        proj = configs.get(args.project) if args.project else None
-        if proj is None:
-            parser.error(f"unknown project: {args.project}")
+        assert proj is not None  # enforced by the one-of --project/--prefix check above
         prefix = proj.prefix
+    token = project_token or github_cfg.token
 
     if not owner or not repo:
         print("[ERROR] GitHub owner/repo unknown in the selected CMRU config", file=sys.stderr)

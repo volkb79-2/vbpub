@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
 
@@ -42,7 +42,7 @@ class GitHubS2Config:
     owner: str
     repo: str
     owner_type: str          # "user" | "org"  (V03)
-    token: Optional[str]     # environment or project-local gitignored overlay only
+    token: Optional[str]     # resolved repository baseline secret; never from committed config
 
 
 @dataclass(frozen=True)
@@ -147,6 +147,7 @@ class ForgeConfig:
     projects: Mapping[str, ProjectS2Config]
     repo_root: Path          # directory containing the config file
     env: Mapping[str, str] = field(default_factory=dict)
+    project_tokens: Mapping[str, str] = field(default_factory=dict)
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────────
@@ -375,7 +376,7 @@ def _scalar_env(raw: object, where: str) -> dict[str, str]:
     return result
 
 
-def _github(raw: object, config_path: Path) -> GitHubS2Config:
+def _github(raw: object) -> GitHubS2Config:
     if not isinstance(raw, dict):
         _error("[github] is required")
     _reject_unknown(raw, {"owner", "repo", "owner_type"}, "github")
@@ -386,32 +387,97 @@ def _github(raw: object, config_path: Path) -> GitHubS2Config:
         _error("github.owner and github.repo must be non-empty strings")
     if owner_type not in {"user", "org"}:
         _error("github.owner_type must be 'user' or 'org'")
-    token = _resolve_project_token(config_path)
-    return GitHubS2Config(owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=token or None)
+    return GitHubS2Config(owner=owner.strip(), repo=repo.strip(), owner_type=owner_type, token=None)
 
 
-def _resolve_project_token(config_path: Path) -> str:
-    """Read an explicit process credential or this project's ignored overlay.
-
-    A committed credential is rejected by ``_github``.  There is deliberately no
-    secondary config source that could turn a stale repository value into an
-    unnoticed publication authority.
-    """
+def _environment_token() -> str:
+    """Return a deliberate invocation-scoped credential, if one was supplied."""
     for env_name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN"):
         value = (os.getenv(env_name) or "").strip()
         if value:
             return value
-    secret_path = config_path.with_name("cmru.secret.toml")
-    if secret_path.is_file():
-        with secret_path.open("rb") as handle:
-            secret = tomllib.load(handle)
-        if not isinstance(secret, dict) or set(secret) != {"github"} or not isinstance(secret["github"], dict):
-            _error(f"{secret_path}: expected only [github]")
-        token = secret["github"].get("token")
-        if not isinstance(token, str) or not token.strip():
-            _error(f"{secret_path}: github.token must be a non-empty string")
-        return token.strip()
     return ""
+
+
+def _secret_token(raw: object, where: str) -> str:
+    if not isinstance(raw, dict):
+        _error(f"{where} must be a table")
+    _reject_unknown(raw, {"token"}, where)
+    token = _require(raw, "token", where)
+    if not isinstance(token, str) or not token.strip():
+        _error(f"{where}.token must be a non-empty string")
+    return token.strip()
+
+
+def _read_secret_document(secret_path: Path) -> dict:
+    """Read one strict secret overlay, returning an empty mapping when absent."""
+    if not secret_path.exists():
+        return {}
+    if not secret_path.is_file():
+        _error(f"{secret_path}: expected a regular file")
+    try:
+        with secret_path.open("rb") as handle:
+            raw = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        _error(f"{secret_path}: invalid TOML ({exc})")
+    if not isinstance(raw, dict):
+        _error(f"{secret_path}: TOML document must be a table")
+    _reject_unknown(raw, {"github"}, str(secret_path))
+    if set(raw) != {"github"}:
+        _error(f"{secret_path}: expected exactly [github]")
+    _secret_token(raw["github"], f"{secret_path}: github")
+    return raw
+
+
+def _deep_merge(base: Mapping[str, object], overlay: Mapping[str, object]) -> dict:
+    """Merge nested secret tables, with the nearer project document winning."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _resolved_secret_token(raw: Mapping[str, object], where: str) -> str:
+    if not raw:
+        return ""
+    return _secret_token(raw.get("github"), f"{where}: github")
+
+
+def _load_repository_secrets(
+    config_root: Path, project_configs: Mapping[str, Path],
+) -> tuple[str, Mapping[str, str]]:
+    """Deep-merge root secrets with an optional project-local override.
+
+    The root ``cmru.secret.toml`` owns repository credentials.  A project may carry
+    a same-shaped ``<project>/cmru.secret.toml`` which overlays that root document
+    only for operations on that project.  Thus a copied project remains portable,
+    while an estate still has one obvious default credential source.
+    """
+    config_root = config_root.resolve()
+    root_raw = _read_secret_document(config_root / "cmru.secret.toml")
+    root_token = _resolved_secret_token(root_raw, str(config_root / "cmru.secret.toml"))
+
+    environment_token = _environment_token()
+    if environment_token:
+        return environment_token, {
+            name: environment_token for name in project_configs
+        }
+
+    project_tokens: dict[str, str] = {}
+    for project_name, project_config in project_configs.items():
+        project_root = project_config.parent.resolve()
+        overlay_raw = {} if project_root == config_root else _read_secret_document(
+            project_root / "cmru.secret.toml"
+        )
+        merged = _deep_merge(root_raw, overlay_raw)
+        project_tokens[project_name] = _resolved_secret_token(
+            merged, str(project_root / "cmru.secret.toml"),
+        )
+    return root_token, project_tokens
 
 
 def _targets(raw: object) -> TargetsConfig:
@@ -485,7 +551,7 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
     )
     if raw.get("schema_version") != 1:
         _error(f"{PROJECT_CONFIG_FILENAME}.schema_version must be exactly 1")
-    github = _github(raw.get("github"), config_path)
+    github = _github(raw.get("github"))
     targets = _targets(raw.get("targets"))
     env = _scalar_env(raw.get("env", {}), "env")
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
@@ -614,6 +680,13 @@ def _parse_cleanup(raw: object) -> CleanupS2Config:
 
 def _load_project_config(config_path: Path) -> ForgeConfig:
     project, github, targets = _parse_project_document(config_path)
+    root_token, project_tokens = _load_repository_secrets(
+        config_path.parent, {project.name: config_path},
+    )
+    github = GitHubS2Config(
+        owner=github.owner, repo=github.repo, owner_type=github.owner_type,
+        token=root_token or None,
+    )
     orchestration = OrchestrationConfig(
         project_order=[project.name], default_projects=[project.name],
         default_steps=["run-tests", "build", "push"], execution_mode="project-first",
@@ -622,6 +695,7 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
     return ForgeConfig(
         github=github, targets=targets, orchestration=orchestration, cleanup=None,
         projects={project.name: project}, repo_root=config_path.parent.resolve(), env=project.env,
+        project_tokens=project_tokens,
     )
 
 
@@ -635,7 +709,7 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         _error("[orchestration] is required")
     _reject_unknown(
         orch_raw,
-        {"project_order", "default_projects", "default_steps", "execution_mode", "auth_project", "project"},
+        {"project_order", "default_projects", "default_steps", "execution_mode", "defaults", "project"},
         "orchestration",
     )
     for key in ("project_order", "default_projects", "default_steps"):
@@ -650,9 +724,12 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     paths: dict[str, Path] = {}
     dependencies: dict[str, List[str]] = {}
     github: Optional[GitHubS2Config] = None
-    github_by_project: dict[str, GitHubS2Config] = {}
     targets: Optional[TargetsConfig] = None
-    shared_env: Optional[Mapping[str, str]] = None
+    defaults_raw = orch_raw.get("defaults", {})
+    if not isinstance(defaults_raw, dict):
+        _error("orchestration.defaults must be a table")
+    _reject_unknown(defaults_raw, {"env"}, "orchestration.defaults")
+    shared_env = _scalar_env(defaults_raw.get("env"), "orchestration.defaults.env")
     for project_id, entry in entries.items():
         where = f"orchestration.project.{project_id}"
         if not isinstance(entry, dict):
@@ -678,20 +755,24 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
             _error(f"{where}.config resolves outside the orchestration root")
         docs[project_id] = project
         paths[project_id] = project_path
-        github_by_project[project_id] = project_github
         if github is None:
             github = project_github
             targets = project_targets
-            shared_env = {}
         elif (project_github.owner, project_github.repo, project_github.owner_type) != (github.owner, github.repo, github.owner_type):
             _error("one orchestration run currently requires every project cmru.toml to name the same GitHub release repository")
         elif project_targets != targets:
             _error("one orchestration run currently requires every project cmru.toml to name identical [targets]")
+    # This is an explicit estate policy, not a consumer-side fallback: project
+    # values deliberately override a key only when the project owns a distinct
+    # fact, and every runner receives the resolved effective environment.
+    # A project loaded by itself remains portable, so it must still declare
+    # every input it needs outside this estate policy.
+    docs = {
+        name: replace(project, env={**shared_env, **project.env})
+        for name, project in docs.items()
+    }
     known = set(docs)
-    auth_project = _require(orch_raw, "auth_project", "orchestration")
-    if not isinstance(auth_project, str) or auth_project not in known:
-        _error("orchestration.auth_project must name one declared project credential contract")
-    github = github_by_project[auth_project]
+    root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
     for field_name, values in (("project_order", orch_raw["project_order"]), ("default_projects", orch_raw["default_projects"])):
         unknown = sorted(set(values) - known)
         if unknown:
@@ -720,6 +801,10 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
                     "to appear earlier in orchestration.project_order"
                 )
     assert github is not None and targets is not None
+    github = GitHubS2Config(
+        owner=github.owner, repo=github.repo, owner_type=github.owner_type,
+        token=root_token or None,
+    )
     return ForgeConfig(
         github=github, targets=targets,
         orchestration=OrchestrationConfig(
@@ -729,7 +814,8 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
             project_configs=paths, dependencies=dependencies,
         ),
         cleanup=_parse_cleanup(raw.get("cleanup")), projects=docs,
-        repo_root=config_path.parent.resolve(), env=shared_env or {},
+        repo_root=config_path.parent.resolve(), env=shared_env,
+        project_tokens=project_tokens,
     )
 
 

@@ -48,6 +48,7 @@ def _wheel_glob(prefix: str) -> str:
 
 # ─── wheel commands ───────────────────────────────────────────────────────────
 _WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
+_DOCKER_CGROUP_PARENT_ENV = "CMRU_DOCKER_CGROUP_PARENT"
 
 
 def _check_build_prerequisites() -> None:
@@ -57,28 +58,46 @@ def _check_build_prerequisites() -> None:
     confusing docker error (container mode)."""
     from cmru import exit_codes
 
-    if os.getenv(_WHEEL_BUILDER_IMAGE_ENV):
-        if shutil.which("docker") is None:
-            print(
-                f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is set but docker is required "
-                "and not found in PATH",
-                file=sys.stderr,
-            )
-            raise SystemExit(exit_codes.PREREQ_MISSING)
-        return
-
-    import importlib.util
-
-    if importlib.util.find_spec("build") is None:
+    if not (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip():
         print(
-            f"[ERROR] the 'build' package is required but not installed in {sys.executable}\n"
-            f"        fix: {sys.executable} -m pip install build\n"
-            f"        (or set ${_WHEEL_BUILDER_IMAGE_ENV} to build via a container instead)",
+            f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is required for wheel-build. "
+            "Declare an immutable wheel-builder image in the project's cmru.toml [env]; "
+            "CMRU refuses the non-reproducible local-Python build path.",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+    if shutil.which("docker") is None:
+        print(
+            f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is set but docker is required "
+            "and not found in PATH",
             file=sys.stderr,
         )
         raise SystemExit(exit_codes.PREREQ_MISSING)
 
 
+def _docker_cgroup_parent() -> str:
+    """Resolve the cgroup parent for a wheel-builder container.
+
+    A wheel build is still a container workload. Refuse to let Docker place it
+    in its ungoverned default when the caller has not supplied the estate's
+    configured background tier.
+    """
+    parent = (
+        os.getenv(_DOCKER_CGROUP_PARENT_ENV)
+        or os.getenv("CGROUP_PARENT_DEV_BACKGROUND")
+        or ""
+    ).strip()
+    if not parent:
+        print(
+            f"[ERROR] ${_DOCKER_CGROUP_PARENT_ENV} or "
+            "$CGROUP_PARENT_DEV_BACKGROUND is required for wheel-build; "
+            "refusing to launch an ungoverned Docker container",
+            file=sys.stderr,
+        )
+        from cmru import exit_codes
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+    return parent
 def _host_bind_source(container_path: Path) -> str:
     """Resolve the real host-filesystem path backing a bind-mounted directory.
 
@@ -124,10 +143,9 @@ def _git_common_dir(cwd_parent: Path) -> Optional[Path]:
     `cwd_parent` alone. For a release worktree it lives OUTSIDE the worktree
     entirely — the worktree's own `.git` is just a file containing an absolute
     pointer there (`gitdir: <repo_root>/.git/worktrees/<name>`) — so a container
-    with only the worktree bind-mounted cannot resolve the repository at all:
-    `git`/`setuptools_scm` fail closed-ish by silently falling back to
-    `pyproject.toml`'s `fallback_version` rather than erroring loudly, which is
-    how a wrong version can end up baked into a wheel undetected.
+    with only the worktree bind-mounted cannot resolve the repository at all.
+    `cmd_wheel_build` rejects that source tree before the builder is invoked:
+    no static package version may stand in for Git-derived release evidence.
     """
     result = subprocess.run(
         ["git", "rev-parse", "--git-common-dir"], cwd=str(cwd_parent),
@@ -181,31 +199,30 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
             stale.unlink()
     print(f"[INFO] cmru handler: building wheel in {cwd}")
 
-    image = os.getenv(_WHEEL_BUILDER_IMAGE_ENV)
-    if image:
-        # Same invocation shape as the direct path below (run from the parent dir,
-        # project dir as the positional srcdir), just through `docker run` with the
-        # image's venv python in place of sys.executable.
-        host_parent = _host_bind_source(cwd.parent)
-        subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "-v", f"{host_parent}:{cwd.parent}",
-                *_wheel_builder_git_mount_args(cwd, mount_root=cwd.parent),
-                "-w", str(cwd.parent),
-                image,
-                "/opt/wheel-builder-venv/bin/python", "-m", "build",
-                "--wheel", "--outdir", str(dist), str(cwd),
-            ],
-            check=True,
+    # _check_build_prerequisites() has already rejected an absent image.  Read it
+    # again rather than carrying ambient state in a module global: each command
+    # invocation remains self-contained and a caller which mutates its environment
+    # between the check and launch still fails loudly.
+    image = (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip()
+    if not image:
+        raise RuntimeError(
+            "wheel-builder image disappeared after prerequisite validation; refusing build"
         )
-        return
-
-    # Run the module from the parent directory so a project-local `build/`
-    # folder does not shadow the `pypa/build` package.
+    cgroup_parent = _docker_cgroup_parent()
+    # Run from the parent directory with the project dir as positional source;
+    # the image's venv replaces the retired local-Python build path.
+    host_parent = _host_bind_source(cwd.parent)
     subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(cwd)],
-        cwd=str(cwd.parent), check=True,
+        [
+            "docker", "run", "--rm", "--cgroup-parent", cgroup_parent,
+            "-v", f"{host_parent}:{cwd.parent}",
+            *_wheel_builder_git_mount_args(cwd, mount_root=cwd.parent),
+            "-w", str(cwd.parent),
+            image,
+            "/opt/wheel-builder-venv/bin/python", "-m", "build",
+            "--wheel", "--outdir", str(dist), str(cwd),
+        ],
+        check=True,
     )
 
 

@@ -11,15 +11,13 @@ registry = ["ghcr.io"]
 
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration for portable CMRU projects.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
 PYTHONPATH = "src"
 
 [project]
 id = "cmru"
 description = "Configurable Multi Release Utility."
-template_revision = 2
+template_revision = 4
 prefix = "cmru-v"
 artifacts = ["wheel"]
 scm_dist = "cmru"
@@ -36,13 +34,14 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  # The CMRU package owns the repository-root estate shims (`cmru.py` and
-  # `cmru.release.sh`), which its release tests exercise.  The project command
-  # explicitly selects that root and then the cmru workdir; tester-gate itself
+  # The installed CMRU executable is the canonical estate entry point. The
+  # command explicitly selects the root and then the cmru workdir; tester-gate
   # still accepts only a contained workdir and mounts exactly that declared root.
-  { label = "cmru: tester-unified suite", argv = ["python3", "cmru.py", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = ".." },
+  { label = "cmru: tester-unified suite", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = ".." },
 ]
 
+# Initial standalone build (before cmru is installed):
+# ./cmru/build-initial-standalone.sh
 [steps.build]
 quiet = true
 commands = [

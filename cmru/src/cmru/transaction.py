@@ -155,12 +155,14 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
 ) -> None:
-    """Copy only declared project-local secret overlays into the child worktree.
-
-    The prior root overlay belongs to the retired central-config grammar and is
-    deliberately not read. Each portable project may own ``cmru.secret.toml``;
-    environment credentials remain the preferred estate-wide mechanism.
-    """
+    """Copy the root credential and explicit project overlays into a child worktree."""
+    source = repo_root.resolve() / "cmru.secret.toml"
+    if source.exists() and not source.is_file():
+        raise RuntimeError(f"repository credential path is not a regular file: {source}")
+    if source.is_file():
+        target = workspace.path / "cmru.secret.toml"
+        shutil.copyfile(source, target)
+        target.chmod(0o600)
     for config_path in project_config_paths:
         config_path = config_path.resolve()
         try:
@@ -168,6 +170,8 @@ def copy_secret_overlays(
         except ValueError as exc:
             raise RuntimeError(f"project config is outside repository: {config_path}") from exc
         source = config_path.with_name("cmru.secret.toml")
+        if source.exists() and not source.is_file():
+            raise RuntimeError(f"project credential path is not a regular file: {source}")
         if not source.is_file():
             continue
         target = workspace.path / relative / "cmru.secret.toml"
@@ -897,14 +901,14 @@ def run_child(
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
-    A vbpub checkout carries ``cmru.py``; a portable third-party project normally
-    has only the installed ``cmru`` package, so use its module entry point there.
+    Release children use the installed ``cmru`` executable. The root checkout no
+    longer carries a Python shim, so a release must be launched after CMRU has
+    been bootstrapped and placed on PATH.
     """
     env = os.environ.copy()
     env[CHILD_ENV] = "1"
     env[BRANCH_ENV] = workspace.branch
     env[BASE_ENV] = workspace.base
-    shim = workspace.path / "cmru.py"
-    launcher = [sys.executable, str(shim)] if shim.is_file() else [sys.executable, "-m", "cmru.cli"]
+    launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
     command = [*launcher, verb, "--_transaction-child", *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

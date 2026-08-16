@@ -169,7 +169,7 @@ retained before this feature existed (no recorded scope) are left for an explici
 a failed worktree implicitly: inspect it, resume it explicitly when appropriate, or explicitly
 request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
 
-The secret overlay is copied mode `0600`, never committed.
+The repository-root secret document is copied mode `0600`, never committed.
 
 ### File conventions (all `cmru.`-prefixed)
 
@@ -177,15 +177,17 @@ The secret overlay is copied mode `0600`, never committed.
 |---|---|---|
 | `<project>/cmru.toml` | committed | Complete portable product contract. **No secrets.** |
 | `cmru.orchestration.toml` | committed | Optional estate ordering/dependencies/cleanup only. |
-| `<project>/cmru.secret.toml` | gitignored | Token only: `[github] token = "…"`. Optional — env wins (see S2.4). |
+| `cmru.secret.toml` | gitignored | Repository credential document; optional explicit per-project overrides (see S2.4). |
 | `cmru.project.sample.toml` | committed | Template for a project contract (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps. |
-| `cmru.py` | committed | Repo-root entry point (`./cmru.py <verb>` ≡ `cmru <verb>`); `cmru.*.sh` shims cover common release verbs. |
+| `cmru` console script | installed | Canonical portable entry point for every verb. |
+| `cmru.release.sh` | committed | vbpub-only convenience wrapper for the complete estate release. |
+| `cmru/build-initial-standalone.sh` | committed | Fresh-checkout bootstrap that builds the first CMRU wheel without CMRU installed. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
 `build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
-legacy remains. The only release entry points are `cmru.py` (and the `cmru.*.sh` shims) or
-the installed `cmru` console script.
+legacy remains. The installed `cmru` console script is the only general release entry
+point; vbpub additionally keeps `cmru.release.sh` as a convenience wrapper.
 
 ---
 
@@ -359,12 +361,19 @@ CMRU has exactly two non-overlapping documents (select a non-default path only w
 `--config`). A portable product owns `<project>/cmru.toml`; it contains every fact
 and command needed to test, build, publish, retain, and release that product in a fresh
 repository root. An optional repository-root `cmru.orchestration.toml` names only those
-project documents, their order/dependencies, cleanup policy, and an explicit credential
-source. Secrets are never committed.
+project documents, their order/dependencies, and cleanup policy. The repository-root
+secret document is the credential baseline; a selected project may explicitly overlay it
+from its own folder as defined in S2.4. Secrets are never committed.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
 **S2.2 — Project document** (`<project>/cmru.toml`):
+
+An orchestration run may declare shared non-secret build/gate inputs once in
+`[orchestration.defaults.env]`.  Those values are resolved first, then a
+project's `[env]` deliberately overrides a key only when it has a distinct
+requirement.  A project run directly has no estate policy to invent, so it
+must declare or receive every required input explicitly.
 
 ```toml
 schema_version = 1
@@ -378,10 +387,19 @@ owner_type = "user"                # required: user | org
 host     = "github"               # required: provider for releases
 registry = ["ghcr.io"]            # list: image registries to push to (S11)
 
+[env]
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder@sha256:<digest>"       # required by wheel-build
+CMRU_TESTER_UNIFIED_IMAGE = "tester-unified@sha256:<digest>"     # required by tester-gate
+CMRU_TESTER_MEMORY = "3g"                                         # required by tester-gate
+CMRU_TESTER_MEMORY_SWAP = "16g"                                   # required by tester-gate
+CMRU_TESTER_CPUS = "1.5"                                          # required by tester-gate
+CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"         # required by tester-gate
+# CMRU_TESTER_DIND_IMAGE = "docker@sha256:<digest>"               # required with --enable-docker
+
 [project]
 id          = "example"           # required, lowercase project id
 description = "consumer-facing product summary"
-template_revision = 2              # required for `cmru standards` conformance
+template_revision = 4              # required for `cmru standards` conformance
 prefix      = "<name>-v"          # required: tag prefix
 artifacts   = ["wheel"]           # required: wheel | oci-image | tarball | bundle
 scm_dist    = "<name>"            # optional: python dist name (for wheel type)
@@ -462,7 +480,6 @@ project_order = ["example"]
 default_projects = ["example"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
-auth_project = "example"            # explicit, never inferred from order
 
 [orchestration.project.example]
 config = "example/cmru.toml"         # project-relative, exact filename
@@ -478,20 +495,48 @@ ghcr_delete_packages = []
 **S2.3** One strict reader validates every CMRU verb before it interprets the config.
 Unknown and retired keys MUST be rejected (exit 2); required fields MUST be present.
 `cmru standards` additionally reports the project-template revision, release-history policy,
-required release gate, and summary-only default step output. `--update` may update only the
+required release gate, and summary-only default step output. Where a command invokes
+`tester-gate`, it requires explicit image/resource/probe `[env]` inputs; where it invokes
+`wheel-build`, it requires an explicit wheel-builder image. A Docker-enabled tester gate
+also requires its nested-Docker image. `--update` may update only the
 project TOML revision marker; it MUST NOT rewrite project-owned command bodies. A project document MUST explicitly declare
 `run-tests`, `push`, and the named `release.build_step`; every step MUST explicitly set
 `quiet = true|false`. A standards-conforming project MUST set `quiet = true` for every
 declared step; `--show-run-details` is the explicit live-detail override.
 
-**S2.4** Token resolution order (first hit wins), so project `cmru.toml` stays secret-free:
+**S2.4** Token resolution, so project `cmru.toml` stays secret-free:
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
-2. `<project>/cmru.secret.toml` → `[github].token` (a gitignored overlay next to that project's config).
+2. Deep merge repository-root `cmru.secret.toml` with the selected
+   `<project>/cmru.secret.toml`; the nearer project table wins. The merged
+   `[github].token` is the credential.
+
+For an orchestration invocation, the root is the directory containing
+`cmru.orchestration.toml`. For a portable one-project invocation, it is the directory
+containing that project's `cmru.toml`. The secret grammar is strict:
+
+```toml
+# <repository-root>/cmru.secret.toml
+[github]
+token = "…"                         # repository-wide credential
+
+# <project>/cmru.secret.toml (optional explicit override)
+[github]
+token = "…"
+```
 
 `[github].token` in a committed `cmru.toml` is rejected. There is no fallback
-credential source.
+credential source. `tester-gate` likewise has no built-in inputs: it requires `--image`
+or `CMRU_TESTER_UNIFIED_IMAGE`, plus explicit memory, combined memory/swap, CPU, and
+host-systemd probe-image values (CLI options or the effective `[env]`). `--enable-docker` additionally
+requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
+does not fall back to the cockpit's Python environment.
 
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
+
+**S2.5 — Cleanup selectors are explicit.** In `cmru.orchestration.toml`, an
+empty `cleanup.release_tag_prefixes` or `cleanup.ghcr_packages` list selects
+nothing. Only an explicit `"*"` selects every release or package. CMRU MUST
+never reinterpret an empty destructive selector as a wildcard.
 
 ---
 
@@ -536,7 +581,11 @@ console is quiet. By default the orchestration console shows labels, elapsed tim
 test-framework success evidence, and failure excerpts only. `--show-run-details` streams
 the raw project output to the console as well. The runner MUST flush every received line;
 it sets `PYTHONUNBUFFERED=1` for Python children, while non-Python programs remain responsible
-for their own stdout buffering.
+for their own stdout buffering. `--log-prefix-time-short` is a process-wide presentation
+choice: every CMRU line that already starts `[INFO]`, `[WARN]`, or `[ERROR]` is emitted as
+`HH:MM:SS [TYPE] …`, including transaction-child output. Interactive terminals colour those
+three severity tokens green/yellow/red; redirected stdout/stderr is deliberately ANSI-free so
+the stable logs and machine consumers retain plain text.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
 and artifacts for inspection/resume. Successful release MUST remove the worktree by default.
@@ -781,13 +830,14 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 
 **S9.3** For the `scm` versioning strategy, the clean version string (no `.dev`) is only emitted on an annotated tag. Untagged builds MUST produce a dev suffix.
 
-**S9.3a** When `CMRU_WHEEL_BUILDER_IMAGE` is set, `cmd_wheel_build` (`cmru/src/cmru/handlers.py`)
-MUST bind-mount the checkout's git common directory into the builder container, not only the
+**S9.3a** `cmd_wheel_build` (`cmru/src/cmru/handlers.py`) MUST require an explicit
+`CMRU_WHEEL_BUILDER_IMAGE` and bind-mount the checkout's git common directory into that
+builder container, not only the
 project subtree. A release worktree's own `.git` is a file pointing to an *absolute path
 outside that subtree* (`gitdir: <repo_root>/.git/worktrees/<name>`); mounting only the subtree
-makes that pointer unresolvable, and `setuptools_scm` fails **silently** — it does not error,
-it falls back to `pyproject.toml`'s `fallback_version` and bakes that wrong, static version
-into the published wheel. `_wheel_builder_git_mount_args` supplies this mount and is a no-op
+makes that pointer unresolvable. CMRU therefore requires a resolvable Git worktree before it
+invokes the builder; it never accepts a static fallback version. `_wheel_builder_git_mount_args`
+supplies this mount and is a no-op
 (nothing extra to mount) for an ordinary non-worktree checkout, where the common dir is already
 covered by the existing subtree mount.
 
@@ -830,7 +880,7 @@ _This section enumerates all config validation rules. Each rule references the s
 | V07 | `version.strategy` is `scm`, `file:<path>`, `counter`, `external:<VAR>`, or `none` | 2 |
 | V08 | `version.bump` is `conventional` or `patch` | 2 |
 | V09 | No unknown keys at any config level (including `[getsh]` — retired; use `[installer]`) | 2 |
-| V10 | `GITHUB_PUSH_PAT`/`GITHUB_TOKEN` env var or project-local ignored token overlay present (for publish) | 3 |
+| V10 | `GITHUB_PUSH_PAT`/`GITHUB_TOKEN`, repository-root ignored token document, or selected project ignored token overlay present (for publish) | 3 |
 | V11 | All `required_env` vars present before step execution | 3 |
 | V13 | `[installer].install_dir_system` is required when `[installer]` is present | 2 |
 | V14 | `[installer].install_dir_user` is required when `[installer]` is present | 2 |

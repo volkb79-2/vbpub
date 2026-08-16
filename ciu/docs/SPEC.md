@@ -846,6 +846,10 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (with `--host`) selects the docker-optional push→activate path on `up` and
   `health` (S14.6). `up --host --thin` also accepts `--bootstrap`/`--rollback`.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
+  `--log-prefix-time-short` is a global presentation flag accepted before or after the
+  verb (before a `--` passthrough boundary): it prefixes CIU's existing `[INFO]`, `[WARN]`,
+  and `[ERROR]` records with `HH:MM:SS`. Interactive terminals colour the severity token
+  green/yellow/red; non-TTY streams remain ANSI-free for logs and machine processing.
 - **S10.5** `ciu diagnose [--project NAME] [--logs N] [--json]` is a strictly
   read-only Docker diagnostic. It selects CIU-labelled containers (optionally
   one project), inspects state without restart/remediation, and correlates:
@@ -1072,6 +1076,11 @@ accepted for the user-global file). Keys:
 | `activate` | Yes† | S14.6 activation contract — a string entrypoint (CIU appends the verb) or a per-verb table (`bootstrap`/`apply`/`health`/`rollback`). †Required only for `--thin`. |
 | `push_mode` | No | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to tar+scp when rsync is absent on the control host or target (S14.6). |
 | `bundle_excludes` | No | List of top-level paths excluded from the pushed bundle (default `[".git"]`). Applied identically to the rsync and tar+scp paths. |
+
+Before any `--host` transport, CIU MUST load the repository's global
+configuration successfully. An unreadable or invalid configuration is an exit-2
+error; it MUST NOT be replaced with an empty mapping, because host credentials
+may be resolved through that configuration.
 
 `[deploy.hosts.<name>.admin]` subtable overrides `ssh_user` / `ssh_key` for the
 higher-privilege access plane (`ciu ssh <host> --admin`).

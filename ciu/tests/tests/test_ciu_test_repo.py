@@ -302,27 +302,55 @@ def test_render_entrypoint_no_guard_for_non_standalone_root(monkeypatch) -> None
         deploy._run(args, ["--render-toml"])
 
 
-def test_deploy_render_all_configs_respects_phases(monkeypatch) -> None:
-    _set_env_defaults()
-    _bootstrap(monkeypatch)
+def test_deploy_render_all_configs_respects_phases(monkeypatch, tmp_path) -> None:
+    """Phase selection must not inherit another xdist worker's rendered state.
 
-    app_rendered = APP_STACK / "ciu.toml"
+    Other integration tests deliberately render the committed demonstration
+    fixture.  This test's negative assertion is about a file being absent, so
+    sharing that mutable directory makes it scheduler-dependent under the
+    release gate's parallel run.  Use a real copied fixture: it exercises the
+    same renderer and global configuration without letting a sibling test
+    recreate the file between our unlink and assertion.
+    """
+    repo = tmp_path / "test-repo"
+    shutil.copytree(TEST_REPO, repo)
+    _set_env_defaults()
+    monkeypatch.setenv("REPO_ROOT", str(repo))
+    monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))
+    monkeypatch.chdir(repo)
+    bootstrap_workspace_env(
+        start_dir=repo,
+        define_root=None,
+        defaults_filename="ciu.global.defaults.toml.j2",
+        generate_env=True,
+        update_cert_permission=False,
+        required_keys=[
+            "REPO_ROOT",
+            "PHYSICAL_REPO_ROOT",
+            "DOCKER_NETWORK_INTERNAL",
+            "CONTAINER_UID",
+            "DOCKER_GID",
+            "PUBLIC_FQDN",
+        ],
+    )
+
+    app_rendered = repo / "applications" / "app-config" / "ciu.toml"
     if app_rendered.exists():
         app_rendered.unlink()
 
     # v2 render path: load global -> resolve the core_infra profile -> build a
     # phase-restricted selection -> render only those stacks (S7.1 / S8.3 step 3).
-    global_config = deploy.load_global_config(TEST_REPO)
+    global_config = deploy.load_global_config(repo)
     profile = profiles_pkg.resolve_profile(global_config, "core_infra")
     selection = deploy.build_selection(profile, cli_phases={"phase_1"})
-    rendered = deploy.render_selected_stacks(TEST_REPO, profile, selection)
+    rendered = deploy.render_selected_stacks(repo, profile, selection)
 
     # Only phase_1 (Vault) is rendered; phase_2/phase_3 stacks are not.
     assert "infra/vault" in rendered
     assert "infra/redis-core" not in rendered
     assert "applications/app-config" not in rendered
 
-    assert (VAULT_STACK / "ciu.toml").exists()
+    assert (repo / "infra" / "vault" / "ciu.toml").exists()
     assert not app_rendered.exists()
 
 

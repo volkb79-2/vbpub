@@ -314,7 +314,11 @@ if [[ ${1:-} == "--inner" ]]; then
 fi
 
 [[ $# -eq 1 ]] || die 'outer mode requires exactly one worktree argument'
-worktree="$1"
+# CMRU executes this project step from ``assay/`` and deliberately supplies
+# ``..``.  Convert that caller-relative spelling to the one canonical path the
+# outer bind and inner gate both require; validating the raw spelling would
+# reject a legitimate repository fact before either gate runs.
+worktree="$(cd -- "$1" && pwd -P)" || die "cannot resolve worktree $1"
 validate_worktree "$worktree"
 cgroup_parent="$("$worktree/assay/tools/cgroup-parent.sh")"
 

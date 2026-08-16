@@ -91,7 +91,51 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
         paths=paths or [name],
         steps=steps or {},
         project_root=Path(name),
+        github_token="test-credential",
     )
+
+
+def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    (repo_root / "alpha").mkdir(parents=True)
+    workspace_path.mkdir()
+    (repo_root / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "root-test-token"\n', encoding="utf-8",
+    )
+    project_config = repo_root / "alpha" / "cmru.toml"
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    (repo_root / "alpha" / "cmru.secret.toml").write_text(
+        '[github]\ntoken = "project-test-token"\n', encoding="utf-8",
+    )
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    transaction.copy_secret_overlays(repo_root, workspace, [project_config])
+
+    assert (workspace_path / "cmru.secret.toml").read_text(encoding="utf-8") == (
+        '[github]\ntoken = "root-test-token"\n'
+    )
+    assert (workspace_path / "alpha" / "cmru.secret.toml").read_text(encoding="utf-8") == (
+        '[github]\ntoken = "project-test-token"\n'
+    )
+    assert (workspace_path / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
+    assert (workspace_path / "alpha" / "cmru.secret.toml").stat().st_mode & 0o777 == 0o600
+
+
+def test_copy_secret_overlays_rejects_a_non_file_secret_path(tmp_path):
+    repo_root = tmp_path / "repo"
+    workspace_path = tmp_path / "workspace"
+    repo_root.mkdir()
+    workspace_path.mkdir()
+    (repo_root / "cmru.secret.toml").mkdir()
+    workspace = transaction.ReleaseWorkspace(
+        repo_root, workspace_path, "cmru/release/test", "a" * 40,
+    )
+
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        transaction.copy_secret_overlays(repo_root, workspace, [])
 
 
 def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_path):
@@ -660,26 +704,47 @@ def test_tester_gate_uses_explicit_container_workdir_and_no_shell(monkeypatch, t
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"],
-        memory="3g", memory_swap="16g",
+        image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
     )
 
     assert argv == [
         "docker", "run", "--rm", "--mount", "type=bind,src=/host/repo,dst=/worktree",
         "--workdir", "/worktree/cmru", "--memory", "3g", "--memory-swap", "16g", "--cpus", "1.5",
-        "tester-unified:local",
+        "tester-unified:test",
         "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
     ]
 
 
 def test_tester_gate_rejects_paths_outside_the_worktree(tmp_path):
     with pytest.raises(ValueError, match="relative path"):
-        tester_gate.build_docker_command(tmp_path, "../ciu", ["true"], memory="3g", memory_swap="16g")
+        tester_gate.build_docker_command(
+            tmp_path, "../ciu", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
+        )
+
+
+def test_tester_gate_resolves_a_consumer_cwd_against_its_git_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    consumer = repo / "nyxloom"
+    consumer.mkdir()
+
+    root, relative = tester_gate._resolve_worktree_context(consumer, ".")
+
+    assert root == repo.resolve()
+    assert relative == "nyxloom"
+
+
+def test_tester_gate_refuses_a_non_git_caller(tmp_path):
+    with pytest.raises(SystemExit, match="not inside a Git worktree"):
+        tester_gate._resolve_worktree_context(tmp_path, ".")
 
 
 def test_tester_gate_no_sidecar_by_default_adds_no_docker_wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
 
-    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
+    argv = tester_gate.build_docker_command(
+        tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
+    )
 
     assert "--network" not in argv
     assert not any("DOCKER_HOST" in part for part in argv)
@@ -690,7 +755,7 @@ def test_tester_gate_sidecar_name_attaches_network_and_docker_host(monkeypatch, 
 
     argv = tester_gate.build_docker_command(
         tmp_path, "modern-debian-tools-python-debug", ["true"], sidecar_name="cmru-tester-dind-abc123",
-        memory="3g", memory_swap="16g",
+        image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
     )
 
     assert "--network" in argv
@@ -719,7 +784,7 @@ def test_dind_sidecar_starts_polls_readiness_yields_name_then_tears_down(monkeyp
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
     monkeypatch.setattr(tester_gate.time, "sleep", lambda _s: None)
 
-    with tester_gate.dind_sidecar() as name:
+    with tester_gate.dind_sidecar("docker:dind-test") as name:
         assert name.startswith("cmru-tester-dind-")
         used_name = name
 
@@ -747,7 +812,7 @@ def test_dind_sidecar_tears_down_even_when_the_body_raises(monkeypatch):
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="boom"):
-        with tester_gate.dind_sidecar() as _name:
+        with tester_gate.dind_sidecar("docker:dind-test") as _name:
             raise RuntimeError("boom")
 
     assert len(stopped) == 1
@@ -774,7 +839,7 @@ def test_dind_sidecar_raises_if_never_ready_within_timeout(monkeypatch):
     monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="did not become ready"):
-        with tester_gate.dind_sidecar(ready_timeout=2.0):
+        with tester_gate.dind_sidecar("docker:dind-test", ready_timeout=2.0):
             pass  # pragma: no cover — never reached
 
 
@@ -784,15 +849,20 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
         tester_gate, "build_docker_command",
         lambda *args, **kwargs: captured.update(kwargs) or ["true"],
     )
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker:dind-test")
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda _cwd, _relative: (tmp_path, _relative))
 
     @contextmanager
-    def fake_sidecar():
+    def fake_sidecar(_image):
         yield "cmru-tester-dind-fixedname"
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fake_sidecar)
@@ -805,6 +875,7 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     assert captured["cgroup_parent_dev_background"] == "dev-background.slice"
     assert captured["memory"] == "3g"
     assert captured["memory_swap"] == "16g"
+    assert captured["cpus"] == "1.5"
 
 
 def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp_path):
@@ -813,14 +884,18 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
         tester_gate, "build_docker_command",
         lambda *args, **kwargs: captured.update(kwargs) or ["true"],
     )
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda _cwd, _relative: (tmp_path, _relative))
 
-    def fail_if_called():
+    def fail_if_called(_image):
         raise AssertionError("dind_sidecar() must not run when --enable-docker is absent")
 
     monkeypatch.setattr(tester_gate, "dind_sidecar", fail_if_called)
@@ -832,6 +907,7 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
 
 
 def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT", raising=False)
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
@@ -846,10 +922,12 @@ def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, t
 
 
 def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.delenv("CMRU_TESTER_MEMORY", raising=False)
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
     def fail_if_called(*_a, **_k):
@@ -862,10 +940,12 @@ def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path
 
 
 def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.delenv("CMRU_TESTER_MEMORY_SWAP", raising=False)
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice: (True, "ok"))
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
     def fail_if_called(*_a, **_k):
@@ -877,11 +957,63 @@ def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
+def test_tester_gate_main_errors_when_no_cpu_limit_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.delenv("CMRU_TESTER_CPUS", raising=False)
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(
+        tester_gate.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not launch Docker")),
+    )
+
+    with pytest.raises(SystemExit, match="no CPU limit resolvable"):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_main_errors_when_no_probe_image_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.delenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", raising=False)
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(
+        tester_gate, "check_slice_unit",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("must not probe without an image")),
+    )
+
+    with pytest.raises(SystemExit, match="no cgroup probe image resolvable"):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_main_errors_when_no_dind_image_resolvable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    monkeypatch.delenv("CMRU_TESTER_DIND_IMAGE", raising=False)
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(
+        tester_gate, "dind_sidecar",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("must not start Docker-in-Docker")),
+    )
+
+    with pytest.raises(SystemExit, match="no nested Docker image resolvable"):
+        tester_gate.main(["--cwd", "cmru", "--enable-docker", "--", "true"])
+
+
 def test_tester_gate_forwards_cgroup_parent_dev_background_into_the_container(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
 
     argv = tester_gate.build_docker_command(
         tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g",
+        image="tester-unified:test", cpus="1.5",
         cgroup_parent_dev_background="dev-background.slice",
     )
 
@@ -892,7 +1024,9 @@ def test_tester_gate_forwards_cgroup_parent_dev_background_into_the_container(mo
 def test_tester_gate_omits_cgroup_parent_dev_background_when_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(tester_gate, "_physical_path", lambda _path: Path("/host/repo"))
 
-    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
+    argv = tester_gate.build_docker_command(
+        tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
+    )
 
     assert not any("CGROUP_PARENT_DEV_BACKGROUND" in part for part in argv)
 
@@ -933,7 +1067,9 @@ def test_build_docker_command_mounts_the_shared_git_dir_for_a_linked_worktree(mo
 
     monkeypatch.setattr(tester_gate, "_physical_path", lambda p: p)
 
-    argv = tester_gate.build_docker_command(worktree, "cmru", ["true"], memory="3g", memory_swap="16g")
+    argv = tester_gate.build_docker_command(
+        worktree, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
+    )
 
     common_dir = str((main_repo / ".git").resolve())
     assert f"type=bind,src={common_dir},dst={common_dir},readonly" in argv
@@ -943,16 +1079,20 @@ def test_build_docker_command_adds_no_extra_mount_for_an_ordinary_checkout(monke
     _init_repo(tmp_path)
     monkeypatch.setattr(tester_gate, "_physical_path", lambda p: p)
 
-    argv = tester_gate.build_docker_command(tmp_path, "cmru", ["true"], memory="3g", memory_swap="16g")
+    argv = tester_gate.build_docker_command(
+        tmp_path, "cmru", ["true"], image="tester-unified:test", memory="3g", memory_swap="16g", cpus="1.5",
+    )
 
     assert argv.count("--mount") == 1
 
 
 def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
     monkeypatch.setattr(
         tester_gate, "check_slice_unit",
-        lambda _slice: (False, "dev-background.slice: LoadState=not-found — the unit is not installed on this host"),
+        lambda _slice, _image: (False, "dev-background.slice: LoadState=not-found — the unit is not installed on this host"),
     )
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
@@ -962,6 +1102,19 @@ def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tm
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
     with pytest.raises(SystemExit, match="refusing to launch"):
+        tester_gate.main(["--cwd", "cmru", "--", "true"])
+
+
+def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatch, tmp_path):
+    monkeypatch.delenv("CMRU_TESTER_UNIFIED_IMAGE", raising=False)
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("must not launch docker when the image is unconfigured")
+
+    monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
+
+    with pytest.raises(SystemExit, match="no test image configured"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
@@ -1477,6 +1630,7 @@ def _seq_project(
         artifact_dirs=(),
         build_step=build_step,
         commit_generated=commit_generated,
+        github_token="test-credential",
     )
 
 
@@ -1554,6 +1708,8 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
 
         released = cli._release_projects_sequentially(
             workspace_path, configs, workspace, ["alpha", "beta"],
+            github_config=cli.GitHubConfig("owner", "repo", "test-credential", "user"),
+            env_config=cli.ReleaseEnvConfig({}, None),
         )
 
         assert released == ["alpha (alpha-v0.1.0)", "beta (no git tag)"]
@@ -1611,7 +1767,11 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
         configs = {"alpha": alpha, "beta": beta}
 
         with pytest.raises(subprocess.CalledProcessError):
-            cli._release_projects_sequentially(workspace_path, configs, workspace, ["alpha", "beta"])
+            cli._release_projects_sequentially(
+                workspace_path, configs, workspace, ["alpha", "beta"],
+                github_config=cli.GitHubConfig("owner", "repo", "test-credential", "user"),
+                env_config=cli.ReleaseEnvConfig({}, None),
+            )
 
         # alpha committed nothing (no prepare step), so its checkpoint is `base`.
         checkpoint = transaction.read_release_progress(workspace_path, workspace)
@@ -1667,7 +1827,11 @@ def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_
             },
         )
         with pytest.raises(subprocess.CalledProcessError):
-            cli._release_projects_sequentially(workspace_path, {"gamma": gamma}, workspace, ["gamma"])
+            cli._release_projects_sequentially(
+                workspace_path, {"gamma": gamma}, workspace, ["gamma"],
+                github_config=cli.GitHubConfig("owner", "repo", "test-credential", "user"),
+                env_config=cli.ReleaseEnvConfig({}, None),
+            )
 
         checkpoint = transaction.read_release_progress(workspace_path, workspace)
         assert checkpoint == new_base

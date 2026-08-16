@@ -36,18 +36,68 @@ COPY nyxloom/ /src/nyxloom/
 COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
-# runtime home bind at /home/vscode cannot shadow it). Each install pulls that
-# project's deps straight from its pyproject — the closure is the SUM of the
-# repo, self-documented by these four lines.
+# runtime home bind at /home/vscode cannot shadow it).  The build context omits
+# `.git`, therefore installing every copied project as a package would make
+# setuptools-scm fabricate or fail on a version before it could provide its
+# test dependencies.  Derive the dependency closure straight from each
+# project's `pyproject.toml` instead: the bind-mounted worktree, not these
+# copied sources, provides the code under test.  CMRU is the sole exception:
+# its installed console script is the canonical gate entry point, so install it
+# explicitly with a build-only SCM identity after its dependencies are present.
+RUN /usr/local/bin/python3.14 - <<'PY' > /tmp/tester-requirements.txt
+import re
+import tomllib
+from pathlib import Path
+
+projects = (
+    (Path("/src/ciu/pyproject.toml"), ("ssh", "test")),
+    (Path("/src/cmru/pyproject.toml"), ("test",)),
+    (Path("/src/topos/pyproject.toml"), ("dev",)),
+    (Path("/src/nyxloom/pyproject.toml"), ("test",)),
+    (Path("/src/cgroup-profiler/pyproject.toml"), ("test",)),
+)
+def normalized(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def own_extra_requirements(project, extras):
+    """Expand only this project's composite extras.
+
+    `topos[dev]` and `cgroup-profiler[test]` deliberately reuse their own
+    `zstandard`/`report` extras.  Handing those self-references to pip would
+    make it look for an unrelated package index project instead of reading the
+    copied pyproject that is the closure's source of truth.
+    """
+    pending = list(extras)
+    seen = set()
+    while pending:
+        extra = pending.pop()
+        if extra in seen:
+            continue
+        seen.add(extra)
+        for requirement in project.get("optional-dependencies", {})[extra]:
+            match = re.match(r"^([A-Za-z0-9_.-]+)\[([^]]+)\]$", requirement)
+            if match and normalized(match.group(1)) == normalized(project["name"]):
+                pending.extend(item.strip() for item in match.group(2).split(","))
+            else:
+                yield requirement
+
+
+for pyproject, extras in projects:
+    with pyproject.open("rb") as handle:
+        document = tomllib.load(handle)
+    project = document["project"]
+    for requirement in project.get("dependencies", ()):
+        print(requirement)
+    for requirement in own_extra_requirements(project, extras):
+        print(requirement)
+print("build")
+PY
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/tester-venv/bin/pip install --no-cache-dir \
-      "/src/ciu[ssh,test]" \
-      "/src/cmru[test]" \
-      "/src/topos[dev]" \
-      "/src/nyxloom[test]" \
-      "/src/cgroup-profiler[test]" \
-      "build" \
+ && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
+ && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0 \
+    /opt/tester-venv/bin/pip install --no-cache-dir --no-deps /src/cmru \
  && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 

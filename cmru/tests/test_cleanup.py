@@ -47,6 +47,37 @@ def _make_env_config() -> cli.ReleaseEnvConfig:
     return cli.ReleaseEnvConfig(env={}, registry_url=None)
 
 
+def test_empty_release_cleanup_selector_is_a_noop_not_an_all_releases_fallback(monkeypatch):
+    cleanup = cli.CleanupConfig(
+        release_tag_prefixes=[], keep_release_tags=[], ghcr_packages=[], ghcr_delete_packages=[],
+    )
+    deleted: list[int] = []
+    monkeypatch.setattr(cli, "list_releases", lambda *_args: [_release("other-v1.0.0", 1)])
+    monkeypatch.setattr(
+        cli, "delete_release", lambda _owner, _repo, _token, release_id, _dry: deleted.append(release_id)
+    )
+
+    cli.cleanup_releases(
+        "owner", "repo", "token", cli.datetime.now(cli.timezone.utc), False, cleanup,
+    )
+
+    assert deleted == []
+
+
+def test_empty_ghcr_cleanup_selector_is_a_noop_not_an_all_packages_fallback(monkeypatch):
+    cleanup = cli.CleanupConfig(
+        release_tag_prefixes=[], keep_release_tags=[], ghcr_packages=[], ghcr_delete_packages=[],
+    )
+    monkeypatch.setattr(
+        cli, "list_container_packages",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not list all packages")),
+    )
+
+    cli.cleanup_ghcr(
+        "owner", "token", "user", cli.datetime.now(cli.timezone.utc), False, cleanup,
+    )
+
+
 def _make_project(
     name: str,
     prefix: str = "",
@@ -59,6 +90,7 @@ def _make_project(
         prefix=prefix or f"{name}-v",
         cwd=name,
         artifacts=("wheel",),
+        github_token="tok",
     )
 
 
@@ -437,7 +469,7 @@ class TestRunCleanupVerb:
         """A project with no prefix is skipped (no Release/tag to clean)."""
         projects = {"noprefix": cli.ProjectConfig(
             name="noprefix", env={}, steps={},
-            prefix=None, cwd="noprefix", artifacts=("wheel",),
+            prefix=None, cwd="noprefix", artifacts=("wheel",), github_token="tok",
         )}
         # Should not raise; just logs a skip.
         cleanup = _make_cleanup_config()

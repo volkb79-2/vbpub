@@ -40,10 +40,10 @@ second one; there is no override for the first (push your commits instead).
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
-`--show-run-details` to stream raw child output to the terminal too. It copies only
-the selected project-local `<project>/cmru.secret.toml` overlay(s) into that worktree
-with mode `0600`; those copies are removed with a successful worktree and are never
-staged. The retired repository-root secret overlay is not read.
+`--show-run-details` to stream raw child output to the terminal too. It copies the
+repository-root `cmru.secret.toml` and each selected project's explicit secret overlay
+into that worktree with mode `0600`; they are removed with a successful worktree and are
+never staged.
 
 The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
@@ -256,7 +256,10 @@ retained for inspection exactly as it always was.
 
 Every releasable project must declare a meaningful `steps.run-tests` command.
 It must invoke the project’s real gate in `tester-unified`, not the developer
-container. Use `cmru tester-gate --cwd <project> -- <command>` in the command
+container. Set `CMRU_TESTER_UNIFIED_IMAGE` explicitly in the estate's
+`[orchestration.defaults.env]` (or in the project's `[env]` when it owns a
+different requirement), then use
+`cmru tester-gate --cwd <project> -- <command>` in the command
 declaration: it resolves the cockpit bind mount to Docker's host-visible path,
 mounts only the isolated release worktree at `/worktree`, and executes without
 a shell. cmru refuses to tag or publish a changed project with no such step.

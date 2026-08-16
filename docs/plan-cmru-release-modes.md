@@ -231,13 +231,13 @@ the remaining destructive/build phase. Decisions: keep current versions, **floor
 
 **P7 — re-release (per-project so mdt is skipped):**
 ```
-./cmru.py release --project ciu      --set-version 3.1.0
-./cmru.py release --project cmru     --set-version 1.0.0
-./cmru.py release --project tls-edge --set-version 1.0.0
-./cmru.py release --project pwmcp                       # delegated, self-versions
+cmru release --project ciu      --set-version 3.1.0
+cmru release --project cmru     --set-version 1.0.0
+cmru release --project tls-edge --set-version 1.0.0
+cmru release --project pwmcp                       # delegated, self-versions
 ```
 Each runs build+push steps only (no run-tests). Verify after: tags, the 4 GitHub Releases
-+ `.sha256`, and `-latest`/latest.json resolve (`./cmru.py resolve --project X`).
++ `.sha256`, and `-latest`/latest.json resolve (`cmru resolve --project X`).
 
 **Gotcha:** run the wipe BEFORE the re-release (else `ciu-v3.1.0` etc. already exist).
 mdt is intentionally not in the per-project list (P5 rebuilds it once).

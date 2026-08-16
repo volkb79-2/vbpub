@@ -1,4 +1,4 @@
-# cmru-orchestration-template-revision: 1
+# cmru-orchestration-template-revision: 2
 schema_version = 1
 
 [orchestration]
@@ -6,7 +6,9 @@ project_order = ["example"]
 default_projects = ["example"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
-auth_project = "example"
+# Credentials default from gitignored repository-root cmru.secret.toml:
+# [github] token = "…"
+# A project override belongs in example/cmru.secret.toml, same [github] table.
 
 [orchestration.project.example]
 config = "example/cmru.toml"

@@ -157,8 +157,8 @@ systemd-cgtop system.slice
 Or invoke the same wrapper through the release runner:
 
 ```bash
-./cmru.build.sh --project pwmcp
-./cmru.publish.sh --project pwmcp
+cmru build --project pwmcp
+cmru publish --project pwmcp
 ```
 
 The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `cmru.vars`.
@@ -176,8 +176,8 @@ The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, 
 
 ```bash
 # Build and push the new image + bundle via cmru (run from the repo root):
-./cmru.build.sh   --project pwmcp
-./cmru.publish.sh --project pwmcp
+cmru build --project pwmcp
+cmru publish --project pwmcp
 
 # Or perform the complete isolated release in one operation:
 ./cmru.release.sh --project pwmcp

@@ -25,6 +25,11 @@ from ciu import cli as cli_mod
 # resolve_activation_command
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _successful_remote_config_load(monkeypatch):
+    """Give CLI routing tests the successful config prerequisite explicitly."""
+    monkeypatch.setattr(cli_mod, "_load_remote_config", lambda _root: {})
+
 
 class TestResolveActivationCommand:
     def test_string_entrypoint_appends_verb(self):

@@ -14,7 +14,7 @@ The goal is to make German (`Deutsch`) consistently available across the main lo
 
 - Publish only (no rebuild):
 ```bash
-./cmru.publish.sh --project empyrion-translation
+cmru publish --project empyrion-translation
 ```
 
 Empyrion project note:
@@ -133,10 +133,10 @@ Then run release from repository root (`/workspaces/vbpub`):
 cd /workspaces/vbpub
 
 # 6) Build release artifact
-./cmru.build.sh --project empyrion-translation
+cmru build --project empyrion-translation
 
 # 7) Push release
-./cmru.publish.sh --project empyrion-translation
+cmru publish --project empyrion-translation
 ```
 
 
@@ -598,7 +598,7 @@ Optional release flags:
 Opt-in through the repository release manager (not part of default project list):
 
 ```bash
-./cmru.build.sh --project empyrion-translation
+cmru build --project empyrion-translation
 ```
 
 To publish via release manager (no `gh`, uses GitHub REST API + token env):

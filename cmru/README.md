@@ -8,15 +8,29 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 ## Install
 
 ```bash
-pip install -e cmru          # provides the `cmru` console script
-# or, from the repo root, with no install:
-./cmru.py <verb>             # vbpub estate wrapper: supplies cmru.orchestration.toml
+pip install -e .             # provides the `cmru` console script
 ```
 
 The installed `cmru` executable is portable: run it from a project directory
-or pass `--config /path/to/cmru.toml`. Only this repository's `./cmru.py`
-knows the explicit root orchestration path; it never makes the reusable CLI
-search parent directories.
+or repository root, or pass `--config /path/to/cmru.toml`. It reads
+`cmru.toml` in the current directory when present and otherwise reads the
+current directory's `cmru.orchestration.toml`; it never searches parent
+directories. From the vbpub repository root, use `--config cmru.orchestration.toml`
+when an explicit estate configuration is needed.
+
+To build CMRU itself before any CMRU wheel is installed, use the supported
+fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
+are built in the dedicated `wheel-builder` image, so the host does not need the
+`build` package:
+
+```bash
+cd /workspaces/vbpub/cmru
+./build-initial-standalone.sh
+```
+
+The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile).
+The script prints the manual virtual-environment install commands after it produces
+the wheel; once installed, all subsequent builds use the `cmru` console script.
 
 ## The model: declared outputs and explicit behavior
 
@@ -43,6 +57,8 @@ cmru standards                    # strict config + project-framework conformanc
 cmru standards --project pwmcp --update  # safely update CMRU-owned revision markers
 cmru build   --project <name>     # isolated local build; retains logs/artifacts, then removes worktree
 cmru worktrees                    # list retained failed build/release worktrees
+cmru dependencies                 # show + preflight the project dependency graph
+cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
@@ -69,7 +85,7 @@ be mistaken for policy cleanup of normal immutable `<project>-v<semver>` release
 
 ## Logging and live diagnostics
 
-Use the root wrapper directly—no `2>&1 | tee ...` is required:
+Use the repository's one convenience wrapper directly—no `2>&1 | tee ...` is required:
 
 ```bash
 ./cmru.release.sh --project assay
@@ -88,19 +104,23 @@ declared directories into `assay/artifacts/<immutable-tag>/` and writes a hash i
 ```bash
 ./cmru.release.sh --project modern-debian-tools-python-debug --show-run-details
 ./cmru.release.sh --project assay --log-append
+./cmru.release.sh --project assay --log-prefix-time-short
 ```
 
 `--show-run-details` also streams raw Docker/test output to the terminal. `--log-append`
 preserves the prior root and per-step logs, adding an exact `---` divider before the new run.
 CMRU sets `PYTHONUNBUFFERED=1` for Python child processes and flushes every received line;
-non-Python tools must still flush their own output.
+non-Python tools must still flush their own output. `--log-prefix-time-short` adds
+`HH:MM:SS` before CMRU's existing severity prefix. INFO/WARN/ERROR are colour-coded only on
+an interactive terminal; `cmru.release.log` and pipes remain plain ANSI-free text.
 
 ## Project framework and templates
 
 Each project owns one complete `cmru.toml` contract: identity, versioning, release artifacts,
 environment, and every runner step. That file is portable to a fresh repository root. A
 monorepo's `cmru.orchestration.toml` contains only selection, order/dependencies, cleanup, and
-an explicit `auth_project`; it cannot contain project commands. `template_revision = 2` lets
+no project commands. Repository credentials are defined separately at the repository root.
+`template_revision = 4` lets
 `cmru standards` identify stale adoption without inventing project behavior. Ready-to-copy
 examples are [`templates/cmru.toml.tmpl`](templates/cmru.toml.tmpl) and
 [`templates/cmru.orchestration.toml.tmpl`](templates/cmru.orchestration.toml.tmpl).
@@ -112,6 +132,12 @@ require `quiet = true` for the normal summary-only transcript; use `--show-run-d
 live subprocess output is required. They reject unknown keys. Put project-only data beneath `[project_metadata]` so a misspelled
 execution setting fails before it can alter a release. `cmru.build.toml`, shell sourcing, and
 configuration aliases are retired; there is no compatibility parser.
+
+The stock `tester-gate` command additionally requires an explicit tester image, memory,
+combined memory/swap, CPU ceiling, and host-systemd probe image in `[env]`. A gate that
+uses `--enable-docker` must also declare its nested-Docker image. The stock `wheel-build`
+handler requires an explicit wheel-builder image. These are release inputs, not CMRU
+defaults; pin immutable digests in a production contract.
 
 ## Release history is automatic
 
@@ -187,14 +213,14 @@ project-author requirements, and the current gate-adoption audit.
 |---|---|---|
 | `<project>/cmru.toml` | yes | complete portable project contract — **no secrets** |
 | `cmru.orchestration.toml` | yes | optional monorepo ordering/dependencies/cleanup only |
-| `<project>/cmru.secret.toml` | no (gitignored) | `[github] token = "…"` overlay (optional; env wins) |
+| `cmru.secret.toml` | no (gitignored) | repository credential document: `[github] token = "…"` |
+| `<project>/cmru.secret.toml` | no (gitignored) | optional same-shaped project override, deep-merged over the root secret |
 | `cmru.vars` | no (gitignored) | `KEY=VALUE` build vars a step emits for later steps |
 
-**Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → the selected
-project's gitignored `cmru.secret.toml [github].token`. A committed `cmru.toml`
-token is rejected.
-The monorepo selects this credential source explicitly with `orchestration.auth_project`; it is
-never inferred from release order. Never commit a token.
+**Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → deep merge the
+repository-root `cmru.secret.toml` with the selected project's optional
+`cmru.secret.toml` (the project `[github].token` wins). A committed `cmru.toml` token
+is rejected. Never commit a token.
 
 **Why `cmru.vars` is gitignored (and not a missing "starting point"):** it is a *generated scratchpad* — a build step writes computed values (e.g. pwmcp's playwright-driven version) for a *later* step in the **same** run to read. The committed starting point is git tags + `VERSION` files + `cmru.toml`; `cmru status`/`release` read those and never read `cmru.vars`. A fresh clone regenerates it on the next build. Committing it would turn a derived cache into an authoritative-looking input that drifts from the tags — the opposite of reproducible.
 

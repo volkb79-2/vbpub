@@ -16,7 +16,7 @@ from typing import Iterable, Mapping
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 
 
-PROJECT_TEMPLATE_REVISION = 2
+PROJECT_TEMPLATE_REVISION = 4
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,49 @@ def assess_projects(
                 messages.append("declared release gate")
         else:
             messages.append("not in orchestration.project_order (manual release policy)")
+
+        commands = [
+            command
+            for step_commands in steps.values()
+            for command in step_commands
+        ]
+        uses_tester_gate = any("tester-gate" in command.argv for command in commands)
+        if uses_tester_gate:
+            env = getattr(project, "env", {})
+            required = (
+                "CMRU_TESTER_UNIFIED_IMAGE",
+                "CMRU_TESTER_MEMORY",
+                "CMRU_TESTER_MEMORY_SWAP",
+                "CMRU_TESTER_CPUS",
+                "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+            )
+            missing = [key for key in required if not str(env.get(key, "")).strip()]
+            if missing:
+                problems.append(
+                    "tester-gate requires explicit [env] values: " + ", ".join(missing)
+                )
+            else:
+                messages.append("explicit tester resources and host probe image")
+
+            docker_gate = any(
+                "tester-gate" in command.argv and "--enable-docker" in command.argv
+                for command in commands
+            )
+            if docker_gate and not str(env.get("CMRU_TESTER_DIND_IMAGE", "")).strip():
+                problems.append(
+                    "Docker-enabled tester-gate requires explicit CMRU_TESTER_DIND_IMAGE in [env]"
+                )
+
+        uses_wheel_build = any(
+            "cmru.handlers" in command.argv and "wheel-build" in command.argv
+            for command in commands
+        )
+        if uses_wheel_build and not str(getattr(project, "env", {}).get(
+            "CMRU_WHEEL_BUILDER_IMAGE", ""
+        )).strip():
+            problems.append(
+                "wheel-build requires explicit CMRU_WHEEL_BUILDER_IMAGE in [env]"
+            )
 
         messages.append("one project-local release and runner contract")
 

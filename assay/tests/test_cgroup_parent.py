@@ -94,3 +94,12 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     assert "dev-background.slice" not in driver
     assert "ASSAY_GATE_HOST_REPO_ROOT" in driver
     assert '--mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub"' in driver
+
+
+def test_outer_gate_canonicalizes_cmru_relative_worktree_before_validation():
+    """CMRU runs the registered project step from ``assay/`` with ``..``."""
+    driver = GATE_DRIVER.read_text(encoding="utf-8")
+    canonicalize = 'worktree="$(cd -- "$1" && pwd -P)" || die "cannot resolve worktree $1"'
+    outer = driver.split("[[ $# -eq 1 ]] || die 'outer mode requires exactly one worktree argument'", 1)[1]
+    assert canonicalize in outer
+    assert outer.index(canonicalize) < outer.index('validate_worktree "$worktree"')

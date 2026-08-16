@@ -10,15 +10,12 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_RELEASE_NOTES = "## topos wheel\n\nHost pressure inspector and cgroup forensics console.\n\n**Install**\n```bash\npipx install topos-*.whl\n```"
 
 [project]
 id = "topos"
 description = "Host pressure inspector and cgroup forensics console."
-template_revision = 2
+template_revision = 4
 prefix = "topos-v"
 artifacts = ["wheel"]
 scm_dist = "topos"

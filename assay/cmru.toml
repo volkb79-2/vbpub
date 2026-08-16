@@ -10,14 +10,12 @@ host = "github"
 registry = ["ghcr.io"]
 
 [env]
-CMRU_TESTER_MEMORY = "3g"
-CMRU_TESTER_MEMORY_SWAP = "16g"
 ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\n\nDeclared test lanes and machine-readable verdicts for a commit.\n\n**Install (wheel)**\n```bash\npipx install assay-*.whl\n```\n\n**No package manager? Use the zipapp**\n```bash\nchmod +x assay-*.pyz && ./assay-*.pyz --help\n```"
 
 [project]
 id = "assay"
 description = "Reproducible, lane-aware software testing and evidence tool."
-template_revision = 2
+template_revision = 4
 prefix = "assay-v"
 artifacts = ["wheel"]
 scm_dist = "assay"
