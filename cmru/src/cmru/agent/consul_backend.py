@@ -180,16 +180,23 @@ class ConsulBackend(DesiredStateBackend):
 
         try:
             entries = json.loads(body)
-        except json.JSONDecodeError as exc:
+            if not isinstance(entries, list):
+                raise ValueError("KV response is not an array")
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
             raise ConsulUnavailable(f"malformed KV response: {exc}") from exc
 
         if not entries:
             return None, new_index
 
+        if not isinstance(entries[0], dict):
+            raise ConsulUnavailable("malformed KV response: entry is not an object")
         value_b64 = entries[0].get("Value")
         if value_b64 is None:
             return None, new_index
-        raw = base64.b64decode(value_b64)
+        try:
+            raw = base64.b64decode(value_b64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ConsulUnavailable(f"malformed KV response: invalid base64: {exc}") from exc
         return raw, new_index
 
     def acquire_lock(self, node_id: str, landscape: str, generation: int) -> LockHandle:
