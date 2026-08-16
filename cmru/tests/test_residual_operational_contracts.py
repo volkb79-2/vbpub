@@ -80,7 +80,7 @@ def test_release_wheel_metadata_requires_version_field(tmp_path):
     assert error.value.code == 1
 
 
-def test_tester_gate_decodes_mountinfo_and_rejects_unknown_host_mapping(monkeypatch):
+def test_tester_gate_decodes_mountinfo_preserves_unmapped_paths_and_surfaces_read_errors(monkeypatch):
     mountinfo = "10 1 0:1 /host/repo /cockpit rw - bind ext4 /dev\n"
     assert tester_gate._physical_path(Path("/cockpit/cmru"), mountinfo) == Path("/host/repo/cmru")
     assert tester_gate._physical_path(Path("/outside"), mountinfo) == Path("/outside")
