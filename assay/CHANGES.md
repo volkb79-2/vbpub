@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.0.0] - 2026-08-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=389c288d19fb32db023a016eb084422140fcf488 -->
+
+### Added
+- feat(cmru)!: adopt strict portable project contracts (6abbc2e8)
+
+### Changed
+- cmru: centralize estate release policy (2281181a)
+
 ## [0.1.0] - 2026-08-12
 <!-- cmru: generated -->
 <!-- cmru: source-end=ab2c130b7e536402d68211f560a423862bc217ae -->
