@@ -622,7 +622,7 @@ def retain_success_outputs(
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
                 try:
-                    target.replace(source)
+                    shutil.move(str(target), str(source))
                 except Exception as rollback_exc:
                     rollback_errors.append(rollback_exc)
             if created_target_root and target_root.exists():
