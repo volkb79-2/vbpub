@@ -75,8 +75,6 @@ def _is_excluded(rel_path: str) -> bool:
     # explicitly allowlisted source file, not a rendered runtime config.
     if name == "pyproject.toml":
         return False
-    if name in _HARD_EXCLUDE_EXACT:
-        return True
     for suffix in _HARD_EXCLUDE_SUFFIXES:
         if name.endswith(suffix):
             return True
