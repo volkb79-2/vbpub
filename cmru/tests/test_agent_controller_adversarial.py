@@ -133,6 +133,16 @@ class TestConsulHttpContracts:
             backend.watch_desired("n", "l", 1)
         with pytest.raises(ConsulUnavailable, match="malformed"):
             backend.watch_desired("n", "l", 1)
+        # A JSON array is still malformed when its entry is not an object;
+        # this must not turn into an indexing/attribute exception.
+        with pytest.raises(ConsulUnavailable, match="entry is not an object"):
+            backend._get = lambda *a, **k: (200, b"[1]", {})
+            backend.watch_desired("n", "l", 1)
+        # Invalid base64 is a transport refusal, not arbitrary decoded data.
+        backend._get = lambda *a, **k: (200, b'[{"Value":"@@@@"}]', {})
+        with pytest.raises(ConsulUnavailable, match="invalid base64"):
+            backend.watch_desired("n", "l", 1)
+        backend._get = lambda *a, **k: next(responses)
         assert backend.watch_desired("n", "l", 1)[0] is None
         assert backend.watch_desired("n", "l", 1)[0] is None
         assert backend.watch_desired("n", "l", 1)[0] == b"x"
