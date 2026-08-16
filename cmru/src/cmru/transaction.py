@@ -386,6 +386,7 @@ def retain_successful_build_outputs(
         stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))
         staged_logs = stage / "logs"
         staged_artifacts = stage / "artifacts"
+        moved_logs = False
         try:
             shutil.copytree(source_logs, staged_logs, symlinks=True)
             staged_artifacts.mkdir()
@@ -423,15 +424,21 @@ def retain_successful_build_outputs(
             target_logs.parent.mkdir(parents=True, exist_ok=True)
             target_artifacts.parent.mkdir(parents=True, exist_ok=True)
             staged_logs.replace(target_logs)
+            moved_logs = True
             try:
                 staged_artifacts.replace(target_artifacts)
             except Exception:
                 # The sources are still safe in the retained worktree.  Restore
                 # the first rename so the caller checkout remains all-or-nothing.
                 target_logs.replace(staged_logs)
+                moved_logs = False
                 raise
             retained.extend((target_logs, target_artifacts))
         finally:
+            if moved_logs:
+                # A later unexpected exception must not leave a partial record.
+                if target_logs.exists() and not target_artifacts.exists():
+                    target_logs.replace(staged_logs)
             shutil.rmtree(stage, ignore_errors=True)
     return retained
 
