@@ -681,7 +681,84 @@ actually deleting each in turn and recording the counts.
 
 ---
 
-## 10. What must NOT change
+## 10. Addendum A — the carver's own corrections
+
+Found by verifying this contract against the real code and the real artifacts
+AFTER writing it. Each supersedes the corresponding sentence in the body. They
+are recorded rather than silently edited in, because "trust but verify, even
+your own prior ruling" is a standing rule here (A-240) and a spec that hides its
+own corrections teaches the implementer that the body is infallible.
+
+**A1 — `dst` CAN be negative; this is now measured, not a caution.** §3.3 asked
+the implementer to prove it. It is proven: `coverage-py-json.exitarc.json`
+carries `missing_branches: [[5,7],[11,-10]]`, where `-10` encodes "this arc
+leaves the function that starts at line 10". Validate `src` as a positive line;
+treat `dst` as an opaque integer and never store it.
+
+**A2 — `BRDA` cannot be split by comma count.** `lcov.exitarc.info` carries
+`BRDA:11,0,return from function 'falls_off_the_end',0`. Split off `line` and
+`block` on the first two commas, take `taken` off the right with
+`rsplit(",", 1)`, and treat everything between as an opaque branch id.
+
+**A3 — do NOT write `sweep_v5_consumers.py`.** §6's migration bullet asked for
+one. P33's `sweep_v4_consumers.py` is version-agnostic in its inventory role —
+it asks "does this file read a path under a carver-owned frozen tree and compare
+it", not "does this file mention v4" — and it RUNS clean on this branch today
+(`python3 nyxloom-trove/carve-assets/P33/sweep_v4_consumers.py`, 20-odd
+consumers reported, several flagged `<-- compares a VERDICT artifact`). Running
+a locked asset is not editing it. Run it, paste its output into the LOG, and
+write a new sweep ONLY if its predicate proves genuinely v4-bound — in which
+case say which line proves that.
+
+**A4 — the migration is 55 tracked documents, not the ~47 in `tests/`, and six
+of them are LOCKED.** `git grep -l '"schema_version": 5'` returns 55, including
+`nyxloom-trove/carve-assets/P33/expected/*-v5-template.json`. A-222 already
+ruled the analogous case for P26's v4 templates: **frozen historical evidence is
+not rewritten**. So: leave all six P33 templates byte-identical, give
+`carve-assets/W1/` its own `expected/` templates for the v6 suite, and deselect
+the P33 suite's template-coupled tests in the gate with the same written
+justification the existing four deselections carry. An implementer who "migrates
+all 55" has destroyed evidence.
+
+**A5 — `reserve_output` has exactly one caller.** `runner.py:1092`, inside
+`_execute_snapshot_unit`, always against `snapshot.project_root`. So §2's "prove
+the non-snapshot path still refuses" is a direct `safeio` unit test over a real
+temporary directory, not an end-to-end lane run — there is no end-to-end
+non-snapshot path to drive. The defaulted-off parameter still ships: it is the
+contract for the next caller, and this project's own history is full of
+capabilities that arrived before the caller that needed them.
+
+**A6 — three loader edits the body only implies.** `_KNOWN_JUDGE_FIELDS`
+(`config.py:159`) is a closed tuple and an unlisted key is refused as unknown —
+`mode`, `targets` and `require_branch` must be added to it or every new lane
+fails to load. And A-062's surplus-config refusal (`config.py`, the comment
+block at ~:750: "Judge config for a rigor level the lane does NOT declare is
+refused… if it is wrong nothing fails") must be extended so that `base` on a
+whole-target lane with no R2 is refused as inert config, by the same argument
+that motivated A-062 in the first place.
+
+**A8 — the scaffolding for the end-to-end oracles already exists; use it.**
+`tests/conftest.py` ships `git_repo` (:233), `project` (:183), `make_lane`
+(:538), `make_r1_judge` (:577), `prepared_snapshot` (:263) and
+`write_coverage_json` (:711). O5/O7/O8 are therefore cheap end-to-end tests, not
+new harnesses — and the one real change they need is
+`write_coverage_json` learning to emit `meta.branch_coverage` and the two arc
+arrays. Extend that ONE helper rather than hand-rolling coverage JSON inside
+twenty tests; a per-test hand-rolled artifact is how a fixture drifts from what
+the real tool emits, which is the defect class `tests/fixtures/coverage/`
+exists to prevent.
+
+**A7 — where the branch-capability guard runs.** `derive_exclusion_capability`
+is called inside `evaluate_coverage` "BEFORE any per-file evaluation, so it
+describes the artifact rather than this evaluation's own outcome"
+(`evaluate.py:297-300`). `derive_branch_capability` goes in the same place for
+the same reason. `require_branch`'s REFUSAL, however, is a measurability guard
+and belongs beside `check_empty_coverage` in `evaluate_r1`'s guard sequence
+(§4), so the two are not the same call site and must not be collapsed.
+
+---
+
+## 11. What must NOT change
 
 * `A-030`: assay never shells out to docker, and nothing here needs to.
 * `A-116`'s payload-free propagation shape, and the four hollow-PASS/FAIL
