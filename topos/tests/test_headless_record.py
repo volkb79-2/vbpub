@@ -322,7 +322,7 @@ class TestHeadlessRecordDriver:
         # in sys.modules after completion.
         test_code = """
 import sys
-sys.path.insert(0, "topos/src")
+sys.path.insert(0, "src")
 from pathlib import Path
 import tempfile
 
@@ -332,7 +332,7 @@ from topos.record.headless import HeadlessRecordDriver
 from topos.record.writer import RecordWriter
 
 # Minimal collector for a single frame
-cgroup_root = Path("topos/tests/fixtures/cgroupfs/gstammtisch")
+cgroup_root = Path("tests/fixtures/cgroupfs/gstammtisch")
 collector = Collector(
     cgroup_root=cgroup_root,
     config=ToposConfig(interval=5.0),
@@ -360,7 +360,7 @@ print("OK: no textual import")
         proc = subprocess.run(
             [sys.executable, "-c", test_code],
             cwd=fixture_root().parents[1].parent,  # topos/ directory
-            env={**os.environ, "PYTHONWARNINGS": "error"},
+            env={**env, "PYTHONWARNINGS": "error"},
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

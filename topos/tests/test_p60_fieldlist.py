@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 
+from pathlib import Path
+
 import pytest
 
 from conftest import fixture_root, systemctl_fixture_runner
@@ -13,6 +15,7 @@ from topos.providers.net_netns import NetnsProvider
 from topos.registry import COMPACT_GROUPS, METRIC_GROUPS
 
 GAME_KEY = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def host_stub() -> dict[str, MetricValue]:
@@ -187,7 +190,7 @@ def test_fieldlist_unknown_token_exits_2() -> None:
         [sys.executable, "-m", "topos.cli", "--once", "--json",
          "--metrics", "ram,bogus_metric",
          "--cgroup-root", str(fixture_root() / "cgroupfs" / "gstammtisch")],
-        capture_output=True, text=True, cwd="topos/src",
+        capture_output=True, text=True, cwd=PROJECT_ROOT / "src",
     )
     assert result.returncode == 2
     assert "bogus_metric" in result.stderr
@@ -205,7 +208,7 @@ def test_fieldlist_empty_selector_exits_2() -> None:
         [sys.executable, "-m", "topos.cli", "--once", "--json",
          "--metrics", "",
          "--cgroup-root", str(fixture_root() / "cgroupfs" / "gstammtisch")],
-        capture_output=True, text=True, cwd="topos/src",
+        capture_output=True, text=True, cwd=PROJECT_ROOT / "src",
     )
     assert result.returncode == 2
     assert "empty selector" in result.stderr
@@ -317,7 +320,7 @@ def test_fieldlist_unknown_token_only_exits_2_via_main() -> None:
         [sys.executable, "-m", "topos.cli", "--once", "--json",
          "--metrics", "bogus1,bogus2",
          "--cgroup-root", str(fixture_root() / "cgroupfs" / "gstammtisch")],
-        capture_output=True, text=True, cwd="topos/src",
+        capture_output=True, text=True, cwd=PROJECT_ROOT / "src",
     )
     assert result.returncode == 2
     assert "bogus1" in result.stderr
