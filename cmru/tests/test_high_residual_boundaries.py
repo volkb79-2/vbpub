@@ -1,6 +1,7 @@
 """Behavior-led tests for high-residual CMRU source boundaries."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -69,6 +70,13 @@ def test_transaction_digest_tree_is_sorted_and_content_authenticated(tmp_path):
     entries = transaction._digest_tree(tmp_path)
     assert [entry["path"] for entry in entries] == ["a", "z"]
     assert entries[0]["bytes"] == "1"
+    assert entries[0]["sha256"] == hashlib.sha256(b"a").hexdigest()
+    assert entries[1]["sha256"] == hashlib.sha256(b"z").hexdigest()
+
+    (tmp_path / "a").write_text("b")
+    changed = transaction._digest_tree(tmp_path)
+    assert changed[0]["bytes"] == entries[0]["bytes"] == "1"
+    assert changed[0]["sha256"] != entries[0]["sha256"]
 
 
 def test_transaction_workspace_roots_reject_outside_project(tmp_path):
@@ -88,4 +96,3 @@ def test_version_bump_rejects_non_semver_and_breaking_commit_precedes_feature():
 def test_version_counter_handles_no_numeric_suffix_without_inventing_existing_count(tmp_path):
     with patch.object(version.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="demo-v1.0.0-rbad\n")):
         assert version._next_counter_version(tmp_path, "demo-v", "1.0.0") == "1.0.0-r1"
-
