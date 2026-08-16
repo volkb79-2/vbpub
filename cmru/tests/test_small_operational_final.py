@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import argparse
 import json
 import runpy
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cmru import dependencies, manifest, output
+from cmru import bundle, dependencies, handlers, manifest, output, runner, tester_gate, transaction
 from cmru.agent import adapter, protocol, selfupdate, state
 from cmru.controller import planner
 
@@ -106,3 +107,109 @@ def test_protocol_manifest_state_and_plan_validation_refuse_bad_shapes(tmp_path,
     empty_profile["waves"] = [{"phase": 1, "name": "w", "nodes": ["n"], "profiles": [""]}]
     with pytest.raises(ValueError, match="profiles entries"):
         planner.load_plan_json(json.dumps({"plan": empty_profile}))
+
+
+def test_bundle_wheel_build_includes_declared_find_links(tmp_path, monkeypatch):
+    config = bundle.BundleConfig(
+        project_root=tmp_path,
+        wheel_project_root=tmp_path,
+        dist_dir=tmp_path / "dist",
+        bundle_dir=tmp_path / "bundle",
+        client_dir=tmp_path / "client",
+        wheel_enabled=True,
+        wheel_python_bin="python3",
+        wheel_find_links=tmp_path / "links",
+        archive_template="x-{version}.tar",
+        archive_version_env="VERSION",
+        archive_format="tar",
+        copy_files=[],
+        copy_dirs=[],
+    )
+    calls = []
+    monkeypatch.setattr(bundle.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+    bundle.build_wheel(config)
+    assert "--find-links" in calls[0][0]
+    assert str(config.wheel_find_links) in calls[0][0]
+    no_links = config.__class__(**{**config.__dict__, "wheel_find_links": None})
+    calls.clear()
+    bundle.build_wheel(no_links)
+    assert "--find-links" not in calls[0][0]
+
+
+def test_handlers_and_tester_gate_choose_longest_mount_and_strip_separator(monkeypatch):
+    mountinfo = (
+        "10 1 0:1 /host /cockpit rw - bind ext4 /dev\n"
+        "11 1 0:1 /host/project /cockpit/project rw - bind ext4 /dev\n"
+        "12 1 0:1 /host /cockpit rw - bind ext4 /dev\n"
+    )
+    with patch.object(handlers.Path, "read_text", return_value=mountinfo):
+        assert handlers._host_bind_source(Path("/cockpit/project/src")) == "/host/project/src"
+    with patch.object(handlers.Path, "read_text", return_value="10 1 0:1 /host /unrelated rw - bind ext4 /dev\n"):
+        with pytest.raises(RuntimeError, match="no matching mount"):
+            handlers._host_bind_source(Path("/cockpit/project/src"))
+    assert tester_gate._physical_path(Path("/cockpit/project/src"), mountinfo) == Path("/host/project/src")
+    assert tester_gate._physical_path(Path("/outside"), mountinfo) == Path("/outside")
+    monkeypatch.setenv("GITHUB_USERNAME", "alice")
+    monkeypatch.setenv("GITHUB_REPO", "repo")
+    monkeypatch.setenv("GITHUB_PUSH_PAT", "token")
+
+    with patch.object(handlers, "GitHubReleases", lambda *args: object()), \
+         patch.object(handlers, "validate_latest_release", return_value={
+             "version": "1.0", "asset": "demo.whl", "url": "https://example/demo.whl",
+         }):
+        handlers.cmd_wheel_validate(SimpleNamespace(prefix="demo"))
+
+    wheel = Path("demo.whl")
+    with patch.object(handlers, "GitHubReleases", lambda *args: object()), \
+         patch.object(handlers, "find_built_wheel", return_value=wheel), \
+         patch.object(handlers, "read_wheel_version", return_value="1.0"), \
+         patch.object(handlers, "publish_versioned", return_value={"sha256": "abc"}):
+        handlers.cmd_wheel_publish(SimpleNamespace(
+            prefix="demo", cwd=".", glob="*.whl", notes_env=None, extra_asset=[],
+        ))
+
+
+def test_runner_metadata_evidence_clean_dir_and_unset_bake_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv("BUILD_DATE", "already-set")
+    monkeypatch.setattr(runner, "apply_reproducible_env", lambda _root: None)
+    runner.compute_build_date({"build_metadata": {"date_env": "BUILD_DATE"}}, tmp_path)
+    assert runner._success_evidence(["Ran 1 test in 0.1s", "OK"]) == "Ran 1 test in 0.1s; OK"
+    assert runner._success_evidence(["Ran 1 test in 0.1s", "not OK"]) is None
+
+    captured = []
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda argv, cwd, handle, **kwargs: captured.append(argv) or runner.CommandResult(0.1, None),
+    )
+    step = runner.StepConfig(
+        "build", [{"label": "echo", "argv": ["echo", "ok"], "cwd": "."}],
+        "prefix-", ["UNSET_BAKE"], None, ["missing-dir"], [], None, {}, None, [], True,
+    )
+    monkeypatch.delenv("UNSET_BAKE", raising=False)
+    runner._execute_step(step, tmp_path, tmp_path / "logs")
+    assert captured == [["echo", "ok"]]
+
+
+def test_tester_gate_public_cli_strips_separator_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
+    commands = []
+    monkeypatch.setattr(tester_gate, "build_docker_command", lambda *args, **kwargs: commands.append(args[2]) or ["true"])
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context", lambda *_: (tmp_path, "."))
+    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    parsed = SimpleNamespace(
+        cwd=".", image="img", cgroup_parent="slice", cgroup_probe_image="probe",
+        memory="1G", memory_swap="2G", cpus="1", device_read_iops="",
+        device_write_iops="", device_read_bps="", device_write_bps="",
+        enable_docker=False, dind_image=None, command=["--", "true"],
+    )
+    with patch.object(argparse.ArgumentParser, "parse_args", return_value=parsed):
+        with pytest.raises(SystemExit) as raised:
+            tester_gate.main([])
+    assert raised.value.code == 0
+    assert commands == [["true"]]
+
+
+def test_transaction_worktree_listing_ignores_malformed_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "_git", lambda *args, **kwargs: "worktree\n\n")
+    assert transaction.list_cmru_workspaces(tmp_path) == []
