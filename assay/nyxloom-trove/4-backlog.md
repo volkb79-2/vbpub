@@ -6,6 +6,8 @@ items:
   - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
+  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
+  - {id: B006, title: "Snapshot substrate ergonomics: (a) an absolute-target symlink ANYWHERE in the tree fails every R1+ lane even when outside all source_roots — offer a source-root-scoped snapshot walk or a symlink allow/skip knob; (b) reserve_output refuses a missing coverage-artifact parent and never mkdirs, so a gitignored artifact dir is absent from the tracked-only snapshot — create the parent inside the snapshot, or document the tracked-dir requirement.", type: bug, component: isolation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -481,3 +483,169 @@ threshold policy question*, which is the thing A-O10 is actually blocked on.
 exists, and nothing assay controls changes that. When it does become available it
 competes with A-O06 (A-244's accepted next capability) and should **not** displace
 it — but it is cheap and in-estate, so it is the obvious item after.
+
+---
+
+## B005 — a whole-module / per-callable coverage judge (R1 without a diff)
+
+**Proposed by:** dstdns's DESIGN-AUTHORITY reconciliation program, 2026-08-16, on
+the first package that adopted an R1 coverage lane (`redirect_chain`, a
+docstring+dead-code reconcile of `libs/common/src/common/redirect_chain.py`).
+**Status:** proposed. dstdns has a working stopgap in production use; this is the
+first-class replacement.
+
+### The claim
+
+assay's R1 judge is **changed-line coverage relative to a base** — by design and
+stated plainly in the source: `assay/evaluate.py:42` ("changed-line coverage, not
+whole-file coverage"), and `assay/measurability.py`'s module docstring calls
+itself "the two changed-line measurability guards" (`DIRTY_TREE`, `BASE_IS_HEAD`).
+There is no mode that asserts a coverage floor over a **whole declared module** (or
+a **per-callable span**) independent of a diff. A consumer that needs whole-method
+rigor — "every branch of every method I own is exercised", not "the lines I touched
+this commit are exercised" — cannot express it as an assay judge.
+
+### Why the changed-line judge is the wrong tool for a reconciliation program
+
+dstdns is running a program whose unit of work is *reconciling a method against a
+derived intent doc*. The failure mode it must gate against is exactly the one
+changed-line coverage permits: a method "reconciled" by editing only its docstring
+changes ~zero executable lines, so a `base..HEAD` judge demands nothing of the
+method body — the intent doc is asserted by prose and verified by nothing. That is
+the precise gap the program's coverage floor (its "D-044") exists to close, and the
+changed-line judge structurally cannot close it.
+
+Two concrete blockers we hit, both from `assay run redirect_chain` at a pinned
+dstdns revision:
+
+1. **`base=main` + run-from-`main` = `BASE_IS_HEAD`.** A reconcile's whole point is
+   to be re-gated *from `main`* after merge (our merge discipline re-runs the gate
+   on `main`). An R1 lane with `base=main` refuses there — base resolves to HEAD,
+   no diff, `NO_MEASUREMENT/BASE_IS_HEAD`. So the changed-line judge can only run on
+   a branch pre-merge, never as the post-merge floor.
+2. **A whole-module floor has no home in the judge config.** `source_roots` +
+   `fail_under` looks like it should express "this module at 100%", but it is
+   filtered through the `base..HEAD` diff, so it only ever judges the *changed*
+   lines under those roots. Setting `fail_under=100` over a docstring-only diff
+   passes vacuously.
+
+### The stopgap we shipped, and why it wants to be native
+
+We enforce the whole-module floor today with coverage.py's own gate baked into the
+lane argv, under assay **R0**:
+
+```toml
+argv = ["python","-m","pytest","tests/unit/test_redirect_logic.py","-q",
+        "--cov=common.redirect_chain","--cov-branch","--cov-fail-under=100"]
+rigor = ["R0"]
+```
+
+`--cov-branch` folds branch partials into the percentage; `--cov-fail-under=100`
+makes pytest itself exit nonzero below 100% line+branch of the scoped module; assay
+R0 (argv-exits-0) is the gate. It runs from `main`, needs no base, and validated
+green (`redirect_chain` PASS; 43 stmts/0 miss, 24 branch/0 partial).
+
+It works, but it pushes the rigor decision *out of the verdict*: assay records only
+"the command exited 0". The verdict carries no per-file/per-callable coverage
+attribution, no measured line/branch counts, and none of assay's own guards apply
+to it — no `EMPTY_COVERAGE` detection (a `--cov` that silently measured nothing
+would report 100% of zero and pass), no artifact integrity, no `fail_under` in the
+recorded claim. The rigor is real but unattested. That inversion — the thing being
+judged is invisible to the judge — is exactly what a first-class mode fixes.
+
+### The shape, as a proposal (assay owns the real design)
+
+A judge mode — call it a baseless / whole-target coverage judgment — that:
+
+- takes a **declared target** (a module path, or when the per-callable span feature
+  lands, a callable), not a `base..HEAD` diff, as the set of lines it requires;
+- asserts `fail_under` over that target's line+branch coverage from the same
+  coverage artifact R1 already parses (`coverage-py-json` etc.), reusing the
+  existing `EMPTY_COVERAGE` / `UNREADABLE_ARTIFACT` / bounded-read machinery;
+- runs with **no base** and therefore from any commit including `main`
+  post-merge, sidestepping `BASE_IS_HEAD` entirely (it is not a measurability
+  concern for a target that is not a diff);
+- records the measured counts and the target in the verdict, so the floor is
+  attested evidence, not a hidden argv side effect.
+
+This is close to the "per-callable span" future feature already named in dstdns's
+D-044 and in assay's own roadmap chatter; the whole-**module** case is the cheaper
+first step and already has a live consumer waiting.
+
+### Evidence available on request
+
+dstdns `main`: `assay.toml` `[lanes.redirect_chain]` (the stopgap form, with a
+comment block explaining this exact limitation), `nyxloom-trove/decisions.md` D-044
++ its 2026-08-16 amendment, and the `redirect_chain` PASS verdict at the recorded
+commit.
+
+---
+
+## B006 — snapshot substrate ergonomics: two papercuts that fail a lane for reasons outside it
+
+**Proposed by:** dstdns's reconciliation program, 2026-08-16, both hit on the very
+first R1 lane run against a real multi-service repo. Both are already worked around
+in dstdns `main`, so this is a usability/robustness item, not a blocker for us — but
+each cost a debugging round and each fails a lane for a reason that has nothing to
+do with the change under test.
+
+### (a) One absolute-target symlink anywhere in the tree fails every R1+ lane
+
+assay's P22 committed-snapshot walks the **entire reachable tree** of the resolved
+commit and refuses any symlink whose target escapes the snapshot root —
+`assay/isolation.py:_check_symlink_target` (~:860): "Refuse any symlink that does
+not resolve inside the snapshot root", raising `GIT_FAILED` on an absolute target.
+This is a correct hermeticity guard in principle. But it is applied to the whole
+tree regardless of `source_roots`, so a single tracked absolute symlink in an
+unrelated corner of the repo fails **every** R1/R2/R3 lane in **every** package,
+permanently, until someone removes it — while R0-only lanes (which bypass the
+snapshot) stay green and hide the problem.
+
+In dstdns this was `infra-global/reverse-proxy/etc-nginx/modules ->
+/usr/lib/nginx/modules` — a vendored nginx-container artifact with no relationship
+to any Python source root. It blocked the program's entire coverage-gating effort
+on day one; the only fix was to stop tracking it. A large multi-service monorepo
+will routinely carry such artifacts (vendored container configs, toolchain
+symlinks) far from the code any given lane judges.
+
+**Proposed:** either scope the snapshot walk / symlink check to the lane's declared
+`source_roots` (a symlink assay will never read cannot break isolation), or offer
+an explicit allow/skip knob (`isolation.allow_symlinks = [...]` or a snapshot
+`exclude`) so a consumer can attest "this path is outside what I test" once, rather
+than being forced to mutate unrelated tracked files. The security property is
+preserved: a symlink outside every source root is never materialized into a lane's
+working tree, so it cannot exfiltrate.
+
+### (b) The coverage-artifact parent dir must pre-exist in the snapshot, but the snapshot is tracked-only
+
+`assay/safeio.py:reserve_output` opens the coverage artifact's parent chain with
+`O_DIRECTORY|O_NOFOLLOW` and **refuses a missing parent** (`_open_parent_chain`);
+it never `mkdir`s. The lane argv runs with `cwd = snapshot.project_root`
+(`assay/runner.py` `execute_plan`), and the snapshot contains **tracked files
+only**. So the near-universal pattern — write coverage JSON to a conventional
+gitignored scratch dir (`.assay/`, `.coverage-out/`, `build/`) — fails with
+`UNREADABLE_ARTIFACT`: the dir is gitignored, hence absent from the snapshot, hence
+the reservation refuses its missing parent, hence the artifact is never written and
+never read.
+
+The failure is opaque: `UNREADABLE_ARTIFACT` reads as "your tests produced no
+coverage", when the true cause is "the directory you asked coverage to write into
+doesn't exist in my snapshot". dstdns worked around it by tracking an empty
+`.assay/.gitkeep` and ignoring only the contents (`.assay/*`, `!.assay/.gitkeep`) —
+every consumer with a gitignored coverage-output convention will hit this and need
+the same trick.
+
+**Proposed:** assay owns the artifact path (it reserves it), so it can safely
+create the artifact's parent directory inside its own ephemeral snapshot before
+running the argv — a mkdir of a path it is about to write is not a hermeticity
+violation. Failing that, detect the missing-parent case and emit a diagnostic that
+names the fix ("declared coverage artifact `.assay/x.json` — its parent `.assay/`
+is not present in the snapshot; track the directory or choose a tracked path"),
+rather than the generic `UNREADABLE_ARTIFACT`.
+
+### Evidence available on request
+
+dstdns `main`: commit `c359a6b1` (symlink removal, with the assay error verbatim in
+its message), `9f42acdc` (`.assay/.gitkeep` + gitignore), and the two intermediate
+`assay run redirect_chain` verdicts showing `GIT_FAILED` then `UNREADABLE_ARTIFACT`
+then `PASS`.
