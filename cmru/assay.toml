@@ -14,7 +14,9 @@ scope = "S1"
 rigor = ["R0"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
-env = {}
+# These are project test facts, not ambient conveniences: pytest must import
+# the source snapshot it is judging, and it must not create bytecode there.
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = []
 budget = "20m"
 allow_argv_append = false
