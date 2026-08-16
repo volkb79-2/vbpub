@@ -537,8 +537,8 @@ def validate_latest_release(
     if not matches:
         _die(f"Release {prefix}-v{info['version']} has no {artifact_suffix} asset")
     if len(matches) > 1:
-        print(f"[WARN] Multiple {artifact_suffix} assets in {prefix}-v{info['version']}: "
-              f"{matches}; using first")
+        _die(f"Release {prefix}-v{info['version']} has multiple {artifact_suffix} assets: "
+             f"{matches}; refusing ambiguous artifact selection")
     primary = matches[0]
     sidecar = primary + ".sha256"
     if require_sha256 and sidecar not in assets:
