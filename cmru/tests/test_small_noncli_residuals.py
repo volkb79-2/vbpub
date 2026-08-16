@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import json
+import runpy
+import sys
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,8 +78,9 @@ def test_standards_update_requires_project_local_config(monkeypatch):
 
 def test_standards_atomic_write_cleans_temporary_file_after_replace_failure(monkeypatch, tmp_path):
     path = tmp_path / "cmru.toml"
-    monkeypatch.setattr(Path, "replace", lambda self, target: None)
-    standards._atomic_write(path, "contents")
+    monkeypatch.setattr(Path, "replace", lambda self, target: (_ for _ in ()).throw(OSError("replace failed")))
+    with pytest.raises(OSError, match="replace failed"):
+        standards._atomic_write(path, "contents")
     assert not path.exists() and not path.with_name(".cmru.toml.cmru-tmp").exists()
 
 
@@ -89,6 +92,17 @@ def test_agent_cli_main_dispatch_fallback_is_explicit(monkeypatch, capsys):
     with pytest.raises(SystemExit) as error:
         agent_cli.main([])
     assert error.value.code == 1 and "help" in capsys.readouterr().out
+
+
+def test_agent_cli_module_guard_executes_status_entrypoint(monkeypatch, capsys):
+    monkeypatch.setattr("cmru.agent.state.read_node_id", lambda scope: None)
+    monkeypatch.setattr("cmru.agent.state.read_observed", lambda scope: None)
+    monkeypatch.setattr("cmru.agent.state.read_current_generation", lambda scope: None)
+    monkeypatch.setattr(sys, "argv", ["cmru-agent", "status"])
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(Path(agent_cli.__file__)), run_name="__main__")
+    assert error.value.code == 0
+    assert "observed:           (none)" in capsys.readouterr().out
 
 
 def test_ghcr_request_http_error_and_repository_failure_are_explicit(monkeypatch):
