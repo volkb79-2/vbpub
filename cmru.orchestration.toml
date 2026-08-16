@@ -9,19 +9,18 @@ schema_version = 1
 #
 #   ciu <- none  (declared release order)
 #   cmru <- none  (declared release order)
-#   nyxloom <- cmru  (declared release order)
 #   assay <- cmru  (declared release order)
 #   topos <- cmru  (declared release order)
-#   modern-debian-tools-python-debug <- ciu, cmru, nyxloom, topos  (declared release order)
-#     consumes first-party wheels: ciu, cmru, nyxloom, topos
+#   modern-debian-tools-python-debug <- ciu, cmru, topos  (declared release order)
+#     consumes first-party wheels: ciu, cmru, topos
 #   pwmcp <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
 [orchestration]
-project_order = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
-default_projects = ["ciu", "cmru", "nyxloom", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+project_order = ["ciu", "cmru", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
+default_projects = ["ciu", "cmru", "assay", "topos", "modern-debian-tools-python-debug", "pwmcp", "tls-edge"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -46,10 +45,6 @@ depends_on = []
 config = "cmru/cmru.toml"
 depends_on = []
 
-[orchestration.project.nyxloom]
-config = "nyxloom/cmru.toml"
-depends_on = ["cmru"]
-
 [orchestration.project.assay]
 config = "assay/cmru.toml"
 depends_on = ["cmru"]
@@ -60,7 +55,7 @@ depends_on = ["cmru"]
 
 [orchestration.project.modern-debian-tools-python-debug]
 config = "modern-debian-tools-python-debug/cmru.toml"
-depends_on = ["ciu", "cmru", "nyxloom", "topos"]
+depends_on = ["ciu", "cmru", "topos"]
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"

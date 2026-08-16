@@ -13,5 +13,4 @@
 
 ciu   # https://github.com/volkb79-2/vbpub/releases — ciu-v* releases carry the wheel (deps Jinja2/PyYAML/tomli_w provided by requirements/toolkit.txt)
 cmru  # https://github.com/volkb79-2/vbpub/releases — cmru-v* releases carry the wheel (no runtime deps)
-nyxloom  # https://github.com/volkb79-2/vbpub/releases — nyxloom-v* releases carry the wheel (deps structlog/PyYAML/jsonschema provided by requirements/toolkit.txt)
 topos  # https://github.com/volkb79-2/vbpub/releases — topos-v* releases carry the wheel (dep textual provided by requirements/toolkit.txt). CLI/client only (`topos --attach`, `topos daemon status|current`) — the root daemon itself needs host DAMON/debugfs/cgroup access this devcontainer does not mount and is not meant to run in a container (see topos/docs/DAEMON.md "Threat Model" + topos/README.md); it connects OUT to a daemon socket, it does not run one in here.

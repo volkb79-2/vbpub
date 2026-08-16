@@ -12,7 +12,7 @@ one config and one installed CLI.
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
-| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
+| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane (offline/redesign; excluded from builds and releases) | — |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
@@ -76,7 +76,8 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
 - **Auto-released set** (`orchestration.project_order` in `cmru.orchestration.toml`): ciu, cmru,
-  nyxloom, assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge.
+  assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge. Nyxloom is
+  intentionally offline and excluded from the build/release set.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
   Tooling overview: [`docs/RELEASE-TOOLING.md`](docs/RELEASE-TOOLING.md).

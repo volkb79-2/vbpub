@@ -56,7 +56,7 @@ pydantic              # data validation (config/model scratch)
 pydantic-settings     # settings models
 structlog             # structured logging
 PyYAML                # YAML parse/emit
-jsonschema            # JSON-Schema validation (nyxloom wheel dep: lint/doctor/config)
+jsonschema            # JSON-Schema validation for interactive inspection
 jinja2                # templating (also a CIU dependency)
 tomli_w               # write TOML (also a CIU dependency)
 click                 # build quick CLIs
