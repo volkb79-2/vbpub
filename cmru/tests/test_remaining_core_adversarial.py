@@ -11,7 +11,7 @@ import pytest
 
 
 class TestReleaseHttpContracts:
-    def test_release_client_routes_json_and_rejects_http_errors(self):
+    def test_release_client_routes_json_and_rejects_http_errors(self, tmp_path):
         from cmru.release import GitHubReleases
         gh = GitHubReleases("o", "r", "tok", api_base="https://api")
         calls = []
@@ -24,12 +24,12 @@ class TestReleaseHttpContracts:
         gh._request = request
         assert gh.get_release_by_tag("v1")["id"] == 1
         assert gh.list_assets(1)[0]["id"] == 2
-        path = Path("/tmp/cmru-release-test-asset"); path.write_bytes(b"x")
+        path = tmp_path / "release-test-asset"
+        path.write_bytes(b"x")
         gh.upload_asset("https://upload/{?name}", path, "a")
         assert any(c[0] == "POST" for c in calls)
         gh._request = lambda *a, **k: (500, "bad")
         with pytest.raises(SystemExit): gh.delete_release(1)
-        path.unlink()
 
     def test_resolve_latest_ignores_draft_prerelease_and_pointer(self):
         from cmru.release import GitHubReleases
