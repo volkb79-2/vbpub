@@ -5,6 +5,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,7 +66,7 @@ def test_runner_required_env_dynamic_output_and_login_fail_closed(monkeypatch, t
 
 def test_runner_executes_real_command_writes_log_and_restores_environment(tmp_path, monkeypatch):
     step = runner.StepConfig(
-        name="tests", commands=[{"label": "pytest", "argv": ["python", "-c", "print('2 passed in 0.01s')"], "cwd": "."}],
+        name="tests", commands=[{"label": "pytest", "argv": [sys.executable, "-c", "print('2 passed in 0.01s')"], "cwd": "."}],
         bake_set_prefix=None, bake_set_vars=[], no_cache_env=None, clean_dirs=[], required_env=[],
         login=None, step_env={"CMRU_TEST_LOCAL": "scoped"}, env_command=None, quiet=False,
     )
@@ -77,7 +78,7 @@ def test_runner_executes_real_command_writes_log_and_restores_environment(tmp_pa
 
 def test_runner_nonzero_real_command_surfaces_failure_and_keeps_log(tmp_path):
     step = runner.StepConfig(
-        name="fail", commands=[{"label": "bad", "argv": ["python", "-c", "raise SystemExit(3)"], "cwd": "."}],
+        name="fail", commands=[{"label": "bad", "argv": [sys.executable, "-c", "raise SystemExit(3)"], "cwd": "."}],
         bake_set_prefix=None, bake_set_vars=[], no_cache_env=None, clean_dirs=[], required_env=[],
         login=None, step_env={}, env_command=None, quiet=True,
     )
