@@ -81,20 +81,25 @@ ghcr_delete_packages = []
 '''
 
 
-def test_config_rejects_project_metadata_and_runner_schema_shapes(tmp_path):
+def test_config_rejects_project_metadata_and_runner_schema_shapes(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     base = project_toml()
-    for extra in (
-        "project_metadata = []\n",
-        "build_metadata = { unsupported = \"x\" }\n",
-        "[project]\nid = \"demo\"\ndescription = \"test\"\nprefix = \"demo-v\"\nartifacts = [\"wheel\"]\n[project.version]\nstrategy = \"scm\"\nbump = \"patch\"\n[project.release]\ngit_tag = true\nbuild_step = \"build\"\nartifact_dirs = [\"dist\"]\n[steps.run-tests]\nquiet = true\ncommands = [{label=\"x\", argv=[\"echo\"], cwd=\".\"}]\n[steps.build]\nquiet = true\ncommands = [\"bad\"]\n[steps.push]\nquiet = true\ncommands = [{label=\"x\", argv=[\"echo\"], cwd=\".\"}]\n",
-    ):
-        project.write_text(extra if extra.startswith(("project_metadata", "build_metadata")) else "schema_version = 1\n[github]\nowner=\"a\"\nrepo=\"r\"\nowner_type=\"org\"\n[targets]\nhost=\"github\"\nregistry=[]\n" + extra, encoding="utf-8")
-        with pytest.raises(SystemExit):
+    cases = (
+        (base + "\nproject_metadata = []\n", "project_metadata"),
+        (base + "\nbuild_metadata = { unsupported = \"x\" }\n", "build_metadata"),
+        (
+            base.replace(
+                'commands = [{label = "build", argv = ["echo", "ok"], cwd = "."}]',
+                'commands = ["bad"]',
+            ),
+            "commands[0]",
+        ),
+    )
+    for raw, diagnostic in cases:
+        project.write_text(raw, encoding="utf-8")
+        with pytest.raises(SystemExit) as error:
             config.load_forge_config(project)
-    project.write_text(base.replace('commands = [{label = "tests", argv = ["echo", "ok"], cwd = "."}]', 'commands = ["bad"]'), encoding="utf-8")
-    with pytest.raises(SystemExit):
-        config.load_forge_config(project)
+        assert diagnostic in capsys.readouterr().out
 
 
 def test_config_orchestration_refuses_unknown_and_misordered_dependencies(tmp_path):
