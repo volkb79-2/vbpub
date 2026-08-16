@@ -185,17 +185,18 @@ class TestReleaseArtifactBoundaries(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 release.find_artifact(root, "*.whl", variant="py311", suffix=".whl")
 
-    def test_validate_latest_rejects_multiple_primary_assets(self):
+    def test_validate_latest_refuses_multiple_primary_assets(self):
         fake = SimpleNamespace(resolve_latest=lambda _: {
             "version": "1.0.0", "tag": "demo-v1.0.0",
             "assets": [{"name": "a.tar.xz", "url": "a"}, {"name": "b.tar.xz", "url": "b"}],
         })
-        # Multiple assets are surfaced as warning, but the selected record remains explicit.
-        with patch("builtins.print") as output:
-            info = release.validate_latest_release(fake, "demo", artifact_suffix=".tar.xz",
-                                                   require_sha256=False, retries=1, delay=0)
-        self.assertEqual(info["asset"], "a.tar.xz")
-        self.assertTrue(any("Multiple" in str(call) for call in output.call_args_list))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                release.validate_latest_release(fake, "demo", artifact_suffix=".tar.xz",
+                                                require_sha256=False, retries=1, delay=0)
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("refusing ambiguous artifact selection", stderr.getvalue())
 
 
 class TestVersionStrategyBoundaries(unittest.TestCase):
