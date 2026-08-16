@@ -93,7 +93,7 @@ def test_transaction_delete_retained_output_validates_manifest_and_supports_dry_
     assert not artifacts.exists() and not logs.exists()
 
 
-def test_transaction_release_output_retention_rolls_back_partial_artifact_move(tmp_path, monkeypatch):
+def test_transaction_release_output_retention_records_artifacts_and_refuses_duplicates(tmp_path, monkeypatch):
     repo = tmp_path / "repo"; repo.mkdir()
     project_root = repo / "demo"; project_root.mkdir()
     child = repo / "child" / "demo"; child.mkdir(parents=True)
