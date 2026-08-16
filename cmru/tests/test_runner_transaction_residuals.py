@@ -125,6 +125,23 @@ def test_transaction_build_retention_rejects_empty_declared_artifact(tmp_path):
     transaction.remove_workspace(workspace)
 
 
+def test_transaction_build_retention_rejects_duplicate_artifact_basenames(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    for directory in ("one/dist", "two/dist"):
+        (child / directory).mkdir(parents=True)
+        (child / directory / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["one/dist", "two/dist"])
+    with pytest.raises(RuntimeError, match="artifact directory name collision: dist"):
+        transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
+    assert (child / "one" / "dist" / "artifact.whl").is_file()
+    assert (child / "two" / "dist" / "artifact.whl").is_file()
+    transaction.remove_workspace(workspace)
+
+
 def test_transaction_build_retention_refuses_destination_appearing_during_copy(tmp_path):
     root = repo(tmp_path)
     workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
@@ -149,6 +166,30 @@ def test_transaction_build_retention_refuses_destination_appearing_during_copy(t
     assert (root / "demo" / "logs" / output_id).is_dir()
     assert (child / "logs" / "step.log").is_file()
     transaction.remove_workspace(workspace)
+
+
+def test_transaction_release_retention_refuses_artifact_destination_race(tmp_path, monkeypatch):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, root / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    (child / "dist").mkdir(parents=True)
+    (child / "dist" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    target = root / "demo" / "artifacts" / "tag" / "dist"
+    original_exists = Path.exists
+    def appears_during_preflight(path):
+        if path == target:
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", appears_during_preflight)
+    with pytest.raises(RuntimeError, match="artifact directory destination already exists"):
+        transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "tag"},
+            retain_logs=False, retain_artifacts=True,
+        )
+    assert (child / "dist" / "artifact.whl").is_file()
+    assert not (root / "demo" / "artifacts" / "tag").exists()
 
 
 def test_transaction_release_retention_surfaces_rollback_failure(tmp_path):
@@ -182,6 +223,76 @@ def test_transaction_release_retention_surfaces_rollback_failure(tmp_path):
             )
     assert isinstance(raised.value.__cause__, OSError)
     assert str(raised.value.__cause__) == "rollback move failure"
+
+
+def test_transaction_release_retention_surfaces_destination_cleanup_failure(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, root / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    (child / "dist-a").mkdir(parents=True)
+    (child / "dist-a" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    (child / "dist-b").mkdir(parents=True)
+    (child / "dist-b" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist-a", "dist-b"])
+    original_move = transaction.shutil.move
+    original_rmtree = transaction.shutil.rmtree
+    calls = {"artifacts": 0}
+
+    def fail_second_artifact(source, target):
+        if Path(source).name in {"dist-a", "dist-b"}:
+            calls["artifacts"] += 1
+            if calls["artifacts"] == 2:
+                raise OSError("outward move failure")
+        return original_move(source, target)
+
+    def fail_target_cleanup(path, *args, **kwargs):
+        if Path(path) == root / "demo" / "artifacts" / "tag":
+            raise OSError("destination cleanup failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    with patch.object(transaction.shutil, "move", side_effect=fail_second_artifact), \
+         patch.object(transaction.shutil, "rmtree", side_effect=fail_target_cleanup):
+        with pytest.raises(RuntimeError, match="retention rollback failed") as raised:
+            transaction.retain_success_outputs(
+                root, workspace, {"demo": project}, {"demo": "tag"},
+                retain_logs=False, retain_artifacts=True,
+            )
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "destination cleanup failure"
+
+
+def test_transaction_release_retention_preserves_unexpected_log_parent_content(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, root / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    for directory in ("dist-a", "dist-b"):
+        (child / directory).mkdir(parents=True)
+        (child / directory / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist-a", "dist-b"])
+    original_move = transaction.shutil.move
+    calls = {"artifacts": 0}
+    unexpected = root / "demo" / "logs" / "cmru-release" / "unexpected.txt"
+
+    def fail_second_artifact(source, target):
+        if Path(source).name in {"dist-a", "dist-b"}:
+            calls["artifacts"] += 1
+            if calls["artifacts"] == 2:
+                unexpected.parent.mkdir(parents=True, exist_ok=True)
+                unexpected.write_text("concurrent record", encoding="utf-8")
+                raise OSError("outward move failure")
+        return original_move(source, target)
+
+    with patch.object(transaction.shutil, "move", side_effect=fail_second_artifact):
+        with pytest.raises(OSError, match="outward move failure"):
+            transaction.retain_success_outputs(
+                root, workspace, {"demo": project}, {"demo": "tag"},
+                retain_logs=True, retain_artifacts=True,
+            )
+    assert unexpected.read_text(encoding="utf-8") == "concurrent record"
+    assert (child / "logs" / "step.log").is_file()
+    assert (child / "dist-a" / "artifact.whl").is_file()
 
 
 def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, capsys, monkeypatch):
