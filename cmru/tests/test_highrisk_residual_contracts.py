@@ -44,6 +44,7 @@ def test_transaction_build_retention_rolls_back_first_rename_on_second_rename_fa
     (child / "logs").mkdir(parents=True); (child / "logs" / "step.log").write_text("log")
     (child / "dist").mkdir(); (child / "dist" / "demo.whl").write_bytes(b"wheel")
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    output_id, _, _ = transaction.build_output_id(workspace)
     original_replace = Path.replace
     def fail_artifact_rename(self, target):
         if self.name == "artifacts" and Path(target).parent.name == "artifacts":
@@ -52,8 +53,10 @@ def test_transaction_build_retention_rolls_back_first_rename_on_second_rename_fa
     with patch.object(Path, "replace", new=fail_artifact_rename):
         with pytest.raises(OSError, match="artifact rename"):
             transaction.retain_successful_build_outputs(root, workspace, {"demo": project}, ["demo"])
-    output_root = root / "demo" / "artifacts"
-    assert not list(output_root.glob("*/build.json")) if output_root.exists() else True
+    retained_logs = root / "demo" / "logs" / output_id
+    retained_artifacts = root / "demo" / "artifacts" / output_id
+    assert not retained_logs.exists()
+    assert not (retained_artifacts / "build.json").exists()
     assert (child / "logs").is_dir()
     transaction.remove_workspace(workspace)
 
