@@ -36,6 +36,7 @@ quiet = true
 commands = [
   # The consumer-owned, hash-pinned zipapp makes the rigor claim explicit.
   # tester-unified deliberately does not bake an ambient Assay version.
+  { label = "cmru: verify pinned Assay", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/usr/bin/sha256sum", "-c", "tools/assay/assay-1.0.0.pyz.sha256"], cwd = ".." },
   { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "tools/assay/assay-1.0.0.pyz", "run", "cmru", "--file", "assay.toml", "--verdict-json", ".assay/verdict-cmru.json"], cwd = ".." },
 ]
 
