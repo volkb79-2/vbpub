@@ -79,4 +79,3 @@ class TestProtocolAndStateBoundaries:
         (state.state_dir() / "identity.json").write_text("{")
         assert state.read_current_generation() is None
         assert state.read_identity() is None
-
