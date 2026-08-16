@@ -21,6 +21,19 @@ def test_cleanup_project_with_no_step_or_deletions_is_safe_noop(monkeypatch, tmp
     cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cli.CleanupConfig([], [], [], []), github, cli.ReleaseEnvConfig({}, None), None, False)
 
 
+def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tmp_path):
+    project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
+    github = cli.GitHubConfig("o", "r", "token", "user")
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
+    monkeypatch.setattr(cli, "github_for_project", lambda *args: github)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
+    monkeypatch.setattr(cli, "cleanup_project_releases_and_tags", lambda *args: [])
+    monkeypatch.setattr(cli, "_latest_version_for_prefix", lambda *args: "1.0.0")
+    monkeypatch.setattr(cli, "cleanup_project_step", lambda *args: False)
+    monkeypatch.setattr(cli, "cleanup_commit_deletions", lambda *args: (_ for _ in ()).throw(AssertionError("commit")))
+    cli.run_cleanup_verb(tmp_path, {"demo": project}, ["demo"], cli.CleanupConfig([], [], [], []), github, cli.ReleaseEnvConfig({}, None), None, False)
+
+
 def test_source_tree_invalid_exact_tag_falls_back_to_no_version(monkeypatch):
     results = iter([
         SimpleNamespace(returncode=0, stdout="not-a-cmru-tag\n"),
@@ -54,6 +67,24 @@ def test_worktrees_reports_missing_workspace_action(monkeypatch, tmp_path, capsy
     assert "action: unavailable here" in capsys.readouterr().out
 
 
+def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch, tmp_path, capsys):
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "missing", "cmru/other/x", "a" * 40)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
+    cli.main(["worktrees"])
+    assert "action: unavailable here" in capsys.readouterr().out
+
+
+def test_worktrees_unknown_purpose_existing_path_has_no_action_hint(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "existing"
+    path.mkdir()
+    workspace = transaction.ReleaseWorkspace(tmp_path, path, "cmru/other/x", "a" * 40)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
+    cli.main(["worktrees"])
+    assert "other: cmru/other/x" in capsys.readouterr().out
+
+
 def test_status_without_project_delegates_all_ordered_projects(monkeypatch, tmp_path):
     config = _config(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
@@ -77,3 +108,15 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
     cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
     assert calls == [{"project_filter": None, "minor": False, "major": False, "set_version": None, "dry_run": True}]
+
+
+def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *args: [("demo", "changed")])
+    calls = []
+    monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
+    cli.main(["release", "--_transaction-child", "--dry-run", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+    assert calls[0]["project_filter"] == "demo"
