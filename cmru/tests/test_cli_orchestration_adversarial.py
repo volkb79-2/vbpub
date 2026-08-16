@@ -145,18 +145,18 @@ def test_cleanup_unmanaged_release_is_idempotent_and_preserves_tag(monkeypatch):
 
 
 def test_cleanup_ghcr_handles_protected_and_forbidden_versions(monkeypatch, capsys):
-    cleanup = cli.CleanupConfig([], [], ["pkg"], [])
-    monkeypatch.setattr(cli, "list_package_versions", lambda *args: [
-        {"id": 1, "updated_at": "2020-01-01T00:00:00Z"},
-        {"id": 2, "updated_at": "2020-01-01T00:00:00Z"},
-    ])
-    monkeypatch.setattr(cli, "delete_package_version", lambda owner, package, token, version_id, owner_type, dry_run: capsys.readouterr())
-    # Directly exercise the typed HTTP responses on the destructive boundary.
+    # Exercise the real destructive boundary with controlled HTTP responses.
     monkeypatch.setattr(cli, "http_request", lambda *args: (400, "cannot be deleted", {}))
     cli.delete_package_version("o", "pkg", "t", 1, "org", False)
+    first = capsys.readouterr().out
+    assert "Skipping GHCR cleanup" in first and "cannot be deleted" in first
     monkeypatch.setattr(cli, "http_request", lambda *args: (403, "forbidden", {}))
+    cli.delete_package_version("o", "pkg", "t", 2, "org", False)
+    second = capsys.readouterr().out
+    assert "missing package delete scope" in second
     cli.delete_package("o", "pkg", "t", "org", False)
-    assert "Skipping" in capsys.readouterr().out
+    third = capsys.readouterr().out
+    assert "Skipping GHCR package delete" in third and "missing package delete scope" in third
 
 
 def test_cleanup_project_step_dry_run_has_no_runner_side_effect(monkeypatch, tmp_path):
