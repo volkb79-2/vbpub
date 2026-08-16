@@ -128,7 +128,9 @@ def bump_version(current: str, bump: str) -> str:
         return f"{major + 1}.0.0"
     if bump == "minor":
         return f"{major}.{minor + 1}.0"
-    return f"{major}.{minor}.{patch + 1}"
+    if bump == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    raise ValueError(f"Unknown version bump level: {bump!r}; expected major, minor, or patch")
 
 
 def _next_counter_version(repo_root: Path, prefix: str, base_version: str) -> str:
