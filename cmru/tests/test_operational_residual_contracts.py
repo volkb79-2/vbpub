@@ -68,13 +68,15 @@ def test_consul_read_absent_observed_and_signature_are_none():
     assert backend.read_desired_sig("node", "land") is None
 
 
-def test_release_read_wheel_version_without_metadata_fails_exactly(tmp_path):
+def test_release_read_wheel_version_without_metadata_fails_exactly(tmp_path, capsys):
     import zipfile
     wheel = tmp_path / "demo.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("README", "demo")
-    with pytest.raises(StopIteration):
+    with pytest.raises(SystemExit) as error:
         release.read_wheel_version(wheel)
+    assert error.value.code == 1
+    assert "No Version field in demo.whl METADATA" in capsys.readouterr().err
 
 
 def test_handlers_wheel_glob_normalizes_distribution_name():

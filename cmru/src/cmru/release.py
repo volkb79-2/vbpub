@@ -492,7 +492,9 @@ def read_wheel_version(wheel_path: Path) -> str:
     import zipfile
 
     with zipfile.ZipFile(wheel_path) as zf:
-        meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        meta = next((n for n in zf.namelist() if n.endswith(".dist-info/METADATA")), None)
+        if meta is None:
+            _die(f"No Version field in {Path(wheel_path).name} METADATA")
         for line in zf.read(meta).decode("utf-8").splitlines():
             if line.startswith("Version:"):
                 return line.split(":", 1)[1].strip()
