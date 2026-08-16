@@ -13,7 +13,7 @@ def _config(tmp_path, project):
     )
 
 
-def test_cleanup_destructive_modes_require_scope_and_confirmation(monkeypatch, tmp_path):
+def test_cleanup_destructive_modes_require_scope_and_confirmation(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
@@ -25,8 +25,7 @@ def test_cleanup_destructive_modes_require_scope_and_confirmation(monkeypatch, t
         with pytest.raises(SystemExit) as exc:
             cli.main(args)
         assert exc.value.code == 2
-        # argparse writes the actionable refusal to stderr; the assertion above
-        # supplies the exact contract without permitting a destructive fallback.
+        assert message in capsys.readouterr().err
 
 
 def test_release_child_rejects_non_orchestrated_project_before_release_work(monkeypatch, tmp_path, capsys):
