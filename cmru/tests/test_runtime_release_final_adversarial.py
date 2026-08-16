@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -37,9 +38,11 @@ class TestReleasePublicationPairs:
 
     def test_read_wheel_version_and_artifact_ambiguity_fail_closed(self, tmp_path):
         from cmru.release import find_artifact, read_wheel_version
-        with pytest.raises(Exception): read_wheel_version(tmp_path / "missing.whl")
+        with pytest.raises(FileNotFoundError, match="missing\\.whl"):
+            read_wheel_version(tmp_path / "missing.whl")
         (tmp_path / "a.whl").write_bytes(b"not zip")
-        with pytest.raises(Exception): read_wheel_version(tmp_path / "a.whl")
+        with pytest.raises(zipfile.BadZipFile, match="File is not a zip file"):
+            read_wheel_version(tmp_path / "a.whl")
         (tmp_path / "a.tar.xz").write_bytes(b"a"); (tmp_path / "b.tar.xz").write_bytes(b"b")
         with pytest.raises(SystemExit): find_artifact(tmp_path, "*.tar.xz")
 
