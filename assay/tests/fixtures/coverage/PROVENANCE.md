@@ -1,7 +1,9 @@
 # Real coverage artifacts — carver-owned evidence, never hand-authored
 
-Six artifacts, three formats × (branch tracking ON / OFF), produced by a real
-`coverage.py` run over the two-file program in `probe/`. They exist because the
+Eight artifacts. Six are three formats × (branch tracking ON / OFF) over the
+two-file program in `probe/`; two more (`*.exitarc.*`) come from `probe-exit/`
+and exist only to witness the exit-arc spellings described at the bottom of this
+file. All were produced by real `coverage.py` runs. They exist because the
 branch-capability rules in the wave-1 specification are claims about what these
 tools **actually emit**, and this project's own record says a fixture invented
 to match a design is the shape of failure that survives a green suite
@@ -58,3 +60,24 @@ the case `lcov` spells `-` rather than `0`.
 
 The last row is the invariant `FileCoverage` enforces once, in the model, for
 all formats: a line in `missing` can never carry a covered arc.
+
+## The exit-arc fixtures — two shapes that reject a "reasonable" parser
+
+`probe-exit/exits.py` has one branch whose untaken arc **leaves the function**
+instead of reaching another line. Generated the same way, `--branch` only:
+
+```sh
+coverage run  --rcfile=.coveragerc --branch -m pytest test_exits.py -q
+coverage json --rcfile=.coveragerc -o ../coverage-py-json.exitarc.json --pretty-print
+coverage lcov --rcfile=.coveragerc -o ../lcov.exitarc.info
+```
+
+| fact | witness |
+|---|---|
+| a coverage.py branch **destination can be negative** | `missing_branches` = `[[5,7],[11,-10]]` — `-10` encodes "exit the function that starts at line 10" |
+| so `src` is a line number and `dst` is an opaque identity | a parser validating both members as positive line numbers rejects this real artifact. assay attributes a branch to its SOURCE line and never needs `dst` |
+| an lcov branch id is **free text**, not a number | `BRDA:11,0,return from function 'falls_off_the_end',0` — spaces and an apostrophe inside the third field |
+| so `BRDA` cannot be parsed by a bare `split(",")` count | split the line into `line`, `block`, and a remainder on the first two commas, then take `taken` off the remainder's RIGHT with `rsplit(",", 1)`. The branch id is whatever is left, opaque |
+
+Both files carry the ordinary shapes too (`[5,6]`/`[5,7]`, `BRDA:5,0,jump to
+line 6,1`), so a test that reads them is not exercising only the exotic case.
