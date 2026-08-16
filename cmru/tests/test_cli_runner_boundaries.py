@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -141,7 +142,7 @@ def test_runner_nonzero_command_preserves_log_and_raises(tmp_path):
     with log.open("w", encoding="utf-8") as handle:
         with pytest.raises(subprocess.CalledProcessError) as caught:
             runner.run_command(
-                ["python", "-c", "print('bad'); raise SystemExit(7)"],
+                [sys.executable, "-c", "print('bad'); raise SystemExit(7)"],
                 tmp_path, handle, log_path=log,
             )
     assert caught.value.returncode == 7
