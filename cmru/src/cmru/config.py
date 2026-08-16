@@ -17,15 +17,10 @@ from __future__ import annotations
 
 import os
 import re
-import sys
+import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Mapping, Optional
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomllib  # type: ignore[no-redef]
 
 from cmru import exit_codes
 from cmru.config_names import (

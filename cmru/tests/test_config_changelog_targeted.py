@@ -86,7 +86,7 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
     targets = config.TargetsConfig("github", [])
 
     def fake_project(path):
-        name = path.parent.name
+        name = "demo" if path.parent.name.endswith("outside-demo") else path.parent.name
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
     monkeypatch.setattr(config, "_parse_project_document", fake_project)
@@ -133,6 +133,74 @@ def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
             config.load_forge_config(path, require_orchestration=True)
         assert error.value.code == exit_codes.CONFIG_ERROR
         assert diagnostic in capsys.readouterr().out
+
+
+def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_path, capsys):
+    project = tmp_path / "cmru.toml"
+    project.write_text(
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "[targets]\nhost='github'\nregistry=[]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as error:
+        config._parse_project_document(project)
+    assert error.value.code == exit_codes.CONFIG_ERROR
+    assert "[project] is required" in capsys.readouterr().out
+
+    orchestration = tmp_path / "cmru.orchestration.toml"
+    orchestration.write_text(
+        "schema_version=1\n[orchestration]\nproject_order=['demo']\n"
+        "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
+        "[orchestration.project.demo]\nconfig=''\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as error:
+        config._load_orchestration_config(orchestration)
+    assert error.value.code == exit_codes.CONFIG_ERROR
+    assert "non-empty project-relative path" in capsys.readouterr().out
+
+
+def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlier_dependency(
+    monkeypatch, tmp_path, capsys
+):
+    github = config.GitHubS2Config("o", "r", "org", None)
+    targets = config.TargetsConfig("github", [])
+
+    def fake_project(path):
+        name = "demo" if path.parent.name.endswith("outside-demo") else path.parent.name
+        return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
+
+    monkeypatch.setattr(config, "_parse_project_document", fake_project)
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args: (None, {}))
+    outside = tmp_path.parent / (tmp_path.name + "-outside-demo")
+    outside.mkdir()
+    (outside / "cmru.toml").write_text("placeholder", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(outside, target_is_directory=True)
+    escaped = tmp_path / "cmru.orchestration.toml"
+    escaped.write_text(
+        "schema_version=1\n[orchestration]\nproject_order=['demo']\n"
+        "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
+        "[orchestration.project.demo]\nconfig='link/cmru.toml'\n"
+        "[cleanup]\nrelease_tag_prefixes=[]\nkeep_release_tags=[]\nghcr_packages=[]\nghcr_delete_packages=[]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit) as error:
+        config._load_orchestration_config(escaped)
+    assert error.value.code == exit_codes.CONFIG_ERROR
+    assert "resolves outside" in capsys.readouterr().out
+
+    ordered = tmp_path / "cmru.orchestration.toml"
+    ordered.write_text(
+        "schema_version=1\n[orchestration]\nproject_order=['provider','consumer']\n"
+        "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
+        "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"
+        "[orchestration.project.consumer]\nconfig='consumer/cmru.toml'\ndepends_on=['provider']\n"
+        "[cleanup]\nrelease_tag_prefixes=[]\nkeep_release_tags=[]\nghcr_packages=[]\nghcr_delete_packages=[]\n",
+        encoding="utf-8",
+    )
+    loaded = config._load_orchestration_config(ordered)
+    assert loaded.orchestration.project_order == ["provider", "consumer"]
 
 
 def test_changelog_plan_rejects_no_changes_and_empty_external_variable(monkeypatch, tmp_path):
