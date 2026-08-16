@@ -58,7 +58,7 @@ def test_consul_read_paths_fail_closed_on_bad_shape_and_status():
     backend._get = lambda *args, **kwargs: (500, b"", {})
     assert backend.read_observed("n", "l") is None
     backend._get = lambda *args, **kwargs: (200, json.dumps([{"Value": "@@@"}]).encode(), {})
-    assert backend.read_desired_sig("n", "l") == b""
+    assert backend.read_desired_sig("n", "l") is None
 
 
 def test_agent_cli_enroll_and_status_use_persisted_state(monkeypatch, capsys):

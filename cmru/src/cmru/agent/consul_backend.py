@@ -310,8 +310,8 @@ class ConsulBackend(DesiredStateBackend):
             value_b64 = entries[0].get("Value")
             if value_b64 is None:
                 return None
-            return base64.b64decode(value_b64)
-        except (json.JSONDecodeError, ValueError):
+            return base64.b64decode(value_b64, validate=True)
+        except (json.JSONDecodeError, ValueError, TypeError):
             return None
 
 
