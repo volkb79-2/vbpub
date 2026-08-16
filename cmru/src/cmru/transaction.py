@@ -439,6 +439,14 @@ def retain_successful_build_outputs(
                 # A later unexpected exception must not leave a partial record.
                 if target_logs.exists() and not target_artifacts.exists():
                     target_logs.replace(staged_logs)
+                    retained[:] = [
+                        path for path in retained
+                        if path not in {target_logs, target_artifacts}
+                    ]
+                    shutil.rmtree(stage, ignore_errors=True)
+                    raise RuntimeError(
+                        f"{name}: retained artifact destination disappeared during retention"
+                    )
             shutil.rmtree(stage, ignore_errors=True)
     return retained
 
