@@ -136,7 +136,9 @@ def test_bundle_wheel_build_includes_declared_find_links(tmp_path, monkeypatch):
     assert "--find-links" not in calls[0][0]
 
 
-def test_handlers_and_tester_gate_choose_longest_mount_and_strip_separator(monkeypatch):
+def test_handlers_and_tester_gate_choose_longest_mount_and_strip_separator(
+    monkeypatch, capsys, tmp_path
+):
     mountinfo = (
         "10 1 0:1 /host /cockpit rw - bind ext4 /dev\n"
         "11 1 0:1 /host/project /cockpit/project rw - bind ext4 /dev\n"
@@ -153,20 +155,59 @@ def test_handlers_and_tester_gate_choose_longest_mount_and_strip_separator(monke
     monkeypatch.setenv("GITHUB_REPO", "repo")
     monkeypatch.setenv("GITHUB_PUSH_PAT", "token")
 
-    with patch.object(handlers, "GitHubReleases", lambda *args: object()), \
-         patch.object(handlers, "validate_latest_release", return_value={
-             "version": "1.0", "asset": "demo.whl", "url": "https://example/demo.whl",
-         }):
+    github_calls = []
+    monkeypatch.setattr(
+        handlers, "GitHubReleases",
+        lambda *args: github_calls.append(args) or object(),
+    )
+    with patch.object(handlers, "validate_latest_release", return_value={
+        "version": "1.0", "asset": "demo.whl", "url": "https://example/demo.whl",
+        "sha256_url": "https://example/demo.sha256",
+    }):
         handlers.cmd_wheel_validate(SimpleNamespace(prefix="demo"))
+    assert github_calls == [("alice", "repo", "token")]
+    validation_output = capsys.readouterr().out
+    assert "[INFO] demo latest: 1.0 (resolved from highest demo-v* release)" in validation_output
+    assert "[INFO] DEMO_WHEEL_NAME=demo.whl" in validation_output
+    assert "[INFO] DEMO_WHEEL_LATEST_URL=https://example/demo.whl" in validation_output
+    assert "[INFO] DEMO_WHEEL_SHA256_URL=https://example/demo.sha256" in validation_output
+    assert (
+        "[INFO] Verify: curl -LO https://example/demo.whl && curl -LO "
+        "https://example/demo.sha256 && sha256sum -c demo.whl.sha256"
+    ) in validation_output
 
-    wheel = Path("demo.whl")
-    with patch.object(handlers, "GitHubReleases", lambda *args: object()), \
-         patch.object(handlers, "find_built_wheel", return_value=wheel), \
+    wheel = tmp_path / "dist" / "demo.whl"
+    publish_calls = []
+    def publish(gh, **kwargs):
+        publish_calls.append((gh, kwargs))
+        return {"sha256": "abc", "asset_url": "https://example/uploaded/demo.whl"}
+
+    monkeypatch.setattr(handlers, "find_built_wheel", lambda *_args: wheel)
+    monkeypatch.setattr(handlers, "read_wheel_version", lambda _path: "1.0")
+    monkeypatch.setattr(handlers, "publish_versioned", publish)
+    monkeypatch.setenv("RELEASE_NOTES", "release notes")
+    with patch.object(handlers, "GitHubReleases", lambda *args: github_calls.append(args) or object()), \
          patch.object(handlers, "read_wheel_version", return_value="1.0"), \
-         patch.object(handlers, "publish_versioned", return_value={"sha256": "abc"}):
+         patch.object(handlers, "find_built_wheel", return_value=wheel):
         handlers.cmd_wheel_publish(SimpleNamespace(
-            prefix="demo", cwd=".", glob="*.whl", notes_env=None, extra_asset=[],
+            prefix="demo", cwd=str(tmp_path), glob="*.whl",
+            notes_env="RELEASE_NOTES", extra_asset=[],
         ))
+    assert github_calls[-1] == ("alice", "repo", "token")
+    assert len(publish_calls) == 1
+    _github, payload = publish_calls[0]
+    assert payload == {
+        "prefix": "demo",
+        "version": "1.0",
+        "asset_path": wheel,
+        "notes": "release notes",
+        "extra_assets": None,
+        "latest_pointer": True,
+    }
+    publish_output = capsys.readouterr().out
+    assert "[INFO] Published demo 1.0" in publish_output
+    assert "[INFO] DEMO_WHEEL_SHA256=abc" in publish_output
+    assert "[INFO] DEMO_WHEEL_ASSET_URL=https://example/uploaded/demo.whl" in publish_output
 
 
 def test_runner_metadata_evidence_clean_dir_and_unset_bake_variable(tmp_path, monkeypatch):
