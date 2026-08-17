@@ -824,3 +824,89 @@ world where the daemon's view happens to be locally stat-able. The oracle was
 sound; the population contained none of the only case that mattered. When a
 fix concerns two namespaces, the test must make them genuinely different —
 `tmp_path/a` vs `tmp_path/b` is not different enough if both exist.
+
+## L22 — Cross-agent prefix-sharing pays in proportion to OVERLAP; the roundtrip is the cost, not the shared prefix
+
+**Rule.** Before forking N children from a shared frozen-orientation base "to reuse
+the prompt cache," **measure the overlap between what they will actually read.**
+Cross-agent prefix caching saves in proportion to the *shared* prefix; the dominant
+cost of a discovery-driven agent is its own **tool-call roundtrip count** — each call
+re-processes the whole accumulating context at cache-read rates — which cross-sharing
+cannot touch. Fork-from-shared-base pays only when siblings share an area; for
+disjoint packages, launch separately. (Companion to **L18**/L21-style measurement
+discipline, and to **L12**, which owns *when to rotate* a reused session; this owns
+*when to share* a prefix across siblings.)
+
+**Evidence (dstdns, 2026-08-17).** Two design-planner agents — a strict
+classification engine and a mock-DNS fixture contract — launched close together, then
+measured from their transcripts (`tool_use` counts + the `cache_read`/`cache_creation`
+usage fields):
+
+| | agent A | agent B |
+|---|---|---|
+| tool calls (roundtrips to ready) | 46 | 29 |
+| cache_read (context re-read across turns) | 6.59M | 4.58M |
+| cache_creation (≈ distinct content processed) | 970k | 876k |
+| distinct files referenced | 23 | 16 |
+| **files referenced by BOTH** | **1** (~200 tok, asymmetric) | — |
+
+Overlap ≈ **0.5%**. A shared prefix would have saved ~180 tokens; the 11.2M combined
+cache_read is a function of roundtrip count, not of anything shared. Precise
+package-specific "read first" pointers *caused* the low overlap — good scoping sends
+each agent straight to its own code, so the better the prompt, the less a shared
+prefix can save. "They're mostly disjoint" is therefore the *expected* outcome of
+well-scoped prompts, to be measured rather than asserted.
+
+**How to apply.**
+- **Separate the two benefits of "frozen."** *Citation stability* (a fixed commit so
+  `file:line` findings don't rot) vs *prefix-cache reuse* (identical leading tokens
+  across co-launched siblings). Freezing the commit buys the first; sharing a prefix
+  buys the second; they are independent — freeze without sharing is the common case.
+- **Fork-from-shared-base only for same-area waves** (expect ≥50% overlap): load the
+  common contract into one base, launch children with an identical leading prefix so
+  the shared half is a cache-read (~10%) for every sibling after the first. For
+  disjoint packages, launch separately — do not pay ~10% to carry cached context a
+  sibling never touches.
+- **The real lever regardless — minimise roundtrips.** Pre-load an agent's KNOWN files
+  as prompt *content*, not path-pointers it must fetch: cheap at ~10% on every
+  re-read, and it eliminates discovery passes that each cost a full context re-read.
+  Best for read-only planners/reviewers (an implementer needs the live worktree).
+- **Measure, don't assert** (L18): dump the transcript and count. A cost is
+  asserted-plausible until the `cache_read`/`cache_creation` fields are read.
+
+## L23 — The successor-brief: a completed work unit compacts itself FORWARD, so a chain carries briefs, not transcripts
+
+**Rule (proposed — not yet incident-validated).** The context bloat in a *chain* of
+work units is not the shared orientation (L22 shows that stays small) — it is each
+unit's OWN post-orientation work, most of which is dead weight to the next unit. A
+completed unit should emit a forward-looking **successor-brief**: the distilled delta
+the next unit needs that is **not already in the files** — what was built, which
+decisions were made *and why*, and what future work must know. The next unit branches
+from **frozen-orientation + accumulated successor-briefs**, discarding the completing
+unit's transcript. Details per unit are intentionally lost — that is the mechanism,
+not a regret.
+
+**A third artifact, distinct from LOG and REPORT.** The LOG is *what I did*; the
+REPORT is *the behavioural contract I implemented* (DOCTRINE §6). The successor-brief
+is *future-facing*: what the NEXT unit must know that the files, the diff, and the LOG
+do not say — decisions with no code home ("why X not Y"), cross-unit contracts, the
+gotcha that will bite, "the gate needs Z first." For bounded tasks, **bake the
+directive into the work prompt** — *"when done, output a successor-brief: results +
+decisions-with-rationale + what-the-next-unit-needs-that-isn't-in-the-files"* — so the
+unit self-compacts; judgement-heavy units need the controller to author or verify it,
+since an agent may not know which of its own decisions the next unit depends on.
+
+**Relation.** Context compaction between work units — like the provider compaction in
+L12's closing paragraph, but forward-directed and per-unit. It composes with L22: L22
+keeps the **shared base** lean (fork only on real overlap); L23 keeps the
+**accumulated chain** lean (each unit self-compacts). Together:
+`frozen-orientation (stable) + successor-briefs (deltas)` = the context a new unit
+needs, minus every transcript.
+
+**Validation before promotion from proposal.** Needs one incident where a
+brief-plus-frozen-base chain measurably beat a transcript-carrying chain (roundtrips +
+cache_creation, per L22's method), or one where a discarded detail bit back (which
+bounds where it applies). Loss tolerance is the risk — discarding a transcript is safe
+when files + brief suffice, unsafe when a later unit needs an unbriefed detail — so
+the brief must always name WHERE the full transcript lives: lossy by default, never
+destructive.
