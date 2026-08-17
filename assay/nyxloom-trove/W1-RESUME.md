@@ -106,16 +106,12 @@ immutable.
 
 ## Remaining, in order
 
-1. **Review round 3-of-3 — the last one.** Round 2 returned NOT READY (9
-   blocking, 14 non-blocking); all folded in, Addendum F records each with its
-   disposition. The mechanism ruling (§1.3) was re-measured by the reviewer in a
-   scratch monorepo and HELD — status empty, `write-tree` == `HEAD^{tree}`,
-   skip-worktree'd `.gitignore` still read from the index, mutation child
-   commits intact. Dispatch the final round scoped the same way: not the 9
-   already fixed, but whether those fixes worked, what they introduced, and
-   anything untouched. **After this round, stop and report regardless of the
-   verdict** — dispatching WI-1 is allowed only if every remaining finding is
-   non-blocking.
+1. **STOPPED — the review budget is spent, and B006(a) needs an operator
+   decision.** Three rounds on this design: **8 → 9 → 11 blocking. Not
+   converging.** Round 3's own summary of the pattern: five of its eleven are
+   defects *introduced by, or left behind by,* a previous round's accepted fix.
+   Do not dispatch WI-1. See "The B006(a) decision" below.
+   Everything else in this list is unaffected and still dispatchable.
 2. **WI-1a/1b/1c** — project-scoped snapshot: config + `ResolvedSnapshotBoundary`,
    isolation materialisation, runner preflight. Three commits.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
@@ -173,6 +169,47 @@ immutable.
     VERIFIED evidence — its ciu blocker CIU-20 is FIXED, `ciu provenance --json`
     ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
     own adversarial review before any dispatch.
+
+## The B006(a) decision
+
+Round 3 (final) returned **NOT READY — 11 blocking**. The findings that matter
+for the decision, as opposed to the ones that are cheap edits:
+
+* **the directory-expansion feature added in round 2 reopened B005's own hole.**
+  "A directory expanding to files none of which appear in the artifact refuses"
+  relaxes the per-file anti-vacuity guard to per-declaration: a directory
+  expanding to 36 files of which ONE is measured passes, and 35 go silently
+  unjudged. That is `--cov`'s vacuity with a first-class judge wrapped around
+  it — the exact thing B005 exists to close. It also contradicts §5's own
+  step 2 (targets are regular files, not directories) and makes the
+  canary-in-`targets` rule undecidable at load, since `config.py` imports no
+  adapter registry and cannot expand a directory there. **A simplification
+  intended for usability turned into the wave's worst finding.**
+* **making CMRU R1/R2/R3 would redden its release gate.** R2's candidates come
+  from `base..HEAD` filtered to source roots; measured, no commit near this
+  branch's HEAD touches `cmru/src`, so R2 renders `INCONCLUSIVE`/`NO_MUTANTS`,
+  which is **exit 5** and rolls the whole verdict INCONCLUSIVE — and
+  `cmru/cmru.toml` runs `assay run cmru` as a gate step. O9b as specified would
+  break the gate on every commit that does not touch CMRU's source.
+* **`materialisation: partial` is not derivable where it must be emitted.** The
+  values were ruled; the ability to produce them was not. `_verify` failures and
+  `prepare_snapshot` refusals arrive at the same `except` with byte-identical
+  state and the same reason code.
+
+What SURVIVED all three rounds, measured independently each time: §1.3's
+full-index-plus-`skip-worktree` mechanism, on the real CMRU payload (empty
+`status`, `write-tree` == `HEAD^{tree}`, index-resident `.gitignore`); both
+declared `inputs` load-bearing (deleting them fails exactly two named tests);
+CMRU's suite green under project scope leaving no dirt; and R3's `uncovered-line`
+canary killing for the RIGHT reason once `--cov-fail-under` is out of the argv.
+**The mechanism is sound. The contract around it is not converging.**
+
+**Controller's recommendation:** split B006(a) into its own wave. Ship B005 +
+B006(b) + v6 here — fully specified, reviewed, and already a third built
+(WI-3 landed and was independently verified). B006(a) keeps its measured
+mechanism findings and gets a design pass that is not racing a schema bump.
+The `isolation` attestation leaves v6 with it, so no required field ships
+without a producer.
 
 ## Standing rules
 
