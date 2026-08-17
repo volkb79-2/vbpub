@@ -156,10 +156,13 @@ immutable.
    /opt/tester-venv/bin/python -m pytest tests -q -p no:cacheprovider`
    (`-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1` leave the tree clean —
    verified). WI-5 still records this in its own implementation report.
-3. **WI-1…WI-6 of the B006(a) carve**, in its own stated order. Note WI-1 must
-   NOT touch `cmru/assay.toml`: CMRU's gate evaluates it with the pinned
-   `assay-1.0.0.pyz`, whose `LANE_SCHEMA_VERSION` is 1, so a lane v2 bump there
-   reds a sibling project's release gate the moment it lands.
+3. ~~B006(a) WI-1/WI-2/WI-3 and B006(b) and the v6 cut.~~ **ALL DONE** — see
+   the Done table. Each was independently verified by driving the shipped entry
+   points; the verifications and what they found are in
+   `reports/W1-controller-verification.md`. Suite **2814 passed, 11 skipped**.
+   The standing warning that produced this row still holds for any future
+   commit: **never touch `cmru/assay.toml`** while CMRU's gate evaluates it with
+   the pinned lane-v1 `assay-1.0.0.pyz`.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
 4. **WI-4** — the v6 contract: §4, §5, §6 together. Migration by the four typed
    buckets (43 transform / 7 preserve byte-identical / 12 hand-edit / 3 must not
@@ -227,7 +230,16 @@ immutable.
     dirty its tree and break its own assay gate — do not commit anything there.
     Cross-machine fallback (not needed here, we share a filesystem):
     `SendMessage` the dstdns loop session, discovered via `ListAgents`.
-11. **Then wave 2 and wave 3, as originally agreed:** B004 (provenance as
+11. **Then, operator-confirmed 2026-08-17, in this order: B007 first, then the
+    waves as originally agreed.** B007 is the ordered multi-target R3 canary
+    filed by nyxloom — **assessed and DEFERRED out of this wave**, and it is the
+    first post-v6 schema item (v7). The full assessment, the three premises
+    verified against shipped code, and five design findings for its carver are
+    in `4-backlog.md` §B007. Carve it together with any other v7-requiring
+    change so the estate pays one migration rather than two. **Nothing in wave 1
+    may be widened for it** — nyxloom's initial adapter is v6-compatible by its
+    own statement and must not depend on it.
+12. **Then wave 2 and wave 3, as originally agreed:** B004 (provenance as
     VERIFIED evidence — its ciu blocker CIU-20 is FIXED, `ciu provenance --json`
     ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
     own adversarial review before any dispatch.
