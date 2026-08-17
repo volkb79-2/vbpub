@@ -1,4 +1,32 @@
-# Wave 1 — live resume point
+# Wave 1 — COMPLETE AND RELEASED (assay-v2.0.0, 2026-08-17)
+
+**Everything below is history.** Wave 1 shipped:
+
+* gate green on the branch AND on `main` after a `--no-ff` merge (`e7e2c616`);
+* **`assay-v2.0.0`** released — major, because verdict v6 refuses v5 outright,
+  lane v2 refuses v1, and unconditional branch judging changes PASS/FAIL for
+  existing R1 lanes;
+* **the `.pyz` published and verified**: `assay-2.0.0.pyz`, 1,008,412 bytes,
+  sha256 `4bc9097763d20e599f4d92d152c6e89d3807ef5d23a4b416fbca452c13bf3216`,
+  taken from the release's own sidecar and re-verified with `sha256sum -c`
+  against the downloaded artifact. dstdns consumes the zipapp, so a wheel-only
+  release would have been useless to it;
+* **dstdns notified** via `.assay-inbox/release.json` with
+  `landed: ["B005","B006"]` — both genuinely shipped, so it may retire D-044's
+  `--cov-fail-under` stopgap AND both D-045 substrate work-arounds.
+
+**Open, not blocking:** `cmru release --abandon all-previous` cannot fully
+drain — it opens a transaction that itself fails and retains a new worktree, so
+9 stale `cmru-release-*` worktrees remain. Cosmetic, cmru's domain, and
+deliberately left rather than hand-deleting another product's transaction
+state after a successful release.
+
+**Next, in order:** B007 (the deferred multi-target R3 canary — first post-v6
+schema item), then wave 2 (B004), then wave 3 (B001/P34).
+
+---
+
+# Wave 1 — live resume point (historical)
 
 **This file is the loop's state.** Update it at the end of every iteration,
 before doing anything else that could be interrupted. If it disagrees with this
