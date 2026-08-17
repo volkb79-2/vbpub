@@ -193,6 +193,18 @@ def test_protocol_and_state_reject_malformed_inputs_and_write_atomically(tmp_pat
     assert state.read_current_generation("user") is None
 
 
+def test_protocol_accepts_generation_zero_as_the_first_valid_generation():
+    """Zero is a valid coordinate; only negative integers are rejected."""
+    desired = protocol.validate_desired({
+        "schema_version": 1,
+        "generation": 0,
+        "action": "hold",
+        "release": {"tag": "t", "manifest_url": "u", "manifest_sha256": "s"},
+        "profiles": ["core"],
+    })
+    assert desired.generation == 0
+
+
 def test_github_host_filters_releases_and_surfaces_sha_retry_failure(monkeypatch):
     host = GitHubReleaseHost("o", "r", "t")
     host._gh.list_releases = lambda: [

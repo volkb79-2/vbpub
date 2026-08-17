@@ -323,6 +323,160 @@ def test_transaction_build_retention_refuses_disappeared_artifact_without_stale_
     assert not target_artifacts.exists()
 
 
+def test_transaction_build_retention_tolerates_best_effort_stage_cleanup_failure(tmp_path, monkeypatch):
+    """A successful immutable record is not invalidated by disposable cleanup."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    (child / "dist").mkdir()
+    (child / "dist" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    original_rmtree = transaction.shutil.rmtree
+    retained_stages: list[Path] = []
+
+    def cleanup_fails_only_when_errors_are_not_ignored(path, *args, **kwargs):
+        candidate = Path(path)
+        if candidate.name.startswith(".cmru-build-retain-"):
+            retained_stages.append(candidate)
+            if not kwargs.get("ignore_errors"):
+                raise OSError("simulated disposable cleanup failure")
+            return None
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(transaction.shutil, "rmtree", cleanup_fails_only_when_errors_are_not_ignored)
+    try:
+        retained = transaction.retain_successful_build_outputs(
+            root, workspace, {"demo": project}, ["demo"],
+        )
+        assert len(retained) == 2
+        assert all(path.exists() for path in retained)
+    finally:
+        monkeypatch.undo()
+        for stage in retained_stages:
+            original_rmtree(stage, ignore_errors=True)
+        transaction.remove_workspace(workspace)
+
+
+def test_build_retention_reports_the_lost_artifact_even_if_stage_cleanup_is_imperfect(tmp_path, monkeypatch):
+    """A cleanup error must not replace the provenance-loss diagnosis."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    (child / "dist").mkdir()
+    (child / "dist" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    output_id, _, _ = transaction.build_output_id(workspace)
+    target_artifacts = root / "demo" / "artifacts" / output_id
+    original_replace = Path.replace
+    original_rmtree = transaction.shutil.rmtree
+    retained_stages: list[Path] = []
+
+    def remove_artifacts_after_promotion(source, target):
+        result = original_replace(source, target)
+        if Path(target) == target_artifacts:
+            original_rmtree(target_artifacts)
+        return result
+
+    def cleanup_fails_only_when_errors_are_not_ignored(path, *args, **kwargs):
+        candidate = Path(path)
+        if candidate.name.startswith(".cmru-build-retain-"):
+            retained_stages.append(candidate)
+            if not kwargs.get("ignore_errors"):
+                raise OSError("simulated disposable cleanup failure")
+            return None
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", remove_artifacts_after_promotion)
+    monkeypatch.setattr(transaction.shutil, "rmtree", cleanup_fails_only_when_errors_are_not_ignored)
+    try:
+        with pytest.raises(RuntimeError, match="artifact destination disappeared"):
+            transaction.retain_successful_build_outputs(
+                root, workspace, {"demo": project}, ["demo"],
+            )
+    finally:
+        monkeypatch.undo()
+        for stage in retained_stages:
+            original_rmtree(stage, ignore_errors=True)
+        transaction.remove_workspace(workspace)
+
+
+def test_release_retention_does_not_retain_logs_when_logs_are_disabled(tmp_path):
+    """Existing source logs are not implicit permission to retain them."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="release")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    (child / "dist").mkdir()
+    (child / "dist" / "artifact.whl").write_text("wheel", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=["dist"])
+    try:
+        retained = transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "tag"},
+            retain_logs=False, retain_artifacts=True,
+        )
+        assert retained == [root / "demo" / "artifacts" / "tag"]
+        assert (child / "logs" / "step.log").is_file()
+        assert not (root / "demo" / "logs" / "cmru-release").exists()
+    finally:
+        transaction.remove_workspace(workspace)
+
+
+def test_release_retention_creates_an_already_present_log_parent_idempotently(tmp_path):
+    """Retention has a distinct immutable leaf; its parent is reusable."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="release")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    (root / "demo" / "logs" / "cmru-release").mkdir(parents=True)
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=[])
+    try:
+        retained = transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "tag"},
+            retain_logs=True, retain_artifacts=False,
+        )
+        assert retained == [root / "demo" / "logs" / "cmru-release" / "tag"]
+        assert not (child / "logs").exists()
+    finally:
+        transaction.remove_workspace(workspace)
+
+
+def test_release_log_failure_never_deletes_a_preexisting_artifact_record(tmp_path):
+    """Artifact cleanup is conditional on creating this run's artifact root."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="release")
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    old_record = root / "demo" / "artifacts" / "tag"
+    old_record.mkdir(parents=True)
+    (old_record / "release.json").write_text("old immutable record", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=[])
+    original_move = transaction.shutil.move
+
+    def reject_log_move(source, target):
+        if Path(source) == child / "logs":
+            raise OSError("simulated log move failure")
+        return original_move(source, target)
+
+    try:
+        with patch.object(transaction.shutil, "move", side_effect=reject_log_move):
+            with pytest.raises(OSError, match="simulated log move failure"):
+                transaction.retain_success_outputs(
+                    root, workspace, {"demo": project}, {"demo": "tag"},
+                    retain_logs=True, retain_artifacts=False,
+                )
+        assert (old_record / "release.json").read_text(encoding="utf-8") == "old immutable record"
+        assert (child / "logs" / "step.log").is_file()
+    finally:
+        transaction.remove_workspace(workspace)
+
+
 def test_bundle_config_and_cli_fail_or_report_at_the_public_boundary(tmp_path, capsys, monkeypatch):
     config_path = tmp_path / "bundle.toml"
     config_path.write_text("placeholder", encoding="utf-8")
