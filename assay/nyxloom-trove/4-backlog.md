@@ -899,3 +899,26 @@ Wave 1 (B005 + B006) releases first, unchanged. B007 is then the first schema
 item after v6 and should be carved together with any other v7-requiring change
 so the estate pays one migration, not two — the same argument that made A-262's
 rename ride v6 rather than wait.
+
+**MEASURED 2026-08-17, after the v2.0.0 release: there is no partner, and that
+inverts the order.** The pairing argument above assumed other planned work
+would also need v7. It does not:
+
+* **B004 needs no schema change at all** — its own section says so in writing
+  ("no verdict-schema change was needed and none proposed"), and the only
+  variant that would need one (enforce-on-mismatch, requiring a new
+  `ReasonCode` and therefore a closed-enum widening) is explicitly **not
+  proposed**;
+* **B001/P34's producer fields are already RESERVED and survived the v6 cut** —
+  `_MUTATION_FIELDS_RESERVED_FOR_P34` (`config.py:269`) names
+  `kill_signal_artifact` and `equivalence_artifact`, and both are still present
+  in `verdict.schema.json` and `verdict.py` at v6. P34 begins producing an
+  already-reserved surface rather than widening one.
+
+So B007 alone would force a **second breaking migration on consumers days
+after v6 and lane-v2**, for one feature nobody is blocked on — nyxloom's own
+proposal states its initial adapter stays v6-compatible and must not depend on
+it. **Revised order: B004 (wave 2) → B001/P34 (wave 3) → B007.** That gives
+consumers a stable v6 period, and lets B007 accumulate a partner if any of
+wave 2 or 3's implementation turns out to want schema surface after all — a
+question their carves should each answer explicitly rather than assume.
