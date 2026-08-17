@@ -971,9 +971,12 @@ def _classify_symlink_target(path: PurePosixPath, target: str) -> str:
         return _SYMLINK_ABSOLUTE
     parent = path.parent
     parts = [] if str(parent) == "." else list(parent.parts)
+    # No "." case: PurePosixPath elides "." components while parsing, so
+    # `.parts` can never yield one ("a/./b" -> ("a", "b"), "." -> ()). The
+    # branch that used to skip them here was structurally unreachable and
+    # therefore uncoverable, which this project does not permit. Do not
+    # re-add it; add a test against `.parts` first if you believe otherwise.
     for component in PurePosixPath(target).parts:
-        if component == ".":
-            continue
         if component == "..":
             if not parts:
                 return _SYMLINK_ESCAPE

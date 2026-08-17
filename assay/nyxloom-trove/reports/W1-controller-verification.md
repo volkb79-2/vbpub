@@ -81,7 +81,7 @@ would silently disagree with the declared set for exactly the paths this feature
 exists to handle. Sent to the WI-2 implementer with a request for a
 newline-in-pathname test, since nothing else in the wave covers it.
 
-### Reported by the implementer, accepted
+### Reported by the implementer, accepted (WI-1)
 
 The carve's WI-1 file list was **under-inclusive**: seven further live test
 modules build higher-rigor lanes through shared helpers and needed migration.
@@ -91,3 +91,89 @@ exists to prevent. Also documented: one of the nine frozen nodes
 (`test_closed_attestation_declaration_rejects_every_inert_or_unsafe_shape`) was
 a **silently vacuous pass** rather than a mechanical failure, which is exactly
 the class of defect the probe above tripped over in its own harness.
+
+---
+
+## WI-2 — P22 unsafe-symlink omissions (`57d620d7`)
+
+### Hard constraints
+
+`cmru/`, `carve-assets/**` and `tests/fixtures/**` untouched; no
+`pragma: no cover` added. Suite re-run by the controller: **2607 passed, 11
+skipped**.
+
+### One defect found and fixed by the controller
+
+`_classify_symlink_target` is a NEW function in this commit, and it carried a
+**structurally dead branch** forward from the code it refactors:
+
+```python
+for component in PurePosixPath(target).parts:
+    if component == ".":     # <- can never be true
+        continue
+```
+
+`PurePosixPath` elides `.` while parsing, measured: `"a/./b" -> ('a','b')`,
+`"./a" -> ('a',)`, `"." -> ()`. Coverage confirmed it, scoped to the two
+isolation modules:
+
+```text
+missing lines inside _classify_symlink_target (951-984): [976]
+missing branches there: [[975, 976]]
+```
+
+The implementer judged it pre-existing because `git diff` aligned the body
+lines as context. That reasoning is wrong in a way worth recording: **the
+function is new even when the lines inside it are moved**, so its dead branch
+is new uncoverable code, and this project forbids that with no `pragma`
+escape. Removed, with a comment saying why it must not come back. Re-measured
+after removal: `missing lines: []`, `missing branches: []`.
+
+### The probe — driving the shipped substrate, not reading the diff
+
+`scratchpad/b006a/probe_wi2.py` builds a real fixture repository containing, at
+once: two unsafe absolute symlinks in different sibling trees, an unsafe
+repository-escaping relative symlink, a safe symlink, a dangling
+repository-contained symlink, ordinary files beside each, and a repo-ROOT file
+the "project" reads — the CMRU shape that killed every subtree-restriction
+variant. It then drives the shipped `prepare_snapshot`/`materialize`.
+
+All 27 assertions held. The load-bearing ones:
+
+* **repository mode still refuses**, naming the link and its absolute target —
+  so the two modes are distinguished by evidence, not by assertion;
+* `git status` empty; **`write-tree` == `HEAD^{tree}`** (`64fbc1c6ce94` both);
+* the `ls-files -v -z` skip set is **exactly** the three declared leaves and
+  nothing else, parsed byte-exact on uppercase `S`;
+* each omitted leaf is absent by `lstat`, while **all eight** retained paths
+  survive — including the repo-root file, the sibling tree's ordinary files,
+  the safe symlink (still resolving) and the dangling one (still dangling);
+* the **source checkout is untouched**: clean status, no skip-worktree bit
+  anywhere, and all three symlinks still present in it;
+* **the honesty check passes too** — `git show HEAD:other/abs_link` inside the
+  snapshot still returns `/etc/passwd`. A-268's "not a sandbox" property is
+  demonstrated rather than merely written down.
+
+### A second vacuous pass, caught by re-isolating it
+
+The probe's "declaring a SAFE symlink is refused" case initially passed — but
+its message was `symlink other/abs_link targets the absolute path
+'/etc/passwd'`, i.e. it refused because *other* links were undeclared, not
+because of the safe declaration. Re-run with every unsafe link declared so the
+safe entry is the only possible cause, the guard is real and each refusal is
+specific:
+
+```text
+control (only the unsafe link declared)  -> ACCEPTED (safe link present=True)
++ a SAFE symlink declared                -> 'project/safe_link' names a symlink whose target 'src/app.py' is already P22-safe
++ a REGULAR FILE declared                -> 'other/ordinary.txt' is a regular file ... not a symlink leaf (mode 120000)
++ a path ABSENT at the commit            -> 'project/zz_nope' is absent at commit cd55f86f
++ a TREE declared                        -> 'project/src' is a tree ... not a symlink leaf (mode 120000)
+```
+
+That is the guard which keeps the exclusion mechanism from ever hiding source,
+tests or a judged target — B005's vacuity hole staying structurally shut — so
+it mattered that it not be accepted on a vacuous pass. **Twice now in this
+wave a probe of mine has passed for the wrong reason; both times only a
+deliberate control exposed it.**
+
