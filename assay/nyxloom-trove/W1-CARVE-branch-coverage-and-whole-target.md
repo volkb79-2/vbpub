@@ -94,6 +94,18 @@ work item 0, in these words:
   selection walk does not descend into out-of-scope subtrees; and every producer
   path derives its recorded boundary FROM THE LANE rather than from a constant.
   See §1, Addendum E and Addendum F.
+* **A-269 — B006(a) ships unsafe-symlink OMISSIONS, not a project boundary, and
+  the three summaries above are therefore partly withdrawn.** Read this before
+  acting on A-266/A-267/A-268: `snapshot_scope`, `boundary_prefix`, `inputs`,
+  the expanded-input attestation, the five containment preflights and the closed
+  `materialisation` state are all gone. What ships is the full repository
+  snapshot minus exact, commit-validated omissions of the symlink leaves P22
+  would otherwise refuse, keyed `snapshot_selection`. **What SURVIVES from the
+  rows above is the part that was measured rather than designed:** A-267's
+  not-a-sandbox property and its enumerated non-guarantees, and A-268's full
+  index plus `skip-worktree` mechanism and its "the command can restore an
+  excluded path" narrowing. The design of record is
+  `W1-CARVE-B006a-project-scope.md`; §1 of this document is dead.
 * **A-264 — R1 records its policy whenever R1 was ATTEMPTED, for exactly two
   new terminals.** Today `judgment.r1` is present iff the R1 claim carries a
   coverage payload, enforced in the model (`verdict.py:2242`: "judgment.r1 is
@@ -1048,16 +1060,27 @@ those corrupts unrelated data.
   none** — a fail-closed classifier is stronger than a sweep, because an
   unclassifiable file stops the migration instead of being silently skipped:
   1. **transform** — verdict documents that become v6 (`tests/fixtures/verdicts/**`).
-     Each needs the new REQUIRED `isolation` object SYNTHESISED, and the values
-     are ruled here rather than invented per-file: every existing fixture
-     predates project scope, so each gets
-     `{snapshot_scope: "repository", materialisation: "complete"}` — except
-     fixtures whose outcome is a refusal before any snapshot
-     (`r1_no_measurement_dirty_tree`, `r0_error_*`, the attestation-timeout and
-     adapter refusals), which get `materialisation: "none"`. The transform must
-     derive that from each document's own outcome/reason pair, and LOG the
-     assignment per file, so a wrong one is visible in review rather than buried
-     in 43 diffs;
+     **AMENDED by A-269 — the rule below REPLACES the withdrawn one.** The
+     synthesised object is `snapshot_policy`, not `isolation`, and the rule is
+     keyed on DECLARED RIGOR rather than on the outcome:
+     * `declared_rigor` contains R1, R2 or R3 ⇒ insert
+       `"snapshot_policy": {"selection": "repository"}`;
+     * R0-only ⇒ insert **no object at all**;
+     * a document that ALREADY carries a `snapshot_policy` key ⇒ **refuse**,
+       rather than overwrite or merge.
+
+     The transform must LOG the assignment per file, so a wrong one is visible
+     in review rather than buried in 43 diffs.
+
+     Why this is simpler than what it replaces, stated because the difference is
+     the whole point of A-269: the withdrawn rule had to derive a
+     `materialisation` phase from each document's own outcome/reason pair —
+     `"complete"` normally, `"none"` for refusals before any snapshot. That
+     derivation is exactly the value the third review round proved **no producer
+     can distinguish at runtime**, so a migration that synthesised it would have
+     been inventing evidence the live code could never emit. Rigor is on the
+     document already, and the live producer copies the policy straight off the
+     lane, so migration and runtime now agree by construction;
   2. **preserve byte-identical** — locked carver-owned evidence, including all
      six `carve-assets/P33/expected/*-v5-template.json` and every earlier
      package's frozen templates (A-222);
