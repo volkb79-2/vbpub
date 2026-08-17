@@ -67,6 +67,7 @@ __all__ = [
     "FileCoverage",
     "FormatSpec",
     "check_empty_coverage",
+    "derive_branch_capability",
     "derive_exclusion_capability",
     "load_coverage_profile",
     "parse_coverage_artifact",
@@ -231,6 +232,46 @@ def derive_exclusion_capability(profile: CoverageProfile) -> str:
             "that cannot report them at all; one artifact is one tool's "
             "output, so this cannot be read without inventing a precedence "
             "rule the lane never declared",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    return "unavailable" if capabilities == {True} else "reported"
+
+
+def derive_branch_capability(profile: CoverageProfile) -> str:
+    """Whether *profile*'s FORMAT could report branch arcs at all (wave-1
+    §3.2, A-257), mirroring :func:`derive_exclusion_capability` exactly.
+
+    ``"unavailable"`` when every measured record says ``branches is None``
+    (the format cannot express arcs at all -- always true for ``go-cover``);
+    ``"reported"`` when every record carries a real :class:`~assay.
+    coverage_parsers.model.BranchCoverage`, empty ``by_line`` or not. Derived
+    from unanimous parser evidence, never from a format NAME and never from
+    whether ``by_line`` happens to be empty -- inferring "unavailable" from
+    an empty mapping would be the exact A-O16-class collapse
+    :func:`derive_exclusion_capability` already exists to avoid one field
+    over: an artifact that measured branches and found the file fully
+    covered (or entirely branch-free) must not read the same as a format
+    that structurally cannot say.
+
+    A MIXED profile is ``ERROR``/``UNREADABLE_ARTIFACT``, not a majority
+    vote and not a default -- the identical reasoning
+    :func:`derive_exclusion_capability` already states: one artifact
+    describes one tool's output, and each of the four parsers decides this
+    ONCE for the whole artifact and applies it to every file it emits
+    (§3.2's own "capability derivation is ARTIFACT-level"), so a mix here
+    means a parser defect, never a legitimate format fact.
+
+    An empty profile never reaches here: :func:`check_empty_coverage` runs
+    first and refuses it with its own truthful terminal.
+    """
+    capabilities = {record.branches is None for record in profile.files.values()}
+    if len(capabilities) > 1:
+        raise AssayError(
+            "coverage artifact mixes files that report branch arcs with "
+            "files that cannot report them at all; one artifact is one "
+            "tool's output, so this cannot be read without inventing a "
+            "precedence rule the lane never declared",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
