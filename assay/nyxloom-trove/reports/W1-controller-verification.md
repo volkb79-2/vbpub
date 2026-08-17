@@ -231,3 +231,62 @@ and rarely get:
 **Both tests must be revisited when the v6 work lands** — that is when the
 embargo lifts by design, not when it becomes inconvenient.
 
+---
+
+## The v5→v6 cut (`71d98965`, `507ca1c7`)
+
+99 files. Suite re-run by the controller, foreground, exit code captured
+directly: **2814 passed, 11 skipped, EXIT=0**.
+
+Boundaries held: the frozen coverage fixtures, the locked P22/P23/P26/P33 carve
+assets and `cmru/` are all untouched, and no `pragma: no cover` was added.
+`materialisation` appears in the shipped tree **only as explanatory prose**
+saying why no such field exists — never as a field. `snapshot_policy` is present
+in the model, the verifier and the schema.
+
+### The removed validation — checked, because removing a check is not like removing a `continue`
+
+The implementer deleted `config._load_targets`'s `PurePosixPath` round-trip
+check as unreachable. Probed against the shipped loader, **every non-canonical
+spelling still refuses**, each naming the offending entry: `./src/m.py`,
+`src//m.py`, `src/m.py/`, `src/./m.py`, `src/../src/m.py`, `/abs/m.py`,
+`../m.py`, empty, and `targets = []`. The component checks do the work; the
+round-trip equality was a theorem, not a guard. Removal is safe.
+
+### The finding: §5 contradicted itself, and the code chose correctly
+
+**§5's Declaration half still said "A target may name a FILE or a DIRECTORY",
+with the anti-vacuity rule applied to the EXPANSION rather than the
+declaration.** That is the third review round's worst finding, never folded in —
+B005 was declared "already specified" when B006(a) was recarved, so §5 was left
+alone. **§5's Judging step 2 has always said the opposite**: "a regular file —
+not a directory, not a symlink".
+
+The shipped code implements the **safe** half, verified by reading the shipped
+functions rather than the tests:
+
+* `evaluate._resolve_whole_target` — source-root containment by
+  `is_relative_to` on resolved paths, then `if not resolved.is_file()` refusing
+  `ERROR`/`BAD_LANE_CONFIG` with *"a whole-target entry is always a regular
+  file, never a directory"*, then excluded-dir, adapter-source-glob and
+  test-path gates;
+* `evaluate_targets` — **per declared target**, `file_cov is None or not
+  target_executable` ⇒ `NO_MEASUREMENT`/`TARGET_NOT_MEASURED`. No expansion
+  exists anywhere: `rglob`/`iterdir`/`walk` appear nowhere in `evaluate.py`.
+
+So **the vacuity hole is closed**: a directory of 36 files with one measured
+cannot pass, because a directory cannot be a target at all. The contract has
+been corrected to match, with the withdrawn rule struck through and the reason
+kept, since the usability argument for it was real and will be made again.
+
+**The implementer chose right but did not report the contradiction.** That is
+the fourth time this wave a superseded instruction has survived in text a reader
+would follow — and the first time the reader happened to follow the other half.
+
+### Deferred to the consolidated pre-merge review
+
+The end-to-end anti-vacuity proof — a real `whole_target` lane, through the CLI,
+whose target is absent from the artifact — is **not** discharged here. It
+belongs to the controller's own review step, which drives the shipped entry
+points against real inputs on disk. Recorded so it cannot be assumed done.
+

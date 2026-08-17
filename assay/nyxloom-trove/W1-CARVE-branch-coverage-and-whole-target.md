@@ -779,17 +779,32 @@ targets = ["libs/common/src/common/redirect_chain.py"]
   named place and is what the verdict records explicitly. This is how "never
   invent a value" and "do not force every existing `assay.toml` to be edited"
   are both kept.
-* **A target may name a FILE or a DIRECTORY.** A directory expands to every
-  adapter-recognised source file beneath it that is not a test path — the same
-  gates `_is_considered` already applies. This is a usability call, taken
-  deliberately: dstdns wants one module, CMRU owns 25, and forcing a consumer to
-  enumerate and then maintain 25 paths is how a floor silently stops covering a
-  file somebody added. The anti-vacuity rule applies to the EXPANSION, not the
-  declaration: a directory expanding to zero files, or to files none of which
-  appear in the coverage artifact, is `NO_MEASUREMENT`/`TARGET_NOT_MEASURED`
-  exactly as a missing file target is. The verdict records the declared targets;
-  `considered` records how many files were actually judged, so a shrinking
-  expansion is visible in the artifact rather than silent.
+* **A target names a REGULAR FILE. Never a directory.** ~~A target may name a
+  FILE or a DIRECTORY, expanding to every adapter-recognised source file
+  beneath it, with the anti-vacuity rule applied to the EXPANSION rather than
+  the declaration.~~ **That rule is WITHDRAWN — it was the worst finding of the
+  third review round, and it contradicted this section's own Judging step 2,
+  which has always said "a regular file — not a directory, not a symlink".**
+
+  Why it is withdrawn, because the usability argument for it was real and will
+  be made again: relaxing the guard from per-file to per-declaration means a
+  directory expanding to 36 files **of which ONE appears in the coverage
+  artifact passes**, and the other 35 go silently unjudged. That is `--cov`'s
+  vacuity with a first-class judge wrapped around it — precisely the hole B005
+  exists to close. A convenience that dissolves the guarantee the feature is
+  named for is not a convenience.
+
+  The consumer cost is real and accepted: CMRU owning 25 modules must name 25
+  paths, and a file somebody adds is not judged until it is declared. That is
+  the honest failure direction — an undeclared file is visibly absent from
+  `targets`, whereas under expansion an unmeasured file was invisibly present.
+  A future capability may close the gap (a declared directory whose expansion is
+  pinned by count or digest, so growth fails closed), but it needs its own
+  ruling and its own anti-vacuity proof.
+
+  **This is what shipped**: `evaluate._resolve_whole_target` refuses a
+  non-regular-file target with `ERROR`/`BAD_LANE_CONFIG` naming it, and
+  `evaluate_targets` applies `TARGET_NOT_MEASURED` **per declared target**.
 * `targets`: required and non-empty iff `mode = "whole_target"`; **refused**
   otherwise (a target list under the changed-line mode is a declaration that
   does nothing, and silently ignoring it is how a consumer comes to believe a
