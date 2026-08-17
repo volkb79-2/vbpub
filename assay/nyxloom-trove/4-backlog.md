@@ -748,3 +748,134 @@ its message), `9f42acdc` (`.assay/.gitkeep` + gitignore), and the two intermedia
 then `PASS`; CMRU at `4b8009d5` has an honest R0 verdict and independent
 whole-source coverage gate, while its attempted R1+ run fails on the Topos
 `/etc/passwd` fixture before tests execute.
+
+---
+
+## B007 — ordered, bounded, explicitly declared multi-target R3 canary
+
+**Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
+canary, verdict and gate-judgment implementations in favour of assay through the
+public CLI/verdict boundary. **Status: ASSESSED AND DEFERRED — the first
+post-v6 schema item (v7).** Not folded into wave 1. The reasoning is below and
+is binding on whoever picks this up.
+
+### The requirement, in the proposer's words
+
+Assay already has the stronger cause-sensitive R3 contract: a known-good control
+must PASS and the transformed input must FAIL *for the mechanism's expected
+reason*. The one behaviour still unique to nyxloom is that its gate
+qualification can try **several source files in a declared order**, so a gate is
+not declared to launder known-bad code merely because one arbitrarily chosen
+module happens not to be imported or exercised.
+
+Explicitly **not** wanted: nyxloom's automatic source-file discovery and
+ranking. It is Python-specific heuristic policy and would become a hidden
+default. The operator declares targets; assay executes them deterministically.
+
+Candidate shape (spelling is assay's decision):
+
+```toml
+[lanes.<lane>.judge.canary]
+mechanism = "import-break"
+targets = ["src/pkg/api.py", "src/pkg/service.py", "src/pkg/model.py"]
+aggregation = "any"     # explicit, no default
+```
+
+Full requirements, oracles and the optional `assay canary qualify` CLI sketch
+are in the proposal as filed; the seven numbered requirements and eight
+behavioural oracles are adopted here by reference and must not be diluted.
+
+### Verified against the shipped code before assessing
+
+* **`import-break` is real**, not aspirational: `CANARY_MECHANISMS` is exactly
+  `{import-break, uncovered-line}` (`canary.py`), *"named identically to
+  nyxloom's own `gate_canary.MECHANISM_IMPORT_BREAK`/`MECHANISM_UNCOVERED_LINE`"*
+  — so the adoption story is sound and the vocabulary already matches.
+* **The singular target is load-bearing in the INDEPENDENT verifier**, not just
+  the model: `verdict.py` cross-checks `claim[R3].canary.target` against
+  `judgment.r3.target` and refuses a mismatch — *"a canary that answers for a
+  different file than the one declared is evidence about nothing the lane asked
+  for"*. Requirement 7's "must not be silently reinterpreted" is therefore
+  already enforced by shipped code, which is a good sign for the migration.
+* **Each attempt costs two isolated materialisations** (control via
+  `prepared.materialize()`, transformed via `materialize_replacement()` in
+  `run_isolated_canary`). So N targets cost **2N**; under `any` with
+  short-circuit typically 2, under `all` always 2N.
+
+### Why it is DEFERRED rather than folded into v6
+
+Judged against the proposer's own test — "if it can safely fit into the
+in-progress verdict-v6 work **without destabilising B005/B006**".
+
+1. **Nothing is blocked on it, and two things are blocked behind it.** The
+   proposal itself states nyxloom's initial adapter stays v6-compatible and must
+   not depend on this feature. Meanwhile dstdns is blocked on B005 (to retire a
+   `--cov-fail-under` stopgap) and B006 (to retire two substrate work-arounds),
+   both of which are **built and waiting only on release**. Folding in delays a
+   shipped capability for one that nobody is waiting on.
+2. **The v6 cut is already committed and verified** (99 files, suite 2814
+   passed). Reopening it re-runs a proven 41-file migration and re-derives the
+   26-node P33 successor suite, for a feature whose payload changes every
+   existing R3 fixture shape.
+3. **The delta is comparable in size to B005 itself**, not a papercut: a closed
+   `aggregation` enum; a closed "why not attempted" vocabulary; an ordered
+   per-attempt payload array; the `judgment.r3` policy gaining `targets` +
+   `aggregation`; canary sequencing with short-circuit bookkeeping; and —
+   largest — requirement 5 forces the aggregation to be **independently
+   recomputed in `verify.py`**, which by this project's deliberate discipline
+   hand-transcribes rather than importing the model. That logic gets written
+   twice, on purpose.
+4. **Wave 1 has already been destabilised twice by scope arriving mid-flight**
+   (`c7bc9b59`, then `010d1813` rewrote B006 under an in-progress
+   implementation), and the direct consequence was three adversarial review
+   rounds that diverged 8 → 9 → 11 blocking findings. A third mid-wave widening
+   after the schema cut is committed is the same move again.
+5. **The "save a schema major" argument is real but much weaker than it looks.**
+   Requirement 7 needs a version bump either way, and v6 has not shipped, so an
+   older verifier refuses the newer shape under either plan. Crucially the v6
+   work leaves behind **reusable migration machinery** — `migrate_v5_to_v6.py`'s
+   fail-closed four-bucket classifier, the frozen-successor-suite pattern, the
+   `carve-assets/W1/` layout. The first migration had to invent all of that; the
+   second inherits it. v7 is a fraction of v6's cost.
+
+### Design findings for whoever builds it — do not rediscover these
+
+* **`aggregation` is not ergonomics, it is the claim, and the verdict must say
+  which was made.** Today R3 attests *"the gate catches known-bad code in **this
+  named module**"*. Under `any` it attests *"…in **at least one of** these
+  modules"* — the same gate-level statement, a strictly weaker per-module one.
+  Under `all` it attests the per-module statement for every declared target.
+  A reviewer must not be able to read the stronger claim off an `any` verdict.
+  **An attestation stronger than its mechanism is what killed three consecutive
+  review rounds on B006(a); do not repeat it here.**
+* **`any` + short-circuit has a vacuity variant worth closing deliberately.** A
+  lane can declare 25 targets, put a trivially-always-imported module first,
+  PASS on attempt 1 forever, and never discover the other 24 are unreachable.
+  That is honest under `any`'s stated meaning but defeats the *intent* "our gate
+  protects these 25 modules". Say so plainly in CONSUMERS.md, and consider
+  whether the artifact should surface how many targets have **never** been
+  attempted across runs.
+* **The bound is a budget control, not hygiene.** At 2N materialisations, an
+  `all` aggregation over CMRU's ~25 modules is ~50 isolated snapshots per gate
+  run. Measure one materialisation before choosing the maximum, and keep
+  requirement 4's rule that budget exhaustion stays its own terminal and is
+  never converted into PASS/FAIL.
+* **It interacts with B005, which just shipped.** §5 of the wave-1 carve already
+  rules that an `uncovered-line` canary on a `whole_target` lane is refused at
+  load unless `judge.canary.target` is itself one of `judge.targets`. Under a
+  canary target LIST that rule generalises to "every canary target must be in
+  `judge.targets`", and it must be specified rather than discovered.
+* **The `assay canary qualify` CLI separation is achievable, but only one way is
+  honest.** A flag on the normal verdict is not enough — an ad-hoc override
+  would then be one field away from looking like committed gate policy. The
+  clean boundary is a **distinct document kind** that `assay verify` refuses to
+  accept as gate evidence at all, recording the committed lane plus every
+  effective override. If that cannot be made clean, the proposal's own
+  instruction stands: ship only the committed declaration.
+
+### Sequencing
+
+Wave 1 (B005 + B006) releases first, unchanged. B007 is then the first schema
+item after v6 and should be carved together with any other v7-requiring change
+so the estate pays one migration, not two — the same argument that made A-262's
+rename ride v6 rather than wait.
