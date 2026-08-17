@@ -127,6 +127,48 @@ false on both refusal paths and contradicts A-264 in the wave that establishes
 it; and O18 asks the implementer to mutate an object §1.8 requires to be
 immutable.
 
+## OPEN BLOCKERS before the release — found by the acceptance test, 2026-08-17
+
+The wave's own acceptance test did its job: it found real defects rather than
+arranging a green tick. **The release is HELD until all three clear.**
+
+1. **R1 is broken for every NESTED project** — the shape B006 exists to serve.
+   `evaluate._normalized_profile_files` documents itself as returning keys
+   *"by REPO-TOP-RELATIVE path"* and does not: `normalize_coverage_key` only
+   **strips** a configured prefix and never **prepends** the project's own, so
+   a coverage artifact's project-relative keys never meet `git diff`'s
+   repo-relative ones. **Both R1 modes are affected** — WI-5 found
+   `changed_lines`; the controller reproduced `whole_target` independently
+   through the real CLI, same source and lane, one variable:
+   ```text
+   A-root-whole_target    exit=0   PASS
+   B-nested-whole_target  exit=3   NO_MEASUREMENT/TARGET_NOT_MEASURED
+   ```
+   **Why it stayed invisible, which is the more useful lesson:** every existing
+   `project_prefix` test *fabricates its own `coverage.json` with the key
+   spelling the evaluator wants*. A test that constructs the artifact it then
+   parses cannot discover a disagreement about that artifact's key space.
+   Fix dispatched with both reproductions as acceptance tests.
+2. **The registered gate exits 1 before reaching the new phase.** Eight reds in
+   `tests/test_python_qualification.py` (the P25 `qualify_topos.py` suite),
+   each an unexpected `ERROR`/exit 2 instead of its frozen terminal, inside
+   `run_self_hosted_lane`. WI-5 judged them pre-existing and unrelated and did
+   not diagnose them. **Controller's hypothesis, to be tested the moment
+   blocker 1 lands: they are the SAME defect.** `qualify_topos.py` qualifies
+   **Topos, which is itself a nested project** (`topos/` inside vbpub), so a
+   real nested R1 lane there would break exactly this way. If the fix clears
+   them, blocker 2 dissolves; if not, it needs its own diagnosis. Either way
+   **step 8 (gate green) cannot be signed off until it is resolved** — do not
+   record a gate pass that skipped phases.
+3. **O5's dstdns fixture does not exist anywhere in the tree.** The in-repo
+   integration fixture named for dstdns's exact path
+   `infra-global/reverse-proxy/etc-nginx/modules -> /usr/lib/nginx/modules`
+   (repository mode refuses; omission mode runs while the link is absent and
+   ordinary `infra-global` files remain) is named in WI-5's prose but owned by
+   WI-3's file list, and neither built it. **This is the only oracle that
+   covers the OTHER consumer's incident**, so it is not optional: dstdns is the
+   project that had to delete a real vendored artifact. Build it.
+
 ## Remaining, in order
 
 1. ~~WI-0 of the B006(a) carve.~~ **DONE** — A-269 written; the sibling carve's
