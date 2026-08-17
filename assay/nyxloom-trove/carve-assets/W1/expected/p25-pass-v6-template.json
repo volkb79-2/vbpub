@@ -103,9 +103,9 @@
           "topos/src/topos/_assay_probe.py"
         ],
         "executable": 5,
-        "branches_covered": 0,
-        "branches_total": 0,
-        "branch_capability": "unavailable",
+        "branches_covered": 2,
+        "branches_total": 2,
+        "branch_capability": "reported",
         "missing_branch_lines": {},
         "files_with_missing_branch_lines": []
       }

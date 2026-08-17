@@ -91,7 +91,7 @@
       "reason_code": "UNCOVERED_LINES",
       "coverage": {
         "covered": 4,
-        "pct": 80.0,
+        "pct": 71.42857142857143,
         "considered": 1,
         "exclusion_capability": "reported",
         "missing_lines": {
@@ -111,11 +111,17 @@
           "topos/src/topos/_assay_probe.py"
         ],
         "executable": 5,
-        "branches_covered": 0,
-        "branches_total": 0,
-        "branch_capability": "unavailable",
-        "missing_branch_lines": {},
-        "files_with_missing_branch_lines": []
+        "branches_covered": 1,
+        "branches_total": 2,
+        "branch_capability": "reported",
+        "missing_branch_lines": {
+          "topos/src/topos/_assay_probe.py": [
+            5
+          ]
+        },
+        "files_with_missing_branch_lines": [
+          "topos/src/topos/_assay_probe.py"
+        ]
       }
     }
   ],
