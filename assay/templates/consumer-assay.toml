@@ -1,7 +1,7 @@
 # Assay consumer template — copy to <your-project>/assay.toml, then replace every fact.
 # A lane declares exactly what it can prove; do not claim R1/R2/R3 until the
 # required coverage/mutation/canary contract and its dedicated gate are real.
-schema_version = 1
+schema_version = 2
 
 [lanes.unit]
 scope = "S1"
@@ -14,11 +14,18 @@ budget = "20m"
 allow_argv_append = false
 
 # To adopt changed-line coverage, change the command to emit coverage JSON and
-# declare R1 plus this judge. Keep the artifact under an ignored directory.
+# declare R1 plus this judge. R1+ also requires an explicit [isolation] table
+# (B006a/A-269) naming the repository snapshot policy: "repository" for the
+# ordinary case, or "repository-minus-unsafe-symlinks" plus an exact,
+# commit-validated unsafe_symlink_omissions list if the project's tree
+# carries a tracked symlink P22 would otherwise refuse. Keep the coverage
+# artifact under an ignored directory.
 #
 # [lanes.unit]
 # rigor = ["R0", "R1"]
 # argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=your_package", "--cov-report=json:.assay/coverage.json"]
+# [lanes.unit.isolation]
+# snapshot_selection = "repository"
 # [lanes.unit.judge]
 # language = "python"
 # source_roots = ["src"]

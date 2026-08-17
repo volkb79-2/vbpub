@@ -75,6 +75,13 @@ base = "main"
 
 def _lane_with(rigor: list[str], *tables: str) -> str:
     body = set_key(R0_LANE, "rigor", "[" + ", ".join(f'"{r}"' for r in rigor) + "]")
+    # B006a/A-269, schema v2: R1+ requires an explicit [isolation] table.
+    # R0_LANE carries none (it is R0-only, where isolation is forbidden), so
+    # every rigor bump this helper makes past R0 must add one -- this
+    # module's own subject is the judge-field conditional, not isolation, so
+    # every case picks the plain "repository" selection.
+    if any(level != "R0" for level in rigor):
+        body += '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
     return body + "".join(tables)
 
 

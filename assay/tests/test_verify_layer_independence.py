@@ -348,12 +348,13 @@ def test_a_failing_lane_that_leaves_the_tree_dirty_round_trips_through_verify(
     repo.write(".gitignore", "verdict.json\n")
     repo.write(
         "assay.toml",
-        'schema_version = 1\n'
+        'schema_version = 2\n'
         "[lanes.package]\n"
         'scope = "S1"\nrigor = ["R0", "R2"]\nenforcement = "gate"\n'
         'argv = ["/bin/sh", "-c", "touch left-behind.py; exit 1"]\n'
         'env = {}\nenv_passthrough = ["PATH"]\n'
         'budget = "1m"\nallow_argv_append = false\n'
+        "[lanes.package.isolation]\nsnapshot_selection = \"repository\"\n"
         "[lanes.package.judge]\n"
         'language = "python"\nsource_roots = ["src"]\nbase = "HEAD^"\n'
         "[lanes.package.judge.mutation]\n"
@@ -402,11 +403,12 @@ def test_assay_run_emits_a_discovery_failure_artifact_its_own_verify_accepts(
     repo.write(".gitignore", "verdict.json\n")
     repo.write(
         "assay.toml",
-        'schema_version = 1\n'
+        'schema_version = 2\n'
         "[lanes.package]\n"
         'scope = "S1"\nrigor = ["R0", "R2"]\nenforcement = "gate"\n'
         'argv = ["/bin/true"]\nenv = {}\nenv_passthrough = ["PATH"]\n'
         'budget = "1m"\nallow_argv_append = false\n'
+        "[lanes.package.isolation]\nsnapshot_selection = \"repository\"\n"
         "[lanes.package.judge]\n"
         'language = "python"\nsource_roots = ["src"]\nbase = "HEAD^"\n'
         "[lanes.package.judge.mutation]\n"

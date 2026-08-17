@@ -27,9 +27,15 @@ source_roots = ["src"]
 """
 
 
+#: B006a/A-269, schema v2: every R1+ lane requires an explicit [isolation]
+#: table; this module's own subject is `judge.canary`, so every case here
+#: picks the plain "repository" selection.
+_ISOLATION_TABLE = '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
+
+
 def _lane_with_canary(canary_table: str) -> str:
     body = set_key(R0_LANE, "rigor", '["R0", "R3"]')
-    return body + R3_JUDGE + canary_table
+    return body + _ISOLATION_TABLE + R3_JUDGE + canary_table
 
 
 def _canary_table(mechanism: str = "import-break", target: str = "src/mod.py") -> str:
@@ -63,6 +69,7 @@ def test_every_declared_mechanism_is_accepted(project: Project):
             body = set_key(R0_LANE, "rigor", '["R0", "R1", "R3"]')
             lane = (
                 body
+                + _ISOLATION_TABLE
                 + "\n[lanes.package.judge]\n"
                 + 'language = "python"\n'
                 + 'source_roots = ["src"]\n'

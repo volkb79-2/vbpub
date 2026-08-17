@@ -25,12 +25,18 @@ base = "main"
 """
 
 
+#: B006a/A-269, schema v2: every R1+ lane requires an explicit [isolation]
+#: table; this module's own subject is `judge.mutation`, so every case here
+#: picks the plain "repository" selection.
+_ISOLATION_TABLE = '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
+
+
 def _lane_with_mutation(mutation_table: str, *, language: str = "python") -> str:
     """(P33/V5-2) *language* is now a parameter, because the operator
     vocabulary is closed PER LANGUAGE: which operators a lane may declare is
     a function of what it says it is."""
     body = set_key(R0_LANE, "rigor", '["R0", "R2"]')
-    return body + R2_JUDGE.format(language=language) + mutation_table
+    return body + _ISOLATION_TABLE + R2_JUDGE.format(language=language) + mutation_table
 
 
 def test_a_minimal_valid_mutation_table_loads(project: Project):

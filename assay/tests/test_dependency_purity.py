@@ -257,7 +257,7 @@ def test_the_installed_console_script_runs_against_a_fixture_project(
     lane_file.write_text(
         '\n'.join(
             [
-                "schema_version = 1",
+                "schema_version = 2",
                 "",
                 "[lanes.package]",
                 'scope = "S1"',

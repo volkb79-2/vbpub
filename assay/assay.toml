@@ -18,7 +18,7 @@
 # note was simply stale, not a promise P11 kept.) The lane is named
 # `tester-unified` because it is the gate id in nyxloom-trove/nyxloom.toml.
 
-schema_version = 1
+schema_version = 2
 
 [lanes.tester-unified]
 scope = "S1"

@@ -76,6 +76,7 @@ __all__ = [
     "CoverageConfig",
     "ENFORCEMENTS",
     "EvidenceConfig",
+    "IsolationConfig",
     "JUDGE_FIELDS_BY_RIGOR",
     "JudgeConfig",
     "LANE_FILE_NAME",
@@ -86,6 +87,7 @@ __all__ = [
     "REQUIRED_LANE_FIELDS",
     "RIGOR_LEVELS",
     "SCOPES",
+    "SNAPSHOT_SELECTIONS",
     "find_lane_file",
     "load_lane_file",
     "parse_duration",
@@ -111,7 +113,18 @@ LANE_FILE_NAME = "assay.toml"
 
 #: The lane-file schema this build understands. Distinct from the *verdict*
 #: artifact's `schema_version` (§6), which is P01b's.
-LANE_SCHEMA_VERSION = 1
+#:
+#: A-269/B006(a) WI-1: bumped 1 -> 2 for `[lanes.X.isolation]`, the declared
+#: repository snapshot policy. The bump is a hard cut, not additive: an old
+#: missing `[isolation]` table cannot be interpreted as repository mode
+#: without inventing the exact shadowing default this loader exists to
+#: refuse (`config.py`'s own docstring, "a default is legitimate only when it
+#: is a policy choice that is correct in the absence of information"), and an
+#: old binary cannot parse the new table either. Only Assay-owned literals
+#: this build itself loads and executes migrate in WI-1; `cmru/assay.toml` is
+#: evaluated by a pinned v1-only binary and stays v1 until WI-6's atomic
+#: consumer adoption commit.
+LANE_SCHEMA_VERSION = 2
 
 #: A-053. TESTING-METHODOLOGY §Axis 1 / §Axis 2, and §12's table.
 SCOPES: frozenset[str] = frozenset({"S0", "S1", "S2", "S3", "S4"})
@@ -130,7 +143,31 @@ REQUIRED_LANE_FIELDS: tuple[str, ...] = (
     "allow_argv_append",
 )
 
-_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "env_required")
+_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "isolation", "env_required")
+
+#: (B006a/A-269, §3.2) The closed `isolation.snapshot_selection` vocabulary.
+#: `"repository"` materialises the whole commit; `"repository-minus-unsafe-
+#: symlinks"` additionally omits exactly the declared, commit-validated
+#: unsafe symlink leaves. There is no third value and no default -- an R1+
+#: lane must pick one, an R0-only lane must pick none.
+SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
+    {"repository", "repository-minus-unsafe-symlinks"}
+)
+
+_ISOLATION_FIELDS: tuple[str, ...] = ("snapshot_selection", "unsafe_symlink_omissions")
+
+#: (§3.2) "contains 1 through 64 strings. Empty omission mode is refused; use
+#: `\"repository\"` instead." A cap, never derived from a measured repository
+#: -- the same "no runtime consumer may invent a missing cap" reasoning
+#: `MAX_MAX_MUTANTS` already gives one policy over.
+MIN_UNSAFE_SYMLINK_OMISSIONS = 1
+MAX_UNSAFE_SYMLINK_OMISSIONS = 64
+
+#: (§3.2) The byte ceiling on one declared omission pathname, the same bound
+#: `MAX_ATTESTATION_DIR_BYTES` already applies to a different declared path
+#: one field over -- both exist so a pathological string cannot make the
+#: loader itself the resource the config file attacks.
+MAX_OMISSION_PATH_BYTES = 4096
 
 #: A-017/A-048: declared rigor is ENFORCED, and the `judge` fields are
 #: CONDITIONALLY required — an R0-only lane has no `[judge]` table at all.
@@ -367,6 +404,123 @@ class JudgeConfig:
         return declared
 
 
+def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
+    """One declared ``unsafe_symlink_omissions`` entry (§3.2's own order):
+    require a ``str``; require it non-empty; refuse a leading ``/``; require
+    strict UTF-8 encoding of at most :data:`MAX_OMISSION_PATH_BYTES` bytes;
+    split the raw value on ``/``; and refuse if any component is ``''``,
+    ``.``, ``..``, or ``.git``, or contains a backslash or NUL.
+
+    There is deliberately no second ``PurePosixPath(value).as_posix() ==
+    value`` branch: every spelling this rejects (``./x``, ``x//y``, ``x/``)
+    is already refused by its OWN component landing in the forbidden set
+    above (a leading ``.`` component, an empty component from a doubled or
+    trailing slash), so equality to that round-trip is a THEOREM of the
+    accepted grammar, not a separate check -- proved for every accepted path
+    by the accept-side matrix in ``tests/test_config_snapshot_selection.py``,
+    never by an unreachable extra refusal branch here.
+    """
+    if not isinstance(value, str):
+        raise LaneConfigError(f"{where}: {field} must be a string, got {_type_name(value)}")
+    if not value:
+        raise LaneConfigError(f"{where}: {field} must not be empty")
+    if value.startswith("/"):
+        raise LaneConfigError(f"{where}: {field} {value!r} must not be absolute")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise LaneConfigError(
+            f"{where}: {field} {value!r} cannot be encoded as strict UTF-8: {exc}"
+        ) from exc
+    if len(encoded) > MAX_OMISSION_PATH_BYTES:
+        raise LaneConfigError(
+            f"{where}: {field} {value!r} is {len(encoded)} UTF-8 bytes, exceeding "
+            f"the {MAX_OMISSION_PATH_BYTES}-byte ceiling"
+        )
+    for component in value.split("/"):
+        if (
+            component in ("", ".", "..", ".git")
+            or "\\" in component
+            or "\x00" in component
+        ):
+            raise LaneConfigError(
+                f"{where}: {field} {value!r} has an invalid path component "
+                f"{component!r}; a component must not be empty, '.', '..', "
+                f"'.git', or contain a backslash or NUL"
+            )
+    return value
+
+
+@dataclass(frozen=True)
+class IsolationConfig:
+    """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
+    snapshot materialisation policy for an R1/R2/R3 lane. A POLICY object,
+    never a Git fact: it says what Assay was TOLD to omit, not that a commit
+    was inspected (that is P22/WI-2's job, in :mod:`assay.isolation`).
+
+    Both constructor arguments are REQUIRED, on the loaded and the directly
+    constructed path alike -- ``__post_init__`` runs the identical closed
+    grammar either way, so a direct caller cannot construct a shape the
+    loader would have refused. Under ``"repository"`` the caller supplies the
+    derived internal empty tuple explicitly; there is no default that would
+    let one meaning of "no omissions" and one meaning of "not declared"
+    collapse into the same absent value.
+    """
+
+    snapshot_selection: str
+    unsafe_symlink_omissions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        where = "IsolationConfig"
+        if (
+            not isinstance(self.snapshot_selection, str)
+            or self.snapshot_selection not in SNAPSHOT_SELECTIONS
+        ):
+            raise LaneConfigError(
+                f"{where}: 'snapshot_selection' must be one of "
+                f"{sorted(SNAPSHOT_SELECTIONS)}, got {self.snapshot_selection!r}"
+            )
+        if self.snapshot_selection == "repository":
+            if self.unsafe_symlink_omissions != ():
+                raise LaneConfigError(
+                    f"{where}: 'unsafe_symlink_omissions' is forbidden under "
+                    f"snapshot_selection = 'repository'; declare "
+                    f"'repository-minus-unsafe-symlinks' to name omissions"
+                )
+            return
+
+        # snapshot_selection == "repository-minus-unsafe-symlinks"
+        count = len(self.unsafe_symlink_omissions)
+        if not (MIN_UNSAFE_SYMLINK_OMISSIONS <= count <= MAX_UNSAFE_SYMLINK_OMISSIONS):
+            raise LaneConfigError(
+                f"{where}: 'unsafe_symlink_omissions' must declare "
+                f"{MIN_UNSAFE_SYMLINK_OMISSIONS}..{MAX_UNSAFE_SYMLINK_OMISSIONS} "
+                f"entries under snapshot_selection = "
+                f"'repository-minus-unsafe-symlinks', got {count}; empty omission "
+                f"mode is refused -- use 'repository' instead"
+            )
+        encoded: list[bytes] = []
+        for index, item in enumerate(self.unsafe_symlink_omissions):
+            validated = _validate_omission_path(
+                item, where=where, field=f"unsafe_symlink_omissions[{index}]"
+            )
+            encoded.append(validated.encode("utf-8"))
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise LaneConfigError(
+                    f"{where}: 'unsafe_symlink_omissions' must be strictly "
+                    f"ascending by the UTF-8 bytes of the canonical spelling, "
+                    f"got {list(self.unsafe_symlink_omissions)}; the loader does "
+                    f"not silently sort a declared list"
+                )
+
+    def as_declared(self) -> dict[str, Any]:
+        declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
+        if self.unsafe_symlink_omissions:
+            declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
+        return declared
+
+
 @dataclass(frozen=True)
 class Lane:
     """One declared lane. Every attribute came out of the file."""
@@ -387,6 +541,14 @@ class Lane:
     judge: JudgeConfig | None
     #: §7: WHERE is data assay parses and never interprets.
     where: Mapping[str, Any] | None
+    #: (B006a/A-269) The declared repository snapshot materialisation policy
+    #: -- REQUIRED, never defaulted: `None` on an R0-only lane, and the real
+    #: `IsolationConfig` object on any lane declaring R1, R2, or R3. Every
+    #: direct `Lane(...)` constructor must say one or the other explicitly;
+    #: there is no third, inferred value. Placed immediately before
+    #: `env_required` (the field order §3.2 specifies), which stays the ONLY
+    #: defaulted field.
+    isolation: IsolationConfig | None
     #: (A-254) The subset of `env_passthrough` whose ABSENCE refuses the lane
     #: before its command runs. Defaults to empty, so every lane written before
     #: this field existed is unchanged -- and it is LAST in the field order
@@ -417,6 +579,8 @@ class Lane:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
             declared["where"] = dict(self.where)
+        if self.isolation is not None:
+            declared["isolation"] = self.isolation.as_declared()
         return declared
 
 
@@ -677,6 +841,8 @@ def _load_lane(
             f"{where}: 'where' must be a table, got {_type_name(where_table)}"
         )
 
+    isolation = _load_isolation_for_lane(table.get("isolation"), rigor, where)
+
     return Lane(
         name=name,
         scope=scope,
@@ -691,7 +857,75 @@ def _load_lane(
         allow_argv_append=allow_argv_append,
         judge=judge,
         where=None if where_table is None else MappingProxyType(dict(where_table)),
+        isolation=isolation,
     )
+
+
+def _load_isolation_for_lane(
+    value: Any, rigor: Iterable[str], where: str
+) -> IsolationConfig | None:
+    """The R0/R1+ conditional (§3.2): `[isolation]` is required the moment
+    `rigor` declares R1, R2, or R3, and forbidden on an R0-only lane. There
+    is no default and no inference from the file's own location -- an R1+
+    lane that omits the table is exactly as wrong as an R0-only lane that
+    declares one.
+    """
+    higher_rigor = any(level != "R0" for level in rigor)
+    if value is None:
+        if higher_rigor:
+            raise LaneConfigError(
+                f"{where}: declares rigor {list(rigor)} but has no [isolation] "
+                f"table; R1/R2/R3 requires an explicit isolation.snapshot_selection"
+            )
+        return None
+    if not higher_rigor:
+        raise LaneConfigError(
+            f"{where}: declares an [isolation] table but rigor {list(rigor)} is "
+            f"R0-only; isolation selects a snapshot policy for a higher-rigor "
+            f"unit, which an R0-only lane never runs"
+        )
+    return _load_isolation(value, where)
+
+
+def _load_isolation(value: Any, where: str) -> IsolationConfig:
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{where}: 'isolation' must be a table, got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - set(_ISOLATION_FIELDS))
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: unknown isolation key(s): {', '.join(unknown)}; expected "
+            f"only: {', '.join(_ISOLATION_FIELDS)}"
+        )
+    if "snapshot_selection" not in value:
+        raise LaneConfigError(
+            f"{where}: missing required field 'isolation.snapshot_selection'"
+        )
+    selection = _as_str(value["snapshot_selection"], where, "isolation.snapshot_selection")
+    if selection not in SNAPSHOT_SELECTIONS:
+        raise LaneConfigError(
+            f"{where}: 'isolation.snapshot_selection' must be one of "
+            f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
+        )
+    has_omissions = "unsafe_symlink_omissions" in value
+    if selection == "repository":
+        if has_omissions:
+            raise LaneConfigError(
+                f"{where}: 'isolation.unsafe_symlink_omissions' is forbidden "
+                f"under snapshot_selection = 'repository'"
+            )
+        return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=())
+    if not has_omissions:
+        raise LaneConfigError(
+            f"{where}: missing required field "
+            f"'isolation.unsafe_symlink_omissions' (required under "
+            f"snapshot_selection = 'repository-minus-unsafe-symlinks')"
+        )
+    omissions = _as_str_list(
+        value["unsafe_symlink_omissions"], where, "isolation.unsafe_symlink_omissions"
+    )
+    return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=tuple(omissions))
 
 
 def _required_judge_fields(rigor: Iterable[str]) -> tuple[str, ...]:

@@ -116,7 +116,7 @@ def _r0_lane_toml(
     argv_toml = ", ".join(json.dumps(token) for token in argv)
     passthrough_toml = ", ".join(json.dumps(name) for name in env_passthrough)
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0"]\n'
@@ -299,7 +299,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     git_repo.commit_all("add farewell")
 
     lane_toml = (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R1"]\n'
@@ -316,6 +316,8 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "env_passthrough = []\n"
         'budget = "2m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n'
@@ -453,7 +455,7 @@ def _r2_lane_toml(
 ) -> str:
     operators_toml = ", ".join(json.dumps(name) for name in operators)
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R2"]\n'
@@ -463,6 +465,8 @@ def _r2_lane_toml(
         "env_passthrough = []\n"
         f'budget = "{budget}"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["src"]\n'
@@ -951,7 +955,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
 
 def _r3_lane_toml(*, script: str, mechanism: str, target: str) -> str:
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R3"]\n'
@@ -961,6 +965,8 @@ def _r3_lane_toml(*, script: str, mechanism: str, target: str) -> str:
         "env_passthrough = []\n"
         'budget = "2m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n\n'
@@ -1289,7 +1295,7 @@ def _r1_r3_lane_toml(*, mechanism: str, target: str, base: str) -> str:
         "--cov=pkg", "--cov-report=json:cov.json",
     ]
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R1", "R3"]\n'
@@ -1299,6 +1305,8 @@ def _r1_r3_lane_toml(*, mechanism: str, target: str, base: str) -> str:
         "env_passthrough = []\n"
         'budget = "5m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n'

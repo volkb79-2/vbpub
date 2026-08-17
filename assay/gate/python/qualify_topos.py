@@ -374,7 +374,7 @@ def _write_lane(
 ) -> None:
     argv = [_TESTER_VENV_PYTHON, "topos/tools/assay_p25_coverage.py", *argv_tail]
     quoted_argv = ", ".join(json.dumps(item) for item in argv)
-    text = f'''schema_version = 1
+    text = f'''schema_version = 2
 [lanes.topos-qualification]
 scope = "S1"
 rigor = ["R0", "R1"]
@@ -384,6 +384,8 @@ env = {{PYTHONPATH = "topos/src:topos", ASSAY_P25_WITNESS = {json.dumps(str(witn
 env_passthrough = []
 budget = "15m"
 allow_argv_append = false
+[lanes.topos-qualification.isolation]
+snapshot_selection = "repository"
 [lanes.topos-qualification.judge]
 language = "python"
 source_roots = [{json.dumps(source_roots)}]

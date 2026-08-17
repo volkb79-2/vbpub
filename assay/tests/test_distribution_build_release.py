@@ -455,7 +455,7 @@ def test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane(built, tmp_pat
     repo = _repo(tmp_path / "consumer")
     (repo / ".gitignore").write_text("verdict.json\n", encoding="utf-8")
     (repo / "assay.toml").write_text(
-        'schema_version = 1\n'
+        'schema_version = 2\n'
         "[lanes.failing]\n"
         'scope = "S1"\nrigor = ["R0"]\nenforcement = "gate"\n'
         'argv = ["/bin/false"]\nenv = {}\nenv_passthrough = ["PATH"]\n'

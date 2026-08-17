@@ -33,7 +33,14 @@ from typing import Mapping
 import pytest
 from jsonschema import Draft202012Validator
 
-from assay.config import CanaryConfig, CoverageConfig, JudgeConfig, Lane, MutationConfig
+from assay.config import (
+    CanaryConfig,
+    CoverageConfig,
+    IsolationConfig,
+    JudgeConfig,
+    Lane,
+    MutationConfig,
+)
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -64,9 +71,11 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 collect_ignore_glob = ["fixtures/canary/python/**", "fixtures/mutation_exec/python/**"]
 
 #: A complete, minimal R0 lane: the eight required top-level fields and nothing
-#: else. An R0-only lane has NO [judge] table (A-048).
+#: else. An R0-only lane has NO [judge] table (A-048), and -- since B006(a)/
+#: A-269's schema v2 -- no [isolation] table either: that table is required
+#: for R1/R2/R3 and forbidden here.
 R0_LANE = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -80,10 +89,13 @@ allow_argv_append = false
 """
 
 #: A complete R1 lane: the eight, plus all five conditionally-required `judge`
-#: fields, plus a `[…where]` table assay must carry and never interpret.
-#: `source_roots` name directories the `project` fixture really creates.
+#: fields, plus a `[…where]` table assay must carry and never interpret, plus
+#: (B006a/A-269, schema v2) the `[…isolation]` table R1+ now requires --
+#: `"repository"`, the migration rule for a lane that is not itself testing
+#: omission mode. `source_roots` name directories the `project` fixture
+#: really creates.
 R1_LANE = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S2"
@@ -94,6 +106,9 @@ env = { MOCK_MODE = "true", TZ = "UTC" }
 env_passthrough = ["PATH"]
 budget = "1h30m"
 allow_argv_append = true
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -548,6 +563,7 @@ def make_lane(
     budget_seconds: float = 300.0,
     allow_argv_append: bool = False,
     judge: "JudgeConfig | None" = None,
+    isolation: "IsolationConfig | None" = None,
 ) -> Lane:
     return Lane(
         name=name,
@@ -562,6 +578,7 @@ def make_lane(
         allow_argv_append=allow_argv_append,
         judge=judge,
         where=None,
+        isolation=isolation,
     )
 
 
