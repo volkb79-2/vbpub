@@ -1060,6 +1060,72 @@ def _snapshot_policy_for_lane(lane: Lane) -> IsolationConfig | None:
     return None
 
 
+def _refuse_coverage_artifact_omission_collision(
+    *,
+    lane: Lane,
+    snapshot_policy: IsolationConfig,
+    project_prefix: PurePosixPath,
+) -> None:
+    """(B006a/A-269 WI-3, §3.4) **Public-API defence-in-depth** -- NOT a
+    loadable-TOML preflight. A lane loaded from a real ``assay.toml`` cannot
+    normally reach this branch at all: ``config._load_coverage`` already
+    refuses a coverage artifact whose OWN spelling escapes the project root
+    through a live symlink, at load time, long before any snapshot exists.
+    This function exists for the shape that check cannot see -- a caller
+    that builds the public frozen :class:`~assay.config.Lane` dataclass
+    directly, bypassing the loader entirely, the same reachability §3.4
+    grants ``_snapshot_policy_for_lane`` immediately above.
+
+    Refuses ``ERROR``/``BAD_LANE_CONFIG`` when *lane*'s declared coverage
+    artifact, converted to a repo-top-relative :class:`~pathlib.PurePosixPath`
+    (never a string prefix, never a local :meth:`~pathlib.Path.resolve`
+    against a commit namespace -- both would compare the wrong namespace or
+    trust a filesystem fact this snapshot's own commit does not own), is
+    equal to or beneath a declared unsafe-symlink omission. Without this
+    check, B006(b)'s own missing-parent-chain creation could silently
+    replace an omitted committed symlink with a generated ordinary
+    directory the very first time the command's coverage artifact is
+    reserved -- exactly the "ancestor of the coverage-artifact path" row
+    §3.6's own outcome matrix names.
+
+    Called ONCE per lane, by :func:`_run_higher_rigor_lane`, after
+    ``isolation.prepare_snapshot`` has already returned (so every omission
+    compared here already survived P22's own commit-tree validation: an
+    unreadable declared target still fails ``GIT_FAILED`` and a declaration
+    that turns out not to be a real unsafe symlink still fails
+    ``BAD_LANE_CONFIG``, both from *inside* ``prepare_snapshot`` itself,
+    never from this function) but BEFORE the first
+    ``prepared.materialize()`` -- this is deliberately the very first thing
+    that runs once a prepared snapshot exists, before any unit (baseline,
+    mutant, or either canary half) ever touches a filesystem.
+
+    A no-op in repository mode (there are no declared omissions to collide
+    with) and for a lane with no declared coverage artifact at all -- an
+    R2- or R3-only lane never reserves one.
+    """
+    if snapshot_policy.snapshot_selection != "repository-minus-unsafe-symlinks":
+        return
+    if lane.judge is None or lane.judge.coverage is None:
+        return
+    artifact_repo_path = PurePosixPath(
+        (project_prefix / lane.judge.coverage.artifact).as_posix()
+    )
+    for omitted in snapshot_policy.unsafe_symlink_omissions:
+        omitted_path = PurePosixPath(omitted)
+        if artifact_repo_path.is_relative_to(omitted_path):
+            raise AssayError(
+                f"lane {lane.name!r}'s coverage artifact "
+                f"{lane.judge.coverage.artifact!r} resolves to "
+                f"{artifact_repo_path.as_posix()!r}, which is equal to or "
+                f"beneath the declared unsafe-symlink omission {omitted!r}; "
+                f"B006(b)'s coverage-artifact parent-directory creation "
+                f"must never be allowed to silently replace an omitted "
+                f"committed symlink with a generated directory",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+
+
 def _relocate_source_roots(
     lane: Lane, *, project_root: Path, scratch_project_root: Path
 ) -> Lane:
@@ -1819,6 +1885,17 @@ def _run_higher_rigor_lane(
                 limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
             )
             with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+                # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
+                # already commit-validated `snapshot_policy`'s declared
+                # omissions, but strictly BEFORE the first
+                # `prepared.materialize()` call inside `_run_prepared_lane`
+                # below -- so B006(b)'s own coverage-artifact parent-chain
+                # creation can never get a chance to run first.
+                _refuse_coverage_artifact_omission_collision(
+                    lane=lane,
+                    snapshot_policy=snapshot_policy,
+                    project_prefix=project_prefix,
+                )
                 outcome_holder.append(
                     _run_prepared_lane(
                         lane,
