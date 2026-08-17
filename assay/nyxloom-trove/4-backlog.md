@@ -7,7 +7,7 @@ items:
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
   - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: bug, component: isolation, context_estimate: large}
+  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: feature, component: isolation, context_estimate: large}
 ---
 
 # assay — backlog
