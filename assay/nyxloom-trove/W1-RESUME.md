@@ -26,6 +26,25 @@ wins and this file is stale.
 | main's B006 rewrite adapted, A-266 | `571cf2b5` |
 | review round 2 folded in (13 blocking), A-267 | `0a96dc7e` |
 | **registered gate green on this branch** | `ASSAY_REGISTERED_GATE_COMPLETE=1`, exit 0, at `59af6b4b` |
+| WI-3 — branch model + all four parsers (§3) | `759bea03`, `bd99bb7a`; 2532 passed, 100% line+branch on all six touched modules |
+
+**WI-3 independently verified by the controller**, not taken from the report:
+the eight real fixtures are untouched; the three formats parse `sample.py` to
+the SAME per-line arcs `{5:(1,2), 11:(1,2), 12:(2,2), 18:(0,2)}` = 4/8, matching
+coverage.py's own `num_branches`/`covered_branches`; `check_sample.py` gets `{}`
+rather than `None` in the branch-tracking lcov (the mixed-artifact trap); the
+negative-`dst` exit arc parses. Eight adversarial probes against the shipped
+parser: the CONTROL is accepted, `meta`-deleted-with-arcs is accepted as
+`reported` (A-265's authority rule — the case that must NOT refuse), and the
+coherent tamper (duplicate covered arc with the summary bumped to match) is
+REFUSED, closing review round 1's finding 3 in the shipped code.
+Caveat recorded: the orphan-arc probe was caught by the totals cross-check
+before the model's invariant 3, so that probe does not isolate invariant 3.
+
+**Carried into WI-4:** O3's second half — a `require_branch = true` lane over a
+go-cover artifact refusing with `NO_MEASUREMENT`/`BRANCH_UNAVAILABLE` — is
+judge-level and could not exist yet. The parser half is proven. Do not let it
+fall between the two work items.
 
 ## In flight — check before spawning anything
 
@@ -38,11 +57,43 @@ reviewer; resume the existing one by name if it is still listed.
   (project-scoped snapshots), §2, §6's isolation block, §7 WI-1, and
   O9/O9b/O15/O17/O18/O19.
 
-## Remaining, in order
+## THE REVIEW CAP IS REACHED — awaiting an operator decision on B006(a)
 
-1. **Round 3 verdict.** If READY → dispatch WI-1a/1b/1c. If NOT READY → fold the
-   findings in as Addendum E, then **STOP: the 3-round cap is reached.** Report
-   to the operator; do not open a round 4 and do not switch models.
+Round 3 (Opus, fresh context) returned **NOT READY — 8 blocking, 14
+non-blocking**, so §1 has now failed three consecutive independent reviews.
+Per the standing rule this stops here: no round 4, no model switch.
+
+The two that change what the work IS, rather than how it is written:
+
+* **§1.3 makes work item 1c unbuildable.** Pinning `project_prefix` to the
+  project's own repo-relative path means no loadable `assay.toml` can produce a
+  source root, artifact, canary target or cwd outside the boundary — every one
+  is already contained by `config.py:1280`/`:998`/`_load_canary` and
+  `runner.py:1113`. 1c's headline deliverable is five refusal branches that
+  cannot fire, in a project that forbids `pragma: no cover`. And the rule cannot
+  be enforced where §1.2 puts it: `config.py` imports no git, so the project's
+  repo-relative path is unknown at load.
+* **The narrowed claim STILL over-reaches.** A-267 says assay never materialises
+  an out-of-scope path. True — but the command can recreate one, demonstrated
+  with stock git against the retained closure B006.3 requires:
+  `git checkout -- <path>` after clearing its skip bit, or `git worktree add`.
+  A suite that runs `git stash`/`git worktree add` hits it by accident. So the
+  honest property is narrower again: *assay* never materialises it.
+
+Also blocking: only `skip-worktree` survives `_verify` + the post-run dirt check
++ `write-tree`, and §1 names no mechanism at all (measured — narrowing the index
+makes `git status` report `D .gitignore` for every omitted entry); the
+`materialisation` enum's two values do not separate the four situations §6 says
+it exists to separate; `cli.py:355`/`:385` must emit a REQUIRED `isolation`
+object with no boundary in scope; §2's `judgment.r1.coverage_artifact` claim is
+false on both refusal paths and contradicts A-264 in the wave that establishes
+it; and O18 asks the implementer to mutate an object §1.8 requires to be
+immutable.
+
+## Remaining, in order (B006(a) blocked at the top)
+
+1. **STOPPED — operator decision required on B006(a).** Do not dispatch work
+   item 1. See the block above.
 2. **WI-1a/1b/1c** — project-scoped snapshot: config + `ResolvedSnapshotBoundary`,
    isolation materialisation, runner preflight. Three commits.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
