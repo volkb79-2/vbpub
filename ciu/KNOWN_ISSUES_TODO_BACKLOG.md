@@ -144,23 +144,30 @@ collision checking currently occurs only in a later S16.3 deployment-cap path.
    profile/shared-infra presence, and one closed lifecycle state:
    `allocating`, `ready`, or `recovery-required`. Current HEAD is derived, not
    frozen in the record. Credentials and DSNs are forbidden.
-3. Logical names are unique within one Git worktree family; independent clones
+3. Add a sparse, non-secret, gitignored
+   `<target-ciu-root>/ciu.global.worktree.toml.j2` merged after the committed
+   global defaults and project override. It owns durable per-worktree global
+   configuration, including selected service profiles and shared-infrastructure
+   intent, and survives both `ciu clean` and `ciu env generate`. `ciu.env`
+   returns to generated machine/runtime facts only; the lifecycle record does
+   not become a second authority for overlay values.
+4. Logical names are unique within one Git worktree family; independent clones
    may reuse them. Host runtime/network identities must still reject collision.
-4. Support explicit create-new, adopt-existing, and idempotent ensure/resume.
+5. Support explicit create-new, adopt-existing, and idempotent ensure/resume.
    Create refuses an occupied identity before side effects. Adopt is the only
    operation allowed to take ownership of unmanaged state. Ensure reuses an
    exact ready match and completes only a mechanically recognizable interrupted
    CIU-owned allocation. Mismatch refuses; repair is explicit.
-5. Generated display names use UTC
+6. Generated display names use UTC
    `<prefix>-<YYYYMMDD_HHMMSS>-<feature-description>`. Prefix means project OR
    component, supplied by the caller. Generated branch and directory basename
    are exactly equal. Allocate under the Git-family lock and add a suffix only
    for an actual same-second collision. Resume retains the original name.
-6. Before Git/env side effects, reject conflicting logical identity, target
+7. Before Git/env side effects, reject conflicting logical identity, target
    path, or active branch. After generating the target's own `ciu.env` but
    before marking ready, reject duplicate `INSTANCE_ID` or network identity.
    A partial attempt remains inspectable and cannot masquerade as ready.
-7. Lifecycle operations provide schema-versioned JSON with closed status and
+8. Lifecycle operations provide schema-versioned JSON with closed status and
    recovery vocabularies. Human output remains presentation only.
 
 ### Behavioral oracles
@@ -175,6 +182,8 @@ collision checking currently occurs only in a later S16.3 deployment-cap path.
   explicit adopt after all facts validate.
 - Nested CIU roots retain the exact Git-root-to-CIU-root offset in every
   checkout; no code treats the Git root as the CIU root by convenience.
+- Regenerating `ciu.env` and running `ciu clean` preserve the worktree overlay;
+  the selected profiles/shared-infrastructure intent still resolve from it.
 
 **SPEC ownership:** replace/extend S16 identity and lifecycle.
 

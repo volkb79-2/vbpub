@@ -95,3 +95,28 @@ The CIU gate is modernized to use the pinned released Assay 1.0.0 artifact in
 run during implementation; the completed series must pass the full
 Assay-backed gate. One adversarial code/spec/test review follows implementation;
 all accepted findings are repaired before the single final merge.
+
+## D-011 — durable worktree-local configuration layer
+
+`ciu clean` is valid inside a linked worktree and preserves its durable inputs:
+`ciu.env`, `ciu.worktree-instance.json`, authored templates, and the checkout.
+It removes runtime state and rendered artifacts only. Worktree-specific
+configuration must not be appended to `ciu.env`: regeneration overwrites those
+lines, and profile/shared-infrastructure choices are configuration rather than
+machine identity.
+
+Add a sparse, non-secret, gitignored
+`<target-ciu-root>/ciu.global.worktree.toml.j2` layer. The global merge order is
+committed defaults, committed project override, worktree-local override, then
+the rendered `ciu.global.toml`. The layer is preserved by clean and may carry
+legitimate per-worktree global overrides. CIU creates/updates it when lifecycle
+options require worktree-local configuration. Raw secret scanning and the
+normal template render/expansion rules apply.
+
+Ownership is non-overlapping: committed templates own project policy;
+`ciu.global.worktree.toml.j2` owns durable local configuration including the
+selected service profiles and shared-infrastructure intent; `ciu.env` owns only
+generated machine/runtime facts; `ciu.worktree-instance.json` owns durable
+logical/Git identity and lifecycle state. The instance record may report
+non-secret feature presence but must not duplicate the overlay as an independent
+configuration authority.

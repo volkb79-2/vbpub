@@ -28,14 +28,17 @@ move together.
    family-scoped logical identity.
 2. Separate logical name, display name, Git branch, Git worktree path, and CIU
    root offset. Preserve the simple existing `worktree add NAME` form.
-3. Add explicit create/adopt/ensure behavior and the
+3. Add the gitignored sparse `ciu.global.worktree.toml.j2` merge layer. Move
+   worktree service-profile and shared-infrastructure choices out of generated
+   `ciu.env`; preserve the overlay across clean and env regeneration.
+4. Add explicit create/adopt/ensure behavior and the
    `allocating | ready | recovery-required` state machine.
-4. Add UTC generated names with exact branch/directory correspondence and
+5. Add UTC generated names with exact branch/directory correspondence and
    collision-only suffixing under the Git-family allocation lock.
-5. Perform universal pre-side-effect logical/path/branch admission and
+6. Perform universal pre-side-effect logical/path/branch admission and
    post-env runtime/network collision admission. Make partial attempts
    mechanically inspectable and recoverable; mismatches fail closed.
-6. Return versioned lifecycle JSON while preserving intentional human output.
+7. Return versioned lifecycle JSON while preserving intentional human output.
 
 ### Package C — machine control and execution (CIU-29)
 
