@@ -307,7 +307,24 @@ must stop and ask, never invent one:
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
 | `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
-| `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE` |
+| `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
+
+**(A-277) `ALL_MUTANTS_EQUIVALENT` was missing from this table from the moment
+v5 introduced it (A-223d) until wave 2 found it.** It fires when `killed +
+survived == 0` while `equivalent` is non-empty — every mutant the analysis
+produced turned out to be semantically identical to the original, so the suite
+was never given anything to catch. That is not a pass: rendering it green is
+A-026/A-035's 0-of-0-is-100% bug, which is why it has its own terminal rather
+than folding into `NO_MUTANTS`. The two differ in what they say about the
+analysis — `NO_MUTANTS` means discovery found no site to mutate, this means it
+found sites and every one of them was inert.
+
+The omission is worth recording rather than quietly fixing, because this table
+declares itself **closed** and tells implementers to stop and ask for anything
+not listed — so for two schema versions it was authoritative and wrong. A-270's
+vocabulary check (§16) originally derived four vocabularies and not this one;
+`test_every_reason_code_is_documented` now closes that, which is the only
+reason the next omission will be caught by the gate instead of by a reader.
 
 **(wave-1) Three additions, each a distinct new terminal, not a repurposed
 old one.** `UNCOVERED_BRANCHES` ranks identically to `UNCOVERED_LINES` in the

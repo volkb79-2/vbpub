@@ -42,6 +42,7 @@ from assay.config import (
     load_lane_file,
 )
 from assay.coverage import FORMAT_REGISTRY
+from assay.verdict import ReasonCode
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
@@ -309,11 +310,23 @@ def test_every_coverage_format_is_documented():
     assert not missing, f"undocumented coverage format(s): {missing}"
 
 
+def test_every_reason_code_is_documented():
+    """(A-277) The fifth derived vocabulary, added in wave 2 because the
+    first four did not include it and `ALL_MUTANTS_EQUIVALENT` was therefore
+    absent from every user-facing document from v5 until wave 2 found it --
+    while the DESIGN-GUIDE's own table declared itself CLOSED and told
+    implementers to stop and ask for anything not listed."""
+    codes = tuple(code.value for code in ReasonCode)
+    assert codes, "ReasonCode must not be empty"
+    missing = _missing_from(codes, _docs_text())
+    assert not missing, f"undocumented reason_code(s): {missing}"
+
+
 def test_a_fabricated_vocabulary_value_is_reported_missing_the_broken_control():
     """Must-fail control for check (2): the exact membership-checking
     routine every vocabulary test above calls must actually detect an
     absent value, proving the check is not vacuously true for any input.
-    Paired against the four real, non-empty derived sets above, which all
+    Paired against the five real, non-empty derived sets above, which all
     pass the identical routine."""
     fabricated = frozenset({"this-value-does-not-appear-in-any-shipped-doc-9f3c2"})
     missing = _missing_from(fabricated, _docs_text())
@@ -323,10 +336,13 @@ def test_a_fabricated_vocabulary_value_is_reported_missing_the_broken_control():
 def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
     """Guards against a degenerate derivation (e.g. every vocabulary
     resolving to the same single-element set) that would let the checks
-    above pass without actually exercising four independent module facts."""
+    above pass without actually exercising five independent module facts."""
+    reason_codes = {code.value for code in ReasonCode}
     assert SNAPSHOT_SELECTIONS != JUDGE_MODES
     assert set(RIGOR_LEVELS) != SNAPSHOT_SELECTIONS
     assert set(FORMAT_REGISTRY) != JUDGE_MODES
+    assert reason_codes != set(FORMAT_REGISTRY)
+    assert reason_codes != set(RIGOR_LEVELS)
 
 
 # --- (3) DESIGN-GUIDE anchor resolution --------------------------------------

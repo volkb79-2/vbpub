@@ -422,8 +422,33 @@ is cmru's work and should not gate assay.
 real-lane isolation work on ciu's S16 worktree verb ("embed provenance in the
 verdict so invariant #18 holds by construction").
 **Status:** the RECORDED half shipped the same day (A-254/A-255). The VERIFIED
-half is **hard-blocked on ciu CIU-20**, which does not exist. A-256 rules the
-adjacent same-instance question as discipline, not schema.
+half was **CARVED, REVIEWED AND DEFERRED in wave 2 (2026-08-17, A-275/A-276)**.
+CIU-20 has since shipped — `ciu provenance --json` exists at CIU 6.0.3 — but the
+carve found **two new blockers in its place**, and A-256 still rules the adjacent
+same-instance question as discipline, not schema.
+
+> **CORRECTION, ruled in A-275: this section's claim below that "no
+> verdict-schema change was needed and none proposed" is FALSE of the VERIFIED
+> half.** It is true of the RECORDED half (A-255's actual finding) and was
+> carried across to the whole item by conflating *no new field* with *no new enum
+> value*. The verified step needs exactly one new `ReasonCode`, because
+> `_check_reason_code` demands a code for every non-`PASS` outcome, `adjudicated`
+> evidence has no payload slot to carry ciu's status string, and none of the 30
+> shipped codes truthfully names "the provenance tool returned a non-green
+> verdict". This section's own `mismatch → FAIL` sketch **is** the closed-enum
+> widening the table below lists as "not proposed".
+>
+> **The second blocker is external and newly measured:** ciu compares *every*
+> running container's OCI revision label against its own repository's short hash,
+> including vendor images that stamp their own upstream revision, so `overall` is
+> pinned at `"mismatch"` on a correctly built host and `verified-match` is
+> unreachable. Filed as a CIU-20 follow-on.
+>
+> `PROVENANCE_UNVERIFIED` is **reserved by name** (A-276) to ride whichever bump
+> B001/P34 or B007 already pays for. B004 unblocks when that code has shipped
+> **and** ciu can emit `verified-match`. Design detail:
+> `W2-CARVE-B004-provenance-verified.md`; review:
+> `reports/assay-B004-carve-review-fable.md`.
 
 ### What already ships — do not re-carve this part
 
@@ -432,7 +457,7 @@ artifact's `env_effective` verbatim, on every outcome including refusals, and
 the artifact verifies clean. Measured, not designed: a real `S3` lane produced
 `env_effective` carrying `CIU_IMAGE_REVISION=1b369e23` and
 `CIU_INSTANCE_ID=dstdns-pkgP96`. **No verdict-schema change was needed and none
-should be added** (A-255).
+should be added** (A-255) — true of THIS half only; see the correction above.
 
 ### What is blocked, and on exactly what
 
@@ -440,8 +465,8 @@ should be added** (A-255).
 |---|---|---|
 | Recorded, caller-asserted | `env_required` (A-254) | **SHIPPED** |
 | Recorded, ciu-**attested** | **ciu CIU-21** — inject the image's own baked `org.opencontainers.image.revision` as an env var | blocked; zero assay work when it lands |
-| **Verified** (adjudicated Tier-2 evidence) | **ciu CIU-20** — `ciu provenance --json`, a closed machine-readable verdict | blocked; this backlog item |
-| **Enforced** (refuse on mismatch) | a new `ReasonCode` → closed-enum widening → v6-class | not proposed |
+| **Verified** (adjudicated Tier-2 evidence) | ~~**ciu CIU-20**~~ **SHIPPED** at CIU 6.0.3. Now needs (i) `PROVENANCE_UNVERIFIED`, reserved by A-276, and (ii) a **CIU-20 follow-on** scoping the comparison to ciu-built images | blocked on both; carved and deferred, A-275 |
+| **Enforced** (refuse on mismatch) | a new `ReasonCode` → closed-enum widening → v6-class | not proposed — **and A-275 rules that the VERIFIED row above needs one too**, so this row was never the only one that did |
 
 The distinction the middle two rows turn on is not cosmetic. Until CIU-21, the
 recorded value is **whatever the caller put in the environment** — an assertion,
@@ -904,11 +929,14 @@ rename ride v6 rather than wait.
 inverts the order.** The pairing argument above assumed other planned work
 would also need v7. It does not:
 
-* **B004 needs no schema change at all** — its own section says so in writing
+* ~~**B004 needs no schema change at all** — its own section says so in writing
   ("no verdict-schema change was needed and none proposed"), and the only
   variant that would need one (enforce-on-mismatch, requiring a new
   `ReasonCode` and therefore a closed-enum widening) is explicitly **not
-  proposed**;
+  proposed**;~~ **WRONG, and the carve proved it (A-275).** §B004's sentence is
+  true of the RECORDED half and false of the VERIFIED half; taking it at its
+  word is precisely the mistake this note asked each carve to stop making. B004
+  needs exactly one new `ReasonCode`, `PROVENANCE_UNVERIFIED`;
 * **B001/P34's producer fields are already RESERVED and survived the v6 cut** —
   `_MUTATION_FIELDS_RESERVED_FOR_P34` (`config.py:269`) names
   `kill_signal_artifact` and `equivalence_artifact`, and both are still present
@@ -922,3 +950,15 @@ it. **Revised order: B004 (wave 2) → B001/P34 (wave 3) → B007.** That gives
 consumers a stable v6 period, and lets B007 accumulate a partner if any of
 wave 2 or 3's implementation turns out to want schema surface after all — a
 question their carves should each answer explicitly rather than assume.
+
+**UPDATE 2026-08-17, after wave 2's carve and review: B007 HAS ITS PARTNER, and
+it is B004.** The bullet above was wrong in exactly the direction this
+paragraph hoped for. `PROVENANCE_UNVERIFIED` is reserved by A-276 to ride
+whichever bump another item pays for, and B007's ordered multi-target R3 canary
+is the item most likely to pay it. So v7, when it comes, carries both — one
+migration, two features, which is the outcome the original pairing argument
+was written to get. **The order stands** (B001/P34 next), because P34 still
+needs no schema surface and B004's implementation is blocked on ciu regardless
+of when the code ships. What has changed is that B007 is no longer a solo
+migration nobody is blocked on, and its carve should be written knowing it will
+be asked to carry a passenger.
