@@ -437,6 +437,9 @@ def run_isolated_canary(
     coverage_artifact = lane.judge.coverage.artifact if wants_coverage else None
     coverage_format = lane.judge.coverage.format if wants_coverage else None
 
+    # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
+    # checkout (never the consumer's real worktree), so this is one of the
+    # "snapshot-running call sites" allowed to opt in to parent creation.
     with prepared.materialize(timeout=deadline.remaining()) as control_snapshot:
         control_unit = _execute_snapshot_unit(
             plan=plan,
@@ -447,6 +450,7 @@ def run_isolated_canary(
             coverage_format=coverage_format,
             process_runner=process_runner,
             clock=clock,
+            create_missing_parents=True,
         )
         if control_unit.post_reason is not None:
             raise AssayError(
@@ -513,6 +517,8 @@ def run_isolated_canary(
         replacement=replacement_bytes,
         timeout=deadline.remaining(),
     ) as transform_snapshot:
+        # B006(b): `transform_snapshot` is likewise an ephemeral, assay-owned
+        # checkout -- the other "snapshot-running call site".
         transform_unit = _execute_snapshot_unit(
             plan=plan,
             snapshot=transform_snapshot,
@@ -522,6 +528,7 @@ def run_isolated_canary(
             coverage_format=coverage_format,
             process_runner=process_runner,
             clock=clock,
+            create_missing_parents=True,
         )
         if transform_unit.post_reason is not None:
             raise AssayError(

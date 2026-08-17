@@ -1178,6 +1178,7 @@ def _execute_snapshot_unit(
     coverage_format: str | None,
     process_runner: ProcessRunner,
     clock: Clock,
+    create_missing_parents: bool = False,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -1194,6 +1195,19 @@ def _execute_snapshot_unit(
     caller knows whether an already-produced REAL R0 result (the lane's own
     baseline) must be preserved despite it (A-195, mirroring P20's own
     direct-path claim precedence one level down).
+
+    *create_missing_parents* (B006(b)) defaults to ``False`` and is threaded
+    straight to :func:`assay.safeio.reserve_output`'s own identically-named,
+    identically-defaulted parameter -- this function's own default is never
+    the thing that decides whether *snapshot*'s tracked-only checkout gets a
+    generated parent directory. Every caller of this function DOES run
+    entirely inside an ephemeral P22 snapshot (there is no other caller), so
+    every one of them passes ``True`` explicitly; the default stays ``False``
+    here anyway, rather than flipping it, so this function's own contract --
+    read on its own, with no caller in view -- still says "does not create"
+    until a caller affirmatively asks otherwise. A consumer's REAL worktree
+    is never reachable through this function at all: *snapshot* is always
+    :mod:`assay.isolation`'s own private, owned checkout.
     """
     reservation: safeio.OutputReservation | None = None
     if wants_coverage:
@@ -1202,6 +1216,7 @@ def _execute_snapshot_unit(
             snapshot.project_root,
             coverage_artifact,
             limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
+            create_missing_parents=create_missing_parents,
         )
         if _coverage_artifact_is_tracked(
             snapshot.root, snapshot.project_root, coverage_artifact,
@@ -1403,6 +1418,9 @@ def _run_prepared_lane(
     coverage_artifact = lane.judge.coverage.artifact if r1_declared else None
     coverage_format = lane.judge.coverage.format if r1_declared else None
 
+    # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
+    # checkout -- never the consumer's real worktree -- so this is exactly
+    # the "snapshot-running call site" that is allowed to opt in explicitly.
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
         unit = _execute_snapshot_unit(
             plan=plan,
@@ -1413,6 +1431,7 @@ def _run_prepared_lane(
             coverage_format=coverage_format,
             process_runner=process_runner,
             clock=clock,
+            create_missing_parents=True,
         )
         result = unit.result
         r0_claim = build_r0_claim(result)

@@ -73,6 +73,16 @@ def _write_cov_argv(files: dict) -> tuple[str, ...]:
     return ("/bin/sh", "-c", script)
 
 
+def _write_cov_argv_at(path: str, files: dict) -> tuple[str, ...]:
+    """Like :func:`_write_cov_argv`, but at an arbitrary relative *path* --
+    never itself ``mkdir``-ing anything: if *path*'s parent does not already
+    exist by the time this runs, ``cat`` fails and the run does too. Used to
+    prove B006(b)'s reservation-owned creation, not this command's own."""
+    payload = _cov_json(files)
+    script = f"cat > {path} <<'EOF'\n{payload}\nEOF"
+    return ("/bin/sh", "-c", script)
+
+
 # --- a full real PASS: R0 and R1 both, judgment.r1 present --------------------
 
 
@@ -569,6 +579,62 @@ def test_run_lane_refuses_a_directory_at_the_artifact_path(git_repo: GitRepo, tm
     assert verdict.outcome is Outcome.ERROR
     assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert not marker.exists()
+
+
+# --- B006(b): the coverage artifact's parent, missing from a tracked-only -----
+# snapshot, is created inside the snapshot ONLY ---------------------------------
+
+
+def test_run_lane_creates_the_coverage_artifacts_missing_parent_only_inside_the_snapshot(
+    git_repo: GitRepo,
+):
+    """The consumer's actual failure mode (4-backlog.md B006(b)): the
+    near-universal convention -- write coverage JSON into a gitignored
+    scratch directory -- previously failed as UNREADABLE_ARTIFACT, because
+    the P22 snapshot materialises tracked files only, so a gitignored
+    directory never existed inside it for `reserve_output` to open. The
+    reservation now creates the missing parent chain itself, from inside
+    `_execute_snapshot_unit`'s own reservation call -- but only inside the
+    ephemeral snapshot: this test also proves the consumer's own real
+    worktree never gains the directory, neither during nor after the run.
+    """
+    git_repo.write(".gitignore", "cov_out/\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\nLINE4\nLINE5\n")
+    head_rev = git_repo.commit_all("add pkg head")
+    assert not (git_repo.path / "cov_out").exists(), "never tracked, never on disk yet"
+
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",),
+        base=base_rev,
+        coverage_artifact="cov_out/nested/cov.json",
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv_at(
+            "cov_out/nested/cov.json", {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.claims[1].status is Outcome.PASS
+    assert verdict.claims[1].coverage.pct == 100.0
+    # The whole point: the consumer's REAL worktree never gained the
+    # gitignored directory -- only the ephemeral, already-destroyed snapshot
+    # did.
+    assert not (git_repo.path / "cov_out").exists()
 
 
 # --- R1 renders honestly regardless of R0's own outcome (work item 5) ---------
