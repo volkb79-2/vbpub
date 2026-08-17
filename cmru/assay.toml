@@ -3,10 +3,13 @@
 # the existing project test command, rather than recursively invoking CMRU's
 # tester-gate wrapper.
 #
-# R0 is the only honest declaration while whole-source coverage is below the
-# R1 100% floor.  R1/R2/R3 are promoted together with real coverage, bounded
-# mutation, and a cause-sensitive canary evidence record; do not add a rigor
-# level merely because the tool supports it.
+# R0 is the only honest Assay declaration in this monorepo today.  The
+# published R1+ snapshot substrate deliberately refuses Topos's tracked
+# absolute-symlink security fixtures before it can run CMRU's isolated
+# snapshot.  A project-scoped snapshot is a versioned Assay product decision,
+# not a consumer-side bypass.  CMRU's outer tester-unified gate separately
+# enforces whole-source line and branch coverage at 100% until that capability
+# is released and pinned here.
 schema_version = 1
 
 [lanes.cmru]

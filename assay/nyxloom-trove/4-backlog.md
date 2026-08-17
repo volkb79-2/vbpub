@@ -7,7 +7,7 @@ items:
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
   - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "Snapshot substrate ergonomics: (a) an absolute-target symlink ANYWHERE in the tree fails every R1+ lane even when outside all source_roots — offer a source-root-scoped snapshot walk or a symlink allow/skip knob; (b) reserve_output refuses a missing coverage-artifact parent and never mkdirs, so a gitignored artifact dir is absent from the tracked-only snapshot — create the parent inside the snapshot, or document the tracked-dir requirement.", type: bug, component: isolation, context_estimate: small}
+  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: bug, component: isolation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -581,13 +581,13 @@ commit.
 
 ---
 
-## B006 — snapshot substrate ergonomics: two papercuts that fail a lane for reasons outside it
+## B006 — explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes
 
-**Proposed by:** dstdns's reconciliation program, 2026-08-16, both hit on the very
-first R1 lane run against a real multi-service repo. Both are already worked around
-in dstdns `main`, so this is a usability/robustness item, not a blocker for us — but
-each cost a debugging round and each fails a lane for a reason that has nothing to
-do with the change under test.
+**Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
+first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** proposed design and
+implementation carve. This blocks honest Assay R1+ claims for a project in this
+monorepo; CMRU may retain R0/direct-coverage evidence in the meantime, but must not
+relabel a project-local stopgap as Assay R1/R2/R3.
 
 ### (a) One absolute-target symlink anywhere in the tree fails every R1+ lane
 
@@ -608,13 +608,79 @@ on day one; the only fix was to stop tracking it. A large multi-service monorepo
 will routinely carry such artifacts (vendored container configs, toolchain
 symlinks) far from the code any given lane judges.
 
-**Proposed:** either scope the snapshot walk / symlink check to the lane's declared
-`source_roots` (a symlink assay will never read cannot break isolation), or offer
-an explicit allow/skip knob (`isolation.allow_symlinks = [...]` or a snapshot
-`exclude`) so a consumer can attest "this path is outside what I test" once, rather
-than being forced to mutate unrelated tracked files. The security property is
-preserved: a symlink outside every source root is never materialized into a lane's
-working tree, so it cannot exfiltrate.
+The earlier "source-root scoped walk" / "allow or skip" proposal is withdrawn:
+source roots do not include every test dependency, and an ignore list only hides a
+path from validation without proving the executed command cannot reach it. The
+required design is an affirmative, attested materialisation boundary, specified in
+the expanded requirement below.
+
+### The CMRU reproduction and required capability
+
+CMRU makes the failure concrete. Its higher-rigor lane is rooted at `cmru`, but
+Assay first materialises the full monorepo commit and correctly refuses Topos's
+tracked fixture `topos/tests/fixtures/inspect_files/_danger/passwd_link ->
+/etc/passwd`. CMRU neither owns nor needs that path. No source root, coverage
+artifact, mutation candidate, canary target, or declared project input is under
+`topos`; the failure occurs before the project command runs. R0 passes, proving the
+argv is viable but providing no R1+ verdict.
+
+Add an explicit snapshot materialisation mode for R1/R2/R3. Exact TOML names are
+Assay's design decision, but the contract must be:
+
+1. A lane explicitly chooses **repository** or **project** scope. Repository scope
+   preserves today's full-P22 behaviour. Project scope declares an owned,
+   repo-top-relative prefix and a finite list of additional repo-top-relative,
+   tracked inputs required by the test command. CMRU needs its own tree plus named
+   root release/sample artifacts which its tests deliberately inspect. There is no
+   ambient discovery or fallback to the caller checkout.
+2. Canonicalise every scope path as a Git-tree path. Refuse absolute paths, `..`,
+   empty paths, duplicate/ambiguous overlap, missing/untracked paths, and any path
+   resolving outside the selected commit. An in-scope symlink keeps P22's current
+   containment check and fails closed.
+3. Retain the complete resolved commit, object closure, base resolution, and
+   provenance, but materialise only the declared prefix and inputs in a private
+   worktree/index. A private full-HEAD index with all non-selected entries marked
+   `skip-worktree` is one possible implementation; it must prove a clean checkout
+   and that the command cannot read a sibling worktree.
+4. Validate before execution that every source root, coverage artifact, mutation
+   candidate, canary target, and command working directory is inside the
+   materialised boundary. Never broaden scope automatically because a dependency
+   is absent.
+5. Record scope mode, full commit, project prefix, and canonical expanded input
+   set in the verdict. This must be a schema/versioned attestation so reviewers can
+   distinguish full-repository from project-scoped evidence.
+6. Use a private index/worktree only: flags, generated parents, hooks, and source
+   replacements cannot leak into the source checkout, and a nested command cannot
+   regain omitted files through environment or relative traversal.
+
+This is deliberately not `exclude = ["topos/**"]`, an `allow_symlinks` escape,
+or a best-effort fallback. A project that needs a sibling names it; an unsafe path
+inside that named boundary remains a loud P22 refusal.
+
+### Acceptance tests and adversarial oracles
+
+- A fixture repository contains an absolute-target symlink outside project scope.
+  Project-scoped R1, R2, and R3 pass through the normal snapshot path, and the
+  external target is never materialised or readable. Repository scope still fails
+  with P22's existing diagnostic.
+- An absolute-target or escaping relative symlink inside the owned prefix or a
+  declared input fails before the command; malformed, missing, untracked,
+  absolute, and `..` declarations do likewise.
+- A named root test dependency is present. Removing it from the explicit inputs
+  causes deterministic preflight failure rather than ambient checkout access.
+  Tests assert private `HEAD`, `git status`, `git diff`, base diff, and replacement
+  semantics remain exact.
+- Mutation/canary targets outside scope are refused; in-scope targets change only
+  in the private snapshot. A deliberate failure proves no temporary index,
+  worktree, or `skip-worktree` flag contaminates the source repository.
+- An end-to-end CMRU lane in `tester-unified` makes genuine R1/R2/R3 verdict
+  claims while the Topos fixture remains tracked. Its bounded mutation campaign
+  kills every non-equivalent mutant and its canary fails for the required coverage
+  reason.
+
+Release the feature as a versioned Assay artifact and pin it in CMRU before CMRU
+removes its temporary runner evidence. Direct whole-source coverage remains useful
+defence-in-depth, but cannot substitute for a verdict that attests what it measured.
 
 ### (b) The coverage-artifact parent dir must pre-exist in the snapshot, but the snapshot is tracked-only
 
@@ -635,17 +701,19 @@ doesn't exist in my snapshot". dstdns worked around it by tracking an empty
 every consumer with a gitignored coverage-output convention will hit this and need
 the same trick.
 
-**Proposed:** assay owns the artifact path (it reserves it), so it can safely
-create the artifact's parent directory inside its own ephemeral snapshot before
-running the argv — a mkdir of a path it is about to write is not a hermeticity
-violation. Failing that, detect the missing-parent case and emit a diagnostic that
-names the fix ("declared coverage artifact `.assay/x.json` — its parent `.assay/`
-is not present in the snapshot; track the directory or choose a tracked path"),
-rather than the generic `UNREADABLE_ARTIFACT`.
+**Required companion change:** assay owns the artifact path (it reserves it), so it
+creates and validates the declared artifact parent chain inside the ephemeral
+snapshot before running the argv. The mkdir is confined to Assay-owned output
+inside the already-declared scope; it is not permission to create arbitrary missing
+paths or climb above scope. A symlinked or escaping parent remains a loud refusal.
+The verdict records the requested artifact path, and diagnostics distinguish setup
+failure from a genuinely unreadable artifact.
 
 ### Evidence available on request
 
 dstdns `main`: commit `c359a6b1` (symlink removal, with the assay error verbatim in
 its message), `9f42acdc` (`.assay/.gitkeep` + gitignore), and the two intermediate
 `assay run redirect_chain` verdicts showing `GIT_FAILED` then `UNREADABLE_ARTIFACT`
-then `PASS`.
+then `PASS`; CMRU at `4b8009d5` has an honest R0 verdict and independent
+whole-source coverage gate, while its attempted R1+ run fails on the Topos
+`/etc/passwd` fixture before tests execute.
