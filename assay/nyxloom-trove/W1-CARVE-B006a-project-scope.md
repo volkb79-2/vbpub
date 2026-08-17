@@ -25,7 +25,7 @@ It does **not** give any of the following:
 
 This carve deliberately replaces the project-prefix-plus-inputs design in A-266 and narrows A-267/A-268; it does not pretend those binding rows already say this. Work item 0 must record the following ruling as A-269 before code lands:
 
-> **A-269 — B006(a) ships an explicit repository snapshot policy with exact, commit-validated omissions of P22-unsafe symlink leaves, not a project-prefix-plus-inputs boundary.** The policy is a materialisation selection, never a statement about process reachability. A-266's required `snapshot_scope = "project"`, `boundary_prefix`, `inputs`, expanded input attestation, and five boundary-containment preflights are withdrawn. A-267's no-sandbox ruling and A-268's full-index-plus-`skip-worktree` mechanism remain binding in their narrower applicable form. Verdict v6 records the selected policy and its exact declared omissions, not an execution-phase/materialisation-state enum.
+> **A-269 — B006(a) ships an explicit repository snapshot policy with exact, commit-validated omissions of P22-unsafe symlink leaves, not a project-prefix-plus-inputs boundary.** The policy is a materialisation selection, never a statement about process reachability. A-266's required `snapshot_scope = "project"`, `boundary_prefix`, `inputs`, expanded input attestation, and five boundary-containment preflights are withdrawn. The `snapshot_scope` key itself is replaced by `snapshot_selection`, closed to `"repository" | "repository-minus-unsafe-symlinks"`; A-268 amendment (a), which selected the `boundary_prefix` spelling, is moot with that prefix's withdrawal. A-267's no-sandbox ruling and A-268's full-index-plus-`skip-worktree` mechanism remain binding in their narrower applicable form. Verdict v6 records the selected policy and its exact declared omissions, not an execution-phase/materialisation-state enum. If N×M maintenance later becomes material, the known escalation path is a new `snapshot_selection` enum value for a commit-owned repository policy under its own ruling; its known trap is that commit-derived omissions are unavailable to early verdict producers, so it must solve that derivability problem rather than reintroduce defect class 3.
 
 If that row is not accepted and present in `decisions.md`, implementation is mechanically **BLOCKED**: A-266 otherwise requires a mutually incompatible public contract. The task brief authorises this design pass to revisit the sketched solution; it does not authorise an implementer to silently contradict the decisions ledger.
 
@@ -59,13 +59,13 @@ The exact grammar is:
 - Under `"repository"`, `unsafe_symlink_omissions` is forbidden.
 - Under `"repository-minus-unsafe-symlinks"`, `unsafe_symlink_omissions` is required and contains 1 through 64 strings. Empty omission mode is refused; use `"repository"` instead.
 - Each omission is the exact Git-tree pathname of one symlink leaf, relative to the repository top. It is never project-relative. Existing `SnapshotSpec.project_prefix` and `refuse_lane(project_prefix=...)` retain their existing, different meaning: the project root's repo-top-relative identity.
-- Each spelling must be non-empty, non-absolute, at most 4096 UTF-8 bytes, use `/`, contain no empty, `.`, `..`, `.git`, backslash, or NUL component, and equal `PurePosixPath(raw).as_posix()` byte-for-byte. Assay refuses rather than normalises `./x`, `x//y`, `x/`, or any other alternate spelling.
+- `IsolationConfig.__post_init__` implements one path-refusal mechanism, in this order: require a `str`; require it non-empty; refuse a leading `/`; require strict UTF-8 encoding of at most 4096 bytes; split the raw value on `/`; and refuse if any component is `''`, `.`, `..`, or `.git`, or contains backslash or NUL. There is no second `PurePosixPath(...).as_posix()` equality branch. Equality to that round-trip is a derived theorem of the accepted grammar: the accept-side matrix asserts it for every accepted path, proving that Assay refuses rather than normalises `./x`, `x//y`, or `x/` without creating an unreachable refusal.
 - The list must be strictly ascending by the UTF-8 bytes of the canonical spelling. This makes duplicate rejection and artifact comparison mechanical; the loader does not silently sort it.
 - No overlap rule is needed: commit validation requires every declaration to be a symlink **leaf**, so no declared path can be the ancestor of another path in the same Git tree.
 
 `config.py` adds a frozen `IsolationConfig(snapshot_selection, unsafe_symlink_omissions)` whose `__post_init__` enforces the closed selection/list/path grammar for both loader and direct construction. Both constructor arguments are required; repository selection carries the derived internal empty tuple, while `as_declared()` omits the forbidden TOML key rather than serialising `[]`. It adds required, **non-defaulted** `Lane.isolation: IsolationConfig | None` immediately before today's defaulted `env_required`; every direct constructor must say `None` or supply the object. `_OPTIONAL_LANE_FIELDS`, `_load_lane`, and `Lane.as_declared()` all consume it. The loader converts structural errors to `LaneConfigError` and additionally enforces the R0/R1+ conditional. `config.py` does not import Git and does not claim to validate the named commit object.
 
-The lane schema bump is separate from verdict schema v6 (A-065). All editable live lane literals migrate to v2 in the same commit. R0-only lanes gain only `schema_version = 2`; higher-rigor lanes explicitly choose a selection. Historical frozen carve assets are not rewritten to pretend they were authored for v2.
+The lane schema bump is separate from verdict schema v6 (A-065). It remains a hard cut because the semantic change is not additive: new R1+ lanes must explicitly select isolation, while interpreting an old missing table as repository mode would be the prohibited shadowing default and would give one `schema_version` two meanings. Old binaries also cannot parse the new table. Therefore only editable live lane literals **owned and executed by Assay** migrate in WI-1; consumer-owned lane files evaluated by pinned v1 binaries remain v1 until an atomic consumer adoption commit repins a v2-capable artifact and changes that consumer's lane file to v2. R0-only Assay-owned lanes gain only `schema_version = 2`; higher-rigor Assay-owned lanes explicitly choose a selection. Historical frozen carve assets are not rewritten to pretend they were authored for v2.
 
 ### 3.3 Commit validation and materialisation
 
@@ -74,12 +74,12 @@ The mechanism changes P22 in one narrow place while retaining its full-commit wa
 1. `SnapshotSpec` gains a required, no-default field `snapshot_policy: IsolationConfig`. Runner adds `_snapshot_policy_for_lane(lane)`: it returns `None` only for a valid R0/no-isolation pair, returns the exact `lane.isolation` object for a valid R1+ pair, and raises `ERROR/BAD_LANE_CONFIG` for either impossible direct-constructor pairing. `run_lane` calls it before choosing the R0/higher path; `_run_higher_rigor_lane` passes its non-`None` result into `SnapshotSpec` by identity. Later WI-4's `assemble_verdict` uses this same helper. `isolation.py` imports `IsolationConfig` from `config.py` (the dependency is one-way; `config.py` still imports neither isolation nor Git). There is one policy object, not separately normalised copies for runner and materialiser. Existing direct P22 tests explicitly construct repository policy; they do not receive a shadowing default.
 2. `prepare_snapshot` still resolves the literal commit, inventories and transfers its entire reachable object closure, and `_build_manifest` still traverses the entire root tree and applies every existing mode/name/object/limit check.
 3. Refactor `_check_symlink_target` around one pure classifier that returns one of `safe`, `empty`, `absolute`, or `repository-escape`. Existing repository mode maps every non-`safe` result to the existing `ERROR/GIT_FAILED` diagnostic. No kernel path resolution is involved.
-4. In omission mode, `_build_manifest` resolves every declared pathname against the **commit tree**, not the caller worktree. The path must exist at that commit with mode `120000`, its blob must be readable strict UTF-8, and the classifier must return `empty`, `absolute`, or `repository-escape`. Only then is the leaf removed from the worktree manifest. A safe symlink declaration is a configuration error, not permission to create an arbitrary exclusion.
+4. In omission mode, `_build_manifest` resolves every declared pathname against the **commit tree**, not the caller worktree. The path must exist at that commit with mode `120000`, its blob must be readable strict UTF-8, and the classifier must return `empty`, `absolute`, or `repository-escape`. `_build_manifest` returns `_Manifest.entries` with those validated leaves absent and a new frozen `_Manifest.omitted: tuple[PurePosixPath, ...]` holding their exact sorted paths. A safe symlink declaration is a configuration error, not permission to create an arbitrary exclusion.
    At a pathname that is declared, the “must be mode `120000`” check runs before the generic gitlink/unsupported-mode refusal, so a declared tree, regular file, executable, or gitlink deterministically means `ERROR/BAD_LANE_CONFIG`; the same kind at an undeclared path retains P22's existing `ERROR/GIT_FAILED` behavior.
-5. Every undeclared symlink still goes through the current `_check_symlink_target`. Thus a newly added unsafe link fails closed; Assay never broadens the declaration automatically.
-6. Each child materialisation runs `read-tree <commit>` to retain the full index, then feeds the exact NUL-delimited omission list to `git update-index --skip-worktree -z --stdin`. It writes every manifest entry except those exact symlink leaves. Using `--stdin -z` avoids both pathname parsing bugs and an argv-size dependency.
+5. Every undeclared symlink still goes through the current `_check_symlink_target`. Thus a newly added unsafe link fails closed; Assay never broadens the declaration automatically. In omission mode its existing `ERROR/GIT_FAILED` diagnostic additionally names the feature and exact repo-top declarable spelling, for example: `symlink topos/.../new_link targets the absolute path '/etc/passwd'; if this is a deliberate fixture, this omission lane may declare exactly "topos/.../new_link" in unsafe_symlink_omissions`. Repository mode retains today's diagnostic without suggesting a declaration that is illegal under that selection.
+6. Each child materialisation runs `read-tree <commit>` to retain the full index, then feeds `_Manifest.omitted` as exact NUL-delimited input to `git update-index --skip-worktree -z --stdin`. `_write_worktree` receives the already-filtered `_Manifest.entries` and applies no second omission filter. Using `--stdin -z` avoids both pathname parsing bugs and an argv-size dependency.
 7. Replacement snapshots update only the selected regular source blob as today. `write-tree` therefore creates a child commit that changes that blob while preserving the omitted symlink entries and every ordinary sibling entry in the tree.
-8. Before yielding a child, `_verify` additionally proves all of the following: `git status --porcelain=v1 -z` is empty; `git write-tree` equals `HEAD^{tree}`; parsing `git ls-files -v -z` yields uppercase `S` for exactly the declared omission set and no other path; `os.path.lexists`/descriptor-relative `lstat` says every omitted leaf is absent; and the existing HEAD, hooks, alternates, source-reference, and project-directory checks still pass. Uppercase `S` is intentional and measured.
+8. Before yielding a child, `_verify` additionally proves all of the following: `git status --porcelain=v1 -z` is empty; `git write-tree` equals `HEAD^{tree}`; parsing `git ls-files -v -z` yields uppercase `S` for exactly `_Manifest.omitted` and no other path; `os.path.lexists`/descriptor-relative `lstat` says every omitted leaf is absent; and the existing HEAD, hooks, alternates, source-reference, and project-directory checks still pass. Uppercase `S` is intentional and measured.
 9. The ordinary post-command dirt and HEAD checks remain unchanged. Skip-worktree is not counted as dirt. If the command restores an omitted path after clearing its skip bit and leaves the tree clean, that is allowed by the stated property and must not be redescribed as confinement.
 
 The manifest continues to contain every non-omitted regular, executable, and symlink entry. Directory creation may leave an empty parent directory after its sole tracked leaf was omitted; Git does not track directories, and the claimed unit is the tracked path, not an empty-directory topology.
@@ -107,12 +107,12 @@ Precedence is load grammar first, then commit/object/tree validation in P22's de
 
 | Condition | Outcome / reason | Where it is knowable |
 |---|---|---|
-| Missing/unknown `[isolation]` key, wrong selection, selection/list mismatch, empty/too-long/unsorted/duplicate/non-canonical path, too many entries, isolation on R0, or no isolation on R1+ | `ERROR/BAD_LANE_CONFIG` | `config.py` loader; malformed files have no resolved lane and therefore no verdict artifact under the existing CLI contract |
+| Missing/unknown `[isolation]` key, wrong selection, selection/list mismatch, non-string/empty/absolute/over-4096-byte path, forbidden empty/dot/dotdot/`.git`/backslash/NUL component, unsorted/duplicate list, too many entries, isolation on R0, or no isolation on R1+ | `ERROR/BAD_LANE_CONFIG` | `config.py` loader; malformed files have no resolved lane and therefore no verdict artifact under the existing CLI contract |
 | Direct construction of a structurally invalid `IsolationConfig` | `LaneConfigError` (`ERROR/BAD_LANE_CONFIG`) before a `Lane` exists | `IsolationConfig.__post_init__`; direct-constructor differential tests cover each branch |
 | A public directly-constructed `Lane` violates the R0/R1+ isolation conditional | `ERROR/BAD_LANE_CONFIG` | runner's policy resolver; direct API differential test |
 | Declared omission is absent at the resolved commit, names a tree/regular/executable blob/gitlink, or names a P22-safe symlink | `ERROR/BAD_LANE_CONFIG` | `_build_manifest`, after the commit tree and target bytes are readable; runner catches it into the normal whole-lane refusal artifact |
 | Validated declared omission equals or is an ancestor of the coverage artifact | `ERROR/BAD_LANE_CONFIG` | runner after `prepare_snapshot` and project→repo conversion, before any materialisation; public `Lane` API is the reachable source |
-| Undeclared empty/absolute/repository-escaping symlink | `ERROR/GIT_FAILED` | existing P22 symlink validation |
+| Undeclared empty/absolute/repository-escaping symlink | `ERROR/GIT_FAILED`; omission mode also names the exact `unsafe_symlink_omissions` spelling, repository mode does not | existing P22 symlink validation plus WI-2's selection-aware diagnostic only |
 | Declared or undeclared symlink target blob is missing, unreadable, or non-UTF-8 | `ERROR/GIT_FAILED` | P22 object/target read; the repository fact cannot be established |
 | Existing malformed tree name/mode, gitlink, object mismatch, private-index verification failure, or cleanup failure | existing `ERROR/GIT_FAILED` | existing P22 sites, unchanged |
 | Existing object/entry/path/pack limit exceeded | `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED` | existing P22 sites, unchanged |
@@ -193,6 +193,8 @@ No commit is repeated inside the object; top-level `commit` remains the single i
 | `snapshot_policy.selection = "repository-minus-unsafe-symlinks"` | The same helper copies the other closed enum value | The config object is the same immutable object passed to `SnapshotSpec`; no exception phase has to be inferred. |
 | `snapshot_policy.unsafe_symlink_omissions` present | The same helper copies `lane.isolation.unsafe_symlink_omissions` only for omission selection | The loader requires a non-empty canonical tuple in this mode and forbids the key in repository mode. Values do not depend on whether `_verify` or `prepare_snapshot` later failed. |
 | `snapshot_policy.unsafe_symlink_omissions` absent | The same helper omits the key for repository selection | This is selection-driven and therefore distinguishable at every producer call site. It is not encoded as an ambiguous empty list. |
+| Migrated v5 R1/R2/R3 document gets `snapshot_policy.selection = "repository"` | `carve-assets/W1/migrate_v5_to_v6.py::transform_document` tests whether the raw v5 `declared_rigor` contains R1, R2, or R3, then inserts that exact object | Every v5 higher-rigor producer had exactly the implicit complete-repository P22 policy; omission mode did not exist. The migration derives this historical fact from the source schema version plus rigor, not from a run phase. |
+| Migrated v5 R0-only document leaves `snapshot_policy` absent | The same migration function takes the disjoint R0-only branch and inserts nothing | V5 R0 bypassed P22 and the v6 runtime producer uses the same absence. A hostile v5 input already carrying `snapshot_policy` is refused before either branch, never merged. |
 
 `assemble_verdict` is the single construction site today. Normal completion calls it directly. `refuse_lane` and `_refuse_lane_with_plan` also end there, covering dirty/HEAD preconditions, snapshot errors, cleanup errors, attestation timeout, and adapter refusal. In particular, both `cli.py:_run_reserved` refusal branches around the currently cited lines 355 and 385 still have the resolved `Lane`, so they can emit this policy without a repository or materialisation state. There is no module-level fallback constant.
 
@@ -206,6 +208,7 @@ Direct callers can construct an invalid public `Lane` that the TOML loader canno
 - Draft 2020-12 **cannot** express strict array sorting or a 4096-**UTF-8-byte** ceiling (`maxLength` counts Unicode code points). `Verdict` enforces strict UTF-8 encodability, the byte ceiling, and order; `verify.py` independently checks those facts on the raw list before reconstruction, including rejecting a lone surrogate that cannot be UTF-8 encoded.
 - The schema cannot prove that a path is a symlink in `commit`, that its target is unsafe, or that it was absent from a worktree. Those are runtime producer facts owned by P22 and the differential integration tests; neither schema nor offline verifier claims them.
 - `verify.py` hand-transcribes the selection vocabulary and conditional rather than importing the model's table, following the existing independent layer style.
+- The typed v5→v6 migration refuses a v5 input that already contains `snapshot_policy`. Otherwise it inserts `{"snapshot_policy": {"selection": "repository"}}` exactly when `declared_rigor` contains R1, R2, or R3, and inserts nothing for R0-only. Differential migration tests cover an R1+ insertion, R0 absence, and hostile pre-existing-key refusal; the post-transform validity sweep proves each transformed document is valid only under v6.
 - No `materialisation = none|partial|complete` field exists. The runner's shared exception state cannot distinguish all such phases, and this design does not need it: `snapshot_policy` says what was selected, while claims/outcome say whether a measurement completed.
 
 This is the minimum §6 change needed from the already-specified verdict-v6 work: add `snapshot_policy` and its conditional. Branch payloads, B005 judgments, the `changed_executable`→`executable` rename, and every other v6 rule remain untouched.
@@ -214,17 +217,19 @@ This is the minimum §6 change needed from the already-specified verdict-v6 work
 
 Each item is independently committable and lands in this order.
 
+Cross-carve ordering is explicit. WI-0 and WI-1 may land now. WI-2 and WI-3 may land before the sibling wave's single v6 cut, subject to WI-3's no-live-omission/no-release embargo below. WI-4 lands in the **same commit** as `W1-CARVE-branch-coverage-and-whole-target.md` §7 item 4: that is the one v5→v6 hard cut, and the `carve-assets/W1/**` files named here are created by that item rather than assumed to exist today. WI-5 additionally requires the sibling wave's item 2 (B006(b) artifact-parent creation) and item 4 (v6, `judge.mode`, `require_branch`, B005, and branch-aware judgment) to have landed. A work item whose stated prerequisite is absent is mechanically BLOCKED; it does not emulate or partially duplicate the missing wave work.
+
 ### WI-0 — accept the product ruling
 
-Files: `assay/nyxloom-trove/decisions.md`, `assay/nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md`, and `assay/nyxloom-trove/W1-RESUME.md`.
+Files: `assay/nyxloom-trove/decisions.md`, `assay/nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md`, `assay/nyxloom-trove/W1-RESUME.md`, and `assay/nyxloom-trove/4-backlog.md`.
 
-Record A-269 exactly as §3.1, mark the old §1 project-boundary contract superseded rather than rewriting its history, and point the resume decision to this carve. Test with `rg` that A-266 through A-269 each occur once. If A-269 is not authorised, stop with the mechanical BLOCKED condition; do not implement around the ledger.
+Record A-269 exactly as §3.1 and point the resume decision to this carve. In the sibling wave carve, add explicit supersession markers without rewriting history at: §1 in full; §6's `### isolation` subsection (replaced by this carve's §5 `snapshot_policy`); §7 items 1a/1b/1c; item 4's sentences demanding the withdrawn `isolation` object and O15/O18; and §8 oracles O9/O15/O17/O18/O19 (replaced by this carve's O1–O7). Update B006(a)'s backlog status line and prose in this same decision commit so the binding requirement never instructs the withdrawn boundary between WI-0 and WI-6. Test with `rg` that A-266 through A-269 each occur once and that every listed sibling marker names A-269 plus this file. If A-269 is not authorised, stop with the mechanical BLOCKED condition; do not implement around the ledger.
 
 ### WI-1 — lane schema v2 and immutable policy
 
-Files: `assay/src/assay/config.py`; new `assay/tests/test_config_snapshot_selection.py` and `assay/tests/test_lane_schema_v2_locked_successors.py`; `assay/tools/tester-unified-gate.sh`; the editable live lane literals in `assay/assay.toml`, `cmru/assay.toml`, `assay/gate/python/qualify_topos.py`, `assay/tests/conftest.py`, `assay/tests/test_canary_python_pipeline.py`, `assay/tests/test_cli_run.py`, `assay/tests/test_config_accept.py`, `assay/tests/test_config_env_required.py`, `assay/tests/test_config_reject.py`, `assay/tests/test_config_source_roots.py`, `assay/tests/test_dependency_purity.py`, `assay/tests/test_distribution_build_release.py`, `assay/tests/test_self_hosting.py`, `assay/tests/test_standalone.py`, and `assay/tests/test_verify_layer_independence.py`; plus new audit log `assay/nyxloom-trove/reports/W1-WI1-lane-v2-migration.md`.
+Files: `assay/src/assay/config.py`; new `assay/tests/test_config_snapshot_selection.py` and `assay/tests/test_lane_schema_v2_locked_successors.py`; `assay/tools/tester-unified-gate.sh`; the Assay-owned live lane/template literals in `assay/assay.toml`, `assay/templates/consumer-assay.toml`, `assay/gate/python/qualify_topos.py`, `assay/tests/conftest.py`, `assay/tests/test_canary_python_pipeline.py`, `assay/tests/test_cli_run.py`, `assay/tests/test_config_accept.py`, `assay/tests/test_config_env_required.py`, `assay/tests/test_config_reject.py`, `assay/tests/test_config_source_roots.py`, `assay/tests/test_dependency_purity.py`, `assay/tests/test_distribution_build_release.py`, `assay/tests/test_self_hosting.py`, `assay/tests/test_standalone.py`, and `assay/tests/test_verify_layer_independence.py`; plus new audit log `assay/nyxloom-trove/reports/W1-WI1-lane-v2-migration.md`. **Do not edit `cmru/assay.toml` here:** `cmru/cmru.toml:39–41` evaluates it with the pinned lane-v1-only `assay-1.0.0.pyz`, so that consumer-owned pair migrates atomically only after release as specified in WI-6.
 
-Implement §3.2, bump `LANE_SCHEMA_VERSION` to 2, round-trip against independent `tomllib`, and migrate each editable literal by rule: R0 gets no isolation; R1+ gets explicit repository unless the test is specifically an omission test. Tests cover every enum/requiredness/path/list bound and distinguish raw spelling from normalisation. The old “unknown version 2” test becomes “unknown version 3”.
+Implement §3.2, bump `LANE_SCHEMA_VERSION` to 2, round-trip against independent `tomllib`, and migrate each **listed Assay-owned** editable literal by rule: R0 gets no isolation; R1+ gets explicit repository unless the test is specifically an omission test. Tests cover every enum/requiredness/path/list bound and distinguish raw spelling from normalisation. The old “unknown version 2” test becomes “unknown version 3”.
 
 Do not edit `nyxloom-trove/carve-assets/**`. To keep this commit green, the registered gate adds rootdir-relative deselections for the four P26 nodes that load `_lane_document` but are not already deselected, and the five P33 nodes that load `_load_lane`:
 
@@ -240,7 +245,7 @@ nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_kill_sig
 nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_equivalence_artifact_as_reserved_for_p34
 ```
 
-`test_lane_schema_v2_locked_successors.py` carries those nine behaviors forward under v2 as nine one-for-one, similarly named tests, and the same installed-wheel gate invocation runs it; a combined omnibus successor is forbidden because it would make a lost behavior hard to see. These are version-coupled fixture failures, not permission to deselect any other red. Run both frozen modules first, record their full red list and prove it equals this nine-node addition plus already-documented verdict-version deselections; any extra red is a regression to fix. Record that output and the one-for-one mapping in the named audit log.
+`test_lane_schema_v2_locked_successors.py` carries those nine behaviors forward under v2 as nine one-for-one, similarly named tests, and the same installed-wheel gate invocation runs it; a combined omnibus successor is forbidden because it would make a lost behavior hard to see. These are version-coupled fixture failures, not permission to deselect any other red. Run both frozen modules first and record their full red list. Any extra red must be dispositioned in the audit log: fix it if it is a real regression, or prove it is lane-v1-coupled, add its exact rootdir-relative node ID to the deselection list, and give it a named one-for-one v2 successor—never silently deselect it. Record the output and complete mapping in the named audit log.
 
 ### WI-2 — P22 validation, omission, index invariants, and mandatory call-site wiring
 
@@ -254,15 +259,17 @@ Files: `assay/src/assay/runner.py`, new `assay/tests/test_runner_snapshot_select
 
 Add only §3.4's coverage-artifact collision and the cross-unit runner proof over the wiring landed in WI-2. A `process_runner` double inspects its live `cwd` and proves the three omitted leaves are absent, the two CMRU root files and an ordinary Topos file are present, `status` is clean, and the exact skip set is visible during the baseline, mutant, and both canary halves. Direct-invalid-Lane tests reach the defence branches. No changes to `evaluate.py` or `safeio.py` belong to this item.
 
+Until WI-4 lands, no live checked-in lane may declare `repository-minus-unsafe-symlinks`; omission mode exists only in test fixtures, and no Assay release is cut between WI-1 and WI-4. This prevents a v5 verdict from reporting omission-mode evidence without the v6 policy record. The WI-3 audit asserts both conditions rather than relying on schedule folklore.
+
 ### WI-4 — v6 policy attestation
 
 Files: `assay/src/assay/verdict.py`, `assay/src/assay/verify.py`, `assay/src/assay/schemas/verdict.schema.json`, `assay/src/assay/runner.py`, new `assay/tests/test_verdict_snapshot_policy.py`, `assay/tests/test_verdict_transparency.py`, `assay/tests/test_verdict_conformance.py`, `assay/tests/test_verify_layer_independence.py`, `assay/tests/test_cli_run.py`, `assay/tests/fixtures/verdicts/*.json`, `assay/nyxloom-trove/carve-assets/W1/migrate_v5_to_v6.py`, `assay/nyxloom-trove/carve-assets/W1/test_acceptance_v6.py`, `assay/nyxloom-trove/carve-assets/W1/expected/*.json`, and `assay/tools/tester-unified-gate.sh`. Those globbed sets are the exact typed transform/expected buckets already owned by wave §6; no earlier frozen carve asset is edited.
 
-Implement §5 as part of the single v6 hard cut, not as v5 or a later v7. Tests cover repository and omission successes; R0 absence; every early producer (`env_required` refusal, `refuse_lane`, attestation timeout, adapter refusal, dirty tree, HEAD drift, snapshot `GIT_FAILED`, and generic OSError mapping); schema/model/raw rejection of conditional/list/order tampering; and exact CLI round-trip. The test for an early bad commit declaration expects the **declared policy** plus `ERROR/BAD_LANE_CONFIG`, never a fabricated phase. Do not change B005 or branch semantics.
+Implement §5 as part of the single v6 hard cut, not as v5 or a later v7. The migration implements §5.3's closed rule: R1/R2/R3 v5 input gets repository policy, R0-only gets no object, and a pre-existing key is refused. Tests cover those three migration cases; repository and omission runtime successes; R0 absence; every early producer (`env_required` refusal, `refuse_lane`, attestation timeout, adapter refusal, dirty tree, HEAD drift, snapshot `GIT_FAILED`, and generic OSError mapping); schema/model/raw rejection of conditional/list/order tampering; and exact CLI round-trip. The test for an early bad commit declaration expects the **declared policy** plus `ERROR/BAD_LANE_CONFIG`, never a fabricated phase. Do not change B005 or branch semantics.
 
 ### WI-5 — real consumer qualification without the R2 gate trap
 
-Files: new `assay/gate/python/qualify_cmru_b006a.py`, new `assay/tests/test_gate_qualify_cmru_b006a.py`, and `assay/tools/tester-unified-gate.sh`.
+Files: new `assay/gate/python/qualify_cmru_b006a.py`, new `assay/tests/test_gate_qualify_cmru_b006a.py`, `assay/tools/tester-unified-gate.sh`, and new `assay/nyxloom-trove/reports/W1-WI5-CMRU-qualification.md`.
 
 The harness follows `qualify_topos.py`'s installed-wheel/disposable-repository pattern and freezes these measured source inputs:
 
@@ -277,6 +284,15 @@ It refuses drift and seeds a disposable full-repository checkout without deletin
 ```python
 client.update_release = lambda *args, **kwargs: {"id": 7}
 ```
+
+Before the qualification baseline is frozen, WI-5 is mechanically **BLOCKED** on one real-environment probe. Inside the same `tester-unified:local` container entry the registered gate uses (`--network=none`, validated background cgroup, `/opt/tester-venv/bin/python`), prepare `c3b00729...`, apply exactly the byte-compared insertion above, and run from `cmru/`:
+
+```bash
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 \
+  /opt/tester-venv/bin/python -m pytest tests -q
+```
+
+Paste the complete command, image ID, exit code, and unabridged terminal summary into `W1-WI5-CMRU-qualification.md` as **M20**. A zero exit is required before the frozen harness is accepted. If an environment-caused failure remains—including any of the three Consul socket nodes seen in the restricted cockpit—extend the disposable qualification-baseline repair by the minimum explicit byte-compared test/environment correction, prove each correction differential, and rerun; never deselect a node. The harness captures this preflight's stdout/stderr and, on nonzero, prints the failing node lines before exiting without a qualification marker. The carver's Docker socket was inaccessible (recorded in §9), so this required tester-unified pass is deliberately a WI-5 gate, not an invented measurement.
 
 The harness compares the complete patched test-file bytes to “frozen blob plus that one insertion,” runs the repaired node once, and requires PASS. It then creates exactly one controlled head commit containing:
 
@@ -332,19 +348,27 @@ target = "src/cmru/_b006a_probe.py"
 
 The argv is `/opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-report=json:.assay/coverage.json`. It deliberately has **no** `--cov-fail-under`; `judge.fail_under = 100.0` owns the decision so the R3 transformed half fails for `UNCOVERED_LINES`, not `COMMAND_FAILED`. B006(b) creates `.assay`.
 
-The full CMRU suite runs from that explicitly repaired disposable history, thereby exercising both measured root dependencies without concealing the stale premise. The harness independently checks: R0/R1/R2/R3 all PASS; R1 `executable > 0`; R2 `candidate_count == total == 1`, exactly one killed identity and no survivor/equivalent/budget bucket; R3 control PASS, transformed FAIL, expected and observed reason `UNCOVERED_LINES`; the v6 snapshot policy and three paths exactly match; the source repository is unchanged; and the disposable snapshot command observed all three links absent. The harness also checks that `git diff <frozen-input>..<qualification-baseline>` is exactly the one test file and that `git diff <qualification-baseline>..<controlled-head> -- cmru/src` is exactly `_b006a_probe.py`; this prevents the repair from manufacturing mutation candidates or changing consumer behavior.
+The full CMRU suite runs from that explicitly repaired disposable history, thereby exercising both measured root dependencies without concealing the stale premise. The harness independently checks: R0/R1/R2/R3 all PASS; R1 `executable > 0`; R2 `candidate_count == total == 1`, exactly one killed identity and no survivor/equivalent/budget bucket; R3 control PASS, transformed FAIL, expected and observed reason `UNCOVERED_LINES`; the v6 snapshot policy and three paths exactly match; the source repository is unchanged; and the disposable snapshot command observed all three links absent. The harness also checks that `git diff <frozen-input>..<qualification-baseline>` is exactly the one test file and that `git diff <qualification-baseline>..<controlled-head> -- cmru/src` is exactly `_b006a_probe.py`; this prevents the repair from manufacturing mutation candidates or changing consumer behavior. If Assay reports R0 `COMMAND_FAILED`, the harness reruns the identical pytest argv directly in the preserved disposable head, emits its captured stdout/stderr and failing node lines, and withholds the marker; if that control passes, it says explicitly that the failure is snapshot-specific rather than inventing an environmental cause.
 
 This avoids the release-gate trap because the controlled head **does** change `cmru/src`, guaranteeing a real R2 candidate, and because the qualification is a dedicated Assay gate phase rather than a permanent `assay run` step in `cmru/cmru.toml`. `cmru/assay.toml` remains R0 in the real checkout until CMRU's owner chooses a per-commit R2 policy; an ordinary non-source commit therefore cannot roll the CMRU release gate to exit 5/`NO_MUTANTS`.
 
-The unit test for the harness stubs subprocess boundaries and proves no marker on wrong input OID, surviving mutant, wrong canary reason, missing omission, or source-checkout dirt. The real harness runs only in `tester-unified`, never in the devcontainer cockpit.
+The unit test for the harness stubs subprocess boundaries and proves no marker on wrong input OID, failed M20 preflight, surviving mutant, wrong canary reason, missing omission, or source-checkout dirt. The real harness runs only in `tester-unified`, never in the devcontainer cockpit. In `tester-unified-gate.sh`, insert its captured-marker phase immediately after `ASSAY_GATE_PHASE=topos-qualified` and before `run_independent_witness`; do not place it after the witness or in the outer Docker wrapper.
 
 Also add an in-repo integration fixture named for dstdns's exact path `infra-global/reverse-proxy/etc-nginx/modules -> /usr/lib/nginx/modules`: repository mode refuses; omission mode runs an unrelated project command while the link is absent and ordinary `infra-global` files remain. The real external dstdns checkout is measured input, not a gate dependency.
 
 ### WI-6 — product documentation and release handoff
 
-Files: `assay/docs/DESIGN-GUIDE.md`, `assay/nyxloom-trove/1-north-star.md`, `assay/nyxloom-trove/2-product-definition.md`, `assay/nyxloom-trove/4-backlog.md`, `assay/nyxloom-trove/STATE.md`, `assay/CHANGES.md`, and new `assay/nyxloom-trove/reports/W1-WI6-B006a-implementation.md`.
+Files: `assay/README.md`, `assay/docs/DESIGN-GUIDE.md`, `assay/nyxloom-trove/1-north-star.md`, `assay/nyxloom-trove/2-product-definition.md`, `assay/nyxloom-trove/4-backlog.md`, `assay/nyxloom-trove/STATE.md`, `assay/CHANGES.md`, and new `assay/nyxloom-trove/reports/W1-WI6-B006a-implementation.md`.
 
-Document the exact one-sentence property and every non-property from §2; mark only B006(a)'s smaller unsafe-symlink problem complete; leave project-prefix dependency selection explicitly unshipped; cite the real test node IDs and qualification marker. Release/pinning and any dstdns re-tracking are external adoption steps, not hidden implementation mutations.
+Document the exact one-sentence property and every non-property from §2; mark only B006(a)'s smaller unsafe-symlink problem complete; leave project-prefix dependency selection explicitly unshipped; update the README and DESIGN-GUIDE lane examples to v2; and cite the real test node IDs, M20 receipt, and qualification marker.
+
+The handoff carries these ordered, consumer-owned adoption sequences; WI-6 documents them but does not mutate either consumer:
+
+1. **Release Assay first** as the separately authorised versioned wheel plus zipapp and verify the published `.pyz`/sidecar. No consumer lane file moves before this artifact exists.
+2. **CMRU, one atomic CMRU-owned commit:** vendor/pin the released v2-capable Assay artifact and hashes; update `cmru/cmru.toml`'s verified/invoked artifact spelling; change `cmru/assay.toml` from lane schema v1 to v2 in the same commit; keep its live rigor R0 unless CMRU separately chooses a permanent higher-rigor policy; run CMRU's gate. Never land the lane-file bump before the pin.
+3. **dstdns notification and atomic adoption:** only after the release, write `/workspaces/dstdns/.assay-inbox/release.json` per its tracked `CONTRACT.md`, taking the `.pyz` hash from the published sidecar. `landed` names `B006` only if both B006(a) and the separately specified B006(b) actually shipped; `notes` names the lane-schema-v2 hard cut. The dstdns controller then vendors/verifies the new zipapp and changes `/workspaces/dstdns/assay.toml` to v2 in the same dstdns-owned commit before running its gate. Re-tracking the nginx link and removing `.assay/.gitkeep` remain dstdns choices gated on the corresponding shipped capability, never Assay-side edits.
+
+As a non-normative monorepo buy-back for the ownership inversion, recommend a Topos-owned inventory test that asserts the exact repo-top set of tracked P22-unsafe symlink leaves. A fourth or renamed fixture should therefore red the author's own gate first and name the consumer lane updates required. This is not an Assay configuration source, is not read by `config.py` or P22, does not auto-broaden omissions, and does not alter the verdict producer; the per-lane explicit list remains authoritative.
 
 ## 7. Acceptance oracles
 
@@ -366,7 +390,7 @@ Exact success marker:
 ASSAY_B006A_CONFIG=1
 ```
 
-Broken/absent observable: accepting a missing higher-rigor table, an isolation table on R0, an empty or oversized omission list, an unsorted/duplicate list, or an alternate/non-canonical path spelling makes the parametrised test fail and the marker is absent. The same test round-trips each control through independent `tomllib`; commit-dependent symlink kind is intentionally tested only by O2.
+Broken/absent observable: accepting a missing higher-rigor table, an isolation table on R0, an empty or oversized omission list, an unsorted/duplicate list, or any named raw component violation makes the parametrised test fail and the marker is absent. Accepted-path controls separately assert the derived `PurePosixPath(raw).as_posix() == raw` theorem; there is no equality-refusal branch to cover. The same test round-trips each control through independent `tomllib`; commit-dependent symlink kind is intentionally tested only by O2.
 
 ### O2 — symlink matrix and full-index mechanism
 
@@ -384,7 +408,7 @@ Exact success marker:
 ASSAY_B006A_ISOLATION=1
 ```
 
-Broken/absent observable: without omission support the control raises `ERROR/GIT_FAILED` at the absolute link; if validation is merely skipped, `lstat` sees the link and the test fails; with a narrow index, status/write-tree differs; with a lowercase-`s` oracle, the exact parsed set is empty rather than equal and the test fails; if safe links are excludable, the safe-link negative does not raise `ERROR/BAD_LANE_CONFIG` and the test fails.
+Broken/absent observable: without omission support the control raises `ERROR/GIT_FAILED` at the absolute link; if validation is merely skipped, `lstat` sees the link and the test fails; with a narrow index, status/write-tree differs; with a lowercase-`s` oracle, the exact parsed set is empty rather than equal and the test fails; if safe links are excludable, the safe-link negative does not raise `ERROR/BAD_LANE_CONFIG` and the test fails. A fourth undeclared unsafe link must fail with `GIT_FAILED` and its exact declarable repo-top spelling; deleting the R1 diagnostic addition leaves the reason unchanged but makes the message assertion fail.
 
 ### O3 — runner applies the same policy to baseline, R2, and R3
 
@@ -442,11 +466,12 @@ Broken/absent observable: repository mode must produce `ERROR/GIT_FAILED`; omiss
 
 ### O6 — real CMRU end to end
 
-Command, inside the registered gate after the candidate wheel is installed:
+Command, inside the registered gate after the candidate wheel is installed, using the established `qualify_topos.py` absolute-path/interpreter pattern:
 
 ```bash
-PYTHONPATH= /opt/tester-venv/bin/python gate/python/qualify_cmru_b006a.py \
-  --source-repo .. \
+PYTHONPATH= "$scratch/run-venv/bin/python" \
+  "$worktree/assay/gate/python/qualify_cmru_b006a.py" \
+  --source-repo "$worktree" \
   --scratch "$scratch/b006a-cmru" \
   --current-assay "$scratch/run-venv/bin/assay" \
   --current-version "$version"
@@ -458,7 +483,7 @@ Exact stdout on success:
 ASSAY_B006A_CMRU_QUALIFIED=1
 ```
 
-Broken/absent observable: without B006(a), no marker is printed and the first higher-rigor snapshot is `ERROR/GIT_FAILED` naming Topos's first `/etc/passwd` link. If the one-line qualification repair drifts or no longer makes its named node pass, the harness refuses before Assay runs. If R2 becomes vacuous, the harness sees `NO_MUTANTS` or a candidate count other than one and suppresses the marker. If `--cov-fail-under` is accidentally restored, R3 observes `COMMAND_FAILED` rather than `UNCOVERED_LINES` and suppresses the marker. If either root dependency is absent, its already-measured named test fails and there is no marker.
+Broken/absent observable: no marker is printed unless the tester-unified M20 preflight is green. Without B006(a), the first higher-rigor snapshot is `ERROR/GIT_FAILED` naming Topos's first `/etc/passwd` link. If the qualification repair drifts or no longer makes its named node pass, the harness refuses before Assay runs and prints the failing node lines. If R2 becomes vacuous, the harness sees `NO_MUTANTS` or a candidate count other than one and suppresses the marker. If `--cov-fail-under` is accidentally restored, R3 observes `COMMAND_FAILED` rather than `UNCOVERED_LINES` and suppresses the marker. If either root dependency is absent, its already-measured named test fails and there is no marker.
 
 ### O7 — registered gate receipt
 
@@ -468,7 +493,7 @@ Command from the repository top, with the gate's existing cgroup-parent derivati
 bash assay/tools/tester-unified-gate.sh .
 ```
 
-The exact new/final success lines, in this order, are:
+The exact new/final success lines occur in this **relative** order; existing gate phase/output lines occur between them:
 
 ```text
 ASSAY_B006A_CMRU_QUALIFIED=1
@@ -476,7 +501,9 @@ ASSAY_GATE_PHASE=cmru-b006a-qualified
 ASSAY_REGISTERED_GATE_COMPLETE=1
 ```
 
-Broken/absent observable: `tester-unified-gate.sh` captures the harness stdout and requires the qualification marker exactly once before printing its phase; any unit, consumer, schema, or installed-wheel failure exits under `set -e` before both the phase and final receipt. The outer script continues to pass `--cgroup-parent` from `assay/tools/cgroup-parent.sh`; no container runs unconfined.
+The new phase is inserted immediately after `ASSAY_GATE_PHASE=topos-qualified` and before `run_independent_witness`; the existing witness and outer-container output therefore appear before `ASSAY_REGISTERED_GATE_COMPLETE=1`.
+
+Broken/absent observable: `tester-unified-gate.sh` captures the harness stdout and requires the qualification marker exactly once before printing its phase; any unit, consumer, schema, installed-wheel, M20-preflight, or witness failure exits under `set -e` before the relevant later phase and final receipt. The outer script continues to pass `--cgroup-parent` from `assay/tools/cgroup-parent.sh`; no container runs unconfined.
 
 After checking the captured value, the gate explicitly prints that value once, then prints the phase. Command substitution alone would hide the harness marker and make the three-line receipt above false.
 
@@ -487,28 +514,32 @@ After checking the captured value, the gate explicitly prints that value once, t
 - **Reachability is not controlled.** Object reads, checkout restoration, alternate worktrees, absolute paths, `..`, `/proc`, external executables, network, and daemonised children remain execution-environment concerns.
 - **Only existing P22-unsafe symlink target classes qualify.** Regular files, directories, safe links, non-UTF-8 targets, gitlinks, and unsupported modes cannot be omitted. Extending eligibility needs a new product ruling because it changes the evidence/vacuity risk.
 - **The full tree is still structurally inspected and the full closure bounded.** This smaller capability fixes the two live symlink incidents, not every possible monorepo-wide P22 refusal.
-- **The list is intentionally manual and fail-closed.** Adding another unsafe link reds omission lanes until their owners review and add its exact path. There is no discovery fallback.
+- **The list is intentionally manual and fail-closed, with an ownership cost.** Adding or moving an unsafe link reds omission lanes until each lane owner reviews the exact path; the author may not own those lanes. WI-2's declarable-path diagnostic and WI-6's non-normative Topos inventory test buy back attribution without auto-broadening evidence. If N×M maintenance becomes material, A-269 records the commit-owned repository policy as the known new-enum escalation and records its early-producer derivability trap.
 - **B006(b) remains separate.** This carve adds only the collision refusal needed to stop parent creation from replacing an omitted link. Parent creation, diagnostics, permissions, and `O_NOFOLLOW` stay as already specified.
 - **No materialisation phase is recorded.** It was underivable at the common exception site. The policy is always derivable; completion is conveyed by the existing claims and outcome.
 - **CMRU qualification is not permanent R2 adoption.** A permanent gate over arbitrary commits still needs a consumer policy for `NO_MUTANTS`; the controlled source commit proves B006(a) without making unrelated CMRU commits exit 5.
-- **The frozen CMRU input is not full-suite green as claimed in the brief.** WI-5 uses one explicit, differential test-only repair in its disposable baseline; it neither edits CMRU nor presents that repaired history as consumer evidence. Repairing the checked-in CMRU test belongs to CMRU's owner.
+- **The frozen CMRU input is not known full-suite green under tester-unified yet.** The restricted cockpit run has one source-intrinsic network failure and three local-socket setup errors; only the one-line repair for the former is presently proven differential. WI-5 cannot freeze its qualification baseline until its real `tester-unified:local --network=none` M20 run passes, extending the disposable byte-compared repair for any remaining node rather than deselecting it. It neither edits CMRU nor presents repaired history as consumer evidence.
 - **dstdns adoption is external.** This implementation permits dstdns to re-track its nginx link and declare it, but does not mutate `/workspaces/dstdns` or decide its release timing.
-- **Historical lane-v1 assets remain historical.** The active lane grammar hard-cuts to v2; frozen evidence is not rewritten. Any gate deselection must name a v2 successor test.
+- **Lane schema v2 is a coordinated adoption hard cut.** It is warranted because a missing R1+ isolation declaration cannot truthfully default to repository mode and old binaries cannot parse the new table. Historical lane-v1 assets remain historical; frozen evidence is not rewritten, and any gate deselection must name a v2 successor test. Each pinned consumer remains wholly v1 until one consumer-owned commit both repins a v2-capable artifact and bumps its lane file; no automatic broadening or mixed-version interval is allowed.
 - **No release/pin is performed by these work items.** Release remains a separately authorised state change after the registered gate and adversarial review are green.
 
 ## 9. Measurements made for this carve
 
 All Git writes below occurred only in `/tmp/b006a-scratch/`. Commands against `/workspaces/vbpub` and `/workspaces/dstdns` were read-only.
 
-### M1 — exact source revision and consumer trees
+### M1 — exact measured product input and unchanged consumer trees
 
 Command:
 
 ```bash
-printf 'INPUT_REVISION=%s\n' "$(git rev-parse HEAD)"
-printf 'CMRU_TREE=%s\n' "$(git rev-parse HEAD:cmru)"
-printf 'TOPOS_TREE=%s\n' "$(git rev-parse HEAD:topos)"
-printf 'TRACKED_COUNT=%s\n' "$(git ls-files | wc -l)"
+input_rev=c3b00729eb61bec3fbb4fead50218a3a4db886e2
+printf 'INPUT_REVISION=%s\n' "$(git rev-parse "$input_rev^{commit}")"
+printf 'CMRU_TREE=%s\n' "$(git rev-parse "$input_rev:cmru")"
+printf 'TOPOS_TREE=%s\n' "$(git rev-parse "$input_rev:topos")"
+printf 'TRACKED_COUNT=%s\n' "$(git ls-tree -r --name-only "$input_rev" | wc -l)"
+printf 'CURRENT_HEAD=%s\n' "$(git rev-parse HEAD)"
+printf 'CURRENT_CMRU_TREE=%s\n' "$(git rev-parse HEAD:cmru)"
+printf 'CURRENT_TOPOS_TREE=%s\n' "$(git rev-parse HEAD:topos)"
 ```
 
 Output:
@@ -518,7 +549,14 @@ INPUT_REVISION=c3b00729eb61bec3fbb4fead50218a3a4db886e2
 CMRU_TREE=6fbb3c2c00be81dd893dc11ad0109d14bc846556
 TOPOS_TREE=31b88ee2ff71566afa4aa23b83ddeff5799ec855
 TRACKED_COUNT=3185
+CURRENT_HEAD=c313589b1cc87451afd976033c104ba5624be1ff
+CURRENT_CMRU_TREE=6fbb3c2c00be81dd893dc11ad0109d14bc846556
+CURRENT_TOPOS_TREE=31b88ee2ff71566afa4aa23b83ddeff5799ec855
 ```
+
+The two commits after the measured input add only this carve and its review; the
+consumer tree identities are unchanged. WI-5 deliberately freezes the measured
+product input, not the later documentation-only HEAD.
 
 ### M2 — current P22 really refuses CMRU before execution
 
@@ -893,14 +931,15 @@ Output:
 Command:
 
 ```bash
-rg -l 'schema_version = 1' assay/gate assay/tests assay/nyxloom-trove/carve-assets \
-  --glob '*.py' --glob '*.toml' | sort
-printf 'FILES=%s\n' "$(rg -l 'schema_version = 1' \
-  assay/gate assay/tests assay/nyxloom-trove/carve-assets \
-  --glob '*.py' --glob '*.toml' | wc -l)"
-printf 'OCCURRENCES=%s\n' "$(rg -o 'schema_version = 1' \
-  assay/gate assay/tests assay/nyxloom-trove/carve-assets \
-  --glob '*.py' --glob '*.toml' | wc -l)"
+scan_paths=(assay/assay.toml assay/gate assay/tests \
+  assay/nyxloom-trove/carve-assets assay/templates/consumer-assay.toml \
+  assay/README.md assay/docs/DESIGN-GUIDE.md)
+rg -l 'schema_version = 1' "${scan_paths[@]}" \
+  --glob '*.py' --glob '*.toml' --glob '*.md' | sort
+printf 'FILES=%s\n' "$(rg -l 'schema_version = 1' "${scan_paths[@]}" \
+  --glob '*.py' --glob '*.toml' --glob '*.md' | wc -l)"
+printf 'OCCURRENCES=%s\n' "$(rg -o 'schema_version = 1' "${scan_paths[@]}" \
+  --glob '*.py' --glob '*.toml' --glob '*.md' | wc -l)"
 printf 'CARVE_ASSET_FILES=%s\n' "$(rg -l 'schema_version = 1' \
   assay/nyxloom-trove/carve-assets --glob '*.py' --glob '*.toml' | wc -l)"
 ```
@@ -908,6 +947,8 @@ printf 'CARVE_ASSET_FILES=%s\n' "$(rg -l 'schema_version = 1' \
 Output:
 
 ```text
+assay/assay.toml
+assay/docs/DESIGN-GUIDE.md
 assay/gate/python/qualify_topos.py
 assay/nyxloom-trove/carve-assets/P21/test_acceptance.py
 assay/nyxloom-trove/carve-assets/P23/test_acceptance.py
@@ -915,6 +956,8 @@ assay/nyxloom-trove/carve-assets/P24/test_acceptance.py
 assay/nyxloom-trove/carve-assets/P25/probe_topos_qualification.py
 assay/nyxloom-trove/carve-assets/P26/test_acceptance.py
 assay/nyxloom-trove/carve-assets/P33/test_acceptance_v5.py
+assay/README.md
+assay/templates/consumer-assay.toml
 assay/tests/conftest.py
 assay/tests/test_cli_run.py
 assay/tests/test_config_accept.py
@@ -926,14 +969,14 @@ assay/tests/test_distribution_build_release.py
 assay/tests/test_self_hosting.py
 assay/tests/test_standalone.py
 assay/tests/test_verify_layer_independence.py
-FILES=18
-OCCURRENCES=36
+FILES=22
+OCCURRENCES=40
 CARVE_ASSET_FILES=6
 ```
 
-The six carve-asset paths are why WI-1 distinguishes live migration from historical evidence rather than bulk-replacing every match.
+The six carve-asset paths are why WI-1 distinguishes live migration from historical evidence rather than bulk-replacing every match. The shipped template is a WI-1 functional surface; the README and DESIGN-GUIDE occurrences are WI-6 documentation surfaces. `cmru/assay.toml` and `/workspaces/dstdns/assay.toml` are deliberately outside this Assay-owned migration scan because their pinned binaries and lane files migrate atomically in the consumer adoption steps.
 
-### M14 — the frozen CMRU full-suite-green premise is stale
+### M14 — the frozen CMRU full-suite-green premise is stale, and the target environment remains unmeasured
 
 A controlled CMRU probe was built in `/tmp/b006a-scratch/cmru-acceptance`, with the three Topos symlinks removed only in that disposable repository to get past current P22. The exact Assay command was:
 
@@ -995,7 +1038,7 @@ def test_release_publish_rejects_response_without_upload_coordinate():
   --network=none \
 ```
 
-The three setup errors were `PermissionError: [Errno 1] Operation not permitted` on local socket creation and are cockpit-specific. The remaining failure is not: the test replaces `get_release_by_tag` with `{"id": 7}`, after which `GitHubReleases.publish` calls the unstubbed `update_release` before it checks `upload_url`. That call reached `api.github.com` and got `Temporary failure in name resolution`; the registered gate also runs with `--network=none`. There is no global fixture (`cmru/tests/conftest.py` is five import-path lines) that patches it. Thus the brief's assertion that the current full suite is green is stale at input revision `c3b00729...`, likely because the failing test was added in later commit `80fbe7e1`. WI-5 repairs the test boundary explicitly in its disposable qualification baseline; it does not claim an unchanged-current-tree green run.
+The three setup errors were `PermissionError: [Errno 1] Operation not permitted` on local socket creation in the restricted cockpit. That observation does **not** establish whether they pass in `tester-unified`; their target-environment status remains unknown until WI-5's M20 probe. The remaining failure is source-intrinsic under the registered gate: the test replaces `get_release_by_tag` with `{"id": 7}`, after which `GitHubReleases.publish` calls the unstubbed `update_release` before it checks `upload_url`. That call reached `api.github.com` and got `Temporary failure in name resolution`; the registered gate also runs with `--network=none`. There is no global fixture (`cmru/tests/conftest.py` is five import-path lines) that patches it. Thus the brief's assertion that the current full suite is green is stale at input revision `c3b00729...`, likely because the failing test was added in later commit `80fbe7e1`. WI-5 proves its disposable test-boundary repair and then requires the real-environment full-suite probe; it does not claim an unchanged-current-tree green run or infer a tester result from this cockpit.
 
 An earlier disposable historical attempt first produced `ERROR/UNREADABLE_ARTIFACT` because `.assay/` was absent, then `FAIL/COMMAND_FAILED` after a tracked parent was added. Those outcomes are not B006(a) acceptance evidence.
 
@@ -1142,3 +1185,112 @@ assay/tests/test_isolation.py
 ```
 
 The first two are frozen historical assets and are not edited; the latter three are WI-2's complete required-field migration set.
+
+### M20 — the carver could not run the required tester-unified preflight
+
+Command from the carving cockpit:
+
+```bash
+printf 'CGROUP_PARENT_DEV_BACKGROUND=%s\n' "${CGROUP_PARENT_DEV_BACKGROUND-<unset>}"
+printf 'CGROUP_PARENT_DEV_INTERACTIVE=%s\n' "${CGROUP_PARENT_DEV_INTERACTIVE-<unset>}"
+docker version --format 'CLIENT={{.Client.Version}} SERVER={{.Server.Version}}'
+printf 'EXIT=%s\n' "$?"
+```
+
+Output:
+
+```text
+CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice
+CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice
+CLIENT=29.7.1 SERVER=
+permission denied while trying to connect to the docker API at unix:///run/docker-api/docker.sock
+EXIT=1
+```
+
+This is not a qualification result. It proves that this carving environment cannot establish whether M14's three socket errors reproduce in `tester-unified`. WI-5 therefore reserves **M20 in its own implementation report** for the required real `tester-unified:local --network=none` command, image ID, zero exit, and unabridged summary; WI-5 is mechanically BLOCKED until that second M20 resolves this availability measurement with a pass or explicit differential repairs.
+
+### M21 — both consumers are pinned lane-v1 adopters, and the release inbox is dstdns-owned
+
+CMRU command:
+
+```bash
+sed -n '37,42p' cmru/cmru.toml
+unzip -p cmru/tools/assay/assay-1.0.0.pyz assay/config.py |
+  sed -n '110,116p'
+```
+
+Output:
+
+```text
+  # The consumer-owned, hash-pinned zipapp makes the rigor claim explicit.
+  # tester-unified deliberately does not bake an ambient Assay version.
+  { label = "cmru: verify pinned Assay", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "cd tools/assay && /usr/bin/sha256sum -c assay-1.0.0.pyz.sha256"], cwd = ".." },
+  { label = "cmru: whole-source line and branch coverage", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=src/cmru", "--cov-branch", "--cov-fail-under=100", "--cov-report=json:coverage.json"], cwd = ".." },
+  { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/assay/assay-1.0.0.pyz run cmru --file assay.toml --verdict-json .assay/verdict-cmru.json"], cwd = ".." },
+]
+LANE_FILE_NAME = "assay.toml"
+
+#: The lane-file schema this build understands. Distinct from the *verdict*
+#: artifact's `schema_version` (§6), which is P01b's.
+LANE_SCHEMA_VERSION = 1
+
+#: A-053. TESTING-METHODOLOGY §Axis 1 / §Axis 2, and §12's table.
+```
+
+dstdns command (read-only in `/workspaces/dstdns`):
+
+```bash
+sed -n '3,12p' /workspaces/dstdns/assay.toml
+sed -n '1,12p;28,30p' /workspaces/dstdns/.assay-inbox/CONTRACT.md
+```
+
+Output:
+
+```text
+# Adopted 2026-08-11 (the wave discriminator, per testing-contstraints-with-assay.md
+# and docs/plan-DESIGN-AUTHORITY-implementation-2026-08-11.md §"wave discriminator").
+#
+# Pinned artifact: tools/assay/assay-1.0.0.pyz  (release assay-v1.0.0, the concrete
+# version assay-latest points to; SHA-256-verified against its sidecar + manifest).
+# The PRODUCT owns this lane, the pinned artifact, and verdict retention; the
+# test-runner supplies the isolated execution boundary. The runner image must NOT
+# bake an ambient assay — the vendored, verified zipapp is the explicit input
+# (CONSUMERS.md: "tester-unified should not bake an ambient Assay version").
+schema_version = 1
+# assay → dstdns release notify contract
+
+The dstdns reconciliation loop consumes a **pinned, vendored** assay zipapp
+(`tools/assay/assay-1.0.0.pyz`), not a live release. When a new assay version
+ships, drop a file here and the dstdns loop controller will pick it up (it watches
+this path and also re-checks it on every heartbeat tick).
+
+## How to notify
+
+Write **`/workspaces/dstdns/.assay-inbox/release.json`** (same-filesystem drop — no
+git commit, no push needed; this dir is gitignored so it will not dirty dstdns's
+tree or break its assay gate). One JSON object:
+### Fields that change what dstdns does
+- **`sha256`** — required. dstdns re-vendors the `.pyz`, verifies this hash, re-pins
+  `tools/assay/` + `assay.toml`, and re-runs its own gate before trusting it.
+```
+
+This proves F1's breakage and the broader adoption rule: CMRU and dstdns must each repin and bump their own lane file atomically. It also proves that the review's proposed placement of `.assay-inbox/release.json` in the CMRU sequence is mistaken; the path is explicitly the Assay→dstdns notification seam, so WI-6 places it only in dstdns's sequence.
+
+## Addendum A — review round 1
+
+| Finding | Disposition | Folded into the operative body |
+|---|---|---|
+| F1 — WI-1 would break CMRU's pinned-v1 gate | **Accepted**, except the proposed CMRU-owned `release.json` step is **rejected**. | WI-1 excludes `cmru/assay.toml`; §3.2 and WI-6 require atomic artifact-repin + lane-v2 commits for both consumers. M21 proves CMRU's v1 binary and proves the inbox is Assay→dstdns, so notification stays in dstdns's sequence. |
+| F2 — sibling carve contradictions and unstated cross-carve dependencies | **Accepted.** | WI-0 enumerates every superseded sibling section/oracle and updates the backlog immediately; §6 gives the exact WI-4/WI-5 dependencies and BLOCKED rule. |
+| F3 — v5→v6 migration could not derive `snapshot_policy` | **Accepted.** | §5.2/§5.3 and WI-4 now specify repository insertion for v5 R1+, absence for R0, hostile-key refusal, and three differential tests. |
+| F4 — redundant path checks create dead refusal branches | **Accepted.** | §3.2 has one ordered component mechanism; canonical round-trip is an accept-side theorem. §3.5 and O1 name only reachable refusals. |
+| F5 — repaired full-suite green was inferred | **Accepted.** | WI-5 requires the real tester-unified M20 before freezing, permits only explicit differential repairs, and emits failing nodes on R0 failure. M14 withdraws the inference; M20 records why the carve could not complete the probe. |
+| N1 — A-269 key replacement/amendment precision | **Accepted.** | A-269 explicitly replaces `snapshot_scope`, closes `snapshot_selection`, and moots A-268(a). |
+| N2 — migration scan missed shipped surfaces | **Accepted.** | WI-1 includes the consumer template; WI-6 includes README/DESIGN-GUIDE; revised M13 measures all 22 files/40 occurrences. |
+| N3 — omission filtering described twice | **Accepted.** | §3.3 defines filtered `_Manifest.entries`, separate frozen `.omitted`, and no `_write_worktree` re-filter. |
+| N4 — pre-v6 omission evidence ambiguity | **Accepted.** | WI-3 forbids live omission lanes and releases until WI-4. |
+| N5 — O6/O7 invocation and placement imprecision | **Accepted.** | O6 uses the installed scratch interpreter and absolute paths; O7 specifies non-adjacent relative order and the exact insertion seam. |
+| N6 — extra frozen red may be version-coupled | **Accepted.** | WI-1 requires each extra red to be fixed or proven/deselected one-for-one with a named v2 successor. |
+| R1 — actionable undeclared-link diagnostic | **Accepted.** | §3.3.5, the refusal table, WI-2, and O2 require the exact declarable repo-top spelling while preserving `GIT_FAILED`. |
+| R2 — author-side unsafe-link inventory | **Accepted.** | WI-6 recommends a non-normative Topos-owned exact-inventory test without making it an Assay input or auto-broadening lanes. |
+| B5 ledger sentence — commit-owned future policy | **Accepted.** | A-269 and §8 name it as the N×M escalation and preserve the early-producer derivability warning. |
