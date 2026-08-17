@@ -580,6 +580,7 @@ def _evaluate_go(
         profile=profile,
         adapter=adapter,
         repo_top=_GO_REPO_TOP,
+        project_root=_GO_REPO_TOP,
         source_root_paths=(_GO_REPO_TOP,),
         fail_under=fail_under,
         allow_excluded=allow_excluded,

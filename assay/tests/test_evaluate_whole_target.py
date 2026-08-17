@@ -215,15 +215,21 @@ def test_a_normalized_key_collision_refuses_unreadable_artifact(repo: Path):
 def test_a_project_root_nested_under_repo_top_resolves_the_repo_relative_key(tmp_path: Path):
     """`repo_top` is the git top; `project_root` (where `judge.targets` is
     spelled from) is a subdirectory of it -- exactly assay's own case inside
-    the vbpub monorepo. The profile's own keys are repo-top-relative, so the
-    lookup must prepend the project's own repo-relative prefix."""
+    the vbpub monorepo (and B006's own CMRU shape). The profile's own RAW
+    keys are PROJECT-relative -- the spelling a real coverage tool actually
+    emits, since the lane's own command always runs with `cwd =
+    project_root`, never `repo_top` (B006's own fix; a fixture spelling the
+    key `"assay/pkg/mod.zzz"` here -- repo-top-relative already -- would
+    silently hide the bug this test exists to catch: `_normalized_profile_
+    files` must ITSELF prepend the project's own repo-relative prefix,
+    never receive it pre-applied by the fixture)."""
     repo_top = tmp_path
     project_root = tmp_path / "assay"
     (project_root / "pkg").mkdir(parents=True)
     (project_root / "pkg" / "mod.zzz").write_text("code\n")
 
     profile = _profile({
-        "assay/pkg/mod.zzz": FileCoverage(executed=frozenset({1}), missing=frozenset(), excluded=frozenset()),
+        "pkg/mod.zzz": FileCoverage(executed=frozenset({1}), missing=frozenset(), excluded=frozenset()),
     })
     result = evaluate_targets(
         profile=profile, adapter=ADAPTER, repo_top=repo_top, project_root=project_root,
@@ -232,6 +238,40 @@ def test_a_project_root_nested_under_repo_top_resolves_the_repo_relative_key(tmp
     )
     assert result.outcome is Outcome.PASS
     assert result.covered == 1
+
+
+def test_a_project_root_nested_under_repo_top_never_double_prefixes_an_already_repo_relative_key(
+    tmp_path: Path,
+):
+    """The double-prefixing trap the fix above must NOT fall into: if a
+    coverage artifact's raw key already happens to spell the repo-top-relative
+    path (never true for a real tool run from `project_root`, but not
+    something `_normalized_profile_files` can tell apart from the
+    project-relative spelling by inspection alone), naively prepending
+    `project_prefix` a second time would produce `"assay/assay/pkg/mod.zzz"`
+    and this lookup would MISS. This is not a defect: the project-relative
+    key `"pkg/mod.zzz"` (the sibling test above) is the ONLY spelling
+    `_to_repo_relative_key` is contracted to reconcile, because it is the
+    ONLY spelling a real tool can actually produce here (`cwd = project_root`
+    is a fact of `assay.runner`'s own command construction, not a guess) --
+    this test pins that a key ALREADY carrying the prefix is simply not
+    found under the doubled path, rather than silently matching by accident."""
+    repo_top = tmp_path
+    project_root = tmp_path / "assay"
+    (project_root / "pkg").mkdir(parents=True)
+    (project_root / "pkg" / "mod.zzz").write_text("code\n")
+
+    profile = _profile({
+        "assay/pkg/mod.zzz": FileCoverage(executed=frozenset({1}), missing=frozenset(), excluded=frozenset()),
+    })
+    with pytest.raises(AssayError) as exc:
+        evaluate_targets(
+            profile=profile, adapter=ADAPTER, repo_top=repo_top, project_root=project_root,
+            targets=("pkg/mod.zzz",), source_root_paths=(project_root / "pkg",),
+            fail_under=100.0, allow_excluded=False,
+        )
+    assert exc.value.outcome is Outcome.NO_MEASUREMENT
+    assert exc.value.reason_code is ReasonCode.TARGET_NOT_MEASURED
 
 
 def test_a_project_root_not_contained_by_repo_top_is_refused(tmp_path: Path):

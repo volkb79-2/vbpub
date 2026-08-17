@@ -105,6 +105,7 @@ def _evaluate(source: str, *, added_lines: set[int], executed, missing, excluded
         profile=profile,
         adapter=adapter,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP / "pkg",),
         fail_under=100.0,
         allow_excluded=False,

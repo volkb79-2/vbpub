@@ -277,13 +277,14 @@ def _recording_process_runner(cov_target: PurePosixPath | None = None):
     def process_runner(argv, *, env, cwd, timeout):
         calls.append(Path(cwd))
         if cov_target is not None:
-            # `evaluate_coverage` matches a raw coverage-artifact key
-            # against `git diff`'s own REPO-TOP-relative spelling (A-145) --
-            # never against the project-relative path the tool ran under --
-            # so the key here carries the same "cmru/" prefix `git diff`
-            # would.
+            # PROJECT-relative key (B006's own fix, WI-5's real finding): a
+            # real coverage tool run with `cwd=cwd` (exactly what this
+            # double's own `cwd` parameter already IS) never carries the
+            # "cmru/" prefix `git diff`'s own repo-top-relative spelling
+            # (A-145) uses -- `evaluate.py`'s own `_normalized_profile_files`
+            # is what prepends that prefix, never this fixture.
             write_coverage_json(
-                Path(cwd) / cov_target, {"cmru/src/mod.zzz": {"executed_lines": [1, 2]}}
+                Path(cwd) / cov_target, {"src/mod.zzz": {"executed_lines": [1, 2]}}
             )
         return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
 
@@ -517,12 +518,18 @@ def _write_fake_coverage(project_root: Path, text: str) -> None:
             executed.append(i)
         else:
             missing.append(i)
-    # Repo-top-relative key, matching `git diff`'s own spelling (A-145) --
-    # the same reason `_recording_process_runner` above uses "cmru/..." --
-    # never the project-relative path the double's own "command" ran under.
+    # PROJECT-relative key (B006's own fix, WI-5's real finding): a real
+    # coverage tool always runs with `cwd = project_root`
+    # (`assay.runner.evaluate_r1`), so its own raw JSON key never carries the
+    # `cmru/` prefix `git diff`'s repo-top-relative spelling (A-145) uses --
+    # `assay.evaluate._normalized_profile_files` is what reconciles the two,
+    # by prepending the project's own repo-relative prefix, never by this
+    # fixture pre-applying it (the exact gap WI-5's real, subprocess-driven
+    # run exposed: every earlier project_prefix test fabricated this key
+    # already repo-top-relative, which is not what the real tool emits).
     write_coverage_json(
         project_root / "cov.json",
-        {"cmru/pkg/mod.py": {"executed_lines": executed, "missing_lines": missing}},
+        {"pkg/mod.py": {"executed_lines": executed, "missing_lines": missing}},
     )
 
 

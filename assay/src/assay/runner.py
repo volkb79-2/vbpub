@@ -649,6 +649,7 @@ def evaluate_r1(
                 profile=profile,
                 adapter=adapter,
                 repo_top=repo_top,
+                project_root=project_root,
                 source_root_paths=judge.source_root_paths,
                 fail_under=judge.fail_under,
                 allow_excluded=judge.allow_excluded,

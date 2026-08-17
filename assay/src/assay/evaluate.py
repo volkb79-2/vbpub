@@ -54,9 +54,11 @@ module is ever called — see :mod:`assay.runner`'s ``evaluate_r1``.
 
 **One deliberate exception (P15, A-067 finding 4).** Two distinct raw
 coverage-artifact keys can normalize (via
-:meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`) to the
-SAME repository path — e.g. a Go module path stripped two different ways, or
-an artifact that simply repeats a file under two spellings. Silently keeping
+:meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`, then
+this module's own project-relative-to-repo-relative join, B006 —
+:func:`_normalized_profile_files`) to the SAME repository path — e.g. a Go
+module path stripped two different ways, or an artifact that simply repeats
+a file under two spellings. Silently keeping
 "whichever key came last in the artifact's own JSON object" (a bare dict
 comprehension's natural behaviour) makes a verdict depend on byte order in a
 file nothing about the *lane* declares — reversing the two keys in the
@@ -281,6 +283,7 @@ def evaluate_coverage(
     profile: CoverageProfile,
     adapter: LanguageAdapter,
     repo_top: Path,
+    project_root: Path,
     source_root_paths: Sequence[Path],
     fail_under: float,
     allow_excluded: bool,
@@ -288,10 +291,19 @@ def evaluate_coverage(
 ) -> CoverageEvaluation:
     """Intersect *added* with *profile* under *adapter*'s classification.
 
-    *repo_top* and every path in *added.by_file* / *profile.files* (after
-    :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`)
-    share one spelling: ``git diff``'s — forward-slash, relative to the
-    repository's top level. *source_root_paths* are RESOLVED, ABSOLUTE,
+    *repo_top* and every path in *added.by_file* share one spelling: ``git
+    diff``'s — forward-slash, relative to the repository's top level.
+    *profile.files* does NOT share that spelling by construction (B006's own
+    finding): the lane's coverage command always runs with ``cwd =
+    project_root`` (:mod:`assay.runner`'s own ``evaluate_r1``), so a real
+    coverage tool's own keys are PROJECT-relative, not repo-relative — the
+    two coincide only when *project_root* IS *repo_top* (a root-level
+    project, ``project_prefix == "."``). *project_root* is what lets
+    :func:`_normalized_profile_files` reconstruct the repo-relative spelling
+    (:func:`_project_prefix`, :func:`_to_repo_relative_key`) before this
+    function ever compares a profile key against *added.by_file* — see that
+    function's own docstring for the adapter-STRIP-vs-core-PREPEND split
+    (DESIGN-GUIDE §11). *source_root_paths* are RESOLVED, ABSOLUTE,
     existing directories (:attr:`assay.config.JudgeConfig.source_root_paths`'s
     own contract); boundary membership is decided by
     :meth:`pathlib.Path.is_relative_to` on the resolved absolute path, never
@@ -315,9 +327,15 @@ def evaluate_coverage(
     Raises :class:`~assay.errors.AssayError`
     (``ERROR``/``UNREADABLE_ARTIFACT``) if two distinct raw keys in
     *profile.files* normalize to the same repository path (module
-    docstring, P15) — the only way this function raises at all.
+    docstring, P15), or (``ERROR``/``BAD_LANE_CONFIG``) if *project_root* is
+    not contained by *repo_top* (:func:`_project_prefix`, mirroring
+    :func:`evaluate_targets`'s own identical, separately-raised guard) —
+    the only two ways this function raises at all.
     """
-    cov_by_repo_path = _normalized_profile_files(profile, adapter)
+    project_prefix = _project_prefix(repo_top, project_root)
+    cov_by_repo_path = _normalized_profile_files(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
 
     # P21/A-183: derived from the PARSED PROFILE, before any per-file
     # evaluation, so it is a property of the artifact rather than of what
@@ -502,14 +520,133 @@ def evaluate_coverage(
     )
 
 
+def _project_prefix(repo_top: Path, project_root: Path) -> PurePosixPath:
+    """*project_root*'s own repo-top-relative POSIX location -- ``.`` when
+    *project_root* IS *repo_top* (a root-level project, P05/B005's original
+    shape), otherwise the real segment(s) beneath it (B006's nested-project
+    shape, e.g. ``cmru``). The ONE fact both :func:`evaluate_coverage` (this
+    package's own fix) and :func:`evaluate_targets` (wave-1 §5, which
+    already needed it to resolve ``judge.targets`` against the profile's own
+    keys) need identically -- computed here ONCE so the two modes cannot
+    silently disagree about where their shared project sits in its own
+    repository, the same "one implementation shared... so drift is
+    structurally impossible" discipline :func:`_normalized_profile_files`
+    already applies to the key-collision refusal one level over.
+
+    A structural, language-free fact -- never adapter-specific -- so this
+    lives in the core, never in a :class:`~assay.adapters.base.LanguageAdapter`
+    (DESIGN-GUIDE §11's own split: "the prefix-BOUNDARY reconciliation... is
+    universal and lives in the core").
+
+    Raises :class:`~assay.errors.AssayError` (``ERROR``/``BAD_LANE_CONFIG``)
+    if *project_root* is not contained by *repo_top* at all -- a lane's
+    project has no repo-relative identity there. Mirrors (but cannot share
+    code with, since :mod:`assay.evaluate` is never permitted to import
+    :mod:`assay.runner`) that module's own structurally-identical
+    ``_resolved_project_prefix``, which the real CLI path already runs
+    BEFORE this one is ever reached, so this raises here only for a caller
+    that skips that upstream guard (e.g. a direct unit test, or
+    :mod:`assay.canary`'s own synthetic Go sentinel repo).
+    """
+    resolved_project_root = project_root.resolve()
+    resolved_repo_top = repo_top.resolve()
+    try:
+        relative = resolved_project_root.relative_to(resolved_repo_top)
+    except ValueError as exc:
+        raise AssayError(
+            f"the project root {resolved_project_root} is not contained by "
+            f"its own repository top {resolved_repo_top}; a lane's project "
+            f"has no repo-relative identity there",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        ) from exc
+    return (
+        PurePosixPath(".") if relative == Path(".") else PurePosixPath(relative.as_posix())
+    )
+
+
+def _to_repo_relative_key(
+    key: str, *, repo_top: Path, project_prefix: PurePosixPath
+) -> str:
+    """*key* (already adapter-normalized, i.e. any language-specific STRIP
+    :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key` had
+    to apply is already done) resolved to the ONE repo-top-relative spelling
+    every consumer of :func:`_normalized_profile_files`'s return value
+    shares with ``git diff`` (module docstring; :func:`evaluate_targets`'s
+    own ``project_prefix``-joined lookup key depends on this exactly as
+    :func:`evaluate_coverage`'s ``added.by_file`` comparison does).
+
+    Two cases, distinguished by :meth:`PurePosixPath.is_absolute` -- exact
+    and unambiguous for the forward-slash-only spellings this project's own
+    path contract requires (``adapters/base.py``'s own module docstring):
+
+    * *key* is RELATIVE. The lane's coverage command always runs with
+      ``cwd = project_root`` (:mod:`assay.runner`'s own ``evaluate_r1``), so
+      a relative key a real coverage tool produced is PROJECT-relative by
+      construction (confirmed empirically against real ``coverage.py``
+      7.15.3: a measured file under the process's own cwd reports a
+      cwd-relative path with no special configuration needed) -- never a
+      guess from the key's own text, since *which cwd produced it* is a
+      fact this function's caller already knows structurally, not
+      something inferred here. Joining *project_prefix* (computed ONCE by
+      :func:`_project_prefix`, identically for both evaluate entry points)
+      turns it into the repo-relative spelling; a no-op for a root-level
+      project (``project_prefix == PurePosixPath(".")``, verified directly
+      by ``PurePosixPath(".") / "x"  == PurePosixPath("x")`` -- no residual
+      ``./`` ever survives), which is why every existing root-project
+      consumer is unaffected by this function's own existence.
+    * *key* is ABSOLUTE -- real ``coverage.py``'s own fallback when the
+      measured file sits outside the ``cwd``-relative tree it can express
+      relatively (confirmed the same empirical way: a ``--cov`` target
+      outside the process's own cwd reports an absolute path). Joining
+      *project_prefix* onto an absolute key would be nonsensical, and is
+      never attempted: this resolves *key* against *repo_top* directly
+      instead. A key that genuinely names a path beneath the repository
+      returns ITS repo-relative identity; a key that does not (a stdlib
+      module, a dependency outside the repository entirely, ...) is
+      returned UNCHANGED -- inert, never a raise, because every genuine
+      lookup key this module's two callers ever construct (``added.by_file``,
+      :func:`evaluate_targets`'s own resolved target paths) is relative by
+      construction and can therefore never collide with a bare absolute
+      string left behind here.
+    """
+    candidate = PurePosixPath(key)
+    if not candidate.is_absolute():
+        return (project_prefix / candidate).as_posix()
+    try:
+        return Path(key).resolve().relative_to(repo_top.resolve()).as_posix()
+    except ValueError:
+        return key
+
+
 def _normalized_profile_files(
-    profile: CoverageProfile, adapter: LanguageAdapter
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_prefix: PurePosixPath,
 ) -> dict[str, FileCoverage]:
     """*profile.files*, keyed by REPO-TOP-RELATIVE path after
-    :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`
-    (module docstring, P15) -- the one implementation shared by
-    :func:`evaluate_coverage` and :func:`evaluate_targets`, so the "two raw
-    keys, one repository path" refusal cannot drift between the two modes.
+    :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key` AND
+    :func:`_to_repo_relative_key` (module docstring, P15; B006's own fix) --
+    the one implementation shared by :func:`evaluate_coverage` and
+    :func:`evaluate_targets`, so the "two raw keys, one repository path"
+    refusal cannot drift between the two modes.
+
+    **The two-stage split, and why it is two stages, not one (A-145).**
+    ``normalize_coverage_key`` speaks the adapter's own LANGUAGE-SPECIFIC
+    dialect only -- a Go module path, a coverage-artifact prefix a wider CI
+    cwd left behind -- and returns *key* unchanged when there is nothing of
+    that kind to strip (every adapter's own documented default). It was
+    never responsible for, and cannot by itself resolve, the fact that this
+    project's own coverage command ran from *project_root* rather than
+    *repo_top* -- that is a structural fact about WHERE this project sits in
+    ITS repository, identical for every language, so it belongs in the core
+    (:func:`_to_repo_relative_key`) exactly the way source-root boundary
+    membership already does (``evaluate.py``'s own ``_is_considered``,
+    DESIGN-GUIDE §11). Collapsing the two into one adapter-side step would
+    mean re-deriving *project_prefix* once per adapter, and getting it wrong
+    once per adapter, instead of once, here.
 
     Raises :class:`~assay.errors.AssayError`
     (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
@@ -518,7 +655,10 @@ def _normalized_profile_files(
     cov_by_repo_path: dict[str, FileCoverage] = {}
     raw_key_by_repo_path: dict[str, str] = {}
     for raw_key, file_cov in profile.files.items():
-        repo_path = adapter.normalize_coverage_key(raw_key)
+        adapter_key = adapter.normalize_coverage_key(raw_key)
+        repo_path = _to_repo_relative_key(
+            adapter_key, repo_top=repo_top, project_prefix=project_prefix
+        )
         colliding_raw_key = raw_key_by_repo_path.get(repo_path)
         if colliding_raw_key is not None:
             raise AssayError(
@@ -693,45 +833,35 @@ def evaluate_targets(
     *targets* are the lane's declared, already load-validated (§5's
     canonical-spelling grammar, :mod:`assay.config`) project-relative
     paths. Each is resolved and validated against the real snapshot
-    filesystem by :func:`_resolve_whole_target`, then looked up in
-    *profile* by its REPO-TOP-RELATIVE spelling (the profile's own keys,
-    after :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`,
-    are repo-top-relative -- rule 1). A target absent from the profile, or
-    present with zero executable lines, is B005's own load-bearing
-    anti-vacuity guard: ``NO_MEASUREMENT``/``TARGET_NOT_MEASURED``, naming
-    the target, rather than a vacuous ``100%`` of nothing -- the stopgap
-    this mode replaces reports exactly that vacuous pass when ``--cov=``
-    names a module nothing ever imported.
+    filesystem by :func:`_resolve_whole_target`, then looked up in *profile*
+    by its REPO-TOP-RELATIVE spelling -- the profile's own RAW keys are
+    PROJECT-relative (the lane's coverage command always runs with ``cwd =
+    project_root``); :func:`_normalized_profile_files` (via
+    :func:`_to_repo_relative_key`) is what turns them into the
+    repo-top-relative spelling this lookup needs, B006's own fix (rule 1
+    now holds by construction rather than by assumption). A target absent
+    from the profile, or present with zero executable lines, is B005's own
+    load-bearing anti-vacuity guard: ``NO_MEASUREMENT``/``TARGET_NOT_MEASURED``,
+    naming the target, rather than a vacuous ``100%`` of nothing -- the
+    stopgap this mode replaces reports exactly that vacuous pass when
+    ``--cov=`` names a module nothing ever imported.
 
     *considered* is the number of declared TARGETS judged (§5 rule 6),
     never a count of files -- there is no diff to have "considered" a file
     against.
 
-    Raises :class:`~assay.errors.AssayError` -- the two above, plus
-    ``ERROR``/``UNREADABLE_ARTIFACT`` on the identical normalized-key
-    collision :func:`evaluate_coverage` refuses (module docstring, P15).
+    Raises :class:`~assay.errors.AssayError` -- ``ERROR``/``BAD_LANE_CONFIG``
+    when *project_root* is not contained by *repo_top*
+    (:func:`_project_prefix`), plus ``ERROR``/``UNREADABLE_ARTIFACT`` on the
+    identical normalized-key collision :func:`evaluate_coverage` refuses
+    (module docstring, P15).
     """
-    cov_by_repo_path = _normalized_profile_files(profile, adapter)
+    project_prefix = _project_prefix(repo_top, project_root)
+    cov_by_repo_path = _normalized_profile_files(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
     exclusion_capability = derive_exclusion_capability(profile)
     branch_capability = derive_branch_capability(profile)
-
-    resolved_project_root = project_root.resolve()
-    resolved_repo_top = repo_top.resolve()
-    try:
-        relative = resolved_project_root.relative_to(resolved_repo_top)
-    except ValueError as exc:
-        raise AssayError(
-            f"the project root {resolved_project_root} is not contained by "
-            f"its own repository top {resolved_repo_top}; a whole-target "
-            f"lane's declared targets have no repo-relative identity there",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        ) from exc
-    project_prefix = (
-        PurePosixPath(".")
-        if relative == Path(".")
-        else PurePosixPath(relative.as_posix())
-    )
 
     total_executable = 0
     total_covered = 0
@@ -746,7 +876,7 @@ def evaluate_targets(
         rel_to_project = _resolve_whole_target(
             raw_target,
             adapter=adapter,
-            project_root=resolved_project_root,
+            project_root=project_root.resolve(),
             source_root_paths=source_root_paths,
         )
         repo_path = (project_prefix / rel_to_project).as_posix()

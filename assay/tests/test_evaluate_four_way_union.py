@@ -59,6 +59,7 @@ def _evaluate(added: AddedLines, profile: CoverageProfile, *, allow_excluded: bo
         profile=profile,
         adapter=ADAPTER,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP / "pkg",),
         fail_under=100.0,
         allow_excluded=allow_excluded,

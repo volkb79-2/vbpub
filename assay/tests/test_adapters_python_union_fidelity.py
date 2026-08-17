@@ -132,6 +132,7 @@ def _evaluate(added, profile, adapter, *, allow_excluded, fail_under=100.0):
         profile=profile,
         adapter=adapter,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         # A single source root covering the whole repo tree -- this test
         # module's own O2 fixtures deliberately span two different
         # top-level project directories (`pkg/`, `myapp_legacy/pkg/`), and
