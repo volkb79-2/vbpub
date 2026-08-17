@@ -6,8 +6,8 @@ items:
   - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
-  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: bug, component: isolation, context_estimate: large}
+  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, and documented on this branch; not yet done end to end pending a real consumer lane and the release.", type: feature, component: evaluate, context_estimate: medium}
+  - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes (not the withdrawn project-scoped boundary A-269 replaces); B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, and documented on this branch; not yet done end to end pending CMRU's real qualifying lane and the release.", type: bug, component: isolation, context_estimate: large}
 ---
 
 # assay — backlog
@@ -486,13 +486,23 @@ it — but it is cheap and in-estate, so it is the obvious item after.
 
 ---
 
-## B005 — a whole-module / per-callable coverage judge (R1 without a diff)
+## B005 — a whole-module / per-callable coverage judge (R1 without a diff) — IMPLEMENTED
 
 **Proposed by:** dstdns's DESIGN-AUTHORITY reconciliation program, 2026-08-16, on
 the first package that adopted an R1 coverage lane (`redirect_chain`, a
 docstring+dead-code reconcile of `libs/common/src/common/redirect_chain.py`).
-**Status:** proposed. dstdns has a working stopgap in production use; this is the
-first-class replacement.
+**Status:** **IMPLEMENTED, wave 1 (2026-08-17), as `judge.mode = "whole_target"`,
+`W1-CARVE-branch-coverage-and-whole-target.md` §5 (A-260).** The whole-module
+case shipped; the per-callable-span case named in the original proposal did
+not (a `target` names a regular file, never a callable span — see
+`docs/DESIGN-GUIDE.md`'s "A whole-target `target` names a regular file, never
+a directory" for why the file-level guard is the shipped shape and what a
+callable-span capability would need on top of it). **Not yet DONE end to end:**
+this is shipped and documented on `assay-B005-B006-coverage-v6`, gated on this
+branch, but not yet merged, released, or adopted by a real consumer lane
+(dstdns's `redirect_chain` still runs the R0 stopgap described below until it
+repins a v2-capable release per `docs/CONSUMERS.md`'s "Adopting a v2-capable
+release" and migrates its own lane).
 
 ### The claim
 
@@ -581,13 +591,22 @@ commit.
 
 ---
 
-## B006 — explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes
+## B006 — unsafe-symlink-omission snapshots and in-snapshot artifact parents for monorepo R1/R2/R3 lanes — IMPLEMENTED
 
 **Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
-first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** (a) carved and
-reviewed, implementing — see `nyxloom-trove/W1-CARVE-B006a-project-scope.md`;
-(b) carved, implementing. This blocks honest Assay R1+ claims for a project in this
-monorepo; CMRU may retain R0/direct-coverage evidence in the meantime, but must not
+first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** **(a) and (b)
+both IMPLEMENTED, wave 1 (2026-08-17)** — (a) as `isolation.snapshot_selection`
+/ `unsafe_symlink_omissions`, `W1-CARVE-B006a-project-scope.md` WI-0 through
+WI-4 (A-269; supersedes the project-scoped-boundary design originally proposed
+here, see the AMENDED callout immediately below); (b) as the in-snapshot
+coverage-artifact parent-chain creation, `W1-CARVE-branch-coverage-and-whole-
+target.md` §2. Both are shipped, gated and documented on
+`assay-B005-B006-coverage-v6`. **Not yet DONE end to end:** not yet merged,
+released, or adopted by a real consumer lane — CMRU's own `assay.toml` is
+deliberately UNTOUCHED by this commit (still schema v1, R0-only; its own
+higher-rigor qualification is B006(a) WI-5, still open) and must not be read
+as proof this item is finished until that lane, the merge, and the release all
+land. Until then CMRU may retain R0/direct-coverage evidence, but must not
 relabel a project-local stopgap as Assay R1/R2/R3.
 
 > **AMENDED 2026-08-17 by ruling A-269 — read this before the prose below.**

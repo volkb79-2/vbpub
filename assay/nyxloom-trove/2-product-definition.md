@@ -86,6 +86,40 @@ features:
     - tests/test_coverage_exclusion_capability.py::test_a_format_that_cannot_express_exclusions_is_unavailable
     - tests/test_coverage_exclusion_capability.py::test_a_format_that_reports_exclusions_is_reported_even_when_it_found_none
     - tests/test_coverage_exclusion_capability.py::test_capability_is_not_inferred_from_the_format_name
+  - id: F003-A5
+    text: A whole-target lane (judge.mode = "whole_target") measures the declared files' real content from the coverage artifact, passing or failing on that content, with no base and no diff resolved.
+    status: proven
+    evidence:
+    - tests/test_runner_evaluate_r1_wave1.py::test_whole_target_mode_passes_without_ever_resolving_a_base_or_diff
+    - tests/test_runner_evaluate_r1_wave1.py::test_whole_target_mode_fails_uncovered_lines_from_the_real_target_content
+    - tests/test_evaluate_whole_target.py::test_a_fully_covered_target_passes
+  - id: F003-A6
+    text: A declared whole-target that is absent from the coverage artifact, or present with zero executable lines, refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than passing vacuously on 0/0.
+    status: proven
+    evidence:
+    - tests/test_evaluate_whole_target.py::test_a_target_absent_from_the_artifact_refuses_target_not_measured
+    - tests/test_evaluate_whole_target.py::test_a_target_with_zero_executable_lines_refuses_target_not_measured
+    - tests/test_runner_evaluate_r1_wave1.py::test_a_target_absent_from_the_artifact_renders_target_not_measured
+  - id: F003-A7
+    text: A whole-target must name a regular source file; a directory or a symlink is refused at load, never silently expanded into every file beneath it.
+    status: proven
+    evidence:
+    - tests/test_evaluate_whole_target.py::test_resolve_whole_target_refuses_a_directory
+    - tests/test_evaluate_whole_target.py::test_resolve_whole_target_refuses_a_symlink
+    - tests/test_evaluate_whole_target.py::test_resolve_whole_target_refuses_an_excluded_directory
+  - id: F003-A8
+    text: Branch coverage is judged whenever the coverage artifact reports it, and pct becomes the combined line-plus-branch percentage; a floor missed purely on branches fails as UNCOVERED_BRANCHES, never UNCOVERED_LINES.
+    status: proven
+    evidence:
+    - tests/test_evaluate_branch_coverage.py::test_full_line_and_branch_coverage_passes_at_the_combined_percentage
+    - tests/test_evaluate_branch_coverage.py::test_a_branch_deficit_alone_fails_as_uncovered_branches_not_uncovered_lines
+    - tests/test_evaluate_branch_coverage.py::test_a_missing_line_takes_precedence_over_a_branch_deficit
+  - id: F003-A9
+    text: judge.require_branch = true refuses NO_MEASUREMENT/BRANCH_UNAVAILABLE before any evaluation when the artifact's branch capability is unavailable; require_branch = false is unaffected by the same artifact.
+    status: proven
+    evidence:
+    - tests/test_runner_evaluate_r1_wave1.py::test_require_branch_renders_branch_unavailable_before_mode_dispatch
+    - tests/test_runner_evaluate_r1_wave1.py::test_require_branch_false_is_unaffected_by_an_unavailable_artifact
   status: shipped
   milestone: M1
 - id: F004
@@ -170,6 +204,38 @@ features:
     - tests/test_runner_p23_cleanup_and_budget.py::test_a_cleanup_assay_error_replaces_only_the_highest_higher_rigor_claim
     - tests/test_runner_p23_cleanup_and_budget.py::test_a_runtime_error_before_any_result_propagates_and_is_never_laundered
     - tests/test_runner_p23_cleanup_and_budget.py::test_a_cleanup_failure_after_a_FAILING_baseline_is_still_verify_clean
+  - id: F006-A5
+    text: Every R1/R2/R3 lane must declare isolation.snapshot_selection from a closed two-value vocabulary, and an R0-only lane must not declare it; there is no default.
+    status: proven
+    evidence:
+    - tests/test_config_snapshot_selection.py::test_snapshot_selection_closed_matrix
+    - tests/test_config_snapshot_selection.py::test_snapshot_selections_public_constant_is_exactly_the_closed_pair
+  - id: F006-A6
+    text: Under repository-minus-unsafe-symlinks, every declared, commit-validated unsafe symlink leaf is absent from the materialised worktree while every other tracked path, including safe symlinks and sibling projects, remains present.
+    status: proven
+    evidence:
+    - tests/test_isolation_unsafe_symlink_omissions.py::test_complete_symlink_matrix_and_index_invariants
+    - tests/test_runner_snapshot_selection.py::test_live_command_observes_exact_policy_in_every_unit
+  - id: F006-A7
+    text: An unsafe symlink not named in unsafe_symlink_omissions still refuses the lane, and the refusal names the exact declarable repo-top-relative spelling rather than requiring the operator to derive it.
+    status: proven
+    evidence:
+    - tests/test_isolation_unsafe_symlink_omissions.py::test_an_undeclared_unsafe_link_still_refuses_and_names_the_declarable_spelling
+    - tests/test_isolation_unsafe_symlink_omissions.py::test_declaring_a_safe_symlink_is_a_configuration_error_not_an_exclusion
+  - id: F006-A8
+    text: The coverage artifact's missing parent directory chain is created only inside the lane's own ephemeral snapshot; an R0/in-place path with a missing parent still refuses and creates nothing.
+    status: proven
+    evidence:
+    - tests/test_runner_run_lane.py::test_run_lane_creates_the_coverage_artifacts_missing_parent_only_inside_the_snapshot
+    - tests/test_safeio.py::test_reserve_output_default_refuses_a_missing_parent_and_creates_nothing
+    - tests/test_safeio.py::test_reserve_output_create_missing_parents_refuses_a_symlinked_component_never_follows_it
+  - id: F006-A9
+    text: The verdict's snapshot_policy records the effective selection and, under omission mode, the exact declared omissions, and is absent for an R0-only lane.
+    status: proven
+    evidence:
+    - tests/test_verify_snapshot_policy.py::test_higher_rigor_with_a_well_formed_repository_policy_is_clean
+    - tests/test_verify_snapshot_policy.py::test_r0_only_with_no_snapshot_policy_is_clean
+    - tests/test_verdict_wave1_new_fields.py::test_snapshot_policy_selection_must_be_a_known_value
   status: shipped
   milestone: M2
 - id: F007
