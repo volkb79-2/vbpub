@@ -452,9 +452,16 @@ its own ephemeral snapshot**. Two hard constraints:
 * **Confined to the assay-owned output path, inside the already-declared
   scope** (added 2026-08-17 with §1's rewrite, from the backlog's own wording).
   This is not permission to create arbitrary missing paths, and never permission
-  to climb above the boundary: under `snapshot_scope = "project"` the artifact
-  path must already have passed §1's preflight, and the creation happens beneath
-  it. A symlinked or escaping parent remains a loud refusal.
+  to climb above the boundary. A symlinked or escaping parent remains a loud
+  refusal.
+  **AMENDED by A-269.** The original sentence here — "under
+  `snapshot_scope = "project"` the artifact path must already have passed §1's
+  preflight" — named a scope and a preflight that no longer exist. The guard
+  that actually protects this seam is **B006(a) WI-3's coverage-artifact
+  collision check**: a declared omission that is equal to, or an ancestor of,
+  the artifact path refuses with `ERROR`/`BAD_LANE_CONFIG` **before any
+  materialisation**, so parent creation can never silently replace an omitted
+  committed symlink with a generated directory. B006(b) does not re-check it.
 
 Independently of the creation: when a parent chain still cannot be opened, the
 diagnostic must name the missing component and the declared artifact path, and
