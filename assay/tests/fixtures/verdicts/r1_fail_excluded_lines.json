@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "8888888888888888888888888888888888888888",
@@ -41,8 +41,13 @@
       "coverage_format": "coverage-py-json",
       "coverage_artifact": "cov.json",
       "fail_under": 100.0,
-      "allow_excluded": false
+      "allow_excluded": false,
+      "mode": "changed_lines",
+      "require_branch": false
     }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
   },
   "claims": [
     {
@@ -59,7 +64,7 @@
       "reason_code": "EXCLUDED_LINES",
       "coverage": {
         "covered": 3,
-        "changed_executable": 3,
+        "executable": 3,
         "pct": 100.0,
         "considered": 1,
         "exclusion_capability": "reported",
@@ -74,7 +79,12 @@
         },
         "files_with_excluded_lines": [
           "pkg/mod.zzz"
-        ]
+        ],
+        "branches_covered": 0,
+        "branches_total": 0,
+        "branch_capability": "unavailable",
+        "missing_branch_lines": {},
+        "files_with_missing_branch_lines": []
       }
     }
   ],

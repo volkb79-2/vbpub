@@ -236,7 +236,7 @@ def test_r3_proves_the_uncovered_line_canary_for_its_own_reason_when_r1_is_decla
     # graded 0/0 either. Under A-149 both halves scored a vacuous 0/0
     # PASS and the assertions above read CANARY_SURVIVED instead.
     assert verdict.claims[1].coverage.considered == 1
-    assert verdict.claims[1].coverage.changed_executable == 2
+    assert verdict.claims[1].coverage.executable == 2
     assert git_repo.git("status", "--porcelain") == ""
 
 

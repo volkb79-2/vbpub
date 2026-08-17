@@ -1,0 +1,121 @@
+{
+  "schema_version": 6,
+  "assay_version": "@ASSAY_VERSION@",
+  "lane": "schema",
+  "commit": "@HEAD_OID@",
+  "outcome": "FAIL",
+  "exit_code": 1,
+  "reason_code": "MUTANTS_SURVIVED",
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "./run-schema-tests.sh"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "./run-schema-tests.sh"
+  ],
+  "argv_modified": false,
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "helpers": [
+    {
+      "role": "mutation-sites",
+      "tool": "assay-sql-sites",
+      "resolved_path": "/opt/assay-helpers/bin/assay-sql-sites",
+      "identity": "@SQL_HELPER_IDENTITY@"
+    }
+  ],
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "MUTANTS_SURVIVED",
+      "mutation": {
+        "candidate_count": 3,
+        "total": 3,
+        "killed": [
+          {
+            "path": "schema/03-create-tables-core.sql",
+            "lineno": 41,
+            "start_byte": 1180,
+            "end_byte": 1206,
+            "replacement_sha256": "@KILLED_REPLACEMENT_SHA@",
+            "operator": "sql:drop-not-null",
+            "description": "drop NOT NULL from jobs.corpus_id",
+            "kill_signal": "23502 not_null_violation on jobs.corpus_id"
+          }
+        ],
+        "survived": [
+          {
+            "path": "schema/03-create-tables-core.sql",
+            "lineno": 52,
+            "start_byte": 1502,
+            "end_byte": 1549,
+            "replacement_sha256": "@SURVIVED_REPLACEMENT_SHA@",
+            "operator": "sql:weaken-delete-action",
+            "description": "jobs_corpus_id_fkey ON DELETE RESTRICT -> CASCADE"
+          }
+        ],
+        "equivalent": [
+          {
+            "path": "schema/07-legacy-constraints.sql",
+            "lineno": 18,
+            "start_byte": 402,
+            "end_byte": 448,
+            "replacement_sha256": "@EQUIVALENT_REPLACEMENT_SHA@",
+            "operator": "sql:drop-check",
+            "description": "drop CHECK corpora_state_check -- redeclared by 12-repair.sql, schema dump unchanged"
+          }
+        ],
+        "crashed": [],
+        "budget_exceeded": []
+      }
+    }
+  ],
+  "evidence": [],
+  "judgment": {
+    "resolved": {
+      "language": "sql",
+      "source_roots": [
+        "schema"
+      ],
+      "base": "@BASE_OID@"
+    },
+    "r2": {
+      "jobs": 1,
+      "max_mutants": 50,
+      "operators": [
+        "sql:drop-not-null",
+        "sql:weaken-delete-action",
+        "sql:drop-check",
+        "sql:drop-trigger"
+      ],
+      "kill_attribution": "declared",
+      "kill_signal_artifact": ".assay/kill-signal.txt",
+      "equivalence_artifact": ".assay/schema-dump.sql"
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  }
+}

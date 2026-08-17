@@ -1,0 +1,451 @@
+# Wave 1 — live resume point
+
+**This file is the loop's state.** Update it at the end of every iteration,
+before doing anything else that could be interrupted. If it disagrees with this
+session's memory, this file wins; if it disagrees with `decisions.md`, decisions
+wins and this file is stale.
+
+* **Worktree:** `/workspaces/vbpub/.worktrees/assay-B005-B006-coverage-v6`
+* **Branch:** `assay-B005-B006-coverage-v6`, based on `main` `c66b67a0`,
+  with `main`'s B006 rewrite merged at `0791d9c4`
+* **Contract, B005 + B006(b) + branch coverage + v6:**
+  `nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md` (Addenda A–F
+  supersede the body where they disagree). **Its §1 is DEAD** — see below.
+* **Contract, B006(a):** `nyxloom-trove/W1-CARVE-B006a-project-scope.md`
+  (`3d745924`). This REPLACES §1 of the older contract. Where the two disagree
+  about B006(a), the newer document wins, and its WI-0 is the work item that
+  makes that true in the ledger.
+* **Requirement, authoritative over both contracts:** `nyxloom-trove/4-backlog.md`
+  items B005 and B006 — but note the B006(a) carve deliberately changes the
+  requirement's point 1, gated on a new ruling A-269 rather than silently.
+* **Rulings:** `decisions.md` A-257…**A-269**. A-269 is written, so the B006(a)
+  carve's BLOCKED condition is cleared and its WI-1 may land.
+
+## Done
+
+| what | evidence |
+|---|---|
+| carve spec + 8 real coverage fixtures | `4286e501`, `39fa7af2` |
+| fixtures kept out of the project's own suite | `af918715` |
+| carver's own corrections (Addendum A) | `77c40ee7` |
+| review round 1 folded in (9 blocking) | `59af6b4b` |
+| WI-0 — decisions A-257…A-265 | `6bd75c0c` |
+| main's B006 rewrite adapted, A-266 | `571cf2b5` |
+| review round 2 folded in (13 blocking), A-267 | `0a96dc7e` |
+| **registered gate green on this branch** | `ASSAY_REGISTERED_GATE_COMPLETE=1`, exit 0, at `59af6b4b` |
+| WI-3 — branch model + all four parsers (§3) | `759bea03`, `bd99bb7a`; 2532 passed, 100% line+branch on all six touched modules |
+| **B006(a) recarved from the consumer problem** (codex `gpt-5.6-sol` xhigh) | `d3173e61` |
+| **its first independent review — READY WITH CORRECTIONS, 5 blocking / 6 non-blocking** | `c313589b` |
+| **all 15 findings folded into the operative body, one rejected with evidence** | `3d745924` |
+| **WI-0 — A-269 ruled, the superseded design marked dead in place** | `c74dce86` |
+| **M20 measured — CMRU in real `tester-unified`, `--network=none`** | `75d50a7e` (1 failed, 1399 passed, 2 skipped) |
+| **B006(a) WI-1 — lane schema v2, `IsolationConfig`** | `c56a13ea`, `9b02e5e8`; verified `f76a3f32` |
+| **B006(a) WI-2 — P22 unsafe-symlink omissions** | `57d620d7`; verified + one dead branch removed `88f24a85` |
+| **B006(a) WI-3 — artifact/omission collision, embargo** | `7d2da7f3`; verified `678f93fc` |
+| **B006(b) — artifact parent chain inside the snapshot** | `7e869e71` (suite 2630 passed, verified in the foreground) |
+| **the withdrawn-design sweep** | `80de2a6c`, `1b563dea` |
+| **A-270 — user-facing docs merge with the change** | `8269fe5d` (+ `66382ab5` widening WI-5) |
+
+**Current position: the single v5→v6 cut is dispatched** — sibling item 4 (§4
+branch judge, §5 B005, §6 schema v6) together with the B006(a) carve's WI-4
+(`snapshot_policy`), in ONE commit. After it: WI-5 docs (widened, see below),
+CMRU qualification, controller review, gate, merge, release, notify dstdns.
+
+**WI-3 independently verified by the controller**, not taken from the report:
+the eight real fixtures are untouched; the three formats parse `sample.py` to
+the SAME per-line arcs `{5:(1,2), 11:(1,2), 12:(2,2), 18:(0,2)}` = 4/8, matching
+coverage.py's own `num_branches`/`covered_branches`; `check_sample.py` gets `{}`
+rather than `None` in the branch-tracking lcov (the mixed-artifact trap); the
+negative-`dst` exit arc parses. Eight adversarial probes against the shipped
+parser: the CONTROL is accepted, `meta`-deleted-with-arcs is accepted as
+`reported` (A-265's authority rule — the case that must NOT refuse), and the
+coherent tamper (duplicate covered arc with the summary bumped to match) is
+REFUSED, closing review round 1's finding 3 in the shipped code.
+Caveat recorded: the orphan-arc probe was caught by the totals cross-check
+before the model's invariant 3, so that probe does not isolate invariant 3.
+
+**Carried into WI-4:** O3's second half — a `require_branch = true` lane over a
+go-cover artifact refusing with `NO_MEASUREMENT`/`BRANCH_UNAVAILABLE` — is
+judge-level and could not exist yet. The parser half is proven. Do not let it
+fall between the two work items.
+
+## In flight — check before spawning anything
+
+Use `ListAgents` first. Do NOT spawn a second implementer or a duplicate
+reviewer; resume the existing one by name if it is still listed.
+
+* **implementer (Sonnet 5, serialized — one only):** last sent WI-3, the branch
+  model and four parsers (§3). That work LANDED and was independently verified.
+  Idle now.
+* **B006(a) carver and reviewer:** see "Agent sessions" below — resume the
+  codex session by id rather than starting a third design from scratch.
+
+## UNBLOCKED 2026-08-17 — round budget reset, CMRU writable, origin/main current
+
+Three things changed at once and all three widen what this wave can finish:
+
+* **the review budget was reset.** Round 3's NOT READY counts as the FIRST review
+  of the post-`c7bc9b59` design, not the third of the old one. **Two rounds
+  remain**, and B006(a) stays in wave 1 rather than being split out. All 8
+  blocking findings are already folded in as decisions (Addendum E, A-268) — the
+  next review starts from the revised §1, not from a question;
+* **CMRU's lanes and rigor are ours to edit.** O9b stops being deferred and
+  becomes this capability's real acceptance test. CMRU is at 100% lines
+  (6060/6060) and branches (2184/2184), 29/29 mutants killed, with a canary that
+  fails for the coverage reason — the best R1/R2/R3 consumer available;
+* **`origin/main` is current**, so `cmru release`'s "N commits ahead" guard is
+  gone and the release step at the end of this wave is reachable. The operator
+  has authorised releasing BOTH cmru and assay.
+
+Round 3 (Opus, fresh context) returned **NOT READY — 8 blocking, 14
+non-blocking**, and its two structural findings are the reason §1 changed shape:
+
+The two that change what the work IS, rather than how it is written:
+
+* **§1.3 makes work item 1c unbuildable.** Pinning `project_prefix` to the
+  project's own repo-relative path means no loadable `assay.toml` can produce a
+  source root, artifact, canary target or cwd outside the boundary — every one
+  is already contained by `config.py:1280`/`:998`/`_load_canary` and
+  `runner.py:1113`. 1c's headline deliverable is five refusal branches that
+  cannot fire, in a project that forbids `pragma: no cover`. And the rule cannot
+  be enforced where §1.2 puts it: `config.py` imports no git, so the project's
+  repo-relative path is unknown at load.
+* **The narrowed claim STILL over-reaches.** A-267 says assay never materialises
+  an out-of-scope path. True — but the command can recreate one, demonstrated
+  with stock git against the retained closure B006.3 requires:
+  `git checkout -- <path>` after clearing its skip bit, or `git worktree add`.
+  A suite that runs `git stash`/`git worktree add` hits it by accident. So the
+  honest property is narrower again: *assay* never materialises it.
+
+Also blocking: only `skip-worktree` survives `_verify` + the post-run dirt check
++ `write-tree`, and §1 names no mechanism at all (measured — narrowing the index
+makes `git status` report `D .gitignore` for every omitted entry); the
+`materialisation` enum's two values do not separate the four situations §6 says
+it exists to separate; `cli.py:355`/`:385` must emit a REQUIRED `isolation`
+object with no boundary in scope; §2's `judgment.r1.coverage_artifact` claim is
+false on both refusal paths and contradicts A-264 in the wave that establishes
+it; and O18 asks the implementer to mutate an object §1.8 requires to be
+immutable.
+
+## GATE GREEN ON THE BRANCH — 2026-08-17, at the re-witness commit
+
+```text
+ASSAY_REGISTERED_GATE_COMPLETE=1     GATE_EXIT=0
+phases: wheel-installed, attestation-hardened, verdict-v5-accepted,
+        lane-schema-v2-successors-verified, verdict-v6-successors-verified,
+        self-hosted-lane-passed, topos-qualified, cmru-b006a-qualified,
+        independent-self-hosting-passed
+```
+
+**Blockers 1 and 2 are CLOSED**, and the wave's acceptance test is genuine —
+CMRU makes real R1/R2/R3 claims **while the Topos fixtures stay tracked**:
+
+```text
+outcome=PASS exit_code=0   claim[R0..R3] all PASS
+r2_killed_identity  Eq->NotEq at cmru/src/cmru/_b006a_probe.py
+r3_canary  control=PASS transformed=FAIL
+           expected=UNCOVERED_LINES  observed=UNCOVERED_LINES
+snapshot_policy  repository-minus-unsafe-symlinks + the three exact Topos paths
+omission_probe  omitted_absent=[true,true,true]  cmru_root_present=true
+                topos_ordinary_present=true  status_clean=true
+```
+
+R3 killed for the RIGHT reason — expected and observed reason codes match,
+which is the cause-sensitivity that makes a canary evidence rather than a coin
+flip. The previous run of this same phase gave R1 FAIL and R3 INCONCLUSIVE; the
+nested-key fix (`d547c75a`) and rulings A-272/A-273/A-274 closed both.
+
+**Still open: blocker 3 only** (O5's dstdns fixture), then merge, gate on
+`main`, release, notify.
+
+## OPEN BLOCKERS before the release — found by the acceptance test, 2026-08-17
+
+The wave's own acceptance test did its job: it found real defects rather than
+arranging a green tick. **The release is HELD until all three clear.**
+
+1. **R1 is broken for every NESTED project** — the shape B006 exists to serve.
+   `evaluate._normalized_profile_files` documents itself as returning keys
+   *"by REPO-TOP-RELATIVE path"* and does not: `normalize_coverage_key` only
+   **strips** a configured prefix and never **prepends** the project's own, so
+   a coverage artifact's project-relative keys never meet `git diff`'s
+   repo-relative ones. **Both R1 modes are affected** — WI-5 found
+   `changed_lines`; the controller reproduced `whole_target` independently
+   through the real CLI, same source and lane, one variable:
+   ```text
+   A-root-whole_target    exit=0   PASS
+   B-nested-whole_target  exit=3   NO_MEASUREMENT/TARGET_NOT_MEASURED
+   ```
+   **Why it stayed invisible, which is the more useful lesson:** every existing
+   `project_prefix` test *fabricates its own `coverage.json` with the key
+   spelling the evaluator wants*. A test that constructs the artifact it then
+   parses cannot discover a disagreement about that artifact's key space.
+   Fix dispatched with both reproductions as acceptance tests.
+2. **The registered gate exits 1 before reaching the new phase.** Eight reds in
+   `tests/test_python_qualification.py` (the P25 `qualify_topos.py` suite),
+   each an unexpected `ERROR`/exit 2 instead of its frozen terminal, inside
+   `run_self_hosted_lane`. WI-5 judged them pre-existing and unrelated and did
+   not diagnose them. **Controller's hypothesis, to be tested the moment
+   blocker 1 lands: they are the SAME defect.** `qualify_topos.py` qualifies
+   **Topos, which is itself a nested project** (`topos/` inside vbpub), so a
+   real nested R1 lane there would break exactly this way. If the fix clears
+   them, blocker 2 dissolves; if not, it needs its own diagnosis. Either way
+   **step 8 (gate green) cannot be signed off until it is resolved** — do not
+   record a gate pass that skipped phases.
+3. **O5's dstdns fixture does not exist anywhere in the tree.** The in-repo
+   integration fixture named for dstdns's exact path
+   `infra-global/reverse-proxy/etc-nginx/modules -> /usr/lib/nginx/modules`
+   (repository mode refuses; omission mode runs while the link is absent and
+   ordinary `infra-global` files remain) is named in WI-5's prose but owned by
+   WI-3's file list, and neither built it. **This is the only oracle that
+   covers the OTHER consumer's incident**, so it is not optional: dstdns is the
+   project that had to delete a real vendored artifact. Build it.
+
+## Remaining, in order
+
+1. ~~WI-0 of the B006(a) carve.~~ **DONE** — A-269 written; the sibling carve's
+   §1, §6 `isolation`, §7 item 1 (1a/1b/1c) and item 4, and oracles
+   O9/O9b/O15/O17/O18/O19 all carry supersession markers; the backlog's B006(a)
+   status line and its numbered contract carry the amendment, so the binding
+   requirement no longer instructs the withdrawn boundary.
+2. ~~Resolve the carve's unmeasured M20.~~ **DONE — measured by the controller,
+   and the news is good.** CMRU's suite, unmodified, inside real
+   `tester-unified:local` with `--network=none`:
+
+   ```text
+   1 failed, 1399 passed, 2 skipped in 19.99s
+   FAILED tests/test_release_final_contracts.py::test_release_publish_rejects_response_without_upload_coordinate
+   E   urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
+   ```
+
+   Two things settle. **The three `TestConsulBackend` socket errors do NOT
+   reproduce** — they were cockpit-only, as the carve inferred but could not
+   prove: 1399 pass here against 1397+3-errors in the cockpit. And **the release
+   test genuinely fails in the target environment**, for exactly the predicted
+   reason, so WI-5's one-line test-double repair is necessary and sufficient —
+   it is not papering over an environmental artifact. Exact invocation:
+   `docker run --rm --cgroup-parent=dev-background.slice --network=none --mount
+   type=bind,src=<host repo root>,dst=/workspaces/vbpub -e
+   PYTHONDONTWRITEBYTECODE=1 -w <worktree>/cmru tester-unified:local
+   /opt/tester-venv/bin/python -m pytest tests -q -p no:cacheprovider`
+   (`-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1` leave the tree clean —
+   verified). WI-5 still records this in its own implementation report.
+3. ~~B006(a) WI-1/WI-2/WI-3 and B006(b) and the v6 cut.~~ **ALL DONE** — see
+   the Done table. Each was independently verified by driving the shipped entry
+   points; the verifications and what they found are in
+   `reports/W1-controller-verification.md`. Suite **2814 passed, 11 skipped**.
+   The standing warning that produced this row still holds for any future
+   commit: **never touch `cmru/assay.toml`** while CMRU's gate evaluates it with
+   the pinned lane-v1 `assay-1.0.0.pyz`.
+3. **WI-2** — the artifact parent chain inside the snapshot (§2).
+4. **WI-4** — the v6 contract: §4, §5, §6 together. Migration by the four typed
+   buckets (43 transform / 7 preserve byte-identical / 12 hand-edit / 3 must not
+   change); the classifier scans THREE patterns (`"schema_version": 5`,
+   `VERDICT_SCHEMA_VERSION`, `urn:assay:schema:verdict:5`) and refuses to run on
+   a file it cannot place. Deselection list for P33's locked suite is derived by
+   MEASUREMENT — run it under v6, list every red, classify each.
+5. **WI-5 — docs, and it is wider than it looks.** `STATE.md`, backlog status
+   lines AND their prose sections, the nyxloom spine, a LOG under `reports/` —
+   **plus the two user-facing documents the plan originally missed**
+   (operator, 2026-08-17; the widened item 5 of the sibling carve carries the
+   detail). The division of labour: **README = what assay does; DESIGN-GUIDE =
+   why it does it that way; CONSUMERS.md = how to adopt it**, with each README
+   feature linking to its DESIGN-GUIDE rationale instead of re-arguing it.
+   Two are defects rather than omissions:
+   * the README's headline bullet says "**changed-line coverage, not
+     whole-project coverage**", which B005 makes FALSE;
+   * `docs/CONSUMERS.md` was named in **no work item at all**, and its "adopt
+     R1" guidance predates the mandatory `[isolation]` table — a consumer
+     following it writes a lane that refuses with `BAD_LANE_CONFIG`.
+   CONSUMERS.md also owes worked examples for the two capabilities consumers
+   are actually waiting on (the whole-target floor, and a monorepo lane with
+   `unsafe_symlink_omissions`), and the ordered repin-plus-bump adoption step.
+   **Every TOML example in all three documents is parsed by the shipped loader
+   in a test** — a doc example is a claim like any other (A-232).
+6. **WI-6 — CMRU's real R1/R2/R3 lane** (O9b). Write `cmru/assay.toml`'s
+   higher-rigor lane with project scope: source roots, coverage argv + artifact,
+   `fail_under = 100.0`, `require_branch = true`, the mutation policy, and the
+   canary. `inputs` must be derived by SWEEPING CMRU's suite for repo-root
+   dependencies (`parents[2]` and friends) — at least `cmru.project.sample.toml`
+   and `cmru.release.sh`, the latter actually executed by
+   `test_release_wrapper.py`. Remove CMRU's temporary whole-source coverage
+   stopgap only once this lane is green, and say so in its commit.
+7. **Controller's own adversarial review** — by writing real inputs to disk and
+   driving the SHIPPED entry points, never by reading the diff and never by
+   re-running the implementer's fixtures. Then one Opus review of the
+   implementation.
+8. **Gate green on the branch**, run in the foreground with the exit code
+   captured honestly — never `| tail`, which returns tail's status.
+9. **Merge `--no-ff` into `main`**, then gate green again on `main`.
+10. **Release, authorised 2026-08-17.** `cmru release --project assay
+    --dry-run` first, then the real release for **both cmru and assay**. Show
+    the dry-run output before publishing. This is the step that lets CMRU pin a
+    released assay and drop its stopgap.
+    * **Confirm the `.pyz` asset actually published**, not just the wheel.
+      dstdns consumes the ZIPAPP (`tools/assay/assay-<v>.pyz`), so a release
+      that ships only the wheel is useless to it. That asset rides cmru's
+      `wheel-publish --extra-asset` (A-249/A-250).
+10b. **Notify the dstdns agent — same filesystem, no git, no push.** After the
+    release lands, write `/workspaces/dstdns/.assay-inbox/release.json`. Its
+    schema is tracked at `/workspaces/dstdns/.assay-inbox/CONTRACT.md` — READ IT
+    at the time rather than trusting this summary. One JSON object:
+    `version`, `tag`, `artifact_filename`, **`sha256` of the `.pyz` (REQUIRED —
+    dstdns re-vendors the artifact and verifies it against this)**,
+    `download_url`, optional `manifest_url`, `landed`, `notes`, `written_at`.
+    Take the hash from the release's own `.sha256` sidecar rather than
+    recomputing by hand.
+    `landed` is the field that changes what dstdns DOES: `B005` lets it retire
+    its `--cov-fail-under=100`-in-argv stopgap (D-044) for a real attested
+    floor, and `B006` lets it drop both substrate work-arounds — the removed
+    nginx symlink (D-045.1) and the tracked `.assay/.gitkeep` (D-045.2). So
+    list only what genuinely shipped; naming an item that did not land would
+    have dstdns tear out a work-around it still needs.
+    The directory is gitignored on dstdns's side precisely so this drop cannot
+    dirty its tree and break its own assay gate — do not commit anything there.
+    Cross-machine fallback (not needed here, we share a filesystem):
+    `SendMessage` the dstdns loop session, discovered via `ListAgents`.
+11. **Then, operator-confirmed 2026-08-17, in this order: B007 first, then the
+    waves as originally agreed.** B007 is the ordered multi-target R3 canary
+    filed by nyxloom — **assessed and DEFERRED out of this wave**, and it is the
+    first post-v6 schema item (v7). The full assessment, the three premises
+    verified against shipped code, and five design findings for its carver are
+    in `4-backlog.md` §B007. Carve it together with any other v7-requiring
+    change so the estate pays one migration rather than two. **Nothing in wave 1
+    may be widened for it** — nyxloom's initial adapter is v6-compatible by its
+    own statement and must not depend on it.
+12. **Then wave 2 and wave 3, as originally agreed:** B004 (provenance as
+    VERIFIED evidence — its ciu blocker CIU-20 is FIXED, `ciu provenance --json`
+    ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
+    own adversarial review before any dispatch.
+
+## The B006(a) decision — RESOLVED 2026-08-17 by recarving, not by splitting
+
+The operator did not take the split. Instead B006(a) went back to a fresh
+carver (codex `gpt-5.6-sol`, xhigh) with the consumer problem, the measured
+facts, the seven recurring defect classes, and **explicit licence to change the
+shape** — the backlog's own words say its sketch is "one possible
+implementation". The result is `W1-CARVE-B006a-project-scope.md`.
+
+**The new shape:** keep the FULL repository snapshot; omit only the exact
+declared symlink leaves P22 would otherwise refuse.
+
+```toml
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = ["topos/.../passwd_link", ...]
+```
+
+It dissolves the old design's defect classes rather than answering them. No
+dependency inventory to be incomplete — everything except the named leaves is
+still materialised, so CMRU's repo-root reads need no `inputs` key. No five
+unreachable containment preflights — one reachable coverage-artifact collision
+check. No `materialisation` enum whose values no call site can derive — the
+policy is copied from the loaded lane, so it is derivable at every producer
+including `cli.py`'s refusal paths. And an omission can only ever be a symlink
+leaf, so it cannot hide source, tests or a B005 target: the vacuity hole stays
+structurally shut.
+
+**Two premise corrections, both verified by the controller against the real
+trees:** Topos carries THREE tracked `/etc/passwd` symlinks, not the one the
+backlog named — a design handling only `passwd_link` would still have failed.
+And CMRU's suite is NOT green under the gate's conditions:
+`test_release_publish_rejects_response_without_upload_coordinate` stubs only
+`get_release_by_tag`, so `publish()` calls the unstubbed `update_release` and
+reaches `api.github.com`, while the gate runs `--network=none`.
+
+**First independent review (Fable, fresh context): READY WITH CORRECTIONS — 5
+blocking, 6 non-blocking**, against 8 → 9 → 11 on the withdrawn design. It
+reproduced the load-bearing measurements itself and reported the round
+converged. It was then given explicit licence to argue the shape is wrong and
+design a better one; it made the case against properly and **still endorsed the
+shape**. All 15 findings are folded into the operative body at `3d745924`.
+
+The historical record of why the OLD design was abandoned, kept because it is
+the reason the new one is shaped as it is:
+
+* **the directory-expansion feature added in round 2 reopened B005's own hole.**
+  "A directory expanding to files none of which appear in the artifact refuses"
+  relaxes the per-file anti-vacuity guard to per-declaration: a directory
+  expanding to 36 files of which ONE is measured passes, and 35 go silently
+  unjudged. That is `--cov`'s vacuity with a first-class judge wrapped around
+  it — the exact thing B005 exists to close. It also contradicts §5's own
+  step 2 (targets are regular files, not directories) and makes the
+  canary-in-`targets` rule undecidable at load, since `config.py` imports no
+  adapter registry and cannot expand a directory there. **A simplification
+  intended for usability turned into the wave's worst finding.**
+* **making CMRU R1/R2/R3 would redden its release gate.** R2's candidates come
+  from `base..HEAD` filtered to source roots; measured, no commit near this
+  branch's HEAD touches `cmru/src`, so R2 renders `INCONCLUSIVE`/`NO_MUTANTS`,
+  which is **exit 5** and rolls the whole verdict INCONCLUSIVE — and
+  `cmru/cmru.toml` runs `assay run cmru` as a gate step. O9b as specified would
+  break the gate on every commit that does not touch CMRU's source.
+* **`materialisation: partial` is not derivable where it must be emitted.** The
+  values were ruled; the ability to produce them was not. `_verify` failures and
+  `prepare_snapshot` refusals arrive at the same `except` with byte-identical
+  state and the same reason code.
+
+What SURVIVED all three rounds, measured independently each time: §1.3's
+full-index-plus-`skip-worktree` mechanism, on the real CMRU payload (empty
+`status`, `write-tree` == `HEAD^{tree}`, index-resident `.gitignore`); both
+declared `inputs` load-bearing (deleting them fails exactly two named tests);
+CMRU's suite green under project scope leaving no dirt; and R3's `uncovered-line`
+canary killing for the RIGHT reason once `--cov-fail-under` is out of the argv.
+**The mechanism is sound. The contract around it is not converging.**
+
+~~Controller's recommendation: split B006(a) into its own wave.~~
+**Superseded.** The recarve kept B006(a) in wave 1 and every measured fact
+above survived into the new design — the skip-worktree mechanism is still the
+mechanism, and the no-sandbox honesty ruling is still binding. What was thrown
+away was the project-prefix-plus-`inputs` CONTRACT, not the measurements.
+
+## Agent sessions — resume, do not respawn
+
+* **B006(a) carver:** codex `gpt-5.6-sol`, effort `xhigh`, session
+  **`01a00eeb-199e-79f3-b6d0-03bc347230bc`**, cwd = this worktree. It holds the
+  full design context for two rounds. `codex exec resume` takes **no
+  `--sandbox` flag** and every option must precede the session id — pass
+  `-c sandbox_mode="workspace-write"` instead, or the resume runs read-only and
+  silently cannot write its deliverable. Full invocation in the scratchpad's
+  `b006a/SESSIONS.md`.
+* **Reviewer:** Fable, fresh context per round, no inherited state. Its report
+  is `reports/assay-B006a-carve-review-fable.md`.
+
+## Standing rules
+
+* `git commit --only -- <paths>` with `-F <msgfile>`. Never `add`+`commit`,
+  never `reset`/`rebase`/`--amend`. A concurrent committer shares this repo.
+* Editor for edits, never `sed -i` or a script that writes files — a hook blocks
+  those and a blocked write looks like success.
+* Locked carve assets under `carve-assets/P2x/` and `P33/` are frozen evidence.
+  Deselect with a written justification; never edit one to make a gate pass.
+* Nothing under `tests/fixtures/coverage/` may be edited.
+* 100% line and branch coverage on new code, zero `pragma: no cover`, every test
+  differential.
+* A stated pass/fail count is not evidence (A-232): paste real command output.
+* Commit before gating — `assay run` refuses a dirty tree and the gate's first
+  step IS an `assay run`.
+* Expect exactly one pre-existing red in the devcontainer:
+  `test_standalone.py::test_a_real_pass_matches_the_documented_r0_pass_shape`.
+  Do not "fix" it.
+
+## STOP and ask the operator
+
+* both remaining review rounds return NOT READY (the budget is then spent);
+* an oracle in the contract turns out to be unwritable honestly — report it,
+  never weaken it into one that cannot fail;
+* a finding that changes the wave's SCOPE rather than its detail;
+* the backlog changes under us again (it has twice);
+* anything outward-facing BEYOND the authorised release of cmru and assay —
+  a force push, a release of another product, posting anywhere.
+
+**Authorised without asking, 2026-08-17:** editing any file in vbpub including
+CMRU's lanes and rigor; merging this branch to `main`; releasing cmru and assay
+via `cmru release` after the dry-run is shown.
+
+## Done means
+
+All of B005 and B006 implemented per the contract; **CMRU making genuine
+R1/R2/R3 claims** with the Topos `/etc/passwd` fixture still tracked (O9b, no
+longer deferred); gate green on the branch and again on `main` after a `--no-ff`
+merge; cmru and assay released; and every deferral or limitation recorded with
+its reason rather than quietly dropped.
+
+Then wave 2 (B004) and wave 3 (B001/P34) continue in the same shape.

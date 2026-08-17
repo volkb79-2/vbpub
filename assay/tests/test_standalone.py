@@ -116,7 +116,7 @@ def _r0_lane_toml(
     argv_toml = ", ".join(json.dumps(token) for token in argv)
     passthrough_toml = ", ".join(json.dumps(name) for name in env_passthrough)
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0"]\n'
@@ -299,7 +299,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     git_repo.commit_all("add farewell")
 
     lane_toml = (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R1"]\n'
@@ -316,6 +316,8 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
         "env_passthrough = []\n"
         'budget = "2m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n'
@@ -336,7 +338,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 5,
+        "schema_version": 6,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -366,8 +368,14 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
                 "coverage_artifact": "cov.json",
                 "fail_under": 100.0,
                 "allow_excluded": False,
+                # wave-1 §6 (A-260): required and always present; the
+                # declared lane is ordinary changed-line mode and never
+                # declares require_branch, so it resolves to its default.
+                "mode": "changed_lines",
+                "require_branch": False,
             },
         },
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             {
                 "rigor": "R0",
@@ -386,7 +394,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
                     # the new test. `tests/test_farewell.py` is outside the
                     # declared source root, so it is not considered at all.
                     "considered": 1,
-                    "changed_executable": 2,
+                    "executable": 2,
                     "covered": 2,
                     "pct": 100.0,
                     # P21/A-183: coverage.py's JSON DOES carry an exclusion
@@ -400,6 +408,14 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
                     "files_with_unclassified_lines": [],
                     "excluded_lines": {},
                     "files_with_excluded_lines": [],
+                    # wave-1 §6: the real `--cov=pkg` argv carries no
+                    # `--cov-branch`, so coverage.py reports no branch
+                    # detail at all -- "unavailable", with zero arcs.
+                    "branches_covered": 0,
+                    "branches_total": 0,
+                    "branch_capability": "unavailable",
+                    "missing_branch_lines": {},
+                    "files_with_missing_branch_lines": [],
                 },
             },
         ],
@@ -453,7 +469,7 @@ def _r2_lane_toml(
 ) -> str:
     operators_toml = ", ".join(json.dumps(name) for name in operators)
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R2"]\n'
@@ -463,6 +479,8 @@ def _r2_lane_toml(
         "env_passthrough = []\n"
         f'budget = "{budget}"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["src"]\n'
@@ -557,7 +575,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -576,6 +594,11 @@ def _expected_r2_artifact(
         "env_effective": {"PATH": "/usr/bin:/bin"},
         "scope": "S1",
         "enforcement": "gate",
+        # wave-1 §6 (A-269): declared_rigor names R2, a higher-rigor level,
+        # so every R2 lane in this module resolves an explicit policy --
+        # unconditionally, unlike `judgment`, which is genuinely absent when
+        # the baseline never passed.
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             r0_claim
             or {
@@ -951,7 +974,7 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
 
 def _r3_lane_toml(*, script: str, mechanism: str, target: str) -> str:
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R3"]\n'
@@ -961,6 +984,8 @@ def _r3_lane_toml(*, script: str, mechanism: str, target: str) -> str:
         "env_passthrough = []\n"
         'budget = "2m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n\n'
@@ -1008,7 +1033,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1030,6 +1055,8 @@ def _expected_r3_artifact(
             "resolved": {"language": "python", "source_roots": ["pkg"]},
             "r3": {"mechanism": mechanism, "target": target},
         },
+        # wave-1 §6 (A-269): declared_rigor names R3, a higher-rigor level.
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             r0_claim
             or {
@@ -1289,7 +1316,7 @@ def _r1_r3_lane_toml(*, mechanism: str, target: str, base: str) -> str:
         "--cov=pkg", "--cov-report=json:cov.json",
     ]
     return (
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0", "R1", "R3"]\n'
@@ -1299,6 +1326,8 @@ def _r1_r3_lane_toml(*, mechanism: str, target: str, base: str) -> str:
         "env_passthrough = []\n"
         'budget = "5m"\n'
         "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
         "[lanes.package.judge]\n"
         'language = "python"\n'
         'source_roots = ["pkg"]\n'
@@ -1357,7 +1386,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1385,9 +1414,14 @@ def _r1_r3_expected(
                 "coverage_artifact": "cov.json",
                 "fail_under": 100.0,
                 "allow_excluded": False,
+                # wave-1 §6 (A-260): required and always present.
+                "mode": "changed_lines",
+                "require_branch": False,
             },
             "r3": {"mechanism": mechanism, "target": target},
         },
+        # wave-1 §6 (A-269): declared_rigor names R1/R3, both higher-rigor.
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             {
                 "rigor": "R0",
@@ -1456,7 +1490,7 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                     # both covered by the new test. `tests/test_mod.py` is
                     # outside the declared source root.
                     "considered": 1,
-                    "changed_executable": 2,
+                    "executable": 2,
                     "covered": 2,
                     "pct": 100.0,
                     # P21/A-183: coverage.py's JSON DOES carry an exclusion
@@ -1470,6 +1504,12 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                     "files_with_unclassified_lines": [],
                     "excluded_lines": {},
                     "files_with_excluded_lines": [],
+                    # wave-1 §6: `--cov-branch` is not in the real argv.
+                    "branches_covered": 0,
+                    "branches_total": 0,
+                    "branch_capability": "unavailable",
+                    "missing_branch_lines": {},
+                    "files_with_missing_branch_lines": [],
                 },
             },
             r3_claim={
@@ -1546,7 +1586,7 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                     # target -- is real source under the same root, but it
                     # is not part of this diff, so R1 never considers it.
                     "considered": 1,
-                    "changed_executable": 2,
+                    "executable": 2,
                     "covered": 2,
                     "pct": 100.0,
                     # P21/A-183: coverage.py's JSON DOES carry an exclusion
@@ -1560,6 +1600,12 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                     "files_with_unclassified_lines": [],
                     "excluded_lines": {},
                     "files_with_excluded_lines": [],
+                    # wave-1 §6: `--cov-branch` is not in the real argv.
+                    "branches_covered": 0,
+                    "branches_total": 0,
+                    "branch_capability": "unavailable",
+                    "missing_branch_lines": {},
+                    "files_with_missing_branch_lines": [],
                 },
             },
             r3_claim={

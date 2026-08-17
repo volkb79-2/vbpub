@@ -34,6 +34,9 @@ EXPECTED_REASON_CODES = {
     "PASS": set(),
     "FAIL": {
         "UNCOVERED_LINES",
+        # wave-1 §4/A-258: a floor missed purely because of branches, ranked
+        # identically to UNCOVERED_LINES but never the same sentence.
+        "UNCOVERED_BRANCHES",
         "EXCLUDED_LINES",
         "UNCLASSIFIED_LINES",
         "MUTANTS_SURVIVED",
@@ -52,6 +55,12 @@ EXPECTED_REASON_CODES = {
         "MUTATION_DISCOVERY_FAILED",
     },
     "NO_MEASUREMENT": {
+        # wave-1 §4/A-259: judge.require_branch=true over an "unavailable"
+        # branch capability.
+        "BRANCH_UNAVAILABLE",
+        # wave-1 §5/A-260: B005's anti-vacuity guard -- a whole_target target
+        # absent from the artifact, or measured with zero executable lines.
+        "TARGET_NOT_MEASURED",
         "DIRTY_TREE",
         # P21/A-178: a clean tree whose HEAD moved is not dirty.
         "HEAD_CHANGED",

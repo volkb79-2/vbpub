@@ -2,7 +2,18 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
-<!-- cmru: release history -->
+## [Unreleased]
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
+
+### Added
+- feat(assay): B005 -- the whole-target R1 coverage judge (`judge.mode = "whole_target"`, `judge.targets`), a coverage floor over declared files independent of any `base..HEAD` diff
+- feat(assay): branch coverage in all four coverage formats (coverage.py JSON, lcov, Cobertura; `go-cover` explicitly `"unavailable"`), judged whenever an artifact reports it; `judge.require_branch` to refuse rather than silently fall back to line-only judging
+- feat(assay): B006(a) -- `isolation.snapshot_selection`, closed to `"repository"` / `"repository-minus-unsafe-symlinks"` with commit-validated `unsafe_symlink_omissions`, replacing the earlier withdrawn project-scoped-boundary design
+- feat(assay): B006(b) -- the coverage artifact's missing parent directory chain is created inside assay's own ephemeral snapshot, never the real worktree
+
+### Changed
+- feat(assay)!: verdict schema v6 (`VERDICT_SCHEMA_VERSION = 6`), a hard cut -- `changed_executable` renamed to `executable`; new `branches_covered`/`branches_total`/`branch_capability`/`missing_branch_lines`/`files_with_missing_branch_lines`; new `judgment.r1.mode`/`.targets`/`.require_branch`; new top-level `snapshot_policy`; `pct` is now the combined line+branch percentage whenever an artifact reports branches, which changes PASS/FAIL for existing R1 lanes with branch-capable coverage artifacts
+- feat(assay)!: lane schema v2 (`LANE_SCHEMA_VERSION = 2`), a hard cut -- `[lanes.X.isolation]` is now required on every R1/R2/R3 lane and refused on R0-only lanes; see `docs/CONSUMERS.md`'s "Adopting a v2-capable release" for the required repin-and-bump ordering
 
 ## [1.0.0] - 2026-08-16
 <!-- cmru: generated -->

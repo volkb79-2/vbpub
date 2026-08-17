@@ -37,6 +37,7 @@ from assay.verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    SnapshotPolicy,
     Verdict,
     rollup,
 )
@@ -91,7 +92,7 @@ def passing(rigor: str, source: str = "computed") -> Claim:
     if rigor == "R1":
         payload["coverage"] = Coverage(
             covered=1,
-            changed_executable=1,
+            executable=1,
             pct=100.0,
             considered=1,
             exclusion_capability="reported",
@@ -139,6 +140,14 @@ def document_with(claims: list[dict]) -> dict:
     document["claims"] = claims
     levels = sorted({claim["rigor"] for claim in claims if "rigor" in claim})
     document["declared_rigor"] = levels or ["R0"]
+    # wave-1 §6: snapshot_policy is required iff declared_rigor names a
+    # higher-rigor level -- the PASS fixture's own R0,R1 snapshot_policy is
+    # wrong the moment this helper rebuilds declared_rigor from arbitrary
+    # claim rigors, so it is recomputed here rather than left stale.
+    if any(level != "R0" for level in document["declared_rigor"]):
+        document["snapshot_policy"] = {"selection": "repository"}
+    else:
+        document.pop("snapshot_policy", None)
     return document
 
 
@@ -204,7 +213,7 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
     else, because the claim is closed by `unevaluatedProperties`."""
     payload = {
         "covered": 1,
-        "changed_executable": 1,
+        "executable": 1,
         "pct": 100.0,
         "considered": 1,
         "exclusion_capability": "reported",
@@ -214,6 +223,11 @@ def test_a_coverage_payload_outside_the_r1_branch_is_rejected(
         "files_with_unclassified_lines": [],
         "excluded_lines": {},
         "files_with_excluded_lines": [],
+        "branches_covered": 0,
+        "branches_total": 0,
+        "branch_capability": "unavailable",
+        "missing_branch_lines": {},
+        "files_with_missing_branch_lines": [],
     }
     assert why_invalid(
         validator, document_with([claim_dict(rigor="R1", coverage=payload)])
@@ -336,6 +350,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
                 kill_attribution="unattributed",
             ),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     assert [claim.rigor for claim in verdict.claims] == ["R0", "R1", "R2"]
 
@@ -735,7 +750,7 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
             reason_code=ReasonCode.UNCOVERED_LINES,
             coverage=Coverage(
                 covered=1,
-                changed_executable=2,
+                executable=2,
                 pct=50.0,
                 considered=1,
                 exclusion_capability="reported",
@@ -765,6 +780,7 @@ def test_the_model_refuses_an_outcome_that_disagrees_with_its_claims():
         declared_rigor=("R0", "R1"),
         claims=claims,
         judgment=judgment,
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
 
     with pytest.raises(ValueError, match="disagrees with the rollup"):

@@ -23,7 +23,7 @@ def test_complete_r0_lane_loads_with_every_value_intact(project: Project):
 
     lane_file = load_lane_file(path)
 
-    assert lane_file.schema_version == 1
+    assert lane_file.schema_version == 2
     assert lane_file.path == path.resolve()
     assert lane_file.project_root == project.root.resolve()
     assert list(lane_file.lanes) == ["package"]
@@ -92,7 +92,7 @@ def test_r1_lane_round_trips_exactly_what_the_file_declared(project: Project):
     declared = load_lane_file(path).lane("package").as_declared()
 
     assert declared == lane_table(R1_LANE)
-    assert set(declared) == {*REQUIRED_LANE_FIELDS, "judge", "where"}
+    assert set(declared) == {*REQUIRED_LANE_FIELDS, "judge", "where", "isolation"}
     assert set(declared["judge"]) == {
         "language",
         "source_roots",
@@ -159,7 +159,7 @@ def test_empty_env_and_empty_passthrough_are_declarations_not_omissions(
     # which is a different statement from omitting the key — and omitting it is
     # rejected (see test_config_reject.py).
     text = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S0"

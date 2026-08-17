@@ -25,10 +25,40 @@ that any assertion would have caught a wrong version of it.
 
 assay exists to close that gap mechanically, not by policy:
 
-- **Changed-line coverage, not whole-project coverage.** A diff that touches
-  12 lines is judged on those 12 lines. A 0/0 result (nothing measurable
-  changed) is reported honestly, with a `considered` count, instead of
-  silently reading as 100%.
+- **You choose which question R1 asks: changed-line, or whole-target.** In
+  `mode = "changed_lines"` (the default — an existing lane needs no edit), a
+  diff that touches 12 lines is judged on those 12 lines; a 0/0 result
+  (nothing measurable changed) is reported honestly, with a `considered`
+  count, instead of silently reading as 100%. In `mode = "whole_target"` a
+  lane instead asserts a coverage floor over one or more explicitly declared
+  **files**, independent of any diff — the mode a reconciliation program needs
+  when a method can be "fixed" by editing only its docstring, changing zero
+  executable lines. One lane declares one mode; a consumer wanting both
+  declares two lanes. See
+  [§6, two R1 modes, one claim per lane](docs/DESIGN-GUIDE.md#two-r1-modes-one-claim-per-lane-a-260).
+- **Branch coverage is judged whenever the artifact reports it — not
+  opt-in.** A changed line that is a branch source with an untaken arc lowers
+  the reported percentage in *every* lane whose coverage artifact carries
+  branch data, including a lane that declared R1 before this shipped. `pct` is
+  the combined line+branch percentage the moment branches are present. Declare
+  `judge.require_branch = true` to refuse (`NO_MEASUREMENT`/
+  `BRANCH_UNAVAILABLE`) rather than silently fall back to line-only judging
+  when the artifact's format or argv can't produce branch data — the guard
+  against an argv edit quietly downgrading a gate's rigor. See
+  [§6, branch coverage is judged whenever reported](docs/DESIGN-GUIDE.md#branch-coverage-is-judged-whenever-the-artifact-reports-it-a-258)
+  and
+  [§6, `require_branch` governs absence](docs/DESIGN-GUIDE.md#require_branch-governs-absence-never-presence-a-259).
+- **Every R1/R2/R3 lane declares its snapshot selection.** `[lanes.X.isolation]`
+  is required the moment a lane declares R1, R2 or R3 (and refused on an
+  R0-only lane): `snapshot_selection = "repository"` materialises the whole
+  commit, or `"repository-minus-unsafe-symlinks"` additionally omits exactly
+  the declared, commit-validated unsafe symlink leaves that would otherwise
+  refuse the lane. The exact property, stated once and never paraphrased
+  stronger: *for each higher-rigor unit using omission mode, assay initially
+  hands the command a private worktree in which every declared,
+  commit-validated P22-unsafe symlink is absent and every other P22-supported
+  tracked path from the resolved commit is materialised.* See
+  [§6, snapshot selection](docs/DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -55,6 +85,16 @@ assay exists to close that gap mechanically, not by policy:
   across this estate before assay unified it. See
   [§2 of the design guide](docs/DESIGN-GUIDE.md#2-why-it-exists-four-copies-and-each-one-is-the-sole-holder-of-something)
   for the receipts.
+
+**Compatibility, read before upgrading.** The verdict artifact is schema
+`VERDICT_SCHEMA_VERSION = 6` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v5 verdict exactly as it refuses
+v4 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
+assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
+and bump `schema_version` **in the same commit** — see
+[the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
+for why the order matters and what breaks if you split it across two commits.
 
 ## What assay is, and is not
 
@@ -115,13 +155,23 @@ prevent, so don't be the first exception.
 
 ```toml
 # assay.toml
-schema_version = 1
+schema_version = 2
 
 [lanes.unit]
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["pytest", "--cov=mypkg", "--cov-report=json:cov.json"]
+argv = ["pytest", "--cov=mypkg", "--cov-branch", "--cov-report=json:cov.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+# Required the moment a lane declares R1, R2 or R3 (refused on an R0-only
+# lane); no default. "repository" materialises the whole commit -- see the
+# design guide for "repository-minus-unsafe-symlinks", the monorepo case.
+[lanes.unit.isolation]
+snapshot_selection = "repository"
 
 [lanes.unit.judge]
 language = "python"

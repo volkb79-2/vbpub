@@ -30,7 +30,7 @@ GATE_ID = "tester-unified"
 def test_assays_own_lane_file_loads():
     lane_file = load_lane_file(SELF_LANE_FILE)
 
-    assert lane_file.schema_version == 1
+    assert lane_file.schema_version == 2
     assert lane_file.project_root == PROJECT_ROOT
     assert list(lane_file.lanes) == [GATE_ID]
 

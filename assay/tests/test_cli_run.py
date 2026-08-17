@@ -253,7 +253,7 @@ def test_run_evaluates_a_real_r2_pass_end_to_end(git_repo: GitRepo):
     git_repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
     git_repo.commit_all("introduce a compare-swap site")
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -264,6 +264,9 @@ env = {{}}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -361,7 +364,7 @@ def test_run_refuses_an_r2_lane_for_an_unregistered_language(
         "sql": '["sql:drop-check"]',
     }[language]
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -372,6 +375,9 @@ env = {{}}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "{language}"
@@ -453,7 +459,7 @@ def test_run_evaluates_a_real_r3_pass_end_to_end(git_repo: GitRepo):
     )
     git_repo.commit_all("add pkg")
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -464,6 +470,9 @@ env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
 env_passthrough = ["PATH"]
 budget = "2m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -512,6 +521,8 @@ def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
     lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
     lane = set_key(lane, "rigor", '["R0", "R3"]')
     lane += (
+        "\n[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n'
         "\n[lanes.package.judge]\n"
         'language = "go"\nsource_roots = ["src"]\n'
         '\n[lanes.package.judge.canary]\n'
@@ -569,7 +580,7 @@ def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Pa
     )
     write_cov = f"cat > cov.json <<'EOF'\n{cov_json}\nEOF"
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -580,6 +591,9 @@ env = {{}}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -617,6 +631,10 @@ base = "{base_rev}"
         "coverage_artifact",
         "fail_under",
         "allow_excluded",
+        # wave-1 §6 (A-260): mode/require_branch are now required and
+        # therefore always present; targets stays absent in changed-line mode.
+        "mode",
+        "require_branch",
     }
 
 
@@ -698,7 +716,7 @@ def test_an_attestation_timeout_outranks_an_adapter_that_would_refuse(
     """
     sentinel_file = tmp_path / "command-really-ran"
     lane_text = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.attested]
 scope = "S1"

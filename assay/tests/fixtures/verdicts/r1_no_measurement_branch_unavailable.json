@@ -1,0 +1,68 @@
+{
+  "schema_version": 6,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "888888888888888888888888888888888888888b",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "started": "2026-08-16T15:05:00+00:00",
+  "ended": "2026-08-16T15:05:01+00:00",
+  "reason_code": "BRANCH_UNAVAILABLE",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ],
+      "base": "000000000000000000000000000000000000000a"
+    },
+    "r1": {
+      "coverage_format": "lcov",
+      "coverage_artifact": "cov.info",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "mode": "changed_lines",
+      "require_branch": true
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "BRANCH_UNAVAILABLE"
+    }
+  ],
+  "evidence": []
+}

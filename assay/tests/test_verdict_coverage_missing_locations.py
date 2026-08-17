@@ -1,7 +1,7 @@
 """O3 (model half) — ``Coverage`` refuses a malformed ``missing_lines`` /
 ``files_missing_coverage`` payload (A-096), the same construction-time
 discipline ``test_verdict_schema_rejects.py`` already applies to
-``covered``/``changed_executable``/``pct``/``considered``.
+``covered``/``executable``/``pct``/``considered``.
 
 Each rejection here is paired with the untouched form building successfully
 in the SAME test, so a Coverage that refuses everything fails these tests
@@ -17,7 +17,7 @@ from assay.verdict import Coverage
 
 BASE = {
     "covered": 1,
-    "changed_executable": 2,
+    "executable": 2,
     "pct": 50.0,
     "considered": 1,
     # P21: required, never defaulted -- see `Coverage.exclusion_capability`.

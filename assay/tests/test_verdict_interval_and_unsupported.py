@@ -27,6 +27,7 @@ from assay.verdict import (
     JudgmentR2,
     JudgmentResolved,
     Mutation,
+    SnapshotPolicy,
     Verdict,
 )
 from assay.verify import verify_document
@@ -209,6 +210,7 @@ def test_the_unsupported_terminal_still_records_the_policy_it_applied():
                 kill_attribution="unattributed",
             ),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
 
     assert verify_document(verdict.to_dict()) == []

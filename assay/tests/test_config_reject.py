@@ -119,8 +119,10 @@ def test_missing_schema_version_is_rejected(project: Project):
 
 
 def test_unknown_schema_version_is_rejected(project: Project):
-    path = project.write(set_key(R0_LANE, "schema_version", "2"))
-    with pytest.raises(LaneConfigError, match="schema_version = 2"):
+    # B006a/A-269: LANE_SCHEMA_VERSION bumped 1 -> 2, so the "unknown version"
+    # probe moves to the next integer the loader still refuses.
+    path = project.write(set_key(R0_LANE, "schema_version", "3"))
+    with pytest.raises(LaneConfigError, match="schema_version = 3"):
         load_lane_file(path)
 
 
@@ -131,19 +133,19 @@ def test_non_integer_schema_version_is_rejected(project: Project):
 
 
 def test_file_with_no_lanes_table_is_rejected(project: Project):
-    path = project.write("schema_version = 1\n")
+    path = project.write("schema_version = 2\n")
     with pytest.raises(LaneConfigError, match="no .lanes. table"):
         load_lane_file(path)
 
 
 def test_file_with_an_empty_lanes_table_is_rejected(project: Project):
-    path = project.write("schema_version = 1\n\n[lanes]\n")
+    path = project.write("schema_version = 2\n\n[lanes]\n")
     with pytest.raises(LaneConfigError, match="declares no lanes"):
         load_lane_file(path)
 
 
 def test_unknown_top_level_key_is_rejected(project: Project):
-    text = R0_LANE.replace("schema_version = 1", 'schema_version = 1\nprofile = "fast"')
+    text = R0_LANE.replace("schema_version = 2", 'schema_version = 2\nprofile = "fast"')
     assert 'profile = "fast"' in text
     path = project.write(text)
     with pytest.raises(LaneConfigError, match="unknown top-level key"):
@@ -180,13 +182,13 @@ def test_missing_file_is_rejected(project: Project):
 
 
 def test_lanes_that_is_not_a_table_is_rejected(project: Project):
-    path = project.write('schema_version = 1\nlanes = "package"\n')
+    path = project.write('schema_version = 2\nlanes = "package"\n')
     with pytest.raises(LaneConfigError, match="must be a table of lanes"):
         load_lane_file(path)
 
 
 def test_lane_that_is_not_a_table_is_rejected(project: Project):
-    path = project.write('schema_version = 1\n\n[lanes]\npackage = "yes"\n')
+    path = project.write('schema_version = 2\n\n[lanes]\npackage = "yes"\n')
     with pytest.raises(LaneConfigError, match="must be a table"):
         load_lane_file(path)
 
@@ -265,7 +267,7 @@ def test_every_rejection_is_error_bad_lane_config(project: Project):
         drop_key(R0_LANE, "budget"),
         set_key(R0_LANE, "scope", '"S9"'),
         set_key(R0_LANE, "budget", '"soon"'),
-        "schema_version = 1\n",
+        "schema_version = 2\n",
         "not toml at all\n[",
     ]
     for index, text in enumerate(defects):

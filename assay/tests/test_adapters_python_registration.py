@@ -70,6 +70,7 @@ def test_a_registry_built_adapter_evaluates_coverage_identically_to_a_direct_one
         profile=profile,
         adapter=adapter,
         repo_top=Path("/repo"),
+        project_root=Path("/repo"),
         source_root_paths=(Path("/repo"),),
         fail_under=100.0,
         allow_excluded=False,

@@ -241,7 +241,7 @@ def _write_failing_lane_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "target"
     repo.mkdir()
     (repo / "assay.toml").write_text(
-        "schema_version = 1\n\n"
+        "schema_version = 2\n\n"
         "[lanes.package]\n"
         'scope = "S1"\n'
         'rigor = ["R0"]\n'

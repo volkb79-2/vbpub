@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "333333333333333333333333333333333333333d",
@@ -29,6 +29,9 @@
   "env_effective": {},
   "scope": "S1",
   "enforcement": "gate",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
   "claims": [
     {
       "rigor": "R0",

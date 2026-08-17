@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "cccccccccccccccccccccccccccccccccccccccc",
@@ -43,6 +43,9 @@
       "mechanism": "uncovered-line",
       "target": "pkg/greet.py"
     }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
   },
   "claims": [
     {

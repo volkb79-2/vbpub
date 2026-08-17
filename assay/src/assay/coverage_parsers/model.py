@@ -29,7 +29,51 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 
-__all__ = ["CoverageProfile", "FileCoverage"]
+__all__ = ["BranchCoverage", "CoverageProfile", "FileCoverage"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class BranchCoverage:
+    """One file's per-line branch-arc counts, format-normalized (wave-1 §3.1).
+
+    ``by_line`` maps a branch SOURCE line to ``(covered_arcs, total_arcs)``.
+    A line with no branch at all is ABSENT from the mapping, never present as
+    ``(0, 0)`` -- the same "absent means none, not empty" contract
+    :class:`FileCoverage`'s own ``excluded`` field keeps one level up (A-008),
+    and every other payload mapping in this project keeps.
+
+    Enforces invariants 1-2 of §3.1's five: every branch line is positive,
+    and ``1 <= total`` with ``0 <= covered <= total`` -- a recorded line with
+    zero total arcs is malformed, not "no branches" (that case is simply
+    absent from ``by_line`` instead). The remaining three invariants (a
+    branch line must be in ``executed | missing``, never in ``excluded``, and
+    a line in ``missing`` must carry ``covered == 0``) are cross-bucket
+    relations against a *file's* other line sets, so they are enforced in
+    :meth:`FileCoverage.__post_init__` instead, the one place that already
+    holds all three buckets alongside ``branches``.
+    """
+
+    by_line: Mapping[int, tuple[int, int]]
+
+    def __post_init__(self) -> None:
+        non_positive = sorted(line for line in self.by_line if line < 1)
+        if non_positive:
+            raise ValueError(
+                f"BranchCoverage.by_line contains non-positive line "
+                f"number(s): {non_positive}"
+            )
+        for line, (covered, total) in self.by_line.items():
+            if total < 1:
+                raise ValueError(
+                    f"BranchCoverage.by_line[{line}] has total={total}, "
+                    f"must be >= 1 -- a recorded line with zero total arcs "
+                    f"is malformed, not \"no branches\""
+                )
+            if not (0 <= covered <= total):
+                raise ValueError(
+                    f"BranchCoverage.by_line[{line}] has covered={covered}, "
+                    f"outside the range 0..{total}"
+                )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -53,11 +97,26 @@ class FileCoverage:
     caller whose input can actually trigger it, and wraps it into its own
     ``ERROR``/``UNREADABLE_ARTIFACT`` the same way it wraps every other
     malformed-record defect.
+
+    ``branches`` (wave-1 §3.1) carries the exact ``None``/``BranchCoverage``
+    split ``excluded`` already established (A-008): ``None`` means the
+    FORMAT cannot express branch arcs at all (``go-cover`` always; lcov and
+    Cobertura when the artifact was produced without branch tracking
+    enabled), a different fact from "expressed, and there are zero". Three
+    of §3.1's five invariants are enforced HERE rather than on
+    :class:`BranchCoverage` itself, because they are relations against
+    ``executed``/``missing``/``excluded`` that only this class holds
+    together: a branch line must be a considered line (in ``executed |
+    missing``), must never also be ``excluded``, and — the strongest
+    anti-tamper invariant available here, which all three branch-bearing
+    formats agree on — a line in ``missing`` can never carry a covered arc,
+    because a line that never ran cannot have taken one.
     """
 
     executed: frozenset[int]
     missing: frozenset[int]
     excluded: frozenset[int] | None
+    branches: "BranchCoverage | None" = None
 
     def __post_init__(self) -> None:
         for name in ("executed", "missing", "excluded"):
@@ -88,6 +147,43 @@ class FileCoverage:
                 raise ValueError(
                     f"FileCoverage.missing and .excluded are not disjoint: "
                     f"shared line(s) {sorted(overlap_missing_excluded)}"
+                )
+        if self.branches is not None:
+            branch_lines = frozenset(self.branches.by_line)
+            # Checked BEFORE "unconsidered" below so this invariant is
+            # independently reachable: `excluded` is already disjoint from
+            # `executed`/`missing` (checked above), and a branch line
+            # confined to `executed | missing` (invariant 3) can therefore
+            # never ALSO be in `excluded` -- the two checks would otherwise
+            # never both be exercisable by one honest input, and reversing
+            # the order is what keeps invariant 4 a real, tested code path
+            # rather than one only invariant 3's own message could reach.
+            if self.excluded is not None:
+                branch_excluded = branch_lines & self.excluded
+                if branch_excluded:
+                    raise ValueError(
+                        f"FileCoverage.branches has line(s) "
+                        f"{sorted(branch_excluded)} that are also in "
+                        f".excluded"
+                    )
+            unconsidered = branch_lines - (self.executed | self.missing)
+            if unconsidered:
+                raise ValueError(
+                    f"FileCoverage.branches has line(s) "
+                    f"{sorted(unconsidered)} that are in neither .executed "
+                    f"nor .missing"
+                )
+            tampered_missing = sorted(
+                line
+                for line in branch_lines & self.missing
+                if self.branches.by_line[line][0] != 0
+            )
+            if tampered_missing:
+                raise ValueError(
+                    f"FileCoverage.branches has line(s) "
+                    f"{tampered_missing} in .missing with a nonzero covered "
+                    f"arc count -- a line that never ran cannot have taken "
+                    f"an arc"
                 )
 
     @property

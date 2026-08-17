@@ -6,8 +6,9 @@ items:
   - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
-  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: feature, component: isolation, context_estimate: large}
+  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, documented, and proven end to end through the real CLI — a target absent from the artifact refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than reporting 100% of zero.", type: feature, component: evaluate, context_estimate: medium}
+  - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
+  - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking.", type: feature, component: canary, context_estimate: large}
 ---
 
 # assay — backlog
@@ -486,13 +487,23 @@ it — but it is cheap and in-estate, so it is the obvious item after.
 
 ---
 
-## B005 — a whole-module / per-callable coverage judge (R1 without a diff)
+## B005 — a whole-module / per-callable coverage judge (R1 without a diff) — IMPLEMENTED
 
 **Proposed by:** dstdns's DESIGN-AUTHORITY reconciliation program, 2026-08-16, on
 the first package that adopted an R1 coverage lane (`redirect_chain`, a
 docstring+dead-code reconcile of `libs/common/src/common/redirect_chain.py`).
-**Status:** proposed. dstdns has a working stopgap in production use; this is the
-first-class replacement.
+**Status:** **IMPLEMENTED, wave 1 (2026-08-17), as `judge.mode = "whole_target"`,
+`W1-CARVE-branch-coverage-and-whole-target.md` §5 (A-260).** The whole-module
+case shipped; the per-callable-span case named in the original proposal did
+not (a `target` names a regular file, never a callable span — see
+`docs/DESIGN-GUIDE.md`'s "A whole-target `target` names a regular file, never
+a directory" for why the file-level guard is the shipped shape and what a
+callable-span capability would need on top of it). **Not yet DONE end to end:**
+this is shipped and documented on `assay-B005-B006-coverage-v6`, gated on this
+branch, but not yet merged, released, or adopted by a real consumer lane
+(dstdns's `redirect_chain` still runs the R0 stopgap described below until it
+repins a v2-capable release per `docs/CONSUMERS.md`'s "Adopting a v2-capable
+release" and migrates its own lane).
 
 ### The claim
 
@@ -581,13 +592,53 @@ commit.
 
 ---
 
-## B006 — explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes
+## B006 — unsafe-symlink-omission snapshots and in-snapshot artifact parents for monorepo R1/R2/R3 lanes — IMPLEMENTED
 
 **Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
-first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** proposed design and
-implementation carve. This blocks honest Assay R1+ claims for a project in this
-monorepo; CMRU may retain R0/direct-coverage evidence in the meantime, but must not
+first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** **(a) and (b)
+both IMPLEMENTED, wave 1 (2026-08-17)** — (a) as `isolation.snapshot_selection`
+/ `unsafe_symlink_omissions`, `W1-CARVE-B006a-project-scope.md` WI-0 through
+WI-4 (A-269; supersedes the project-scoped-boundary design originally proposed
+here, see the AMENDED callout immediately below); (b) as the in-snapshot
+coverage-artifact parent-chain creation, `W1-CARVE-branch-coverage-and-whole-
+target.md` §2. Both are shipped, gated and documented on
+`assay-B005-B006-coverage-v6`. **Not yet DONE end to end:** not yet merged,
+released, or adopted by a real consumer lane — CMRU's own `assay.toml` is
+deliberately UNTOUCHED by this commit (still schema v1, R0-only; its own
+higher-rigor qualification is B006(a) WI-5, still open) and must not be read
+as proof this item is finished until that lane, the merge, and the release all
+land. Until then CMRU may retain R0/direct-coverage evidence, but must not
 relabel a project-local stopgap as Assay R1/R2/R3.
+
+> **AMENDED 2026-08-17 by ruling A-269 — read this before the prose below.**
+> The requirement stands; **the solution sketched in "(a)" below does not.**
+> This item's own words say the sketch is only "one possible implementation" and
+> that "exact TOML names are Assay's design decision", and A-269 exercises that
+> latitude after the project-prefix design failed three independent adversarial
+> reviews at 8 → 9 → 11 blocking findings.
+>
+> **What ships instead:** the FULL repository snapshot, minus exact,
+> commit-validated omissions of the symlink leaves P22 would otherwise refuse —
+> `snapshot_selection = "repository" | "repository-minus-unsafe-symlinks"` plus
+> `unsafe_symlink_omissions = [...]`. Because everything else is still
+> materialised, the `inputs` inventory that point 1 below demands is **not
+> needed and not shipped**: CMRU's repository-root reads keep working with no
+> declaration at all.
+>
+> **Consequently, in the numbered contract below:** point 1's project scope,
+> owned prefix and additional-inputs list are WITHDRAWN; point 4's five
+> containment preflights are WITHDRAWN as unreachable from any loadable
+> `assay.toml` (only the coverage-artifact/omission collision survives, and it
+> is reachable only through the public `Lane` API); point 5 is met in modified
+> form, recording the selected policy and its exact omissions rather than a
+> "project" label whose enforceable content was nil; and points 2, 3 and 6 stand
+> as written, narrowed by A-267/A-268 — assay never materialises the omitted
+> leaf, but the retained closure means the command can restore it, so no
+> confinement is claimed.
+>
+> **One measured correction to the prose below:** Topos carries **three**
+> tracked absolute `/etc/passwd` symlinks, not the single `passwd_link` named
+> here. A design that handled only the named one would still have failed.
 
 ### (a) One absolute-target symlink anywhere in the tree fails every R1+ lane
 
@@ -717,3 +768,134 @@ its message), `9f42acdc` (`.assay/.gitkeep` + gitignore), and the two intermedia
 then `PASS`; CMRU at `4b8009d5` has an honest R0 verdict and independent
 whole-source coverage gate, while its attempted R1+ run fails on the Topos
 `/etc/passwd` fixture before tests execute.
+
+---
+
+## B007 — ordered, bounded, explicitly declared multi-target R3 canary
+
+**Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
+canary, verdict and gate-judgment implementations in favour of assay through the
+public CLI/verdict boundary. **Status: ASSESSED AND DEFERRED — the first
+post-v6 schema item (v7).** Not folded into wave 1. The reasoning is below and
+is binding on whoever picks this up.
+
+### The requirement, in the proposer's words
+
+Assay already has the stronger cause-sensitive R3 contract: a known-good control
+must PASS and the transformed input must FAIL *for the mechanism's expected
+reason*. The one behaviour still unique to nyxloom is that its gate
+qualification can try **several source files in a declared order**, so a gate is
+not declared to launder known-bad code merely because one arbitrarily chosen
+module happens not to be imported or exercised.
+
+Explicitly **not** wanted: nyxloom's automatic source-file discovery and
+ranking. It is Python-specific heuristic policy and would become a hidden
+default. The operator declares targets; assay executes them deterministically.
+
+Candidate shape (spelling is assay's decision):
+
+```toml
+[lanes.<lane>.judge.canary]
+mechanism = "import-break"
+targets = ["src/pkg/api.py", "src/pkg/service.py", "src/pkg/model.py"]
+aggregation = "any"     # explicit, no default
+```
+
+Full requirements, oracles and the optional `assay canary qualify` CLI sketch
+are in the proposal as filed; the seven numbered requirements and eight
+behavioural oracles are adopted here by reference and must not be diluted.
+
+### Verified against the shipped code before assessing
+
+* **`import-break` is real**, not aspirational: `CANARY_MECHANISMS` is exactly
+  `{import-break, uncovered-line}` (`canary.py`), *"named identically to
+  nyxloom's own `gate_canary.MECHANISM_IMPORT_BREAK`/`MECHANISM_UNCOVERED_LINE`"*
+  — so the adoption story is sound and the vocabulary already matches.
+* **The singular target is load-bearing in the INDEPENDENT verifier**, not just
+  the model: `verdict.py` cross-checks `claim[R3].canary.target` against
+  `judgment.r3.target` and refuses a mismatch — *"a canary that answers for a
+  different file than the one declared is evidence about nothing the lane asked
+  for"*. Requirement 7's "must not be silently reinterpreted" is therefore
+  already enforced by shipped code, which is a good sign for the migration.
+* **Each attempt costs two isolated materialisations** (control via
+  `prepared.materialize()`, transformed via `materialize_replacement()` in
+  `run_isolated_canary`). So N targets cost **2N**; under `any` with
+  short-circuit typically 2, under `all` always 2N.
+
+### Why it is DEFERRED rather than folded into v6
+
+Judged against the proposer's own test — "if it can safely fit into the
+in-progress verdict-v6 work **without destabilising B005/B006**".
+
+1. **Nothing is blocked on it, and two things are blocked behind it.** The
+   proposal itself states nyxloom's initial adapter stays v6-compatible and must
+   not depend on this feature. Meanwhile dstdns is blocked on B005 (to retire a
+   `--cov-fail-under` stopgap) and B006 (to retire two substrate work-arounds),
+   both of which are **built and waiting only on release**. Folding in delays a
+   shipped capability for one that nobody is waiting on.
+2. **The v6 cut is already committed and verified** (99 files, suite 2814
+   passed). Reopening it re-runs a proven 41-file migration and re-derives the
+   26-node P33 successor suite, for a feature whose payload changes every
+   existing R3 fixture shape.
+3. **The delta is comparable in size to B005 itself**, not a papercut: a closed
+   `aggregation` enum; a closed "why not attempted" vocabulary; an ordered
+   per-attempt payload array; the `judgment.r3` policy gaining `targets` +
+   `aggregation`; canary sequencing with short-circuit bookkeeping; and —
+   largest — requirement 5 forces the aggregation to be **independently
+   recomputed in `verify.py`**, which by this project's deliberate discipline
+   hand-transcribes rather than importing the model. That logic gets written
+   twice, on purpose.
+4. **Wave 1 has already been destabilised twice by scope arriving mid-flight**
+   (`c7bc9b59`, then `010d1813` rewrote B006 under an in-progress
+   implementation), and the direct consequence was three adversarial review
+   rounds that diverged 8 → 9 → 11 blocking findings. A third mid-wave widening
+   after the schema cut is committed is the same move again.
+5. **The "save a schema major" argument is real but much weaker than it looks.**
+   Requirement 7 needs a version bump either way, and v6 has not shipped, so an
+   older verifier refuses the newer shape under either plan. Crucially the v6
+   work leaves behind **reusable migration machinery** — `migrate_v5_to_v6.py`'s
+   fail-closed four-bucket classifier, the frozen-successor-suite pattern, the
+   `carve-assets/W1/` layout. The first migration had to invent all of that; the
+   second inherits it. v7 is a fraction of v6's cost.
+
+### Design findings for whoever builds it — do not rediscover these
+
+* **`aggregation` is not ergonomics, it is the claim, and the verdict must say
+  which was made.** Today R3 attests *"the gate catches known-bad code in **this
+  named module**"*. Under `any` it attests *"…in **at least one of** these
+  modules"* — the same gate-level statement, a strictly weaker per-module one.
+  Under `all` it attests the per-module statement for every declared target.
+  A reviewer must not be able to read the stronger claim off an `any` verdict.
+  **An attestation stronger than its mechanism is what killed three consecutive
+  review rounds on B006(a); do not repeat it here.**
+* **`any` + short-circuit has a vacuity variant worth closing deliberately.** A
+  lane can declare 25 targets, put a trivially-always-imported module first,
+  PASS on attempt 1 forever, and never discover the other 24 are unreachable.
+  That is honest under `any`'s stated meaning but defeats the *intent* "our gate
+  protects these 25 modules". Say so plainly in CONSUMERS.md, and consider
+  whether the artifact should surface how many targets have **never** been
+  attempted across runs.
+* **The bound is a budget control, not hygiene.** At 2N materialisations, an
+  `all` aggregation over CMRU's ~25 modules is ~50 isolated snapshots per gate
+  run. Measure one materialisation before choosing the maximum, and keep
+  requirement 4's rule that budget exhaustion stays its own terminal and is
+  never converted into PASS/FAIL.
+* **It interacts with B005, which just shipped.** §5 of the wave-1 carve already
+  rules that an `uncovered-line` canary on a `whole_target` lane is refused at
+  load unless `judge.canary.target` is itself one of `judge.targets`. Under a
+  canary target LIST that rule generalises to "every canary target must be in
+  `judge.targets`", and it must be specified rather than discovered.
+* **The `assay canary qualify` CLI separation is achievable, but only one way is
+  honest.** A flag on the normal verdict is not enough — an ad-hoc override
+  would then be one field away from looking like committed gate policy. The
+  clean boundary is a **distinct document kind** that `assay verify` refuses to
+  accept as gate evidence at all, recording the committed lane plus every
+  effective override. If that cannot be made clean, the proposal's own
+  instruction stands: ship only the committed declaration.
+
+### Sequencing
+
+Wave 1 (B005 + B006) releases first, unchanged. B007 is then the first schema
+item after v6 and should be carved together with any other v7-requiring change
+so the estate pays one migration, not two — the same argument that made A-262's
+rename ride v6 rather than wait.

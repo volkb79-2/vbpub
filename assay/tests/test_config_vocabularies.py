@@ -100,7 +100,15 @@ def test_every_declared_rigor_level_loads(level: str, project: Project):
         project.file("src/canary_target.py", "x = 1\n")
     rigor = (level,) if level == "R0" else ("R0", level)
     declared = "[" + ", ".join(f'"{r}"' for r in rigor) + "]"
-    text = set_key(R0_LANE, "rigor", declared) + judge_table_for(level)
+    # B006a/A-269, schema v2: every R1+ lane requires an explicit [isolation]
+    # table; this module's own subject is the rigor/scope vocabulary, so
+    # every non-R0 case here picks the plain "repository" selection.
+    isolation = (
+        '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
+        if level != "R0"
+        else ""
+    )
+    text = set_key(R0_LANE, "rigor", declared) + isolation + judge_table_for(level)
     lane = load_lane_file(project.write(text)).lane("package")
     assert lane.rigor == rigor
 
