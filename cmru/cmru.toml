@@ -37,7 +37,8 @@ commands = [
   # The consumer-owned, hash-pinned zipapp makes the rigor claim explicit.
   # tester-unified deliberately does not bake an ambient Assay version.
   { label = "cmru: verify pinned Assay", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "cd tools/assay && /usr/bin/sha256sum -c assay-1.0.0.pyz.sha256"], cwd = ".." },
-  { label = "cmru: Assay R0/R1/R2/R3 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/assay/assay-1.0.0.pyz run cmru --file assay.toml --verdict-json .assay/verdict-cmru.json"], cwd = ".." },
+  { label = "cmru: whole-source line and branch coverage", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=src/cmru", "--cov-branch", "--cov-fail-under=100", "--cov-report=json:coverage.json"], cwd = ".." },
+  { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/assay/assay-1.0.0.pyz run cmru --file assay.toml --verdict-json .assay/verdict-cmru.json"], cwd = ".." },
 ]
 
 # Initial standalone build (before cmru is installed):

@@ -3,52 +3,23 @@
 # the existing project test command, rather than recursively invoking CMRU's
 # tester-gate wrapper.
 #
-# This lane makes three independently checked claims beyond a passing test
-# command: every changed executable source line is covered while the command
-# itself enforces whole-source line-and-branch coverage at 100%; every
-# discoverable mutation in the changed source is run (the ceiling is a hard
-# refusal, not a sample); and an isolated source transform fails for the
-# declared coverage reason.  The artifacts are written only in Assay's
-# disposable snapshots and are ignored in the consumer worktree.
+# R0 is the only honest Assay declaration in this monorepo today.  The
+# published R1+ snapshot substrate deliberately refuses Topos's tracked
+# absolute-symlink security fixtures before it can run CMRU's isolated
+# snapshot.  A project-scoped snapshot is a versioned Assay product decision,
+# not a consumer-side bypass.  CMRU's outer tester-unified gate separately
+# enforces whole-source line and branch coverage at 100% until that capability
+# is released and pinned here.
 schema_version = 1
 
 [lanes.cmru]
 scope = "S1"
-rigor = ["R0", "R1", "R2", "R3"]
+rigor = ["R0"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=src/cmru", "--cov-branch", "--cov-fail-under=100", "--cov-report=json:.assay/coverage.json"]
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
 # These are project test facts, not ambient conveniences: pytest must import
 # the source snapshot it is judging, and it must not create bytecode there.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = []
-budget = "1h"
+budget = "20m"
 allow_argv_append = false
-
-[lanes.cmru.judge]
-language = "python"
-source_roots = ["src/cmru"]
-fail_under = 100.0
-allow_excluded = false
-# This is an explicit comparison policy, not an assumed branch name.  The
-# local tracking ref is present in the release checkout and resolves before
-# Assay materializes its isolated snapshots.
-base = "origin/main"
-
-[lanes.cmru.judge.coverage]
-format = "coverage-py-json"
-artifact = ".assay/coverage.json"
-
-[lanes.cmru.judge.mutation]
-# One worker is intentional: each mutant runs the complete gate inside the
-# resource-bounded tester container.  max_mutants is the published hard
-# ceiling; exceeding it fails rather than silently truncating the experiment.
-jobs = 1
-max_mutants = 10000
-operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
-
-[lanes.cmru.judge.canary]
-# The transform adds one uncovered executable line to the same real source
-# snapshot.  Assay requires the transformed lane to fail with UNCOVERED_LINES,
-# not merely with an arbitrary non-zero exit.
-mechanism = "uncovered-line"
-target = "src/cmru/config.py"
