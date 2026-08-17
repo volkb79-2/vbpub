@@ -92,7 +92,11 @@ def test_missing_branches_repeating_an_arc_identity_is_refused():
     _assert_unreadable(document)
 
 
-def test_a_record_with_no_summary_key_at_all_skips_the_summary_cross_check():
+def test_a_record_with_no_summary_key_at_all_still_parses():
+    # A-272 withdrew the summary/arc-array cross-check entirely (a real
+    # coverage.py 7.15.4 artifact disagrees with its own arc arrays on
+    # ordinary output), so `summary` being absent altogether is unremarkable
+    # -- exactly as unremarkable as it being present and disagreeing.
     document = _artifact(
         a={
             "executed_lines": [1],

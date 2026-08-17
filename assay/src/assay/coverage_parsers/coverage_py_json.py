@@ -45,6 +45,22 @@ opaque identity used ONLY to detect a repeated or contradictory arc before
 the counts are aggregated (§3.1a) — never stored, and legitimately negative
 (``coverage-py-json.exitarc.json``'s ``[11, -10]``, an arc leaving the
 function starting at line 10).
+
+**Per-file ``summary.num_branches``/``summary.covered_branches`` are NOT
+cross-checked against the derived arc totals (A-272, withdrawing a wave-1
+check).** They are coverage.py's own aggregate, not the cardinality of its
+own ``executed_branches``/``missing_branches`` arrays — measured false on
+real coverage.py 7.15.4 output (94-file artifact): ``.../ui/banner.py``
+states ``num_branches=108`` against 106 arcs actually listed, and
+``covered_branches=2`` against an EMPTY ``executed_branches``;
+``.../ui/hostmem.py`` is the same shape (``48`` vs 46 listed, ``2`` vs
+empty). The arrays are authoritative for per-line branch DETAIL; the
+summary is the tool's own aggregate; asserting equality between them is a
+false refusal of valid output, not a tamper check, and must not be
+restored. ``_parse_branches``'s arc-identity checks (uniqueness within each
+array, executed/missing disjointness) are what catch a tampered artifact,
+because those are properties of the arrays themselves rather than of
+agreement with a cross-tool aggregate.
 """
 
 from __future__ import annotations
@@ -193,7 +209,24 @@ def _parse_branches(record: dict, path: str) -> BranchCoverage:
     by_line = {
         src: (covered_by_src.get(src, 0), total) for src, total in total_by_src.items()
     }
-    _check_branch_summary(record, path, by_line)
+    # A-272: `record["summary"]["num_branches"]`/`"covered_branches"` are
+    # coverage.py's OWN aggregate and are deliberately NOT cross-checked
+    # against `by_line` here. Wave 1 shipped that equality check and it is a
+    # release-blocking false refusal against real coverage.py output:
+    # measured on a real 94-file `coverage json` artifact (coverage.py
+    # 7.15.4), `topos/src/topos/ui/banner.py` states `num_branches=108`
+    # while only 106 arcs are actually listed across both arrays, and
+    # states `covered_branches=2` while `executed_branches` is EMPTY;
+    # `topos/src/topos/ui/hostmem.py` is the same shape (`num_branches=48`
+    # vs 46 arcs listed, `covered_branches=2` vs an empty
+    # `executed_branches`). Two of 94 files in one ordinary run. The arc
+    # arrays are authoritative for per-line branch DETAIL; `summary` is the
+    # tool's own aggregate; no equality between the two is asserted. Do NOT
+    # restore this check -- it refuses valid coverage.py output, not
+    # tampered output. `_check_arc_identity` above (uniqueness within each
+    # array, executed/missing disjointness) is what actually catches a
+    # tampered artifact, because those are properties of the arrays
+    # themselves rather than of agreement with a cross-tool aggregate.
     return BranchCoverage(by_line=by_line)
 
 
@@ -259,35 +292,6 @@ def _check_arc_identity(
             f"record for {path!r}: arc(s) {sorted(overlap)} appear in both "
             f"'executed_branches' and 'missing_branches' -- an arc cannot "
             f"be simultaneously taken and not taken"
-        )
-
-
-def _check_branch_summary(
-    record: dict, path: str, by_line: dict[int, tuple[int, int]]
-) -> None:
-    """Cross-check ``summary.num_branches``/``summary.covered_branches``
-    against the DERIVED totals, when ``summary`` carries them. A ``summary``
-    that omits the branch keys is not malformed -- some coverage.py builds
-    or hand-built fixtures may not carry them -- so the cross-check is
-    simply skipped, per key, when absent.
-    """
-    summary = record.get("summary")
-    if not isinstance(summary, dict):
-        return
-    derived_total = sum(total for _covered, total in by_line.values())
-    derived_covered = sum(covered for covered, _total in by_line.values())
-    stated_total = summary.get("num_branches")
-    if stated_total is not None and stated_total != derived_total:
-        raise _malformed(
-            f"record for {path!r}: summary.num_branches={stated_total!r} "
-            f"does not match the derived branch total {derived_total}"
-        )
-    stated_covered = summary.get("covered_branches")
-    if stated_covered is not None and stated_covered != derived_covered:
-        raise _malformed(
-            f"record for {path!r}: summary.covered_branches="
-            f"{stated_covered!r} does not match the derived covered arc "
-            f"count {derived_covered}"
         )
 
 

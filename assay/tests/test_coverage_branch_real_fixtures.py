@@ -11,9 +11,13 @@ the tool printed", not a hand-computed value (O1's own wording).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
 from assay.coverage import derive_branch_capability, load_coverage_profile
+from assay.errors import AssayError, Outcome, ReasonCode
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "coverage"
 
@@ -163,3 +167,85 @@ def test_a_never_entered_branch_line_reports_zero_covered_in_every_format():
         covered, total = sample.branches.by_line[18]
         assert (covered, total) == (0, 2), f"{fmt}: line 18 must be (0, 2)"
         assert 18 in sample.missing, f"{fmt}: line 18 must itself be missing"
+
+
+# ---------------------------------------------------------------------------
+# A-272 — coverage.py's own per-file `summary.num_branches`/
+# `covered_branches` are NOT the cardinality of its own arc arrays, so the
+# equality cross-check wave 1 shipped in `_check_branch_summary` is
+# WITHDRAWN. This is a NEW, hand-built witness (never one of the eight
+# frozen artifacts under this directory, which PROVENANCE.md forbids
+# editing) reproducing the exact measured shape that made the withdrawn
+# check a release-blocking false refusal: `covered_branches` GREATER than
+# `len(executed_branches)`, and `num_branches` GREATER than the arcs
+# actually listed across both arrays -- the real coverage.py 7.15.4 shape
+# measured on `topos/src/topos/ui/banner.py` (`num_branches=108` vs 106
+# arcs listed, `covered_branches=2` vs an EMPTY `executed_branches`) and
+# `topos/src/topos/ui/hostmem.py` (`48` vs 46, `2` vs empty). The numbers
+# below are scaled down for a unit test but preserve the identical
+# property on purpose (`covered_branches=2` against an EMPTY
+# `executed_branches`, `num_branches=5` against 3 arcs listed).
+# ---------------------------------------------------------------------------
+
+
+def _banner_shaped_document() -> dict:
+    """One file, `shaped_like_banner.py`, whose `summary` disagrees with its
+    own arc arrays exactly the way real coverage.py 7.15.4 output does
+    (A-272). Lines 1 and 4 are both `executed` (branch source lines must be
+    considered lines, never `missing` or `excluded` -- `FileCoverage`'s own
+    invariant), each carrying only MISSING arcs -- `executed_branches` is
+    empty, matching banner.py's/hostmem.py's own witnessed shape exactly.
+    """
+    return {
+        "meta": {"branch_coverage": True},
+        "files": {
+            "shaped_like_banner.py": {
+                "executed_lines": [1, 2, 3, 4],
+                "missing_lines": [5],
+                "excluded_lines": [],
+                "executed_branches": [],
+                "missing_branches": [[1, 2], [1, 3], [4, 5]],
+                "summary": {"num_branches": 5, "covered_branches": 2},
+            }
+        },
+    }
+
+
+def test_a_real_shaped_summary_arc_mismatch_parses_clean():
+    """The MUST-SUCCEED control: this is a real-shaped, untampered artifact
+    (its shape is exactly what a real coverage.py 7.15.4 run produces) and
+    R1 must be able to run against it, not refuse ERROR/UNREADABLE_ARTIFACT
+    -- the false refusal A-272 exists to withdraw. The arc arrays, not the
+    disagreeing `summary`, are authoritative: derived totals come from
+    `missing_branches`/`executed_branches` alone.
+    """
+    document = _banner_shaped_document()
+    profile = load_coverage_profile(json.dumps(document), declared_format="coverage-py-json")
+    shaped = profile.files["shaped_like_banner.py"]
+    assert shaped.branches.by_line == {1: (0, 2), 4: (0, 1)}
+    covered, total = _derived_totals(shaped.branches.by_line)
+    # The point of A-272: derived (0, 3) from the arrays disagrees with the
+    # artifact's own stated summary (covered_branches=2, num_branches=5),
+    # and that disagreement is exactly what must NOT refuse.
+    assert (covered, total) == (0, 3)
+    assert document["files"]["shaped_like_banner.py"]["summary"] == {
+        "num_branches": 5,
+        "covered_branches": 2,
+    }
+
+
+def test_a_tampered_variant_of_the_same_shape_still_refuses():
+    """The paired TAMPERED case: on this exact real-shaped artifact -- the
+    one the withdrawn cross-check would have refused for a legitimate
+    reason -- an actual tamper (a repeated arc identity within
+    `missing_branches`) still refuses, via `_check_arc_identity`, completely
+    independent of whatever `summary` states. This is the proof that A-272
+    did not weaken the invariant that actually catches a tampered artifact.
+    """
+    document = _banner_shaped_document()
+    document["files"]["shaped_like_banner.py"]["missing_branches"].append([1, 2])
+    with pytest.raises(AssayError) as caught:
+        load_coverage_profile(json.dumps(document), declared_format="coverage-py-json")
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "repeats an arc identity" in str(caught.value)

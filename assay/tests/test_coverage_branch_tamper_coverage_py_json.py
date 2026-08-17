@@ -54,18 +54,38 @@ def _assert_unreadable(document: dict[str, Any]) -> None:
     assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
-def test_covered_branches_off_by_one_is_refused():
+def test_covered_branches_off_by_one_still_parses_clean():
+    # A-272 withdraws this cross-check: `summary.covered_branches` is
+    # coverage.py's OWN aggregate, not the cardinality of `executed_branches`,
+    # and real coverage.py 7.15.4 output disagrees with it on ordinary files
+    # (measured: `topos/.../banner.py`, `covered_branches=2` against an EMPTY
+    # `executed_branches`). This used to be refused by the withdrawn
+    # `_check_branch_summary`; the arc-identity invariants (`_check_arc_
+    # identity`) do not fire here at all -- an isolated summary edit touches
+    # neither array, so there is nothing for them to catch, and that is
+    # exactly the point: this is not evidence of tampering. The mutation is
+    # now inert, and the derived `by_line` (built only from the arrays) is
+    # unchanged from `_control`'s.
     _control()
     document = _document()
     document["files"]["sample.py"]["summary"]["covered_branches"] += 1
-    _assert_unreadable(document)
+    profile = load_coverage_profile(_dump(document), declared_format="coverage-py-json")
+    assert profile.files["sample.py"].branches.by_line == {
+        5: (1, 2), 11: (1, 2), 12: (2, 2), 18: (0, 2),
+    }
 
 
-def test_num_branches_off_by_one_is_refused():
+def test_num_branches_off_by_one_still_parses_clean():
+    # A-272, same reasoning as the sibling test above but for
+    # `summary.num_branches` (measured false against `executed_branches`/
+    # `missing_branches`' own combined length on real output).
     _control()
     document = _document()
     document["files"]["sample.py"]["summary"]["num_branches"] += 1
-    _assert_unreadable(document)
+    profile = load_coverage_profile(_dump(document), declared_format="coverage-py-json")
+    assert profile.files["sample.py"].branches.by_line == {
+        5: (1, 2), 11: (1, 2), 12: (2, 2), 18: (0, 2),
+    }
 
 
 def test_an_arc_whose_source_line_is_not_in_executed_or_missing_is_refused():
@@ -124,12 +144,17 @@ def test_a_record_carrying_executed_branches_but_not_missing_branches_is_refused
 
 
 def test_a_duplicated_covered_arc_with_totals_tampered_to_match_is_refused():
-    # The coherent-tamper case (A-265's whole reason for existing): every
-    # totals cross-check passes, and only the identity rule catches it.
-    # Duplicating [5, 6] within executed_branches, under NAIVE (no-identity)
-    # per-src aggregation, would derive total=9 (was 8) and covered=5 (was
-    # 4) for the whole file -- exactly what this tamper sets `summary` to,
-    # so the summary cross-check alone would pass this artifact clean.
+    # The coherent-tamper case (A-265's whole reason for existing), STILL
+    # refused after A-272 withdrew the summary cross-check -- because the
+    # identity rule was always the thing catching it, not the withdrawn
+    # check. Duplicating [5, 6] within executed_branches, under NAIVE
+    # (no-identity) per-src aggregation, would derive total=9 (was 8) and
+    # covered=5 (was 4) for the whole file; this tamper sets `summary` to
+    # match those NAIVE numbers to show even a coherent-looking artifact
+    # (one whose stated totals a since-withdrawn cross-check would have
+    # accepted) is refused -- `summary` is not even consulted post-A-272, so
+    # the duplicate arc itself, caught by `_check_arc_identity` before any
+    # aggregation runs, is the ONLY thing doing the refusing here now.
     _control()
     document = _document()
     document["files"]["sample.py"]["executed_branches"].append([5, 6])
