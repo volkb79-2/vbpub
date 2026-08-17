@@ -290,3 +290,49 @@ whose target is absent from the artifact — is **not** discharged here. It
 belongs to the controller's own review step, which drives the shipped entry
 points against real inputs on disk. Recorded so it cannot be assumed done.
 
+**DISCHARGED — see the next section.**
+
+---
+
+## B005 end to end, through the real CLI (the debt above)
+
+`scratchpad/b006a/e2e_b005.sh` builds a real git repository — a covered module,
+a module nothing imports, a module with an untaken branch, a test suite — and
+drives **`python -m assay.cli run`** four times. Not the test suite, not a unit
+call: the shipped command-line entry point, against a real commit.
+
+```text
+lane ok         exit=0  PASS                                     targets=['src/pkg/covered.py']
+lane unmeasured exit=1  FAIL/UNCOVERED_LINES                     targets=['src/pkg/never_imported.py']
+lane partial    exit=1  FAIL/UNCOVERED_LINES                     targets=['src/pkg/partial.py']
+lane vacuous    exit=3  NO_MEASUREMENT/TARGET_NOT_MEASURED       targets=['src/pkg/never_imported.py']
+```
+
+Every verdict carries `schema_version=6`, `snapshot_policy=repository`, and
+`judgment.r1: mode=whole_target` with the declared targets — so v6's three new
+wire facts are witnessed by a real run rather than by a fixture.
+
+**`vacuous` is the proof B005 exists for.** Its argv narrows coverage to
+`--cov=pkg.covered`, so the declared target is **absent from the artifact
+entirely** — precisely the shape of the stopgap this feature replaces, where
+`--cov=` naming a module that was never imported reports *100% of zero* and
+passes. assay refuses it. Contrast `unmeasured`, whose identical target under a
+wide `--cov=pkg` **is** present at 0% and correctly FAILs rather than refusing:
+the two outcomes are distinguished by evidence, which is what makes
+`TARGET_NOT_MEASURED` meaningful rather than a synonym for failure.
+
+`ok` is the must-succeed control. Without it a judge that refused everything
+would have scored three out of four.
+
+### A consumer trap found by doing this, not by reading
+
+The first attempt returned `NO_MEASUREMENT/DIRTY_TREE` on every lane, and the
+fixture's `git status` was clean. The cause was **coverage.py's own `.coverage`
+data file**, which it writes into the working directory even when the report is
+JSON elsewhere — untracked, unignored, and therefore real dirt under the
+snapshot's post-run check. **The guard was right and the fixture was wrong.**
+
+This will hit the first consumer who adopts a whole-target lane and has not
+ignored `.coverage`, and the diagnostic they will see says `DIRTY_TREE`, not
+"your coverage tool wrote a data file". Handed to WI-5 for `CONSUMERS.md`.
+
