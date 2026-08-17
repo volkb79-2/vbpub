@@ -17,6 +17,82 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.0.0] - 2026-08-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=5460d9371cb11b4b80dbe8b0ea920c72b29cda83 -->
+
+### Added
+- feat(assay): B006(b) -- create the coverage artifact's missing parent inside the snapshot only (7e869e71)
+- feat(assay): B006(a) WI-3 -- coverage-artifact/omission collision and the embargo (7d2da7f3)
+- feat(assay): B006(a) WI-2 -- P22 exact unsafe-symlink omissions (57d620d7)
+- feat(assay): lane schema v2 -- IsolationConfig and the R0/R1+ isolation conditional (c56a13ea)
+
+### Fixed
+- fix(assay): finish the P25 harness's v6 migration and split its v1/v2 lanes (3da074ec)
+- fix(assay): withdraw coverage.py branch-summary cross-check (A-272) (4894bae6)
+- fix(assay): R1 never worked for a nested project -- reconcile the key spaces (d547c75a)
+- fix(assay): W1-WI5 report -- correct §7 with the real O7 command output (bb5153c6)
+
+### Changed
+- merge(assay): wave 1 -- B005 whole-target judge, B006 monorepo snapshots, v6 (e7e2c616)
+- assay: record the gate green on the branch, and CMRU's real R1/R2/R3 claims (000ae29a)
+- assay: re-witness P25's two v6 templates from a real run (A-274) (d355a434)
+- assay: rule A-274 -- the migration needed a fifth bucket, RE-WITNESS (b0aa10fb)
+- assay: rule A-273 -- correct A-263's percentage claim, do not chase the number (dd03dea6)
+- assay: rule A-272 -- the branch-summary cross-check refuses real coverage.py (662f288b)
+- assay: record the three release blockers the acceptance test found (2cffc884)
+- assay(B006a): WI-5 CMRU qualification harness -- lands the proof, finds a real R1 defect (cd83ae8d)
+- backlog(assay): add B007's frontmatter row to match its body (ee88ca23)
+- assay: wave-1 item 5 -- README/DESIGN-GUIDE/CONSUMERS for B005+B006, and the three A-270 checks (f0e391cd)
+- assay: discharge the B005 end-to-end proof through the real CLI (3328a01f)
+- assay: bring the wave state current, and sequence B007 after the release (29ce78b0)
+- backlog(assay): B007 -- multi-target R3 canary, assessed and deferred to v7 (b869db79)
+- assay: rule A-271 -- the two path grammars differ on purpose (9cb0e310)
+- assay: verify the v6 cut, and close section 5's self-contradiction (3149d822)
+- fixup(assay wave-1): classify the v6 successor suite in the migration script (507ca1c7)
+- assay: wave-1 branch coverage, whole-target judge, verdict schema v6 (71d98965)
+- assay: record wave state -- B006 is built, the v6 cut is dispatched (dae5b7c7)
+- assay+estate: rule A-270 -- user-facing docs merge with the change (8269fe5d)
+- assay: widen the documentation work item -- the plan missed both user docs (66382ab5)
+- assay: controller's independent verification of WI-3 (678f93fc)
+- assay: sweep the wave contract for surviving withdrawn-design instructions (1b563dea)
+- assay: correct the one B006(b) sentence that still named the withdrawn scope (80de2a6c)
+- assay: verify WI-2 against the real substrate, and remove one dead branch (88f24a85)
+- assay: controller's independent verification of WI-1 (f76a3f32)
+- assay: measure the B006(a) carve's open M20 — CMRU in tester-unified (75d50a7e)
+- assay: rule A-269 and kill the superseded B006(a) design in place (c74dce86)
+- assay: B006(a) is unblocked — record the recarve as the live state (5d6d525c)
+- assay: fold review round 1 into the B006(a) carve, body first (3d745924)
+- assay: independent review of the B006(a) recarve — READY WITH CORRECTIONS (c313589b)
+- assay: recarve B006(a) as unsafe-symlink omission, not a project boundary (d3173e61)
+- assay: stop B006(a) at the review budget, correct two stale decision rows (c3b00729)
+- assay: fold round 2-of-3's nine blocking findings into section 1 (2f9495b5)
+- assay: dispatch review round 2-of-3 on the revised section 1 (18b08fc5)
+- assay: make notifying dstdns part of the release step, not an afterthought (465393d3)
+- assay: take round 3's eight blocking findings as decisions, and widen the wave (d57cb2f1)
+- assay: WI-3 verified, and B006(a) stopped at the 3-round review cap (7835ed8c)
+- coverage(parsers): wire branch arcs into all four formats (wave-1 S3.1a/S3.3) (bd99bb7a)
+- coverage(model): add BranchCoverage and FileCoverage.branches (wave-1 S3.1/S3.2) (759bea03)
+- assay: add the wave-1 resume point (172f1550)
+- assay: stop claiming a sandbox the substrate cannot deliver (A-267) (0a96dc7e)
+- assay: adapt wave 1 to main's rewritten B006 -- project-scoped snapshots (A-266) (571cf2b5)
+- merge(assay): take main's rewritten B006 -- project-scoped snapshots supersede the allowlist (0791d9c4)
+- decisions(wave1): record A-257..A-265 (branch coverage, whole-target judge, verdict v6) (6bd75c0c)
+- assay: rewrite the wave-1 carve against an independent review's 11 findings (59af6b4b)
+- assay: carve spec addendum -- the carver's own corrections (77c40ee7)
+- assay: stop the coverage fixtures from joining the project's own suite (af918715)
+- assay: pin the two branch-arc spellings that reject a reasonable parser (39fa7af2)
+- assay: carve wave 1 -- branch coverage, whole-target judge, verdict v6 (4286e501)
+- backlog: B005 whole-module/per-callable coverage judge; B006 snapshot substrate papercuts (b5d0c894)
+
+### Documentation
+- docs(assay): complete WI-1 audit log with real post-commit numbers (9b02e5e8)
+- docs(assay): classify scoped snapshot as capability (010d1813)
+- docs(assay): specify safe monorepo snapshot scope (c7bc9b59)
+
+### Testing
+- test(assay): witness O5, the dstdns nginx-symlink incident shape (364415ad)
+
 ## [1.0.0] - 2026-08-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=389c288d19fb32db023a016eb084422140fcf488 -->
