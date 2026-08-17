@@ -57,3 +57,14 @@ CIU-23's injectable data-isolation provisioner is tested in-gate against a
 **fake** because the package gate does not supply a live Postgres. The real
 Postgres integration proof is filed as **CIU-26** and remains open until an
 explicit external integration lane proves `PostgresProvisioner.provision/drop`.
+
+## Automation-consumer follow-ups (CIU-28 and CIU-29 remain open)
+
+Nyxloom's 2026-08-17 qualification of CIU as an automated worktree/environment
+provider found two general S16 gaps. **CIU-28** separates logical instance name,
+Git branch, and path; adds create/adopt/ensure semantics; and requires universal
+runtime-identity collision admission rather than relying on a timestamp or on
+S16.3's later capacity scan. **CIU-29** adds versioned JSON lifecycle/inspect
+results, an exact-target environment exec boundary, and structured capability
+discovery. Full mechanisms, negative cases, and proposed SPEC ownership are in
+the canonical [`../KNOWN_ISSUES_TODO_BACKLOG.md`](../KNOWN_ISSUES_TODO_BACKLOG.md).

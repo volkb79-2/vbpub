@@ -9,9 +9,12 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-12 (CIU-27 FIXED: `ciu provenance --no-preflight` is an
-explicit no-check break-glass bypass; it performs no config, Git, or Docker access,
-and rejects `--json` because it produces no evidence verdict. CIU-24 FIXED — code + tests + spec + docs,
+Last updated: 2026-08-17 (CIU-28 and CIU-29 filed from nyxloom's first
+automation-consumer audit of S16: allocation/adoption identity and the
+machine-readable lifecycle boundary. Earlier: CIU-27 FIXED: `ciu provenance
+--no-preflight` is an explicit no-check break-glass bypass; it performs no
+config, Git, or Docker access, and rejects `--json` because it produces no
+evidence verdict. CIU-24 FIXED — code + tests + spec + docs,
 `ciu-P03-worktree-concurrency-budget`, S16.3. Earlier the same day: CIU-22
 FIXED, `ciu-P02-worktree-shared-infra-join`, S16.1; CIU-20/21/23 FIXED,
 `ciu-P01-worktree-isolation-primitives`; CIU-26 filed as the deferred
@@ -66,6 +69,8 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-25 | No leak detector for worktree instances: an orphaned stack (crashed child, killed session, forgotten `worktree rm`) is never reaped, silently consuming host resources indefinitely | Low | OPEN |
 | CIU-26 | CIU-23's `worktree.PostgresProvisioner` (the real, shipped S16.2 data-isolation default) has no live-server proof: its naming/ordering/force/idempotency contract is proven in-gate only against a FAKE `DataIsolationProvisioner`, because `tester-unified:local` has no live Postgres server to provision against. Needs an integration lane (outside this repo's own gate) that runs `PostgresProvisioner` against a real Postgres and confirms `provision`/`drop` actually create/remove a database, not just that the mechanism dispatches correctly | Low | OPEN |
 | CIU-27 | S17.2 stated that `ciu provenance --no-preflight` skips the check, but the parser did not accept it. Fixed: it is now a true no-check break-glass bypass and rejects `--json`, which must not fabricate an evidence verdict. | Medium | FIXED |
+| CIU-28 | `ciu worktree add` conflates logical instance name, Git branch, and target path; it cannot adopt/resume an existing branch or checkout, and registration does not universally reject collisions in the 24-bit path-derived `INSTANCE_ID` namespace | Medium | OPEN |
+| CIU-29 | Worktree lifecycle is prose-oriented and has no exact-target environment execution or structured capability discovery, forcing automation to parse text, source `ciu.env`, and infer features from a version string | Medium | OPEN |
 
 ### CIU-27 — `provenance --no-preflight` was specified but not implemented — FIXED
 
@@ -75,6 +80,174 @@ Docker. It is a break-glass bypass, not a new S17.3 verdict. Consequently it is
 incompatible with `--json`: a machine-readable document would look like evidence
 when no check occurred, so argparse refuses that combination (exit 2). The
 parser, S17.2, CLI reference, and focused behavior tests changed together.
+
+### CIU-28 — automation-safe worktree allocation, adoption, and identity
+
+**Reported by:** nyxloom/vbpub, 2026-08-17, while qualifying CIU as the first
+supported environment provider for an automated development factory.
+**Severity:** Medium — ordinary hand-created worktrees work, but a durable
+dispatcher cannot create, resume, or unambiguously recover its own branch
+identity through CIU today. The truncated runtime-identity collision is rare,
+but it affects networks, Compose names, and namespaced data when it occurs.
+
+**The observed contract.** `worktree.add()` currently receives one `name` and
+uses it for all three unrelated identities:
+
+1. it rejects `/` and requires one path component;
+2. it creates `<repo>/<worktree-dir>/<name>`; and
+3. it runs `git worktree add -b <name> <target> <base>`.
+
+That is adequate for a person typing `ciu worktree add feature-x`. It is not an
+automation lifecycle. A dispatcher commonly has a durable branch convention
+such as `feat/<task-id>`, and must resume that SAME branch after rejection,
+process loss, or a later review turn. CIU rejects the slash-bearing branch as a
+name, always asks Git to create a NEW branch, and has no attach/adopt/ensure mode
+for an existing branch or checkout. Reimplementing `git worktree add` in every
+consumer and running `ciu env generate` afterward defeats S16's purpose: CIU no
+longer owns the complete identity/lifecycle operation or its failure states.
+
+**What uniqueness exists today, and what does not.** The target-path check
+refuses an already-existing directory, and Git itself rejects an already-existing
+branch. Those are useful collision refusals, but they do not establish one
+unambiguous CIU instance identity:
+
+- `find_worktree()` can select by basename or path, while no separately stored
+  logical instance name exists;
+- `_compute_network_name()` derives `INSTANCE_ID` from only the first six hex
+  characters of SHA-256 over the physical path — a 24-bit namespace;
+- duplicate `DOCKER_NETWORK_INTERNAL` values are rejected later by S16.3's
+  capacity candidate resolver, but only when that path is exercised. Registration
+  itself does not enumerate every registered CIU instance and reject a distinct
+  physical path with the same derived ID before writing `ciu.env` or provisioning
+  data.
+
+A date/time in the directory name does **not** solve this. In particular,
+`<component>-<YYMMDD-HHMM>-<slug>` collides for two allocations in one minute,
+has timezone/century ambiguity, and trusts wall-clock uniqueness. It is useful
+human metadata, not an identity primitive.
+
+**Required behavior; exact CLI spelling belongs to the carve.**
+
+1. Separate **logical instance name**, **Git branch/ref**, and **target path**.
+   Preserve the simple positional-name form for people, but permit an automation
+   caller to provide the three facts independently. CIU must never derive a
+   caller's existing branch convention from a slug.
+2. Support explicit create-new, attach/adopt-existing, and idempotent ensure/resume
+   semantics. Create-new fails before side effects if the branch already exists.
+   Attach requires the named branch/checkout to exist and match the requested
+   path. Ensure succeeds as a no-op only when every persisted fact matches;
+   branch/path/name disagreement is a loud refusal, never "close enough."
+3. Persist enough non-secret metadata in the target's `ciu.env` (or another
+   machine-owned instance record) to resolve the logical name, branch, physical
+   path, and runtime identity without basename inference. Removal and listing
+   use that exact identity and reject ambiguity.
+4. Before `ciu.env` is committed as usable or any data slot is provisioned,
+   enumerate the Git worktree family and every registered CIU instance. Reject
+   duplicate logical names, target paths, active branch occupancy, runtime
+   `INSTANCE_ID`, network identity, or data-isolation entity belonging to a
+   different physical checkout. This admission check must run regardless of
+   whether S16.3's deployment cap is configured.
+5. Either widen/version the six-hex `INSTANCE_ID` or retain it with the universal
+   collision refusal above. Never repair only the Docker network name with a
+   suffix: the same ID also names data isolation and other instance state.
+6. Optionally offer generated human names, but reserve them atomically under the
+   Git worktree family's own lock and add a collision-resistant component. A
+   reasonable display form is
+   `<project>-<YYYYMMDDTHHMMSSZ>-<slug>-<short-unique>`. UTC seconds and the
+   suffix are explicit; neither timestamp nor slug is claimed as identity.
+   Caller-supplied stable names remain supported, because resumable automation
+   normally already has a stronger task ID than a clock value.
+7. `worktree add/attach/ensure` still prepares but does not deploy. Existing
+   shared-infra, data-isolation, profile narrowing, and clean-before-remove
+   behavior compose unchanged with every creation mode.
+
+**Behavioral oracles.** Two simultaneous generated-name allocations with the
+same injected clock never receive the same name/path/branch. Two different paths
+with a forced equal six-hex hash are refused before env/data side effects. An
+existing matching branch can be resumed without creating a second branch; a
+mismatching branch/path refuses. A partial earlier attempt has a mechanically
+distinguishable recovery state. Two independent repository clones may use the
+same human logical name only if the product decision explicitly scopes logical
+names per Git family; their physical-path runtime identities remain distinct.
+Every negative asserts no unrelated checkout, network, database, or branch was
+created or removed.
+
+**Why this belongs in CIU.** Git checkout creation, checkout-local environment
+identity, Compose/network naming, optional data isolation, and clean-before-remove
+are already the single S16 transaction. Every IDE, CI fan-out controller, test
+harness, or agent dispatcher needs resume and collision behavior; none should
+rebuild the first half in raw Git and hope it still composes with the second.
+
+**Proposed SPEC ownership:** extend S16's worktree-instance identity and
+lifecycle contract; do not put branch naming policy in a nyxloom-specific API.
+
+### CIU-29 — machine-readable worktree control and exact-environment execution
+
+**Reported by:** nyxloom/vbpub, 2026-08-17, same qualification audit as CIU-28.
+**Severity:** Medium — humans can read the current output and `source ciu.env`,
+but automation otherwise parses presentation text and can silently operate on a
+sibling repository when inherited `REPO_ROOT`/`PHYSICAL_REPO_ROOT` values win.
+
+**The problem.** `ciu worktree add|rm|list` prints human prose. There is no
+stable JSON result for identity or partial failure, no `inspect` result for one
+instance, and no generic operation that runs an argv in the selected worktree's
+cwd with that worktree's explicitly parsed `ciu.env`. There is also no structured
+capability query. A consumer can run `ciu version`, but mapping SemVer to the
+presence of `provenance --json`, data isolation, shared infra, or S16.3 is a
+second, drifting feature registry.
+
+This is observable today: from the vbpub development shell, the installed
+`ciu 4.11.2.dev12` has basic `worktree` verbs, while released CIU 6.0.3 has the
+later S16/S17 capabilities. An inherited environment caused `ciu worktree list`
+from vbpub to enumerate the unrelated dstdns worktree family. A caller can avoid
+that by carefully supplying `--define-root` and scrubbing root variables, but
+every automation consumer must rediscover the rule.
+
+**Required behavior; exact CLI spelling belongs to the carve.**
+
+1. Add versioned JSON output for worktree add/attach/ensure, list, inspect, and
+   remove. Identity fields include logical name, branch/detached state, logical
+   and physical path, primary flag, registration state, `INSTANCE_ID`, network,
+   selected profile, and the presence (not secret values) of optional data/shared
+   infrastructure. Partial failures carry a closed status and the exact retained
+   resource identities needed for recovery.
+2. Add an exact-target command boundary (for example `ciu worktree exec <id> --
+   <argv...>`). It resolves one registered instance without ambiguity, parses
+   that target's `ciu.env` by explicit path, replaces conflicting inherited CIU
+   root/identity values, runs without `shell=True` in the selected checkout/CIU
+   root, and propagates the child's exact exit. It does not implicitly deploy,
+   clean, interpret the command, or expose secret values in its own output.
+3. Add a machine-readable capability document (`ciu capabilities --json` or a
+   versioned equivalent) with closed identifiers for supported public contracts
+   such as worktree attach/ensure, worktree JSON, exact-env exec, provenance JSON,
+   image-revision exposure, data isolation, shared-infra join, and concurrency
+   budget. Consumers pin/allowlist a tested document; CIU does not claim that any
+   unknown future version is compatible merely because its number is larger.
+4. Every worktree command accepts an explicit root and reports the resolved root
+   in JSON. A conflicting inherited root is rejected or replaced according to one
+   documented rule; it must never select a sibling project silently.
+
+**Boundary with testing tools.** The exec operation is deliberately generic. CIU
+owns WHERE — checkout identity, cwd, and environment. A product-owned tool such
+as Assay still owns HOW to judge a lane, and CIU neither imports it nor parses
+its verdict. `ciu worktree exec task -- assay run integration ...` is composition,
+not a `ciu test` reimplementation.
+
+**Behavioral oracles.** JSON contains no presentation lines and round-trips all
+closed states. Two worktrees with similar basenames cannot make inspect/exec
+select the wrong one. A stale ambient root cannot redirect exec. Missing or
+malformed target `ciu.env` refuses before the child runs. Child argv is passed
+byte-for-byte without a shell and all six representative exit codes propagate.
+Capability output changes only with a reviewed public-contract change and has a
+schema/version independent of CIU's package SemVer.
+
+**Why this belongs in CIU.** IDEs, task runners, CI fan-out, local scripts, and
+agent orchestrators all need the same structured worktree boundary. The
+nyxloom-specific pieces — its task/feature description, workflow transitions,
+Assay lane selection, and gate policy — remain entirely outside CIU.
+
+**Proposed SPEC ownership:** S16 machine interface plus a versioned CLI
+capability schema; S17 remains the owner of provenance semantics.
 
 ## Resolved / not-a-gap
 
