@@ -57,11 +57,25 @@ reviewer; resume the existing one by name if it is still listed.
   (project-scoped snapshots), §2, §6's isolation block, §7 WI-1, and
   O9/O9b/O15/O17/O18/O19.
 
-## THE REVIEW CAP IS REACHED — awaiting an operator decision on B006(a)
+## UNBLOCKED 2026-08-17 — round budget reset, CMRU writable, origin/main current
+
+Three things changed at once and all three widen what this wave can finish:
+
+* **the review budget was reset.** Round 3's NOT READY counts as the FIRST review
+  of the post-`c7bc9b59` design, not the third of the old one. **Two rounds
+  remain**, and B006(a) stays in wave 1 rather than being split out. All 8
+  blocking findings are already folded in as decisions (Addendum E, A-268) — the
+  next review starts from the revised §1, not from a question;
+* **CMRU's lanes and rigor are ours to edit.** O9b stops being deferred and
+  becomes this capability's real acceptance test. CMRU is at 100% lines
+  (6060/6060) and branches (2184/2184), 29/29 mutants killed, with a canary that
+  fails for the coverage reason — the best R1/R2/R3 consumer available;
+* **`origin/main` is current**, so `cmru release`'s "N commits ahead" guard is
+  gone and the release step at the end of this wave is reachable. The operator
+  has authorised releasing BOTH cmru and assay.
 
 Round 3 (Opus, fresh context) returned **NOT READY — 8 blocking, 14
-non-blocking**, so §1 has now failed three consecutive independent reviews.
-Per the standing rule this stops here: no round 4, no model switch.
+non-blocking**, and its two structural findings are the reason §1 changed shape:
 
 The two that change what the work IS, rather than how it is written:
 
@@ -90,10 +104,13 @@ false on both refusal paths and contradicts A-264 in the wave that establishes
 it; and O18 asks the implementer to mutate an object §1.8 requires to be
 immutable.
 
-## Remaining, in order (B006(a) blocked at the top)
+## Remaining, in order
 
-1. **STOPPED — operator decision required on B006(a).** Do not dispatch work
-   item 1. See the block above.
+1. **Review round 2-of-3 on the revised §1** (fresh Opus, no inherited context;
+   codex is unavailable). If READY → dispatch WI-1. If NOT READY → fold the
+   findings in, then ONE more round. After that round, stop and report.
+   Dispatching WI-1 without a READY verdict is allowed only if the remaining
+   findings are all non-blocking.
 2. **WI-1a/1b/1c** — project-scoped snapshot: config + `ResolvedSnapshotBoundary`,
    isolation materialisation, runner preflight. Three commits.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
@@ -105,15 +122,29 @@ immutable.
    MEASUREMENT — run it under v6, list every red, classify each.
 5. **WI-5** — docs, `STATE.md`, backlog status lines AND their prose sections,
    the nyxloom spine, and a LOG under `reports/`.
-6. **Controller's own adversarial review** — by writing real inputs to disk and
+6. **WI-6 — CMRU's real R1/R2/R3 lane** (O9b). Write `cmru/assay.toml`'s
+   higher-rigor lane with project scope: source roots, coverage argv + artifact,
+   `fail_under = 100.0`, `require_branch = true`, the mutation policy, and the
+   canary. `inputs` must be derived by SWEEPING CMRU's suite for repo-root
+   dependencies (`parents[2]` and friends) — at least `cmru.project.sample.toml`
+   and `cmru.release.sh`, the latter actually executed by
+   `test_release_wrapper.py`. Remove CMRU's temporary whole-source coverage
+   stopgap only once this lane is green, and say so in its commit.
+7. **Controller's own adversarial review** — by writing real inputs to disk and
    driving the SHIPPED entry points, never by reading the diff and never by
-   re-running the implementer's fixtures. Then one Opus xhigh review of the
+   re-running the implementer's fixtures. Then one Opus review of the
    implementation.
-7. **Gate green on the branch**, run in the foreground with the exit code
+8. **Gate green on the branch**, run in the foreground with the exit code
    captured honestly — never `| tail`, which returns tail's status.
-8. **Merge `--no-ff` into `main`**, then gate green again on `main`.
-9. **`cmru release --project assay --dry-run`**, output shown to the operator.
-   **STOP THERE.**
+9. **Merge `--no-ff` into `main`**, then gate green again on `main`.
+10. **Release, authorised 2026-08-17.** `cmru release --project assay
+    --dry-run` first, then the real release for **both cmru and assay**. Show
+    the dry-run output before publishing. This is the step that lets CMRU pin a
+    released assay and drop its stopgap.
+11. **Then wave 2 and wave 3, as originally agreed:** B004 (provenance as
+    VERIFIED evidence — its ciu blocker CIU-20 is FIXED, `ciu provenance --json`
+    ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
+    own adversarial review before any dispatch.
 
 ## Standing rules
 
@@ -135,15 +166,24 @@ immutable.
 
 ## STOP and ask the operator
 
-* review round 3 returns NOT READY (cap reached);
-* anything outward-facing: `git push`, publishing a release, posting anywhere;
-* a finding that changes the wave's SCOPE rather than its detail;
-* the backlog changes under us again;
+* both remaining review rounds return NOT READY (the budget is then spent);
 * an oracle in the contract turns out to be unwritable honestly — report it,
-  never weaken it into one that cannot fail.
+  never weaken it into one that cannot fail;
+* a finding that changes the wave's SCOPE rather than its detail;
+* the backlog changes under us again (it has twice);
+* anything outward-facing BEYOND the authorised release of cmru and assay —
+  a force push, a release of another product, posting anywhere.
+
+**Authorised without asking, 2026-08-17:** editing any file in vbpub including
+CMRU's lanes and rigor; merging this branch to `main`; releasing cmru and assay
+via `cmru release` after the dry-run is shown.
 
 ## Done means
 
-All of B005 and B006 implemented per the contract, gate green on the branch and
-again on `main` after a `--no-ff` merge, the release dry-run shown, and O9b
-recorded as deferred with its blocker named rather than quietly dropped.
+All of B005 and B006 implemented per the contract; **CMRU making genuine
+R1/R2/R3 claims** with the Topos `/etc/passwd` fixture still tracked (O9b, no
+longer deferred); gate green on the branch and again on `main` after a `--no-ff`
+merge; cmru and assay released; and every deferral or limitation recorded with
+its reason rather than quietly dropped.
+
+Then wave 2 (B004) and wave 3 (B001/P34) continue in the same shape.
