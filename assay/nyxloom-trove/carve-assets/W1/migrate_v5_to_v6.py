@@ -77,6 +77,13 @@ SCAN_PATTERNS: tuple[str, ...] = (
 #: `VERDICT_SCHEMA_VERSION` in PROSE rather than reading it as code -- still
 #: a hand-edit made because of this exact migration, so it belongs here
 #: rather than in bucket 4's "merely mentions the string" reading.
+#: `nyxloom-trove/carve-assets/W1/test_acceptance_v6.py` is this same
+#: migration's own one-for-one successor suite for those 26 deselections
+#: (§6's own instruction): it reads `VERDICT_SCHEMA_VERSION` as a real
+#: symbol (asserting it now equals 6) AND names the literal v5 `$id` string
+#: in prose, documenting what the LOCKED v5 sibling test asserted -- a
+#: brand-new file, hand-authored in this exact commit, entirely because of
+#: this exact migration.
 HAND_EDIT_SOURCE_FILES: frozenset[str] = frozenset(
     {
         "src/assay/__init__.py",
@@ -89,6 +96,7 @@ HAND_EDIT_SOURCE_FILES: frozenset[str] = frozenset(
         "tests/test_verdict_schema_is_packaged.py",
         "tests/test_verdict_serialises.py",
         "tools/tester-unified-gate.sh",
+        "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py",
     }
 )
 
