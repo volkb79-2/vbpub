@@ -15,6 +15,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay)!: verdict schema v6 (`VERDICT_SCHEMA_VERSION = 6`), a hard cut -- `changed_executable` renamed to `executable`; new `branches_covered`/`branches_total`/`branch_capability`/`missing_branch_lines`/`files_with_missing_branch_lines`; new `judgment.r1.mode`/`.targets`/`.require_branch`; new top-level `snapshot_policy`; `pct` is now the combined line+branch percentage whenever an artifact reports branches, which changes PASS/FAIL for existing R1 lanes with branch-capable coverage artifacts
 - feat(assay)!: lane schema v2 (`LANE_SCHEMA_VERSION = 2`), a hard cut -- `[lanes.X.isolation]` is now required on every R1/R2/R3 lane and refused on R0-only lanes; see `docs/CONSUMERS.md`'s "Adopting a v2-capable release" for the required repin-and-bump ordering
 
+<!-- cmru: release history -->
+
 ## [1.0.0] - 2026-08-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=389c288d19fb32db023a016eb084422140fcf488 -->
