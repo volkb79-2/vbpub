@@ -39,6 +39,20 @@ Go's coverprofile format has no exclusion concept at all — no pragma, no
 field anywhere in the grammar that could carry one — so
 ``FileCoverage.excluded`` is always ``None`` here (DESIGN-GUIDE §11's own
 worked example: "a Go cover profile has no such concept").
+
+**Branch capability (wave-1 §3.3, A-257) is always ``None``, unconditionally.**
+A cover profile's records are ``<path>:<startLine>.<startCol>,<endLine>.
+<endCol> <numStmts> <count>``: a BLOCK's position and a STATEMENT COUNT,
+never an arc between two branch targets. There is no field anywhere in this
+grammar that could distinguish "this block's untaken exit went to the
+`else`" from "this block's untaken exit fell through" -- the format simply
+does not carry that information, so ``FileCoverage.branches`` is always
+``None`` here, exactly as ``excluded`` is, and for the identical reason:
+faking a ``BranchCoverage`` from block extents would be the exact
+``declared_unverified``-class lie A-O12 was corrected for. This makes the
+capability a MEASURED property of the format (a test asserts it directly)
+rather than an omission that later looks like an oversight (A-O16's exact
+failure).
 """
 
 from __future__ import annotations
@@ -86,6 +100,7 @@ def parse(text: str) -> CoverageProfile:
             executed=frozenset(n for n, c in h.items() if c == 1),
             missing=frozenset(n for n, c in h.items() if c == 0),
             excluded=None,
+            branches=None,
         )
         for path, h in hits_by_file.items()
     }
