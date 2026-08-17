@@ -141,6 +141,29 @@ immutable.
     --dry-run` first, then the real release for **both cmru and assay**. Show
     the dry-run output before publishing. This is the step that lets CMRU pin a
     released assay and drop its stopgap.
+    * **Confirm the `.pyz` asset actually published**, not just the wheel.
+      dstdns consumes the ZIPAPP (`tools/assay/assay-<v>.pyz`), so a release
+      that ships only the wheel is useless to it. That asset rides cmru's
+      `wheel-publish --extra-asset` (A-249/A-250).
+10b. **Notify the dstdns agent — same filesystem, no git, no push.** After the
+    release lands, write `/workspaces/dstdns/.assay-inbox/release.json`. Its
+    schema is tracked at `/workspaces/dstdns/.assay-inbox/CONTRACT.md` — READ IT
+    at the time rather than trusting this summary. One JSON object:
+    `version`, `tag`, `artifact_filename`, **`sha256` of the `.pyz` (REQUIRED —
+    dstdns re-vendors the artifact and verifies it against this)**,
+    `download_url`, optional `manifest_url`, `landed`, `notes`, `written_at`.
+    Take the hash from the release's own `.sha256` sidecar rather than
+    recomputing by hand.
+    `landed` is the field that changes what dstdns DOES: `B005` lets it retire
+    its `--cov-fail-under=100`-in-argv stopgap (D-044) for a real attested
+    floor, and `B006` lets it drop both substrate work-arounds — the removed
+    nginx symlink (D-045.1) and the tracked `.assay/.gitkeep` (D-045.2). So
+    list only what genuinely shipped; naming an item that did not land would
+    have dstdns tear out a work-around it still needs.
+    The directory is gitignored on dstdns's side precisely so this drop cannot
+    dirty its tree and break its own assay gate — do not commit anything there.
+    Cross-machine fallback (not needed here, we share a filesystem):
+    `SendMessage` the dstdns loop session, discovered via `ListAgents`.
 11. **Then wave 2 and wave 3, as originally agreed:** B004 (provenance as
     VERIFIED evidence — its ciu blocker CIU-20 is FIXED, `ciu provenance --json`
     ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
