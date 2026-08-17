@@ -127,6 +127,37 @@ false on both refusal paths and contradicts A-264 in the wave that establishes
 it; and O18 asks the implementer to mutate an object §1.8 requires to be
 immutable.
 
+## GATE GREEN ON THE BRANCH — 2026-08-17, at the re-witness commit
+
+```text
+ASSAY_REGISTERED_GATE_COMPLETE=1     GATE_EXIT=0
+phases: wheel-installed, attestation-hardened, verdict-v5-accepted,
+        lane-schema-v2-successors-verified, verdict-v6-successors-verified,
+        self-hosted-lane-passed, topos-qualified, cmru-b006a-qualified,
+        independent-self-hosting-passed
+```
+
+**Blockers 1 and 2 are CLOSED**, and the wave's acceptance test is genuine —
+CMRU makes real R1/R2/R3 claims **while the Topos fixtures stay tracked**:
+
+```text
+outcome=PASS exit_code=0   claim[R0..R3] all PASS
+r2_killed_identity  Eq->NotEq at cmru/src/cmru/_b006a_probe.py
+r3_canary  control=PASS transformed=FAIL
+           expected=UNCOVERED_LINES  observed=UNCOVERED_LINES
+snapshot_policy  repository-minus-unsafe-symlinks + the three exact Topos paths
+omission_probe  omitted_absent=[true,true,true]  cmru_root_present=true
+                topos_ordinary_present=true  status_clean=true
+```
+
+R3 killed for the RIGHT reason — expected and observed reason codes match,
+which is the cause-sensitivity that makes a canary evidence rather than a coin
+flip. The previous run of this same phase gave R1 FAIL and R3 INCONCLUSIVE; the
+nested-key fix (`d547c75a`) and rulings A-272/A-273/A-274 closed both.
+
+**Still open: blocker 3 only** (O5's dstdns fixture), then merge, gate on
+`main`, release, notify.
+
 ## OPEN BLOCKERS before the release — found by the acceptance test, 2026-08-17
 
 The wave's own acceptance test did its job: it found real defects rather than
