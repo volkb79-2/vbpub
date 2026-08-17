@@ -177,3 +177,57 @@ it mattered that it not be accepted on a vacuous pass. **Twice now in this
 wave a probe of mine has passed for the wrong reason; both times only a
 deliberate control exposed it.**
 
+---
+
+## WI-3 — runner collision check and the embargo (`7d2da7f3`)
+
+Landed by the controller rather than the implementer: the agent's turns kept
+ending while it waited on background jobs, so the suite and the coverage query
+were run here, in the **foreground**, with exit codes captured directly rather
+than through a pipe.
+
+```text
+EXIT=0
+2619 passed, 11 skipped, 1 warning in 180.53s   (2607 baseline + 12 new)
+```
+
+Coverage over the new function's line range: **no missing lines, no missing
+branches**.
+
+### The probe — the near-misses, which is where this check can only go wrong
+
+`scratchpad/b006a/probe_wi3.py` calls the shipped
+`_refuse_coverage_artifact_omission_collision` directly. **10/10** as §3.4
+specifies. The three that carry the weight:
+
+* an artifact that **IS** the omitted leaf refuses, and one **beneath** it
+  refuses at any depth;
+* **`topos/link_evil` and `topos/linkage.json` do NOT collide with the omission
+  `topos/link`** — the string-prefix trap A-145 exists to prevent, closed here
+  by `PurePosixPath.is_relative_to` on components;
+* an artifact that is an **ancestor** of an omission does not collide, which is
+  right: B006(b) creates the artifact's parent chain, so only a parent that IS
+  or CONTAINS the omitted leaf could overwrite it.
+
+Repository mode is a strict no-op and a lane with no judge is a no-op, both
+confirmed rather than assumed.
+
+### The embargo tests, checked for vacuity rather than taken on trust
+
+Both halves are non-vacuous by construction, which is exactly what I asked for
+and rarely get:
+
+* half (a) scans every live tracked `assay.toml` with **independent `tomllib`**
+  — so a bug in assay's own loader could not hide a live declaration from the
+  audit — and **asserts the scanned set actually contains the two lane files
+  that exist today**, because an audit that silently scanned zero files would
+  prove nothing;
+* half (b) checks **real git ancestry**, not a hardcoded "as of today": no
+  `assay-v*` tag may descend from WI-1's landing commit. It first asserts that
+  commit is still reachable history, since an unreachable commit is nobody's
+  ancestor and the check would otherwise pass vacuously forever. A release cut
+  tomorrow fails it on the next run.
+
+**Both tests must be revisited when the v6 work lands** — that is when the
+embargo lifts by design, not when it becomes inconvenient.
+
