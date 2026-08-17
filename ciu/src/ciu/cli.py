@@ -552,8 +552,6 @@ def _worktree(rest: list[str]) -> int:
     p_add.add_argument("--profile", default=None, metavar="P1,P2")
     p_add.add_argument("--worktree-dir", dest="worktree_dir",
                        default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
-    p_add.add_argument("--data-isolation", dest="data_isolation", default=None,
-                       metavar="PROFILE")
     p_add.add_argument("--shared-infra", dest="shared_infra", default=None,
                        metavar="REF")
     p_add.add_argument("--shared-infra-services", dest="shared_infra_services",
@@ -582,7 +580,6 @@ def _worktree(rest: list[str]) -> int:
             path = wt_mod.add(
                 repo_root, opts.name, base=opts.base, profile=opts.profile,
                 worktree_dir=opts.worktree_dir,
-                data_isolation=opts.data_isolation,
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,

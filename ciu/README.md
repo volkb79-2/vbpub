@@ -31,12 +31,10 @@ record and the change list generated for each future release.
   not hand-tag CIU releases.
 - **nyxloom** can put parallel implementation tasks in CIU worktrees. Each
   worktree receives its own identity, Compose network, volumes, and optional
-  shared-infrastructure/data-isolation setup; CIU's primary-worktree capacity
+  shared-infrastructure setup; CIU's primary-worktree capacity
   policy protects the host when those tasks run concurrently.
 - **assay** can consume `ciu provenance --json` before a live evidence lane to
-  record the checked artifact identity. Keep `CIU_DATA_ISOLATION_DSN` out of
-  `env_passthrough`: it may contain credentials and would enter an evidence
-  artifact.
+  record the checked artifact identity.
 - **modern-debian-tools-python-debug** provides the real host systemd slices
   that governance uses. CIU verifies a configured slice rather than silently
   letting Docker create an unbounded transient one.

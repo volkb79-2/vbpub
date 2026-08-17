@@ -11,7 +11,7 @@ decision D-001. The units below are implementation/commit packages, not
 parallel dispatches. Code, tests, SPEC, user documentation, and issue status
 move together.
 
-### Package A — restore truthful product state
+### Package A — restore truthful product state (complete)
 
 1. Reduce `nyxloom-trove/backlog.md` to an unused-transition pointer and clean
    stale/contradictory material from the canonical tracker.
@@ -22,7 +22,7 @@ move together.
 4. Preserve CIU-25 as an open leak-detection issue; it is not silently folded
    into this milestone.
 
-### Package B — identity, allocation, and resume (CIU-28)
+### Package B — identity, allocation, and resume (CIU-28, in progress)
 
 1. Add atomic schema-v1 `ciu.worktree-instance.json` records and exact lookup by
    family-scoped logical identity.

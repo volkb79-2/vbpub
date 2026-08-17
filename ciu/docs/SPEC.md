@@ -2083,22 +2083,20 @@ hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
 container prefix and volumes. `ciu worktree` is the verb that composes what CIU
 already knows into one operation.
 
-- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--data-isolation PROFILE] [--shared-infra REF --shared-infra-services S1,S2 --shared-infra-ref-projects R1,R2]`** —
+- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--shared-infra REF --shared-infra-services S1,S2 --shared-infra-ref-projects R1,R2]`** —
   creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
   `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
   `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
-  prepares an instance, it does not decide you want it running. `--data-isolation`
-  additionally provisions a namespaced data slot (S16.2). `--shared-infra`
+  prepares an instance, it does not decide you want it running. `--shared-infra`
   joins the new instance's declared diverging services onto an existing
   reference instance's shared network (S16.1).
-- **`worktree rm NAME [-y] [--force]`** — when the worktree was created with
-  `--data-isolation`, first drops its namespaced data slot (S16.2), then runs
-  `ciu clean` INSIDE the worktree under that worktree's own `ciu.env`, and only
-  then `git worktree remove`. **The order is normative.** `ciu down` preserves
+- **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
+  under that worktree's own `ciu.env`, and only then `git worktree remove`.
+  **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
   config that tells CIU what to clean. A failed clean ABORTS the removal unless
-  `--force`; a failed data-isolation drop does too (S16.2).
+  `--force`.
 - **`worktree list`** — registered worktrees, primary marked.
 
 Both sub-operations run as SUBPROCESSES under the target worktree's environment.
@@ -2173,7 +2171,7 @@ explicitly `ciu down`.
 The gate (`tester-unified:local`) has no Docker socket, so every branch
 above — liveness, target discovery, the concurrent-connect state check, and
 rollback — is proven against a scripted fake at the `procutil.docker`
-boundary, the same seam S16.2's provisioner tests use.
+boundary.
 
 **`--shipped` (S8.5/S8.7) with no derivable compose project is a deliberate
 additional refusal.** When `deploy.project_name`/`environment_tag` are unset,
@@ -2187,45 +2185,6 @@ which value Compose actually chose, not because a wrong value would corrupt
 anything (an unmatched filter just finds zero containers and fails the
 existing "no running container" check harmlessly). The ordinary no-intent
 legacy fallback is completely unaffected.
-
-### S16.2 — Namespaced data isolation (CIU-23)
-
-`worktree add --data-isolation <profile>` provisions a database/schema
-namespaced by the new instance's own `INSTANCE_ID` (S2) — NEVER by its
-`NAME` — via an injectable `DataIsolationProvisioner` (a `Protocol`
-implemented by `worktree.PostgresProvisioner`, the real Postgres-backed
-shipped default). Naming by `INSTANCE_ID` rather than `NAME` is load-bearing:
-`INSTANCE_ID` is a hash of the PHYSICAL repo path, so two different CLONES of
-the repo that independently choose the SAME worktree name get different
-`INSTANCE_ID`s and therefore never collide on one entity — a name-keyed
-scheme would.
-
-The resulting connection identity (entity name, profile, DSN) is written into
-the new worktree's own `ciu.env` as `CIU_DATA_ISOLATION_ENTITY` /
-`CIU_DATA_ISOLATION_PROFILE` / `CIU_DATA_ISOLATION_DSN`. **This value MAY be
-credential-bearing** (a DSN can embed a database user/host/name) and MUST
-NEVER be recommended as an `env_passthrough` candidate for a consumer's own
-assay lane — a passthrough value lands in every verdict artifact in
-cleartext.
-
-`worktree rm` drops the namespaced entity BEFORE `ciu clean` (extending the
-module's clean-before-remove ordering to a second precondition). The drop is
-IDEMPOTENT: dropping an already-absent entity is a no-op success, which is
-what makes a RETRIED `worktree rm` safe after a prior partial failure — if
-the drop succeeded on an earlier attempt but `ciu clean` then failed and
-aborted removal, the checkout and its `ciu.env` (naming the now-dead DSN)
-remain; the retried `rm` re-runs the drop as a no-op, then retries `ciu
-clean`. A FAILED drop aborts removal unless `--force`. Unlike `worktree
-rm`'s existing `--force` path over a failed `ciu clean` (which proceeds
-silently), a `--force`-masked drop failure WARNS, naming the entity that was
-not dropped and stating it is now the operator's problem — it is not mirrored
-from the existing silent path, it improves on it.
-
-The injectable provisioner is deliberately the test seam: this package's gate
-(`tester-unified:local`) has no live Postgres server, so naming, ordering,
-force semantics, and the idempotent-retry contract are proven against a FAKE
-implementation of `DataIsolationProvisioner`. A real-server proof against the
-shipped `PostgresProvisioner` is deliberately deferred — tracked as CIU-26.
 
 ### S16.3 — Worktree instance concurrency budget (CIU-24)
 
@@ -2354,7 +2313,7 @@ the count/start decision any safer.
 
 The gate (`tester-unified:local`) has no Docker socket, so the classifier,
 the lock discipline, and both engine call sites are proven against the same
-scripted `worktree.procutil.docker` fake S16.1 and S16.2's tests use; the
+scripted `worktree.procutil.docker` fake S16.1's tests use; the
 lock's held-continuously-across-the-executor discipline is proven by wrapping
 the real `fcntl.flock` and recording every transition, and genuine two-thread
 contention (real `fcntl.flock`, no sleeps) proves the second waiter of two

@@ -17,9 +17,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
-| CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWAL APPROVED — implementation in Package A |
+| CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
 | CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | OPEN — later milestone |
-| CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE ON CIU-23 WITHDRAWAL |
+| CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | OPEN — current Package B |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — current Package C |
 
@@ -45,8 +45,8 @@ available from the selected worktree or its configuration.
 
 ## CIU-23 — withdraw PostgreSQL-specific data isolation
 
-**Disposition:** WITHDRAWAL APPROVED on 2026-08-17. Package A removes the
-implementation and changes this status to WITHDRAWN.
+**Disposition:** WITHDRAWN on 2026-08-17. Package A removed the implementation
+after re-verification disproved its consumer premise.
 
 ### What was claimed
 
@@ -113,12 +113,12 @@ not itself permission to reap.
 
 ## CIU-26 — deferred PostgreSQL proof
 
-**Disposition:** OBSOLETE ON CIU-23 WITHDRAWAL.
+**Disposition:** OBSOLETE on 2026-08-17 because CIU-23 was withdrawn.
 
 CIU-26 asked for a live PostgreSQL proof of the default provider. Building that
 lane would validate an unused, incorrectly grounded abstraction. Package A
-instead removes the provider. When removal lands, CIU-26 closes as OBSOLETE,
-not FIXED: no live-provider claim remains to prove.
+removed the provider. CIU-26 is therefore OBSOLETE, not FIXED: no
+live-provider claim remains to prove.
 
 ## CIU-28 — automation-safe worktree identity and lifecycle
 

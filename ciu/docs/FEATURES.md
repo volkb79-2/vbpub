@@ -76,7 +76,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, remove, or list isolated CIU instances | `add NAME --base REF --profile P1,P2`; `rm NAME -y`; `list`; optional data isolation/shared infra (S16) |
+| `ciu worktree` | Create, remove, or list isolated CIU instances | `add NAME --base REF --profile P1,P2`; `rm NAME -y`; `list`; optional shared infrastructure (S16) |
 | `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
@@ -151,9 +151,6 @@ ciu worktree rm feature-x -y
 For a diverging application tier that shares already-running identity, secret,
 or observability services, use `worktree add --shared-infra ...` exactly as
 shown in [CONFIG.md's shared-infra example](CONFIG.md#shared-infra-join-example-s161).
-For per-instance database/schema provisioning, add `--data-isolation <profile>`.
-The emitted `CIU_DATA_ISOLATION_DSN` can be credential-bearing: do not pass it
-to an assay or other evidence tool as an environment capture.
 
 This makes CIU a useful companion to **nyxloom** for parallel implementation
 work and to **assay** for proving a live lane exercised the intended image.

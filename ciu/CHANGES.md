@@ -7,6 +7,16 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## Unreleased
+
+### Removed
+
+- **Breaking:** withdrew the unused `ciu worktree add --data-isolation` API,
+  `DataIsolationProvisioner`, and `PostgresProvisioner`. CIU-23 was based on an
+  incorrect description of dstdns's schema gate: that consumer deliberately
+  uses a disposable PostgreSQL container and never adopted CIU's shared-server
+  provider. CIU-26 is consequently obsolete rather than fixed.
+
 ## [6.0.3] - 2026-08-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=5681b42b5b8e2a21acfbd6b5578e5bd26f293118 -->
@@ -177,4 +187,3 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 - Applied `standalone_root` consistently to render operations and corrected
   stale physical-root detection in Docker-outside-of-Docker environments.
-
