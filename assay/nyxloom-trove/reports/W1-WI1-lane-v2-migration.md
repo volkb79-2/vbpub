@@ -173,20 +173,50 @@ commit lands, and was re-verified green post-commit (see §6).
 
 ## 6. Final state
 
+Commit `c56a13ea3434cfc3b471d05042272f0882921413`.
+
 Full suite, post-commit, `PYTHONPATH=src python3 -m pytest tests -q -p
 no:randomly --override-ini=pythonpath=`:
 
 ```
-2606 passed, 11 skipped, 1 warning in <duration>s
+2591 passed, 11 skipped, 1 warning in 184.34s (0:03:04)
 ```
 
 (2532 baseline + 42 new tests in `test_config_snapshot_selection.py` + 17 new
-tests in `test_lane_schema_v2_locked_successors.py` = 2591; the exact final
-count is pasted from the real post-commit run in the work item's report.)
+tests in `test_lane_schema_v2_locked_successors.py` = 2591, exactly.)
 
-Both frozen modules, deselections applied: unchanged from §3 (25 passed / 16
-deselected; 39 passed / 5 deselected). The nine successor tests: 17 passed
+Pre-commit, the identical run showed one additional, TRANSIENT failure
+(`test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane`, §5); it is
+absent from this post-commit run, confirmed by re-running that single node
+in isolation post-commit (`1 passed`).
+
+Both frozen modules, deselections applied, re-verified post-commit:
+unchanged from §3 (`25 passed, 16 deselected in 0.65s`; `39 passed, 5
+deselected in 11.21s`). The nine successor tests, post-commit: `17 passed`
 (9 named successors + 8 parametrized instances of the closed-attestation
-successor).
+successor). O1's exact command, post-commit: `28 passed` followed by the
+exact marker `ASSAY_B006A_CONFIG=1`.
 
-Zero unexplained red. The one pre-existing skip is unchanged and untouched.
+Coverage, full suite, `coverage run --branch --source=assay.config -m
+pytest tests -q ...` then `coverage report -m --include="*/assay/config.py"`:
+
+```
+Name                  Stmts   Miss Branch BrPart  Cover   Missing
+-----------------------------------------------------------------
+src/assay/config.py     570     15    310     13    97%   1091, 1097-1098, 1103, 1108, 1112, 1116, 1133, 1146, 1159, 1171, 1300, 1305, 1465, 1471
+```
+
+Every one of those 14 missing-line numbers (and their 0 associated missing
+branches -- checked via `coverage json`) falls in PRE-EXISTING `judge.
+attestation_dir`/`judge.evidence` validation code the P26 acceptance suite
+covers when run with `ASSAY_P26_PROJECT_ROOT` set (this `tests/` run does
+not import that module); none falls inside the two new-code ranges this work
+item added (`_validate_omission_path`/`IsolationConfig` at lines 407-521,
+`_load_isolation_for_lane`/`_load_isolation` at lines 864-928). Verified by
+querying `coverage json`'s `missing_lines`/`missing_branches` against both
+ranges directly: both empty. **100% line and branch coverage on every line
+this work item added, zero `pragma: no cover`.**
+
+Zero unexplained red. The one pre-existing skip
+(`test_standalone.py::test_a_real_pass_matches_the_documented_r0_pass_shape`)
+is unchanged and untouched.
