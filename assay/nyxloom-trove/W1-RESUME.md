@@ -106,11 +106,16 @@ immutable.
 
 ## Remaining, in order
 
-1. **Review round 2-of-3 on the revised §1** (fresh Opus, no inherited context;
-   codex is unavailable). If READY → dispatch WI-1. If NOT READY → fold the
-   findings in, then ONE more round. After that round, stop and report.
-   Dispatching WI-1 without a READY verdict is allowed only if the remaining
-   findings are all non-blocking.
+1. **Review round 2-of-3 on the revised §1 — IN FLIGHT** (fresh Opus, no
+   inherited context; codex is unavailable). Dispatched at `465393d3` and told
+   not to re-report the 8 already folded in, but to ask whether each fix worked
+   or merely relocated the problem, what the fixes introduced, and whether
+   CMRU's real R1/R2/R3 lane is actually achievable. It was also asked to test
+   the `skip-worktree` mechanism ruling empirically in a scratch repo, since
+   §1.3 now states it as measured fact.
+   If READY → dispatch WI-1. If NOT READY → fold the findings in, then ONE more
+   round; after that, stop and report. Dispatching WI-1 without a READY verdict
+   is allowed only if every remaining finding is non-blocking.
 2. **WI-1a/1b/1c** — project-scoped snapshot: config + `ResolvedSnapshotBoundary`,
    isolation materialisation, runner preflight. Three commits.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
