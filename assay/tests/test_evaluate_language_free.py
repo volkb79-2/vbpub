@@ -64,7 +64,7 @@ def test_a_non_python_extension_and_synthetic_syntax_reaches_the_same_result():
     result = _evaluate(added, profile, adapter)
 
     assert result.covered == 1
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.pct == 50.0
     assert result.outcome is Outcome.FAIL
 
@@ -81,7 +81,7 @@ def test_a_file_extension_the_adapter_does_not_recognise_is_invisible():
     result = _evaluate(added, profile, adapter)
 
     assert result.considered == 0
-    assert result.changed_executable == 0
+    assert result.executable == 0
     assert result.pct == 100.0
     assert result.outcome is Outcome.PASS
 
@@ -105,7 +105,7 @@ def test_a_test_path_per_the_adapters_own_rule_is_excluded():
     result = _evaluate(added, profile, adapter)
 
     assert result.considered == 0
-    assert result.changed_executable == 0
+    assert result.executable == 0
     assert result.outcome is Outcome.PASS  # would be FAIL if the test file counted
 
 
@@ -184,7 +184,7 @@ def test_normalize_coverage_key_reconciles_a_language_specific_prefix():
     result = _evaluate(added, profile, adapter)
 
     assert result.covered == 2
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.outcome is Outcome.PASS
 
 
@@ -230,7 +230,7 @@ def test_a_considered_file_missing_from_coverage_with_real_code_is_flagged():
 
     assert result.files_missing_coverage == ("pkg/mod.zzz",)
     assert result.missing_lines == {"pkg/mod.zzz": frozenset({2, 3})}
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.covered == 0
     assert result.considered == 1
     assert result.outcome is Outcome.FAIL
@@ -253,7 +253,7 @@ def test_a_considered_file_missing_from_coverage_with_no_code_is_not_flagged():
 
     assert result.files_missing_coverage == ()
     assert result.missing_lines == {}
-    assert result.changed_executable == 0
+    assert result.executable == 0
     assert result.considered == 1  # still considered -- just contributes 0/0
     assert result.outcome is Outcome.PASS
 

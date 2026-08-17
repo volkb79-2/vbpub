@@ -26,7 +26,7 @@ import pytest
 
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.output import reserve_verdict_output
-from assay.verdict import Claim, Verdict
+from assay.verdict import Claim, SnapshotPolicy, Verdict
 from assay import runner
 
 VERSION = "0.1.0"
@@ -86,6 +86,7 @@ def _no_measurement_verdict() -> Verdict:
                 reason_code=ReasonCode.DIRTY_TREE,
             ),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
 
 

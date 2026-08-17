@@ -76,7 +76,7 @@ def test_the_hello_world_fixture_produces_the_exact_expected_mapping():
     )
 
     assert result.considered == 2
-    assert result.changed_executable == 4  # {29, 30, 36, 37}
+    assert result.executable == 4  # {29, 30, 36, 37}
     assert result.covered == 2  # {29, 30}
     assert result.pct == 50.0
     assert result.missing_lines == {"hello/hello.go": frozenset({36, 37})}
@@ -191,5 +191,5 @@ def test_normalize_coverage_key_reconciles_the_real_pipeline_end_to_end():
     )
 
     assert result.covered == 1
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.missing_lines == {"internal/x.go": frozenset({3})}

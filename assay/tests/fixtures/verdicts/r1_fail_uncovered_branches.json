@@ -1,0 +1,92 @@
+{
+  "schema_version": 6,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "777777777777777777777777777777777777777a",
+  "outcome": "FAIL",
+  "exit_code": 1,
+  "started": "2026-08-16T15:00:00+00:00",
+  "ended": "2026-08-16T15:00:01+00:00",
+  "reason_code": "UNCOVERED_BRANCHES",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ],
+      "base": "000000000000000000000000000000000000000a"
+    },
+    "r1": {
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": "cov.json",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "mode": "changed_lines",
+      "require_branch": false
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "UNCOVERED_BRANCHES",
+      "coverage": {
+        "covered": 2,
+        "executable": 2,
+        "pct": 75.0,
+        "considered": 1,
+        "exclusion_capability": "reported",
+        "missing_lines": {},
+        "files_missing_coverage": [],
+        "unclassified_lines": {},
+        "files_with_unclassified_lines": [],
+        "excluded_lines": {},
+        "files_with_excluded_lines": [],
+        "branches_covered": 1,
+        "branches_total": 2,
+        "branch_capability": "reported",
+        "missing_branch_lines": {
+          "pkg/mod.py": [
+            5
+          ]
+        },
+        "files_with_missing_branch_lines": [
+          "pkg/mod.py"
+        ]
+      }
+    }
+  ],
+  "evidence": []
+}

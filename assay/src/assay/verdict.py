@@ -63,7 +63,13 @@ from importlib.resources import files
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from .config import ENFORCEMENTS, RIGOR_LEVELS, SCOPES
+from .config import (
+    ENFORCEMENTS,
+    JUDGE_MODES,
+    RIGOR_LEVELS,
+    SCOPES,
+    SNAPSHOT_SELECTIONS,
+)
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
 from .vocabulary import (
     MUTATION_OPERATORS,
@@ -72,11 +78,13 @@ from .vocabulary import (
 )
 
 __all__ = [
+    "BRANCH_CAPABILITIES",
     "CLAIM_SOURCES",
     "EVIDENCE_SOURCES",
     "EXCLUSION_CAPABILITIES",
     "EXIT_CODES",
     "HELPER_ROLES",
+    "JUDGE_MODES",
     "KILL_ATTRIBUTIONS",
     "MUTATION_BUCKETS",
     "MUTATION_OPERATORS",
@@ -85,6 +93,7 @@ __all__ = [
     "REASON_CODES",
     "ROLLUP_PRECEDENCE",
     "SCHEMA_RESOURCE",
+    "SNAPSHOT_SELECTIONS",
     "VERDICT_SCHEMA_VERSION",
     "CanaryResult",
     "Claim",
@@ -99,6 +108,7 @@ __all__ = [
     "JudgmentResolved",
     "Mutation",
     "MutantOutcome",
+    "SnapshotPolicy",
     "operator_language",
     "Outcome",
     "ReasonCode",
@@ -139,7 +149,32 @@ __all__ = [
 #: `kill_attribution`; and a new optional top-level `helpers` records what an
 #: adapter actually invoked. Still exactly ONE active schema per build
 #: (A-170): a v4 artifact is refused on its version, never upgraded in place.
-VERDICT_SCHEMA_VERSION = 5
+#:
+#: Bumped 5 -> 6 (wave-1 §4/§5/§6, A-261, hard cut): branch coverage is
+#: judged whenever the artifact reports it (A-258), which changes what PASS
+#: means for an existing R1 lane -- precisely why this is a major bump and
+#: not an additive one. `coverage.changed_executable` is renamed
+#: `executable` (A-262: under the new whole-target mode the denominator is a
+#: target's executable lines, which were not "changed" by anything).
+#: `coverage` gains `branches_covered`/`branches_total`/`branch_capability`/
+#: `missing_branch_lines`/`files_with_missing_branch_lines`. `judgment.r1`
+#: gains required `mode`/`require_branch` and conditionally-required
+#: `targets` (B005, A-260), and now survives two payload-free R1 terminals
+#: -- `BRANCH_UNAVAILABLE`/`TARGET_NOT_MEASURED` -- widening the "present
+#: iff a coverage payload" rule the same way A-183 already widened R2's
+#: (A-264). `judgment.resolved.base` becomes conditional on R1's MODE, not
+#: merely its presence: forbidden for a whole-target R1 with no R2.
+#: `reason_code` gains three members: `UNCOVERED_BRANCHES`,
+#: `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`. A new top-level
+#: `snapshot_policy` (B006(a)/A-269, `W1-CARVE-B006a-project-scope.md` §5)
+#: records the lane-selected repository snapshot materialisation policy --
+#: required whenever `declared_rigor` contains R1, R2 or R3, absent
+#: otherwise; it replaces the withdrawn `isolation` object this wave's own
+#: first design specified (A-269 supersedes A-266/A-267/A-268 in full). No
+#: dual-version verifier, no compatibility shim (A-170's rule, restated):
+#: producers emit v6 only, and `assay verify` refuses v5 exactly as it
+#: refuses v4 today.
+VERDICT_SCHEMA_VERSION = 6
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -149,6 +184,15 @@ VERDICT_SCHEMA_VERSION = 5
 #: exclusion set serialised identically, so a reader could not tell a clean
 #: lane from a blind format (A-O16).
 EXCLUSION_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
+
+#: (wave-1 §3.2/§4, A-257) the closed R1 branch-capability vocabulary,
+#: mirroring :data:`EXCLUSION_CAPABILITIES` exactly -- a DIFFERENT
+#: vocabulary about a different capability, kept as its own named constant
+#: rather than reusing the tuple even though the two happen to share values
+#: today. `"unavailable"` means the coverage FORMAT cannot express branch
+#: arcs at all (`go-cover`, always); `"reported"` means it can, and
+#: truthfully reported some or none.
+BRANCH_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 
 #: (P33/V5-4) the closed kill-attribution vocabulary. `declared` means the
 #: run named the mechanism that refused each kill, via the lane's declared
@@ -483,9 +527,24 @@ class Coverage:
     """
 
     covered: int
-    changed_executable: int
+    #: (wave-1 §6, A-262) renamed from ``changed_executable``: under B005's
+    #: whole-target mode the denominator is a target's executable lines,
+    #: which were not "changed" by anything, so the old name would put a
+    #: false statement on the wire. The rename is taken now because a major
+    #: bump is the only honest moment for it.
+    executable: int
+    #: (wave-1 §6, A-263) the COMBINED line+branch percentage: ``(covered +
+    #: branches_covered) / (executable + branches_total)`` -- exactly
+    #: ``coverage.py``'s own ``summary.percent_covered`` under
+    #: ``--cov-branch``. ``covered``/``executable`` stay line-only; the
+    #: branch side gets its own two integers below, so an independent
+    #: consumer can still re-derive ``pct`` from the payload alone. When
+    #: ``branch_capability`` is ``"unavailable"``, ``branches_total`` is 0
+    #: and the formula degenerates to today's line-only value with no
+    #: special case.
     pct: float
     #: changed files under the source roots that were considered at all
+    #: (whole-target mode: the number of declared TARGETS judged, §5 rule 6)
     considered: int
     #: (P21/A-183) whether the coverage FORMAT could report exclusions at
     #: all -- `"reported"` or `"unavailable"`, never inferred from whether
@@ -529,9 +588,38 @@ class Coverage:
     #: :attr:`files_missing_coverage`/:attr:`files_with_unclassified_lines`
     #: already established.
     files_with_excluded_lines: tuple[str, ...] = ()
+    #: (wave-1 §6, A-257/A-263) branch arcs COVERED across every branch
+    #: source line this claim's mode counted. Zero when
+    #: :attr:`branch_capability` is ``"unavailable"``, with no special case
+    #: (the ``allOf`` in the shipped schema states the same rule, mirroring
+    #: :meth:`_check_capability_agrees_with_detail`'s exclusion analogue).
+    branches_covered: int = 0
+    #: (wave-1 §6) branch arcs this claim's mode counted in total. Zero when
+    #: :attr:`branch_capability` is ``"unavailable"``.
+    branches_total: int = 0
+    #: (wave-1 §6, A-257) whether the coverage FORMAT could report branch
+    #: arcs at all -- ``"reported"`` or ``"unavailable"``, never inferred
+    #: from whether :attr:`branches_total` happens to be zero. Defaults to
+    #: ``"unavailable"`` with zero arcs so every producer written before
+    #: this wave continues to build a valid, schema-conformant
+    #: :class:`Coverage` (the identical additive-field discipline P07/P16
+    #: already established for :attr:`unclassified_lines`/
+    #: :attr:`excluded_lines`) -- but the OUTPUT always carries all five
+    #: branch fields (:meth:`to_dict` always emits them), never
+    #: conditionally omitted.
+    branch_capability: str = "unavailable"
+    #: (wave-1 §6) counted, branch-source lines with at least one uncovered
+    #: arc, keyed by path -- same "absent means none" shape as
+    #: :attr:`missing_lines`. A file contributing none is absent, never
+    #: present with an empty frozenset.
+    missing_branch_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    #: (wave-1 §6) paths appearing in :attr:`missing_branch_lines`, sorted --
+    #: the same "always present, possibly empty, sorted" discipline every
+    #: other ``files_with_*`` summary in this class already keeps.
+    files_with_missing_branch_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("covered", "changed_executable", "considered"):
+        for name in ("covered", "executable", "considered"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"coverage.{name} must be an integer, got {value!r}")
@@ -543,16 +631,26 @@ class Coverage:
             raise ValueError(
                 f"coverage.pct must be a percentage between 0 and 100, got {self.pct}"
             )
-        if self.covered > self.changed_executable:
+        if self.covered > self.executable:
             raise ValueError(
-                f"coverage.covered ({self.covered}) exceeds changed_executable "
-                f"({self.changed_executable})"
+                f"coverage.covered ({self.covered}) exceeds executable "
+                f"({self.executable})"
             )
         if self.exclusion_capability not in EXCLUSION_CAPABILITIES:
             raise ValueError(
                 f"coverage.exclusion_capability must be one of "
                 f"{list(EXCLUSION_CAPABILITIES)}, got "
                 f"{self.exclusion_capability!r}"
+            )
+        if self.branch_capability not in BRANCH_CAPABILITIES:
+            raise ValueError(
+                f"coverage.branch_capability must be one of "
+                f"{list(BRANCH_CAPABILITIES)}, got {self.branch_capability!r}"
+            )
+        if self.branches_covered > self.branches_total:
+            raise ValueError(
+                f"coverage.branches_covered ({self.branches_covered}) exceeds "
+                f"branches_total ({self.branches_total})"
             )
         _check_line_location_mapping(self.missing_lines, "coverage.missing_lines")
         _check_file_tuple(self.files_missing_coverage, "coverage.files_missing_coverage")
@@ -567,35 +665,46 @@ class Coverage:
         _check_file_tuple(
             self.files_with_excluded_lines, "coverage.files_with_excluded_lines"
         )
+        _check_line_location_mapping(
+            self.missing_branch_lines, "coverage.missing_branch_lines"
+        )
+        _check_file_tuple(
+            self.files_with_missing_branch_lines,
+            "coverage.files_with_missing_branch_lines",
+        )
 
         # P16 (sol finding 2): the arithmetic no earlier package enforced —
         # a `Coverage` reporting `PASS` at 0% simply disagreed with its own
-        # `covered`/`changed_executable`, and construction accepted it.
-        # `pct` is DERIVED, never independently supplied.
+        # `covered`/`executable`, and construction accepted it. `pct` is
+        # DERIVED, never independently supplied. wave-1/A-263: the
+        # denominator/numerator are now the COMBINED line+branch values.
+        combined_denominator = self.executable + self.branches_total
         expected_pct = (
             100.0
-            if self.changed_executable == 0
-            else 100.0 * self.covered / self.changed_executable
+            if combined_denominator == 0
+            else 100.0 * (self.covered + self.branches_covered) / combined_denominator
         )
         if abs(float(self.pct) - expected_pct) > 1e-9:
             raise ValueError(
                 f"coverage.pct {self.pct} does not agree with "
-                f"covered/changed_executable "
-                f"({self.covered}/{self.changed_executable} = {expected_pct}); "
-                f"pct is derived from those two fields, never independently "
+                f"(covered + branches_covered)/(executable + branches_total) "
+                f"({self.covered}+{self.branches_covered})/"
+                f"({self.executable}+{self.branches_total}) = {expected_pct}); "
+                f"pct is derived from those four fields, never independently "
                 f"supplied"
             )
         total_missing = sum(len(lines) for lines in self.missing_lines.values())
-        if total_missing != self.changed_executable - self.covered:
+        if total_missing != self.executable - self.covered:
             raise ValueError(
                 f"coverage.missing_lines names {total_missing} line(s) total, "
-                f"but changed_executable - covered = "
-                f"{self.changed_executable - self.covered}; the per-file "
+                f"but executable - covered = "
+                f"{self.executable - self.covered}; the per-file "
                 f"detail must sum to the summary"
             )
         self._check_buckets_pairwise_disjoint()
         self._check_summaries_name_their_own_detail()
         self._check_capability_agrees_with_detail()
+        self._check_branch_capability_agrees_with_detail()
 
     def _check_capability_agrees_with_detail(self) -> None:
         """(P21/A-183) `"unavailable"` carries NO exclusion detail.
@@ -616,6 +725,35 @@ class Coverage:
                 f"{sorted(self.excluded_lines)}/"
                 f"{list(self.files_with_excluded_lines)}; a format that "
                 f"cannot report exclusions cannot have reported any"
+            )
+
+    def _check_branch_capability_agrees_with_detail(self) -> None:
+        """(wave-1 §6, A-257) `"unavailable"` carries no branch detail at
+        all -- `branches_total`/`branches_covered` are zero and
+        `missing_branch_lines`/`files_with_missing_branch_lines` are empty.
+        The converse is deliberately NOT a rule (the schema's own `allOf`
+        states the same, one-directional): `"reported"` with zero arcs is a
+        capable format that truthfully found none on the lines this claim
+        counted, and forbidding it would re-collapse the distinction A-008
+        keeps -- the exact reasoning
+        :meth:`_check_capability_agrees_with_detail` already gives for
+        exclusions, one field over.
+        """
+        if self.branch_capability != "unavailable":
+            return
+        if (
+            self.branches_total
+            or self.branches_covered
+            or self.missing_branch_lines
+            or self.files_with_missing_branch_lines
+        ):
+            raise ValueError(
+                f"coverage.branch_capability is 'unavailable' but the "
+                f"payload names branch data (branches_total="
+                f"{self.branches_total}, branches_covered="
+                f"{self.branches_covered}, missing_branch_lines="
+                f"{sorted(self.missing_branch_lines)}); a format that cannot "
+                f"report branch arcs cannot have reported any"
             )
 
     def _check_summaries_name_their_own_detail(self) -> None:
@@ -656,6 +794,12 @@ class Coverage:
                 "excluded_lines",
                 self.files_with_excluded_lines,
                 "files_with_excluded_lines",
+            ),
+            (
+                self.missing_branch_lines,
+                "missing_branch_lines",
+                self.files_with_missing_branch_lines,
+                "files_with_missing_branch_lines",
             ),
         ):
             expected = tuple(sorted(mapping))
@@ -704,7 +848,7 @@ class Coverage:
     def to_dict(self) -> dict[str, Any]:
         return {
             "covered": self.covered,
-            "changed_executable": self.changed_executable,
+            "executable": self.executable,
             "pct": float(self.pct),
             "considered": self.considered,
             "exclusion_capability": self.exclusion_capability,
@@ -723,6 +867,16 @@ class Coverage:
                 for path, lines in sorted(self.excluded_lines.items())
             },
             "files_with_excluded_lines": list(self.files_with_excluded_lines),
+            "branches_covered": self.branches_covered,
+            "branches_total": self.branches_total,
+            "branch_capability": self.branch_capability,
+            "missing_branch_lines": {
+                path: sorted(lines)
+                for path, lines in sorted(self.missing_branch_lines.items())
+            },
+            "files_with_missing_branch_lines": list(
+                self.files_with_missing_branch_lines
+            ),
         }
 
 
@@ -1252,12 +1406,31 @@ class JudgmentR1:
     what left were facts about the lane that every computed tier above R0
     consumes, and keeping them in the R1 tier made them unrecordable for a
     lane that declares no R1.
+
+    **wave-1 §6 (A-260) adds ``mode``, ``targets`` and ``require_branch``.**
+    ``mode`` is REQUIRED here even though it is OPTIONAL in the lane file:
+    the lane file records what a human declared; this records what
+    actually judged (P16, sol finding 2's own asymmetry). ``targets`` is
+    required, non-empty, unique and SORTED iff ``mode = "whole_target"``,
+    and forbidden otherwise. ``require_branch`` records the EFFECTIVE
+    policy the same way ``allow_excluded`` already does.
     """
 
     coverage_format: str
     coverage_artifact: str
     fail_under: float
     allow_excluded: bool
+    #: (wave-1 §6, A-260) defaults to ``"changed_lines"`` -- the only mode
+    #: that existed before this wave, and the faithful historical value for
+    #: every producer written before this field existed.
+    mode: str = "changed_lines"
+    #: (wave-1 §6) required, non-empty, unique, sorted iff
+    #: ``mode == "whole_target"``; ``None`` otherwise.
+    targets: tuple[str, ...] | None = None
+    #: (wave-1 §4/§6, A-259) the EFFECTIVE ``judge.require_branch`` policy --
+    #: defaults to ``False``, the value every lane declared before this
+    #: field existed.
+    require_branch: bool = False
 
     def __post_init__(self) -> None:
         _check_nonempty(self.coverage_format, "judgment.r1.coverage_format")
@@ -1278,14 +1451,56 @@ class JudgmentR1:
                 f"judgment.r1.allow_excluded must be a boolean, got "
                 f"{self.allow_excluded!r}"
             )
+        if self.mode not in JUDGE_MODES:
+            raise ValueError(
+                f"judgment.r1.mode must be one of {list(JUDGE_MODES)}, got "
+                f"{self.mode!r}"
+            )
+        if not isinstance(self.require_branch, bool):
+            raise ValueError(
+                f"judgment.r1.require_branch must be a boolean, got "
+                f"{self.require_branch!r}"
+            )
+        if self.mode == "whole_target":
+            if (
+                not isinstance(self.targets, tuple)
+                or not self.targets
+            ):
+                raise ValueError(
+                    f"judgment.r1.targets must be a non-empty tuple when "
+                    f"mode is 'whole_target', got {self.targets!r}"
+                )
+            for target in self.targets:
+                _check_wire_path(target, "judgment.r1.targets entry")
+            if len(set(self.targets)) != len(self.targets):
+                raise ValueError(
+                    f"judgment.r1.targets contains a duplicate: "
+                    f"{list(self.targets)}"
+                )
+            if list(self.targets) != sorted(self.targets):
+                raise ValueError(
+                    f"judgment.r1.targets must be sorted, got "
+                    f"{list(self.targets)}"
+                )
+        elif self.targets is not None:
+            raise ValueError(
+                f"judgment.r1.targets is present ({list(self.targets)}) but "
+                f"mode is {self.mode!r}, not 'whole_target' -- targets "
+                f"describes nothing outside whole-target mode"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "coverage_format": self.coverage_format,
             "coverage_artifact": self.coverage_artifact,
             "fail_under": float(self.fail_under),
             "allow_excluded": self.allow_excluded,
+            "mode": self.mode,
+            "require_branch": self.require_branch,
         }
+        if self.targets is not None:
+            payload["targets"] = list(self.targets)
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1495,25 +1710,29 @@ class Judgment:
                 "judgment declares none of r1/r2/r3 -- an empty judgment "
                 "records no policy and should be omitted (None) instead"
             )
-        # A-223a/A-227: `base` is required IF r1|r2 and forbidden UNLESS
-        # r1|r2. Both halves, because each is a different lie: a missing base
-        # on an R2 lane hides the commit mutation was scoped against, and a
-        # present base on an r3-only judgment records a comparison commit no
-        # tier in it reads.
-        compares_a_base = self.r1 is not None or self.r2 is not None
+        # A-223a/A-227, widened by wave-1 §6 (A-260): `base` is required IF
+        # r2, OR r1 with mode="changed_lines" -- and forbidden UNLESS one of
+        # those. A whole-target R1 with no R2 resolves NOTHING against a
+        # base (B005's whole point: judgeable from any commit including a
+        # post-merge main), so recording one there would imply a comparison
+        # that never happened; R2 still requires it independently, so an
+        # R0,R1,R2 lane in whole-target mode still declares and records one.
+        compares_a_base = self.r2 is not None or (
+            self.r1 is not None and self.r1.mode == "changed_lines"
+        )
         if compares_a_base and self.resolved.base is None:
             raise ValueError(
-                "judgment carries r1 or r2 but judgment.resolved records no "
-                "base -- both tiers are scoped to changed lines against a "
-                "resolved comparison commit, so omitting it leaves the "
-                "judgment unre-derivable"
+                "judgment carries r2, or r1 in changed-line mode, but "
+                "judgment.resolved records no base -- both are scoped to "
+                "changed lines against a resolved comparison commit, so "
+                "omitting it leaves the judgment unre-derivable"
             )
         if not compares_a_base and self.resolved.base is not None:
             raise ValueError(
-                f"judgment carries neither r1 nor r2 yet judgment.resolved "
-                f"records base {self.resolved.base!r} -- JUDGE_FIELDS_BY_RIGOR "
-                f"gives R3 no base, so a comparison commit here describes a "
-                f"comparison nothing in this judgment made"
+                f"judgment.resolved records base {self.resolved.base!r} but "
+                f"judgment carries neither r2 nor r1 in changed-line mode -- "
+                f"a whole-target R1 with no R2 resolves nothing against a "
+                f"base, and R3 alone never has one either"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1623,6 +1842,29 @@ class Claim:
 
         self._check_a_judged_status_carries_its_own_payload()
         self._check_mutation_terminal_correspondence()
+        self._check_r1_only_reason_codes()
+
+    def _check_r1_only_reason_codes(self) -> None:
+        """(wave-1 §4/§5, A-259/A-260) ``BRANCH_UNAVAILABLE`` and
+        ``TARGET_NOT_MEASURED`` are read off R1's own guard sequence and
+        nowhere else -- the identical reasoning
+        :meth:`_check_mutation_terminal_correspondence` already gives for
+        binding ``MUTATION_UNSUPPORTED``/``MUTATION_DISCOVERY_FAILED`` to
+        R2, one tier over. Both are payload-free by construction (guarded
+        before :func:`assay.evaluate.evaluate_coverage`/``evaluate_targets``
+        ever runs), so this only needs to bind the RIGOR -- the payload
+        constraint is already enforced above (NO_MEASUREMENT carries no
+        coverage payload at all).
+        """
+        if self.reason_code in (
+            ReasonCode.BRANCH_UNAVAILABLE,
+            ReasonCode.TARGET_NOT_MEASURED,
+        ):
+            if self.rigor != "R1":
+                raise ValueError(
+                    f"claim[{self.rigor}]: {self.reason_code.value} describes "
+                    f"R1's own measurability guards and belongs to the R1 claim"
+                )
 
     def _check_mutation_terminal_correspondence(self) -> None:
         """(P21/A-163/A-183) the three R2 terminals that are ABOUT a payload
@@ -1937,6 +2179,88 @@ class Helper:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SnapshotPolicy:
+    """(B006(a)/A-269, ``W1-CARVE-B006a-project-scope.md`` §5) the
+    lane-selected initial worktree materialisation policy -- a POLICY
+    record, never a claim that materialisation reached any particular
+    phase. Replaces the withdrawn ``isolation`` object this wave's own
+    first design specified (A-266/A-267/A-268 are superseded in full by
+    A-269 for exactly this shape).
+
+    Whenever a higher-rigor command unit actually ran -- whether its
+    eventual judged claim passed or failed -- the materialiser consumed the
+    SAME immutable policy object recorded here (an end-to-end differential
+    test proves that wiring; this class does not and cannot). On an early
+    refusal it truthfully records only the policy under which assay
+    attempted or refused the lane; the refusal does not masquerade as a
+    completed snapshot. There is deliberately no
+    ``materialisation: none|partial|complete`` field: the runner's shared
+    exception state cannot distinguish those phases at every producer site
+    (the withdrawn design's own underivability defect), and this design does
+    not need one -- ``snapshot_policy`` says what was SELECTED, while
+    ``claims``/``outcome`` already say whether a measurement completed.
+    """
+
+    #: mirrors :data:`assay.config.SNAPSHOT_SELECTIONS` exactly.
+    selection: str
+    #: required, non-empty, 1..64 entries, strictly ascending by UTF-8
+    #: bytes iff ``selection == "repository-minus-unsafe-symlinks"``;
+    #: forbidden (``None``) under ``"repository"``.
+    unsafe_symlink_omissions: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.selection not in SNAPSHOT_SELECTIONS:
+            raise ValueError(
+                f"snapshot_policy.selection must be one of "
+                f"{sorted(SNAPSHOT_SELECTIONS)}, got {self.selection!r}"
+            )
+        if self.selection == "repository":
+            if self.unsafe_symlink_omissions is not None:
+                raise ValueError(
+                    f"snapshot_policy.unsafe_symlink_omissions is present "
+                    f"({list(self.unsafe_symlink_omissions)}) under "
+                    f"selection = 'repository', where it is forbidden"
+                )
+            return
+        # selection == "repository-minus-unsafe-symlinks"
+        omissions = self.unsafe_symlink_omissions
+        if not isinstance(omissions, tuple) or not (1 <= len(omissions) <= 64):
+            raise ValueError(
+                f"snapshot_policy.unsafe_symlink_omissions must be a tuple "
+                f"of 1..64 entries under selection = "
+                f"'repository-minus-unsafe-symlinks', got {omissions!r}"
+            )
+        encoded: list[bytes] = []
+        for index, path in enumerate(omissions):
+            what = f"snapshot_policy.unsafe_symlink_omissions[{index}]"
+            _check_wire_path(path, what)
+            # B006a §5.3's own grammar additionally forbids a bare `.git`
+            # component -- `_check_wire_path` does not (its own callers
+            # never need that restriction), so it is checked here too.
+            if ".git" in path.split("/"):
+                raise ValueError(f"{what} {path!r} contains a '.git' component")
+            encoded.append(path.encode("utf-8"))
+        if any(len(item) > 4096 for item in encoded):
+            raise ValueError(
+                "snapshot_policy.unsafe_symlink_omissions entries must be "
+                "at most 4096 UTF-8 bytes each"
+            )
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise ValueError(
+                    f"snapshot_policy.unsafe_symlink_omissions must be "
+                    f"strictly ascending by UTF-8 bytes, got "
+                    f"{list(omissions)}"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"selection": self.selection}
+        if self.unsafe_symlink_omissions is not None:
+            payload["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
 class Verdict:
     """One verdict: one lane, one commit (§7).
 
@@ -1981,6 +2305,12 @@ class Verdict:
     #: tuple is refused, because ``helpers: []`` would assert a known-empty
     #: fact that no producer in this build can witness.
     helpers: tuple[Helper, ...] | None = None
+    #: (B006(a)/A-269, §5) the lane-selected repository snapshot
+    #: materialisation policy -- required whenever ``declared_rigor``
+    #: contains R1, R2 or R3; absent for an R0-only verdict and for an
+    #: error produced before a lane resolves at all. See
+    #: :meth:`_check_snapshot_policy_matches_declared_rigor`.
+    snapshot_policy: SnapshotPolicy | None = None
     schema_version: int = VERDICT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -2018,8 +2348,40 @@ class Verdict:
         self._check_outcome_agrees_with_rollup()
         self._check_judgment_matches_claims()
         self._check_helpers()
+        self._check_snapshot_policy_matches_declared_rigor()
 
     # --- the rules the schema cannot express ---------------------------------
+
+    def _check_snapshot_policy_matches_declared_rigor(self) -> None:
+        """(B006(a)/A-269, §5.1) ``snapshot_policy`` is present iff
+        ``declared_rigor`` contains R1, R2 or R3 -- required rather than
+        optional because "absent" would otherwise be indistinguishable
+        between an old producer and a genuinely R0-only run, and the whole
+        point is that a reviewer can tell which policy a higher-rigor
+        verdict ran under without re-running anything.
+
+        Absent for an R0-only verdict (the loader forbids ``[isolation]``
+        there, A-062) and for a verdict where no lane resolved at all (no
+        ``declared_rigor`` to test) -- both are truthful absences, never a
+        producer that forgot the field.
+        """
+        higher_rigor_declared = self.declared_rigor is not None and any(
+            level != "R0" for level in self.declared_rigor
+        )
+        if higher_rigor_declared and self.snapshot_policy is None:
+            raise ValueError(
+                f"declared_rigor {list(self.declared_rigor or ())} contains a "
+                f"higher-rigor level but snapshot_policy is absent -- every "
+                f"R1/R2/R3 lane resolves an explicit snapshot policy, and a "
+                f"verdict that ran one must record which"
+            )
+        if not higher_rigor_declared and self.snapshot_policy is not None:
+            raise ValueError(
+                f"snapshot_policy is present ({self.snapshot_policy!r}) but "
+                f"declared_rigor is {list(self.declared_rigor) if self.declared_rigor else None} "
+                f"-- an R0-only lane (or a verdict where no lane resolved) "
+                f"never selects a snapshot policy"
+            )
 
     def _check_helpers(self) -> None:
         """(P33/V5-5, A-223c/A-227) helper correspondence, in the OBSERVABLE
@@ -2239,17 +2601,31 @@ class Verdict:
             )
         r1_claim = next((claim for claim in self.claims if claim.rigor == "R1"), None)
         r1_judged = r1_claim is not None and r1_claim.coverage is not None
+        # wave-1 §6, A-264 (forced by the independent pre-dispatch review):
+        # R1 records its policy whenever R1 was ATTEMPTED, for exactly two
+        # new payload-free terminals -- one case wider than "rendered a
+        # payload", mirroring A-183's identical R2 widening for
+        # MUTATION_UNSUPPORTED immediately below. Without this,
+        # BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED could not record which
+        # target was attempted or which floor was asked for, which would
+        # gut B005's whole reason for existing.
+        r1_attempted = r1_judged or (
+            r1_claim is not None
+            and r1_claim.reason_code
+            in (ReasonCode.BRANCH_UNAVAILABLE, ReasonCode.TARGET_NOT_MEASURED)
+        )
         judgment_r1 = None if self.judgment is None else self.judgment.r1
-        if judgment_r1 is not None and not r1_judged:
+        if judgment_r1 is not None and not r1_attempted:
             raise ValueError(
                 "judgment.r1 is present but no R1 claim rendered a coverage "
-                "payload -- a policy is recorded for a judgment that never "
-                "happened"
+                "payload or one of BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED -- "
+                "a policy is recorded for a judgment that never happened"
             )
-        if judgment_r1 is None and r1_judged:
+        if judgment_r1 is None and r1_attempted:
             raise ValueError(
-                "the R1 claim rendered a coverage payload but judgment.r1 "
-                "is absent -- an independent consumer cannot re-derive R1's "
+                "the R1 claim rendered a coverage payload or one of "
+                "BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED but judgment.r1 is "
+                "absent -- an independent consumer cannot re-derive R1's "
                 "status without the policy that decided it"
             )
 
@@ -2524,6 +2900,8 @@ class Verdict:
             payload["enforcement"] = self.enforcement
         if self.judgment is not None:
             payload["judgment"] = self.judgment.to_dict()
+        if self.snapshot_policy is not None:
+            payload["snapshot_policy"] = self.snapshot_policy.to_dict()
         # A-230a: omitted when no helper ran, never `helpers: []`.
         if self.helpers is not None:
             payload["helpers"] = [helper.to_dict() for helper in self.helpers]

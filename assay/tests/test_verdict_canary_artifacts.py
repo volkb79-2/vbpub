@@ -35,6 +35,7 @@ from assay.verdict import (
     Judgment,
     JudgmentR3,
     JudgmentResolved,
+    SnapshotPolicy,
     Verdict,
 )
 
@@ -50,6 +51,9 @@ BASE = {
     "env_effective": {},
     "scope": "S1",
     "enforcement": "gate",
+    # (wave-1 §6, A-269) none of these fixtures is itself testing the
+    # omission axis.
+    "snapshot_policy": SnapshotPolicy(selection="repository"),
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)

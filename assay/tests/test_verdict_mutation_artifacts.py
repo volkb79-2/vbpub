@@ -38,8 +38,14 @@ from assay.verdict import (
     JudgmentResolved,
     Mutation,
     MutantOutcome,
+    SnapshotPolicy,
     Verdict,
 )
+
+#: (wave-1 §6, A-269) the plain repository-mode policy every R0,R2 verdict
+#: below carries -- none of these fixtures is itself testing the omission
+#: axis.
+REPOSITORY_POLICY = SnapshotPolicy(selection="repository")
 
 BASE = {
     "lane": "package",
@@ -53,6 +59,7 @@ BASE = {
     "env_effective": {},
     "scope": "S1",
     "enforcement": "gate",
+    "snapshot_policy": REPOSITORY_POLICY,
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)
@@ -318,6 +325,7 @@ def test_a_crashed_baseline_matches_the_hand_written_fixture(validator: Draft202
         started="2026-08-07T14:25:00+00:00",
         ended="2026-08-07T14:25:00+00:00",
         claims=(r0_crashed, r2_claim),
+        snapshot_policy=REPOSITORY_POLICY,
     )
     document = json.loads(verdict.to_json())
     assert document == mutation_verdict_fixture("r2_error_exec_failed_baseline_crashed")

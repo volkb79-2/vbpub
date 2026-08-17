@@ -71,6 +71,12 @@ class ReasonCode(StrEnum):
 
     # FAIL
     UNCOVERED_LINES = "UNCOVERED_LINES"
+    #: (wave-1 §4, A-258) `pct < fail_under` with zero missing LINES and at
+    #: least one uncovered branch arc. Ranked identically to
+    #: `UNCOVERED_LINES` in the outcome precedence, but never the same
+    #: sentence: "which mechanism refused" is the distinction this project
+    #: exists to keep (B001's false-PASS story one layer up).
+    UNCOVERED_BRANCHES = "UNCOVERED_BRANCHES"
     EXCLUDED_LINES = "EXCLUDED_LINES"
     UNCLASSIFIED_LINES = "UNCLASSIFIED_LINES"
     MUTANTS_SURVIVED = "MUTANTS_SURVIVED"
@@ -97,6 +103,20 @@ class ReasonCode(StrEnum):
     #: (that is `NO_MUTANTS`).
     MUTATION_DISCOVERY_FAILED = "MUTATION_DISCOVERY_FAILED"
     # NO_MEASUREMENT
+    #: (wave-1 §4, A-259) `judge.require_branch = true` over an artifact
+    #: whose branch capability is `"unavailable"` -- payload-free, guarded
+    #: before any evaluation (beside `check_empty_coverage` in `evaluate_r1`'s
+    #: own guard sequence, never inside `evaluate_coverage` itself: this is a
+    #: measurability question, not an arithmetic one). Exists so dropping
+    #: `--cov-branch` from an argv cannot silently downgrade a line+branch
+    #: gate into a line-only one that still says PASS.
+    BRANCH_UNAVAILABLE = "BRANCH_UNAVAILABLE"
+    #: (wave-1 §5, A-260) B005's own anti-vacuity guard: a `whole_target`
+    #: target absent from the coverage artifact, or present with zero
+    #: executable lines. Payload-free -- the target was never measured, so
+    #: there is nothing to judge. This is the terminal the argv stopgap it
+    #: replaces silently fails to render (it reports `100%` of zero instead).
+    TARGET_NOT_MEASURED = "TARGET_NOT_MEASURED"
     DIRTY_TREE = "DIRTY_TREE"
     #: (P21/A-178) the lane's command left a CLEAN tree but moved `HEAD`.
     #: P20 collapsed this into `DIRTY_TREE` to stay schema-v3-compatible,
@@ -158,6 +178,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         Outcome.FAIL: frozenset(
             {
                 ReasonCode.UNCOVERED_LINES,
+                ReasonCode.UNCOVERED_BRANCHES,
                 ReasonCode.EXCLUDED_LINES,
                 ReasonCode.UNCLASSIFIED_LINES,
                 ReasonCode.MUTANTS_SURVIVED,
@@ -178,6 +199,8 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         ),
         Outcome.NO_MEASUREMENT: frozenset(
             {
+                ReasonCode.BRANCH_UNAVAILABLE,
+                ReasonCode.TARGET_NOT_MEASURED,
                 ReasonCode.DIRTY_TREE,
                 ReasonCode.HEAD_CHANGED,
                 ReasonCode.BASE_IS_HEAD,

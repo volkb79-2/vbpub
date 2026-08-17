@@ -108,6 +108,7 @@ from .verdict import (
     Mutation,
     Outcome,
     ReasonCode,
+    SnapshotPolicy,
     Verdict,
     operator_language,
     rollup,
@@ -236,6 +237,112 @@ def _check_lane_resolved_group(document: dict, failures: list[str]) -> None:
         )
 
 
+#: (B006(a)/A-269, §5.3) transcribed by hand from
+#: :data:`assay.config.SNAPSHOT_SELECTIONS` -- the raw layer reads strings
+#: and must never import the model's/loader's own vocabulary to compare
+#: them, the identical independence every other closed-vocabulary check in
+#: this module already keeps.
+_SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
+    {"repository", "repository-minus-unsafe-symlinks"}
+)
+
+
+def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
+    """(B006(a)/A-269, §5.1/§5.3) ``snapshot_policy`` is present iff
+    ``declared_rigor`` contains R1, R2 or R3 -- and, when present, obeys its
+    own closed grammar independently of the model: a closed ``selection``,
+    ``unsafe_symlink_omissions`` present iff omission mode, 1..64 entries,
+    each a non-empty forward-slash path of at most 4096 UTF-8 bytes with no
+    empty/``.``/``..``/``.git`` component, and the list strictly ascending
+    by UTF-8 bytes -- draft 2020-12 cannot express array ORDER or a
+    UTF-8-BYTE (as opposed to code-point) ceiling, so both are checked here
+    on the raw list rather than trusted to the packaged schema.
+    """
+    declared_rigor = document.get("declared_rigor")
+    higher_rigor_declared = isinstance(declared_rigor, list) and any(
+        level != "R0" for level in declared_rigor
+    )
+    policy = document.get("snapshot_policy")
+    has_policy = "snapshot_policy" in document
+    if higher_rigor_declared and not has_policy:
+        failures.append(
+            "declared_rigor contains a higher-rigor level but "
+            "snapshot_policy is absent"
+        )
+    if not higher_rigor_declared and has_policy:
+        failures.append(
+            "snapshot_policy is present but declared_rigor names no "
+            "higher-rigor level"
+        )
+    if not has_policy or not isinstance(policy, dict):
+        return
+    selection = policy.get("selection")
+    if selection not in _SNAPSHOT_SELECTIONS:
+        failures.append(
+            f"snapshot_policy.selection {selection!r} is not one of "
+            f"{sorted(_SNAPSHOT_SELECTIONS)}"
+        )
+        return
+    omissions = policy.get("unsafe_symlink_omissions")
+    if selection == "repository":
+        if omissions is not None:
+            failures.append(
+                "snapshot_policy.unsafe_symlink_omissions is present under "
+                "selection = 'repository', where it is forbidden"
+            )
+        return
+    if not isinstance(omissions, list) or not (1 <= len(omissions) <= 64):
+        failures.append(
+            "snapshot_policy.unsafe_symlink_omissions must be a list of "
+            "1..64 entries under selection = "
+            "'repository-minus-unsafe-symlinks'"
+        )
+        return
+    encoded: list[bytes] = []
+    for index, path in enumerate(omissions):
+        if not isinstance(path, str) or not path:
+            failures.append(
+                f"snapshot_policy.unsafe_symlink_omissions[{index}] must be "
+                f"a non-empty string"
+            )
+            return
+        if "\\" in path or "\x00" in path or path.startswith("/") or path.endswith("/"):
+            failures.append(
+                f"snapshot_policy.unsafe_symlink_omissions[{index}] {path!r} "
+                f"is not a normalized forward-slash path"
+            )
+            return
+        parts = path.split("/")
+        if any(part in ("", ".", "..", ".git") for part in parts):
+            failures.append(
+                f"snapshot_policy.unsafe_symlink_omissions[{index}] {path!r} "
+                f"has an invalid path component"
+            )
+            return
+        try:
+            as_bytes = path.encode("utf-8")
+        except UnicodeEncodeError:
+            failures.append(
+                f"snapshot_policy.unsafe_symlink_omissions[{index}] {path!r} "
+                f"cannot be encoded as strict UTF-8"
+            )
+            return
+        if len(as_bytes) > 4096:
+            failures.append(
+                f"snapshot_policy.unsafe_symlink_omissions[{index}] exceeds "
+                f"4096 UTF-8 bytes"
+            )
+            return
+        encoded.append(as_bytes)
+    for previous, current in zip(encoded, encoded[1:]):
+        if not previous < current:
+            failures.append(
+                "snapshot_policy.unsafe_symlink_omissions must be strictly "
+                "ascending by UTF-8 bytes"
+            )
+            return
+
+
 def _check_claims_cover_declared_rigor(document: dict, failures: list[str]) -> None:
     if "declared_rigor" not in document:
         return
@@ -332,14 +439,27 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
         None,
     )
     r1_judged = r1_claim is not None and "coverage" in r1_claim
+    # wave-1 §6/A-264: R1 records its policy whenever R1 was ATTEMPTED, one
+    # case wider than "rendered a payload" -- the closed set of exactly two
+    # payload-free terminals, mirroring the R2 widening for
+    # MUTATION_UNSUPPORTED immediately below. Worded from the raw document
+    # rather than reusing the model's own phrasing, for the reason this
+    # function's docstring already gives.
+    r1_attempted = r1_judged or (
+        r1_claim is not None
+        and r1_claim.get("reason_code")
+        in ("BRANCH_UNAVAILABLE", "TARGET_NOT_MEASURED")
+    )
     judgment_r1_present = isinstance(judgment, dict) and "r1" in judgment
-    if judgment_r1_present and not r1_judged:
+    if judgment_r1_present and not r1_attempted:
         failures.append(
-            "judgment.r1 is declared without a corresponding R1 coverage claim"
+            "judgment.r1 is declared without a corresponding R1 coverage "
+            "claim or BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED terminal"
         )
-    if r1_judged and not judgment_r1_present:
+    if r1_attempted and not judgment_r1_present:
         failures.append(
-            "an R1 coverage claim is declared without a corresponding judgment.r1"
+            "an R1 coverage claim or BRANCH_UNAVAILABLE/TARGET_NOT_MEASURED "
+            "terminal is declared without a corresponding judgment.r1"
         )
 
     r2_claim = next(
@@ -526,28 +646,36 @@ def _check_resolved_language_owns_every_operator(
 
 
 def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -> None:
-    """(P33/A-223a/A-227) ``judgment.resolved.base`` is required IF ``r1`` or
-    ``r2`` is present and forbidden UNLESS one of them is.
+    """(P33/A-223a/A-227, widened by wave-1 §6/A-260) ``judgment.resolved.
+    base`` is required IF ``r2`` is present, or ``r1`` is present with
+    ``mode == "changed_lines"`` -- and forbidden UNLESS one of those holds.
+    A whole-target ``r1`` with no ``r2`` resolves nothing against a base
+    (B005's whole point).
 
-    The producer cannot reach the forbidden half -- A-062 refuses
-    ``judge.base`` on an ``R0,R3`` lane as inert config -- but this verifier
-    exists for FOREIGN documents, which is exactly the population that can.
+    The producer cannot reach the forbidden half for an ordinary
+    ``changed_lines`` lane -- A-062 refuses ``judge.base`` on an ``R0,R3``
+    lane as inert config, and this loader-level widening does the same for
+    a whole-target R1 with no R2 -- but this verifier exists for FOREIGN
+    documents, which is exactly the population that can.
     """
     resolved = judgment.get("resolved")
     if not isinstance(resolved, dict):
         return
-    compares_a_base = "r1" in judgment or "r2" in judgment
+    r1 = judgment.get("r1")
+    r1_changed_lines = isinstance(r1, dict) and r1.get("mode") == "changed_lines"
+    compares_a_base = "r2" in judgment or r1_changed_lines
     has_base = "base" in resolved
     if compares_a_base and not has_base:
         failures.append(
-            "judgment.resolved omits base while judgment records an r1 or r2 "
-            "tier, both of which judge a diff against a resolved comparison "
-            "commit"
+            "judgment.resolved omits base while judgment records r2, or r1 "
+            "in changed-line mode, both of which judge a diff against a "
+            "resolved comparison commit"
         )
     if not compares_a_base and has_base:
         failures.append(
             "judgment.resolved records a base although judgment carries "
-            "neither r1 nor r2; no tier present here reads a comparison commit"
+            "neither r2 nor r1 in changed-line mode; no tier present here "
+            "reads a comparison commit"
         )
 
 
@@ -892,7 +1020,7 @@ def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:
 def _reconstruct_coverage(raw: dict) -> Coverage:
     coverage = Coverage(
         covered=raw["covered"],
-        changed_executable=raw["changed_executable"],
+        executable=raw["executable"],
         pct=raw["pct"],
         considered=raw["considered"],
         exclusion_capability=raw["exclusion_capability"],
@@ -906,6 +1034,13 @@ def _reconstruct_coverage(raw: dict) -> Coverage:
             key: frozenset(value) for key, value in raw["excluded_lines"].items()
         },
         files_with_excluded_lines=tuple(raw["files_with_excluded_lines"]),
+        branches_covered=raw["branches_covered"],
+        branches_total=raw["branches_total"],
+        branch_capability=raw["branch_capability"],
+        missing_branch_lines={
+            key: frozenset(value) for key, value in raw["missing_branch_lines"].items()
+        },
+        files_with_missing_branch_lines=tuple(raw["files_with_missing_branch_lines"]),
     )
     _reject_unknown_keys(raw, coverage.to_dict(), "coverage")
     return coverage
@@ -927,6 +1062,9 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
         coverage_artifact=raw["coverage_artifact"],
         fail_under=raw["fail_under"],
         allow_excluded=raw["allow_excluded"],
+        mode=raw["mode"],
+        targets=tuple(raw["targets"]) if "targets" in raw else None,
+        require_branch=raw["require_branch"],
     )
     _reject_unknown_keys(raw, r1.to_dict(), "judgment.r1")
     return r1
@@ -1023,6 +1161,19 @@ def _reconstruct_claim(raw: dict) -> Claim:
     return claim
 
 
+def _reconstruct_snapshot_policy(raw: dict) -> SnapshotPolicy:
+    policy = SnapshotPolicy(
+        selection=raw["selection"],
+        unsafe_symlink_omissions=(
+            tuple(raw["unsafe_symlink_omissions"])
+            if "unsafe_symlink_omissions" in raw
+            else None
+        ),
+    )
+    _reject_unknown_keys(raw, policy.to_dict(), "snapshot_policy")
+    return policy
+
+
 def _reconstruct_helper(raw: dict) -> Helper:
     helper = Helper(
         role=raw["role"],
@@ -1084,6 +1235,10 @@ def _reconstruct_verdict(document: dict) -> Verdict:
     if "helpers" in document:
         judgment_kwargs["helpers"] = tuple(
             _reconstruct_helper(item) for item in document["helpers"]
+        )
+    if "snapshot_policy" in document:
+        judgment_kwargs["snapshot_policy"] = _reconstruct_snapshot_policy(
+            document["snapshot_policy"]
         )
 
     reason_code = document.get("reason_code")
@@ -1251,13 +1406,19 @@ def _check_r1_rederivation(verdict: Verdict, failures: list[str]) -> None:
     for why.
 
     A missing ``coverage`` payload means nothing to re-derive: a legitimate
-    non-R1-judged claim (NO_MEASUREMENT, or no R1 declared at all). When
-    ``coverage`` IS present, ``verdict.judgment.r1`` is guaranteed present
-    too -- :meth:`~assay.verdict.Verdict._check_judgment_matches_claims`
-    already refuses to construct a ``Verdict`` (real OR reconstructed;
-    both go through the same ``__init__``) where an R1 claim carries
-    ``coverage`` but ``judgment.r1`` is absent, so a second None-check here
-    would only guard an unreachable branch.
+    non-R1-judged claim (NO_MEASUREMENT, or no R1 declared at all --
+    including the two new payload-free A-264 terminals, which carry no
+    ``coverage`` to re-derive from either). When ``coverage`` IS present,
+    ``verdict.judgment.r1`` is guaranteed present too -- :meth:`~assay.
+    verdict.Verdict._check_judgment_matches_claims` already refuses to
+    construct a ``Verdict`` (real OR reconstructed; both go through the
+    same ``__init__``) where an R1 claim carries ``coverage`` but
+    ``judgment.r1`` is absent, so a second None-check here would only guard
+    an unreachable branch.
+
+    wave-1 §4/A-258: the branch-aware precedence -- a floor missed PURELY
+    because of branches (zero missing LINES, at least one uncovered arc) is
+    ``UNCOVERED_BRANCHES``, never ``UNCOVERED_LINES``.
     """
     claim = next((item for item in verdict.claims if item.rigor == "R1"), None)
     if claim is None or claim.coverage is None:
@@ -1272,7 +1433,10 @@ def _check_r1_rederivation(verdict: Verdict, failures: list[str]) -> None:
     elif coverage.excluded_lines and not policy.allow_excluded:
         expected = (Outcome.FAIL, ReasonCode.EXCLUDED_LINES)
     elif coverage.pct < policy.fail_under:
-        expected = (Outcome.FAIL, ReasonCode.UNCOVERED_LINES)
+        if not coverage.missing_lines and coverage.branches_covered < coverage.branches_total:
+            expected = (Outcome.FAIL, ReasonCode.UNCOVERED_BRANCHES)
+        else:
+            expected = (Outcome.FAIL, ReasonCode.UNCOVERED_LINES)
     else:
         expected = (Outcome.PASS, None)
     if (claim.status, claim.reason_code) != expected:
@@ -1472,6 +1636,7 @@ def verify_document(document: Any) -> list[str]:
     _check_evidence_covers_declared_evidence(document, failures)
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
+    _check_snapshot_policy(document, failures)
     _check_mutation_payload_shapes(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)

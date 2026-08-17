@@ -132,7 +132,7 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
 
     # Equivalent numeric results for genuinely equivalent constructs (O2):
     for result, label in ((python_result, "python"), (go_result, "go")):
-        assert result.changed_executable == 4, label
+        assert result.executable == 4, label
         assert result.covered == 3, label
         assert result.pct == 75.0, label
         assert result.outcome is Outcome.FAIL, label

@@ -289,6 +289,25 @@ run_inner() {
   # locked nodes here, all built by the frozen `_load_lane` helper (a
   # `schema_version = 1`, rigor R0+R2 document). Same treatment: deselected,
   # never edited, each with a named v2 successor below.
+  #
+  # Wave-1/A-261/A-262/A-264 (amended by A-269): `VERDICT_SCHEMA_VERSION`
+  # 5 -> 6 is a HARD CUT (A-261), and `assay.verify`'s schema-version guard
+  # is a short-circuit: it returns a single failure and never reaches any
+  # downstream field check. That single fact reddens 26 more locked nodes
+  # below, MEASURED (not read off the source) by implementing v6, running
+  # this module unmodified with `--tb=short`, and inspecting every failure
+  # individually. All 26 failed for exactly this one cause -- two directly
+  # (`test_schema_identity_is_internally_consistent` and
+  # `test_shipped_schema_is_byte_identical_to_the_locked_asset` assert the
+  # literal v5 `$id`/byte-identity), the other 24 because every negative in
+  # this suite is differential (`refuses_only_the_defect`,
+  # `test_acceptance_v5.py:72`) and its own control -- a v5-shaped document
+  # -- no longer verifies clean under a v6 verifier before the specific
+  # defect under test is ever reached. None is a regression; the hard cut
+  # is behaving exactly as specified. Each gets a named v6 successor in
+  # `carve-assets/W1/test_acceptance_v6.py`, run below, against its OWN
+  # `expected/` templates -- the six v5 templates here stay frozen and are
+  # never rewritten into v6.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= ASSAY_P26_PROJECT_ROOT="$worktree/assay" \
     "$scratch/run-venv/bin/python" -m pytest \
@@ -298,7 +317,33 @@ run_inner() {
       --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_refuses_a_cross_language_operator \
       --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_accepts_a_matching_language_operator \
       --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_kill_signal_artifact_as_reserved_for_p34 \
-      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_equivalence_artifact_as_reserved_for_p34
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_config_names_equivalence_artifact_as_reserved_for_p34 \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_schema_identity_is_internally_consistent \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_shipped_schema_is_byte_identical_to_the_locked_asset \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_a_v5_artifact_missing_judgment_resolved_is_refused \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_a_cross_language_operator_is_refused \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[missing-tool-v5-template.json]" \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[sql-r2-v5-template.json]" \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[ca1-r3-no-base-v5-template.json]" \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_locked_v5_template_is_accepted[ca4-all-equivalent-v5-template.json]" \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p26_attestation_shapes_survive_v5 \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca1_r0r3_lane_needs_no_base \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca1_an_r2_lane_without_base_is_refused \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca3_two_independent_violations_produce_two_failures \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca4_all_equivalent_is_inconclusive_not_pass \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca4_equivalent_mutants_do_not_count_as_survived \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_kill_signal_is_rejected_outside_the_killed_bucket \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_entry_requires_a_correspondingly_judged_claim \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca9_payload_free_all_mutants_equivalent_is_refused \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca9_all_mutants_equivalent_is_bound_to_r2 \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_base_is_forbidden_unless_r1_or_r2 \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_declared_attribution_requires_a_kill_signal_artifact \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_declared_requires_a_kill_signal_on_every_killed_entry \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_ca10_unattributed_forbids_a_kill_signal_on_a_killed_entry \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p25_v5_siblings_validate[pass-v4-template.json-p25-pass-v5-template.json]" \
+      --deselect "nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_p25_v5_siblings_validate[missing-v4-template.json-p25-missing-v5-template.json]" \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_executable_code_requires_a_payload_bearing_claim \
+      --deselect nyxloom-trove/carve-assets/P33/test_acceptance_v5.py::test_helpers_is_omitted_when_no_helper_ran
   echo 'ASSAY_GATE_PHASE=verdict-v5-accepted'
 
   # B006a/A-269/WI-1: the nine one-for-one v2 successors for the nine locked
@@ -312,6 +357,15 @@ run_inner() {
     "$worktree/assay/tests/test_lane_schema_v2_locked_successors.py" \
     -q -p no:randomly --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=lane-schema-v2-successors-verified'
+
+  # Wave-1: the 26 one-for-one v6 successors for the 26 locked P33 nodes
+  # deselected just above by the schema-version hard cut. Same
+  # installed-wheel pattern as every locked suite it carries forward.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v6-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version"
 

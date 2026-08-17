@@ -78,6 +78,7 @@ __all__ = [
     "EvidenceConfig",
     "IsolationConfig",
     "JUDGE_FIELDS_BY_RIGOR",
+    "JUDGE_MODES",
     "JudgeConfig",
     "LANE_FILE_NAME",
     "LANE_SCHEMA_VERSION",
@@ -202,7 +203,18 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "mutation",
     "canary",
     "base",
+    "mode",
+    "targets",
+    "require_branch",
 )
+
+#: (wave-1 §5, A-260) the closed `judge.mode` vocabulary. Absent means
+#: `"changed_lines"` -- the only mode that existed before this wave -- so
+#: `JudgeConfig.mode` stores the DECLARED value or `None`, never a filled-in
+#: default: `as_declared()` stays a faithful reproduction of the file, and
+#: the *effective* mode is resolved at exactly one named place
+#: (:mod:`assay.runner`'s `evaluate_r1`).
+JUDGE_MODES: frozenset[str] = frozenset({"changed_lines", "whole_target"})
 
 _COVERAGE_FIELDS: tuple[str, ...] = ("format", "artifact")
 
@@ -378,6 +390,19 @@ class JudgeConfig:
     #: nor requires a computed ``judge`` field.
     attestation_dir: str | None = None
     evidence: tuple[EvidenceConfig, ...] | None = None
+    #: (wave-1 §5, A-260) the declared R1 mode, verbatim -- `None` when the
+    #: file omits `judge.mode`, which means `"changed_lines"`. Never
+    #: defaulted here: the loader stores exactly what the file said, and
+    #: `evaluate_r1` resolves the effective mode at exactly one named place.
+    mode: str | None = None
+    #: (wave-1 §5) the declared `judge.targets`, canonical project-relative
+    #: spellings in file order -- `None` iff the lane is not `whole_target`
+    #: mode (`targets` is refused at load otherwise).
+    targets: tuple[str, ...] | None = None
+    #: (wave-1 §4, A-259) the declared `judge.require_branch` -- `None` when
+    #: the file omits it, which means `false`. Legal only on a lane
+    #: declaring R1.
+    require_branch: bool | None = None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -397,6 +422,12 @@ class JudgeConfig:
             declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
+        if self.mode is not None:
+            declared["mode"] = self.mode
+        if self.targets is not None:
+            declared["targets"] = list(self.targets)
+        if self.require_branch is not None:
+            declared["require_branch"] = self.require_branch
         if self.attestation_dir is not None:
             declared["attestation_dir"] = self.attestation_dir
         if self.evidence is not None:
@@ -835,6 +866,27 @@ def _load_lane(
     ):
         raise LaneConfigError(f"{where}: uncovered-line R3 requires declared R1")
 
+    # wave-1 §5: `uncovered-line` proves "a changed-line coverage floor
+    # rejects an uncovered line" -- a premise whole-target mode replaces.
+    # Outside the declared targets it would prove nothing about the floor
+    # actually enforced and would produce an accidental CANARY_SURVIVED
+    # that looks like a real finding, so it is refused at load unless the
+    # canary target is itself one of `targets`.
+    if (
+        judge is not None
+        and judge.canary is not None
+        and judge.canary.mechanism == "uncovered-line"
+        and judge.mode == "whole_target"
+        and judge.canary.target not in (judge.targets or ())
+    ):
+        raise LaneConfigError(
+            f"{where}: judge.canary.target {judge.canary.target!r} is not "
+            f"one of judge.targets {list(judge.targets or ())} under "
+            f"mode = 'whole_target'; outside the declared targets the "
+            f"uncovered-line canary proves nothing about the whole-target "
+            f"floor"
+        )
+
     where_table = table.get("where")
     if where_table is not None and not isinstance(where_table, dict):
         raise LaneConfigError(
@@ -928,6 +980,71 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
     return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=tuple(omissions))
 
 
+def _load_targets(value: Any, where: str) -> tuple[str, ...]:
+    """``judge.targets`` (wave-1 §5) -- required and non-empty iff
+    ``mode = "whole_target"``. Project-relative file paths, the same
+    spelling ``judge.coverage.artifact``/``judge.canary.target`` use
+    (A-145). Load-time refusal for: non-list, non-string, empty, absolute,
+    any ``.``/``..``/empty path component, backslash, or duplicate.
+
+    Existence is deliberately NOT checked here (unlike
+    :func:`_load_canary`'s target): a whole-target lane must be judgeable
+    from ANY commit, including a post-merge ``main`` (A-260), and a
+    target's existence is a fact of the commit being judged, not of the
+    declaration. Filesystem kind/containment is
+    :func:`assay.evaluate._resolve_whole_target`'s job, at judge time,
+    against the real snapshot.
+
+    The component-by-component check below is EXHAUSTIVE for canonical
+    POSIX spelling, not merely a first pass: every way
+    :class:`~pathlib.PurePosixPath` normalises a string during its own
+    ``as_posix()`` round-trip -- collapsing a doubled or trailing slash,
+    dropping a leading/embedded ``.`` component -- reduces to producing an
+    empty or ``"."`` component somewhere in ``raw.split("/")``, which the
+    loop below already refuses; a ``PurePosixPath(raw).as_posix() != raw``
+    check run AFTER this loop can therefore never fire on any input that
+    reaches it (proven by exhaustive search over every string of length <=
+    6 built from ``{"a", "/", "."}—the alphabet spanning every
+    normalisation ``PurePosixPath`` performs), and a check that can never
+    be false is not a check: it would be unreachable code and an
+    unreachable branch, not defence in depth. It is intentionally NOT
+    duplicated here.
+    """
+    declared = _as_str_list(value, where, "judge.targets")
+    if not declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.targets' is empty; whole-target mode requires "
+            f"at least one target"
+        )
+    seen: set[str] = set()
+    validated: list[str] = []
+    for index, raw in enumerate(declared):
+        field = f"judge.targets[{index}]"
+        if not raw:
+            raise LaneConfigError(f"{where}: {field} must not be empty")
+        if raw.startswith("/"):
+            raise LaneConfigError(f"{where}: {field} {raw!r} must not be absolute")
+        if "\\" in raw:
+            raise LaneConfigError(
+                f"{where}: {field} {raw!r} contains a backslash; declare it "
+                f"with forward slashes regardless of platform"
+            )
+        for component in raw.split("/"):
+            if component in ("", ".", ".."):
+                raise LaneConfigError(
+                    f"{where}: {field} {raw!r} has an invalid path component "
+                    f"{component!r}; a target must not contain an empty, "
+                    f"'.', or '..' component"
+                )
+        if raw in seen:
+            raise LaneConfigError(
+                f"{where}: 'judge.targets' declares {raw!r} more than once"
+            )
+        seen.add(raw)
+        validated.append(raw)
+    return tuple(validated)
+
+
 def _required_judge_fields(rigor: Iterable[str]) -> tuple[str, ...]:
     """The union of what every DECLARED rigor level requires (A-017/A-048)."""
     required: list[str] = []
@@ -942,7 +1059,7 @@ def _load_judge(
     table: Any, rigor: Iterable[str], where: str, project_root: Path
 ) -> JudgeConfig | None:
     rigor = tuple(rigor)
-    required = _required_judge_fields(rigor)
+    required = list(_required_judge_fields(rigor))
 
     if table is None:
         if required:
@@ -965,11 +1082,74 @@ def _load_judge(
             f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'evidence'))}"
         )
 
+    # wave-1 §5, A-260: `mode`/`targets` and §4/A-259's `require_branch` are
+    # R1-specific and OPTIONAL -- legal only on a lane declaring R1, and
+    # deliberately not folded into the generic per-rigor `required` set the
+    # way `fail_under`/`allow_excluded` are (this loader has never had a
+    # genuinely optional judge field before evidence/attestation_dir, and
+    # those are a separate axis entirely). `targets` is the one exception:
+    # it becomes REQUIRED, but only once `mode` resolves to `"whole_target"`,
+    # which is why it is folded into `required` below rather than treated
+    # like its two siblings.
+    r1_declared = "R1" in rigor
+    mode_declared = "mode" in table
+    if mode_declared and not r1_declared:
+        raise LaneConfigError(
+            f"{where}: declares 'judge.mode' but rigor {list(rigor)} does "
+            f"not include R1; mode selects the R1 judging strategy"
+        )
+    mode: str | None = None
+    if mode_declared:
+        mode = _as_str(table["mode"], where, "judge.mode")
+        if mode not in JUDGE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'judge.mode' must be one of {sorted(JUDGE_MODES)}, "
+                f"got {mode!r}"
+            )
+    # A-260: absent means "changed_lines" -- the only mode that existed
+    # before this wave. `mode` itself (the JudgeConfig field) stays the
+    # DECLARED value or None; only this local variable resolves the default,
+    # and only to decide `required`/the canary interaction below.
+    effective_mode = mode if mode is not None else "changed_lines"
+
+    require_branch_declared = "require_branch" in table
+    if require_branch_declared and not r1_declared:
+        raise LaneConfigError(
+            f"{where}: declares 'judge.require_branch' but rigor "
+            f"{list(rigor)} does not include R1"
+        )
+
+    targets_declared = "targets" in table
+    if targets_declared and effective_mode != "whole_target":
+        raise LaneConfigError(
+            f"{where}: declares 'judge.targets' but judge.mode is not "
+            f"'whole_target' -- a target list under changed-line mode does "
+            f"nothing and silently declaring one is how a consumer comes to "
+            f"believe a floor is enforced when it is not"
+        )
+
+    if r1_declared and effective_mode == "whole_target":
+        # A-260/§5: `base` resolves nothing for a whole-target lane with no
+        # R2, so it moves OUT of `required` here -- the generic surplus
+        # check below then refuses it as inert config if the lane still
+        # declares it (A6 addendum, extending A-062's own argument).
+        # `targets` moves IN: required and non-empty precisely in this mode.
+        if "base" in required and "R2" not in rigor:
+            required.remove("base")
+        # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
+        # (only this mode-specific branch ever requires it), so it can
+        # never already be in `required` here -- appended unconditionally
+        # rather than guarded by a membership check that could never be
+        # false, which would be an unreachable branch, not a real guard.
+        required.append("targets")
+    required = tuple(required)
+
     for field in required:
         if field not in table:
+            hint = " (judge.mode = 'whole_target')" if field == "targets" else ""
             raise LaneConfigError(
                 f"{where}: declares rigor {list(rigor)} but is missing required "
-                f"field 'judge.{field}'"
+                f"field 'judge.{field}'{hint}"
             )
 
     # P26/A-209: Tier-3 evidence's HOW pair is a separate axis from computed
@@ -997,7 +1177,11 @@ def _load_judge(
     # The cost is the "write the config, enable the level later" workflow,
     # which is a habit rather than a requirement: declaring the level is one
     # line in the same edit. The remedy is always visible in the message.
-    surplus = sorted(set(table) - set(required) - {"attestation_dir", "evidence"})
+    surplus = sorted(
+        set(table)
+        - set(required)
+        - {"attestation_dir", "evidence", "mode", "require_branch"}
+    )
     if surplus:
         raise LaneConfigError(
             f"{where}: declares rigor {list(rigor)}, which reads none of "
@@ -1058,6 +1242,16 @@ def _load_judge(
         if not base:
             raise LaneConfigError(f"{where}: 'judge.base' is empty")
 
+    require_branch = None
+    if require_branch_declared:
+        require_branch = _as_bool(
+            table["require_branch"], where, "judge.require_branch"
+        )
+
+    targets = None
+    if targets_declared:
+        targets = _load_targets(table["targets"], where)
+
     attestation_dir = None
     evidence = None
     if has_attestation_dir:
@@ -1074,6 +1268,9 @@ def _load_judge(
         mutation=mutation,
         canary=canary,
         base=base,
+        mode=mode,
+        targets=targets,
+        require_branch=require_branch,
         attestation_dir=attestation_dir,
         evidence=evidence,
     )

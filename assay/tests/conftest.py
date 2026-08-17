@@ -645,8 +645,11 @@ def make_r1_judge(
     allow_excluded: bool = False,
     coverage_format: str = "coverage-py-json",
     coverage_artifact: str = "cov.json",
-    base: str = "main",
+    base: str | None = "main",
     mutation: "MutationConfig | None" = None,
+    mode: str | None = None,
+    targets: tuple[str, ...] | None = None,
+    require_branch: bool | None = None,
 ) -> JudgeConfig:
     """A fully-resolved R1 ``JudgeConfig`` — every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
@@ -656,7 +659,19 @@ def make_r1_judge(
     ref straight to that function, not through this field -- only
     ``runner.run_lane`` reads ``judge.base`` itself. *mutation* (P18)
     lets a caller build a combined R1+R2 judge without a second
-    constructor -- ``None`` (the default) is unchanged R1-only behaviour."""
+    constructor -- ``None`` (the default) is unchanged R1-only behaviour.
+
+    *mode*/*targets*/*require_branch* (wave-1 §4/§5, A-259/A-260) default
+    to ``None`` -- the identical "declared value or None, never a filled-in
+    default" discipline :class:`JudgeConfig` itself keeps -- so every
+    caller written before this wave is unaffected: ``None``/``None``/
+    ``None`` still resolves to ``"changed_lines"``/no targets/``False`` at
+    the one named place (:mod:`assay.runner`'s ``evaluate_r1``). A caller
+    building a ``whole_target`` lane passes ``mode="whole_target"`` and
+    ``targets=(...)`` explicitly; passing ``targets`` without ``base=None``
+    is legal here (this helper does not enforce the config loader's own
+    "base forbidden under whole_target with no R2" rule -- that is
+    :mod:`assay.config`'s OWN test surface, not this bypass helper's)."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),
@@ -667,6 +682,9 @@ def make_r1_judge(
         mutation=mutation,
         canary=None,
         base=base,
+        mode=mode,
+        targets=targets,
+        require_branch=require_branch,
     )
 
 
@@ -781,17 +799,51 @@ def write_coverage_json(path: Path, files: Mapping[str, Mapping[str, list]]) -> 
     fake, non-Python LANGUAGE to demonstrate format and language are
     independent axes (DESIGN-GUIDE §11): a synthetic ``.zzz`` file can be
     "measured" by a real, already-proven coverage FORMAT parser.
+
+    (wave-1 §3, Addendum A8) A record may additionally carry
+    ``executed_branches``/``missing_branches`` -- lists of ``[src, dst]``
+    pairs, the exact shape the parser's own module docstring documents.
+    When ANY file record supplies either array, the document also carries
+    ``meta.branch_coverage = true`` (coverage.py's own real convention);
+    when none does, ``meta`` is omitted entirely, which the parser reads as
+    branch capability ``"unavailable"`` for every file -- so every caller
+    written before this wave, which never mentions either key, is
+    byte-for-byte unaffected.
     """
-    document = {
+    any_branches = any(
+        "executed_branches" in record or "missing_branches" in record
+        for record in files.values()
+    )
+    document: dict = {
         "files": {
             key: {
                 "executed_lines": list(record.get("executed_lines", [])),
                 "missing_lines": list(record.get("missing_lines", [])),
                 "excluded_lines": list(record.get("excluded_lines", [])),
+                **(
+                    {
+                        "executed_branches": [
+                            list(pair) for pair in record["executed_branches"]
+                        ]
+                    }
+                    if "executed_branches" in record
+                    else {}
+                ),
+                **(
+                    {
+                        "missing_branches": [
+                            list(pair) for pair in record["missing_branches"]
+                        ]
+                    }
+                    if "missing_branches" in record
+                    else {}
+                ),
             }
             for key, record in files.items()
         }
     }
+    if any_branches:
+        document["meta"] = {"branch_coverage": True}
     path.write_text(json.dumps(document), encoding="utf-8")
 
 

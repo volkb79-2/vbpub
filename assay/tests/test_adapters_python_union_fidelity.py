@@ -169,7 +169,7 @@ def test_every_construct_family_is_classified_correctly_via_the_real_adapter():
     assert result.outcome is Outcome.FAIL
     assert result.reason_code is ReasonCode.EXCLUDED_LINES
     assert result.considered == 1
-    assert result.changed_executable == 10  # executed(9) + missing(1)
+    assert result.executable == 10  # executed(9) + missing(1)
     assert result.covered == 9
     assert result.missing_lines == {"pkg/mod.py": frozenset({9})}
     assert result.files_missing_coverage == ()
@@ -261,7 +261,7 @@ def test_normalize_coverage_key_reconciles_the_real_pipeline_end_to_end():
     result = _evaluate(added, profile, adapter, allow_excluded=False)
 
     assert result.covered == 1
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.missing_lines == {"pkg/foo.py": frozenset({3})}
 
 
@@ -307,6 +307,6 @@ def test_a_sibling_prefixed_files_own_coverage_is_not_stolen_or_lost():
     assert result.outcome is Outcome.PASS
     assert result.considered == 2
     assert result.covered == 2
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.files_missing_coverage == ()
     assert result.missing_lines == {}

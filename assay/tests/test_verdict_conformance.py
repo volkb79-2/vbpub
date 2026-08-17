@@ -88,6 +88,9 @@ def _load_path(path: Path) -> dict:
 VOCABULARY: dict[str, tuple[str, ...]] = {
     "FAIL": (
         "UNCOVERED_LINES",
+        # wave-1 §4/A-258: a floor missed PURELY because of branches -- zero
+        # missing LINES, at least one uncovered arc.
+        "UNCOVERED_BRANCHES",
         "EXCLUDED_LINES",
         "UNCLASSIFIED_LINES",
         "MUTANTS_SURVIVED",
@@ -106,6 +109,14 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "MUTATION_DISCOVERY_FAILED",
     ),
     "NO_MEASUREMENT": (
+        # wave-1 §4/A-259: judge.require_branch=true over an "unavailable"
+        # branch capability -- a MEASURABILITY guard, checked before R1's
+        # mode dispatch.
+        "BRANCH_UNAVAILABLE",
+        # wave-1 §5/A-260: B005's anti-vacuity guard -- a whole_target
+        # target absent from the artifact, or measured with zero
+        # executable lines.
+        "TARGET_NOT_MEASURED",
         "DIRTY_TREE",
         # P21/A-178: a clean tree whose HEAD moved is not dirty.
         "HEAD_CHANGED",
@@ -831,7 +842,7 @@ def test_verify_rejects_an_r1_coverage_claim_without_judgment():
 
     failures = verify_document(document)
     assert any(
-        "an R1 coverage claim is declared without a corresponding judgment.r1" in f
+        "declared without a corresponding judgment.r1" in f
         for f in failures
     )
 
@@ -1119,7 +1130,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1138,6 +1149,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
         "env_effective": {},
         "scope": "S1",
         "enforcement": "gate",
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             {
                 "rigor": "R2",
@@ -1230,9 +1242,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 5: a verdict "
+        "schema_version 2 is not this verifier's version 6: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 5"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 6"
     ]
 
 
@@ -1251,7 +1263,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 5" in failures[0]
+    assert "schema_version 3 is not this verifier's version 6" in failures[0]
 
 
 # ============================================================================

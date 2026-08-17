@@ -19,7 +19,7 @@ from assay.verdict import Coverage
 
 BASE = {
     "covered": 2,
-    "changed_executable": 2,
+    "executable": 2,
     "pct": 100.0,
     "considered": 1,
     # P21: required, never defaulted -- see `Coverage.exclusion_capability`.
@@ -49,7 +49,7 @@ def test_the_new_fields_default_to_empty():
     """
     coverage = Coverage(
         covered=1,
-        changed_executable=1,
+        executable=1,
         pct=100.0,
         considered=1,
         exclusion_capability="reported",
@@ -117,7 +117,7 @@ def test_to_dict_always_emits_both_keys_even_when_empty():
     a whole, applied here to P07's own pair."""
     coverage = Coverage(
         covered=0,
-        changed_executable=0,
+        executable=0,
         pct=100.0,
         considered=0,
         exclusion_capability="reported",

@@ -41,11 +41,17 @@ from assay.verdict import (
     JudgmentR2,
     JudgmentResolved,
     Mutation,
+    SnapshotPolicy,
     Verdict,
     iso_utc,
     load_schema,
     schema_text,
 )
+
+#: (wave-1 §6, A-269) the plain repository-mode snapshot policy every
+#: R1/R2/R3 verdict built below carries -- one shared literal, since none of
+#: these hand-written constructors is itself testing the omission axis.
+REPOSITORY_POLICY = SnapshotPolicy(selection="repository")
 
 R1_JUDGMENT = Judgment(
     resolved=JudgmentResolved(
@@ -90,6 +96,7 @@ def build(outcome: str) -> Verdict:
             scope="S1",
             enforcement="gate",
             judgment=R1_JUDGMENT,
+            snapshot_policy=REPOSITORY_POLICY,
             claims=(
                 Claim(
                     rigor="R0",
@@ -104,7 +111,7 @@ def build(outcome: str) -> Verdict:
                     verified_by_assay=True,
                     coverage=Coverage(
                         covered=12,
-                        changed_executable=12,
+                        executable=12,
                         pct=100.0,
                         considered=4,
                         exclusion_capability="reported",
@@ -137,6 +144,7 @@ def build(outcome: str) -> Verdict:
             scope="S1",
             enforcement="gate",
             judgment=R1_JUDGMENT,
+            snapshot_policy=REPOSITORY_POLICY,
             claims=(
                 Claim(
                     rigor="R0",
@@ -152,7 +160,7 @@ def build(outcome: str) -> Verdict:
                     reason_code=ReasonCode.UNCOVERED_LINES,
                     coverage=Coverage(
                         covered=2,
-                        changed_executable=3,
+                        executable=3,
                         pct=100.0 * 2 / 3,
                         considered=1,
                         exclusion_capability="reported",
@@ -211,6 +219,7 @@ def build_no_measurement() -> Verdict:
         env_effective={},
         scope="S1",
         enforcement="gate",
+        snapshot_policy=REPOSITORY_POLICY,
         claims=(
             Claim(
                 rigor="R0",
@@ -291,6 +300,7 @@ def build_inconclusive() -> Verdict:
                 kill_attribution="unattributed",
             ),
         ),
+        snapshot_policy=REPOSITORY_POLICY,
         claims=(
             Claim(
                 rigor="R0",

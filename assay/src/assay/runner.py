@@ -84,9 +84,10 @@ from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequen
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
 from .config import IsolationConfig, Lane
+from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
-from .evaluate import evaluate_coverage
+from .evaluate import evaluate_coverage, evaluate_targets
 from .output import VerdictOutput
 from .verdict import (
     CanaryResult,
@@ -99,6 +100,7 @@ from .verdict import (
     JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
+    SnapshotPolicy,
     Verdict,
     iso_utc,
     rollup,
@@ -502,7 +504,7 @@ def evaluate_r1(
     *,
     repo: Path,
     project_root: Path,
-    base: str,
+    base: str | None,
     adapter: LanguageAdapter,
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
@@ -572,40 +574,86 @@ def evaluate_r1(
     same ``base``..``HEAD`` pair a second time, for the identical
     frozen-signature reason *on_base_resolved* exists: :mod:`assay.canary`
     already depends on this function returning a bare :class:`Claim`.
+
+    **wave-1 §4/§5 (A-258/A-259/A-260).** ``judge.mode`` (absent means
+    ``"changed_lines"``) dispatches to :func:`~assay.evaluate.
+    evaluate_coverage` (unchanged shape) or to the whole-target mode's
+    :func:`~assay.evaluate.evaluate_targets`, which has no base and no
+    diff: neither *on_base_resolved* nor *on_added_resolved* is ever called
+    on that path, and *base* itself is not read at all. ``judge.
+    require_branch`` (absent means ``False``) is a MEASURABILITY guard --
+    checked once, beside :func:`~assay.coverage.check_empty_coverage`,
+    before mode dispatch, never inside either evaluate function -- so an
+    artifact whose branch capability is ``"unavailable"`` renders
+    ``NO_MEASUREMENT``/``BRANCH_UNAVAILABLE`` regardless of which mode was
+    declared.
     """
     judge = lane.judge
+    effective_mode = judge.mode if judge.mode is not None else "changed_lines"
+    effective_require_branch = (
+        judge.require_branch if judge.require_branch is not None else False
+    )
     try:
         measurability.check_dirty_tree(repo, judge.source_root_paths, remaining=remaining)
-        resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
-        if on_base_resolved is not None:
-            on_base_resolved(resolved.base_rev)
+
+        resolved = None
+        if effective_mode == "changed_lines":
+            resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
+            if on_base_resolved is not None:
+                on_base_resolved(resolved.base_rev)
+
         if profile is None:
             profile = coverage.read_coverage_artifact(
                 project_root, judge.coverage.artifact, declared_format=judge.coverage.format
             )
         coverage.check_empty_coverage(profile)
+
+        if effective_require_branch and derive_branch_capability(profile) == "unavailable":
+            raise AssayError(
+                f"judge.require_branch is true but the coverage artifact's "
+                f"branch capability is 'unavailable' -- this format cannot "
+                f"report branch arcs at all, so judging on lines alone would "
+                f"be exactly the silent rigor downgrade require_branch "
+                f"exists to refuse",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.BRANCH_UNAVAILABLE,
+            )
+
         repo_top = git.repo_top(repo, remaining=remaining)
-        diff_text = git.run(
-            repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
-            remaining=remaining,
-        )
-        added = diff.parse_added_lines(diff_text)
-        if on_added_resolved is not None:
-            on_added_resolved(added)
 
-        def read_source_text(path: str) -> str:
-            return _read_bounded_source_text(repo_top, path, why="coverage classification")
+        if effective_mode == "whole_target":
+            result = evaluate_targets(
+                profile=profile,
+                adapter=adapter,
+                repo_top=repo_top,
+                project_root=project_root,
+                targets=judge.targets or (),
+                source_root_paths=judge.source_root_paths,
+                fail_under=judge.fail_under,
+                allow_excluded=judge.allow_excluded,
+            )
+        else:
+            diff_text = git.run(
+                repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
+                remaining=remaining,
+            )
+            added = diff.parse_added_lines(diff_text)
+            if on_added_resolved is not None:
+                on_added_resolved(added)
 
-        result = evaluate_coverage(
-            added=added,
-            profile=profile,
-            adapter=adapter,
-            repo_top=repo_top,
-            source_root_paths=judge.source_root_paths,
-            fail_under=judge.fail_under,
-            allow_excluded=judge.allow_excluded,
-            read_source_text=read_source_text,
-        )
+            def read_source_text(path: str) -> str:
+                return _read_bounded_source_text(repo_top, path, why="coverage classification")
+
+            result = evaluate_coverage(
+                added=added,
+                profile=profile,
+                adapter=adapter,
+                repo_top=repo_top,
+                source_root_paths=judge.source_root_paths,
+                fail_under=judge.fail_under,
+                allow_excluded=judge.allow_excluded,
+                read_source_text=read_source_text,
+            )
     except AssayError as exc:
         return Claim(
             rigor="R1",
@@ -623,7 +671,7 @@ def evaluate_r1(
         reason_code=result.reason_code,
         coverage=Coverage(
             covered=result.covered,
-            changed_executable=result.changed_executable,
+            executable=result.executable,
             pct=result.pct,
             considered=result.considered,
             exclusion_capability=result.exclusion_capability,
@@ -633,6 +681,11 @@ def evaluate_r1(
             files_with_unclassified_lines=result.files_with_unclassified_lines,
             excluded_lines=result.excluded_lines,
             files_with_excluded_lines=result.files_with_excluded_lines,
+            branches_covered=result.branches_covered,
+            branches_total=result.branches_total,
+            branch_capability=result.branch_capability,
+            missing_branch_lines=result.missing_branch_lines,
+            files_with_missing_branch_lines=result.files_with_missing_branch_lines,
         ),
     )
 
@@ -834,6 +887,7 @@ def assemble_verdict(
         judgment=judgment,
         claims=claims,
         evidence=evidence,
+        snapshot_policy=_verdict_snapshot_policy(lane),
     )
 
 
@@ -1058,6 +1112,33 @@ def _snapshot_policy_for_lane(lane: Lane) -> IsolationConfig | None:
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
     return None
+
+
+def _verdict_snapshot_policy(lane: Lane) -> SnapshotPolicy | None:
+    """(B006(a)/A-269 WI-4, §5.2) The WIRE ``snapshot_policy`` for *lane* --
+    ``None`` exactly when :func:`_snapshot_policy_for_lane` returns
+    ``None`` (an R0-only lane), and the closed-enum copy of
+    ``lane.isolation`` otherwise. Called by :func:`assemble_verdict`, which
+    is the SINGLE construction site every producer path -- normal
+    completion, ``refuse_lane``, the attestation-timeout/adapter-refusal
+    CLI branches, dirty-tree/HEAD-drift refusals, and the generic
+    ``except AssayError`` mapping -- already funnels through, so this is
+    the one place the runner and the verdict producer can never disagree
+    about which policy a lane carries (the identical "one helper, not two
+    copies that could drift" reasoning :func:`_snapshot_policy_for_lane`'s
+    own docstring already gives).
+    """
+    policy = _snapshot_policy_for_lane(lane)
+    if policy is None:
+        return None
+    return SnapshotPolicy(
+        selection=policy.snapshot_selection,
+        unsafe_symlink_omissions=(
+            policy.unsafe_symlink_omissions
+            if policy.snapshot_selection == "repository-minus-unsafe-symlinks"
+            else None
+        ),
+    )
 
 
 def _refuse_coverage_artifact_omission_collision(
@@ -1493,7 +1574,17 @@ def _run_prepared_lane(
                     remaining=deadline.remaining,
                 )
                 claims += (r1_claim,)
-                if r1_claim.coverage is not None:
+                # wave-1 §6/A-264: R1 records its policy whenever R1 was
+                # ATTEMPTED -- one case wider than "rendered a coverage
+                # payload", mirroring A-183's identical R2 widening for
+                # MUTATION_UNSUPPORTED. Without this, BRANCH_UNAVAILABLE and
+                # TARGET_NOT_MEASURED could not record which target was
+                # attempted or which floor was asked for.
+                r1_attempted = r1_claim.coverage is not None or r1_claim.reason_code in (
+                    ReasonCode.BRANCH_UNAVAILABLE,
+                    ReasonCode.TARGET_NOT_MEASURED,
+                )
+                if r1_attempted:
                     # (P33/A-223f) v5 collapses two independently-resolved
                     # `base` values into ONE field, so which wins is stated
                     # rather than left to whoever writes the code next:
@@ -1506,7 +1597,13 @@ def _run_prepared_lane(
                     # commit assay measured and the one it recorded, which
                     # must be loud rather than silently resolved in favour
                     # of whichever value happened to be assigned last.
-                    if resolved_base_holder[0] != resolved_base:
+                    # wave-1 §5/A-260: a whole-target R1 never resolves a
+                    # base at all (`on_base_resolved` is never called on
+                    # that path, evaluate_r1's own docstring), so
+                    # `resolved_base_holder` stays empty for it -- this
+                    # comparison is therefore skipped, never a forced
+                    # IndexError, whenever R1 resolved no base of its own.
+                    if resolved_base_holder and resolved_base_holder[0] != resolved_base:
                         raise AssayError(
                             f"the comparison commit resolved inside the "
                             f"snapshot ({resolved_base_holder[0]}) differs "
@@ -1517,11 +1614,22 @@ def _run_prepared_lane(
                             outcome=Outcome.ERROR,
                             reason_code=ReasonCode.GIT_FAILED,
                         )
+                    r1_effective_mode = (
+                        lane.judge.mode if lane.judge.mode is not None else "changed_lines"
+                    )
+                    r1_effective_require_branch = (
+                        lane.judge.require_branch
+                        if lane.judge.require_branch is not None
+                        else False
+                    )
                     judgment_r1 = JudgmentR1(
                         coverage_format=lane.judge.coverage.format,
                         coverage_artifact=lane.judge.coverage.artifact,
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
+                        mode=r1_effective_mode,
+                        targets=lane.judge.targets,
+                        require_branch=r1_effective_require_branch,
                     )
                 if added_holder:
                     added = added_holder[0]

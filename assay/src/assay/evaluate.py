@@ -73,17 +73,17 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass
 from enum import Enum, auto
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from .adapters.base import LanguageAdapter, StatementSpan
-from .coverage import derive_exclusion_capability
+from .coverage import derive_branch_capability, derive_exclusion_capability
 from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["CoverageEvaluation", "evaluate_coverage"]
+__all__ = ["CoverageEvaluation", "evaluate_coverage", "evaluate_targets"]
 
 
 class _Attribution(Enum):
@@ -151,13 +151,31 @@ class CoverageEvaluation:
     """
 
     covered: int
-    changed_executable: int
+    #: (wave-1 §4, A-262) changed, considered, non-excluded LINES this
+    #: evaluation's own mode counted -- renamed from ``changed_executable``:
+    #: under :func:`evaluate_targets`'s whole-target mode nothing about these
+    #: lines was "changed" by anything, so the old name would put a false
+    #: statement on the wire. Line-only; the branch side gets its own two
+    #: integers below, so ``pct`` is the combined value (A-263) while an
+    #: independent consumer can still re-derive it from the four counters
+    #: alone.
+    executable: int
+    #: (wave-1 §4, A-263) the COMBINED line+branch percentage: ``(covered +
+    #: branches_covered) / (executable + branches_total)``, exactly
+    #: ``coverage.py``'s own ``summary.percent_covered`` under
+    #: ``--cov-branch``. Degenerates to today's line-only value with no
+    #: special case when ``branches_total`` is 0 (``branch_capability ==
+    #: "unavailable"``, or a "reported" artifact with genuinely zero arcs on
+    #: the judged lines).
     pct: float
     #: changed files under the source roots this evaluation actually
     #: considered — under a source root, adapter-recognised as source, not a
     #: test path, not inside an excluded directory. Present whether or not
     #: the file ended up contributing any executable lines (srdm's
-    #: ``considered`` fix: a 0/0 pass explains itself).
+    #: ``considered`` fix: a 0/0 pass explains itself). Under
+    #: :func:`evaluate_targets`'s whole-target mode this is instead the
+    #: number of declared TARGETS judged (§5 rule 6) -- there is no diff to
+    #: intersect, so "changed files considered" has no meaning there.
     considered: int
     #: changed, executable, non-excluded lines that were NOT executed,
     #: keyed exactly like :attr:`assay.diff.AddedLines.by_file` (A-096). A
@@ -202,6 +220,29 @@ class CoverageEvaluation:
     #: evaluation's own outcome. Carried through to
     #: :attr:`assay.verdict.Coverage.exclusion_capability` unchanged.
     exclusion_capability: str
+    #: (wave-1 §4, A-257/A-258) branch arcs COVERED across every branch
+    #: source line this evaluation's mode counted -- zero when
+    #: :attr:`branch_capability` is ``"unavailable"``.
+    branches_covered: int
+    #: (wave-1 §4) branch arcs this evaluation's mode counted in total --
+    #: zero when :attr:`branch_capability` is ``"unavailable"``.
+    branches_total: int
+    #: (wave-1 §3.2/§4, A-257) whether the coverage FORMAT could report
+    #: branch arcs at all -- derived from the parsed profile by
+    #: :func:`assay.coverage.derive_branch_capability` BEFORE any per-file
+    #: evaluation (Addendum A7), mirroring :attr:`exclusion_capability`
+    #: exactly.
+    branch_capability: str
+    #: (wave-1 §4) counted, branch-source lines with at least one uncovered
+    #: arc -- same shape/discipline as :attr:`missing_lines` (absent means
+    #: none, never an empty set). A line reached only through rule 3b's span
+    #: attribution never appears here (crediting arcs leaving a DIFFERENT
+    #: physical line would invent a measurement).
+    missing_branch_lines: Mapping[str, frozenset[int]]
+    #: (wave-1 §4) paths appearing in :attr:`missing_branch_lines`, sorted --
+    #: the same "always present, possibly empty, sorted" discipline every
+    #: other ``files_with_*`` summary in this project keeps.
+    files_with_missing_branch_lines: tuple[str, ...]
     #: PASS or FAIL — never any other :class:`~assay.errors.Outcome`. The
     #: three NO_MEASUREMENT causes are guarded before this function is ever
     #: called (A-090) and are not this module's concern.
@@ -276,35 +317,28 @@ def evaluate_coverage(
     *profile.files* normalize to the same repository path (module
     docstring, P15) — the only way this function raises at all.
     """
-    cov_by_repo_path: dict[str, FileCoverage] = {}
-    raw_key_by_repo_path: dict[str, str] = {}
-    for raw_key, file_cov in profile.files.items():
-        repo_path = adapter.normalize_coverage_key(raw_key)
-        colliding_raw_key = raw_key_by_repo_path.get(repo_path)
-        if colliding_raw_key is not None:
-            raise AssayError(
-                f"coverage artifact keys {colliding_raw_key!r} and "
-                f"{raw_key!r} both normalize to repository path "
-                f"{repo_path!r} -- ambiguous which one's data applies, so "
-                f"the artifact cannot be judged without inventing a "
-                f"precedence rule the lane never declared.",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            )
-        raw_key_by_repo_path[repo_path] = raw_key
-        cov_by_repo_path[repo_path] = file_cov
+    cov_by_repo_path = _normalized_profile_files(profile, adapter)
 
     # P21/A-183: derived from the PARSED PROFILE, before any per-file
     # evaluation, so it is a property of the artifact rather than of what
     # this diff happened to touch. A mixed profile refuses here.
     exclusion_capability = derive_exclusion_capability(profile)
+    # wave-1 §3.2/§4, A-257/Addendum A7: the identical "artifact-level,
+    # before any per-file evaluation" derivation, one field over. The
+    # REFUSAL this guards (`judge.require_branch`) is a measurability
+    # question and lives beside `check_empty_coverage` in `evaluate_r1`'s
+    # own guard sequence -- never here, which is arithmetic only.
+    branch_capability = derive_branch_capability(profile)
 
     total_changed_exec = 0
     total_covered = 0
+    total_branches_covered = 0
+    total_branches_total = 0
     missing_lines: dict[str, frozenset[int]] = {}
     files_missing: list[str] = []
     unclassified_lines: dict[str, frozenset[int]] = {}
     excluded_lines: dict[str, frozenset[int]] = {}
+    missing_branch_lines: dict[str, frozenset[int]] = {}
     considered = 0
     has_disallowed_excluded = False
 
@@ -347,6 +381,24 @@ def evaluate_coverage(
 
         total_changed_exec += len(changed_exec)
         total_covered += len(changed_exec & file_cov.executed)
+
+        # wave-1 §4 rule 1 (A-258): a changed, considered line that is a
+        # branch source contributes its arcs. Deliberately over `changed_exec`
+        # ONLY, never over any line rule 3b (below) resolves by attribution
+        # -- rule 2 says a span-attributed line "contributes nothing to the
+        # branch side", because attribution answers which STATEMENT's status
+        # a line inherits, and crediting arcs leaving a different physical
+        # line (the anchor) would invent a measurement. Rule 3 (a branch
+        # source line that is excluded) is unreachable here by construction:
+        # `changed_exec` is drawn from `executable = executed | missing`,
+        # already disjoint from `excluded` (FileCoverage's own invariant).
+        branch_covered, branch_total, branch_missing = _tally_branches(
+            changed_exec, file_cov
+        )
+        total_branches_covered += branch_covered
+        total_branches_total += branch_total
+        if branch_missing:
+            missing_branch_lines[path] = branch_missing
 
         # Rule 3b (P07): a changed line in none of executed/missing/excluded
         # is offered to span attribution before falling through to rule 4,
@@ -391,10 +443,15 @@ def evaluate_coverage(
         if file_unclassified:
             unclassified_lines[path] = frozenset(file_unclassified)
 
+    # A-263: the COMBINED line+branch denominator/numerator. Degenerates to
+    # today's line-only value with no special case when `total_branches_total`
+    # is 0 -- an "unavailable" branch capability, or a "reported" artifact
+    # genuinely reporting zero arcs on the lines this evaluation counted.
+    total_denominator = total_changed_exec + total_branches_total
     pct = (
         100.0
-        if total_changed_exec == 0
-        else 100.0 * total_covered / total_changed_exec
+        if total_denominator == 0
+        else 100.0 * (total_covered + total_branches_covered) / total_denominator
     )
 
     if unclassified_lines:
@@ -411,14 +468,21 @@ def evaluate_coverage(
         reason_code = ReasonCode.EXCLUDED_LINES
     elif pct < fail_under:
         outcome = Outcome.FAIL
-        reason_code = ReasonCode.UNCOVERED_LINES
+        # wave-1 §4 outcome precedence: a floor missed PURELY because of
+        # branches -- zero missing LINES, at least one uncovered arc -- is
+        # UNCOVERED_BRANCHES, never UNCOVERED_LINES. "Which mechanism
+        # refused" is the distinction this project exists to keep.
+        if not missing_lines and total_branches_covered < total_branches_total:
+            reason_code = ReasonCode.UNCOVERED_BRANCHES
+        else:
+            reason_code = ReasonCode.UNCOVERED_LINES
     else:
         outcome = Outcome.PASS
         reason_code = None
 
     return CoverageEvaluation(
         covered=total_covered,
-        changed_executable=total_changed_exec,
+        executable=total_changed_exec,
         pct=pct,
         considered=considered,
         missing_lines=MappingProxyType(dict(missing_lines)),
@@ -428,6 +492,341 @@ def evaluate_coverage(
         excluded_lines=MappingProxyType(dict(excluded_lines)),
         files_with_excluded_lines=tuple(sorted(excluded_lines)),
         exclusion_capability=exclusion_capability,
+        branches_covered=total_branches_covered,
+        branches_total=total_branches_total,
+        branch_capability=branch_capability,
+        missing_branch_lines=MappingProxyType(dict(missing_branch_lines)),
+        files_with_missing_branch_lines=tuple(sorted(missing_branch_lines)),
+        outcome=outcome,
+        reason_code=reason_code,
+    )
+
+
+def _normalized_profile_files(
+    profile: CoverageProfile, adapter: LanguageAdapter
+) -> dict[str, FileCoverage]:
+    """*profile.files*, keyed by REPO-TOP-RELATIVE path after
+    :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`
+    (module docstring, P15) -- the one implementation shared by
+    :func:`evaluate_coverage` and :func:`evaluate_targets`, so the "two raw
+    keys, one repository path" refusal cannot drift between the two modes.
+
+    Raises :class:`~assay.errors.AssayError`
+    (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
+    function raises.
+    """
+    cov_by_repo_path: dict[str, FileCoverage] = {}
+    raw_key_by_repo_path: dict[str, str] = {}
+    for raw_key, file_cov in profile.files.items():
+        repo_path = adapter.normalize_coverage_key(raw_key)
+        colliding_raw_key = raw_key_by_repo_path.get(repo_path)
+        if colliding_raw_key is not None:
+            raise AssayError(
+                f"coverage artifact keys {colliding_raw_key!r} and "
+                f"{raw_key!r} both normalize to repository path "
+                f"{repo_path!r} -- ambiguous which one's data applies, so "
+                f"the artifact cannot be judged without inventing a "
+                f"precedence rule the lane never declared.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        raw_key_by_repo_path[repo_path] = raw_key
+        cov_by_repo_path[repo_path] = file_cov
+    return cov_by_repo_path
+
+
+def _tally_branches(
+    lines: Iterable[int], file_cov: FileCoverage
+) -> tuple[int, int, frozenset[int]]:
+    """Branch arcs contributed by *lines* against *file_cov*'s own branch
+    detail (wave-1 §4). *lines* must already be the DIRECTLY-classified set
+    a caller wants credited -- this function does not know or care whether
+    that is a changed-line intersection (:func:`evaluate_coverage`) or a
+    whole target's complete executable set (:func:`evaluate_targets`); both
+    modes share the identical per-line arithmetic (A-258's rule extends
+    unchanged to B005, per §5 rule 5).
+
+    Returns ``(covered, total, missing_lines)``. ``missing_lines`` is the
+    subset of *lines* that are branch sources carrying at least one
+    uncovered arc -- same "absent means none" discipline as every other
+    line-set field in this project. A line absent from
+    :attr:`~assay.coverage_parsers.model.FileCoverage.branches`' own
+    ``by_line`` (not a branch source at all) contributes nothing, and
+    ``file_cov.branches is None`` (branch capability ``"unavailable"`` for
+    this file) contributes nothing to any of the three.
+    """
+    if file_cov.branches is None:
+        return 0, 0, frozenset()
+    covered = 0
+    total = 0
+    missing: set[int] = set()
+    for line in lines:
+        arc = file_cov.branches.by_line.get(line)
+        if arc is None:
+            continue
+        line_covered, line_total = arc
+        covered += line_covered
+        total += line_total
+        if line_covered < line_total:
+            missing.add(line)
+    return covered, total, frozenset(missing)
+
+
+def _resolve_whole_target(
+    raw_target: str,
+    *,
+    adapter: LanguageAdapter,
+    project_root: Path,
+    source_root_paths: Sequence[Path],
+) -> str:
+    """One declared ``judge.targets`` entry, resolved and structurally
+    validated against the REAL filesystem of the snapshot being judged
+    (wave-1 §5 rule 2) -- deliberately never at lane-load time, because a
+    whole-target lane must be judgeable from any commit including a
+    post-merge ``main`` (A-260's whole point), and a target's existence and
+    kind are facts of the commit being judged, not of the declaration.
+
+    Checks run in exactly :func:`assay.config._load_canary`'s own order --
+    symlink, then containment, then existence/kind -- so the two
+    project-relative-path gates in this file agree about which failure a
+    consumer sees first.
+
+    Refuses ``ERROR``/``BAD_LANE_CONFIG``, naming *raw_target* and the gate
+    it failed: a symlink (``is_symlink`` never raises for a non-existent
+    path, so it is checked before anything that would); outside every
+    declared source root; anything other than a REGULAR FILE -- never a
+    directory, deliberately: a directory target expanding to N files of
+    which only one is measured would PASS while leaving the rest unjudged,
+    which is precisely the vacuity hole this whole mode exists to close;
+    inside an adapter-excluded directory; not adapter-recognised source; or
+    a test path per the adapter's own convention.
+
+    Returns the target's PROJECT-relative POSIX spelling (the profile
+    lookup's repo-top-relative conversion is the caller's job, §5 rule 1).
+    """
+    candidate = project_root / raw_target
+    if candidate.is_symlink():
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} is a symlink; a "
+            f"whole-target entry must be a real, ordinary source file",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    resolved = candidate.resolve()
+    if not any(resolved.is_relative_to(root) for root in source_root_paths):
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} resolves to {resolved}, "
+            f"which is not contained beneath any declared source root "
+            f"{[str(root) for root in source_root_paths]}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    if not resolved.is_file():
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} does not exist as a "
+            f"regular file under the project root {project_root} (looked "
+            f"for {resolved}); a whole-target entry is always a regular "
+            f"file, never a directory",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    rel_to_project = resolved.relative_to(project_root).as_posix()
+    if any(
+        part in adapter.excluded_dir_names
+        for part in Path(rel_to_project).parts[:-1]
+    ):
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} sits inside an excluded "
+            f"directory ({sorted(adapter.excluded_dir_names)})",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    if not any(
+        fnmatch.fnmatch(rel_to_project, glob) for glob in adapter.source_globs
+    ):
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} is not adapter-recognised "
+            f"source ({list(adapter.source_globs)})",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    if adapter.is_test_path(rel_to_project):
+        raise AssayError(
+            f"judge.targets entry {raw_target!r} is a test path per the "
+            f"adapter's own convention",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    return rel_to_project
+
+
+def evaluate_targets(
+    *,
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    repo_top: Path,
+    project_root: Path,
+    targets: Sequence[str],
+    source_root_paths: Sequence[Path],
+    fail_under: float,
+    allow_excluded: bool,
+) -> CoverageEvaluation:
+    """B005's whole-target judge (wave-1 §5, A-260): intersect a FIXED,
+    lane-declared set of source files with *profile* -- never a diff.
+
+    Returns the SAME :class:`CoverageEvaluation` type
+    :func:`evaluate_coverage` returns, keeping one claim-assembly path for
+    both modes. Deliberately NOT ``evaluate_coverage`` with a mode flag:
+    that function's whole contract is "intersect a diff with a profile", and
+    a mode parameter making half its parameters meaningless is the shape
+    that produces vacuous passes.
+
+    There is no diff, no base, and no span attribution here: every judged
+    line comes straight from the artifact, so
+    :attr:`CoverageEvaluation.unclassified_lines` is always empty and
+    :attr:`~CoverageEvaluation.files_with_unclassified_lines` always ``()``,
+    and :attr:`~CoverageEvaluation.files_missing_coverage` is always ``()``
+    too -- an unmeasured target refuses outright (below) rather than
+    falling through to that field the way an unmeasured changed-line file
+    does.
+
+    *targets* are the lane's declared, already load-validated (§5's
+    canonical-spelling grammar, :mod:`assay.config`) project-relative
+    paths. Each is resolved and validated against the real snapshot
+    filesystem by :func:`_resolve_whole_target`, then looked up in
+    *profile* by its REPO-TOP-RELATIVE spelling (the profile's own keys,
+    after :meth:`~assay.adapters.base.LanguageAdapter.normalize_coverage_key`,
+    are repo-top-relative -- rule 1). A target absent from the profile, or
+    present with zero executable lines, is B005's own load-bearing
+    anti-vacuity guard: ``NO_MEASUREMENT``/``TARGET_NOT_MEASURED``, naming
+    the target, rather than a vacuous ``100%`` of nothing -- the stopgap
+    this mode replaces reports exactly that vacuous pass when ``--cov=``
+    names a module nothing ever imported.
+
+    *considered* is the number of declared TARGETS judged (§5 rule 6),
+    never a count of files -- there is no diff to have "considered" a file
+    against.
+
+    Raises :class:`~assay.errors.AssayError` -- the two above, plus
+    ``ERROR``/``UNREADABLE_ARTIFACT`` on the identical normalized-key
+    collision :func:`evaluate_coverage` refuses (module docstring, P15).
+    """
+    cov_by_repo_path = _normalized_profile_files(profile, adapter)
+    exclusion_capability = derive_exclusion_capability(profile)
+    branch_capability = derive_branch_capability(profile)
+
+    resolved_project_root = project_root.resolve()
+    resolved_repo_top = repo_top.resolve()
+    try:
+        relative = resolved_project_root.relative_to(resolved_repo_top)
+    except ValueError as exc:
+        raise AssayError(
+            f"the project root {resolved_project_root} is not contained by "
+            f"its own repository top {resolved_repo_top}; a whole-target "
+            f"lane's declared targets have no repo-relative identity there",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        ) from exc
+    project_prefix = (
+        PurePosixPath(".")
+        if relative == Path(".")
+        else PurePosixPath(relative.as_posix())
+    )
+
+    total_executable = 0
+    total_covered = 0
+    total_branches_covered = 0
+    total_branches_total = 0
+    missing_lines: dict[str, frozenset[int]] = {}
+    excluded_lines: dict[str, frozenset[int]] = {}
+    missing_branch_lines: dict[str, frozenset[int]] = {}
+    has_disallowed_excluded = False
+
+    for raw_target in targets:
+        rel_to_project = _resolve_whole_target(
+            raw_target,
+            adapter=adapter,
+            project_root=resolved_project_root,
+            source_root_paths=source_root_paths,
+        )
+        repo_path = (project_prefix / rel_to_project).as_posix()
+        file_cov = cov_by_repo_path.get(repo_path)
+        target_executable = (
+            file_cov.executed | file_cov.missing
+            if file_cov is not None
+            else frozenset()
+        )
+        if file_cov is None or not target_executable:
+            raise AssayError(
+                f"judge.targets entry {raw_target!r} (coverage artifact key "
+                f"{repo_path!r}) has "
+                f"{'no entry at all' if file_cov is None else 'zero executable lines'} "
+                f"in the coverage artifact -- a whole-target floor refuses "
+                f"rather than pass on a target that was never measured",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.TARGET_NOT_MEASURED,
+            )
+
+        excluded = file_cov.excluded if file_cov.excluded is not None else frozenset()
+        if excluded:
+            excluded_lines[repo_path] = frozenset(excluded)
+            if not allow_excluded:
+                has_disallowed_excluded = True
+        if file_cov.missing:
+            missing_lines[repo_path] = frozenset(file_cov.missing)
+
+        total_executable += len(target_executable)
+        total_covered += len(file_cov.executed)
+
+        # wave-1 §5 rule 5: branch arithmetic identical to §4, over EVERY
+        # branch line of the target rather than a changed subset -- there
+        # is no span attribution here, so every branch-source line in
+        # `target_executable` is directly classified.
+        branch_covered, branch_total, branch_missing = _tally_branches(
+            target_executable, file_cov
+        )
+        total_branches_covered += branch_covered
+        total_branches_total += branch_total
+        if branch_missing:
+            missing_branch_lines[repo_path] = branch_missing
+
+    total_denominator = total_executable + total_branches_total
+    pct = (
+        100.0
+        if total_denominator == 0
+        else 100.0 * (total_covered + total_branches_covered) / total_denominator
+    )
+
+    if has_disallowed_excluded:
+        outcome = Outcome.FAIL
+        reason_code: ReasonCode | None = ReasonCode.EXCLUDED_LINES
+    elif pct < fail_under:
+        outcome = Outcome.FAIL
+        if not missing_lines and total_branches_covered < total_branches_total:
+            reason_code = ReasonCode.UNCOVERED_BRANCHES
+        else:
+            reason_code = ReasonCode.UNCOVERED_LINES
+    else:
+        outcome = Outcome.PASS
+        reason_code = None
+
+    return CoverageEvaluation(
+        covered=total_covered,
+        executable=total_executable,
+        pct=pct,
+        considered=len(targets),
+        missing_lines=MappingProxyType(dict(missing_lines)),
+        files_missing_coverage=(),
+        unclassified_lines=MappingProxyType({}),
+        files_with_unclassified_lines=(),
+        excluded_lines=MappingProxyType(dict(excluded_lines)),
+        files_with_excluded_lines=tuple(sorted(excluded_lines)),
+        exclusion_capability=exclusion_capability,
+        branches_covered=total_branches_covered,
+        branches_total=total_branches_total,
+        branch_capability=branch_capability,
+        missing_branch_lines=MappingProxyType(dict(missing_branch_lines)),
+        files_with_missing_branch_lines=tuple(sorted(missing_branch_lines)),
         outcome=outcome,
         reason_code=reason_code,
     )

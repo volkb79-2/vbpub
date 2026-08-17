@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "6666666666666666666666666666666666666666",
@@ -41,6 +41,9 @@
       "operators": ["python:compare-swap"],
       "kill_attribution": "unattributed"
     }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
   },
   "claims": [
     {

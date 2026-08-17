@@ -88,7 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -106,6 +106,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         "env_effective": {},
         "scope": "S1",
         "enforcement": "gate",
+        "snapshot_policy": {"selection": "repository"},
         "judgment": {
             # P33/V5-1: an R0,R2 lane records what it judged. This is the
             # exact shape v4 could not express -- no language, no source
@@ -467,7 +468,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "description": "drop the CHECK constraint",
     }
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -485,6 +486,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "env_effective": {},
         "scope": "S1",
         "enforcement": "gate",
+        "snapshot_policy": {"selection": "repository"},
         "judgment": {
             "resolved": {
                 "language": language,
@@ -676,7 +678,7 @@ def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
     broken = json.loads(json.dumps(r3_only))
     broken["resolved"]["base"] = "9" * 40
     failures = _raw(lambda d, f: check(d, f), broken)
-    assert failures and any("neither r1 nor r2" in f for f in failures), failures
+    assert failures and any("neither r2 nor r1" in f for f in failures), failures
 
 
 def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():

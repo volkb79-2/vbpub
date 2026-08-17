@@ -357,7 +357,7 @@ def test_a_diverged_symbolic_judge_base_resolves_to_its_forkpoint(
     r1 = verdict.claims[1]
     assert (r1.status, r1.reason_code) == (Outcome.PASS, None)
     assert r1.coverage.considered == 1
-    assert r1.coverage.changed_executable == 2, "the fork-point diff, not an empty one"
+    assert r1.coverage.executable == 2, "the fork-point diff, not an empty one"
     # The artifact binds the FORK POINT, never the declared symbolic name and
     # never the diverged tip -- P16's "the FULL resolved comparison commit".
     assert verdict.judgment.resolved.base == fork_point

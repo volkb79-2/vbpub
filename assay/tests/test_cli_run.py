@@ -631,6 +631,10 @@ base = "{base_rev}"
         "coverage_artifact",
         "fail_under",
         "allow_excluded",
+        # wave-1 §6 (A-260): mode/require_branch are now required and
+        # therefore always present; targets stays absent in changed-line mode.
+        "mode",
+        "require_branch",
     }
 
 

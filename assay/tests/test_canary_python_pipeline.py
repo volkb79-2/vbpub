@@ -29,7 +29,13 @@ from assay import canary
 from assay.adapters.python import PythonAdapter
 from assay.config import CoverageConfig, IsolationConfig, JudgeConfig, Lane
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Judgment, JudgmentR3, JudgmentResolved, Verdict
+from assay.verdict import (
+    Judgment,
+    JudgmentR3,
+    JudgmentResolved,
+    SnapshotPolicy,
+    Verdict,
+)
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "canary" / "python"
 assert (FIXTURE_DIR / "pkg" / "greet.py").is_file(), (
@@ -153,6 +159,7 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
             r3=JudgmentR3(mechanism=canary.MECHANISM_IMPORT_BREAK, target=TARGET_PATH),
         ),
         claims=(r0_claim, claim),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     document = __import__("json").loads(verdict.to_json())
     assert why_invalid(validator, document) == []

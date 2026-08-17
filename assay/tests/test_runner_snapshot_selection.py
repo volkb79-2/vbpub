@@ -23,17 +23,27 @@ landed on TOP of that already-working machinery:
 roots, cwd, mutation candidates, canary targets, or B005 targets -- this
 module does not add any.
 
-3. §6 WI-3's own embargo: until WI-4 lands the v6 ``snapshot_policy``
-   record, no LIVE checked-in lane may declare omission mode, and no assay
-   release may be cut. Asserted mechanically at the bottom of this module
-   against the real repository -- not left to a sentence in a report.
+3. §6 WI-3's own embargo, half (b) only. WI-3 imposed two halves: (a) no
+   LIVE checked-in lane may declare omission mode, and (b) no assay release
+   may be cut, until WI-4 lands the v6 ``snapshot_policy`` record. **Wave-1
+   WI-4 is this very commit** -- the v6 record now exists, so half (a)'s own
+   trigger condition is satisfied and ``test_no_live_lane_declares_
+   omission_mode_yet`` is RETIRED here, deliberately, not left failing and
+   not silently deleted: keeping it would turn a legitimate future lane's
+   real opt-in to omission mode into a spurious failure, for a prohibition
+   that no longer exists. Half (b) is a different kind of check -- an audit
+   of git tag HISTORY, not of WI-4's landing state -- and stays exactly as
+   written and exactly as binding: it protects the window between WI-1
+   landing lane schema v2 and this branch actually merging, so a release
+   cut from an unmerged intermediate state still has no v6 policy record to
+   attest it until the gate is green and this branch lands on the trunk
+   history the tag check walks.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
-import tomllib
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -612,11 +622,13 @@ def test_live_command_observes_exact_policy_in_every_unit(git_repo: GitRepo) -> 
 
 
 # ---------------------------------------------------------------------------
-# §6 WI-3's own embargo, asserted mechanically against the REAL enclosing
-# repository (never a fixture): until WI-4 lands, (a) no live checked-in
-# lane may declare `repository-minus-unsafe-symlinks`, and (b) no assay
-# release may be cut. This prevents a v5 verdict from reporting omission-
-# mode evidence with no v6 policy record to attest it.
+# §6 WI-3's own embargo, half (b), asserted mechanically against the REAL
+# enclosing repository (never a fixture): no assay release may be cut
+# between WI-1 landing lane schema v2 and this branch merging with a green
+# gate. This prevents a v5 verdict from reporting omission-mode evidence
+# with no v6 policy record to attest it. Half (a) -- no live checked-in
+# lane may declare omission mode -- was retired in the same commit that
+# landed WI-4's v6 `snapshot_policy` record; see the module docstring.
 # ---------------------------------------------------------------------------
 
 #: The monorepo top -- one level above assay's own project root, matching
@@ -637,39 +649,6 @@ def _repo_git(*args: str) -> str:
         ["git", "-C", str(_REPO_ROOT), *args],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-
-
-def test_no_live_lane_declares_omission_mode_yet() -> None:
-    """Embargo half (a). Scans every LIVE, tracked ``assay.toml`` this
-    repository actually ships -- never a frozen carve asset or a test
-    fixture -- and parses each with independent ``tomllib`` (never
-    ``assay.config``, so a bug in the loader itself could not hide a live
-    declaration from this audit). Omission mode is legitimate only inside
-    THIS work item's own disposable test fixtures until WI-4 lands.
-    """
-    tracked = [
-        line for line in _repo_git("ls-files", "--", "**/assay.toml").splitlines() if line
-    ]
-    live = [
-        rel for rel in tracked
-        if "/carve-assets/" not in rel and "/fixtures/" not in rel
-    ]
-    # A audit that silently scanned zero files would prove nothing -- assert
-    # the two projects known, TODAY, to carry a real lane file are both in
-    # the scanned set.
-    assert {"assay/assay.toml", "cmru/assay.toml"}.issubset(set(live)), live
-
-    for rel in live:
-        document = tomllib.loads((_REPO_ROOT / rel).read_text(encoding="utf-8"))
-        for lane_name, table in document.get("lanes", {}).items():
-            isolation = table.get("isolation")
-            if not isinstance(isolation, dict):
-                continue
-            assert isolation.get("snapshot_selection") != "repository-minus-unsafe-symlinks", (
-                f"{rel}: lane {lane_name!r} declares omission mode, which "
-                f"is embargoed until WI-4 lands the v6 snapshot_policy "
-                f"record (§6 WI-3)"
-            )
 
 
 def test_no_assay_release_has_been_cut_since_wi1_landed() -> None:

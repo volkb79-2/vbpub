@@ -39,6 +39,7 @@ from assay.verdict import (
     Judgment,
     JudgmentR1,
     JudgmentResolved,
+    SnapshotPolicy,
     Verdict,
     rollup,
 )
@@ -124,7 +125,7 @@ def _r1_claim(result: CoverageEvaluation) -> Claim:
         reason_code=result.reason_code,
         coverage=Coverage(
             covered=result.covered,
-            changed_executable=result.changed_executable,
+            executable=result.executable,
             pct=result.pct,
             considered=result.considered,
             exclusion_capability=result.exclusion_capability,
@@ -164,6 +165,7 @@ def _verdict(commit: str, started: str, ended: str, r1_claim: Claim) -> Verdict:
         enforcement="gate",
         judgment=R1_JUDGMENT,
         claims=claims,
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
 
 
@@ -234,7 +236,7 @@ def test_omitting_unclassified_locations_differs_from_the_expected_artifact():
         reason_code=result.reason_code,
         coverage=Coverage(
             covered=result.covered,
-            changed_executable=result.changed_executable,
+            executable=result.executable,
             pct=result.pct,
             considered=result.considered,
             exclusion_capability=result.exclusion_capability,
@@ -271,7 +273,7 @@ def test_rolling_up_unclassified_as_pass_differs_from_the_expected_artifact():
         verified_by_assay=True,
         coverage=Coverage(
             covered=result.covered,
-            changed_executable=result.changed_executable,
+            executable=result.executable,
             pct=result.pct,
             considered=result.considered,
             exclusion_capability=result.exclusion_capability,
@@ -300,6 +302,7 @@ def test_rolling_up_unclassified_as_pass_differs_from_the_expected_artifact():
         enforcement="gate",
         judgment=R1_JUDGMENT,
         claims=(r0_claim, buggy_r1_claim),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
 
     assert buggy_verdict.to_dict() != span_verdict_fixture("r1_fail_unclassified_lines")

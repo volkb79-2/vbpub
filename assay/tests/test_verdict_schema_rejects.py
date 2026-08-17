@@ -66,7 +66,7 @@ _PASSING_PAYLOAD = {
 #: wrong with the documents it is planted into below.
 ZEROED_COVERAGE = {
     "covered": 0,
-    "changed_executable": 0,
+    "executable": 0,
     "pct": 100.0,
     "considered": 0,
     "exclusion_capability": "reported",
@@ -76,6 +76,11 @@ ZEROED_COVERAGE = {
     "files_with_unclassified_lines": [],
     "excluded_lines": {},
     "files_with_excluded_lines": [],
+    "branches_covered": 0,
+    "branches_total": 0,
+    "branch_capability": "unavailable",
+    "missing_branch_lines": {},
+    "files_with_missing_branch_lines": [],
 }
 
 NON_PASS = [outcome.value for outcome in Outcome if outcome is not Outcome.PASS]
@@ -160,7 +165,7 @@ def test_a_coverage_block_missing_considered_is_rejected(
     assert not validator.is_valid(document)
 
 
-@pytest.mark.parametrize("field", ["covered", "changed_executable", "pct"])
+@pytest.mark.parametrize("field", ["covered", "executable", "pct"])
 def test_a_coverage_block_missing_a_number_is_rejected(
     field: str, validator: Draft202012Validator
 ):
@@ -231,6 +236,11 @@ def test_a_non_pass_claim_missing_reason_code_is_rejected(
     )[0].value
     document = verdict_fixture("PASS")
     document["declared_rigor"] = ["R0"]
+    # wave-1 §6: the PASS fixture is R0,R1 and therefore carries
+    # snapshot_policy; downgrading declared_rigor to R0-only without also
+    # dropping it now trips the new schema-level conditional this test does
+    # not exist to check.
+    document.pop("snapshot_policy", None)
     claim = {
         "rigor": "R0",
         "source": "computed",
@@ -295,7 +305,7 @@ def test_the_model_refuses_a_no_measurement_claim_with_coverage():
             reason_code=ReasonCode.DIRTY_TREE,
             coverage=Coverage(
                 covered=0,
-                changed_executable=0,
+                executable=0,
                 pct=100.0,
                 considered=0,
                 exclusion_capability="reported",
@@ -320,7 +330,7 @@ def test_the_model_refuses_a_coverage_payload_on_a_non_r1_claim(rigor: str):
             verified_by_assay=True,
             coverage=Coverage(
                 covered=1,
-                changed_executable=1,
+                executable=1,
                 pct=100.0,
                 considered=1,
                 exclusion_capability="reported",
@@ -355,11 +365,11 @@ def test_the_model_refuses_a_pass_claim_carrying_a_reason_code():
     "kwargs,match",
     [
         ({"covered": -1}, "must not be negative"),
-        ({"changed_executable": -2}, "must not be negative"),
+        ({"executable": -2}, "must not be negative"),
         ({"considered": -3}, "must not be negative"),
         ({"pct": 101.0}, "between 0 and 100"),
         ({"pct": -0.5}, "between 0 and 100"),
-        ({"covered": 4}, "exceeds changed_executable"),
+        ({"covered": 4}, "exceeds executable"),
         ({"covered": True}, "must be an integer"),
         ({"pct": "100"}, "must be a number"),
     ],
@@ -367,7 +377,7 @@ def test_the_model_refuses_a_pass_claim_carrying_a_reason_code():
 def test_the_coverage_payload_refuses_an_impossible_measurement(kwargs, match):
     base = {
         "covered": 3,
-        "changed_executable": 3,
+        "executable": 3,
         "pct": 100.0,
         "considered": 1,
         "exclusion_capability": "reported",
