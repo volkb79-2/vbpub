@@ -18,8 +18,8 @@ wins and this file is stale.
 * **Requirement, authoritative over both contracts:** `nyxloom-trove/4-backlog.md`
   items B005 and B006 — but note the B006(a) carve deliberately changes the
   requirement's point 1, gated on a new ruling A-269 rather than silently.
-* **Rulings:** `decisions.md` A-257…A-268. **A-269 is proposed but NOT YET
-  WRITTEN**; the B006(a) carve declares itself mechanically BLOCKED until it is.
+* **Rulings:** `decisions.md` A-257…**A-269**. A-269 is written, so the B006(a)
+  carve's BLOCKED condition is cleared and its WI-1 may land.
 
 ## Done
 
@@ -116,13 +116,11 @@ immutable.
 
 ## Remaining, in order
 
-1. **WI-0 of the B006(a) carve — write A-269, and supersede the dead §1.**
-   Nothing in B006(a) may be implemented before this: the carve declares itself
-   mechanically BLOCKED without the ruling, because A-266 otherwise mandates a
-   mutually incompatible public contract. WI-0 also enumerates every sibling
-   section and oracle it kills (the older contract's §6 `isolation` object, §7
-   items 1a–1c, O9/O15/O17/O18/O19) and updates the backlog prose in the SAME
-   commit, so the requirement and the ledger never disagree mid-implementation.
+1. ~~WI-0 of the B006(a) carve.~~ **DONE** — A-269 written; the sibling carve's
+   §1, §6 `isolation`, §7 item 1 (1a/1b/1c) and item 4, and oracles
+   O9/O9b/O15/O17/O18/O19 all carry supersession markers; the backlog's B006(a)
+   status line and its numbered contract carry the amendment, so the binding
+   requirement no longer instructs the withdrawn boundary.
 2. **Resolve the one measurement the carve could not make (its M20).** The
    carving sandbox got `permission denied` on the docker socket, so whether
    CMRU's three `TestConsulBackend` socket errors reproduce in real

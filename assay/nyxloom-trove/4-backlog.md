@@ -584,10 +584,41 @@ commit.
 ## B006 — explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes
 
 **Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
-first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** proposed design and
-implementation carve. This blocks honest Assay R1+ claims for a project in this
+first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** (a) carved and
+reviewed, implementing — see `nyxloom-trove/W1-CARVE-B006a-project-scope.md`;
+(b) carved, implementing. This blocks honest Assay R1+ claims for a project in this
 monorepo; CMRU may retain R0/direct-coverage evidence in the meantime, but must not
 relabel a project-local stopgap as Assay R1/R2/R3.
+
+> **AMENDED 2026-08-17 by ruling A-269 — read this before the prose below.**
+> The requirement stands; **the solution sketched in "(a)" below does not.**
+> This item's own words say the sketch is only "one possible implementation" and
+> that "exact TOML names are Assay's design decision", and A-269 exercises that
+> latitude after the project-prefix design failed three independent adversarial
+> reviews at 8 → 9 → 11 blocking findings.
+>
+> **What ships instead:** the FULL repository snapshot, minus exact,
+> commit-validated omissions of the symlink leaves P22 would otherwise refuse —
+> `snapshot_selection = "repository" | "repository-minus-unsafe-symlinks"` plus
+> `unsafe_symlink_omissions = [...]`. Because everything else is still
+> materialised, the `inputs` inventory that point 1 below demands is **not
+> needed and not shipped**: CMRU's repository-root reads keep working with no
+> declaration at all.
+>
+> **Consequently, in the numbered contract below:** point 1's project scope,
+> owned prefix and additional-inputs list are WITHDRAWN; point 4's five
+> containment preflights are WITHDRAWN as unreachable from any loadable
+> `assay.toml` (only the coverage-artifact/omission collision survives, and it
+> is reachable only through the public `Lane` API); point 5 is met in modified
+> form, recording the selected policy and its exact omissions rather than a
+> "project" label whose enforceable content was nil; and points 2, 3 and 6 stand
+> as written, narrowed by A-267/A-268 — assay never materialises the omitted
+> leaf, but the retained closure means the command can restore it, so no
+> confinement is claimed.
+>
+> **One measured correction to the prose below:** Topos carries **three**
+> tracked absolute `/etc/passwd` symlinks, not the single `passwd_link` named
+> here. A design that handled only the named one would still have failed.
 
 ### (a) One absolute-target symlink anywhere in the tree fails every R1+ lane
 

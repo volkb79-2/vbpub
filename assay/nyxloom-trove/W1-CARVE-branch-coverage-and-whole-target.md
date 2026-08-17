@@ -130,7 +130,22 @@ work item 0, in these words:
 
 ---
 
-## 1. B006 (a) — explicit, attested project-scoped snapshots (A-266)
+## 1. B006 (a) — explicit, attested project-scoped snapshots (A-266) — **SUPERSEDED**
+
+> **DEAD SECTION — do not implement any of it. Superseded in full by A-269 and
+> by `W1-CARVE-B006a-project-scope.md`.** The project-prefix-plus-`inputs`
+> boundary specified below failed three independent adversarial reviews at
+> 8 → 9 → 11 blocking findings, diverging rather than converging. B006(a) now
+> ships as a full-repository snapshot minus exact, commit-validated
+> P22-unsafe symlink leaves. `snapshot_scope`, `boundary_prefix`, `inputs`,
+> the expanded-input attestation and the five containment preflights are all
+> WITHDRAWN.
+>
+> It is kept unrewritten because its MEASUREMENTS survived and are cited by the
+> replacement: the full-index-plus-`skip-worktree` mechanism (§1.3), the
+> not-a-sandbox property and its enumerated non-guarantees (§1.6 preamble), and
+> the restore-is-possible narrowing. Read those as evidence, never as
+> instructions.
 
 **This section was rewritten on 2026-08-17.** `main` commit `c7bc9b59`
 ("docs(assay): specify safe monorepo snapshot scope") replaced B006's proposal
@@ -914,7 +929,15 @@ v6: required iff `judgment` carries `r2`, **or** carries `r1` with
 independently — that duplication is intentional (A-181/A-182's model/raw-verifier
 split) and both must move together.
 
-### `isolation`
+### `isolation` — **SUPERSEDED**
+
+> **DEAD. Do not add this object to v6.** A-269 replaces it with
+> `snapshot_policy`, specified in `W1-CARVE-B006a-project-scope.md` §5. The
+> `materialisation` enum in particular is withdrawn as underivable: `_verify`
+> failures and `prepare_snapshot` refusals reach the same `except` with
+> byte-identical state, so no call site can distinguish `partial` from the
+> others. An implementer who builds both objects ships a required field with no
+> honest producer.
 
 New **required** top-level object recording the materialisation boundary that
 actually ran (§1, A-266):
@@ -1086,9 +1109,17 @@ Each lands as its own commit. Do not batch.
    with §0's thinner summaries. Check they are present and correct; add only
    A-269+ if this wave rules anything further. `decisions.md` outranks §0 where
    they differ.
-1. **B006 (a) — the project-scoped snapshot** — §1. **This is now the largest
-   single item in the wave**, not the small papercut the original backlog
-   described, and it is the one with a consumer blocked on it today. It splits:
+1. **B006 (a) — the project-scoped snapshot** — §1. **SUPERSEDED — items 1a,
+   1b and 1c are all DEAD.** A-269 replaces them with WI-0…WI-6 of
+   `W1-CARVE-B006a-project-scope.md`. Do not build the `[isolation]` table,
+   `ResolvedSnapshotBoundary`, the prefix+inputs materialisation, or the
+   five-item runner preflight. The replacement's own WI-1 keeps exactly one
+   thing from the text below — the **`LANE_SCHEMA_VERSION` bump to 2**, noted
+   at the end of this item — and even that lands under the replacement's
+   migration rules, which forbid touching `cmru/assay.toml`. The dead text
+   follows unrewritten because its loader-edit inventory (`_OPTIONAL_LANE_FIELDS`,
+   `Lane.as_declared()`) is still an accurate map of what a lane-grammar change
+   must touch:
    1a. config — the `[isolation]` table, its closed grammar, the required-on-R1+
        and refused-on-R0-only rules, both-direction overlap refusal, and the
        bounds; plus the immutable `ResolvedSnapshotBoundary` type (§1.8) which
@@ -1127,6 +1158,15 @@ Each lands as its own commit. Do not batch.
    `config.py`, `runner.py`, `verdict.py`, `verify.py`, the schema, the
    migration, the sweep, the fixtures, the gate wiring. These cannot be split;
    a half-migrated schema is a red tree.
+   **AMENDED by A-269.** The `isolation` object this item was to add is
+   WITHDRAWN, and with it O15 and O18. In its place this item lands
+   `snapshot_policy` — `W1-CARVE-B006a-project-scope.md` §5 — **in this same
+   commit**, because that carve's WI-4 is defined as the same single v5→v6 hard
+   cut, not a second one. The v5→v6 migration therefore gains one rule it did
+   not have: insert `{"selection": "repository"}` into every R1+ v5 document,
+   emit no object for R0-only ones, and refuse a document that already carries
+   the key. Everything else in this item — branch payloads, B005, the
+   `changed_executable`→`executable` rename — is untouched by A-269.
 5. **Documentation and spine** — `DESIGN-GUIDE.md` (§5 registry, §6 measurement
    causes, §11 the model), `STATE.md`, `4-backlog.md` (B005/B006 status lines
    AND their prose sections — a status line that contradicts its own section is
@@ -1213,6 +1253,14 @@ exactly the same whole-target verdict as any other commit. Prove it by running
 the same lane at two commits differing only in a docstring and comparing the
 coverage payloads.
 
+> **O9, O15, O17, O18, O19 and O9b are SUPERSEDED by A-269**, and replaced by
+> O1–O7 of `W1-CARVE-B006a-project-scope.md`. They assert a boundary, a
+> `ResolvedSnapshotBoundary` object and an `isolation` verdict field that no
+> longer exist. O19's criterion in particular was measured to be unfailable as
+> written (`git ls-files -v` prints uppercase `S`, not lowercase), which is why
+> the replacement states the exact uppercase parse. Do not implement any of the
+> six; they are kept as the record of what was asked for and why it changed.
+
 **O9 — the project boundary is real, not a filter.** These are the backlog's own
 acceptance tests, and they are the acceptance bar for work item 1:
 
@@ -1273,6 +1321,11 @@ acceptance tests, and they are the acceptance bar for work item 1:
   called byte-identity wrong; one contract cannot say both about the same
   assertion.)
 
+**[SUPERSEDED by A-269 — replaced by O6/O7 of the B006(a) carve, which also
+avoids the R2 gate trap this oracle would have walked into: a permanent CMRU
+R1/R2/R3 lane renders `INCONCLUSIVE`/`NO_MUTANTS` (exit 5) on any commit that
+does not touch `cmru/src`, and `cmru/cmru.toml` runs `assay run cmru` as a gate
+step.]**
 **O9b — the end-to-end consumer proof, DEFERRED to the release pin by operator
 ruling.** The backlog's final acceptance test is a CMRU lane in `tester-unified`
 making genuine R1/R2/R3 claims while the Topos `/etc/passwd` fixture stays
@@ -1351,6 +1404,7 @@ is injected. All through the real CLI plus the raw verifier.
 `["src/a.py", "src//a.py"]` is refused at load; so is `["src/a.py/"]`. Prove the
 refusal is the loader's, not an accident of a later stage.
 
+**[SUPERSEDED by A-269 — see the note at O9.]**
 **O15 — the isolation table is required where it acts and refused where it is
 inert.** A lane declaring R1/R2/R3 with NO `[isolation]` table is refused at
 load, naming both legal values; an R0-only lane WITH one is refused at load
@@ -1361,6 +1415,7 @@ prefix and canonical inputs. A preflight refusal under project scope produces
 `materialisation: "none"` — prove that one specifically, because it is the case
 the previous draft got wrong.
 
+**[SUPERSEDED by A-269 — see the note at O9.]**
 **O17 — overlap and kinds are refused in every direction.** Separate cases, each
 refused at load or preflight as §1 assigns: an input inside the prefix; an input
 that is an ANCESTOR of the prefix (`apps/cmru` + `apps`); an input inside another
@@ -1373,6 +1428,7 @@ resolved commit; and `src/foo` alongside `src/foo_evil`, which must LOAD — the
 ancestry check is on path components, and a string-prefix implementation fails
 exactly here.
 
+**[SUPERSEDED by A-269 — see the note at O9.]**
 **O18 — one boundary object, not two that agree.** (Work item 4, not item 1 —
 the `isolation` object does not exist until then.) On a lane that MATERIALISES,
 the boundary the materialiser consumed and the boundary the verdict serialises
@@ -1386,6 +1442,7 @@ which is impossible against the frozen dataclass §1.9 requires — an implement
 would have reached for `object.__setattr__` or a mutable double that proves
 nothing.
 
+**[SUPERSEDED by A-269 — see the note at O9.]**
 **O19 — nothing reaches the consumer's checkout, including on failure.** After a
 project-scoped run that MATERIALISED AND RAN and then went red (not a preflight
 refusal, which materialises nothing and would make this vacuous), the source
