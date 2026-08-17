@@ -8,11 +8,18 @@ wins and this file is stale.
 * **Worktree:** `/workspaces/vbpub/.worktrees/assay-B005-B006-coverage-v6`
 * **Branch:** `assay-B005-B006-coverage-v6`, based on `main` `c66b67a0`,
   with `main`'s B006 rewrite merged at `0791d9c4`
-* **Contract:** `nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md`
-  (Addenda A–D supersede the body where they disagree)
-* **Requirement, authoritative over the contract:** `nyxloom-trove/4-backlog.md`
-  items B005 and B006
-* **Rulings:** `decisions.md` A-257…A-267
+* **Contract, B005 + B006(b) + branch coverage + v6:**
+  `nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md` (Addenda A–F
+  supersede the body where they disagree). **Its §1 is DEAD** — see below.
+* **Contract, B006(a):** `nyxloom-trove/W1-CARVE-B006a-project-scope.md`
+  (`3d745924`). This REPLACES §1 of the older contract. Where the two disagree
+  about B006(a), the newer document wins, and its WI-0 is the work item that
+  makes that true in the ledger.
+* **Requirement, authoritative over both contracts:** `nyxloom-trove/4-backlog.md`
+  items B005 and B006 — but note the B006(a) carve deliberately changes the
+  requirement's point 1, gated on a new ruling A-269 rather than silently.
+* **Rulings:** `decisions.md` A-257…A-268. **A-269 is proposed but NOT YET
+  WRITTEN**; the B006(a) carve declares itself mechanically BLOCKED until it is.
 
 ## Done
 
@@ -27,6 +34,9 @@ wins and this file is stale.
 | review round 2 folded in (13 blocking), A-267 | `0a96dc7e` |
 | **registered gate green on this branch** | `ASSAY_REGISTERED_GATE_COMPLETE=1`, exit 0, at `59af6b4b` |
 | WI-3 — branch model + all four parsers (§3) | `759bea03`, `bd99bb7a`; 2532 passed, 100% line+branch on all six touched modules |
+| **B006(a) recarved from the consumer problem** (codex `gpt-5.6-sol` xhigh) | `d3173e61` |
+| **its first independent review — READY WITH CORRECTIONS, 5 blocking / 6 non-blocking** | `c313589b` |
+| **all 15 findings folded into the operative body, one rejected with evidence** | `3d745924` |
 
 **WI-3 independently verified by the controller**, not taken from the report:
 the eight real fixtures are untouched; the three formats parse `sample.py` to
@@ -51,11 +61,11 @@ fall between the two work items.
 Use `ListAgents` first. Do NOT spawn a second implementer or a duplicate
 reviewer; resume the existing one by name if it is still listed.
 
-* **implementer (Sonnet 5, serialized — one only):** sent WI-3, the branch model
-  and four parsers (§3). Was mid-edit in `src/assay/coverage*.py`.
-* **reviewer (Opus, fresh, no inherited context):** adversarial round 3 over §1
-  (project-scoped snapshots), §2, §6's isolation block, §7 WI-1, and
-  O9/O9b/O15/O17/O18/O19.
+* **implementer (Sonnet 5, serialized — one only):** last sent WI-3, the branch
+  model and four parsers (§3). That work LANDED and was independently verified.
+  Idle now.
+* **B006(a) carver and reviewer:** see "Agent sessions" below — resume the
+  codex session by id rather than starting a third design from scratch.
 
 ## UNBLOCKED 2026-08-17 — round budget reset, CMRU writable, origin/main current
 
@@ -106,14 +116,23 @@ immutable.
 
 ## Remaining, in order
 
-1. **STOPPED — the review budget is spent, and B006(a) needs an operator
-   decision.** Three rounds on this design: **8 → 9 → 11 blocking. Not
-   converging.** Round 3's own summary of the pattern: five of its eleven are
-   defects *introduced by, or left behind by,* a previous round's accepted fix.
-   Do not dispatch WI-1. See "The B006(a) decision" below.
-   Everything else in this list is unaffected and still dispatchable.
-2. **WI-1a/1b/1c** — project-scoped snapshot: config + `ResolvedSnapshotBoundary`,
-   isolation materialisation, runner preflight. Three commits.
+1. **WI-0 of the B006(a) carve — write A-269, and supersede the dead §1.**
+   Nothing in B006(a) may be implemented before this: the carve declares itself
+   mechanically BLOCKED without the ruling, because A-266 otherwise mandates a
+   mutually incompatible public contract. WI-0 also enumerates every sibling
+   section and oracle it kills (the older contract's §6 `isolation` object, §7
+   items 1a–1c, O9/O15/O17/O18/O19) and updates the backlog prose in the SAME
+   commit, so the requirement and the ledger never disagree mid-implementation.
+2. **Resolve the one measurement the carve could not make (its M20).** The
+   carving sandbox got `permission denied` on the docker socket, so whether
+   CMRU's three `TestConsulBackend` socket errors reproduce in real
+   `tester-unified` is UNMEASURED, and WI-5 is blocked on it. **This session
+   can run docker** (`CLIENT=29.7.1 SERVER=29.7.1`, exit 0), so this is a
+   sandbox artifact, not a real blocker — run the probe and record it.
+3. **WI-1…WI-6 of the B006(a) carve**, in its own stated order. Note WI-1 must
+   NOT touch `cmru/assay.toml`: CMRU's gate evaluates it with the pinned
+   `assay-1.0.0.pyz`, whose `LANE_SCHEMA_VERSION` is 1, so a lane v2 bump there
+   reds a sibling project's release gate the moment it lands.
 3. **WI-2** — the artifact parent chain inside the snapshot (§2).
 4. **WI-4** — the v6 contract: §4, §5, §6 together. Migration by the four typed
    buckets (43 transform / 7 preserve byte-identical / 12 hand-edit / 3 must not
@@ -170,10 +189,49 @@ immutable.
     ships) → release; then B001/P34 (the SQL/DDL adapter), whose plan gets its
     own adversarial review before any dispatch.
 
-## The B006(a) decision
+## The B006(a) decision — RESOLVED 2026-08-17 by recarving, not by splitting
 
-Round 3 (final) returned **NOT READY — 11 blocking**. The findings that matter
-for the decision, as opposed to the ones that are cheap edits:
+The operator did not take the split. Instead B006(a) went back to a fresh
+carver (codex `gpt-5.6-sol`, xhigh) with the consumer problem, the measured
+facts, the seven recurring defect classes, and **explicit licence to change the
+shape** — the backlog's own words say its sketch is "one possible
+implementation". The result is `W1-CARVE-B006a-project-scope.md`.
+
+**The new shape:** keep the FULL repository snapshot; omit only the exact
+declared symlink leaves P22 would otherwise refuse.
+
+```toml
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = ["topos/.../passwd_link", ...]
+```
+
+It dissolves the old design's defect classes rather than answering them. No
+dependency inventory to be incomplete — everything except the named leaves is
+still materialised, so CMRU's repo-root reads need no `inputs` key. No five
+unreachable containment preflights — one reachable coverage-artifact collision
+check. No `materialisation` enum whose values no call site can derive — the
+policy is copied from the loaded lane, so it is derivable at every producer
+including `cli.py`'s refusal paths. And an omission can only ever be a symlink
+leaf, so it cannot hide source, tests or a B005 target: the vacuity hole stays
+structurally shut.
+
+**Two premise corrections, both verified by the controller against the real
+trees:** Topos carries THREE tracked `/etc/passwd` symlinks, not the one the
+backlog named — a design handling only `passwd_link` would still have failed.
+And CMRU's suite is NOT green under the gate's conditions:
+`test_release_publish_rejects_response_without_upload_coordinate` stubs only
+`get_release_by_tag`, so `publish()` calls the unstubbed `update_release` and
+reaches `api.github.com`, while the gate runs `--network=none`.
+
+**First independent review (Fable, fresh context): READY WITH CORRECTIONS — 5
+blocking, 6 non-blocking**, against 8 → 9 → 11 on the withdrawn design. It
+reproduced the load-bearing measurements itself and reported the round
+converged. It was then given explicit licence to argue the shape is wrong and
+design a better one; it made the case against properly and **still endorsed the
+shape**. All 15 findings are folded into the operative body at `3d745924`.
+
+The historical record of why the OLD design was abandoned, kept because it is
+the reason the new one is shaped as it is:
 
 * **the directory-expansion feature added in round 2 reopened B005's own hole.**
   "A directory expanding to files none of which appear in the artifact refuses"
@@ -204,12 +262,23 @@ CMRU's suite green under project scope leaving no dirt; and R3's `uncovered-line
 canary killing for the RIGHT reason once `--cov-fail-under` is out of the argv.
 **The mechanism is sound. The contract around it is not converging.**
 
-**Controller's recommendation:** split B006(a) into its own wave. Ship B005 +
-B006(b) + v6 here — fully specified, reviewed, and already a third built
-(WI-3 landed and was independently verified). B006(a) keeps its measured
-mechanism findings and gets a design pass that is not racing a schema bump.
-The `isolation` attestation leaves v6 with it, so no required field ships
-without a producer.
+~~Controller's recommendation: split B006(a) into its own wave.~~
+**Superseded.** The recarve kept B006(a) in wave 1 and every measured fact
+above survived into the new design — the skip-worktree mechanism is still the
+mechanism, and the no-sandbox honesty ruling is still binding. What was thrown
+away was the project-prefix-plus-`inputs` CONTRACT, not the measurements.
+
+## Agent sessions — resume, do not respawn
+
+* **B006(a) carver:** codex `gpt-5.6-sol`, effort `xhigh`, session
+  **`01a00eeb-199e-79f3-b6d0-03bc347230bc`**, cwd = this worktree. It holds the
+  full design context for two rounds. `codex exec resume` takes **no
+  `--sandbox` flag** and every option must precede the session id — pass
+  `-c sandbox_mode="workspace-write"` instead, or the resume runs read-only and
+  silently cannot write its deliverable. Full invocation in the scratchpad's
+  `b006a/SESSIONS.md`.
+* **Reviewer:** Fable, fresh context per round, no inherited state. Its report
+  is `reports/assay-B006a-carve-review-fable.md`.
 
 ## Standing rules
 
