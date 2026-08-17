@@ -34,6 +34,20 @@ BASELINE_INDEX_COUNT = 965
 RELEASE_VERSION = "1.2.5"
 RELEASE_WHEEL = "assay-1.2.5-py3-none-any.whl"
 RELEASE_SHA256 = "a0f8d28e4f6359e90616343badcf3c663eb7e2075c1a521bf9da8afd7002dc86"
+
+# This harness feeds a lane file to TWO different assay binaries: the current
+# candidate build under test (`current_assay`, always schema v2 per B006(a)/
+# WI-1) and the locked, hash-pinned 1.2.5 release (`RELEASE_VERSION`, forever
+# schema v1 -- that binary is never upgraded, so it never learns v2). A lane
+# spelled for the wrong one resolves NO lane at all, and the binary that
+# cannot parse it exits without ever writing a verdict artifact -- silently,
+# with no error of its own to see. One lane generator serving two assay
+# versions is exactly the trap; these two constants and
+# `_lane_schema_version_for` exist so the choice is a named, obviously-visible
+# fact at every call site rather than an inferred default that a future
+# schema bump can silently break again.
+RELEASE_LANE_SCHEMA_VERSION = 1
+CURRENT_LANE_SCHEMA_VERSION = 2
 ABSOLUTE_SYMLINKS: Mapping[str, str] = {
     "topos/tests/fixtures/inspect_files/_danger/passwd_link": "/etc/passwd",
     "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape": "/etc/passwd",
@@ -48,16 +62,23 @@ RELEASE_ROOT = Path(__file__).resolve().parent / "release" / "P25"
 # manifest's own self-hash. `qualify_topos.py` lives at `gate/python/`, two
 # levels under the project root.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-# P33/A-226: the expectations move to P33's carver-supplied v5 SIBLINGS. P25's
-# own `expected/*-v4-template.json` files stay frozen and unedited as the
-# historical record of what P25 actually proved (A-222) -- rewriting them to
-# v5 would falsify that record, claiming a merged package was accepted
-# against a contract that did not exist when it was accepted. A v4->v5
-# projection computed inside this harness was considered and rejected: an
+# P33/A-226: the expectations moved to P33's carver-supplied v5 SIBLINGS, then
+# Wave-1/A-262 moved them again to W1's carver-supplied v6 siblings (the same
+# one-for-one-successor discipline: `p25-pass-v6-template.json` and
+# `p25-missing-v6-template.json` are the named successors to the v5 templates
+# below, produced by the SAME transform proven against the real shipped v6
+# schema in `nyxloom-trove/carve-assets/W1/migrate_v5_to_v6.py`). P25's own
+# `expected/*-v4-template.json` files, and P33's own `expected/*-v5-
+# template.json` files, both stay frozen and unedited as the historical
+# record of what P25 actually proved under those contracts (A-222) --
+# rewriting either to v6 would falsify that record, claiming a merged package
+# was accepted against a contract that did not exist when it was accepted. A
+# v5->v6 projection computed inside this harness was considered and
+# rejected for the identical reason P33/A-226 rejected a v4->v5 one: an
 # unfrozen transform is machinery to be trusted, whereas a frozen expectation
 # is evidence to be checked, and the whole point of comparing against a
 # locked template is that nothing in the run under test produced it.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P33" / "expected"
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W1" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -371,10 +392,26 @@ def _write_lane(
     argv_tail: Sequence[str],
     allow_excluded: bool,
     source_roots: str = "topos/src/topos",
+    lane_schema_version: int = CURRENT_LANE_SCHEMA_VERSION,
 ) -> None:
+    if lane_schema_version not in (RELEASE_LANE_SCHEMA_VERSION, CURRENT_LANE_SCHEMA_VERSION):
+        raise QualificationError(
+            f"lane_schema_version must be {RELEASE_LANE_SCHEMA_VERSION} "
+            f"(the locked release) or {CURRENT_LANE_SCHEMA_VERSION} (the current "
+            f"candidate build), got {lane_schema_version!r}"
+        )
+    # v1 (the locked release binary) predates `[isolation]` entirely (B006(a)/
+    # WI-1 introduced it alongside the v2 bump) -- the table must be OMITTED,
+    # never merely left with a v1-incompatible value, or the v1 binary would
+    # refuse the lane for a second, unrelated reason.
+    isolation_table = (
+        '[lanes.topos-qualification.isolation]\nsnapshot_selection = "repository"\n'
+        if lane_schema_version == CURRENT_LANE_SCHEMA_VERSION
+        else ""
+    )
     argv = [_TESTER_VENV_PYTHON, "topos/tools/assay_p25_coverage.py", *argv_tail]
     quoted_argv = ", ".join(json.dumps(item) for item in argv)
-    text = f'''schema_version = 2
+    text = f'''schema_version = {lane_schema_version}
 [lanes.topos-qualification]
 scope = "S1"
 rigor = ["R0", "R1"]
@@ -384,9 +421,7 @@ env = {{PYTHONPATH = "topos/src:topos", ASSAY_P25_WITNESS = {json.dumps(str(witn
 env_passthrough = []
 budget = "15m"
 allow_argv_append = false
-[lanes.topos-qualification.isolation]
-snapshot_selection = "repository"
-[lanes.topos-qualification.judge]
+{isolation_table}[lanes.topos-qualification.judge]
 language = "python"
 source_roots = [{json.dumps(source_roots)}]
 base = {json.dumps(base)}
@@ -415,10 +450,16 @@ def _materialize_negative(
     base_override: str | None = None,
     tag_head_as: str | None = None,
     tag_base_as: str | None = None,
+    lane_schema_version: int = CURRENT_LANE_SCHEMA_VERSION,
 ) -> tuple[Path, Path, Path, str, str]:
     """Shared construction for both the five named scenarios and the
     integrity-negative matrix -- only the wrapper/root/base declaration
-    varies. Returns ``(repo, witness, pytest_log, base_oid, head_oid)``."""
+    varies. Returns ``(repo, witness, pytest_log, base_oid, head_oid)``.
+
+    ``lane_schema_version`` defaults to the CURRENT candidate build's schema
+    (every ``_check_*`` integrity-negative in this module runs against
+    ``current_assay``); only :func:`run_scenario` ever overrides it, and only
+    for the one scenario it runs against the locked release."""
     root = scratch / name
     repo = root / "repo"
     witness = root / "witness.json"
@@ -448,6 +489,7 @@ def _materialize_negative(
         argv_tail=argv_tail,
         allow_excluded=allow_excluded,
         source_roots=source_roots,
+        lane_schema_version=lane_schema_version,
     )
     _run(
         [
@@ -601,7 +643,11 @@ def install_locked_release(*, source_repo: Path, scratch: Path) -> tuple[Path, s
 
 
 def materialize_scenario(
-    *, source_repo: Path, scratch: Path, spec: ScenarioSpec
+    *,
+    source_repo: Path,
+    scratch: Path,
+    spec: ScenarioSpec,
+    lane_schema_version: int = CURRENT_LANE_SCHEMA_VERSION,
 ) -> tuple[Path, Path, Path, str, str]:
     """Return ``(repo, witness, pytest_log, base_oid, head_oid)``.
 
@@ -610,6 +656,10 @@ def materialize_scenario(
     links; force-add the exact remaining tracked set plus ``.assay/.gitignore``
     to a deterministic baseline (965 entries); add only the frozen wrapper,
     probe, test, and complete lane to deterministic HEAD.
+
+    ``lane_schema_version`` defaults to the CURRENT candidate build's schema;
+    :func:`run_scenario` overrides it per-owner (§ ``_lane_schema_version_for``)
+    so the written lane always matches the assay binary that will read it.
     """
     return _materialize_negative(
         source_repo,
@@ -621,7 +671,28 @@ def materialize_scenario(
         allow_excluded=spec.allow_excluded,
         wrapper_fixture="coverage-witness.py",
         source_target=spec.source_target,
+        lane_schema_version=lane_schema_version,
     )
+
+
+def _lane_schema_version_for(assay_version: str) -> int:
+    """Which lane schema the binary identifying as ``assay_version`` can
+    parse.
+
+    The locked release is pinned forever at :data:`RELEASE_VERSION` and
+    understands ONLY :data:`RELEASE_LANE_SCHEMA_VERSION`;
+    :func:`install_locked_release` already proves the release venv's own
+    ``assay_version`` is exactly :data:`RELEASE_VERSION` before ever
+    returning it (the ``installed == runtime == RELEASE_VERSION`` identity
+    check above), so this equality is not a guess about which scenario is
+    running -- it distinguishes the only two binaries this harness ever
+    invokes. Every other ``assay_version`` (by construction, the current
+    candidate build under test) understands ONLY
+    :data:`CURRENT_LANE_SCHEMA_VERSION`.
+    """
+    if assay_version == RELEASE_VERSION:
+        return RELEASE_LANE_SCHEMA_VERSION
+    return CURRENT_LANE_SCHEMA_VERSION
 
 
 def run_scenario(
@@ -629,7 +700,10 @@ def run_scenario(
 ) -> ScenarioResult:
     """Run one scenario and compare the complete artifact and independent result."""
     repo, witness, _pytest_log, base_oid, head_oid = materialize_scenario(
-        source_repo=source_repo, scratch=scratch, spec=spec
+        source_repo=source_repo,
+        scratch=scratch,
+        spec=spec,
+        lane_schema_version=_lane_schema_version_for(assay_version),
     )
     artifact_path = scratch / spec.name / "verdict.json"
     proc, artifact = _invoke(assay_executable, repo, artifact_path)
@@ -765,12 +839,18 @@ def compare_complete_artifact(
 
 def _check_line_manifests(results: Mapping[str, ScenarioResult]) -> None:
     """Cross-check each scenario's coverage numbers against the carver-owned
-    literal hand manifest (never against anything Assay itself produced)."""
+    literal hand manifest (never against anything Assay itself produced).
+
+    The manifest's own keys stay ``changed_executable`` (P25/A-262: that JSON
+    is a frozen carve asset, never rewritten for the v6 rename); only the
+    REAL artifact's own field -- ``coverage.executable`` since A-262 --
+    changed name.
+    """
     manifest = json.loads(_QUALIFICATION_MANIFEST.read_text(encoding="utf-8"))
 
     pass_coverage = results[PRIMARY.name].artifact["claims"][1]["coverage"]
     pass_probe = manifest["pass_probe"]
-    if (pass_coverage["covered"], pass_coverage["changed_executable"]) != (
+    if (pass_coverage["covered"], pass_coverage["executable"]) != (
         pass_probe["covered"],
         pass_probe["changed_executable"],
     ):
@@ -785,7 +865,7 @@ def _check_line_manifests(results: Mapping[str, ScenarioResult]) -> None:
 
     comment_coverage = results[COMMENT_ONLY.name].artifact["claims"][1]["coverage"]
     comment_probe = manifest["comment_only_probe"]
-    if (comment_coverage["changed_executable"], comment_coverage["covered"]) != (
+    if (comment_coverage["executable"], comment_coverage["covered"]) != (
         comment_probe["changed_executable"],
         comment_probe["covered"],
     ):
@@ -1009,7 +1089,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v5-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v6-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1033,7 +1113,9 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     claim["status"] = "PASS"
     claim.pop("reason_code", None)
     coverage = dict(claim["coverage"])
-    coverage["covered"] = coverage["changed_executable"]
+    # A-262/v6: the real artifact's own field is `executable`, not the
+    # manifest's frozen `changed_executable` -- see `_check_line_manifests`.
+    coverage["covered"] = coverage["executable"]
     coverage["pct"] = 100.0
     coverage["missing_lines"] = {}
     claim["coverage"] = coverage
@@ -1044,7 +1126,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v5-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v6-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1092,8 +1174,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v5-template.json"),
-        (missing, "p25-missing-v5-template.json"),
+        (primary, "p25-pass-v6-template.json"),
+        (missing, "p25-missing-v6-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch
