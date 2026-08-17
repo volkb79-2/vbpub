@@ -121,12 +121,28 @@ immutable.
    O9/O9b/O15/O17/O18/O19 all carry supersession markers; the backlog's B006(a)
    status line and its numbered contract carry the amendment, so the binding
    requirement no longer instructs the withdrawn boundary.
-2. **Resolve the one measurement the carve could not make (its M20).** The
-   carving sandbox got `permission denied` on the docker socket, so whether
-   CMRU's three `TestConsulBackend` socket errors reproduce in real
-   `tester-unified` is UNMEASURED, and WI-5 is blocked on it. **This session
-   can run docker** (`CLIENT=29.7.1 SERVER=29.7.1`, exit 0), so this is a
-   sandbox artifact, not a real blocker — run the probe and record it.
+2. ~~Resolve the carve's unmeasured M20.~~ **DONE — measured by the controller,
+   and the news is good.** CMRU's suite, unmodified, inside real
+   `tester-unified:local` with `--network=none`:
+
+   ```text
+   1 failed, 1399 passed, 2 skipped in 19.99s
+   FAILED tests/test_release_final_contracts.py::test_release_publish_rejects_response_without_upload_coordinate
+   E   urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
+   ```
+
+   Two things settle. **The three `TestConsulBackend` socket errors do NOT
+   reproduce** — they were cockpit-only, as the carve inferred but could not
+   prove: 1399 pass here against 1397+3-errors in the cockpit. And **the release
+   test genuinely fails in the target environment**, for exactly the predicted
+   reason, so WI-5's one-line test-double repair is necessary and sufficient —
+   it is not papering over an environmental artifact. Exact invocation:
+   `docker run --rm --cgroup-parent=dev-background.slice --network=none --mount
+   type=bind,src=<host repo root>,dst=/workspaces/vbpub -e
+   PYTHONDONTWRITEBYTECODE=1 -w <worktree>/cmru tester-unified:local
+   /opt/tester-venv/bin/python -m pytest tests -q -p no:cacheprovider`
+   (`-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1` leave the tree clean —
+   verified). WI-5 still records this in its own implementation report.
 3. **WI-1…WI-6 of the B006(a) carve**, in its own stated order. Note WI-1 must
    NOT touch `cmru/assay.toml`: CMRU's gate evaluates it with the pinned
    `assay-1.0.0.pyz`, whose `LANE_SCHEMA_VERSION` is 1, so a lane v2 bump there
