@@ -84,6 +84,16 @@ work item 0, in these words:
   one immutable boundary object is built once and shared; and the impossible
   "removing an input refuses at preflight" oracle becomes the command failing on
   the absent file. See §1 and Addendum D.
+* **A-268 — the guarantee is "assay never materialises an out-of-scope path",
+  and the mechanism is named.** Ruled after the first review of this design
+  measured that the COMMAND can restore an excluded path with stock git from the
+  closure B006.3 requires assay to retain. Ruled with it: the mechanism IS a
+  full index plus `skip-worktree` outside the boundary (measured — the
+  alternative dies in `_verify`); `boundary_prefix` need only CONTAIN the
+  project root; the runner preflight is defence-in-depth over a public API; the
+  selection walk does not descend into out-of-scope subtrees; and every producer
+  path derives its recorded boundary FROM THE LANE rather than from a constant.
+  See §1, Addendum E and Addendum F.
 * **A-264 — R1 records its policy whenever R1 was ATTEMPTED, for exactly two
   new terminals.** Today `judgment.r1` is present iff the R1 claim carries a
   coverage payload, enforced in the model (`verdict.py:2242`: "judgment.r1 is
@@ -160,7 +170,7 @@ versioned Assay product decision, not a consumer-side bypass."*
 ```toml
 [lanes.cmru.isolation]
 snapshot_scope = "project"          # closed: "repository" | "project"
-project_prefix = "cmru"             # repo-top-relative, the owned tree
+boundary_prefix = "cmru"            # repo-top-relative, the owned tree
 inputs = ["cmru.project.sample.toml"]   # a REAL tracked root file CMRU's suite reads
 ```
 
@@ -236,11 +246,11 @@ words, and no reader should be able to mistake it for a sandbox.
    (A-145: say which spelling, everywhere). Refused at LOAD
    (`ERROR`/`BAD_LANE_CONFIG`): absolute, empty, any `.`/`..` component, a
    backslash, a non-canonical spelling whose `PurePosixPath` round-trip differs
-   from the raw string, a duplicate, `project_prefix` of `"."` or `""` (a
+   from the raw string, a duplicate, `boundary_prefix` of `"."` or `""` (a
    repo-root project scope is repository scope — declare that instead), and more
    than 64 `inputs` entries or a declared path longer than 4096 bytes.
    **Overlap is refused in BOTH directions, and between inputs**: an input inside
-   `project_prefix`, an input that is an ANCESTOR of `project_prefix` (prefix
+   `boundary_prefix`, an input that is an ANCESTOR of `boundary_prefix` (prefix
    `apps/cmru`, input `apps` — which would silently swallow sibling projects), an
    input inside another input, and two inputs where either is an ancestor of the
    other. Ancestry is decided on canonical path components, never string prefixes
@@ -258,29 +268,48 @@ words, and no reader should be able to mistake it for a sandbox.
    one), and `write-tree` returns exactly `HEAD^{tree}`. Only this reading
    survives; say so, or work item 1b's first end-to-end run dies in `_verify`
    and the implementer will not know whether the design or their code is wrong.
-4. **The boundary must contain the project root, and that is the only rule
-   binding the two.** The command runs at `snapshot.project_root`
+4. **`boundary_prefix` must CONTAIN the project root — the prefix specifically,
+   not the boundary as a whole.** The command runs at `snapshot.project_root`
    (`runner.py:1113`), so the project's own tree must be materialised or there is
    no working directory. Checked where git is actually available — at snapshot
    preparation, not at load: `config.py` imports no git (`config.py:56-72`) and
    cannot know the project's repo-relative path, so a load-time rule here would
-   be unenforceable. The earlier draft additionally required the prefix to EQUAL
-   the project's own path; that is dropped, because it made every downstream
-   containment check unreachable (see §1.7) while adding nothing — a prefix that
-   does not contain the project root already fails this rule.
+   be unenforceable. The earlier draft required the prefix to EQUAL the project's
+   own path; that is dropped, because it made every downstream containment check
+   unreachable (see §1.7) while adding nothing.
+   **Naming the prefix specifically matters**: "the BOUNDARY must contain the
+   project root" is satisfiable by an *input*, so `boundary_prefix = "docs"` with
+   `inputs = ["cmru"]` and the project at `cmru` would load and run, and the
+   headline attested field would name a tree with no relation to the evidence.
+   It also restores §1.2's ancestor-input rationale, which refuses an input that
+   swallows sibling projects — a harm the loose reading let the prefix cause
+   directly.
+   The key is `boundary_prefix`, not `project_prefix`, because
+   `SnapshotSpec.project_prefix` (`isolation.py:148`) and
+   `refuse_lane(project_prefix=…)` (`runner.py:867`) already exist and mean the
+   project's own repo-relative path — which §1.4 now deliberately allows to
+   DIFFER from the boundary. Three meanings for one name, in a codebase whose
+   A-145 rule is that every boundary says which spelling it speaks, is how the
+   next incident starts. The backlog leaves TOML names to assay.
 5. **Kinds and expansion are closed.** Checked against the resolved commit
    (`ERROR`/`BAD_LANE_CONFIG` at preflight, before any materialisation, following
    `_coverage_artifact_is_tracked`'s precedent rather than `GIT_FAILED` — the
-   declaration is wrong, the repository is not): `project_prefix` must name a
+   declaration is wrong, the repository is not): `boundary_prefix` must name a
    TREE; each `inputs` entry must name a tree or a regular/executable blob;
    a gitlink is refused (the substrate already refuses submodules); an input that
    is ITSELF a symlink is refused, because its target would need a boundary
    membership rule of its own and inventing one here is how scope creeps. A tree
    input expands recursively. `inputs = []` is legal and means "the prefix only".
-   **The selection walk descends only into the boundary.** An out-of-scope
-   subtree is not traversed at all, so the whole-tree structural refusals —
-   gitlink (`isolation.py:955`), unsupported mode (`:960`), non-UTF-8 name
-   (`:966`) — never fire on paths the lane does not materialise. Otherwise one
+   **The selection walk does not descend INTO an out-of-scope subtree** — it
+   still reads the names and modes of sibling entries at every level it does
+   traverse, because deciding whether a sibling is in scope requires decoding
+   its name (`isolation.py:966`). So the structural refusals — gitlink
+   (`isolation.py:955`), unsupported mode (`:960`), non-UTF-8 name (`:966`) —
+   stop firing for anything INSIDE a skipped subtree, but a malformed entry
+   sitting beside the boundary at a traversed level still refuses. State that
+   limit rather than claiming the walk is blind: a root-level non-UTF-8 name
+   will still fail every project-scoped lane, and a consumer should learn that
+   here rather than from a red gate. Otherwise one
    submodule added anywhere in the monorepo would keep failing every
    project-scoped lane, which is the exact failure class B006 exists to remove,
    wearing a different hat. Which bounds narrow, stated because they point in
@@ -323,7 +352,7 @@ words, and no reader should be able to mistake it for a sandbox.
    boundary is repo-top-relative; conversion joins the project's own
    repo-relative prefix and compares with `is_relative_to` on resolved paths,
    never string prefixes. **The boundary is never broadened automatically.**
-7. **Base resolution and diffs are unchanged, and that is a deliberate
+8. **Base resolution and diffs are unchanged, and that is a deliberate
    consequence of §the-boundary-is-not-a-sandbox.** The base is resolved
    pre-snapshot against the consumer repository (`runner.py:1245`) exactly as
    today, and an in-snapshot `git diff base..HEAD` still reports the FULL
@@ -333,7 +362,7 @@ words, and no reader should be able to mistake it for a sandbox.
    `resolve_mutation_targets` does the same. A test must prove a changed file
    outside the boundary never enters `considered` and never becomes a mutation
    target.
-8. **One resolved boundary object, constructed once.** An immutable
+9. **One resolved boundary object, constructed once.** An immutable
    `ResolvedSnapshotBoundary` — effective scope, canonical prefix, canonical
    sorted inputs — is built ONCE after commit-relative validation and passed
    unchanged to the manifest builder, the preflight, every snapshot unit and the
@@ -343,10 +372,9 @@ words, and no reader should be able to mistake it for a sandbox.
    canonicalised copy and the artifact could disagree with what `_build_manifest`
    actually selected. A test must prove they are the same object, not two objects
    that happen to agree.
-9. **Nothing leaks into the consumer's checkout.** The private index and worktree
+10. **Nothing leaks into the consumer's checkout.** The private index and worktree
    live outside it; no flag, generated parent, hook, index entry or replacement
-   ref may appear in it. Assert the source repository's `git status` and index are
-   byte-unchanged after a RED run, not only a green one. What assay can enforce
+   ref may appear in it. O19 carries the exact criterion. What assay can enforce
    here it must; what it cannot — a command that daemonises a child outliving the
    post-run checks — is named as a limitation in the same breath rather than
    quietly assumed away.
@@ -355,7 +383,7 @@ words, and no reader should be able to mistake it for a sandbox.
 
 A new top-level `isolation` object, REQUIRED in v6 (see §6): the effective
 `snapshot_scope`, a closed `materialisation` state, and — for project scope —
-`project_prefix` and the canonical `inputs` as validated (the declared roots
+`boundary_prefix` and the canonical `inputs` as validated (the declared roots
 after canonicalisation, NOT their recursive expansion, which is unbounded and
 already implied by prefix + roots + commit).
 
@@ -717,6 +745,17 @@ targets = ["libs/common/src/common/redirect_chain.py"]
   named place and is what the verdict records explicitly. This is how "never
   invent a value" and "do not force every existing `assay.toml` to be edited"
   are both kept.
+* **A target may name a FILE or a DIRECTORY.** A directory expands to every
+  adapter-recognised source file beneath it that is not a test path — the same
+  gates `_is_considered` already applies. This is a usability call, taken
+  deliberately: dstdns wants one module, CMRU owns 25, and forcing a consumer to
+  enumerate and then maintain 25 paths is how a floor silently stops covering a
+  file somebody added. The anti-vacuity rule applies to the EXPANSION, not the
+  declaration: a directory expanding to zero files, or to files none of which
+  appear in the coverage artifact, is `NO_MEASUREMENT`/`TARGET_NOT_MEASURED`
+  exactly as a missing file target is. The verdict records the declared targets;
+  `considered` records how many files were actually judged, so a shrinking
+  expansion is visible in the artifact rather than silent.
 * `targets`: required and non-empty iff `mode = "whole_target"`; **refused**
   otherwise (a target list under the changed-line mode is a declaration that
   does nothing, and silently ignoring it is how a consumer comes to believe a
@@ -883,8 +922,8 @@ actually ran (§1, A-266):
 | field | rule |
 |---|---|
 | `snapshot_scope` | required, enum `repository` \| `project` — the EFFECTIVE value |
-| `materialisation` | required, enum `none` \| `complete` — whether a boundary was actually materialised |
-| `project_prefix` | required iff `snapshot_scope = "project"`, forbidden otherwise; repo-top-relative, canonical, non-empty |
+| `materialisation` | required, enum `none` \| `partial` \| `complete` |
+| `boundary_prefix` | required iff `snapshot_scope = "project"`, forbidden otherwise; repo-top-relative, canonical, non-empty |
 | `inputs` | required iff `snapshot_scope = "project"` (possibly empty), forbidden otherwise; canonical repo-top-relative paths, unique, sorted |
 
 Required rather than optional because "absent" would be indistinguishable
@@ -894,14 +933,25 @@ without re-running anything. It does NOT carry the commit: the document already
 has a required top-level `commit`, and two copies of one fact is one fact too
 many.
 
-**`materialisation` is what keeps the object from lying**, and it claims exactly
-what two values can carry: whether a boundary was materialised at all. It does
-NOT separate "materialised but the command never started" from "materialised and
-the command ran" — the claims already answer that, since an R0 claim exists iff
-the command ran. The earlier draft's prose named four situations and then
-supplied a two-value enum, which would have let the schema, the model and the raw
-verifier be built to three different readings. Two values, and prose that claims
-two. An R0-only lane records
+**`materialisation` is what keeps the object from lying.** Three values, because
+three states are genuinely reachable and the previous two-value draft had no
+legal answer for the middle one:
+
+* `none` — nothing was written: a direct R0 execution, or any refusal before
+  `prepared.materialize(...)` is entered;
+* `partial` — the private tree was written and then the run failed inside it.
+  `_run_prepared_lane` enters `with prepared.materialize(...)` with no `try`
+  around it (`runner.py:1297`), so a `_verify` failure (`isolation.py:592`), a
+  `_write_worktree` OSError, a stale replacement site (`isolation.py:452`), or
+  §2's own `reserve_output` refusal (`runner.py:1092`) all propagate to
+  `refuse_all` (`runner.py:1786`) with a tree already on disk and torn down.
+  `none` is false there by its own definition and `complete` is undefined;
+* `complete` — the boundary was materialised and the lane ran in it.
+
+It does NOT separate "materialised but the command never started" from
+"materialised and the command ran" — the claims already answer that, since an R0
+claim exists iff the command ran. §2 and §6 must agree on which value a
+`reserve_output` failure records: it is `partial`. An R0-only lane records
 `{snapshot_scope: "repository", materialisation: "none"}` — no boundary was
 applied and none was materialised, both true — and declaring an `[isolation]`
 table on an R0-only lane is refused at load as inert configuration (A-062).
@@ -912,22 +962,35 @@ The object's own schema `description` must say, in the artifact, that this is a
 MATERIALISATION boundary and not a sandbox — §1's ruling. An attestation whose
 meaning lives only in a design document is one a consumer will over-read.
 
-The conditional pairs (`project_prefix`/`inputs` present iff project scope) ARE
+The conditional pairs (`boundary_prefix`/`inputs` present iff project scope) ARE
 expressible in Draft 2020-12 via `if`/`then`/`else`, unlike §6's numeric
 comparisons — so they live in the schema as well as the model and the raw
 verifier.
 
-**The pre-repository refusal paths need an answer, and it is a constant, not a
-second boundary.** `cli.py:355` and `cli.py:385` emit complete artifacts before
-repository identity exists at all (`refuse_lane`'s own docstring says
-`project_prefix` "stays `None` by default precisely for `assay.cli`'s
-pre-adapter refusal"), and `_refuse_lane_with_plan` does the same. Since the
-`isolation` object is required, those paths record the module-level constant
-`{snapshot_scope: "repository", materialisation: "none"}` — truthful on both
-counts: no project boundary was applied and nothing was materialised. A
-module-level constant is not a second constructed boundary, so §1.8's
-one-object rule is intact; state that explicitly, because O18 forbids exactly
-the thing this could be mistaken for.
+**The refusal paths derive the DECLARED boundary from the lane. There is no
+constant, and the previous draft's constant was false.** `cli.py:385` is the
+adapter refusal, and `_resolve_declared_adapters` skips R0 (`cli.py:230`) — so
+that path is reachable ONLY for R1+ lanes, which are exactly the lanes §1.1
+requires to declare `snapshot_scope`. A constant recording `"repository"` there
+would report `repository` for a lane that declared `project`, which §6's own
+next paragraph calls a false attestation.
+
+The justification for a constant ("repository identity does not exist yet") was
+a non-sequitur: `snapshot_scope`, `boundary_prefix` and `inputs` are LANE
+CONFIG, fully parsed before any git work, and `refuse_lane` already receives the
+lane (`runner.py:859`). `assemble_verdict` already derives `scope` and
+`enforcement` from the lane on every call for exactly this reason. Only
+VALIDATION against the commit needs the repository; the DECLARATION does not.
+
+So every producer path records the lane's declared boundary, with
+`materialisation` carrying what actually happened. That covers the five paths
+that emit a complete verdict before §1.8's validated boundary exists —
+`cli.py:355`, `cli.py:385`, the `env_required` refusal (`runner.py:1936`),
+`refuse_all(DIRTY_TREE)`/`(HEAD_CHANGED)` (`runner.py:1745`/`:1747`), and the
+generic `except AssayError` (`runner.py:1786`) — none of which had a rule
+before. An R0-only lane, which may not declare the table at all, records
+`{snapshot_scope: "repository", materialisation: "none"}`; that value is
+DERIVED from "this lane never snapshots", not defaulted into its config.
 
 ### `reason_code`
 
@@ -954,7 +1017,17 @@ those corrupts unrelated data.
   into exactly one of four buckets and **refuses to run if any file falls into
   none** — a fail-closed classifier is stronger than a sweep, because an
   unclassifiable file stops the migration instead of being silently skipped:
-  1. **transform** — verdict documents that become v6 (`tests/fixtures/verdicts/**`);
+  1. **transform** — verdict documents that become v6 (`tests/fixtures/verdicts/**`).
+     Each needs the new REQUIRED `isolation` object SYNTHESISED, and the values
+     are ruled here rather than invented per-file: every existing fixture
+     predates project scope, so each gets
+     `{snapshot_scope: "repository", materialisation: "complete"}` — except
+     fixtures whose outcome is a refusal before any snapshot
+     (`r1_no_measurement_dirty_tree`, `r0_error_*`, the attestation-timeout and
+     adapter refusals), which get `materialisation: "none"`. The transform must
+     derive that from each document's own outcome/reason pair, and LOG the
+     assignment per file, so a wrong one is visible in review rather than buried
+     in 43 diffs;
   2. **preserve byte-identical** — locked carver-owned evidence, including all
      six `carve-assets/P33/expected/*-v5-template.json` and every earlier
      package's frozen templates (A-222);
@@ -1007,8 +1080,12 @@ suppressed.
 
 Each lands as its own commit. Do not batch.
 
-0. **Decisions first.** A-257…A-267 into `decisions.md`, verbatim from §0. A
-   ruling that reaches only an agent message is not applied (A-072).
+0. **Decisions — VERIFY, do not re-add.** A-257…A-268 are ALREADY in
+   `decisions.md` (commits `6bd75c0c`, `d57cb2f1`). Re-adding them "verbatim
+   from §0" would duplicate rows AND overwrite the fuller A-266/A-267 entries
+   with §0's thinner summaries. Check they are present and correct; add only
+   A-269+ if this wave rules anything further. `decisions.md` outranks §0 where
+   they differ.
 1. **B006 (a) — the project-scoped snapshot** — §1. **This is now the largest
    single item in the wave**, not the small papercut the original backlog
    described, and it is the one with a consumer blocked on it today. It splits:
@@ -1028,6 +1105,18 @@ Each lands as its own commit. Do not batch.
    oracle. **Do not promise more than §1's ruling allows** — the boundary is a
    materialisation boundary; no test may be phrased as proving confinement the
    mechanism does not deliver.
+   **Item 1's acceptance bar is O9, O17 and O19 only.** O15 and O18 assert the
+   `isolation` OBJECT, which does not exist in the schema or the model until
+   item 4 — so they belong to item 4 and must not be demanded here. Three
+   further loader edits belong to 1a and are easy to miss:
+   `_OPTIONAL_LANE_FIELDS` (`config.py:133`) must gain `"isolation"` or every
+   lane declaring the table is refused as an unknown key; `Lane.as_declared()`
+   (`config.py:395`) must round-trip it, or its "compares equal to tomllib's own
+   parse" contract breaks; and **`LANE_SCHEMA_VERSION` (`config.py:114`) bumps
+   to 2**, because the lane grammar changes incompatibly and a consumer on the
+   old grammar otherwise gets a bare unknown-key or missing-table failure with
+   no version signal. That is the LANE schema, distinct from the verdict schema
+   v6 — §1.1's "consumers absorb it anyway" argument conflated the two.
 2. **B006 (b)** — §2. Independent of §1's mechanism, but its "inside the
    declared scope" constraint only means something once 1c exists, so land it
    after.
@@ -1147,11 +1236,15 @@ acceptance tests, and they are the acceptance bar for work item 1:
   `process_runner` double that inspects its own `cwd`, or the oracle silently
   degrades into a `prepare_snapshot` unit test that proves the substrate and not
   the wiring;
-* `git status` inside the snapshot is clean AND `git ls-files -v` shows skip bits
-  only outside the boundary; the in-snapshot `git diff base..HEAD` is
-  BYTE-IDENTICAL to the same lane under repository scope (§1.8 rules it reports
-  the full repository delta, so "exact" must be pinned to that comparison rather
-  than left to interpretation);
+* `git status` inside the snapshot is clean AND `git ls-files -v` shows `S`
+  (skip-worktree) only outside the boundary;
+* the in-snapshot `git diff base..HEAD` is BYTE-IDENTICAL to the same lane under
+  repository scope — but that comparison needs a SECOND, symlink-free fixture,
+  because the escaping-symlink fixture above never materialises under repository
+  scope and so has no repository-scoped diff to compare against. Name it. (The
+  underlying claim is sound: both diff call sites, `runner.py:589` and `:1405`,
+  run `git diff --unified=0 <base_rev> <head_rev>`, commit-to-commit and
+  worktree-independent.)
 * an absolute-target or escaping-relative symlink INSIDE the owned prefix or a
   declared input fails before the command runs — including a relative symlink
   that escapes the boundary while staying inside the repository, which is the
@@ -1174,8 +1267,11 @@ acceptance tests, and they are the acceptance bar for work item 1:
 * mutation and canary targets outside the boundary are refused; in-scope targets
   are modified only inside the private snapshot, and a deliberately failing run
   leaves **no** temporary index, worktree or `skip-worktree` flag in the source
-  repository — assert the source repo's `git status` and index are byte-unchanged
-  after a red run, not only after a green one.
+  repository — see **O19** for the exact criterion, which is `git status` plus
+  the absence of `S` entries in `git ls-files -v`, and explicitly NOT index
+  byte-identity. (The previous wording demanded byte-identity here while O19
+  called byte-identity wrong; one contract cannot say both about the same
+  assertion.)
 
 **O9b — the end-to-end consumer proof, DEFERRED to the release pin by operator
 ruling.** The backlog's final acceptance test is a CMRU lane in `tester-unified`
@@ -1192,13 +1288,38 @@ authority to edit CMRU's lanes and rigor, which removes exactly the blocker
 above. This wave WRITES CMRU's R1/R2/R3 lane and makes the backlog's own final
 acceptance test real.
 
-CMRU is the ideal consumer for it and the numbers are already in hand from its
-own gate: 100% lines (6060/6060) and branches (2184/2184), 29/29 mutation
-candidates killed, and a canary that failed specifically because the coverage
-floor caught its injected uncovered line. So R1 at `fail_under = 100.0` with
-`require_branch = true`, R2 over the declared operators, and the existing canary
-mechanism should all pass on the first honest run — and if one does not, that is
-a REAL finding about assay, not a reason to weaken the lane.
+CMRU is a strong consumer for it — 100% lines (6060/6060) and branches
+(2184/2184) under its own gate. **But two things must be ruled here or the lane
+is written wrong, and both were caught before dispatch:**
+
+**(a) The assay lane's argv must NOT carry `--cov-fail-under`.** CMRU's reverted
+lane had `--cov-fail-under=100` in it. R3's transform half appends an uncovered
+line to the canary target inside the snapshot; with that flag, **pytest itself
+exits non-zero**, so `canary.py:350` short-circuits on the failing R0 status and
+the observed cause is `COMMAND_FAILED` where `uncovered-line` expects
+`UNCOVERED_LINES` (`canary.py:133`) — yielding `FAIL`/`CANARY_SURVIVED`
+deterministically. That is not a finding about assay; it is a lane whose argv
+pre-empts the judge. The whole-source floor already lives in `cmru/cmru.toml` as
+a separate gate step and stays there. So: `--cov-branch` and
+`--cov-report=json:...` yes, `--cov-fail-under` **no** — the floor is
+`judge.fail_under`, which is the entire point of the tier.
+
+**(b) The lane must state its R1 mode, its base, and a non-vacuity assertion.**
+`fail_under = 100.0` and `require_branch = true` alone let O9b pass on nothing:
+under `changed_lines`, a release commit touching no `src/cmru` file gives zero
+considered lines, `pct = 100.0` by the zero-denominator rule, and R2 renders
+`INCONCLUSIVE`/`NO_MUTANTS` — the letter of the oracle, none of the backlog.
+Use **`mode = "whole_target"`** with an explicit `targets` list (that is what
+B005 is FOR, and it is what makes the lane meaningful post-merge), keep the
+canary target inside `targets` per §5's rule, and declare `base` for R2, which
+requires it independently. Assert explicitly that R1's `considered > 0` and R2's
+candidate count `> 0` before believing any of it — O7's discipline, applied to
+the wave's headline oracle.
+
+Note also that CMRU's "29/29 mutants killed" figure does NOT transfer: that is
+its own whole-source gate, while assay's R2 candidate set comes from the
+`base..HEAD` diff (`runner.py:1405`). Citing it as evidence the lane will pass
+is a category error, so do not cite it.
 
 **Enumerate CMRU's root dependencies before writing `inputs`; do not guess.**
 `cmru.project.sample.toml` is read at `cmru/tests/test_cli_dispatch.py:151`, and
@@ -1244,29 +1365,45 @@ the previous draft got wrong.
 refused at load or preflight as §1 assigns: an input inside the prefix; an input
 that is an ANCESTOR of the prefix (`apps/cmru` + `apps`); an input inside another
 input; two inputs where either is an ancestor of the other; a prefix of `"."`;
-a prefix that is not the project's own repo-relative path; an input naming a
+a prefix that does NOT contain the project root (§1.4 — and note the case that
+must LOAD: a prefix that contains the project root without equalling it, since
+the equality rule was dropped); an input naming a
 gitlink; an input that is itself a symlink; an input or prefix missing from the
 resolved commit; and `src/foo` alongside `src/foo_evil`, which must LOAD — the
 ancestry check is on path components, and a string-prefix implementation fails
 exactly here.
 
-**O18 — one boundary object, not two that agree.** The boundary the materialiser
-consumed and the boundary the verdict serialises must be THE SAME OBJECT.
-Assert identity with `is`, plus a construction probe (count constructions across
-one `run_lane`; it must be exactly one). The earlier wording said "mutate it and
-show the artifact changes", which is impossible against the frozen dataclass
-§1.8 requires — an implementer would have reached for `object.__setattr__` or
-substituted a mutable double that proves nothing.
+**O18 — one boundary object, not two that agree.** (Work item 4, not item 1 —
+the `isolation` object does not exist until then.) On a lane that MATERIALISES,
+the boundary the materialiser consumed and the boundary the verdict serialises
+must be THE SAME OBJECT: assert with `is`, plus a construction probe that counts
+exactly one validated construction per `run_lane`. On the refusal paths that
+never validate against a commit, the artifact's boundary is DERIVED FROM THE
+LANE (§6) and the probe expects ZERO validated constructions — state both
+expectations, because a single global count fails on the paths that legitimately
+have none. The earlier wording said "mutate it and show the artifact changes",
+which is impossible against the frozen dataclass §1.9 requires — an implementer
+would have reached for `object.__setattr__` or a mutable double that proves
+nothing.
 
 **O19 — nothing reaches the consumer's checkout, including on failure.** After a
 project-scoped run that MATERIALISED AND RAN and then went red (not a preflight
 refusal, which materialises nothing and would make this vacuous), the source
-repository carries no `skip-worktree` bit — `git ls-files -v` shows no
-lower-case entry — and `git status` is clean. Assert the skip bits specifically:
-`git status` being clean is nearly implied, since the run refuses a dirty tree
-before starting (`runner.py:1745`), and index BYTE-identity is the wrong
-assertion because `git status` legitimately refreshes the index for unrelated
-reasons.
+repository carries no `skip-worktree` bit and `git status` is clean.
+
+**The criterion is `S`, not lower case, and getting this backwards makes the
+oracle unfailable** — measured: `git ls-files -v` prints `S` for skip-worktree
+alone and a lower-case letter only when assume-unchanged is ALSO set. The
+previous wording ("no lower-case entry") passes with a leaked skip bit sitting
+right there, which is precisely the cannot-fail negative this project pays for
+repeatedly (A-124/A-131). Assert no `S` entries.
+
+Do NOT assert index byte-identity: `git status` legitimately refreshes and
+rewrites `.git/index` for unrelated reasons. And say plainly what this oracle
+is worth — under this design assay never touches the consumer's index at all
+(the snapshot is a separate repository, `isolation.py:478`), so O19 is a
+regression guard against a future change, not the proof that leakage is
+impossible.
 
 **O16 — the whole-target/R3 interaction is deliberate.** A `whole_target` lane
 declaring an `uncovered-line` canary whose target is NOT in `targets` is refused
@@ -1565,7 +1702,59 @@ for.
 
 ---
 
-## 15. What must NOT change
+## 15. Addendum F — review round 2-of-3, and the one fix that held
+
+**NOT READY — 9 blocking, 14 non-blocking.** All folded in. The reviewer was
+asked not to re-report Addendum E's eight but to ask whether each fix worked,
+what the fixes introduced, and whether O9b's new scope is achievable — and that
+framing is what produced the findings, because six of the nine are in those
+three categories.
+
+**The mechanism ruling held under empirical attack, and that matters.** §1.3
+claims specific behaviour of `git status`, `write-tree`, `ls-files --others` and
+`_verify` under a full index with skip bits. The reviewer rebuilt a vbpub-shaped
+monorepo in a scratch repo and measured every one: status empty (with a planted
+control correctly reported), `write-tree` returning `HEAD^{tree}` exactly,
+`--exclude-per-directory` reading the skip-worktree'd `.gitignore` from the
+INDEX — which is what lets §2's artifact-parent creation and project scope
+compose at all — and the mutation path's child commits intact under skip bits.
+A ruling stated as measured fact was re-measured by someone who did not write
+it, and survived. That is the standard the rest of this document should be held
+to.
+
+| # | finding | decision |
+|---|---|---|
+| B1 | the `cli.py` constant lies — that path is reachable ONLY for R1+ lanes, exactly the lanes required to declare a scope | constant DELETED. Every path derives the declared boundary from the lane, which `refuse_lane` already receives and which `assemble_verdict` already does for `scope`/`enforcement` |
+| B2 | three more producer paths had no rule (`env_required`, `DIRTY_TREE`/`HEAD_CHANGED`, the generic `except`) | same fix covers all five paths; they are now enumerated |
+| B3 | `materialisation` had no legal value for "tree written, then failed" — reachable, since `materialize(...)` has no `try` around it | third value `partial`, with §2's `reserve_output` failure explicitly mapped to it |
+| B4 | O17 still demanded the prefix-equality rule §1.4 dropped | case replaced, and the case that must LOAD is now stated |
+| B5 | O19's skip-bit assertion could not fail — `ls-files -v` prints `S` for skip-worktree; lower case means assume-unchanged | criterion corrected to `S`, with the measurement recorded. This was a cannot-fail negative introduced by the previous round's own fix |
+| B6 | O9 demanded index byte-identity while O19 called it wrong | O9 defers to O19; the contract no longer says both |
+| B7 | O9's byte-identical-diff bullet was unsatisfiable on its own fixture, which never materialises under repository scope | a second symlink-free fixture is now required for that comparison |
+| B8 | O9b would have had the implementer write a lane that fails its own canary — `--cov-fail-under` in the argv makes pytest exit non-zero during the R3 transform, so the observed cause is `COMMAND_FAILED`, not `UNCOVERED_LINES` | ruled: the assay lane carries no `--cov-fail-under`; the floor is `judge.fail_under`. The instruction to treat a failure as "a REAL finding about assay" would have pointed the implementer at a non-defect |
+| B9 | O9b named no R1 mode and no base, so it could pass on zero considered lines and `NO_MUTANTS` | `whole_target` with explicit targets, canary target inside them, `base` for R2, and non-vacuity assertions on `considered` and the candidate count |
+
+Non-blocking taken: `boundary_prefix` renamed away from a name that already
+means two other things; the prefix (not the boundary) must contain the project
+root, which also restores §1.2's rationale; §1.5's walk claim narrowed to "does
+not descend INTO"; three loader edits named (`_OPTIONAL_LANE_FIELDS`,
+`as_declared`, and a `LANE_SCHEMA_VERSION` bump — the lane grammar changes
+incompatibly and that is a different schema from the verdict's); the migration
+now rules what `isolation` value each of the 43 fixtures gets and requires the
+assignment be logged; work item 0 changed from "record the decisions" to "verify
+they are there", since they already are and re-adding would overwrite fuller
+text with thinner; O15/O18 reassigned to work item 4, where the object exists;
+and §1's duplicate item numbering fixed.
+
+**A usability call taken here rather than deferred:** a `whole_target` target may
+name a DIRECTORY, expanding to the adapter-recognised source files beneath it.
+dstdns wants one module and CMRU owns 25; making a consumer enumerate and then
+maintain 25 paths is how a floor silently stops covering a file somebody added.
+The anti-vacuity rule applies to the expansion, so an empty one still refuses.
+
+---
+
+## 16. What must NOT change
 
 * `A-030`: assay never shells out to docker, and nothing here needs to.
 * `A-116`'s payload-free propagation shape, and the four hollow-PASS/FAIL
