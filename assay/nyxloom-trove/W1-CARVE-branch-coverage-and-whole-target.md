@@ -1206,6 +1206,55 @@ Each lands as its own commit. Do not batch.
    parametrised node id, so cite the bare function id), and a LOG under
    `nyxloom-trove/reports/`.
 
+   **WIDENED 2026-08-17 (operator).** The list above covered the trove and the
+   design guide but named neither user-facing document, and both are wrong the
+   moment this wave lands. Add them, with the division of labour stated once:
+   **README = what assay does; DESIGN-GUIDE = why it does it that way;
+   CONSUMERS.md = how to adopt it.** Every feature named in the README links to
+   the DESIGN-GUIDE section carrying its rationale rather than re-arguing it.
+
+   * **`README.md` — the feature surface, which this wave makes FALSE.** Its
+     headline bullet currently reads "**Changed-line coverage, not
+     whole-project coverage**". B005 ships exactly the whole-target mode that
+     bullet denies, so leaving it is not a stale doc but a contradiction of the
+     product. The README must name, in its own voice and each linked to its
+     DESIGN-GUIDE section: (a) the two R1 **modes** — changed-line and
+     whole-target — and when a consumer wants each, replacing the "not
+     whole-project" framing with "you choose which question is asked";
+     (b) **branch coverage judged whenever the artifact reports it** (A-258),
+     including that this changes what PASS means for an existing R1 lane, and
+     `require_branch` as the guard against a silent rigor downgrade;
+     (c) **snapshot selection** — one line for repository mode, one for
+     `repository-minus-unsafe-symlinks`, and the one-sentence property from the
+     B006(a) carve §2 verbatim, never a stronger paraphrase;
+     (d) **verdict schema v6 and lane schema v2** as the compatibility facts a
+     reader needs before adopting. Its `assay.toml` example migrates to v2 with
+     an explicit `[isolation]` table.
+   * **`docs/CONSUMERS.md` — named in NO work item before this amendment, and
+     the file a consumer actually follows.** Its "Adopt R1 only after…"
+     paragraph predates the mandatory `[isolation]` table, so a consumer
+     following it today writes a lane that refuses to load with
+     `BAD_LANE_CONFIG` and no hint why. It must gain: the required
+     `[isolation]` declaration on every R1+ lane and how to choose the
+     selection; a **worked whole-target example** for the B005 use case that
+     motivated it (a module-level floor that survives a docstring-only change,
+     with the argv, the judge table, and what the verdict then attests — this
+     is the feature dstdns is waiting on, so it gets a real example, not a
+     mention); a **worked monorepo example** for B006(a) showing a lane
+     declaring `unsafe_symlink_omissions`, what the refusal looks like when a
+     link is undeclared, and the maintenance obligation that a new unsafe
+     symlink reds the lane until its owner declares it; a note that the
+     coverage artifact's parent is now created inside the snapshot (B006(b)),
+     so the tracked-`.gitkeep` work-around is no longer needed; and the
+     **ordered consumer adoption step** — repin a v2-capable release and bump
+     the lane file's `schema_version` in the SAME commit, because a v2 assay
+     refuses a v1 lane file and a v1 pinned assay refuses a v2 one.
+   * **Both files must be checked, not just written**: every TOML example in
+     the README, `CONSUMERS.md` and `DESIGN-GUIDE.md` is parsed by the shipped
+     loader in a test, so a documentation example that cannot load fails the
+     suite. This wave has already shipped one contract whose examples were
+     stale; a doc example is a claim like any other (A-232).
+
 ---
 
 ## 8. Acceptance oracles

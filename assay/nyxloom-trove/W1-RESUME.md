@@ -154,8 +154,24 @@ immutable.
    `VERDICT_SCHEMA_VERSION`, `urn:assay:schema:verdict:5`) and refuses to run on
    a file it cannot place. Deselection list for P33's locked suite is derived by
    MEASUREMENT — run it under v6, list every red, classify each.
-5. **WI-5** — docs, `STATE.md`, backlog status lines AND their prose sections,
-   the nyxloom spine, and a LOG under `reports/`.
+5. **WI-5 — docs, and it is wider than it looks.** `STATE.md`, backlog status
+   lines AND their prose sections, the nyxloom spine, a LOG under `reports/` —
+   **plus the two user-facing documents the plan originally missed**
+   (operator, 2026-08-17; the widened item 5 of the sibling carve carries the
+   detail). The division of labour: **README = what assay does; DESIGN-GUIDE =
+   why it does it that way; CONSUMERS.md = how to adopt it**, with each README
+   feature linking to its DESIGN-GUIDE rationale instead of re-arguing it.
+   Two are defects rather than omissions:
+   * the README's headline bullet says "**changed-line coverage, not
+     whole-project coverage**", which B005 makes FALSE;
+   * `docs/CONSUMERS.md` was named in **no work item at all**, and its "adopt
+     R1" guidance predates the mandatory `[isolation]` table — a consumer
+     following it writes a lane that refuses with `BAD_LANE_CONFIG`.
+   CONSUMERS.md also owes worked examples for the two capabilities consumers
+   are actually waiting on (the whole-target floor, and a monorepo lane with
+   `unsafe_symlink_omissions`), and the ordered repin-plus-bump adoption step.
+   **Every TOML example in all three documents is parsed by the shipped loader
+   in a test** — a doc example is a claim like any other (A-232).
 6. **WI-6 — CMRU's real R1/R2/R3 lane** (O9b). Write `cmru/assay.toml`'s
    higher-rigor lane with project scope: source roots, coverage argv + artifact,
    `fail_under = 100.0`, `require_branch = true`, the mutation policy, and the
