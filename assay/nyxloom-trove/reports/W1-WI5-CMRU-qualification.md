@@ -323,15 +323,69 @@ did not make that change.** Making it inside WI-5 would be exactly
   real installed wheel, and its own oracle correctly refuses a FAIL/
   UNCOVERED_LINES lane rather than reporting a false
   `ASSAY_B006A_CMRU_QUALIFIED=1`. No marker was printed, honestly.
-- **O7 (`bash assay/tools/tester-unified-gate.sh .`) will fail at the new
-  `cmru-b006a-qualified` phase** for the identical reason, with the
-  identical diagnostic, once run against this commit. The wiring is landed
-  exactly where §6/O7 specify (immediately after `topos-qualified`, before
-  `run_independent_witness`) because shipping WI-5 without even attempting
-  O7 is a worse omission than a red phase with a legible cause — the
-  alternative (holding the gate-script edit back) would silently under-
-  deliver the specified file list and hide, rather than surface, the
-  finding above.
+- **O7, actually run** (`bash assay/tools/tester-unified-gate.sh .`, real
+  command, real exit code, foreground, from the repository top, against
+  this commit `cd83ae8d`) — pasted, not summarized:
+
+  ```
+  ASSAY_GATE_PHASE=wheel-installed
+  25 passed, 16 deselected in 1.31s
+  ASSAY_GATE_PHASE=attestation-hardened
+  13 passed, 31 deselected in 14.39s
+  ASSAY_GATE_PHASE=verdict-v5-accepted
+  17 passed in 0.72s
+  ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+  26 passed in 0.72s
+  ASSAY_GATE_PHASE=verdict-v6-successors-verified
+  tester-unified: FAIL/COMMAND_FAILED (exit 1)
+    commit: cd83ae8de2bcbea65e02ed49ffeb789ec48aa533
+    argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+  ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics
+  ...
+  8 failed, 2895 passed in 270.24s (0:04:30)
+  GATE_EXIT=1
+  ```
+
+  The gate does **not** even reach `topos-qualified` or the new
+  `cmru-b006a-qualified` phase this time: it reds one step earlier, inside
+  `run_self_hosted_lane`'s own `assay run tester-unified` (assay judging
+  its own source tree through the just-installed wheel). All 8 failures are
+  in `tests/test_python_qualification.py`
+  (`test_run_scenario_reproduces_the_locked_missing_line_terminal`,
+  `test_run_scenario_records_the_exclusion_capability_asymmetry`,
+  `test_integrity_matrix_negatives_produce_their_frozen_terminals`,
+  `test_universal_pass_mutation_is_rejected_by_the_whole_document_comparator`,
+  `test_a_scenario_that_must_compare_with_topos_refuses_a_missing_witness`,
+  `test_a_scenario_that_measured_nothing_is_refused`,
+  `test_the_wrong_source_root_decoy_is_rejected_because_of_the_root`,
+  `test_release_smoke_scenario_matches_the_current_full_pass_shape`) — the
+  EXISTING test suite for `qualify_topos.py` (P25), each now getting an
+  unexpected `ERROR` (exit 2) instead of its frozen expected terminal, or a
+  missing verdict file. **This file is untouched by this work item**
+  (`git log -1 -- tests/test_python_qualification.py` shows its last
+  change was `f13e78a2`, 2026-08-11, days before B006(a) WI-1 started; my
+  own new `test_gate_qualify_cmru_b006a.py` is not among the 8 failures and
+  ran clean inside this same self-hosted pass). I did not diagnose this
+  further — it is unrelated to CMRU, to nested `project_prefix` lanes, or
+  to anything WI-5 touches, and chasing an unrelated pre-existing P25
+  regression is outside this work item's scope. It is reported here only
+  because it is real, current O7 evidence and A-232 forbids summarizing
+  around it: **as of this commit, `bash assay/tools/tester-unified-gate.sh
+  .` exits 1 before reaching my new phase at all**, for a reason this work
+  item did not create and cannot honestly claim credit or blame for. My own
+  targeted, narrower construction in §4 (wheel build through
+  `wheel-installed`, then straight to `qualify_cmru_b006a.py`, skipping the
+  self-hosted lane and the locked-suite phases) is what isolates and proves
+  the CMRU-specific R1 finding in §6 without that unrelated regression in
+  the way.
+- The gate-script wiring for the new phase is landed anyway, exactly where
+  §6/O7 specify (immediately after `topos-qualified`, before
+  `run_independent_witness`), because shipping WI-5 without even attempting
+  O7 would under-deliver the specified file list and hide, rather than
+  surface, both findings above. Once the self-hosted-lane regression is
+  independently resolved, the next `bash assay/tools/tester-unified-gate.sh
+  .` run will reach `cmru-b006a-qualified` and fail there instead, for the
+  §6 reason, until that is also resolved.
 
 ## 8. A second, smaller gap found while implementing — not in WI-5's scope either
 
