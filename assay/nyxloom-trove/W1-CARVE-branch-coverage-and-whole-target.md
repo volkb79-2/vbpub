@@ -1249,11 +1249,28 @@ Each lands as its own commit. Do not batch.
      **ordered consumer adoption step** — repin a v2-capable release and bump
      the lane file's `schema_version` in the SAME commit, because a v2 assay
      refuses a v1 lane file and a v1 pinned assay refuses a v2 one.
-   * **Both files must be checked, not just written**: every TOML example in
-     the README, `CONSUMERS.md` and `DESIGN-GUIDE.md` is parsed by the shipped
-     loader in a test, so a documentation example that cannot load fails the
-     suite. This wave has already shipped one contract whose examples were
-     stale; a doc example is a claim like any other (A-232).
+   * **Checked, not just written — three tests, ruled as A-270 and recorded in
+     `DESIGN-GUIDE.md` §16 and the estate-wide `AGENTS.md`.** Each must be able
+     to go red; a check that cannot fail is this project's most expensive
+     recurring defect (A-124, A-131):
+     1. **every TOML example** in `README.md`, `docs/CONSUMERS.md` and
+        `docs/DESIGN-GUIDE.md` parses with the **shipped loader** and declares
+        the current `LANE_SCHEMA_VERSION`. Extract them from the fenced blocks;
+        do not maintain a duplicated copy, which would drift from the rendered
+        document and defeat the point;
+     2. **every value of every closed public vocabulary a consumer must type**
+        — `isolation.snapshot_selection`, `judge.mode`, the rigor levels, and
+        the coverage `format` registry — **appears in at least one of the
+        three documents.** Derive each vocabulary from the shipped module, never
+        from a hand-written list in the test, or the test stops noticing new
+        values on the day it matters. This is the check that makes "a capability
+        shipped undocumented" mechanically impossible;
+     3. **every DESIGN-GUIDE anchor the README links to resolves.** §16 makes
+        README→DESIGN-GUIDE linking the rule instead of re-argument, so a dead
+        link silently restores the duplication it exists to prevent.
+     The test asserting (2) must itself be non-vacuous: assert the derived
+     vocabularies are non-empty, or an import that silently yields nothing
+     would make the whole check pass forever.
 
 ---
 

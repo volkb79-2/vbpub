@@ -1151,6 +1151,63 @@ terminal.
 
 ---
 
+## 16. Where documentation lives, and why it merges with the code (A-270)
+
+§11 says where language-specificity lives. This says where *knowledge about the
+product* lives, for the same reason: when a question has no single home, every
+document grows a partial answer and they drift apart.
+
+**Three documents, one job each.**
+
+| document | its one job |
+|---|---|
+| **`README.md`** | **WHAT** assay does — the user-facing feature surface. A reader deciding whether assay solves their problem stops here. |
+| **`docs/DESIGN-GUIDE.md`** (this file) | **WHY** it does it that way — choices, rejected alternatives, implementation reasoning, and the arguments that must not be re-had. |
+| **`docs/CONSUMERS.md`** | **HOW** to adopt it — worked examples and real use cases, in a form an adopter can paste. |
+
+The boundaries are load-bearing in both directions. A README that argues its
+own rationale becomes a second, diverging design guide — and it had already
+started. A design guide that lists features becomes a second, staler README.
+So: **a README feature links here rather than re-arguing; this file explains
+rather than enumerating; CONSUMERS.md shows rather than describes.**
+
+**Documentation merges with the change, not after it.** A capability is not
+shipped when its code is green; it is shipped when someone who does not know it
+exists can find it, understand why it works that way, and adopt it. Any work
+item that adds, removes or changes a user-facing capability, a public config
+key, a closed vocabulary value, or a compatibility fact is **incomplete until
+all three are in sync**, and each such work item names the affected documents in
+its own file list — a doc obligation that is not written down is a doc
+obligation that is skipped.
+
+**Three checks make this a test rather than an intention**, because "we will
+remember" is exactly the check that cannot fail, and a check that cannot fail is
+this project's most expensive recurring defect (A-124, A-131):
+
+1. every TOML example in all three documents **parses with the shipped loader**
+   and declares the current `LANE_SCHEMA_VERSION`;
+2. every value of every **closed public vocabulary a consumer must type** —
+   `isolation.snapshot_selection`, `judge.mode`, the rigor levels, the coverage
+   `format` registry — appears in at least one of the three, so a capability
+   cannot ship undocumented;
+3. every DESIGN-GUIDE anchor the README links to **resolves**.
+
+A documentation example is a claim, and A-232 applies to it unchanged: it is
+evidence only if something executed it.
+
+**Why this is a ruling and not a habit.** Wave 1's plan went through a carve,
+three failed adversarial review rounds, a complete recarve and an independent
+review — and every one of them missed that this README's headline bullet said
+"changed-line coverage, *not* whole-project coverage" while the wave was
+shipping precisely the whole-target mode that sentence denies, and that
+`CONSUMERS.md` appeared in no work item at all while its adoption steps had gone
+stale against a newly mandatory `[isolation]` table. The trove documents were
+immaculate throughout, because the process touches them daily. The documents
+facing a human adopter were touched only when someone remembered, and nobody
+did.
+
+---
+
 ## Appendix — arguments considered and rejected
 
 | Proposal | Rejected because |

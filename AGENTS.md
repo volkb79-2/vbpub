@@ -116,6 +116,52 @@ commit — HEAD may have already moved under concurrent commits; leave the bad o
 buried and land a correct new commit instead. (Inside a private worktree none of
 this applies — commit normally.)
 
+## User-facing docs are part of the change, not a follow-up (MANDATORY, estate-wide)
+
+> **A capability is not shipped when its code is green. It is shipped when a
+> human who does not know it exists can find it, understand why it works that
+> way, and adopt it — before the merge, not after.**
+
+Three documents, one job each. Do not blur them; they were already drifting
+when this rule was written.
+
+| document | its one job | failure if skipped |
+|---|---|---|
+| **README** | **WHAT** the product does — the user-facing feature surface | a reader is told the opposite of what the tool does |
+| **DESIGN-GUIDE** (`docs/`) | **WHY** it does it that way — choices, rejected alternatives, reasoning | the next agent re-argues a settled question, or reopens a rejected option |
+| **CONSUMERS.md** (`docs/`) | **HOW** to adopt it — worked examples and real use cases | an adopter follows the guide and gets a refusal with no hint why |
+
+A README feature **links** to its DESIGN-GUIDE section rather than re-arguing
+the rationale there; CONSUMERS.md shows something an adopter could **paste**,
+not a description of one.
+
+**The obligation:** any work item that adds, removes or changes a user-facing
+capability, a public config key, a closed vocabulary value, or a compatibility
+fact is **INCOMPLETE until all three are in sync**, and that sync lands in the
+work, not in a later tidy-up commit. State it in the work item's own file list
+so it cannot be forgotten silently.
+
+**Make it a test, not an intention** — "we will remember to update the docs" is
+precisely the check that cannot fail, which is this estate's most expensive
+recurring defect. Each of these must be able to go red:
+
+1. **every config example in all three documents parses with the SHIPPED
+   loader**, and declares the current schema version;
+2. **every value of every closed public vocabulary a consumer must type**
+   appears in at least one of the three, so a capability cannot ship
+   undocumented;
+3. **every cross-document anchor resolves.**
+
+Incident behind this: assay wave 1. The plan survived a carve, three failed
+review rounds, a full recarve and an independent adversarial review — and all
+of them missed that the README's headline bullet said "changed-line coverage,
+**not** whole-project coverage" while the wave was shipping exactly the
+whole-target mode that denies, and that `docs/CONSUMERS.md` was named in **no
+work item at all** while its adoption steps had gone stale against a now-
+mandatory config table. Both had the same cause: trove documents get touched
+every day by the process, and the documents facing a human adopter get touched
+only when somebody remembers. Recorded as assay `decisions.md` **A-270**.
+
 ## Carving for a project — where the specifics live
 Project-specific constraints a carve/review agent must honor (schema policy,
 gate command, stack/mutex rules, product invariants) live in that project's
