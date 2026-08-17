@@ -25,11 +25,12 @@ must not be edited (see their `PROVENANCE.md`).
 
 ## 0. The rulings this wave rests on
 
-Operator decisions taken 2026-08-16 (A-257…A-263), two the independent
-pre-dispatch review forced (A-264, A-265 — see Addendum B), and one taken
-upstream in `main` on 2026-08-17 that superseded this wave's own first design
-(A-266 — see Addendum C). All ten to be recorded in `decisions.md` by the
-implementer as work item 0, in these words:
+Operator decisions taken 2026-08-16 (A-257…A-263), two the first independent
+pre-dispatch review forced (A-264, A-265 — see Addendum B), one taken upstream in
+`main` on 2026-08-17 that superseded this wave's own first design (A-266 — see
+Addendum C), and one the SECOND review round forced on top of that (A-267 — see
+Addendum D). All eleven to be recorded in `decisions.md` by the implementer as
+work item 0, in these words:
 
 * **A-257 — the coverage model gains branch data, in all four formats.** A
   format that genuinely cannot express branch arcs declares that fact rather
@@ -69,6 +70,20 @@ implementer as work item 0, in these words:
   which paths exist at all. Only the second is provable, and only the second can
   be attested in the verdict. The withdrawn allowlist must not be re-proposed —
   §1 records the argument so it does not have to be re-had.
+* **A-267 — the boundary is a MATERIALISATION boundary, not a sandbox, and the
+  artifact says so.** Ruled 2026-08-17 after the second independent review found
+  the first design promising what the substrate cannot deliver. Out-of-scope
+  paths are never written into the working tree, so nothing can open, follow or
+  execute them — the whole property, and exactly what unblocks CMRU. Explicitly
+  NOT claimed: the retained object closure still yields out-of-scope committed
+  bytes to `git show`, and assay does not confine the process. A
+  mount-namespace/Landlock sandbox is rejected, not deferred (DESIGN-GUIDE §7,
+  A-030). Ruled with it: `snapshot_scope` is required on every R1+ lane and
+  refused on R0-only ones, with no default and no inference from the
+  `assay.toml` location; the attestation gains a closed `materialisation` state;
+  one immutable boundary object is built once and shared; and the impossible
+  "removing an input refuses at preflight" oracle becomes the command failing on
+  the absent file. See §1 and Addendum D.
 * **A-264 — R1 records its policy whenever R1 was ATTEMPTED, for exactly two
   new terminals.** Today `judgment.r1` is present iff the R1 claim carries a
   coverage payload, enforced in the model (`verdict.py:2242`: "judgment.r1 is
@@ -146,62 +161,158 @@ versioned Assay product decision, not a consumer-side bypass."*
 [lanes.cmru.isolation]
 snapshot_scope = "project"          # closed: "repository" | "project"
 project_prefix = "cmru"             # repo-top-relative, the owned tree
-inputs = ["release/samples/pinned-manifest.json"]   # additional tracked paths
+inputs = ["cmru.project.sample.toml"]   # a REAL tracked root file CMRU's suite reads
 ```
+
+That input is not decorative and not invented: `cmru/tests/test_cli_dispatch.py:151`
+resolves `parents[2] / "cmru.project.sample.toml"`, i.e. a repo-ROOT file outside
+CMRU's own tree, and `git ls-files` confirms it is tracked. It is the concrete
+reason `inputs` exists at all — a project boundary with no escape hatch for named
+root artifacts would break CMRU's suite on day one.
 
 Named `snapshot_scope`, not `scope`, because a lane already has a `scope` key
 meaning its S-level, and `mode` is taken by `judge.mode`.
 
-1. **The choice is explicit.** `snapshot_scope = "repository"` is exactly today's
-   P22 behaviour, unchanged. Absent means `"repository"` — the only behaviour
-   that existed before — stored as the declared value or `None` so
-   `as_declared()` stays faithful, with the EFFECTIVE value resolved in one named
-   place and recorded in the artifact, the same treatment `judge.mode` gets in
-   §5. There is no ambient discovery and no fallback to the caller's checkout: a
-   project that needs a sibling path names it.
+### What the boundary IS, and what it is NOT (operator ruling, 2026-08-17)
+
+Say this before the mechanism, because the second review round's central finding
+was that the first draft promised something assay cannot deliver, and a security
+claim that overstates its mechanism is worse than no claim.
+
+**It IS a materialisation boundary.** Out-of-scope paths are never written into
+the working tree the command runs in. Nothing the command executes can open,
+follow or execute a file that was never created — which is exactly and entirely
+the property CMRU is blocked on: Topos's `passwd_link -> /etc/passwd` is never
+materialised, so no symlink to `/etc/passwd` exists for anything to follow.
+
+**It is NOT a confidentiality sandbox, and the spec must not imply otherwise:**
+
+* the snapshot's Git object store retains the COMPLETE closure, because B006.3
+  requires it ("retain the complete resolved commit, object closure, base
+  resolution, and provenance"). So `git show HEAD:topos/...` from inside the
+  snapshot still reads committed bytes of an out-of-scope path. Note what that
+  does and does not give: it reads the symlink's TARGET STRING, not `/etc/passwd`
+  itself, because no symlink was created;
+* assay does not sandbox the process. `execute_plan` is
+  `subprocess.run(env=..., cwd=...)` (`runner.py:201`), which stops no absolute
+  path, no `../..`, and no `/proc/$PPID/cwd`. It cannot: CMRU's own argv starts
+  `/opt/tester-venv/bin/python`, which lives outside every snapshot;
+* a mount-namespace/Landlock sandbox would deliver the stronger property and is
+  **rejected here**, not deferred: DESIGN-GUIDE §7 puts container, image and
+  provisioning knowledge outside assay permanently (A-030). That property
+  belongs to the execution environment — ciu's lane — not to this library.
+
+The attestation in §6 therefore describes a materialisation boundary in those
+words, and no reader should be able to mistake it for a sandbox.
+
+### The mechanism
+
+1. **The choice is explicit, and required.** `snapshot_scope` is REQUIRED on any
+   lane declaring R1, R2 or R3, and REFUSED on an R0-only lane (inert config,
+   A-062, since R0 never snapshots). There is no default, no inference from where
+   `assay.toml` happens to sit, and no fallback to the caller's checkout. The
+   backlog's wording is literal — "a lane explicitly chooses" — and inference was
+   considered and rejected: it would silently re-scope every existing R1+
+   consumer, whose `assay.toml` files all sit in subdirectories, so a lane whose
+   tests read a sibling path would begin failing for a reason nothing in its
+   config mentions. That is the failure class this item exists to remove. The
+   cost is one declared line per existing R1+ consumer, landing in a v6 bump
+   those consumers must absorb anyway.
 2. **Every scope path is canonicalised as a Git-tree path**, repo-top-relative
-   (A-145: say which spelling, everywhere). Refused: absolute, empty, any `.`/
-   `..` component, a backslash, a non-canonical spelling whose `PurePosixPath`
-   round-trip differs from the raw string, a duplicate, an `inputs` entry that
-   already lies inside `project_prefix` (ambiguous overlap), and — checked
-   against the resolved commit rather than the loader — a path that is missing or
-   untracked there. Shape refusals are `ERROR`/`BAD_LANE_CONFIG` at load;
-   commit-relative refusals are `ERROR`/`BAD_LANE_CONFIG` at preflight, before
-   any materialisation, following `_coverage_artifact_is_tracked`'s precedent
-   rather than `GIT_FAILED` (the declaration is wrong, the repository is not).
-3. **The commit closure is retained; only the boundary is materialised.** The
-   resolved commit, its object closure, base resolution and provenance are
-   exactly as they are today — this changes what lands in the working tree, not
-   what assay resolves or records. Materialise `project_prefix` plus each
-   `inputs` entry, nothing else, in a private index/worktree.
-4. **An in-scope symlink keeps P22's containment check and fails closed** — with
+   (A-145: say which spelling, everywhere). Refused at LOAD
+   (`ERROR`/`BAD_LANE_CONFIG`): absolute, empty, any `.`/`..` component, a
+   backslash, a non-canonical spelling whose `PurePosixPath` round-trip differs
+   from the raw string, a duplicate, `project_prefix` of `"."` or `""` (a
+   repo-root project scope is repository scope — declare that instead), and more
+   than 64 `inputs` entries or a declared path longer than 4096 bytes.
+   **Overlap is refused in BOTH directions, and between inputs**: an input inside
+   `project_prefix`, an input that is an ANCESTOR of `project_prefix` (prefix
+   `apps/cmru`, input `apps` — which would silently swallow sibling projects), an
+   input inside another input, and two inputs where either is an ancestor of the
+   other. Ancestry is decided on canonical path components, never string prefixes
+   (`src/foo` is not an ancestor of `src/foo_evil`).
+3. **`project_prefix` must equal the project's own repo-relative path.** The
+   command runs at `snapshot.project_root` (`runner.py:1111`); allowing a prefix
+   that names some OTHER tree would let the boundary and the working directory
+   drift apart, and the implementer would have to invent which one wins. Project
+   scope means "my own project tree, plus what I name", and a prefix that is not
+   the project's own path is `ERROR`/`BAD_LANE_CONFIG`.
+4. **Kinds and expansion are closed.** Checked against the resolved commit
+   (`ERROR`/`BAD_LANE_CONFIG` at preflight, before any materialisation, following
+   `_coverage_artifact_is_tracked`'s precedent rather than `GIT_FAILED` — the
+   declaration is wrong, the repository is not): `project_prefix` must name a
+   TREE; each `inputs` entry must name a tree or a regular/executable blob;
+   a gitlink is refused (the substrate already refuses submodules); an input that
+   is ITSELF a symlink is refused, because its target would need a boundary
+   membership rule of its own and inventing one here is how scope creeps. A tree
+   input expands recursively. `inputs = []` is legal and means "the prefix only".
+   Every existing `SnapshotLimits` bound still applies to the materialised set —
+   the boundary narrows what is written, it never raises a ceiling.
+5. **An in-scope symlink keeps P22's containment check and fails closed** — with
    containment now meaning *the materialised boundary*, not the repository. A
    relative symlink inside `cmru/` pointing at `../topos/x` escapes the boundary
-   and is refused exactly as an absolute target is. Out-of-scope symlinks are
-   never examined because they are never materialised; that is the whole security
-   argument, and it belongs in the code as a comment, not only here.
-5. **Preflight validates the boundary covers the work.** Every `source_root`, the
-   coverage artifact path, every mutation candidate, the canary target, and the
-   command's working directory must resolve inside the materialised boundary,
-   checked before execution and by `is_relative_to` on resolved paths, never
-   string prefixes. Outside ⇒ `ERROR`/`BAD_LANE_CONFIG` naming the item and the
-   boundary. **The boundary is never broadened automatically** because something
-   is missing — that would be the invented-fallback failure this whole item
-   exists to remove.
-6. **Private index/worktree only.** No flag, generated parent, hook, index entry
-   or source replacement may appear in the consumer's checkout, and a nested
-   command must not be able to regain an omitted file through the environment or
-   relative traversal. A private full-HEAD index with non-selected entries marked
-   `skip-worktree` is one permitted implementation; whatever is chosen must prove
-   a clean checkout and that the command cannot read a sibling worktree.
+   and is refused exactly as an absolute target is; P22 alone would have allowed
+   it. The selection walk MAY read out-of-scope tree names and modes — it has to,
+   to find the prefix — but an out-of-scope symlink's target is neither validated
+   nor materialised, and must never affect acceptance nor appear in the
+   child-visible tree. ("Never examined" was too strong and made the substrate
+   change harder than the requirement needs.)
+6. **Preflight validates the boundary covers the work, and states its spellings.**
+   `source_roots`, the coverage artifact and the canary target are
+   PROJECT-relative (`config.py`); mutation replacement paths are already
+   repo-top-relative (`isolation.py:26`); the boundary is repo-top-relative. Each
+   is converted to the repo-top spelling by joining the project's own
+   repo-relative prefix, then checked with `is_relative_to` on resolved paths,
+   never string prefixes. Outside ⇒ `ERROR`/`BAD_LANE_CONFIG` naming the item,
+   its spelling and the boundary. **The boundary is never broadened
+   automatically** — that would be the invented-fallback failure this item exists
+   to remove.
+7. **Base resolution and diffs are unchanged, and that is a deliberate
+   consequence of §the-boundary-is-not-a-sandbox.** The base is resolved
+   pre-snapshot against the consumer repository (`runner.py:1245`) exactly as
+   today, and an in-snapshot `git diff base..HEAD` still reports the FULL
+   repository delta because the object closure is complete. Out-of-scope changed
+   files are filtered out downstream, where they already are: `evaluate_coverage`
+   only iterates `added.by_file` entries under a source root, and
+   `resolve_mutation_targets` does the same. A test must prove a changed file
+   outside the boundary never enters `considered` and never becomes a mutation
+   target.
+8. **One resolved boundary object, constructed once.** An immutable
+   `ResolvedSnapshotBoundary` — effective scope, canonical prefix, canonical
+   sorted inputs — is built ONCE after commit-relative validation and passed
+   unchanged to the manifest builder, the preflight, every snapshot unit and the
+   verdict producer. Today `SnapshotSpec` carries no scope (`isolation.py:142`)
+   and `assemble_verdict` takes no isolation argument (`runner.py:688`), so
+   without this the implementer would be free to serialise a separately
+   canonicalised copy and the artifact could disagree with what `_build_manifest`
+   actually selected. A test must prove they are the same object, not two objects
+   that happen to agree.
+9. **Nothing leaks into the consumer's checkout.** The private index and worktree
+   live outside it; no flag, generated parent, hook, index entry or replacement
+   ref may appear in it. Assert the source repository's `git status` and index are
+   byte-unchanged after a RED run, not only a green one. What assay can enforce
+   here it must; what it cannot — a command that daemonises a child outliving the
+   post-run checks — is named as a limitation in the same breath rather than
+   quietly assumed away.
 
 ### Recorded in the verdict
 
 A new top-level `isolation` object, REQUIRED in v6 (see §6): the effective
-`snapshot_scope`, and — for project scope — `project_prefix` and the canonical
-expanded `inputs`. It deliberately does **not** repeat the resolved commit: the
-document already carries a required top-level `commit`, and a second copy is a
-second thing to disagree with itself.
+`snapshot_scope`, a closed `materialisation` state, and — for project scope —
+`project_prefix` and the canonical `inputs` as validated (the declared roots
+after canonicalisation, NOT their recursive expansion, which is unbounded and
+already implied by prefix + roots + commit).
+
+`materialisation` exists because the earlier draft's object could describe a
+boundary that never ran: an R0 lane never snapshots, and a preflight refusal
+happens before materialisation, yet both would have recorded a scope. Its closed
+values are `"none"` (no snapshot was materialised — direct R0 execution, or a
+refusal before materialisation) and `"complete"`. Without it, "repository" on an
+R0 artifact is a false attestation.
+
+It deliberately does **not** repeat the resolved commit: the document already
+carries a required top-level `commit`, and a second copy is a second thing to
+disagree with itself.
 
 This is the half that makes the capability honest rather than convenient. A
 reviewer must be able to tell a full-repository verdict from a project-scoped one
@@ -248,12 +359,22 @@ its own ephemeral snapshot**. Two hard constraints:
 
 Independently of the creation: when a parent chain still cannot be opened, the
 diagnostic must name the missing component and the declared artifact path, and
-must distinguish **setup failure** ("the parent could not be created/opened")
+must distinguish **setup failure** ("the parent could not be created or opened")
 from **a genuinely unreadable artifact** ("the command produced nothing usable").
-Collapsing those two into one generic `UNREADABLE_ARTIFACT` is what cost the
-consumer a debugging round. The verdict records the requested artifact path
-either way — it already does, via `judgment.r1.coverage_artifact`, so this is a
-check that the existing field is populated on the refusal path, not a new field.
+Collapsing those two into one generic message is what cost the consumer a
+debugging round.
+
+**The distinction is in the DIAGNOSTIC, not in a new reason code** — ruled here
+rather than left to the implementer, because `safeio`'s every refusal is
+hardwired to `ERROR`/`UNREADABLE_ARTIFACT` (`safeio.py:42`) and the reason
+vocabulary is closed (`errors.py`). A fourth new code in one bump, bought purely
+for message fidelity, is not worth another closed-enum widening and another
+migration; a stable, prefixed diagnostic naming the failing component gives the
+consumer the same answer. The alternative was considered and is recorded so the
+next reviewer can challenge the trade rather than rediscover it. The verdict
+records the requested artifact path either way via
+`judgment.r1.coverage_artifact` — so this is a check that the existing field is
+populated on the refusal path, not a new field.
 
 ---
 
@@ -688,7 +809,8 @@ actually ran (§1, A-266):
 
 | field | rule |
 |---|---|
-| `snapshot_scope` | required, enum `repository` \| `project` — the EFFECTIVE value, never absent because the lane omitted the key |
+| `snapshot_scope` | required, enum `repository` \| `project` — the EFFECTIVE value |
+| `materialisation` | required, enum `none` \| `complete` — whether a boundary was actually materialised |
 | `project_prefix` | required iff `snapshot_scope = "project"`, forbidden otherwise; repo-top-relative, canonical, non-empty |
 | `inputs` | required iff `snapshot_scope = "project"` (possibly empty), forbidden otherwise; canonical repo-top-relative paths, unique, sorted |
 
@@ -699,15 +821,24 @@ without re-running anything. It does NOT carry the commit: the document already
 has a required top-level `commit`, and two copies of one fact is one fact too
 many.
 
+**`materialisation` is what keeps the object from lying.** Four situations are
+otherwise indistinguishable: a direct R0 execution that never snapshots; a policy
+resolved but refused at preflight; a snapshot materialised but the command never
+started; and a snapshot that actually ran. An R0-only lane records
+`{snapshot_scope: "repository", materialisation: "none"}` — no boundary was
+applied and none was materialised, both true — and declaring an `[isolation]`
+table on an R0-only lane is refused at load as inert configuration (A-062).
+Recording `"repository"` alone there, as this spec's previous draft did, is a
+false attestation: it names a policy for machinery that never ran.
+
+The object's own schema `description` must say, in the artifact, that this is a
+MATERIALISATION boundary and not a sandbox — §1's ruling. An attestation whose
+meaning lives only in a design document is one a consumer will over-read.
+
 The conditional pairs (`project_prefix`/`inputs` present iff project scope) ARE
 expressible in Draft 2020-12 via `if`/`then`/`else`, unlike §6's numeric
 comparisons — so they live in the schema as well as the model and the raw
 verifier.
-
-An R0-only lane never snapshots (`runner.py:1857`, "direct live-tree execution")
-so it records `snapshot_scope: "repository"` — the truthful statement that no
-project boundary was applied — and declaring an `[isolation]` table on an
-R0-only lane is refused at load as inert configuration (A-062).
 
 ### `reason_code`
 
@@ -787,21 +918,27 @@ suppressed.
 
 Each lands as its own commit. Do not batch.
 
-0. **Decisions first.** A-257…A-266 into `decisions.md`, verbatim from §0. A
+0. **Decisions first.** A-257…A-267 into `decisions.md`, verbatim from §0. A
    ruling that reaches only an agent message is not applied (A-072).
 1. **B006 (a) — the project-scoped snapshot** — §1. **This is now the largest
    single item in the wave**, not the small papercut the original backlog
    described, and it is the one with a consumer blocked on it today. It splits:
-   1a. config — the `[isolation]` table, its closed grammar, every load-time
-       refusal, and the R0-only refusal;
-   1b. isolation — canonicalisation against the resolved commit, the private
-       index/worktree materialisation of prefix + inputs, boundary-relative
-       symlink containment, and the no-leakage proof;
-   1c. runner — the preflight that every source root, artifact, mutation
-       candidate, canary target and cwd lies inside the boundary.
-   1a/1b/1c land as three commits. 1b is where the security property lives; if
-   any of its oracles cannot be written honestly, STOP and report rather than
-   weakening the oracle.
+   1a. config — the `[isolation]` table, its closed grammar, the required-on-R1+
+       and refused-on-R0-only rules, both-direction overlap refusal, and the
+       bounds; plus the immutable `ResolvedSnapshotBoundary` type (§1.8) which
+       everything downstream consumes;
+   1b. isolation — canonicalisation and kind/expansion validation against the
+       resolved commit, the private index/worktree materialisation of prefix +
+       inputs, boundary-relative symlink containment, and the no-leakage proof;
+   1c. runner — the preflight over every source root, artifact, mutation
+       candidate, canary target and cwd, with the project↔repo-top spelling
+       conversion stated at each; plus threading the ONE boundary object into
+       `assemble_verdict`.
+   1a/1b/1c land as three commits. 1b is where the property lives; if any of its
+   oracles cannot be written honestly, STOP and report rather than weakening the
+   oracle. **Do not promise more than §1's ruling allows** — the boundary is a
+   materialisation boundary; no test may be phrased as proving confinement the
+   mechanism does not deliver.
 2. **B006 (b)** — §2. Independent of §1's mechanism, but its "inside the
    declared scope" constraint only means something once 1c exists, so land it
    after.
@@ -902,10 +1039,13 @@ coverage payloads.
 acceptance tests, and they are the acceptance bar for work item 1:
 
 * a fixture repository carrying an absolute-target symlink OUTSIDE the project
-  scope: project-scoped R1, R2 and R3 all run normally, and the external target
-  is **never materialised and not readable from the command** — assert both, and
-  assert the file's absence from the materialised tree rather than inferring it
-  from the run having proceeded. The SAME repository under
+  scope: project-scoped R1, R2 and R3 all run normally, and the symlink is
+  **never materialised** — assert its absence from the materialised tree with a
+  real filesystem check (`lstat`), not inferred from the run having proceeded,
+  and assert that the target it would have pointed at is not reachable through
+  any path in that tree. Do NOT assert it is "unreadable": §1's ruling says the
+  retained object closure can still yield its bytes via `git show`, and a test
+  claiming otherwise would be false. The SAME repository under
   `snapshot_scope = "repository"` still fails with P22's existing diagnostic, in
   the same test, so the two scopes are distinguished by evidence;
 * an absolute-target or escaping-relative symlink INSIDE the owned prefix or a
@@ -914,11 +1054,17 @@ acceptance tests, and they are the acceptance bar for work item 1:
   case P22 alone would have allowed;
 * malformed, missing, untracked, absolute and `..` declarations each refuse,
   each with their own diagnostic;
-* a named root test dependency is present, and REMOVING it from `inputs` causes
-  a deterministic preflight failure rather than the command silently reading it
-  from the ambient checkout. This is the oracle that proves there is no
-  fallback, and it is the one most easily written so it cannot fail — it must
-  assert the command's own observation of the file, not just assay's refusal;
+* a named root test dependency is present and the command reads it; REMOVING it
+  from `inputs` makes **the command itself fail because the file is absent**.
+  The backlog's wording ("deterministic preflight failure") is impossible as
+  literally stated and is resolved by operator ruling: once an entry is removed
+  from `inputs`, nothing declares the command needs it, and ambient discovery is
+  forbidden — so assay cannot refuse in preflight without a second
+  `required_inputs` declaration that would let the same fact be declared twice
+  in two places that can disagree. The honest negative is stronger anyway: it
+  proves the boundary is real by having the command discover the file's absence,
+  which is precisely what "no fallback to the caller's checkout" means. Assert
+  the COMMAND's observation, not assay's;
 * private `HEAD`, `git status`, `git diff`, base diff and replacement semantics
   are exact inside the snapshot;
 * mutation and canary targets outside the boundary are refused; in-scope targets
@@ -927,13 +1073,23 @@ acceptance tests, and they are the acceptance bar for work item 1:
   repository — assert the source repo's `git status` and index are byte-unchanged
   after a red run, not only after a green one.
 
-**O9b — the end-to-end consumer proof.** A CMRU lane running in
-`tester-unified` makes genuine R1/R2/R3 claims while the Topos
-`/etc/passwd` fixture remains tracked; its bounded mutation campaign kills every
-non-equivalent mutant and its canary fails for the required coverage reason.
-This is the backlog's own final acceptance test and the reason the capability
-exists. If it cannot be run inside this wave, say so explicitly rather than
-substituting a synthetic repository and calling it done.
+**O9b — the end-to-end consumer proof, DEFERRED to the release pin by operator
+ruling.** The backlog's final acceptance test is a CMRU lane in `tester-unified`
+making genuine R1/R2/R3 claims while the Topos `/etc/passwd` fixture stays
+tracked, killing every non-equivalent mutant and failing its canary for the
+required coverage reason. **It cannot be written in this wave**, and the reason
+is not effort: `cmru/assay.toml` declares R0 only, with no source roots, no
+coverage argv or artifact, no base, no mutation policy and no canary target. An
+implementer writing O9b would have to invent CMRU's entire rigor policy on its
+owner's behalf, which the carve rules say to hand back rather than land.
+
+So this wave proves the mechanism against a purpose-built fixture repository
+(O9), and O9b becomes the acceptance step at the moment the released assay is
+pinned in CMRU — which is the sequence the backlog itself asks for ("release the
+feature as a versioned Assay artifact and pin it in CMRU before CMRU removes its
+temporary runner evidence"). **Recorded as deferred, with its blocker named, so
+it is not silently dropped**: a synthetic fixture passing is not the same claim
+as the consumer's real lane passing, and this wave must not report it as one.
 
 **O10 — the artifact parent is created only in the snapshot.** A lane writing
 coverage into a gitignored `.assay/` with no `.gitkeep` runs green end to end;
@@ -956,13 +1112,37 @@ is injected. All through the real CLI plus the raw verifier.
 `["src/a.py", "src//a.py"]` is refused at load; so is `["src/a.py/"]`. Prove the
 refusal is the loader's, not an accident of a later stage.
 
-**O15 — the isolation table is refused where it would be inert, and recorded
-where it ran.** An R0-only lane declaring `[lanes.X.isolation]` is refused at
-load; the same table on an R1 lane loads, and the resulting artifact carries
-`isolation.snapshot_scope` with the prefix and expanded inputs. An R0-only lane
-that declares no table still records `snapshot_scope: "repository"` — the
-attestation is required, so "no boundary was applied" is a statement the
-artifact makes rather than an absence a reader has to interpret.
+**O15 — the isolation table is required where it acts and refused where it is
+inert.** A lane declaring R1/R2/R3 with NO `[isolation]` table is refused at
+load, naming both legal values; an R0-only lane WITH one is refused at load
+(A-062); an R0-only lane without one produces
+`{snapshot_scope: "repository", materialisation: "none"}`, and a project-scoped
+R1 lane that reaches execution produces `materialisation: "complete"` with its
+prefix and canonical inputs. A preflight refusal under project scope produces
+`materialisation: "none"` — prove that one specifically, because it is the case
+the previous draft got wrong.
+
+**O17 — overlap and kinds are refused in every direction.** Separate cases, each
+refused at load or preflight as §1 assigns: an input inside the prefix; an input
+that is an ANCESTOR of the prefix (`apps/cmru` + `apps`); an input inside another
+input; two inputs where either is an ancestor of the other; a prefix of `"."`;
+a prefix that is not the project's own repo-relative path; an input naming a
+gitlink; an input that is itself a symlink; an input or prefix missing from the
+resolved commit; and `src/foo` alongside `src/foo_evil`, which must LOAD — the
+ancestry check is on path components, and a string-prefix implementation fails
+exactly here.
+
+**O18 — one boundary object, not two that agree.** The boundary the materialiser
+consumed and the boundary the verdict serialises must be the same object.
+Construct a boundary, mutate it before `assemble_verdict` in a test seam, and
+show the artifact changes with it; a design that canonicalises twice passes an
+equality check and fails this one.
+
+**O19 — nothing reaches the consumer's checkout, including on failure.** After a
+deliberately RED project-scoped run, the source repository's `git status` is
+empty and its index file is byte-identical to before. Assert on the red path,
+not only the green one — a cleanup that only runs on success is the classic
+shape here.
 
 **O16 — the whole-target/R3 interaction is deliberate.** A `whole_target` lane
 declaring an `uncovered-line` canary whose target is NOT in `targets` is refused
@@ -1170,7 +1350,58 @@ What changed, and what it costs:
 
 ---
 
-## 13. What must NOT change
+## 13. Addendum D — review round 2, and the claim this wave stopped making
+
+The rewritten §1 went back for an independent adversarial review and returned
+**NOT READY — 13 blocking**. The findings were not about details; the central one
+is that the design promised a security property assay's architecture does not
+have, and four of the thirteen were different views of that same overreach.
+
+The load-bearing facts, verified rather than accepted on assertion:
+
+* each consumer snapshot receives the COMPLETE seed pack and a `read-tree` of the
+  whole commit (`isolation.py:478`, `:500`, `:674`), so `git show HEAD:<path>`
+  reads out-of-scope committed bytes from inside the snapshot, and
+  `skip-worktree` is a status-reporting bit, not access control;
+* the consumer command is `subprocess.run(env=..., cwd=...)` (`runner.py:201`) —
+  no namespace, no process group — so absolute paths, `../..` and
+  `/proc/$PPID/cwd` all still work, and a daemonised child can outlive the
+  post-run checks;
+* assay's `GIT_NO_REPLACE_OBJECTS`/no-hooks protections apply to assay's own Git
+  children (`git.py:116`), not to the lane's command;
+* CMRU's own argv begins `/opt/tester-venv/bin/python`, which lives outside every
+  snapshot — so "the command cannot read outside the boundary" was never going to
+  be true of any real lane.
+
+**The operator ruled the honest scope: a materialisation boundary, not a
+sandbox.** §1 now says so before it says anything else, the attestation says so
+in the artifact, and the oracles are phrased to prove only what the mechanism
+delivers — O9 asserts the symlink is never created, and explicitly forbids a test
+claiming its bytes are unreachable. The stronger property would need a
+mount/Landlock sandbox, which DESIGN-GUIDE §7 and A-030 put permanently outside
+this library.
+
+The other rulings this round forced, each now in §1: scope is REQUIRED on every
+R1+ lane rather than defaulting (inference from the `assay.toml` location was
+considered and rejected — it would silently re-scope every existing consumer);
+the backlog's "removing an input causes deterministic preflight failure" oracle
+is impossible as written and is resolved by having the COMMAND fail on the absent
+file; overlap must be refused in both directions and between inputs; kinds,
+expansion and bounds are closed; one immutable boundary object is constructed
+once and shared, so the attestation cannot disagree with what was materialised;
+`materialisation: none|complete` stops the object describing a boundary that
+never ran; and O9b is deferred to the release pin because `cmru/assay.toml`
+declares no R1+ policy for it to test.
+
+**What this cost is worth recording.** Two review rounds have now found that the
+first written design was wrong in a way the author could not see: round 1 caught
+a false-PASS in the branch rules, round 2 caught a security claim the substrate
+cannot back. Neither was a detail, and both were found by a reviewer who could
+not be overruled by the author.
+
+---
+
+## 14. What must NOT change
 
 * `A-030`: assay never shells out to docker, and nothing here needs to.
 * `A-116`'s payload-free propagation shape, and the four hollow-PASS/FAIL
