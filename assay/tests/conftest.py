@@ -275,12 +275,24 @@ def git_repo(tmp_path: Path) -> GitRepo:
 # of P22/P23's own construction rules.
 
 
+#: (B006a/A-269 WI-2) The default :class:`~assay.config.IsolationConfig` for
+#: every `prepared_snapshot`/`make_lane` caller that does not itself care
+#: about the isolation axis -- plain repository mode, no omissions. Kept as
+#: ONE shared literal rather than reconstructed at each call site, so a test
+#: that DOES pass its own `snapshot_policy`/`isolation` is unambiguously
+#: opting out of this default rather than merely repeating it.
+REPOSITORY_SNAPSHOT_POLICY = IsolationConfig(
+    snapshot_selection="repository", unsafe_symlink_omissions=()
+)
+
+
 def prepared_snapshot(
     repo: GitRepo,
     *,
     commit: str | None = None,
     project_prefix: str = ".",
     scratch_root: Path,
+    snapshot_policy: IsolationConfig | None = None,
     timeout: float = 60.0,
 ):
     """A real P22 :class:`~assay.isolation.SnapshotRepository` context,
@@ -288,6 +300,12 @@ def prepared_snapshot(
     same construction :func:`~assay.runner.run_lane`'s own higher-rigor path
     uses, so a test exercising :mod:`assay.mutation`/:mod:`assay.canary`
     through it proves the real substrate, not a hand-rolled stand-in.
+
+    *snapshot_policy* defaults to :data:`REPOSITORY_SNAPSHOT_POLICY`: every
+    caller that is not itself testing the omission axis gets plain
+    repository mode without having to spell it out, and a caller that IS
+    testing omissions passes its own :class:`~assay.config.IsolationConfig`
+    explicitly.
     """
     from assay import isolation
 
@@ -296,6 +314,9 @@ def prepared_snapshot(
         commit=repo.head() if commit is None else commit,
         project_prefix=PurePosixPath(project_prefix),
         scratch_root=scratch_root.resolve(),
+        snapshot_policy=(
+            REPOSITORY_SNAPSHOT_POLICY if snapshot_policy is None else snapshot_policy
+        ),
         limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
     )
     return isolation.prepare_snapshot(spec, timeout=timeout)
@@ -550,6 +571,15 @@ def mutation_verdict_fixture(name: str) -> dict:
 # test actually is.
 
 
+#: A sentinel distinct from `None`, so `make_lane` can tell "the caller did
+#: not pass `isolation` at all" (auto-derive from `rigor`, B006a/A-269 WI-2)
+#: apart from "the caller explicitly passed `isolation=None`" (a deliberate
+#: R1+/no-isolation pairing -- exactly the shape a `_snapshot_policy_for_lane`
+#: differential negative test needs to construct). A plain `None` default
+#: could not distinguish the two.
+_ISOLATION_UNSET = object()
+
+
 def make_lane(
     *,
     name: str = "package",
@@ -563,8 +593,24 @@ def make_lane(
     budget_seconds: float = 300.0,
     allow_argv_append: bool = False,
     judge: "JudgeConfig | None" = None,
-    isolation: "IsolationConfig | None" = None,
+    isolation: "IsolationConfig | None" = _ISOLATION_UNSET,  # type: ignore[assignment]
 ) -> Lane:
+    if isolation is _ISOLATION_UNSET:
+        # (B006a/A-269 WI-2) `run_lane` now enforces the SAME R0/R1+
+        # isolation conditional `config.py`'s loader enforces, so a runner-
+        # level test that builds a higher-rigor `Lane` directly (bypassing
+        # the loader, which is the whole point of `make_lane`) needs a real
+        # `IsolationConfig` or it now refuses before doing any of the work
+        # that test actually means to exercise. Every test file across this
+        # suite that is not itself about the isolation axis is orthogonal to
+        # WHICH policy is declared, so this default is the plain
+        # `"repository"` selection -- mirroring exactly the rule WI-1 used
+        # to migrate the equivalent TOML literals ("R1+ gets explicit
+        # repository unless the test is specifically an omission test").
+        # A test that DOES care passes `isolation=...` (or explicit `None`
+        # to construct the invalid pairing) and this default never applies.
+        higher_rigor = any(level != "R0" for level in rigor)
+        isolation = REPOSITORY_SNAPSHOT_POLICY if higher_rigor else None
     return Lane(
         name=name,
         scope=scope,

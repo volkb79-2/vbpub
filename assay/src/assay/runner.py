@@ -83,7 +83,7 @@ from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequen
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
-from .config import Lane
+from .config import IsolationConfig, Lane
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
@@ -1017,6 +1017,49 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
     )
 
 
+def _snapshot_policy_for_lane(lane: Lane) -> IsolationConfig | None:
+    """(B006a/A-269 WI-2, §3.3 item 1) The R0/R1+ isolation conditional,
+    re-enforced HERE at the runner boundary.
+
+    ``config.py``'s loader already enforces this identical rule
+    (``_load_isolation_for_lane``) for every TOML-sourced lane; this is the
+    SAME rule checked again because a caller may construct a public
+    :class:`~assay.config.Lane` directly, bypassing the loader entirely
+    (§3.5's own "a public directly-constructed Lane violates the R0/R1+
+    isolation conditional"). Returns ``None`` -- never a fabricated
+    repository default -- for a valid R0-only/no-isolation pair; returns
+    ``lane.isolation`` BY IDENTITY (never copied or renormalised) for a
+    valid R1+/isolation pair; raises ``ERROR``/``BAD_LANE_CONFIG`` for
+    either impossible direct-constructor pairing.
+
+    Called by :func:`run_lane` before it chooses between the direct R0-only
+    path and :func:`_run_higher_rigor_lane`, and (WI-4) by
+    ``assemble_verdict`` -- ONE helper, so the runner and the verdict
+    producer can never disagree about which policy a lane carries.
+    """
+    higher_rigor = any(level != "R0" for level in lane.rigor)
+    if higher_rigor:
+        if lane.isolation is None:
+            raise AssayError(
+                f"lane {lane.name!r} declares rigor {list(lane.rigor)} but "
+                f"isolation is None; R1/R2/R3 requires an explicit "
+                f"snapshot_policy, and this runner never invents a "
+                f"repository default for one",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        return lane.isolation
+    if lane.isolation is not None:
+        raise AssayError(
+            f"lane {lane.name!r} declares rigor {list(lane.rigor)} (R0-only) "
+            f"but isolation is {lane.isolation!r}; an R0-only lane runs no "
+            f"snapshot and must not declare a policy for one",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    return None
+
+
 def _relocate_source_roots(
     lane: Lane, *, project_root: Path, scratch_project_root: Path
 ) -> Lane:
@@ -1708,6 +1751,7 @@ def _run_higher_rigor_lane(
     r1_declared: bool,
     r2_declared: bool,
     r3_declared: bool,
+    snapshot_policy: IsolationConfig,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
 ) -> Verdict:
@@ -1718,6 +1762,14 @@ def _run_higher_rigor_lane(
     CLI-started :class:`LaneDeadline` (P26/A-212, already begun before HEAD
     resolution by the caller) are shared across every unit;
     :mod:`assay.isolation` (P22) owns all Git-object isolation and refusal.
+
+    *snapshot_policy* (B006a/A-269 WI-2) is :func:`run_lane`'s own
+    ``_snapshot_policy_for_lane(lane)`` result -- always non-``None`` on this
+    path, since the caller only reaches here once ``r1_declared or
+    r2_declared or r3_declared``, which is exactly the pairing that helper
+    never returns ``None`` for. Passed into the ONE :class:`~assay.isolation.
+    SnapshotSpec` below BY IDENTITY, never re-derived from *lane* a second
+    time here.
     """
     repo_top = git.repo_top(repo, remaining=deadline.remaining)
     project_prefix = _resolved_project_prefix(repo_top, project_root)
@@ -1763,6 +1815,7 @@ def _run_higher_rigor_lane(
                 commit=commit,
                 project_prefix=project_prefix,
                 scratch_root=scratch_root,
+                snapshot_policy=snapshot_policy,
                 limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
             )
             with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
@@ -1946,6 +1999,13 @@ def run_lane(
             clock=clock,
         )
 
+    # (B006a/A-269 WI-2, §3.3 item 1) Resolved BEFORE the R0/higher-rigor
+    # dispatch below, and unconditionally -- not only on the higher-rigor
+    # branch -- so a directly constructed `Lane` that pairs R0-only rigor
+    # with a declared isolation policy is refused here too, never silently
+    # accepted because its rigor happened to route it past P22 entirely.
+    snapshot_policy = _snapshot_policy_for_lane(lane)
+
     r1_declared = "R1" in lane.rigor
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
@@ -1954,6 +2014,9 @@ def run_lane(
         # A-189: exact R0 alone stays on the direct live-tree path below;
         # every higher-rigor lane uses P22's committed-snapshot state
         # machine instead, with no live-tree fallback on its refusal.
+        # `snapshot_policy` is never `None` here: `_snapshot_policy_for_lane`
+        # only returns `None` for an R0-only lane, and this branch is
+        # exactly `r1_declared or r2_declared or r3_declared`.
         return _run_higher_rigor_lane(
             lane,
             commit=commit,
@@ -1970,6 +2033,7 @@ def run_lane(
             r1_declared=r1_declared,
             r2_declared=r2_declared,
             r3_declared=r3_declared,
+            snapshot_policy=snapshot_policy,
             evidence=evidence,
             declared_evidence=declared_evidence,
         )

@@ -46,7 +46,8 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterator, Mapping
 
 from . import git as _git
-from .errors import AssayError, Outcome, ReasonCode
+from .config import IsolationConfig
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
 __all__ = [
     "DEFAULT_SNAPSHOT_LIMITS",
@@ -85,6 +86,10 @@ def _git_failed(message: str) -> AssayError:
     return AssayError(
         message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED
     )
+
+
+def _bad_lane_config(message: str) -> AssayError:
+    return LaneConfigError(message)
 
 
 def _limit_exceeded(message: str) -> AssayError:
@@ -141,18 +146,34 @@ DEFAULT_SNAPSHOT_LIMITS = SnapshotLimits(
 
 @dataclass(frozen=True, kw_only=True)
 class SnapshotSpec:
-    """One source commit and caller-owned scratch namespace."""
+    """One source commit and caller-owned scratch namespace.
+
+    ``snapshot_policy`` (B006a/A-269 WI-2, §3.3.1) is REQUIRED and has no
+    default: the declared repository materialisation policy for this
+    snapshot, always a real :class:`~assay.config.IsolationConfig` -- never
+    ``None``. A ``SnapshotSpec`` is only ever constructed for an R1+ lane
+    (an R0-only lane never reaches :mod:`assay.isolation` at all), and
+    ``runner._snapshot_policy_for_lane`` already guarantees ``lane.isolation``
+    is non-``None`` on that path, so there is no "no policy" state for this
+    field to represent. The caller passes the ONE resolved policy object by
+    identity; this module never normalises or copies a second version of it.
+    """
 
     repo_top: Path
     commit: str
     project_prefix: PurePosixPath
     scratch_root: Path
+    snapshot_policy: IsolationConfig
     limits: SnapshotLimits = DEFAULT_SNAPSHOT_LIMITS
 
     def __post_init__(self) -> None:
-        """Validate exact SHA-1, prefix, roots, and concrete limits."""
+        """Validate exact SHA-1, prefix, roots, policy, and concrete limits."""
         if not isinstance(self.limits, SnapshotLimits):
             raise ValueError(f"limits must be SnapshotLimits, got {self.limits!r}")
+        if not isinstance(self.snapshot_policy, IsolationConfig):
+            raise ValueError(
+                f"snapshot_policy must be IsolationConfig, got {self.snapshot_policy!r}"
+            )
         for name in ("repo_top", "scratch_root"):
             value = getattr(self, name)
             if not isinstance(value, Path) or not value.is_absolute():
@@ -205,10 +226,20 @@ class _Entry:
 
 @dataclass(frozen=True, kw_only=True)
 class _Manifest:
-    """The frozen content of one commit: what materialization may write."""
+    """The frozen content of one commit: what materialization may write.
+
+    ``omitted`` (B006a/A-269 WI-2, §3.3.4) holds the exact sorted repo-top
+    paths of every validated, commit-checked declared unsafe-symlink leaf --
+    empty under repository-mode. Each is a `_MODE_SYMLINK` leaf that WOULD
+    otherwise appear in ``entries``; it does not, on purpose. Its blob stays
+    part of the private object closure (§2's non-property list), so
+    ``git show <commit>:<omitted path>`` still works -- only the *worktree*
+    leaf and the manifest's own record of it are absent.
+    """
 
     entries: tuple[_Entry, ...]
     directories: tuple[PurePosixPath, ...]
+    omitted: tuple[PurePosixPath, ...]
 
     def by_path(self) -> Mapping[PurePosixPath, _Entry]:
         return {entry.path: entry for entry in self.entries}
@@ -498,6 +529,26 @@ class SnapshotRepository:
             )
 
         run("read-tree", spec.commit)
+        if self._manifest.omitted:
+            # (§3.3.6) The full index from `read-tree` above already carries
+            # every omitted leaf's entry; this marks EXACTLY those entries
+            # skip-worktree, never a broader set. `-z --stdin` is not a
+            # convenience here: a tracked pathname may hold any byte except
+            # NUL or `/` (a real symlink leaf can carry a literal newline),
+            # so an argv-based or newline-delimited form would either split
+            # a single declared path across two records or mis-parse it via
+            # git's own C-quoting. NUL-terminated raw bytes are the only
+            # spelling that cannot be misread (measured, M5).
+            run(
+                "update-index",
+                "--skip-worktree",
+                "-z",
+                "--stdin",
+                stdin_bytes=b"".join(
+                    str(path).encode("utf-8") + b"\x00"
+                    for path in self._manifest.omitted
+                ),
+            )
         commit = spec.commit
         entries = self._manifest.entries
         if replacement is not None:
@@ -592,6 +643,36 @@ class SnapshotRepository:
             raise _git_failed(
                 f"the private snapshot at {root} is not clean: {status[:200]!r}"
             )
+        # (B006a/A-269 WI-2, §3.3.8) The four new proofs, in addition to the
+        # ones above: an index whose tree diverges from HEAD's, a skip-
+        # worktree set that is not exactly the declared omissions, or a
+        # materialized omitted leaf would each be a false claim of the
+        # narrower `repository-minus-unsafe-symlinks` policy.
+        tree = _decode(run("write-tree")).strip()
+        head_tree = _decode(run("rev-parse", "HEAD^{tree}")).strip()
+        if tree != head_tree:
+            raise _git_failed(
+                f"the private snapshot at {root} has an index tree {tree} "
+                f"that does not match HEAD^{{tree}} {head_tree}"
+            )
+        skip_paths = _parse_skip_worktree_paths(run("ls-files", "-v", "-z"))
+        expected_skip = frozenset(
+            str(path).encode("utf-8") for path in self._manifest.omitted
+        )
+        if skip_paths != expected_skip:
+            raise _git_failed(
+                f"the private snapshot at {root} has skip-worktree entries "
+                f"{sorted(skip_paths)!r} but the declared omissions are "
+                f"exactly {sorted(expected_skip)!r}"
+            )
+        for omitted_path in self._manifest.omitted:
+            materialized = root.joinpath(*omitted_path.parts)
+            if os.path.lexists(materialized):
+                raise _git_failed(
+                    f"the private snapshot at {root} materialised the "
+                    f"declared omission {omitted_path!s}, which must be "
+                    f"absent from the worktree"
+                )
         if (git_dir / "objects" / "info" / "alternates").exists():
             raise _git_failed(
                 f"the private snapshot at {root} depends on an alternate object store"
@@ -857,19 +938,37 @@ def _parse_tree(raw: bytes, oid: str) -> tuple[tuple[str, bytes, str], ...]:
     return tuple(records)
 
 
-def _check_symlink_target(path: PurePosixPath, target: str) -> None:
-    """Refuse any symlink that does not resolve inside the snapshot root.
+#: (B006a/A-269 WI-2, §3.3.3) The pure classifier's closed result vocabulary.
+#: ``safe`` is the only kind repository mode ever accepts; the other three
+#: are the exact three kinds P22 has always refused, now named so omission
+#: mode can distinguish "this is a declarable leaf" from "this is not".
+_SYMLINK_SAFE = "safe"
+_SYMLINK_EMPTY = "empty"
+_SYMLINK_ABSOLUTE = "absolute"
+_SYMLINK_ESCAPE = "repository-escape"
+
+
+def _classify_symlink_target(path: PurePosixPath, target: str) -> str:
+    """Classify one symlink's target, purely lexically, never touching disk.
 
     Resolution is LEXICAL and never touches the filesystem: asking the
     kernel (``Path.resolve``) would answer about the machine assay happens
     to run on, follow links that already exist, and quietly accept a link
     that only escapes once its target is created. Because every link in the
     tree is checked this way, a chain of links cannot escape either.
+
+    Returns exactly one of :data:`_SYMLINK_SAFE`, :data:`_SYMLINK_EMPTY`,
+    :data:`_SYMLINK_ABSOLUTE`, or :data:`_SYMLINK_ESCAPE` (§3.3.3) -- never
+    raises. This is the ONE decision both repository mode (which refuses
+    every non-``safe`` result) and omission mode (which additionally
+    REQUIRES a non-``safe`` result at a declared path, and refuses a
+    ``safe`` one) are built on, so the two modes can never silently
+    disagree about which symlinks are unsafe.
     """
     if not target:
-        raise _git_failed(f"symlink {path!s} has an empty target")
+        return _SYMLINK_EMPTY
     if target.startswith("/"):
-        raise _git_failed(f"symlink {path!s} targets the absolute path {target!r}")
+        return _SYMLINK_ABSOLUTE
     parent = path.parent
     parts = [] if str(parent) == "." else list(parent.parts)
     for component in PurePosixPath(target).parts:
@@ -877,12 +976,174 @@ def _check_symlink_target(path: PurePosixPath, target: str) -> None:
             continue
         if component == "..":
             if not parts:
-                raise _git_failed(
-                    f"symlink {path!s} targets {target!r}, which escapes the snapshot root"
-                )
+                return _SYMLINK_ESCAPE
             parts.pop()
         else:
             parts.append(component)
+    return _SYMLINK_SAFE
+
+
+def _unsafe_symlink_message(path: PurePosixPath, target: str, kind: str) -> str:
+    """The existing repository-mode diagnostic for one non-``safe`` *kind*.
+
+    Verbatim the same three messages P22 has always produced (measured, M4)
+    -- this refactor changes HOW the kind is decided, never what repository
+    mode says about it.
+    """
+    if kind == _SYMLINK_EMPTY:
+        return f"symlink {path!s} has an empty target"
+    if kind == _SYMLINK_ABSOLUTE:
+        return f"symlink {path!s} targets the absolute path {target!r}"
+    return f"symlink {path!s} targets {target!r}, which escapes the snapshot root"
+
+
+def _check_symlink_target(path: PurePosixPath, target: str) -> None:
+    """Repository mode's own diagnostic: refuse any non-``safe`` classification."""
+    kind = _classify_symlink_target(path, target)
+    if kind != _SYMLINK_SAFE:
+        raise _git_failed(_unsafe_symlink_message(path, target, kind))
+
+
+#: (B006a/A-269 WI-2, §3.3.4) Human names for the declared-omission "wrong
+#: kind" diagnostic -- a declared tree/regular/executable/gitlink is refused
+#: BEFORE the generic mode check ever runs for that same path, so this
+#: module supplies its own friendly names rather than reusing a message the
+#: generic refusal never gets to produce for a declared path.
+_DECLARED_KIND_NAMES: Mapping[str, str] = {
+    _MODE_TREE: "a tree",
+    _MODE_REGULAR: "a regular file",
+    _MODE_EXECUTABLE: "an executable file",
+    _MODE_GITLINK: "a gitlink",
+}
+
+
+def _declared_kind_name(mode: str) -> str:
+    return _DECLARED_KIND_NAMES.get(mode, f"mode {mode!r}")
+
+
+def _parse_skip_worktree_paths(raw: bytes) -> frozenset[bytes]:
+    """Parse ``git ls-files -v -z`` into the raw path BYTES of every entry
+    marked skip-worktree -- uppercase ``S`` (measured: git prints uppercase
+    for the ordinary tracked/skip-worktree states and lowercase only when an
+    entry ALSO carries assume-unchanged, which this module's own snapshots
+    never set). An earlier oracle in this project asserted lowercase and was
+    therefore unfailable forever -- this is the corrected, exact parse.
+
+    Deliberately RAW bytes, never decoded, and never line-split: ``-z``
+    changes git's record terminator to NUL and, just as importantly, turns
+    off C-quoting, so a tracked path holding a literal newline, tab, or
+    backslash round-trips byte-for-byte instead of being escaped onto one
+    printable line (measured directly: a tracked symlink named
+    ``dir/weird\\nlink`` parses as the single NUL-terminated record
+    ``S dir/weird\\nlink``, with the raw newline byte inside it). Comparing
+    two bytes objects for record membership needs no decode step, so this
+    parse never has to assume a tracked name is valid UTF-8 in the first
+    place -- only a DECLARED omission is ever required to be.
+    """
+    skipped: set[bytes] = set()
+    for record in raw.split(b"\x00"):
+        if record[:2] == b"S ":
+            skipped.add(record[2:])
+    return frozenset(skipped)
+
+
+def _absent_declared_omission(path: PurePosixPath, commit: str) -> AssayError:
+    return _bad_lane_config(
+        f"declared unsafe_symlink_omissions entry {str(path)!r} is absent at "
+        f"commit {commit}"
+    )
+
+
+def _resolve_declared_omission_modes(
+    git_executable: Path,
+    *,
+    seed_git_dir: Path,
+    root_tree: str,
+    commit: str,
+    declared_paths: tuple[PurePosixPath, ...],
+    metadata: Mapping[str, tuple[str, int]],
+    deadline: "_git._P22Deadline",
+) -> None:
+    """(B006a/A-269 WI-2, §3.3.4) Resolve every declared omission pathname
+    against *root_tree* -- the commit's OWN tree, never the caller worktree
+    -- and confirm each names an existing mode-``120000`` leaf, entirely
+    INDEPENDENTLY of, and before, the general structural walk in
+    :func:`_build_manifest` below.
+
+    This independence is what makes "must be mode 120000" run BEFORE the
+    generic gitlink/unsupported-mode refusal for a DECLARED path (§3.3.4):
+    the general walk raises ``GIT_FAILED`` for the first bad entry it meets
+    in ITS OWN traversal order, so a declared path's own kind has to be
+    decided here, first, or the general walk's answer -- reached by
+    accident of where that path happens to sit in the tree -- would win.
+
+    Content is deliberately NOT read here. Classification (safe / empty /
+    absolute / repository-escape) happens once, uniformly, in the SAME loop
+    that already reads and classifies every other symlink's target inside
+    :func:`_build_manifest`, so a declared path is judged by literally the
+    same code an undeclared path is -- this function only proves EXISTENCE
+    and MODE, never target safety.
+
+    Every oid this walk touches is already a member of *metadata* -- the
+    complete reachable closure :func:`prepare_snapshot` fetched before
+    :func:`_build_manifest` ever ran -- so "is this oid a tree" is answered
+    from that map rather than a second ``cat-file`` round trip, and a
+    gitlink target (never walked by ``rev-list --objects``, so never a
+    member of *metadata*) is indistinguishable from "absent" here, which is
+    exactly the outcome §3.5's refusal table gives it.
+    """
+    if not declared_paths:
+        return
+    frontier: dict[PurePosixPath, tuple[tuple[str, ...], str]] = {
+        path: (path.parts, root_tree) for path in declared_paths
+    }
+    while frontier:
+        by_tree: dict[str, list[PurePosixPath]] = {}
+        for path, (_parts, tree_oid) in frontier.items():
+            by_tree.setdefault(tree_oid, []).append(path)
+        for tree_oid, paths in by_tree.items():
+            declared_kind = metadata.get(tree_oid)
+            if declared_kind is None or declared_kind[0] != "tree":
+                raise _absent_declared_omission(paths[0], commit)
+
+        raw_trees: dict[str, bytearray] = {}
+
+        def open_sink(
+            oid: str, _kind: str, _size: int, _sink: dict[str, bytearray] = raw_trees
+        ) -> Callable[[bytes], None] | None:
+            buffer = _sink.setdefault(oid, bytearray())
+            return buffer.extend
+
+        _batch_objects(
+            git_executable,
+            git_dir=seed_git_dir,
+            oids=tuple(by_tree),
+            deadline=deadline,
+            open_sink=open_sink,
+        )
+
+        next_frontier: dict[PurePosixPath, tuple[tuple[str, ...], str]] = {}
+        for tree_oid, paths in by_tree.items():
+            records = _parse_tree(bytes(raw_trees[tree_oid]), tree_oid)
+            by_name: dict[bytes, tuple[str, str]] = {}
+            for mode, name, child_oid in records:
+                by_name.setdefault(name, (mode, child_oid))
+            for path in paths:
+                parts, _tree_oid = frontier[path]
+                match = by_name.get(parts[0].encode("utf-8"))
+                if match is None:
+                    raise _absent_declared_omission(path, commit)
+                mode, child_oid = match
+                rest = parts[1:]
+                if rest:
+                    next_frontier[path] = (rest, child_oid)
+                elif mode != _MODE_SYMLINK:
+                    raise _bad_lane_config(
+                        f"declared unsafe_symlink_omissions entry "
+                        f"{str(path)!r} is {_declared_kind_name(mode)} in "
+                        f"{commit}, not a symlink leaf (mode 120000)"
+                    )
+        frontier = next_frontier
 
 
 def _build_manifest(
@@ -911,6 +1172,26 @@ def _build_manifest(
             cwd=seed_git_dir,
         )
     ).strip()
+
+    # (B006a/A-269 WI-2, §3.3.4) Omission mode's declared paths, resolved
+    # against THIS commit's tree before the general walk below runs at all
+    # -- see `_resolve_declared_omission_modes`'s own docstring for why the
+    # ordering matters. Empty under repository mode (`IsolationConfig`
+    # guarantees `unsafe_symlink_omissions == ()` there), so this is a no-op
+    # for every repository-mode snapshot.
+    declared_paths = tuple(
+        PurePosixPath(raw) for raw in spec.snapshot_policy.unsafe_symlink_omissions
+    )
+    _resolve_declared_omission_modes(
+        git_executable,
+        seed_git_dir=seed_git_dir,
+        root_tree=root_tree,
+        commit=spec.commit,
+        declared_paths=declared_paths,
+        metadata=metadata,
+        deadline=deadline,
+    )
+    declared_set = frozenset(declared_paths)
 
     entries: list[_Entry] = []
     directories: list[PurePosixPath] = [PurePosixPath(".")]
@@ -1058,6 +1339,7 @@ def _build_manifest(
             open_sink=open_target,
         )
 
+    omission_mode = spec.snapshot_policy.snapshot_selection == "repository-minus-unsafe-symlinks"
     targets: dict[PurePosixPath, str] = {}
     for path, oid in symlinks:
         raw = bytes(resolved[oid])
@@ -1065,7 +1347,33 @@ def _build_manifest(
             target = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise _git_failed(f"symlink {path!s} has a non-UTF-8 target {raw!r}") from exc
-        _check_symlink_target(path, target)
+        kind = _classify_symlink_target(path, target)
+        if path in declared_set:
+            # (§3.3.4) Declared as an omission: the ONLY legal declaration is
+            # a leaf P22 would otherwise refuse. A `safe` declared target is
+            # a configuration error, never permission to create an arbitrary
+            # exclusion (§2's own non-property: "does not permit arbitrary
+            # file or directory exclusions").
+            if kind == _SYMLINK_SAFE:
+                raise _bad_lane_config(
+                    f"declared unsafe_symlink_omissions entry {str(path)!r} "
+                    f"names a symlink whose target {target!r} is already "
+                    f"P22-safe in {spec.commit}; only a symlink P22 would "
+                    f"otherwise refuse may be declared as an omission"
+                )
+        elif kind != _SYMLINK_SAFE:
+            # (§3.3.5) Undeclared and unsafe: fails closed exactly as
+            # repository mode always has. Omission mode's diagnostic
+            # additionally buys back the ownership inversion by naming the
+            # exact declarable spelling; repository mode's stays unchanged
+            # because that declaration is illegal under that selection.
+            message = _unsafe_symlink_message(path, target, kind)
+            if omission_mode:
+                message += (
+                    f'; if this is a deliberate fixture, this omission lane '
+                    f'may declare exactly "{path!s}" in unsafe_symlink_omissions'
+                )
+            raise _git_failed(message)
         targets[path] = target
 
     final = tuple(
@@ -1077,8 +1385,9 @@ def _build_manifest(
             target=targets.get(entry.path),
         )
         for entry in entries
+        if entry.path not in declared_set
     )
-    manifest = _Manifest(entries=final, directories=tuple(directories))
+    manifest = _Manifest(entries=final, directories=tuple(directories), omitted=declared_paths)
     if str(spec.project_prefix) != "." and spec.project_prefix not in seen_dirs:
         raise _git_failed(
             f"project_prefix {spec.project_prefix!s} does not name a tree in {spec.commit}"

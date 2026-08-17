@@ -140,6 +140,106 @@ def test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own(
     assert verdict.ended == "2026-08-08T09:00:01+00:00"
 
 
+# --- B006(a)/A-269 WI-2: the R0/R1+ isolation conditional, re-enforced at --
+# the runner boundary (`_snapshot_policy_for_lane`) for a directly
+# constructed `Lane` -- `config.py`'s loader already enforces the identical
+# rule for every TOML-sourced lane, so these two shapes are reachable only
+# through the public `Lane` API, never through a loaded `assay.toml`.
+
+
+def test_run_lane_refuses_a_higher_rigor_lane_with_no_isolation_policy(
+    git_repo: GitRepo,
+):
+    """A directly constructed R1+ `Lane` with `isolation=None` is refused
+    before any git work -- checked BEFORE `run_lane` even chooses between
+    the direct R0-only path and `_run_higher_rigor_lane`.
+    """
+    lane = make_lane(rigor=("R0", "R1"), judge=None, isolation=None)
+
+    with pytest.raises(AssayError) as caught:
+        runner.run_lane(
+            lane,
+            commit="d" * 40,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            adapter=None,
+            assay_version="0.1.0",
+        )
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "isolation is None" in str(caught.value)
+
+    # CONTROL: the identical rigor with an explicit policy is NOT refused by
+    # this check -- it proceeds far enough to hit the next one instead (a
+    # commit that does not match `git_repo`'s real HEAD), proving the
+    # isolation conditional itself, and not some other refusal, is what
+    # fired above.
+    from assay.config import IsolationConfig
+
+    ok_lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=None,
+        isolation=IsolationConfig(
+            snapshot_selection="repository", unsafe_symlink_omissions=()
+        ),
+    )
+    verdict = runner.run_lane(
+        ok_lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+    )
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.HEAD_CHANGED
+
+
+def test_run_lane_refuses_an_r0_only_lane_that_declares_an_isolation_policy(
+    git_repo: GitRepo,
+):
+    """A directly constructed R0-only `Lane` that ALSO declares an
+    isolation policy is refused: an R0-only lane runs no snapshot at all,
+    so a declared policy for one can never be honoured.
+    """
+    from assay.config import IsolationConfig
+
+    policy = IsolationConfig(
+        snapshot_selection="repository", unsafe_symlink_omissions=()
+    )
+    lane = make_lane(rigor=("R0",), judge=None, isolation=policy)
+
+    with pytest.raises(AssayError) as caught:
+        runner.run_lane(
+            lane,
+            commit="d" * 40,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            adapter=None,
+            assay_version="0.1.0",
+        )
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "R0-only" in str(caught.value)
+
+    # CONTROL: the identical rigor with no isolation policy at all is not
+    # refused by this check and runs to completion, exactly like
+    # `test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own`
+    # above.
+    ok_lane = make_lane(
+        rigor=("R0",), judge=None, isolation=None, argv=("/bin/sh", "-c", "exit 0")
+    )
+    verdict = runner.run_lane(
+        ok_lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+    )
+    assert [c.rigor for c in verdict.claims] == ["R0"]
+
+
 # --- O2: the lane command runs exactly once ------------------------------------
 
 
