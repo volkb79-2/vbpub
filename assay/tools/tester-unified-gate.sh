@@ -391,6 +391,28 @@ run_inner() {
     die "P25 Topos qualification did not emit its success marker exactly once"
   echo 'ASSAY_GATE_PHASE=topos-qualified'
 
+  # B006(a) WI-5: qualifies the CURRENT run-venv Assay against a disposable,
+  # pinned, full-repository checkout of CMRU while Topos's three unsafe
+  # symlink fixtures stay tracked -- the end-to-end proof that
+  # `snapshot_selection = "repository-minus-unsafe-symlinks"` unblocks a real
+  # consumer's R1/R2/R3 claims. `--source-repo` is $worktree itself, exactly
+  # as P25's own invocation above; this is a disposable qualification gate
+  # phase, never a permanent CMRU lane (`cmru/assay.toml` stays untouched and
+  # R0-only in the real checkout). Inserted immediately after
+  # `topos-qualified` and before the independent witness, per O7.
+  local cmru_b006a_marker
+  cmru_b006a_marker="$(
+    "$scratch/run-venv/bin/python" "$worktree/assay/gate/python/qualify_cmru_b006a.py" \
+      --source-repo "$worktree" \
+      --scratch "$scratch/b006a-cmru" \
+      --current-assay "$scratch/run-venv/bin/assay" \
+      --current-version "$version"
+  )"
+  [[ "$cmru_b006a_marker" == "ASSAY_B006A_CMRU_QUALIFIED=1" ]] || \
+    die "B006(a) CMRU qualification did not emit its success marker exactly once"
+  echo "$cmru_b006a_marker"
+  echo 'ASSAY_GATE_PHASE=cmru-b006a-qualified'
+
   run_independent_witness "$scratch" "$run_venv_site"
 }
 
