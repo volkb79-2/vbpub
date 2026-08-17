@@ -37,6 +37,19 @@ wins and this file is stale.
 | **B006(a) recarved from the consumer problem** (codex `gpt-5.6-sol` xhigh) | `d3173e61` |
 | **its first independent review — READY WITH CORRECTIONS, 5 blocking / 6 non-blocking** | `c313589b` |
 | **all 15 findings folded into the operative body, one rejected with evidence** | `3d745924` |
+| **WI-0 — A-269 ruled, the superseded design marked dead in place** | `c74dce86` |
+| **M20 measured — CMRU in real `tester-unified`, `--network=none`** | `75d50a7e` (1 failed, 1399 passed, 2 skipped) |
+| **B006(a) WI-1 — lane schema v2, `IsolationConfig`** | `c56a13ea`, `9b02e5e8`; verified `f76a3f32` |
+| **B006(a) WI-2 — P22 unsafe-symlink omissions** | `57d620d7`; verified + one dead branch removed `88f24a85` |
+| **B006(a) WI-3 — artifact/omission collision, embargo** | `7d2da7f3`; verified `678f93fc` |
+| **B006(b) — artifact parent chain inside the snapshot** | `7e869e71` (suite 2630 passed, verified in the foreground) |
+| **the withdrawn-design sweep** | `80de2a6c`, `1b563dea` |
+| **A-270 — user-facing docs merge with the change** | `8269fe5d` (+ `66382ab5` widening WI-5) |
+
+**Current position: the single v5→v6 cut is dispatched** — sibling item 4 (§4
+branch judge, §5 B005, §6 schema v6) together with the B006(a) carve's WI-4
+(`snapshot_policy`), in ONE commit. After it: WI-5 docs (widened, see below),
+CMRU qualification, controller review, gate, merge, release, notify dstdns.
 
 **WI-3 independently verified by the controller**, not taken from the report:
 the eight real fixtures are untouched; the three formats parse `sample.py` to
