@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -67,6 +68,7 @@ from assay.config import (
     MutationConfig,
 )
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotSpec, prepare_snapshot
 
 # ---------------------------------------------------------------------------
 # Shared IsolationConfig builders (mirroring test_isolation_unsafe_symlink_
@@ -626,6 +628,146 @@ def test_live_command_observes_exact_policy_in_every_unit(git_repo: GitRepo) -> 
             f"that only ever applies to a disjoint private snapshot"
         )
     assert git_repo.git("show", f"HEAD:{_EMPTY_LEAF}") == ""
+
+
+# ---------------------------------------------------------------------------
+# O5 -- the dstdns incident shape (§7, M10): a vendored container artifact
+# symlinked at its EXACT real repository path,
+# `infra-global/reverse-proxy/etc-nginx/modules -> /usr/lib/nginx/modules`,
+# with no relationship to any Python source root. Before omission mode
+# existed, this link blocked dstdns's entire coverage effort on day one, and
+# the only fix available was to stop tracking a real artifact to satisfy the
+# tool. This module -- not the P22 mechanism module -- is where this belongs:
+# what O5 proves is runner-shaped ("a lane judging its own code is no longer
+# hostage to a vendored artifact somewhere else"), the same wiring-level
+# claim `test_live_command_observes_exact_policy_in_every_unit` above proves
+# for the CMRU shape. A generic `link -> /etc/passwd` would not witness this
+# incident; the exact spelling is what lets a dstdns reader recognise their
+# own case (a fourth undeclared-unsafe-link negative already exists in
+# `test_isolation_unsafe_symlink_omissions.py`, so this test does not repeat
+# it).
+# ---------------------------------------------------------------------------
+
+_DSTDNS_LINK = "infra-global/reverse-proxy/etc-nginx/modules"
+_DSTDNS_LINK_TARGET = "/usr/lib/nginx/modules"
+_DSTDNS_SIBLING = "infra-global/reverse-proxy/etc-nginx/nginx.conf"
+_DSTDNS_SIBLING_TEXT = "user www-data;\n"
+_DSTDNS_PROJECT_FILE_TEXT = "print('unrelated project command ran')\n"
+
+
+def _dstdns_shaped_repo(git_repo: GitRepo) -> str:
+    """dstdns's own measured incident (M10), scaled into a hermetic repo:
+    the exact real vendored-artifact symlink, one ordinary sibling file
+    beneath the SAME ``infra-global/`` tree, and a small, genuinely
+    unrelated ``project/`` this test's own command actually runs against.
+    """
+    git_repo.write(_DSTDNS_SIBLING, _DSTDNS_SIBLING_TEXT)
+    os.symlink(_DSTDNS_LINK_TARGET, git_repo.path / _DSTDNS_LINK)
+    git_repo.write("project/app.py", _DSTDNS_PROJECT_FILE_TEXT)
+    git_repo.git("add", "-A")
+    git_repo.git("commit", "-q", "-m", "dstdns-shaped fixture: vendored nginx modules symlink")
+    return git_repo.head()
+
+
+def _dstdns_spec(repo: Path, scratch: Path, commit: str, policy: IsolationConfig) -> SnapshotSpec:
+    """The ONE :class:`SnapshotSpec` shape shared by both the negative and
+    the control below -- ``project_prefix`` is fixed at ``"project"`` for
+    BOTH (P22's structural walk covers the whole commit regardless of
+    ``project_prefix``; see ``isolation.py``'s own manifest builder, which
+    only consults it afterwards to check the prefix names a real tree), so
+    the declared *policy* is the only variable that differs between them.
+    """
+    return SnapshotSpec(
+        repo_top=repo.resolve(),
+        commit=commit,
+        project_prefix=PurePosixPath("project"),
+        scratch_root=scratch.resolve(),
+        snapshot_policy=policy,
+        limits=DEFAULT_SNAPSHOT_LIMITS,
+    )
+
+
+def test_dstdns_nginx_link_is_an_exact_omittable_leaf(
+    git_repo: GitRepo, tmp_path: Path
+) -> None:
+    """O5's own acceptance node (§7). Repository mode still refuses the
+    whole tree -- the state dstdns was ACTUALLY in -- naming the exact
+    link. Omission mode, declaring ONLY that one path, runs a real command
+    against a small, genuinely unrelated ``project/`` elsewhere in the same
+    fixture repo, with the link absent (checked by ``lstat``, never
+    inferred from the run having proceeded), the ordinary
+    ``infra-global/`` sibling untouched -- the half that matters most,
+    since it is what distinguishes an omission from deleting the vendored
+    directory outright, which is exactly what dstdns actually lost -- and a
+    clean ``git status``. The negative and the control share EVERYTHING
+    (the same commit, the same ``project_prefix``, the same scratch
+    parent) except the one declared policy, so a repository-mode refusal
+    here cannot be blamed on anything else in the fixture.
+    """
+    commit = _dstdns_shaped_repo(git_repo)
+
+    # --- NEGATIVE: repository mode refuses, naming the exact link. ---
+    repo_scratch = tmp_path / "repo-mode"
+    repo_scratch.mkdir()
+    with pytest.raises(AssayError) as caught:
+        with prepare_snapshot(
+            _dstdns_spec(git_repo.path, repo_scratch, commit, _repository_policy()),
+            timeout=60.0,
+        ):
+            pytest.fail("repository mode must refuse dstdns's own vendored symlink")
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.GIT_FAILED
+    assert _DSTDNS_LINK in str(caught.value)
+    assert list(repo_scratch.iterdir()) == []
+
+    # --- CONTROL: omission mode, declaring that ONE path, genuinely runs a
+    # command against the unrelated `project/` directory inside the
+    # private snapshot. ---
+    omission_scratch = tmp_path / "omission-mode"
+    omission_scratch.mkdir()
+    policy = _omission_policy(_DSTDNS_LINK)
+    with prepare_snapshot(
+        _dstdns_spec(git_repo.path, omission_scratch, commit, policy), timeout=60.0
+    ) as prepared:
+        with prepared.materialize(timeout=60.0) as snapshot:
+            root = snapshot.root
+
+            # The link is absent, proven directly by `lstat` -- independent
+            # of whether the command below runs at all.
+            assert not os.path.lexists(root / _DSTDNS_LINK), _DSTDNS_LINK
+
+            # The ordinary `infra-global/` sibling survives untouched --
+            # the exact thing dstdns lost by untracking the whole artifact
+            # instead of just the one unsafe leaf.
+            assert (
+                root / _DSTDNS_SIBLING
+            ).read_bytes() == _DSTDNS_SIBLING_TEXT.encode("utf-8")
+
+            status = subprocess.run(
+                ["git", "-C", str(root), "status", "--porcelain=v1"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+            assert status == "", f"expected a clean tree, got {status!r}"
+
+            # The command genuinely runs, entirely unrelated to
+            # `infra-global/`: a lane judging its own project is no longer
+            # hostage to a vendored artifact somewhere else in the tree.
+            result = subprocess.run(
+                [sys.executable, "app.py"],
+                cwd=str(snapshot.project_root),
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == "unrelated project command ran\n"
+
+        assert not snapshot.root.exists()
+    assert list(omission_scratch.iterdir()) == []
+
+    # The consumer's OWN repository -- never touched by any of this: the
+    # real vendored link is still exactly where it was.
+    assert os.path.lexists(git_repo.path / _DSTDNS_LINK)
+    assert os.readlink(git_repo.path / _DSTDNS_LINK) == _DSTDNS_LINK_TARGET
 
 
 # ---------------------------------------------------------------------------
