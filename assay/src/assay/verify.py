@@ -760,8 +760,9 @@ def _check_helpers_have_a_judged_claim(document: dict, failures: list[str]) -> N
 
     Only the OBSERVABLE direction. The converse -- a claim produced with a
     helper requires an entry -- has no readable antecedent in the artifact
-    bytes, so implementing it here would be vacuous; P34 owns it, with the
-    adapter that makes the state reachable.
+    bytes, so implementing it here would be vacuous; P29 owns it (A-282:
+    route (i) gives SQL ``external_tools = ()``, so P34 can never witness
+    it), with the adapter that makes the state reachable.
     """
     helpers = document.get("helpers")
     if not isinstance(helpers, list):

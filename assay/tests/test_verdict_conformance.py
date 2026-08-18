@@ -170,7 +170,17 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #: :func:`assay.runner.run_lane`'s own external-tool preflight (A-253) -- and
 #: fixtured in the ordinary set below, per this constant's own recorded
 #: obligation ("P34 removes this line when it makes the state reachable, and
-#: this audit turns red until it does" -- discharged). Two pairs remain:
+#: this audit turns red until it does" -- discharged). P34/W5 closes the
+#: last of the three: ``INCONCLUSIVE``/``ALL_MUTANTS_EQUIVALENT`` is now
+#: producer-reachable -- :func:`assay.mutation.run_mutation` populates the
+#: ``equivalent`` bucket by comparing a declared ``equivalence_artifact``
+#: against the baseline's own bytes (§3.6), and :func:`assay.mutation.
+#: judge_mutation` already ranked the terminal (A-223d) -- so it is fixtured
+#: in the ordinary set below (``r2_inconclusive_all_mutants_equivalent.json``,
+#: witnessed by constructing the real dataclass graph and calling the real
+#: :func:`~assay.mutation.judge_mutation`, never hand-typed toward green,
+#: A-274) and this constant's own recorded obligation is discharged. One
+#: pair remains:
 #:
 #: * ``ERROR``/``OUTPUT_WRITE_FAILED`` — structurally artifact-less. It means
 #:   assay could not write the verdict it was asked for, so the only honest
@@ -178,7 +188,6 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #:   invented"). Fixturing it would assert an artifact whose own existence
 #:   the reason denies. Proven instead by the locked CLI marker test and
 #:   ``tests/test_output_reservation.py``.
-#: * ``INCONCLUSIVE``/``ALL_MUTANTS_EQUIVALENT`` — see its own entry below.
 #:
 #: P23 closes A-190: the snapshot-policy limit pair P22 reserved is now
 #: producer-reachable (a byte-identical copy of P22's own carver-owned
@@ -187,17 +196,6 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
-        # (P33/A-223d) `ALL_MUTANTS_EQUIVALENT` is spellable in the artifact
-        # and enforced for documents, but NO P33 lane can produce it: the
-        # `equivalent` bucket is only populated by comparing a declared
-        # `equivalence_artifact`, and `config` refuses that declaration on a
-        # non-sql lane -- and no build yet registers the sql adapter that
-        # could declare one (P34/W6). Excluded here on the same terms as
-        # `OUTPUT_WRITE_FAILED` above -- and with the same obligation:
-        # whoever wires the sql adapter's own R2 producer path removes this
-        # line when it makes the state reachable, and this audit turns red
-        # until it does.
-        ("INCONCLUSIVE", "ALL_MUTANTS_EQUIVALENT"),
     }
 )
 

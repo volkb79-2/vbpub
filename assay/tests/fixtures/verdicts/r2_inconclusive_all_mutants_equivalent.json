@@ -1,0 +1,86 @@
+{
+  "schema_version": 6,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "outcome": "INCONCLUSIVE",
+  "exit_code": 5,
+  "started": "2026-08-18T09:00:00+00:00",
+  "ended": "2026-08-18T09:00:03+00:00",
+  "reason_code": "ALL_MUTANTS_EQUIVALENT",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "bash",
+    "gate/qualify_dstdns_sql.sh"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "bash",
+    "gate/qualify_dstdns_sql.sh"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "sql",
+      "source_roots": [
+        "init-scripts"
+      ],
+      "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "r2": {
+      "jobs": 1,
+      "max_mutants": 50,
+      "operators": [
+        "sql:drop-check"
+      ],
+      "kill_attribution": "unattributed",
+      "equivalence_artifact": ".assay/schema-dump.sql"
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "INCONCLUSIVE",
+      "verified_by_assay": true,
+      "reason_code": "ALL_MUTANTS_EQUIVALENT",
+      "mutation": {
+        "candidate_count": 1,
+        "total": 1,
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": [],
+        "equivalent": [
+          {
+            "path": "init-scripts/002_workflow.sql",
+            "lineno": 14,
+            "start_byte": 210,
+            "end_byte": 238,
+            "replacement_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "operator": "sql:drop-check",
+            "description": "drop CHECK (status IN ('new', 'done'))"
+          }
+        ]
+      }
+    }
+  ],
+  "evidence": []
+}

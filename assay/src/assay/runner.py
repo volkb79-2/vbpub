@@ -1243,12 +1243,24 @@ class SnapshotUnitResult:
     requested -- either the freshly parsed profile or the
     :class:`~assay.errors.AssayError` its own reservation/consume/parse
     raised.
+
+    *baseline_equivalence*/*equivalence_error* (P34/§3.6) are the identical
+    shape one field over, for R2's declared ``equivalence_artifact`` -- only
+    populated when a caller passed one in. Unlike coverage's *profile_error*
+    (which can be a parse failure among other things), *equivalence_error*
+    is set for exactly ONE fact this dataclass's own producer distinguishes
+    from a genuine consume failure: the baseline declared the artifact and
+    its own command did not write it (A-279's "never a comparison against
+    None" -- :func:`~assay.mutation.run_mutation` refuses that outright, so
+    this is where the caller must resolve real bytes or stop before it).
     """
 
     result: CommandResult
     post_reason: ReasonCode | None
     profile: CoverageProfile | None
     profile_error: AssayError | None
+    baseline_equivalence: bytes | None = None
+    equivalence_error: AssayError | None = None
 
 
 def _execute_snapshot_unit(
@@ -1262,6 +1274,8 @@ def _execute_snapshot_unit(
     process_runner: ProcessRunner,
     clock: Clock,
     create_missing_parents: bool = False,
+    equivalence_artifact: str | None = None,
+    kill_signal_artifact: str | None = None,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -1291,6 +1305,21 @@ def _execute_snapshot_unit(
     until a caller affirmatively asks otherwise. A consumer's REAL worktree
     is never reachable through this function at all: *snapshot* is always
     :mod:`assay.isolation`'s own private, owned checkout.
+
+    *equivalence_artifact*/*kill_signal_artifact* (P34/§3.6/§3.7) are the
+    R2 baseline's own SQL-only artifact declarations, ``None`` for every
+    other lane (identical disposition to *coverage_artifact* under
+    ``wants_coverage``). Both get the SAME tracked-by-git refusal the
+    coverage artifact already gets (§3.7's "either artifact tracked ...
+    -> `runner._execute_snapshot_unit`"), checked here because a git-tracked
+    status is a fact about the COMMIT, invariant across every later mutant's
+    own single-blob-replacement snapshot of it -- one check at baseline time
+    covers all of them. Only *equivalence_artifact* is reserved/armed/
+    consumed: the baseline command is the lane's own ``apply && dump &&
+    test`` run once (A-279), so its OWN dump is read here exactly like
+    coverage's profile one field over; *kill_signal_artifact* names a file a
+    PASSING baseline has no reason to write, so it gets the tracked check
+    only, never a reservation.
     """
     reservation: safeio.OutputReservation | None = None
     if wants_coverage:
@@ -1314,6 +1343,46 @@ def _execute_snapshot_unit(
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
         reservation.arm()
+
+    equivalence_reservation: safeio.OutputReservation | None = None
+    if equivalence_artifact is not None:
+        equivalence_reservation = safeio.reserve_output(
+            snapshot.project_root,
+            equivalence_artifact,
+            limit=mutation.MAX_EQUIVALENCE_ARTIFACT_BYTES,
+            create_missing_parents=create_missing_parents,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, equivalence_artifact,
+            remaining=deadline.remaining,
+        ):
+            equivalence_reservation.close()
+            if reservation is not None:
+                reservation.close()
+            raise AssayError(
+                f"the declared equivalence_artifact {equivalence_artifact!r} "
+                f"is tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        equivalence_reservation.arm()
+
+    if kill_signal_artifact is not None and _coverage_artifact_is_tracked(
+        snapshot.root, snapshot.project_root, kill_signal_artifact,
+        remaining=deadline.remaining,
+    ):
+        if equivalence_reservation is not None:
+            equivalence_reservation.close()
+        if reservation is not None:
+            reservation.close()
+        raise AssayError(
+            f"the declared kill_signal_artifact {kill_signal_artifact!r} is "
+            f"tracked by git inside the prepared snapshot -- measurement "
+            f"output must not be committed",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
 
     result = execute_plan(
         plan,
@@ -1341,11 +1410,37 @@ def _execute_snapshot_unit(
     if reservation is not None:
         reservation.close()
 
+    baseline_equivalence: bytes | None = None
+    equivalence_error: AssayError | None = None
+    if post_reason is None and equivalence_reservation is not None:
+        try:
+            baseline_equivalence = equivalence_reservation.consume()
+        except AssayError as exc:
+            equivalence_error = exc
+        else:
+            if baseline_equivalence is None:
+                # A-279: never a comparison against None. The baseline
+                # declared this artifact and its own command did not write
+                # it -- no mutant is even attempted (§3.7's own row).
+                equivalence_error = AssayError(
+                    f"the baseline declared judge.mutation.equivalence_artifact "
+                    f"{equivalence_artifact!r} but its own command did not "
+                    f"write it -- R2 needs the baseline's own bytes to prove "
+                    f"any mutant equivalent, so no mutant can even be "
+                    f"attempted",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.EXEC_FAILED,
+                )
+    if equivalence_reservation is not None:
+        equivalence_reservation.close()
+
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
         profile=profile,
         profile_error=profile_error,
+        baseline_equivalence=baseline_equivalence,
+        equivalence_error=equivalence_error,
     )
 
 
@@ -1500,6 +1595,17 @@ def _run_prepared_lane(
     """
     coverage_artifact = lane.judge.coverage.artifact if r1_declared else None
     coverage_format = lane.judge.coverage.format if r1_declared else None
+    # P34/§3.6: `None` for every lane that does not declare R2 or whose
+    # `judge.mutation` does not name them (every Python/Go lane through this
+    # build, A-227) -- identical disposition to `coverage_artifact` above,
+    # which is what makes the undeclared lane's baseline unit byte-identical
+    # to before this item (O8).
+    equivalence_artifact = (
+        lane.judge.mutation.equivalence_artifact if r2_declared else None
+    )
+    kill_signal_artifact = (
+        lane.judge.mutation.kill_signal_artifact if r2_declared else None
+    )
 
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
@@ -1515,6 +1621,8 @@ def _run_prepared_lane(
             process_runner=process_runner,
             clock=clock,
             create_missing_parents=True,
+            equivalence_artifact=equivalence_artifact,
+            kill_signal_artifact=kill_signal_artifact,
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
@@ -1544,6 +1652,19 @@ def _run_prepared_lane(
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
         r2_early_claim: Claim | None = None
+        if unit.equivalence_error is not None:
+            # A-279: the baseline declared `equivalence_artifact` and its
+            # own command did not write it -- ERROR/EXEC_FAILED, before any
+            # mutant. Set HERE, before diff/target resolution below, so that
+            # work is skipped entirely rather than merely discarded (the
+            # `r2_early_claim is None` guard on that block).
+            r2_early_claim = Claim(
+                rigor="R2",
+                source="computed",
+                status=unit.equivalence_error.outcome,
+                verified_by_assay=True,
+                reason_code=unit.equivalence_error.reason_code,
+            )
 
         if r1_declared:
             if unit.profile_error is not None:
@@ -1637,7 +1758,7 @@ def _run_prepared_lane(
                     added = added_holder[0]
             ended = iso_utc(clock())
 
-        if r2_declared and result.outcome is Outcome.PASS:
+        if r2_declared and result.outcome is Outcome.PASS and r2_early_claim is None:
             if added is None:
                 try:
                     resolved = measurability.check_base_is_head(
@@ -1720,6 +1841,9 @@ def _run_prepared_lane(
                     operators=lane.judge.mutation.operators,
                     process_runner=process_runner,
                     clock=clock,
+                    equivalence_artifact=equivalence_artifact,
+                    kill_signal_artifact=kill_signal_artifact,
+                    baseline_equivalence=unit.baseline_equivalence,
                 )
             except AssayError as exc:
                 r2_orchestration_fault = exc
