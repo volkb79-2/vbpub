@@ -6,14 +6,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Added
-- feat(assay): B005 -- the whole-target R1 coverage judge (`judge.mode = "whole_target"`, `judge.targets`), a coverage floor over declared files independent of any `base..HEAD` diff
-- feat(assay): branch coverage in all four coverage formats (coverage.py JSON, lcov, Cobertura; `go-cover` explicitly `"unavailable"`), judged whenever an artifact reports it; `judge.require_branch` to refuse rather than silently fall back to line-only judging
-- feat(assay): B006(a) -- `isolation.snapshot_selection`, closed to `"repository"` / `"repository-minus-unsafe-symlinks"` with commit-validated `unsafe_symlink_omissions`, replacing the earlier withdrawn project-scoped-boundary design
-- feat(assay): B006(b) -- the coverage artifact's missing parent directory chain is created inside assay's own ephemeral snapshot, never the real worktree
+- feat(assay): B001/P34 -- the source-oriented SQL/DDL adapter. `judge.language = "sql"` at **R2 only**, with seven `sql:*` operators (`drop-check`, `drop-unique`, `drop-not-null`, `drop-foreign-key`, `weaken-delete-action`, `drop-trigger`, `widen-check-in`) built on a stdlib-only two-level DDL lexer. assay never connects to a database, never sees a DSN and never provisions anything: it mutates the DDL you changed, runs *your* schema command, and reports which removals your suite did not notice
+- feat(assay): `judge.mutation.equivalence_artifact` -- **REQUIRED** on a SQL lane. A mutant whose declared artifact is byte-identical to the baseline's lands in `equivalent` rather than `survived`, which turns the most likely consumer isolation mistake from a false claim about their tests into an honest refusal to claim
+- feat(assay): `judge.mutation.kill_signal_artifact` -- SQL-only and optional; derives `kill_attribution = "declared"` and records the command's own string verbatim, never parsed or interpreted
+- feat(assay): `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` has a real producer -- a declared adapter prerequisite absent from the effective `PATH` now refuses before any snapshot, command or Git work
 
 ### Changed
-- feat(assay)!: verdict schema v6 (`VERDICT_SCHEMA_VERSION = 6`), a hard cut -- `changed_executable` renamed to `executable`; new `branches_covered`/`branches_total`/`branch_capability`/`missing_branch_lines`/`files_with_missing_branch_lines`; new `judgment.r1.mode`/`.targets`/`.require_branch`; new top-level `snapshot_policy`; `pct` is now the combined line+branch percentage whenever an artifact reports branches, which changes PASS/FAIL for existing R1 lanes with branch-capable coverage artifacts
-- feat(assay)!: lane schema v2 (`LANE_SCHEMA_VERSION = 2`), a hard cut -- `[lanes.X.isolation]` is now required on every R1/R2/R3 lane and refused on R0-only lanes; see `docs/CONSUMERS.md`'s "Adopting a v2-capable release" for the required repin-and-bump ordering
+- feat(assay): mutant classification is a function of `(exit status, artifact present, artifact bytes)` **when and only when** a lane declares `equivalence_artifact`. A lane declaring none takes the pre-existing code path unchanged and produces a byte-identical verdict -- proven by test, not asserted. **No verdict-schema change: v6 is unchanged, and lane schema v2 is unchanged.** Existing Python lanes are unaffected
+- docs(assay): the documentation vocabulary gate derives its required mutation-operator set from **registered** languages, so the requirement expands by itself when a new adapter registers rather than waiting for someone to remember
+
+### Fixed
+- docs(assay): this `[Unreleased]` section still listed B005, B006(a)+(b), verdict schema v6 and lane schema v2 -- **all four of which shipped in 2.0.0**, and are recorded in the generated `[2.0.0]` entry below. A consumer reading it would have concluded that release's headline features, including two hard schema cuts requiring a coordinated repin, were still unreleased. Nothing polices this file the way `docs/` is policed, which is how it survived
+- docs(assay): `README.md` still stated SQL had reserved schema surface but no real adapter and that a `sql:` operator would be refused; `docs/DESIGN-GUIDE.md` §11 still speculated that a future SQL adapter "may learn SQL syntax through a parser/helper". Both became false when the adapter shipped
 
 <!-- cmru: release history -->
 
