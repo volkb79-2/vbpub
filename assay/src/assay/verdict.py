@@ -2396,9 +2396,10 @@ class Verdict:
         **The converse is deliberately NOT implemented here.** "A claim
         produced with a helper requires an entry" has no readable antecedent
         — nothing in the artifact bytes says a claim *used* a helper — so any
-        implementation of it would be vacuous. P34 owns that direction, with
-        the adapter that makes the state reachable (A-142/A-144's precedent
-        for deferring a check until a producer makes it witnessable).
+        implementation of it would be vacuous. P29 owns that direction (A-282:
+        route (i) gives SQL ``external_tools = ()``, so P34 can never witness
+        it), with the adapter that makes the state reachable (A-142/A-144's
+        precedent for deferring a check until a producer makes it witnessable).
         """
         if self.helpers is None:
             return
@@ -2429,9 +2430,9 @@ class Verdict:
             if not satisfied:
                 raise ValueError(
                     f"helpers records a {helper.role!r} helper ({helper.tool!r}) "
-                    f"but this verdict carries no {what} -- a helper is recorded "
-                    f"because it produced a claim payload, so an entry with no "
-                    f"such payload describes work that judged nothing"
+                    f"but this verdict does not carry {what} -- a helper is "
+                    f"recorded because it produced a claim payload, so an entry "
+                    f"with no such payload describes work that judged nothing"
                 )
 
     def _check_interval_is_ordered(self) -> None:

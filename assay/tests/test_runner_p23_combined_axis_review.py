@@ -129,6 +129,13 @@ class _ConformingMultiSiteAdapter:
     name = "conforming-multi-site"
     source_globs = ("*.py",)
     excluded_dir_names = frozenset()
+    # (P34/W3) `run_lane`'s own external-tool preflight (A-253) now reads
+    # this attribute unconditionally for every resolved adapter, before
+    # this test's R2 body ever runs -- so it needs a real value the same
+    # way every shipped adapter already declares one, not a target-
+    # selection member this class happened to omit before that reader
+    # existed.
+    external_tools: tuple[str, ...] = ()
 
     def is_test_path(self, rel_path: str) -> bool:
         return False

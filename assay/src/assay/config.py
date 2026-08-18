@@ -262,11 +262,17 @@ class CoverageConfig:
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
 
-#: (P33/A-227/A-230b) v5 artifact fields reserved for P34's producer. Named
-#: separately from `_MUTATION_FIELDS` so the refusal can say RESERVED rather
-#: than UNKNOWN: both are refused either way, and only the message tells a
-#: reader whether the field is a typo or a capability that is coming.
-_MUTATION_FIELDS_RESERVED_FOR_P34: tuple[str, ...] = (
+#: (P33/A-227/A-230b, narrowed P34/W4) the two v6 artifact fields, legal
+#: ONLY on a ``judge.language = "sql"`` lane. Named separately from
+#: `_MUTATION_FIELDS` so the refusal can name the specific reason (language
+#: mismatch) rather than reporting an UNKNOWN key: both are refused either
+#: way for a non-SQL lane, and only the message tells a reader whether the
+#: field is a typo or a capability this lane's own language cannot use.
+#: Through P33 both names were reserved for EVERY language (no adapter
+#: shipped a producer at all); P34 lifts the refusal for `"sql"` only --
+#: A-227's "the refusal for every other language must survive" stays a
+#: test, never a note.
+_MUTATION_SQL_ONLY_FIELDS: tuple[str, ...] = (
     "kill_signal_artifact",
     "equivalence_artifact",
 )
@@ -302,13 +308,32 @@ class MutationConfig:
     #: executions").
     max_mutants: int
     operators: tuple[str, ...]
+    #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
+    #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
+    #: value here is only ever possible on a ``judge.language = "sql"`` lane.
+    #: Optional even there: A-223b derives `kill_attribution` from this
+    #: field's own presence, so "declared" is a real, meaningful choice.
+    kill_signal_artifact: str | None = None
+    #: (P34/W4) SQL-only, and REQUIRED once ``judge.language == "sql"``
+    #: (`_load_mutation` refuses a SQL lane that omits it): without it, a
+    #: mutant that never actually mutated is recorded ``survived`` rather
+    #: than ``equivalent`` -- a false statement about the consumer's tests
+    #: (§4.3 of the P34 carve). ``None`` for every other language.
+    equivalence_artifact: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "jobs": self.jobs,
             "max_mutants": self.max_mutants,
             "operators": list(self.operators),
         }
+        # (P34/W4) Declared value or omitted, never null (A-051) -- present
+        # only for the SQL lane that actually named it.
+        if self.kill_signal_artifact is not None:
+            payload["kill_signal_artifact"] = self.kill_signal_artifact
+        if self.equivalence_artifact is not None:
+            payload["equivalence_artifact"] = self.equivalence_artifact
+        return payload
 
 
 _CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
@@ -1231,7 +1256,7 @@ def _load_judge(
 
     mutation = None
     if "mutation" in table:
-        mutation = _load_mutation(table["mutation"], where, language)
+        mutation = _load_mutation(table["mutation"], where, language, project_root)
     canary = None
     if "canary" in table:
         canary = _load_canary(table["canary"], where, project_root, source_root_paths)
@@ -1390,6 +1415,47 @@ def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
     return tuple(items)
 
 
+def _validate_artifact_path(value: Any, where: str, project_root: Path, field: str) -> str:
+    """The project-relative OUTPUT-artifact path grammar (P17 work item 3),
+    shared by every declared artifact a lane's own command later WRITES:
+    ``judge.coverage.artifact`` and, as of P34/W4, ``judge.mutation.
+    equivalence_artifact``/``kill_signal_artifact`` -- the identical
+    containment reasoning :func:`_resolve_source_root` already applies to
+    ``source_roots``, one field over. A non-empty string, never absolute,
+    and resolving beneath *project_root* once ``..`` and any symlink are
+    collapsed. Existence is deliberately NOT checked here: every one of
+    these paths is an OUTPUT the lane's own command writes, so it need not
+    exist yet when ``assay.toml`` loads (A-048's own timing) -- only
+    :mod:`assay.runner`'s own RUNTIME checks (tracked-by-git, in
+    particular) need live filesystem/git state, and belong to the module
+    that actually executes the lane.
+
+    *field* is the fully-dotted config key *value* came from (e.g.
+    ``"judge.coverage.artifact"``), so one shared function still names the
+    SPECIFIC offending field in every message (AGENTS.md 4.2a) -- extracting
+    this out of :func:`_load_coverage` must not cost a reader the ability to
+    tell which of the three call sites refused.
+    """
+    artifact = _as_str(value, where, field)
+    if not artifact:
+        raise LaneConfigError(f"{where}: '{field}' is empty")
+    if Path(artifact).is_absolute():
+        raise LaneConfigError(
+            f"{where}: '{field}' {artifact!r} is absolute; it is relative "
+            f"to the directory containing assay.toml ({project_root})"
+        )
+    resolved_artifact = (project_root / artifact).resolve()
+    if not resolved_artifact.is_relative_to(project_root):
+        raise LaneConfigError(
+            f"{where}: '{field}' {artifact!r} resolves to "
+            f"{resolved_artifact}, which is not contained beneath the "
+            f"project root {project_root} (via '..' or a symlink) -- a lane "
+            f"must not be able to point '{field}' outside the project it "
+            f"declares"
+        )
+    return artifact
+
+
 def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
@@ -1407,33 +1473,11 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
                 f"{where}: missing required field 'judge.coverage.{field}'"
             )
     fmt = _as_str(value["format"], where, "judge.coverage.format")
-    artifact = _as_str(value["artifact"], where, "judge.coverage.artifact")
     if not fmt:
         raise LaneConfigError(f"{where}: 'judge.coverage.format' is empty")
-    if not artifact:
-        raise LaneConfigError(f"{where}: 'judge.coverage.artifact' is empty")
-    # P17 (work item 3): the artifact this build will later remove-and-await
-    # a fresh copy of, and read back, must resolve inside the project it
-    # measures -- the identical containment reasoning
-    # `_resolve_source_root` already applies to `source_roots`, one field
-    # over. Existence is NOT checked here (A-048's own timing: the artifact
-    # is an OUTPUT of the lane's own command, so it need not exist yet at
-    # load time).
-    if Path(artifact).is_absolute():
-        raise LaneConfigError(
-            f"{where}: 'judge.coverage.artifact' {artifact!r} is absolute; "
-            f"it is relative to the directory containing assay.toml "
-            f"({project_root}), the same as source_roots"
-        )
-    resolved_artifact = (project_root / artifact).resolve()
-    if not resolved_artifact.is_relative_to(project_root):
-        raise LaneConfigError(
-            f"{where}: 'judge.coverage.artifact' {artifact!r} resolves to "
-            f"{resolved_artifact}, which is not contained beneath the "
-            f"project root {project_root} (via '..' or a symlink) -- a lane "
-            f"must not be able to point its coverage artifact outside the "
-            f"project it declares"
-        )
+    artifact = _validate_artifact_path(
+        value["artifact"], where, project_root, "judge.coverage.artifact"
+    )
     if fmt not in FORMAT_REGISTRY:
         # A-068: cross-checked against the parser registry's own keys, not a
         # second hardcoded list, so the vocabulary can never drift out of
@@ -1446,32 +1490,34 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
     return CoverageConfig(format=fmt, artifact=artifact)
 
 
-def _load_mutation(value: Any, where: str, language: str | None) -> MutationConfig:
+def _load_mutation(
+    value: Any, where: str, language: str | None, project_root: Path
+) -> MutationConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.mutation' must be a table, got {_type_name(value)}"
         )
-    # (P33/A-227/A-230b) The two v5 artifact fields whose PRODUCER is P34's.
-    # Checked BEFORE the unknown-key sweep on purpose: `judge.mutation` is
-    # already a closed table, so both names are already rejected today as
-    # unknown keys -- which means "the declaration is refused" is true with
-    # or without this code and distinguishes nothing. The observable is the
-    # MESSAGE. Declaring either would create a legal lane whose own artifact
-    # has no representable shape: assay ships no producer for a `kill_signal`
-    # value or for an equivalence comparison, so the lane could not emit a
-    # consistent document. Reserving the artifact shape while refusing the
-    # declaration keeps v5 stable for P34 without inventing a bounded
-    # safe-input reader inside a contract migration.
-    reserved = sorted(set(value) & set(_MUTATION_FIELDS_RESERVED_FOR_P34))
-    if reserved:
-        raise LaneConfigError(
-            f"{where}: judge.mutation key(s) {', '.join(reserved)} are "
-            f"RESERVED for P34 and cannot be declared yet; the v5 verdict "
-            f"contract carries them, but this build ships no producer for the "
-            f"values they imply, so a lane declaring one could not emit a "
-            f"consistent artifact"
-        )
-    unknown = sorted(set(value) - set(_MUTATION_FIELDS))
+    # (P33/A-227/A-230b, narrowed P34/W4) The two v6 artifact fields are
+    # legal ONLY on a `judge.language = "sql"` lane. Checked BEFORE the
+    # unknown-key sweep on purpose: for every OTHER language `judge.mutation`
+    # is still a closed table that does not name either field, so both are
+    # already rejected today as unknown keys -- which means "the declaration
+    # is refused" is true with or without this code and distinguishes
+    # nothing. The observable is the MESSAGE: a Python or Go lane declaring
+    # either gets a refusal that names WHY (language-scoped), not one that
+    # reads like a typo (A-227's "the refusal for every other language must
+    # survive" is a test, not a note).
+    if language != "sql":
+        reserved = sorted(set(value) & set(_MUTATION_SQL_ONLY_FIELDS))
+        if reserved:
+            raise LaneConfigError(
+                f"{where}: judge.mutation key(s) {', '.join(reserved)} "
+                f"require judge.language = 'sql' (P34); this lane declares "
+                f"judge.language = {language!r}, and the v6 verdict contract "
+                f"carries these fields only for a sql lane, the only "
+                f"language this build ships a producer for"
+            )
+    unknown = sorted(set(value) - set(_MUTATION_FIELDS) - set(_MUTATION_SQL_ONLY_FIELDS))
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
@@ -1548,8 +1594,45 @@ def _load_mutation(value: Any, where: str, language: str | None) -> MutationConf
             f"{', '.join(unknown_operators)}; known operators: "
             f"{', '.join(MUTATION_OPERATORS)}"
         )
+    # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
+    # carve's single most consequential config decision (§4.3): without it,
+    # a mutant that never actually mutated (residue from a previous run
+    # still in the database, say) exits 0 and is recorded `survived`, a
+    # false statement about the consumer's tests. `kill_signal_artifact`
+    # stays optional even on a sql lane (A-223b derives `kill_attribution`
+    # from its presence). Both share `judge.coverage.artifact`'s own path
+    # grammar via `_validate_artifact_path`, and neither is even INSPECTED
+    # for a non-sql lane -- the reserved-key check above already refused
+    # any lane that tried to declare one.
+    equivalence_artifact: str | None = None
+    kill_signal_artifact: str | None = None
+    if language == "sql":
+        if "equivalence_artifact" not in value:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.equivalence_artifact' is required "
+                f"on a sql lane; without it a mutant that never actually "
+                f"mutated would be recorded 'survived', a false statement "
+                f"about the consumer's tests"
+            )
+        equivalence_artifact = _validate_artifact_path(
+            value["equivalence_artifact"],
+            where,
+            project_root,
+            "judge.mutation.equivalence_artifact",
+        )
+        if "kill_signal_artifact" in value:
+            kill_signal_artifact = _validate_artifact_path(
+                value["kill_signal_artifact"],
+                where,
+                project_root,
+                "judge.mutation.kill_signal_artifact",
+            )
     return MutationConfig(
-        jobs=jobs, max_mutants=max_mutants, operators=tuple(operators)
+        jobs=jobs,
+        max_mutants=max_mutants,
+        operators=tuple(operators),
+        kill_signal_artifact=kill_signal_artifact,
+        equivalence_artifact=equivalence_artifact,
     )
 
 

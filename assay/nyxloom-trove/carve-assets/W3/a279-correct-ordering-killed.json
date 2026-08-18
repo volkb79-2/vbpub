@@ -1,0 +1,84 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "./gate.sh"
+  ],
+  "argv_effective": [
+    "./gate.sh"
+  ],
+  "argv_modified": false,
+  "assay_version": "0+unknown",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "mutation": {
+        "budget_exceeded": [],
+        "candidate_count": 1,
+        "crashed": [],
+        "equivalent": [],
+        "killed": [
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 117,
+            "lineno": 5,
+            "operator": "sql:drop-not-null",
+            "path": "db/schema.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 109
+          }
+        ],
+        "survived": [],
+        "total": 1
+      },
+      "rigor": "R2",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "d664aa86c3bda286dab2276306d8f7c2fe24915a",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "ended": "2026-08-18T03:50:49.292470+00:00",
+  "enforcement": "gate",
+  "env_declared": {},
+  "env_effective": {
+    "PATH": "/home/vscode/.local/bin:/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/vscode/vscode-server/bin/linux-x64/a5b500951314efd502d07465bd138dfbd714a960/bin/remote-cli:/home/vscode/.local/bin:/home/vscode/.venv/bin:/home/vscode/.local/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/home/vscode/.venv/bin:/home/vscode/.local/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/vscode/.vscode-server/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/scripts/noConfigScripts:/home/vscode/.claude/plugins/marketplaces/gitkraken/plugins/gitkraken-hooks/bin"
+  },
+  "evidence": [],
+  "exit_code": 0,
+  "judgment": {
+    "r2": {
+      "equivalence_artifact": ".assay/schema-dump.sql",
+      "jobs": 1,
+      "kill_attribution": "unattributed",
+      "max_mutants": 10,
+      "operators": [
+        "sql:drop-not-null"
+      ]
+    },
+    "resolved": {
+      "base": "16126898098707e5ae24fb0c5eb1702fe1ec687b",
+      "language": "sql",
+      "source_roots": [
+        "db"
+      ]
+    }
+  },
+  "lane": "schema",
+  "outcome": "PASS",
+  "schema_version": 6,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "2026-08-18T03:50:49.188439+00:00"
+}

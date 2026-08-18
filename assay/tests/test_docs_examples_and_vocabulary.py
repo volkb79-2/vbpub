@@ -11,11 +11,13 @@ estate-wide `AGENTS.md`:
    ``<!-- assay-doc-example:skip reason="..." -->`` marker on the line
    immediately before its fence; nothing is silently exempted otherwise.
 2. every value of every closed public vocabulary a consumer must type --
-   ``isolation.snapshot_selection``, ``judge.mode``, the rigor levels, and
-   the coverage ``format`` registry -- appears in at least one of the three
-   documents. Each vocabulary is DERIVED from the shipped module, never
-   hand-copied, and the derived sets are asserted non-empty so an import that
-   silently yields nothing cannot make this check pass forever.
+   ``isolation.snapshot_selection``, ``judge.mode``, the rigor levels, the
+   coverage ``format`` registry, the closed ``ReasonCode`` vocabulary
+   (A-277), and (P34/A-287) the mutation-operator vocabulary of every
+   REGISTERED language -- appears in at least one of the three documents.
+   Each vocabulary is DERIVED from the shipped module, never hand-copied,
+   and the derived sets are asserted non-empty so an import that silently
+   yields nothing cannot make this check pass forever.
 3. every ``docs/DESIGN-GUIDE.md#...`` anchor ``README.md`` links to resolves
    against a real DESIGN-GUIDE heading.
 
@@ -33,6 +35,7 @@ from typing import NamedTuple
 
 import pytest
 
+from assay.cli import _built_in_registry
 from assay.config import (
     JUDGE_MODES,
     LANE_SCHEMA_VERSION,
@@ -43,6 +46,7 @@ from assay.config import (
 )
 from assay.coverage import FORMAT_REGISTRY
 from assay.verdict import ReasonCode
+from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
@@ -322,11 +326,67 @@ def test_every_reason_code_is_documented():
     assert not missing, f"undocumented reason_code(s): {missing}"
 
 
+#: (P34/A-287) The sixth derived vocabulary. `judge.mutation.operators` is a
+#: closed public vocabulary a consumer types, and `MUTATION_OPERATORS` (all
+#: 14 names across python/go/sql) is NOT the right required set: the
+#: controller's ruling is that adding it wholesale would demand documenting
+#: three `go:*` operators for which no adapter is registered and no
+#: producer exists in THIS build -- documenting an operator a consumer
+#: cannot actually run is worse than the gap it closes. So the required set
+#: is scoped to the operators of every language `cli._built_in_registry()`
+#: actually registers (today: python and sql), derived through
+#: `vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` rather than hand-copied --
+#: the day a later package registers a Go adapter, this set (and the docs
+#: gate below) expands BY ITSELF.
+_REGISTERED_LANGUAGES: frozenset[str] = frozenset(_built_in_registry().entries)
+
+REQUIRED_MUTATION_OPERATORS: frozenset[str] = frozenset(
+    operator
+    for language in _REGISTERED_LANGUAGES
+    for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language, ())
+)
+
+
+def test_every_registered_language_mutation_operator_is_documented():
+    """(A-287) The must-succeed proof for check (2)'s sixth vocabulary: every
+    operator of every REGISTERED language -- not the whole closed catalogue
+    -- appears in at least one of the three documents. Non-empty per A-278:
+    a check with nothing to check is not a passing check."""
+    assert REQUIRED_MUTATION_OPERATORS, "required mutation-operator set must not be empty"
+    missing = _missing_from(REQUIRED_MUTATION_OPERATORS, _docs_text())
+    assert not missing, f"undocumented mutation operator(s): {missing}"
+
+
+def test_the_undocumented_mutation_operators_are_exactly_the_unregistered_languages():
+    """(A-287) The companion test the ruling itself requires: the operators
+    this check deliberately does NOT demand documentation for
+    (`MUTATION_OPERATORS` minus the required set) must be EXACTLY the
+    operators of the languages `_built_in_registry()` does not register
+    (today: go's three) -- never a looser "some operators are excluded"
+    claim, and never vacuously empty (which would mean this build's registry
+    already covers the whole closed catalogue and the scoping bought
+    nothing)."""
+    unregistered_languages = frozenset(MUTATION_OPERATORS_BY_LANGUAGE) - _REGISTERED_LANGUAGES
+    assert unregistered_languages, (
+        "expected at least one unregistered language (go) for this test to "
+        "exercise anything -- a fully-registered build would make this "
+        "assertion vacuous"
+    )
+    excluded = frozenset(MUTATION_OPERATORS) - REQUIRED_MUTATION_OPERATORS
+    expected_excluded = frozenset(
+        operator
+        for language in unregistered_languages
+        for operator in MUTATION_OPERATORS_BY_LANGUAGE[language]
+    )
+    assert excluded == expected_excluded
+    assert excluded, "excluded mutation-operator set must not be empty"
+
+
 def test_a_fabricated_vocabulary_value_is_reported_missing_the_broken_control():
     """Must-fail control for check (2): the exact membership-checking
     routine every vocabulary test above calls must actually detect an
     absent value, proving the check is not vacuously true for any input.
-    Paired against the five real, non-empty derived sets above, which all
+    Paired against the six real, non-empty derived sets above, which all
     pass the identical routine."""
     fabricated = frozenset({"this-value-does-not-appear-in-any-shipped-doc-9f3c2"})
     missing = _missing_from(fabricated, _docs_text())
@@ -336,13 +396,18 @@ def test_a_fabricated_vocabulary_value_is_reported_missing_the_broken_control():
 def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
     """Guards against a degenerate derivation (e.g. every vocabulary
     resolving to the same single-element set) that would let the checks
-    above pass without actually exercising five independent module facts."""
+    above pass without actually exercising six independent module facts."""
     reason_codes = {code.value for code in ReasonCode}
     assert SNAPSHOT_SELECTIONS != JUDGE_MODES
     assert set(RIGOR_LEVELS) != SNAPSHOT_SELECTIONS
     assert set(FORMAT_REGISTRY) != JUDGE_MODES
     assert reason_codes != set(FORMAT_REGISTRY)
     assert reason_codes != set(RIGOR_LEVELS)
+    assert REQUIRED_MUTATION_OPERATORS != SNAPSHOT_SELECTIONS
+    assert REQUIRED_MUTATION_OPERATORS != JUDGE_MODES
+    assert REQUIRED_MUTATION_OPERATORS != set(RIGOR_LEVELS)
+    assert REQUIRED_MUTATION_OPERATORS != set(FORMAT_REGISTRY)
+    assert REQUIRED_MUTATION_OPERATORS != reason_codes
 
 
 # --- (3) DESIGN-GUIDE anchor resolution --------------------------------------

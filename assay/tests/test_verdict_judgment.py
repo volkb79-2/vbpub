@@ -983,7 +983,8 @@ def test_mutation_refuses_a_kill_signal_outside_the_killed_bucket():
 def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
     """(P33/V5-5, A-223c) Only the observable direction. The converse -- a
     claim produced with a helper requires an entry -- has no readable
-    antecedent in the artifact bytes, so P34 owns it."""
+    antecedent in the artifact bytes, so P29 owns it (A-282: route (i) gives
+    SQL ``external_tools = ()``, so P34 can never witness it)."""
     mutation = Mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
@@ -1008,7 +1009,9 @@ def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
         resolved_path="/opt/assay-helpers/bin/assay-go-positions",
         identity="assay-go-positions 0.1.0",
     )
-    with pytest.raises(ValueError, match="carries no an R1 claim|statement-positions"):
+    with pytest.raises(
+        ValueError, match="does not carry an R1 claim carrying a coverage payload"
+    ):
         _r2_verdict(
             mutation=mutation, policy=policy, language="sql", helpers=(positions,)
         )

@@ -21,8 +21,37 @@ below, so a proposal cannot be adopted without the argument that produced it.
 ## B001 — a SQL/DDL adapter, and why PostgreSQL projects are the cheapest place to prove R2/R3
 
 **Proposed by:** dstdns, 2026-08-10, out of the CW2a corpus-schema wave.
-**Status:** accepted for a Sol design/probe checkpoint after P28 and before
-P29; not accepted for implementation yet. A-215 records the disposition.
+**Status:** **CARVED and REVIEWED, wave 3, 2026-08-18 — implementation in
+progress.** Superseded the earlier "accepted for a Sol design/probe checkpoint
+after P28 and before P29; not accepted for implementation yet". A-215 still
+records the source-oriented disposition, which the carve confirms.
+
+> **The carve is `W3-CARVE-P34-sql-adapter.md`; the adversarial review is
+> `reports/assay-P34-carve-review-fable.md` (READY WITH CORRECTIONS, five
+> blocking findings, none refuted). Read BOTH plus A-279…A-283 before touching
+> anything here — five of this section's premises are corrected there.**
+>
+> Route chosen: a **stdlib-only two-level bounded DDL lexer inside assay**, not
+> an external helper. No SQL parser exists on this host *or inside
+> `tester-unified:local`*, the image assay's own gate runs in, so the helper
+> route begins by re-risking four other products' gates (A-O02); and the span
+> problem is a *lexing* problem, not a grammar one — a bare keyword regex over
+> real dstdns DDL produces 68 phantom matches out of 512, including **all three**
+> of its `ON DELETE RESTRICT` matches.
+>
+> **Verdict-schema surface needed: NO — and unlike B004, this was verified by
+> construction rather than asserted.** The most demanding artifact P34 emits is
+> model-valid, schema-valid and raw-verifier-clean at v6 unchanged, confirmed
+> twice from independent starting points. `PROVENANCE_UNVERIFIED` (A-276) stays
+> reserved; P34 pays for no bump; lane schema v2 is unchanged.
+>
+> **The correction that matters most (A-279):** this section's own framing and
+> the carve both had the consumer command as `apply && test && dump`. That makes
+> `killed` **unreachable** — a kill *is* the test failing, so `&&` short-circuits
+> and the dump the classification depends on never gets written. It is
+> `apply && dump && test`. The feature's headline outcome could not have been
+> produced under the documented shape, and no acceptance oracle would have
+> noticed, because none of them ever produced a kill.
 
 ### Assay-owner disposition — authoritative over the original proposal below
 

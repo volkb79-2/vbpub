@@ -586,4 +586,409 @@ def test_run_lane_r2_renders_a_complete_claim_when_a_target_source_read_fails(
     assert r2_claim.status is Outcome.ERROR
     assert r2_claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert r2_claim.mutation is None
+
+
+# --- P34/W5: the baseline's own equivalence_artifact reservation -------------
+#
+# `MutationConfig` itself carries `equivalence_artifact`/`kill_signal_artifact`
+# unconditionally (config.py's own language-scoped REFUSAL is a loader-time
+# rule, not a dataclass one) -- so a `judge.language = "python"` R2 lane built
+# directly here, bypassing the loader exactly like every other fixture in
+# this module, is the correct way to exercise `runner.py`'s OWN mechanism in
+# isolation from SQL entirely (the table itself carries "zero SQL knowledge",
+# carve §3.6).
+
+_MUTATION_WITH_EQUIVALENCE = MutationConfig(
+    jobs=1,
+    max_mutants=50,
+    operators=("python:compare-swap",),
+    equivalence_artifact="dump.txt",
+)
+
+
+def _seed_compare_swap_site_ignoring_dump(repo: GitRepo) -> tuple[str, str]:
+    """The identical two-commit compare-swap fixture as
+    ``_seed_compare_swap_site``, but ignoring ``dump.txt`` (this section's
+    own declared ``equivalence_artifact``) and ``dump-link.txt`` (a second
+    hard-linked name one test below deliberately creates) instead of
+    ``cov.json`` -- A-140/A-175 again: an un-ignored file the lane's own
+    command leaves behind trips the post-command dirty check before any
+    claim is even reached."""
+    repo.write(".gitignore", "dump.txt\ndump-link.txt\n")
+    repo.write("src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = repo.commit_all("add mod.py")
+    repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
+    head_rev = repo.commit_all("introduce a compare-swap site")
+    return base_rev, head_rev
+
+
+def test_a_baseline_that_declares_equivalence_artifact_and_does_not_write_it_stops_before_any_mutant(
+    git_repo: GitRepo,
+):
+    """(P34/A-279, carve §3.7) The baseline declared
+    ``judge.mutation.equivalence_artifact`` and its own command never wrote
+    it -- ``ERROR``/``EXEC_FAILED``, before any mutant, NEVER a comparison
+    against ``None`` (which would make every mutant unequal and hide the
+    fault this row exists to catch).
+
+    Proven not merely by the claim's own shape but by the process-boundary
+    ledger, mirroring ``test_mutation_baseline_gate.py``'s own O1 proof one
+    level up: the mutant's own compare-swap site would be a genuine,
+    submittable candidate if this guard were deleted, so ``len(calls) == 1``
+    is the "no mutant attempted" fact, not an assumption.
+    """
+    base_rev, head_rev = _seed_compare_swap_site_ignoring_dump(git_repo)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+    calls: list[Path] = []
+
+    def counting(argv, *, env, cwd, timeout):
+        calls.append(Path(cwd))
+        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=counting,
+    )
+
+    r2_claim = verdict.claims[1]
+    assert r2_claim.status is Outcome.ERROR
+    assert r2_claim.reason_code is ReasonCode.EXEC_FAILED
+    assert r2_claim.mutation is None
+    assert verdict.judgment is None
+    assert len(calls) == 1, "the process boundary must be crossed only ONCE -- the baseline"
+
+
+def test_a_baseline_that_writes_its_equivalence_artifact_proceeds_to_a_real_mutant_run(
+    git_repo: GitRepo,
+):
+    """The must-succeed control for the refusal above: the IDENTICAL
+    declaration, with a command that actually writes the artifact, proceeds
+    all the way to a real, judged R2 claim rather than refusing everything
+    regardless of what the baseline did."""
+    base_rev, head_rev = _seed_compare_swap_site_ignoring_dump(git_repo)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("/bin/sh", "-c", "echo dump > dump.txt"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    r2_claim = verdict.claims[1]
+    assert r2_claim.mutation is not None
+    assert r2_claim.mutation.total == 1
+    # The single generated mutant WROTE THE SAME constant "dump\n" the
+    # baseline did (this command's own content does not depend on the
+    # mutated file at all) -- so it is proven inert, never `survived`: the
+    # equivalent bucket is reachable through `runner.run_lane` itself, not
+    # only through `mutation.run_mutation` directly.
+    assert r2_claim.mutation.survived == ()
+    assert r2_claim.mutation.killed == ()
+    assert len(r2_claim.mutation.equivalent) == 1
+    assert verdict.judgment.r2.equivalence_artifact == "dump.txt"
+
+
+def test_run_lane_never_reads_a_stale_pre_existing_equivalence_artifact(
+    git_repo: GitRepo,
+):
+    """The mirror of ``test_runner_run_lane.py``'s own
+    ``test_run_lane_removes_a_stale_artifact_before_running_never_reuses_it``,
+    one artifact over: a stale, UNCOMMITTED copy of the declared
+    ``equivalence_artifact`` sits on the CONSUMER's own real disk before the
+    run starts. P23's snapshot-from-commit-alone construction means it is
+    never even copied into the baseline's own snapshot in the first place,
+    so the baseline's own reservation reads its own command's fresh bytes,
+    never the stale ones -- proven here by the stale copy surviving
+    UNTOUCHED and by the mutant landing in `equivalent` (which the stale
+    bytes, chosen to differ, would NOT have produced).
+    """
+    base_rev, head_rev = _seed_compare_swap_site_ignoring_dump(git_repo)
+    stale = "STALE -- must never be compared against\n"
+    git_repo.write("dump.txt", stale)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("/bin/sh", "-c", "echo dump > dump.txt"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert (git_repo.path / "dump.txt").read_text(encoding="utf-8") == stale
+    r2_claim = verdict.claims[1]
+    assert r2_claim.mutation is not None
+    assert len(r2_claim.mutation.equivalent) == 1
+    # A-223d: every attempted mutant proven inert, none killed/survived --
+    # INCONCLUSIVE/ALL_MUTANTS_EQUIVALENT, not the ERROR a stale-bytes leak
+    # would have hidden underneath (a false PASS/FAIL comparison against
+    # content this run never produced).
+    assert r2_claim.status is Outcome.INCONCLUSIVE
+    assert r2_claim.reason_code is ReasonCode.ALL_MUTANTS_EQUIVALENT
+    assert verdict.outcome is Outcome.INCONCLUSIVE
+
+
+# --- P34/W5: §3.7's "either artifact tracked by git" refusal -----------------
+#
+# The tracked-artifact check is a baseline-time-only, PRE-EXECUTION refusal
+# (§3.7: `runner._execute_snapshot_unit`) -- it fires before the lane's
+# command ever runs, so none of these fixtures need a real compare-swap
+# diff at all; a minimal one-file repo is enough to reach it.
+
+
+def _seed_minimal_r2_repo(repo: GitRepo) -> str:
+    repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
+    return repo.commit_all("add mod.py")
+
+
+def test_run_lane_refuses_a_tracked_equivalence_artifact_r2_only(git_repo: GitRepo):
+    """(§3.7) `equivalence_artifact` tracked by git inside the prepared
+    snapshot is `ERROR`/`BAD_LANE_CONFIG`, mirroring
+    `test_runner_run_lane.py::test_run_lane_refuses_a_tracked_artifact_path`
+    one artifact over. R2-only (no R1 declared): the coverage reservation
+    never exists, so this is also the "nothing else to close" arm."""
+    base_rev = _seed_minimal_r2_repo(git_repo)
+    git_repo.write("dump.txt", "accidentally committed\n")
+    head_rev = git_repo.commit_all("accidentally commit the equivalence artifact")
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
     assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def test_run_lane_refuses_a_tracked_equivalence_artifact_with_r1_also_declared(
+    git_repo: GitRepo,
+):
+    """The must-close-the-OTHER-reservation-too arm: R1 is ALSO declared,
+    so the coverage reservation is already armed by the time the
+    equivalence artifact's own tracked check fires -- proving that
+    reservation is closed on this path too, never leaked."""
+    git_repo.write(".gitignore", "cov.json\n")
+    base_rev = _seed_minimal_r2_repo(git_repo)
+    git_repo.write("dump.txt", "accidentally committed\n")
+    head_rev = git_repo.commit_all("accidentally commit the equivalence artifact")
+    judge = make_r1_judge(
+        language="python",
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        fail_under=0.0,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(rigor=("R0", "R1", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+_MUTATION_WITH_KILL_SIGNAL_ONLY = MutationConfig(
+    jobs=1,
+    max_mutants=50,
+    operators=("python:compare-swap",),
+    kill_signal_artifact="signal.txt",
+)
+
+_MUTATION_WITH_BOTH_ARTIFACTS = MutationConfig(
+    jobs=1,
+    max_mutants=50,
+    operators=("python:compare-swap",),
+    equivalence_artifact="dump.txt",
+    kill_signal_artifact="signal.txt",
+)
+
+
+def test_run_lane_refuses_a_tracked_kill_signal_artifact_r2_only(git_repo: GitRepo):
+    """(§3.7) The `kill_signal_artifact` mirror of the equivalence-artifact
+    refusal above: R2-only and no `equivalence_artifact` declared, so
+    NEITHER reservation exists yet when this check fires -- the "nothing
+    to close" arm for both inner guards at once."""
+    base_rev = _seed_minimal_r2_repo(git_repo)
+    git_repo.write("signal.txt", "accidentally committed\n")
+    head_rev = git_repo.commit_all("accidentally commit the kill-signal artifact")
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_KILL_SIGNAL_ONLY,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def test_run_lane_refuses_a_tracked_kill_signal_artifact_with_both_other_reservations_live(
+    git_repo: GitRepo,
+):
+    """The must-close-BOTH-other-reservations arm: R1 declared (coverage
+    reservation live) AND `equivalence_artifact` ALSO declared (that
+    reservation live too) by the time the kill-signal artifact's own
+    tracked check fires -- proving both are closed on this path, never
+    leaked."""
+    git_repo.write(".gitignore", "cov.json\ndump.txt\n")
+    base_rev = _seed_minimal_r2_repo(git_repo)
+    git_repo.write("signal.txt", "accidentally committed\n")
+    head_rev = git_repo.commit_all("accidentally commit the kill-signal artifact")
+    judge = make_r1_judge(
+        language="python",
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        fail_under=0.0,
+        mutation=_MUTATION_WITH_BOTH_ARTIFACTS,
+    )
+    lane = make_lane(rigor=("R0", "R1", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def test_run_lane_refuses_a_non_regular_equivalence_artifact(git_repo: GitRepo):
+    """(P20's vocabulary, applied here) A committed DIRECTORY at the
+    declared `equivalence_artifact` path is not git-``ls-files``-tracked at
+    that EXACT literal path (only the placeholder file inside it is), so
+    this reaches `safeio.reserve_output`'s own pre-existing-object check --
+    the reservation is refused before it is ever armed, let alone consumed
+    -- mirroring
+    `test_runner_run_lane.py::test_run_lane_refuses_a_directory_at_the_artifact_path`
+    exactly, one artifact over. That refusal is never caught inside
+    `_execute_snapshot_unit` (it is a structural precondition failure, the
+    same disposition the coverage artifact's own tracked-path guard gets),
+    so it propagates out and taints the WHOLE run uniformly -- R0 itself
+    included, not merely R2 -- which is why this asserts only the
+    verdict-level shape rather than a specific claim's."""
+    base_rev = _seed_minimal_r2_repo(git_repo)
+    git_repo.write("dump.txt/placeholder.txt", "not an equivalence artifact\n")
+    git_repo.git("add", "-f", "dump.txt/placeholder.txt")
+    head_rev = git_repo.commit_all("commit a directory at the equivalence artifact path")
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_run_lane_refuses_a_baseline_that_wrote_a_multiply_linked_equivalence_artifact(
+    git_repo: GitRepo,
+):
+    """The SOFT half of a malformed artifact, distinct from the structural
+    refusal above: the baseline's own command writes a REGULAR file at the
+    declared path (so `reserve`/`arm` both succeed) but then hard-links a
+    second name to it -- `safeio`'s own single-owner-output contract
+    (`consume()`'s `require_single_link=True`) refuses it as reachable from
+    somewhere this reservation never produced. Unlike the directory case,
+    THIS failure happens strictly after `arm()`, so `_execute_snapshot_unit`
+    catches it itself and turns it into an R2-scoped early claim -- R0
+    stays a genuine, unaffected PASS, proving `equivalence_reservation.
+    consume()`'s own `except AssayError` branch, not the uncaught
+    propagation the directory test exercises."""
+    base_rev, head_rev = _seed_compare_swap_site_ignoring_dump(git_repo)
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=_MUTATION_WITH_EQUIVALENCE,
+    )
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        judge=judge,
+        argv=("/bin/sh", "-c", "echo dump > dump.txt && ln dump.txt dump-link.txt"),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.claims[0].status is Outcome.PASS  # R0 itself is unaffected
+    r2_claim = verdict.claims[1]
+    assert r2_claim.status is Outcome.ERROR
+    assert r2_claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r2_claim.mutation is None
+    assert verdict.judgment is None

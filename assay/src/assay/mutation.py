@@ -110,7 +110,7 @@ from typing import Callable, Iterable, Sequence
 import hashlib
 from typing import Literal
 
-from . import git
+from . import git, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .verdict import MAX_CANDIDATE_CEILING, Claim, Mutation, MutantOutcome
@@ -118,6 +118,8 @@ from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
     "MAX_CANDIDATE_CEILING",
+    "MAX_EQUIVALENCE_ARTIFACT_BYTES",
+    "MAX_KILL_SIGNAL_BYTES",
     "MUTATION_OPERATORS",
     "Clock",
     "ExecutorFactory",
@@ -139,6 +141,20 @@ __all__ = [
 #: implementation at all -- never a parse failure, never an unrecognised
 #: individual construct, never a valid analysis that found nothing.
 UNSUPPORTED = "UNSUPPORTED"
+
+#: (P34/§3.6) the equivalence artifact's own byte ceiling -- a schema dump
+#: is comparable measurement output to a coverage artifact, so this reuses
+#: :data:`~assay.coverage.MAX_COVERAGE_ARTIFACT_BYTES`'s own value rather
+#: than inventing a second unrelated one, without importing that module (no
+#: cycle risk either way, but this module's own byte-arithmetic identity
+#: has no other reason to depend on :mod:`assay.coverage` at all).
+MAX_EQUIVALENCE_ARTIFACT_BYTES = 16 * 1024 * 1024
+
+#: (P34/§3.6) a kill signal is a short mechanism string -- the database's
+#: own error text, never a payload -- so it is bounded well below the
+#: artifact ceiling above; 64 KiB is generous headroom over any single
+#: PostgreSQL error message.
+MAX_KILL_SIGNAL_BYTES = 64 * 1024
 
 #: The injectable clock, identical in shape to ``assay.runner.Clock`` --
 #: duplicated rather than imported (this module's own circular-import note,
@@ -617,6 +633,22 @@ def _default_executor_factory(jobs: int) -> Executor:
     return ThreadPoolExecutor(max_workers=jobs)
 
 
+@dataclass(frozen=True, kw_only=True)
+class _MutantRun:
+    """(P34) one mutant's own full attempt record: the command's
+    :class:`~assay.runner.CommandResult` plus whatever the lane's own
+    declared artifacts held after it ran. Kept separate from
+    :class:`~assay.verdict.MutantOutcome` (the WIRE identity) because
+    classification needs the raw bytes/signal BEFORE the bucket is decided,
+    and ``MutantOutcome`` cannot legally carry a ``kill_signal`` until the
+    bucket it belongs to (``killed``) is already known (A-223e).
+    """
+
+    result: CommandResult
+    equivalence_bytes: bytes | None = None
+    kill_signal: str | None = None
+
+
 def _classify_mutant_result(result: CommandResult) -> str:
     """Map one mutant's :class:`~assay.runner.CommandResult` onto one of
     the FOUR terminal buckets A-116/A-117 name — reusing
@@ -641,13 +673,109 @@ def _classify_mutant_result(result: CommandResult) -> str:
     return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
 
-def _outcome_of(job: MutantJob) -> MutantOutcome:
+def _classify_mutant_result_with_equivalence(
+    result: CommandResult,
+    *,
+    equivalence_bytes: bytes | None,
+    baseline_equivalence: bytes,
+) -> str:
+    """(P34/A-279, carve §3.6) the SAME four-outcome split widened into a
+    function of ``(outcome, artifact-present, artifact-bytes)`` -- reachable
+    ONLY when the lane declares ``judge.mutation.equivalence_artifact``. The
+    caller (:func:`run_mutation`) decides BEFORE either classifier is
+    invoked which one applies, so the undeclared lane is never routed
+    through here at all (O8's own inertness: :func:`_classify_mutant_result`
+    is not merely equivalent on that path, it is the exact same call).
+
+    ``PASS`` and ``FAIL`` both split the identical way: an ABSENT artifact
+    means the mutated schema was never measured at all -- the lane declared
+    one and its own command did not write it, so nothing was observed and
+    this is ``crashed``, never a kill and never a survival (§9 M11's own
+    reachable case: invalid DDL that still exits non-zero looks like a kill
+    under the old exit-status-only mapping). Byte-EQUAL to the baseline's
+    own artifact means the mutant provably changed nothing -- ``equivalent``,
+    evidence about the MUTATION rather than about the tests. Anything else
+    is the ordinary ``PASS``->``survived`` / ``FAIL``->``killed`` mapping.
+    ``ERROR``/``BUDGET_EXCEEDED`` do not consult the artifact at all --
+    unchanged from :func:`_classify_mutant_result`.
+    """
+    if result.outcome is Outcome.PASS:
+        if equivalence_bytes is None:
+            return "crashed"
+        return "equivalent" if equivalence_bytes == baseline_equivalence else "survived"
+    if result.outcome is Outcome.FAIL:
+        if equivalence_bytes is None:
+            return "crashed"
+        return "equivalent" if equivalence_bytes == baseline_equivalence else "killed"
+    if result.outcome is Outcome.BUDGET_EXCEEDED:
+        return "budget_exceeded"
+    return "crashed"  # Outcome.ERROR -- unchanged.
+
+
+def _arm_artifact_reservation(
+    project_root: Path, artifact: str, *, limit: int
+) -> safeio.OutputReservation:
+    """Reserve *artifact* under *project_root* and arm it BEFORE the
+    mutant's own command runs (P34/§3.6's "why stale bytes cannot leak"):
+    ``arm()`` unlinks any pre-existing regular file at that path, so a later
+    absent read is a genuine fact about THIS run, never a stale copy left
+    over from anything else. The identical reserve-then-unlink discipline
+    :func:`~assay.runner._execute_snapshot_unit` already applies to the
+    coverage artifact -- existing, proven machinery (A-180); this is P34's
+    own call site for it, not a second mechanism.
+
+    ``create_missing_parents=True``: every caller of this function runs
+    inside an ephemeral, assay-owned P22 replacement snapshot -- never the
+    consumer's real worktree -- exactly the condition
+    :func:`safeio.reserve_output`'s own contract requires before that
+    default may be overridden.
+    """
+    reservation = safeio.reserve_output(
+        project_root, artifact, limit=limit, create_missing_parents=True
+    )
+    reservation.arm()
+    return reservation
+
+
+def _read_kill_signal(reservation: safeio.OutputReservation) -> str | None:
+    """Consume an already-armed *reservation* and decode the killed
+    mutant's own mechanism string (P34/carve §3.6): bounded by the
+    reservation's own limit, UTF-8, stripped, and recorded VERBATIM -- assay
+    never parses or interprets it (the module docstring's own "assay never
+    shells out" discipline one level over: it never reads meaning INTO a
+    consumer's own string either).
+
+    ``None`` both when the artifact was never written (``consume()``'s own
+    "missing output" contract) and when it reads as empty after stripping --
+    both are "no signal", and the caller reclassifies a killed mutant with
+    no signal to ``crashed`` under declared attribution (A-223e): an empty
+    file names no mechanism any more than a missing one does.
+    """
+    raw = reservation.consume()
+    if raw is None:
+        return None
+    try:
+        text = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"kill_signal_artifact {reservation.artifact!r} is not valid "
+            f"UTF-8: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+    return text or None
+
+
+def _outcome_of(job: MutantJob, *, kill_signal: str | None = None) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
     Built DIRECTLY from the validated site, so the wire identity and the
     experiment that produced it cannot disagree — never reconstructed by
     diffing the mutated file against the original, which does not recover a
-    syntax site at all.
+    syntax site at all. *kill_signal* (P34) is attached ONLY by the caller
+    that already knows this job landed in the ``killed`` bucket -- passing
+    it for any other bucket would violate :class:`~assay.verdict.Mutation`'s
+    own ``kill_signal``-is-``killed``-only invariant (A-223e).
     """
     return MutantOutcome(
         path=job.path,
@@ -657,6 +785,7 @@ def _outcome_of(job: MutantJob) -> MutantOutcome:
         replacement_sha256=job.site.replacement_sha256,
         operator=job.site.operator,
         description=job.site.description,
+        kill_signal=kill_signal,
     )
 
 
@@ -708,6 +837,9 @@ def run_mutation(
     process_runner: ProcessRunner,
     clock: Clock,
     executor_factory: ExecutorFactory = _default_executor_factory,
+    equivalence_artifact: str | None = None,
+    kill_signal_artifact: str | None = None,
+    baseline_equivalence: bytes | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -757,6 +889,18 @@ def run_mutation(
     awaited by its own index), and the three non-killed buckets are
     naturally identity-ordered already (never re-sorted, matching
     :func:`collect_mutation_sites`'s own already-ordered batches).
+
+    **P34/A-279/§3.6.** *equivalence_artifact*/*kill_signal_artifact* are
+    ``None`` for every lane that does not declare them (every Python/Go
+    lane through this build, A-227) -- their absence is exactly what routes
+    every mutant through the UNCHANGED :func:`_classify_mutant_result`
+    rather than :func:`_classify_mutant_result_with_equivalence` (O8's own
+    inertness). When *equivalence_artifact* IS declared, *baseline_equivalence*
+    must be the caller's own already-resolved baseline artifact bytes --
+    never ``None``, which this function refuses outright rather than
+    silently comparing every mutant's bytes against it (a comparison that
+    can never be equal, so no mutant could ever be recorded ``equivalent``,
+    hiding exactly the fault the carve's own A-279 finding was about).
     """
     if isinstance(jobs, bool) or not isinstance(jobs, int):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")
@@ -769,6 +913,15 @@ def run_mutation(
     if not 1 <= max_mutants <= 10_000:
         raise ValueError(
             f"run_mutation max_mutants must be in 1..10,000, got {max_mutants}"
+        )
+    if equivalence_artifact is not None and baseline_equivalence is None:
+        raise ValueError(
+            "run_mutation equivalence_artifact is declared but "
+            "baseline_equivalence is None; comparing a mutant's artifact "
+            "bytes against None can never be equal, so no mutant could ever "
+            "be recorded equivalent -- the caller must resolve the "
+            "baseline's own artifact bytes (or its own EXEC_FAILED refusal, "
+            "when the baseline never wrote it) before calling this function"
         )
 
     if baseline.outcome is not Outcome.PASS:
@@ -799,7 +952,7 @@ def run_mutation(
 
     from .runner import execute_plan
 
-    def _run_one(index: int) -> CommandResult:
+    def _run_one(index: int) -> _MutantRun:
         job = job_list[index]
         original_bytes = job.original_text.encode("utf-8")
         replacement_bytes = job.site.apply(original_bytes)
@@ -810,6 +963,30 @@ def run_mutation(
             replacement=replacement_bytes,
             timeout=materialize_timeout,
         ) as snapshot:
+            # P34/§3.6: reserved and ARMED before the command runs, exactly
+            # like the coverage artifact one level up in
+            # `runner._execute_snapshot_unit` -- `arm()` unlinks anything
+            # pre-existing at either path BEFORE `execute_plan` starts, so a
+            # later absent read can never be a stale copy leaking through
+            # (the carve's own "why stale bytes cannot leak").
+            equivalence_reservation = (
+                _arm_artifact_reservation(
+                    snapshot.project_root,
+                    equivalence_artifact,
+                    limit=MAX_EQUIVALENCE_ARTIFACT_BYTES,
+                )
+                if equivalence_artifact is not None
+                else None
+            )
+            kill_signal_reservation = (
+                _arm_artifact_reservation(
+                    snapshot.project_root,
+                    kill_signal_artifact,
+                    limit=MAX_KILL_SIGNAL_BYTES,
+                )
+                if kill_signal_artifact is not None
+                else None
+            )
             result = execute_plan(
                 plan,
                 cwd=snapshot.project_root,
@@ -846,11 +1023,32 @@ def run_mutation(
                 ):
                     raise
                 dirt = None
+            equivalence_bytes: bytes | None = None
+            kill_signal_text: str | None = None
+            decode_error: AssayError | None = None
+            if dirt is None:
+                if equivalence_reservation is not None:
+                    equivalence_bytes = equivalence_reservation.consume()
+                if kill_signal_reservation is not None:
+                    try:
+                        kill_signal_text = _read_kill_signal(kill_signal_reservation)
+                    except AssayError as exc:
+                        decode_error = exc
+            if equivalence_reservation is not None:
+                equivalence_reservation.close()
+            if kill_signal_reservation is not None:
+                kill_signal_reservation.close()
             if dirt is not None:
                 raise dirt
-        return result
+            if decode_error is not None:
+                raise decode_error
+        return _MutantRun(
+            result=result,
+            equivalence_bytes=equivalence_bytes,
+            kill_signal=kill_signal_text,
+        )
 
-    results: list[CommandResult | None] = [None] * total
+    results: list[_MutantRun | None] = [None] * total
     budget_exceeded_mask = [False] * total
     fatal: AssayError | None = None
 
@@ -900,6 +1098,7 @@ def run_mutation(
         "survived": [],
         "crashed": [],
         "budget_exceeded": [],
+        "equivalent": [],
     }
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
@@ -910,8 +1109,29 @@ def run_mutation(
         # identity-ordered without a second sort.
         if budget_exceeded_mask[position]:
             buckets["budget_exceeded"].append(_outcome_of(job))
-        else:
-            buckets[_classify_mutant_result(results[position])].append(_outcome_of(job))
+            continue
+        run = results[position]
+        assert run is not None
+        if equivalence_artifact is None:
+            # O8's own inertness: the UNDECLARED lane takes the EXISTING
+            # path, unchanged -- never a new path that happens to agree.
+            buckets[_classify_mutant_result(run.result)].append(_outcome_of(job))
+            continue
+        assert baseline_equivalence is not None  # refused above otherwise
+        bucket = _classify_mutant_result_with_equivalence(
+            run.result,
+            equivalence_bytes=run.equivalence_bytes,
+            baseline_equivalence=baseline_equivalence,
+        )
+        kill_signal = run.kill_signal if bucket == "killed" else None
+        if bucket == "killed" and kill_signal_artifact is not None and kill_signal is None:
+            # §3.6's own kill-signal rule: `kill_attribution` derives to
+            # `declared` from `kill_signal_artifact`'s own presence, and the
+            # model then requires a signal on EVERY killed entry -- so a
+            # mutant that would land here with no signal file did not meet
+            # the lane's own declared contract, and is `crashed` instead.
+            bucket = "crashed"
+        buckets[bucket].append(_outcome_of(job, kill_signal=kill_signal))
 
     return Mutation(
         candidate_count=candidate_count,
@@ -920,6 +1140,7 @@ def run_mutation(
         survived=tuple(buckets["survived"]),
         crashed=tuple(buckets["crashed"]),
         budget_exceeded=tuple(buckets["budget_exceeded"]),
+        equivalent=tuple(buckets["equivalent"]),
     )
 
 
