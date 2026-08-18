@@ -910,3 +910,94 @@ bounds where it applies). Loss tolerance is the risk — discarding a transcript
 when files + brief suffice, unsafe when a later unit needs an unbriefed detail — so
 the brief must always name WHERE the full transcript lives: lossy by default, never
 destructive.
+
+## L24 — Same-orientation fan-out is cheap: `--fork-session` from a fact-only frozen orientation, holding the system prompt + toolset stable, so implementer and reviewer share one cheap base
+
+**This refines L22.** L22 measured two *different* agents with ~0.5% incidental
+context overlap and concluded prefix-sharing barely pays. That holds for *unrelated*
+agents. But when N agents branch from *one frozen orientation*, the overlap is 100%,
+and — done correctly — each branch reuses that orientation's entire cache at **~zero
+creation cost**. The fan-out you were told was expensive is cheap; the earlier pessimism
+was a confounded measurement (missing `--exclude-dynamic`, changed toolset), not a fork
+limitation.
+
+**Measured mechanism (Claude Code CLI `2.1.234`, headless `--output-format json`).**
+The prompt cache is **content-addressed (org-scoped), not session-scoped.** A branch
+that replays an identical prefix hits the cache regardless of its session id. Controlled
+test — orient once, then two branches whose *only* difference is the session id:
+
+Head-to-head, identical flag + toolset, the *only* variable being fork-vs-copy:
+
+| branch | cache_read | cache_creation |
+|---|---|---|
+| orientation (creates the cache) | 63,207 | 28,448 |
+| same-id `--resume` | ~44,350 | 78 |
+| **`--resume <O> --fork-session`** | **45,916** | **77 ≈ 0** |
+| copy `.jsonl` → new id → `--resume` | 45,993 | 0 |
+
+So **vanilla `--fork-session` is the primitive — no manual tricks needed.**
+`--resume <frozen-id> --fork-session` mints a clean new id, leaves the original frozen
+**automatically**, and reuses the entire cache at ~zero creation (77 tokens vs copy's 0
+— both full reuse). It is **parallelizable** (each fork independent) and requires no
+file manipulation or backup. A new session id is NOT a cache-breaker; only the *prefix*
+is. (An earlier run that showed fork "re-creating ~27k" was confounded — it ran WITHOUT
+`--exclude-dynamic-system-prompt-sections` and with a changed toolset, so the prefix
+genuinely differed.) Copying the frozen `.jsonl` to a new id — or truncating it back to
+the freeze point — is an **equivalent manual fallback** (also ~0 creation), useful only
+where you cannot pass `--fork-session`; it is not otherwise required.
+
+**Two hard dependencies — miss either and the prefix diverges → full re-create, no reuse:**
+1. **`--exclude-dynamic-system-prompt-sections`.** Per-machine sections (cwd, env,
+   memory paths, git status, date) otherwise sit *inside* the system prompt and drift
+   between the orientation and any later branch; a single changed byte in the system
+   prompt misses the whole session. The flag moves them into the first user message,
+   stabilizing the cacheable prefix. (Only applies with the default system prompt.)
+2. **Identical toolset across the orientation and every branch.** Tool definitions live
+   in the system prompt; enabling or disabling one tool shifts the prefix. So orient
+   with the *full* toolset every branch will use (implementer needs Edit/Write/Bash),
+   instructing the orientation not to modify anything — do not orient read-only and add
+   tools at the implementer step.
+
+Plus a lifetime constraint: the **cache TTL (1h in this tier) starts at the request**, so
+a frozen base stranded longer than that behind a long-running agent goes cold and the
+next branch pays full creation. Use a frozen base promptly, or keep it warm with a cheap
+touch within the window (a controller/daemon can automate this).
+
+**The recipe.**
+1. **Orient once, self-directed:** prompt the agent to "get ready to \<task\>, read
+   whatever you need, do NOT act yet." (Self-directed reading beats a prescribed list —
+   it surfaces load-bearing sources the controller wouldn't have named; track the
+   "unexpected reads" as a map of the controller's blind spots.) Launch it with
+   `--exclude-dynamic-system-prompt-sections` + the full toolset.
+2. **Freeze at ZERO OUTPUT — fact-only.** Stop *before* the agent writes a plan, a
+   manifest, or any conclusion. `--fork-session` leaves this base frozen automatically,
+   so no backup is required (keep one only as insurance / for a manual truncate-rewind).
+3. **Branch with `--fork-session`:** for each implementer, reviewer, and retry, run
+   `--resume <frozen-id> --fork-session` with the *same* flag + toolset and the branch's
+   task. Clean new id, original frozen automatically, full cache reuse, parallel — no
+   file manipulation.
+
+**Reviewer using the SAME orientation (the point of the fact-only freeze).** Because the
+freeze carries *facts, not conclusions*, the reviewer copies the **same** frozen base:
+it shares the authority/module/context the implementer had (cheap — full cache reuse via
+the mechanism above) but never sees the implementer's reasoning, so it forms its own
+judgment on the diff. This dissolves the DOCTRINE/L12 rule "a reviewer must be fresh,
+never a fork" into its real intent: the rule forbids inheriting the producer's
+**conclusions**; a fact-only base has none, so sharing it is both safe and cheap.
+**Safeguard:** instruct the reviewer to verify adversarially and read *beyond* the
+orientation — a shared base means a shared file-*selection*, and only independent reading
+catches a defect hiding in a file the orientation never opened.
+
+**The anti-pattern, learned the expensive way.** If the orientation runs on to produce a
+manifest/plan (conclusions) before you freeze, a reviewer branching from it inherits
+those conclusions (blind-spot trap) — so you are forced to spend a *fresh* reviewer that
+re-reads everything, forfeiting the cache win. The fix is not "always use a fresh
+reviewer"; it is **freeze earlier.** Split the orientation: fact-gathering (freeze here,
+shared) → planning (implementer-only, continues from the freeze).
+
+**Validation status.** The cache mechanics are MEASURED (controlled test above). The
+fact-only-freeze + shared-reviewer design is derived from them and is the recommended
+harness; its first at-scale application is a live method-reconciliation wave. The first
+slice of that wave ran on the *inferior* primitives (same-session resume, a fresh
+reviewer) and still succeeded — so treat L24 as the fan-out **optimization**, proven at
+the mechanism level, to apply from the second slice onward.
