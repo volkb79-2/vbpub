@@ -911,7 +911,7 @@ when files + brief suffice, unsafe when a later unit needs an unbriefed detail �
 the brief must always name WHERE the full transcript lives: lossy by default, never
 destructive.
 
-## L24 — Same-orientation fan-out is cheap: `--fork-session` from a fact-only frozen orientation, holding the system prompt + toolset stable, so implementer and reviewer share one cheap base
+## L24 — Same-orientation fan-out via `--fork-session` from a fact-only frozen orientation: cheap in CONTEXT (no re-orientation), opportunistic in CACHE — hold the system prompt + toolset stable, but budget a fork at ~1.25× the orientation size (measured at scale)
 
 **This refines L22.** L22 measured two *different* agents with ~0.5% incidental
 context overlap and concluded prefix-sharing barely pays. That holds for *unrelated*
@@ -995,9 +995,27 @@ re-reads everything, forfeiting the cache win. The fix is not "always use a fres
 reviewer"; it is **freeze earlier.** Split the orientation: fact-gathering (freeze here,
 shared) → planning (implementer-only, continues from the freeze).
 
-**Validation status.** The cache mechanics are MEASURED (controlled test above). The
-fact-only-freeze + shared-reviewer design is derived from them and is the recommended
-harness; its first at-scale application is a live method-reconciliation wave. The first
-slice of that wave ran on the *inferior* primitives (same-session resume, a fresh
-reviewer) and still succeeded — so treat L24 as the fan-out **optimization**, proven at
-the mechanism level, to apply from the second slice onward.
+**Validation status — CORRECTED AT SCALE (dstdns Track-B B1, 2026-08-18, 8 slices).**
+The controlled test above holds for a *one-turn* orientation. Across the real wave —
+8 orientations of 20–31 turns (~67–104k context at freeze) and 15 forks (8 implementers,
+7 reviewers), every one launched with the flag + the identical `Read Grep Glob Edit Write
+Bash` toolset — the fork's FIRST post-fork request read the orientation cache in only
+**2 of 15** cases (`network_type` impl: 79,269 read / 12,501 create; `cdn_detection`
+impl: 82,126 / 13,308). The other **13 read exactly the base 18,650 (system+tools) and
+re-created the whole orientation (70–112k, ×1.25)** — implementer AND reviewer alike.
+Facts that rule out the obvious causes: (a) the replayed prefix is byte-identical
+(diffed the orient `.jsonl` against the fork's copied history: no difference); (b) the
+system prompt was stable (the base hit was a constant 18,650 for four hours); (c) the
+gap between freeze and fork does not discriminate (hits at 3.7 and 34 min; misses at
+3.3, 3.7, 6.7 … 52 min — all inside the 1h TTL); (d) impl and review forks of the SAME
+orientation split hit/miss. What remains is server-side: the cache is best-effort and
+long multi-turn prefixes appear to be evicted/unavailable to a new session under load
+(many hundred-k-token implementer runs were writing new prefixes in the same org).
+**Consequence: budget a fork at ~1.25× the orientation size in cache_creation
+(~$1.5 for an 80k orientation) and treat cache reuse as opportunistic, never assumed.**
+The fork's proven value is *context inheritance* — each branch skips a ~$1.5 / 20-turn
+re-orientation and, from a fact-only freeze, the reviewer stays independent — not the
+"~zero creation" of the controlled test. The wave still closed 8 slices this way at
+$10–16 per slice all-in; the harness stands, the cost model above is the honest one.
+Open experiment (worth one run): does a *short* real orientation (≤5 turns) reproduce
+the controlled result at scale, i.e. is the discriminator prefix LENGTH?
