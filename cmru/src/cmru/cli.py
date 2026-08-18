@@ -2365,7 +2365,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         changed_names = {c[0] for c in changed}
 
         release_names = [name for name in project_order if name in changed_names]
-        skipped_names = [name for name in project_order if name not in changed_names]
         if release_names:
             log_info(
                 f"Release plan: {len(release_names)}/{len(project_order)} project(s) changed "
@@ -2373,8 +2372,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         else:
             log_info("Release plan: no changed projects detected; nothing to release.")
-        if skipped_names:
-            log_info(f"Unchanged, skipping: {', '.join(skipped_names)}")
+        # KI-13/S12.2e: every unchanged project already printed its own specific
+        # "[INFO] Unchanged, skipping: <name> (<baseline tag> @ <reason>)" line
+        # above, from inside detect_changed_projects (this isolated transaction
+        # always passes check_tag_at_head=True) -- one line per project naming
+        # its exact baseline and reason, not a second, bare name-only list here.
+        # This also runs identically whether or not --dry-run is set (KI-14):
+        # the plan above is computed once, before the dry-run/real branch below.
 
         if vargs.dry_run:
             # Preview only: show what would be tagged for every changed project, no

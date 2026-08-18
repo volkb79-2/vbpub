@@ -288,6 +288,38 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
     _forget_plan_refused(repo_root, workspace)
+    _forget_backup_pushed(repo_root, workspace)
+
+
+def mark_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that :func:`push_backup_branch` actually pushed this exact
+    transaction's durability backup to origin (KI-15).
+
+    :func:`remove_backup_branch` checks :func:`backup_was_pushed` before
+    attempting any delete, instead of special-casing every caller known
+    (today) not to have pushed one -- a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`, and an unconditional
+    best-effort delete on those paths is exactly what made a genuinely
+    successful, side-effect-free run print `error: unable to delete '...':
+    remote ref does not exist` / `error: failed to push some refs to '...'`.
+    Tracking this transaction's OWN observed push state -- rather than
+    enumerating which call sites are "known safe" -- also guards the opposite,
+    worse failure: a push that genuinely happened must still be reliably
+    recognised as pushed, or its backup branch is orphaned on origin forever.
+    """
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.backup-pushed").write_text("1", encoding="utf-8")
+
+
+def backup_was_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if :func:`mark_backup_pushed` was called for this exact workspace."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").exists()
+
+
+def _forget_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").unlink(missing_ok=True)
 
 
 def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
@@ -926,22 +958,44 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     name (pushed by an EARLIER call in this same run, before the rebase) then
     diverges from the local rewritten history, and a plain push would itself
     hit the identical non-fast-forward rejection this function exists to avoid.
+
+    Records that THIS transaction actually pushed the backup
+    (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
+    later checks before attempting any cleanup delete.
     """
     subprocess.run(
         ["git", "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}"],
         cwd=workspace.path, check=True,
     )
+    mark_backup_pushed(workspace.repo_root, workspace)
 
 
 def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
     """Delete the durability backup branch from origin after a fully successful release.
 
-    Best-effort: a release that already succeeded should not fail cleanup over a
-    missing/already-gone remote branch.
+    Only attempted when THIS transaction actually pushed one
+    (:func:`backup_was_pushed`, KI-15) — a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`; unconditionally attempting
+    a delete on those paths is exactly what made a genuinely successful,
+    side-effect-free run print `error: unable to delete '...': remote ref does
+    not exist` / `error: failed to push some refs to '...'` — training operators
+    to read this release tool's `error:` output as noise.
+
+    When a push DID happen, the delete still always runs — this transaction
+    state is tracked precisely so that case is never mistaken for "nothing to
+    clean up" either, which would orphan a real backup branch on origin
+    forever. Best-effort: output is captured rather than left to reach the
+    real stderr, so even a genuine failure here (branch already gone,
+    network blip) stays silent rather than alarming — a release that already
+    succeeded should not fail, or look like it failed, over cleanup of a
+    branch whose job is already done.
     """
+    if not backup_was_pushed(workspace.repo_root, workspace):
+        return
     subprocess.run(
         ["git", "push", "origin", "--delete", workspace.branch],
-        cwd=workspace.path, check=False,
+        cwd=workspace.path, check=False, capture_output=True, text=True,
     )
 
 

@@ -1289,30 +1289,81 @@ def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):
         transaction.resume_workspace(tmp_path, retained)
 
 
-def test_push_backup_branch_force_pushes_under_its_own_name(tmp_path, monkeypatch):
+def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
+    """KI-15: a successful push MUST be recorded as this transaction's own
+    state (mark_backup_pushed) -- that record is what later tells cleanup
+    apart "nothing to delete" from "delete this"."""
+    _init_repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
     calls = []
-    monkeypatch.setattr(transaction.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+    real_run = transaction.subprocess.run
+
+    def spy(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[:2] == ["git", "push"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return real_run(argv, **kwargs)  # the internal git-common-dir lookup mark_backup_pushed makes
+
+    monkeypatch.setattr(transaction.subprocess, "run", spy)
 
     transaction.push_backup_branch(workspace)
 
     assert calls[0][0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
     assert calls[0][1]["cwd"] == workspace.path
     assert calls[0][1]["check"] is True
+    assert transaction.backup_was_pushed(tmp_path, workspace) is True
 
 
-def test_remove_backup_branch_deletes_remote_branch_best_effort(tmp_path, monkeypatch):
+def test_remove_backup_branch_is_a_true_no_op_when_never_pushed(tmp_path, monkeypatch):
+    """KI-15, direction 2 -- the paired must-succeed control: a transaction
+    that never called push_backup_branch (dry run, "nothing to release", or a
+    refused release plan) must not even ATTEMPT a delete. A spy proves the
+    git delete command itself is never invoked; a bare "no error printed"
+    assertion could not distinguish that from an attempt whose output merely
+    happens to be captured."""
+    _init_repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
     calls = []
-    monkeypatch.setattr(
-        transaction.subprocess, "run",
-        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=1),
-    )
+    real_run = transaction.subprocess.run
+
+    def spy(argv, **kwargs):
+        calls.append(argv)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(transaction.subprocess, "run", spy)
+
+    transaction.remove_backup_branch(workspace)  # must not raise
+
+    assert not any("--delete" in call for call in calls)
+
+
+def test_remove_backup_branch_still_attempts_delete_when_pushed_best_effort(tmp_path, monkeypatch):
+    """KI-15, direction 1: when THIS transaction DID push a backup, cleanup
+    must still attempt the delete -- tracking push-state must never become an
+    excuse to skip a delete that is actually owed, or a real backup branch is
+    left on origin forever. The attempt itself stays best-effort: output is
+    captured rather than left to reach real stderr, so a failure here (as
+    mocked below) must not raise."""
+    _init_repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
+    transaction.mark_backup_pushed(tmp_path, workspace)
+    calls = []
+    real_run = transaction.subprocess.run
+
+    def spy(argv, **kwargs):
+        if argv[:2] == ["git", "push"]:
+            calls.append((argv, kwargs))
+            return SimpleNamespace(returncode=1, stdout="", stderr="error: unable to delete\n")
+        return real_run(argv, **kwargs)  # the internal git-common-dir lookup backup_was_pushed makes
+
+    monkeypatch.setattr(transaction.subprocess, "run", spy)
 
     transaction.remove_backup_branch(workspace)  # must not raise even though the mock "fails"
 
     assert calls[0][0] == ["git", "push", "origin", "--delete", "cmru/release/x"]
     assert calls[0][1]["check"] is False
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True
 
 
 def test_promotion_landed_false_before_promote_true_after():

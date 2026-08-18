@@ -66,6 +66,13 @@ typed failure: no project's cycle has started yet, so cmru discards the just-cre
 worktree exactly like a success would, instead of retaining it the way a genuine
 mid-release failure is retained for inspection.
 
+Every project this plan skips (equal, ahead-and-allowed, or the ordinary "behind" case) prints
+its own `[INFO] Unchanged, skipping: <name> (…)` line naming the exact baseline tag and reason —
+never a bare list of names (SPEC S12.2e); see the worked example below. This computation runs
+exactly once, before `--dry-run` is ever considered, so a preview and a real run report
+identical plan/baseline/reason diagnostics — a dry run only adds the `[DRY] Would …` prefix on
+what a real run instead performs for real (SPEC S-CLI.5c).
+
 The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
@@ -183,7 +190,10 @@ Suppose only these three have real changes this run (`project_order` puts
 
 ```
 [INFO] Release plan: 3/7 project(s) changed — releasing in order: ciu, nyxloom, modern-debian-tools-python-debug
-[INFO] Unchanged, skipping: cmru, pwmcp, tls-edge, topos
+[INFO] Unchanged, skipping: cmru (no commits under cmru/ since cmru-v2.0.0 @ 1a2b3c4d)
+[INFO] Unchanged, skipping: pwmcp (no commits under pwmcp/ since pwmcp-v1.4.2 @ 2b3c4d5e)
+[INFO] Unchanged, skipping: tls-edge (no commits under tls-edge/ since tls-edge-v0.3.1 @ 3c4d5e6f)
+[INFO] Unchanged, skipping: topos (no commits under topos/ since topos-v0.9.0 @ 4d5e6f70)
 
 === ciu: releasing ===
 [INFO] ciu: running required release gate
@@ -216,6 +226,9 @@ End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
 real GitHub Releases with wheels attached; the mdt image on ghcr was built
 against those exact wheel versions. The `cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>`
 branch/worktree and its origin backup are removed; your local `main` is synced to `<sha C>`.
+That removal is real here because this run actually pushed the backup once at least one
+project changed; a run that never pushes one (a dry run, "nothing to release", or a refused
+plan) has nothing to remove and prints nothing about it either (SPEC S-CLI.5d).
 
 **Partial failure — before that project's own promote (nothing to revert)**
 

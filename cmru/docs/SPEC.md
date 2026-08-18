@@ -1031,6 +1031,61 @@ for this — the transaction records the refusal as its own state (alongside the
 marker, S-CLI.5a) so the parent process can tell "refused before starting" apart from "failed
 after starting" without a new exit code.
 
+**S12.2e — The isolated release transaction's unchanged/skipped path MUST name the exact
+baseline and reason, per project, never a bare project-name list (KI-13).** Before this rule,
+the plan printed the baseline tag only on the CHANGED path (`assay: assay-v2.0.0 →
+assay-v2.1.0 (minor)`) and withheld it on the UNCHANGED path (`Unchanged, skipping: ciu, cmru,
+assay, …`) — exactly backwards: the changed case never needed disambiguation, and the unchanged
+case is precisely where an operator who just committed under a project's own path cannot tell a
+wrong `paths` glob, a misplaced/unpushed tag (S12.2a/S12.2b's refusals), and a genuinely
+unchanged project apart. With `check_tag_at_head` True (the isolated release transaction; never
+`cmru status`/`cmru changelog`, which keep S12.2's plain silent skip), every one of the three
+S12.2b states that is not itself a refusal MUST print exactly one `[INFO] Unchanged, skipping:
+<name> (…)` line, sharing one message shape rather than a competing style per state:
+
+* **"equal"** (S12.2b.1): `<name> (already released as <tag> at the snapshot commit; nothing
+  new since)`.
+* **"ahead"**, downgraded via `--allow-tag-ahead-of-head` (S12.2b.2's abort, deliberately
+  skipped instead): `<name> (tag <tag> is ahead of the snapshot commit; skipped via
+  --allow-tag-ahead-of-head)`.
+* **"behind"** (S12.2b.3, the ordinary case and by far the most common — some other project's
+  commits moved HEAD, this project's own paths didn't change): `<name> (no commits under
+  <path>/[, <path>/…] since <tag> @ <short-sha>)`, naming every watched path (S12.3) and the
+  baseline tag's own resolved commit, e.g. `assay (no commits under assay/ since assay-v2.1.0 @
+  52534ef7)`.
+
+A project with no prior tag remains always eligible (first release, S12.2) — it is never
+reported as unchanged, and this rule prints nothing for it. One line per project keeps this
+readable even at cmru's real scale (seven products): a per-project line each, never a merged
+wall of duplicated prose, and never the old bare `Unchanged, skipping: a, b, c` list once each
+skipped project has already printed its own line above.
+
+**S-CLI.5c — `--dry-run` MUST NOT be the only way to learn something about a real run
+(KI-14).** The isolated release transaction computes its plan (S12.2a/S12.2b, S12.2e) exactly
+once, unconditionally, before branching on `--dry-run` — both paths therefore observe identical
+decision-level diagnostics (the plan summary, the baseline, the derived version, and every
+per-project unchanged reason), differing only in the `[DRY] Would …` prefix on what a real run
+instead performs for real, and in the absence of that run's effects. `--dry-run` MAY show
+strictly less than a real run (a real run's own operational/progress output has no dry-run
+analogue, since there is nothing happening to report), but MUST NEVER show a decision an
+operator could not also learn by watching a real run to completion.
+
+**S-CLI.5d — The origin durability backup branch (S-CLI.5a) MUST be deleted only when THIS
+transaction actually pushed it, tracked as transaction state (KI-15).** A dry run, a "nothing
+to release" run, and a refused release plan (S12.2d) all reach a successful exit without ever
+calling the push that creates this backup. Attempting its deletion unconditionally on those
+paths is what made a genuinely successful, side-effect-free run print `error: unable to delete
+'…': remote ref does not exist` / `error: failed to push some refs to '…'` — indistinguishable
+from a real failure, and training operators to read this release tool's `error:` output as
+noise. The transaction MUST instead record, as its own state, whether its own push of this
+branch succeeded, and check that record before ever attempting a delete. When it DID push one,
+the delete MUST still always be attempted — never skipped merely because it might fail, since
+treating a genuine push as "nothing to clean up" is the worse failure: it orphans a real branch
+on origin forever, silently, which is far more expensive to notice than a stray log line. Any
+delete that is attempted remains best-effort (a release that already succeeded MUST NOT fail,
+or appear to fail, over cleanup of a branch whose job is already done) but MUST NOT surface at
+`error:` level even on a genuine failure.
+
 **S12.3** Change detection always watches the project directory. Additional project-relative shared paths MAY be listed in `project.version.paths`.
 
 **S12.4** Version bump rules (in priority order):

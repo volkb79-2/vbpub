@@ -470,6 +470,26 @@ def _tag_ahead_error(repo_root: Path, name: str, prefix: str, tag: str) -> Relea
     )
 
 
+def _unchanged_reason(repo_root: Path, name: str, last_tag: str, paths: List[str]) -> str:
+    """KI-13/S12.2e: the ordinary "nothing changed under this project's own
+    paths since its last release" line -- names the exact baseline tag AND
+    the commit it resolves to, not a bare project-name list. Package A's
+    "already released ... at the snapshot commit" message (the "equal"
+    state) already has this shape; this is the "behind" state's equivalent
+    (some OTHER project's commits moved HEAD, this one's own paths didn't
+    change) -- by far the most common skip reason, and previously the one
+    with no message at all. An operator who just committed under one of
+    ``paths`` can now immediately tell that apart from a wrong ``paths``
+    glob or a misplaced/unpushed tag -- both of which are refused earlier,
+    by S12.2a/S12.2b, before this line is ever reached."""
+    tag_commit = _git(repo_root, "rev-parse", f"{last_tag}^{{commit}}")
+    where = ", ".join(f"{p}/" for p in paths)
+    return (
+        f"[INFO] Unchanged, skipping: {name} (no commits under {where} "
+        f"since {last_tag} @ {tag_commit[:8]})"
+    )
+
+
 def detect_changed_projects(
     repo_root: Path,
     projects: Dict[str, Any],
@@ -480,7 +500,8 @@ def detect_changed_projects(
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
-    Projects with no prior tag are always included (first release).
+    Projects with no prior tag are always included (first release) -- never
+    reported as "unchanged", and never printed below (S12.2).
 
     ``require_pushed_baseline`` (S12.2a) and ``check_tag_at_head`` (S12.2b)
     default to False, preserving today's plain-local-read, skip-silently
@@ -489,15 +510,27 @@ def detect_changed_projects(
     one caller that turns both on unconditionally: see ``cli.py``'s
     release-plan computation.
 
-    When ``check_tag_at_head`` is True, the "equal" state (a pushed tag
-    exactly at the snapshot commit, the ordinary result of a completed
-    release) is ALWAYS reported with an informative skip — never an error,
-    and never gated by ``allow_tag_ahead_of_head``, which controls only the
-    "ahead" state (S12.2b's genuine anomaly): True raises, False
-    (``--allow-tag-ahead-of-head``, née ``--allow-tag-at-head``) downgrades it
-    to an ordinary silent skip instead. With ``check_tag_at_head`` False, ALL
-    of this is skipped and both states fold back into today's plain silent
-    skip -- ``allow_tag_ahead_of_head`` is meaningless without it.
+    When ``check_tag_at_head`` is True, EVERY unchanged/skipped state below
+    prints exactly one informative line naming the project, the baseline tag,
+    and the specific reason (KI-13/S12.2e; one shape, shared by all three
+    states, not a competing style per state):
+
+    * "equal" (a pushed tag exactly at the snapshot commit, the ordinary
+      result right after a completed release) is ALWAYS reported — never an
+      error, and never gated by ``allow_tag_ahead_of_head``, which controls
+      only the "ahead" state below.
+    * "ahead" (S12.2b's genuine anomaly) raises unless
+      ``allow_tag_ahead_of_head`` is True (``--allow-tag-ahead-of-head``, née
+      ``--allow-tag-at-head``), in which case it too is reported and skipped
+      rather than silently folded away.
+    * "behind" (the ordinary case: some other project's commits moved HEAD,
+      this project's own paths didn't change) is reported via
+      :func:`_unchanged_reason`.
+
+    With ``check_tag_at_head`` False, ALL of this is skipped and every state
+    folds back into today's plain silent skip -- ``allow_tag_ahead_of_head``
+    is meaningless without it, and callers that want the old silent preview
+    (``cmru status``, ``cmru changelog``) are unaffected.
     """
     changed = []
     for name, proj in projects.items():
@@ -514,8 +547,15 @@ def detect_changed_projects(
                             f"[INFO] Unchanged, skipping: {name} (already released as "
                             f"{last_tag} at the snapshot commit; nothing new since)"
                         )
-                    elif relationship == "ahead" and not allow_tag_ahead_of_head:
-                        raise _tag_ahead_error(repo_root, name, prefix, last_tag)
+                    elif relationship == "ahead":
+                        if not allow_tag_ahead_of_head:
+                            raise _tag_ahead_error(repo_root, name, prefix, last_tag)
+                        print(
+                            f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
+                            "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
+                        )
+                    else:  # "behind" -- the ordinary, by-far-most-common skip reason
+                        print(_unchanged_reason(repo_root, name, last_tag, paths))
                 continue  # no changes
         else:
             messages = []  # first release — always eligible
