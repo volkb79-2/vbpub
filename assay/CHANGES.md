@@ -21,6 +21,35 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.1.0] - 2026-08-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=52534ef7e78d5c113c7873db5e8dc8f2940542d6 -->
+
+### Added
+- feat(assay): P34 W9 -- real-PostgreSQL qualification at a pinned dstdns revision (746a24b5)
+- feat(assay): P34 W5+W6 -- classification, artifact plumbing, CLI wiring (2c1a57cc)
+- feat(assay): P34 W3+W4 -- the external-tool preflight and the config surface (67e396bf)
+- feat(assay): P34 W1+W2 -- the DDL lexer and the SQL adapter (fbb5e15b)
+
+### Fixed
+- fix(assay): wave 1's release embargo could not survive its own success (A-278) (9bd0cf72)
+
+### Changed
+- merge(assay): wave 3 -- P34/B001 the source-oriented SQL/DDL adapter (W0-W8) (ccf9ca55)
+- evidence(assay): freeze the A-279 ordering pair; rule A-287, A-288 (545d5213)
+- decide(assay): A-279..A-283 -- the P34 carve corrections, ruled (9a5b68d5)
+- review(assay): W3 -- adversarial review of the P34 carve (5 blocking) (d7a78a60)
+- carve(assay): W3 -- P34/B001 source-oriented SQL/DDL adapter (cdd16adc)
+- assay: wave 2 complete -- nothing to release, and why that is the right call (f6c7196b)
+- disposition(assay): B004 deferred (A-275/A-276); A-270 finds its first defect (A-277) (a86d70b5)
+- review(assay): B004 carve -- READY WITH CORRECTIONS, defer implementation (1237a39f)
+- carve(assay): B004 provenance-verified -- and it is blocked twice (5a14d70c)
+- backlog(assay): B007 has no v7 partner, so wave 2 and 3 go first (ca63c8cc)
+- assay: wave 1 complete -- assay-v2.0.0 released, .pyz verified, dstdns notified (611279c2)
+
+### Documentation
+- docs(assay): P34 W7+W8 -- the sixth derived vocabulary and the SQL documentation (7d4ad61d)
+
 ## [2.0.0] - 2026-08-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=5460d9371cb11b4b80dbe8b0ea920c72b29cda83 -->
