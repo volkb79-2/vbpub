@@ -32,7 +32,7 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
         cli.main(["build", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert child
-    assert workspace_args == {"base": "b" * 40, "purpose": "build"}
+    assert workspace_args == {"base": "b" * 40, "purpose": "build", "scope": "demo"}
     output = capsys.readouterr().out
     assert "2 commit(s) behind origin/main" in output
     assert "uses fetched origin/main bbbbbbbbbbbb" in output

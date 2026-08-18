@@ -270,7 +270,9 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
         monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
         monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
-        monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: calls.append("created"))
+        monkeypatch.setattr(
+            transaction, "create_workspace", lambda _root, *, base, **_kw: calls.append("created"),
+        )
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
 
         with pytest.raises(SystemExit) as exc:
@@ -299,7 +301,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-        monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+        monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
@@ -334,7 +336,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
         monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
         monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-        monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+        monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
         monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
@@ -378,7 +380,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
@@ -425,10 +427,11 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
     # Child fails (e.g. build/publish) after it already promoted origin/main.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
+    monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: calls.append("checked-promotion") or True)
     monkeypatch.setattr(transaction, "read_release_progress", lambda _root, _w: None)
     monkeypatch.setattr(
@@ -477,10 +480,11 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     # Child fails before ever reaching promote_workspace (e.g. gates failed).
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 1)
+    monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
     monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: False)
     monkeypatch.setattr(
         transaction, "revert_promotion",
@@ -545,7 +549,7 @@ cwd = "beta"
     )
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
@@ -604,7 +608,7 @@ cwd = "beta"
     )
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
@@ -656,7 +660,7 @@ cwd = "alpha"
     )
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
-    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base: fresh_workspace)
+    monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: fresh_workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda ws, args: calls.append(("ran", ws.branch)) or 0)
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
@@ -1946,7 +1950,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(
-        transaction, "create_workspace", lambda _root, *, base, purpose: workspace,
+        transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 0)
@@ -1984,7 +1988,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(transaction, "fetch_origin_main", lambda _root: "a" * 40)
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root: 0)
     monkeypatch.setattr(
-        transaction, "create_workspace", lambda _root, *, base, purpose: workspace,
+        transaction, "create_workspace", lambda _root, *, base, purpose, **_kw: workspace,
     )
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: None)
     monkeypatch.setattr(transaction, "run_child", lambda *_args, **_kwargs: 1)

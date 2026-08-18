@@ -63,7 +63,8 @@ project in this run's scope (`--project <name>`, else every orchestrated project
 `orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
 no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
-`cmru/release/<id>` worktree at that exact remote commit, and re-execs there. All caller
+`cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree (KI-16; see S-CLI.5b) at that exact
+remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
 
@@ -170,6 +171,34 @@ a failed worktree implicitly: inspect it, resume it explicitly when appropriate,
 request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
 
 The repository-root secret document is copied mode `0600`, never committed.
+
+**S-CLI.5b — Transaction branch/worktree naming (KI-16).** Every `cmru/release/*` and
+`cmru/build/*` transaction this tool creates is named:
+
+```
+branch:     cmru/<purpose>/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
+directory:  .worktrees/cmru-<purpose>-<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
+```
+
+`<purpose>` is `release` or `build`. `<YYYYMMDD-HHMMSS>` is UTC, for chronological sort.
+`<scope>` is the `--project` value when the run is scoped, sanitised to `[a-z0-9-]`, else
+`all`. `<uuid8>` is 8 hex characters from `uuid4()` and MUST NOT be removed or made
+deterministic: cleanup (`remove_workspace`, `abandon_workspace`) depends on a transaction being
+able to assume it exclusively owns the name it created, so the scheme MUST stay
+collision-free even for two runs on the same scope in the same second. The directory name is
+the branch name with every `/` replaced by `-`, 1:1 derivable in both directions — never
+computed by `mkdtemp`-then-`rmdir`. `git worktree add` on its own is NOT sufficient here: it
+fails closed on a non-empty existing directory but silently ADOPTS an empty one, which would
+violate "this ONE transaction exclusively owns the name it created" if a uuid8 collision or a
+stale leftover ever left an empty directory in the way — the code MUST therefore refuse
+explicitly (any existing path, empty or not) before ever calling `git worktree add`.
+
+Both `startswith("cmru/release/")` and `startswith("cmru/build/")` are preserved by this
+scheme, so every existing refspec/glob keeps working, and a worktree retained under the OLDER
+`cmru/<purpose>/<12-hex>` naming remains just as discoverable (`cmru worktrees`,
+`list_cmru_workspaces`), resumable (`--resume`), and removable as one created under the new
+scheme — nothing in discovery or cleanup parses the directory name; only the branch prefix and
+whatever `git worktree list --porcelain` itself reports are load-bearing.
 
 ### File conventions (all `cmru.`-prefixed)
 
@@ -593,7 +622,7 @@ and artifacts for inspection/resume. Successful release MUST remove the worktree
 `<project>/logs/cmru-release/<immutable-id>/`; `--retain-artifacts-on-release` moves the
 declared `project.release.artifact_dirs` to `<project>/artifacts/<immutable-id>/` and writes
 `release.json` with source commit and SHA-256 inventory. `cmru build` MUST use an isolated
-`cmru/build/<id>` worktree. On child success it MUST copy that project's logs to
+`cmru/build/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to
 `<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256
@@ -917,6 +946,90 @@ class ReleaseHost:
 **S12.1** `cmru status` performs a dry-run: for each project, reports whether the subtree changed since last `<prefix>-v*` tag and what version would be minted.
 
 **S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` is non-empty after excluding CMRU release-control files and generated release-history documents. If no prior tag exists, the project is always eligible (first release).
+
+**S12.2a — The release plan's baseline MUST reflect the pushed repository (KI-12a).**
+`git tag --list` alone returns local-only refs; a hand-made, never-pushed tag would
+otherwise silently become `<last_tag>` in S12.2's own comparison for every operator who runs
+the identical command on the identical commit — contradicting the isolation S-CLI.5 already
+establishes for the rest of the transaction. Chosen fix: keep the local `git tag --list` read
+(no unconditional network dependency for every caller), but when computing the isolated
+release transaction's own plan (`cli.py`'s release-plan computation, not `cmru status` or
+`cmru changelog`), additionally verify against `origin` in both directions `git ls-remote`
+can be wrong about:
+
+1. **Object, not just name.** A local tag whose NAME exists on `origin` can still point at a
+   DIFFERENT commit there — checking only ref existence would pass a hand-made tag created
+   locally over an already-published one, and every later decision (the version this tag
+   implies, S12.2b's tag-vs-HEAD comparison) would then silently run against the wrong,
+   local-only object. The selected `<last_tag>` MUST resolve to the exact same commit locally
+   and on `origin` (`git ls-remote --exit-code --tags origin refs/tags/<tag>
+   refs/tags/<tag>^{}` — one call covers annotated and lightweight tags, comparing the
+   resolved SHA either way against local `git rev-parse <tag>^{commit}`); a name match with an
+   object mismatch refuses, naming both SHAs, distinct from "absent entirely".
+2. **Origin, not just local, may be ahead.** `origin` MAY carry a higher matching tag than
+   this local clone has ever fetched (another operator's release, never pulled here). Using a
+   stale local maximum would derive a version that already exists and fail mid-release, after
+   `origin/main` has already been promoted for that project — exactly the "ahead" half-completed
+   state S12.2b aborts on, just reached a different way. Checked via `git ls-remote --tags
+   origin refs/tags/<prefix>*`, compared against the local maximum by the same semver ordering
+   — even when the local clone has no matching tag at all (a believed-first-release that
+   `origin` secretly already has one for). A newer/different remote tag refuses with a "fetch
+   tags and re-run" remedy.
+
+`git ls-remote` is a network call in an otherwise-offline-capable path; an unreachable `origin`
+is therefore its own distinct refusal in both checks above (never conflated with "tag not
+found" or "nothing published yet", and never silently ignored).
+
+**S12.2b — A tag AHEAD of the snapshot commit MUST abort; a tag EQUAL to it is a benign,
+informative skip, never an error (KI-12b).** Once S12.2's `git log <last_tag>..HEAD -- <paths>`
+is found empty for a project with a prior tag, `<last_tag>`'s commit relative to the commit
+being evaluated (HEAD) is exactly one of three states — `git merge-base --is-ancestor` alone
+cannot tell the first two apart, so the release plan resolves and compares the commit objects
+directly:
+
+1. **Equal** — `<last_tag>`'s commit IS HEAD. This is the ordinary, expected state immediately
+   after any successful release (nothing has landed anywhere in the repository since). It MUST
+   NOT abort and MUST NOT be treated as evidence of a hand-made tag: it is reported as an
+   informative skip naming the tag, e.g. `Unchanged, skipping: demo (already released as
+   demo-v1.0.0 at the snapshot commit; nothing new since)`.
+2. **Ahead** — `<last_tag>`'s commit is a strict descendant of HEAD: the tag exists (and is
+   pushed — S12.2a already ruled out the unpushed case) on a commit that is not yet in this
+   snapshot's history at all. This is the genuine anomaly: almost always a previous release that
+   tagged and pushed this project but failed before promoting `origin/main` to that commit (a
+   half-completed release). The isolated release transaction's plan computation MUST abort with
+   an error naming the project, the tag, the snapshot commit, that likely cause, and the remedy
+   (continuing would silently produce an empty release for a project that already has unpromoted
+   work waiting). `cmru release --allow-tag-ahead-of-head` downgrades this one refusal — and only
+   this one — back to an ordinary skip, for the deliberate case (`--allow-tag-at-head` is a
+   deprecated alias kept for compatibility: after this three-state fix the "equal" case never
+   aborts, so the old name no longer describes what the flag actually overrides).
+3. **Behind** — `<last_tag>`'s commit is a strict ancestor of HEAD (the ordinary case: some
+   other project's commits moved HEAD forward, nothing under this project's own paths changed).
+   Indistinguishable from, and handled identically to, S12.2's plain "genuinely unchanged" skip.
+
+`cmru status` and `cmru changelog` are previews/migrations, not the release plan itself, and
+keep S12.2's plain skip-silently behaviour for all three states (no informative message, no
+abort).
+
+**S12.2c — cmru owns tag creation.** A cmru-managed project's `<prefix>-v*` tags MUST only be
+created by cmru's own versioning strategies (S12.5). A hand-made tag is indistinguishable from
+a completed release: an unpushed one is exactly S12.2a's refusal, and a pushed one sitting
+ahead of the snapshot commit is exactly S12.2b's "ahead" abort (whose far more common real cause
+is actually a half-completed cmru release, not a hand-made tag — but the tool cannot tell them
+apart from git state alone). Never tag a cmru-managed project by hand.
+
+**S12.2d — A release-plan refusal (S12.2a/S12.2b) is a typed, clean failure that discards its
+worktree.** No project's `prepare`/gate/promote/tag cycle has started when the plan itself
+refuses — nothing was gated, promoted, or tagged, and the durability backup branch (S-CLI.5a)
+was never pushed either, since it is pushed only after the plan is accepted. The isolated
+release transaction MUST therefore surface this as a clean operator-facing `[ERROR]` message
+(never a raw Python traceback) and discard the just-created worktree/branch exactly like a
+successful release would — never retain it the way a genuine mid-release failure is retained
+for inspection (S-CLI.1), since there would be nothing there to inspect. This exit still uses
+the ordinary `1` ("build or publish failure") from S8's four-value scheme — S8 is not extended
+for this — the transaction records the refusal as its own state (alongside the existing scope
+marker, S-CLI.5a) so the parent process can tell "refused before starting" apart from "failed
+after starting" without a new exit code.
 
 **S12.3** Change detection always watches the project directory. Additional project-relative shared paths MAY be listed in `project.version.paths`.
 

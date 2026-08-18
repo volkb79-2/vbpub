@@ -174,15 +174,27 @@ release tag.
 
 Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
 cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
-and creates a temporary `cmru/release/<id>` worktree at that exact commit. A local `main`
-behind the remote is warned about but safe because the remote is authoritative. This matters
-because setuptools-scm sees the
+and creates a temporary `cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree at that
+exact commit — chronologically sortable, its `.worktrees/` directory name the branch's own
+`/`→`-` transform. A local `main` behind the remote is warned about but safe because the
+remote is authoritative. This matters because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
 
 cmru ignores every uncommitted caller path, including a selected project's files: none can
 enter the remote snapshot. It instead rejects only committed local `main` changes not yet on
-`origin/main`, since those are easy to mistake for released source. In the transaction
-worktree, cmru runs each changed project's required `run-tests` gate, then
+`origin/main`, since those are easy to mistake for released source. Before touching any
+project, cmru also checks the release plan itself against `origin` in two ways a purely local
+read cannot: a project's latest tag must actually be published there under the SAME name AND
+pointing at the SAME commit (never a local-only or same-named-but-different-object hand-made
+tag), and `origin` must not carry a newer matching tag this local clone never fetched — either
+always aborts with a named remedy. If a verified tag's commit is exactly the snapshot commit,
+that's the ordinary state right after a completed release: cmru reports it and moves on, never
+an error. Only a tag strictly *ahead* of the snapshot — pushed, but not yet in this snapshot's
+history, almost always a half-completed prior release — aborts with a named remedy
+(`--allow-tag-ahead-of-head` downgrades only that one deliberately; `--allow-tag-at-head` is a
+deprecated alias). Any such plan-time refusal is a clean, typed failure that discards the
+just-created worktree — never retains it, since no project's cycle ever started. In the
+transaction worktree, cmru runs each changed project's required `run-tests` gate, then
 fast-forwards `origin/main` from the validated branch before creating tags or publishing.
 If another writer advanced remote main, the release fails before publication. A failure keeps
 the branch/worktree for diagnosis; success removes both (after optional evidence retention).
@@ -193,7 +205,8 @@ release action. On success it copies project logs to
 `<project>/artifacts/<commit-date>_<full-commit>/`, writes `build.json` with a SHA-256
 inventory and a `publication: forbidden` marker, then removes the worktree. These records are
 gitignored local consumption outputs, not release candidates and not inputs to `cmru publish`.
-If the build or retention fails, CMRU keeps the exact `cmru/build/<id>` worktree and prints its
+If the build or retention fails, CMRU keeps the exact
+`cmru/build/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
 `cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with

@@ -1988,7 +1988,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                             f"Local main is {behind} commit(s) behind origin/main; "
                             f"build uses fetched origin/main {base[:12]}."
                         )
-                    workspace = transaction.create_workspace(repo_root, base=base, purpose="build")
+                    workspace = transaction.create_workspace(
+                        repo_root, base=base, purpose="build", scope=vargs.project,
+                    )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
@@ -2119,6 +2121,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--allow-uncommitted", action="store_true",
                             help="release: proceed even though a released project's path has "
                                  "local uncommitted changes (which origin/main won't include)")
+        parser.add_argument(
+            "--allow-tag-ahead-of-head", "--allow-tag-at-head",
+            dest="allow_tag_ahead_of_head", action="store_true",
+            help="release: downgrade to a skip, instead of aborting, when a project's latest "
+                 "tag is pushed but strictly AHEAD of the snapshot commit -- a half-completed "
+                 "prior release (S12.2b). --allow-tag-at-head is a deprecated alias: a tag "
+                 "exactly AT the snapshot commit is never an error and needs no override.",
+        )
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         parser.add_argument(
             "--show-run-details", action="store_true",
@@ -2141,6 +2151,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
             log_error("--resume and --abandon are mutually exclusive.")
             _sys.exit(2)
+        if "--allow-tag-at-head" in rest:
+            log_warn("--allow-tag-at-head is a deprecated alias; use --allow-tag-ahead-of-head.")
 
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
@@ -2228,7 +2240,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 f"Local main is {behind} commit(s) behind origin/main; "
                                 f"release uses fetched origin/main {base[:12]}."
                             )
-                        workspace = transaction.create_workspace(repo_root, base=base)
+                        workspace = transaction.create_workspace(repo_root, base=base, scope=vargs.project)
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
@@ -2264,6 +2276,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 "conflict); resolve manually — `git rebase origin/main`."
                             )
                         log_info("Release transaction complete; isolated worktree removed.")
+                    elif transaction.plan_was_refused(repo_root, workspace):
+                        # The release plan itself refused (S12.2a/S12.2b) before any
+                        # project's cycle started: no gate ran, nothing was promoted or
+                        # tagged, and `push_backup_branch` never ran either -- there is
+                        # nothing here worth retaining a worktree for, unlike a genuine
+                        # mid-release failure. Discard it exactly like a success would
+                        # (the detailed refusal was already printed by the child above).
+                        transaction.remove_workspace(workspace)
+                        transaction.forget_release_scope(repo_root, workspace)
+                        transaction.sync_local_main(repo_root)
+                        log_error(
+                            "Release plan refused before any project started; no changes "
+                            "were made (see the error above). Worktree discarded."
+                        )
                     else:
                         if transaction.promotion_landed(repo_root, workspace):
                             # Projects release one after another (each project's own
@@ -2306,11 +2332,36 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _sys.exit(1)
 
         # --- release: detect → tag → push → build → publish -------------------
-        from cmru.version import release_cmd, detect_changed_projects
+        from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
-        changed = detect_changed_projects(repo_root, ordered)
-        if vargs.project:
-            changed = [c for c in changed if c[0] == vargs.project]
+        # Scope to what this run will actually touch *before* computing the plan
+        # (not by filtering the result afterward): an unrelated orchestrated
+        # project's degenerate tag state must not abort a `--project`-scoped run
+        # that never touches it.
+        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
+        scoped_for_plan = {name: ordered[name] for name in release_scope}
+        # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
+        # preview or a `changelog` migration — MUST be a function of the pushed
+        # repository, and a tag pushed but strictly ahead of the snapshot commit
+        # MUST abort loudly rather than look identical to a genuinely unchanged
+        # project (S-CLI.5: continuing here would silently produce an empty
+        # release). `--allow-tag-ahead-of-head` downgrades only that one check;
+        # a tag exactly AT the snapshot commit is always reported and skipped,
+        # never an error. A refusal here means no project's cycle ever started
+        # -- nothing was gated, promoted, or tagged -- so the parent discards
+        # this worktree exactly like a success, never retaining it for
+        # inspection (there would be nothing there to inspect).
+        try:
+            changed = detect_changed_projects(
+                repo_root, scoped_for_plan,
+                require_pushed_baseline=True,
+                check_tag_at_head=True,
+                allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
+            )
+        except ReleasePlanRefused as exc:
+            log_error(str(exc))
+            transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+            _sys.exit(exit_codes.FAILURE)
         changed_names = {c[0] for c in changed}
 
         release_names = [name for name in project_order if name in changed_names]

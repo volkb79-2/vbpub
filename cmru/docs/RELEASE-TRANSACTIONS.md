@@ -3,9 +3,9 @@
 `cmru release` is intentionally safe to start from a busy developer checkout.
 It does not build, tag, or publish from that checkout. Instead it takes a
 committed snapshot of `origin/main` and performs all release work in a private
-`cmru/release/<id>` worktree — one project **at a time**, each project's own
-cycle running to completion before the next project starts (see "Transaction
-order" below).
+`cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree (SPEC S-CLI.5b) — one
+project **at a time**, each project's own cycle running to completion before
+the next project starts (see "Transaction order" below).
 
 ## Operator contract
 
@@ -45,6 +45,27 @@ repository-root `cmru.secret.toml` and each selected project's explicit secret o
 into that worktree with mode `0600`; they are removed with a successful worktree and are
 never staged.
 
+Inside the worktree, before touching any project, cmru also validates the release
+*plan* itself against `origin` two ways a purely local `git tag --list` read cannot (SPEC
+S12.2a): the local clone's chosen `<prefix>-v*` tag must resolve to the exact same commit
+on `origin` under the exact same name (never a local-only tag, and never a same-named
+local tag hand-made over an already-published one at a different commit), and `origin`
+must not carry a newer matching tag this local clone never fetched (a stale local view
+would otherwise derive a version that already exists and fail mid-release). Either always
+aborts, naming the offending tag(s)/commit(s) and a remedy. Given a verified tag, cmru
+then compares its commit against the snapshot commit (SPEC S12.2b): *equal* is the
+ordinary state right after a completed release (nothing has landed anywhere since) and
+is reported as an informative skip, never an error; only *ahead* — a tag pushed to a
+commit not yet in this snapshot's history, almost always a previous release that tagged
+and pushed but failed before promoting `origin/main` — aborts, because folding that into
+an ordinary "unchanged" skip would make an empty release look successful.
+`--allow-tag-ahead-of-head` downgrades only that "ahead" abort — for the deliberate case
+(e.g. re-running before `origin/main` has caught up) — back to a normal skip
+(`--allow-tag-at-head` is a deprecated alias). Any plan-time refusal here is a clean,
+typed failure: no project's cycle has started yet, so cmru discards the just-created
+worktree exactly like a success would, instead of retaining it the way a genuine
+mid-release failure is retained for inspection.
+
 The re-execed child inherits the parent transaction lock; it does not try to
 acquire a second lock against its own release.
 
@@ -66,8 +87,8 @@ the worktree is removed.
 `cmru build` uses the same fetched snapshot but stops before every release action. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact
 directories into `<project>/artifacts/<commit-date>_<full-commit>/`, writes a `build.json`
-SHA-256 inventory marked `publication: forbidden`, then removes its `cmru/build/<id>`
-worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
+SHA-256 inventory marked `publication: forbidden`, then removes its
+`cmru/build/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree. It is local consumption evidence, not a candidate that `publish` may consume. A build
 or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
@@ -92,7 +113,7 @@ caller checkout
     │  lock + reject uncommitted release-path edits + reject local-only main commits
     │  fetch origin/main → immutable snapshot base
     ▼
-cmru/release/<id> worktree, one project at a time (project_order, changed only):
+cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8> worktree, one project at a time (project_order, changed only):
     ┌─────────────────────────────────────────────────────────────────────┐
     │  optional prepare → generate CHANGES.md → commit declared outputs  │
     │  required tester-unified gate                                      │
@@ -193,8 +214,8 @@ Suppose only these three have real changes this run (`project_order` puts
 
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
 real GitHub Releases with wheels attached; the mdt image on ghcr was built
-against those exact wheel versions. The `cmru/release/<id>` branch/worktree
-and its origin backup are removed; your local `main` is synced to `<sha C>`.
+against those exact wheel versions. The `cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>`
+branch/worktree and its origin backup are removed; your local `main` is synced to `<sha C>`.
 
 **Partial failure — before that project's own promote (nothing to revert)**
 
@@ -232,8 +253,8 @@ but its subsequent `push` (uploading the image to ghcr) fails:
 [ERROR] Release failed after origin/main was already promoted; attempting
         automatic revert of the in-flight project's changes...
 [INFO] origin/main reverted to its last-known-good state.
-[ERROR] Release transaction failed; retained .../cmru-release-<id> on branch
-        cmru/release/<id> for inspection/resume.
+[ERROR] Release transaction failed; retained .../cmru-release-20260818-195012-all-a3ae580d on branch
+        cmru/release/20260818-195012-all-a3ae580d for inspection/resume.
 ```
 
 `origin/main` is now a *new* revert commit on top of `<sha B>` (nyxloom's
