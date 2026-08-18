@@ -363,6 +363,16 @@ def test_run_refuses_an_r2_lane_for_an_unregistered_language(
         "go": '["go:compare-swap"]',
         "sql": '["sql:drop-check"]',
     }[language]
+    # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane at CONFIG
+    # LOAD time -- a defect it declares even before any registry lookup.
+    # Without this, the sql case would be refused earlier and for a
+    # DIFFERENT reason than the one this test exists to prove (the
+    # unregistered-language refusal at A-139's own choke point), which
+    # would make the registry-level path this test names unreachable by
+    # this fixture. Go needs no such addition: the requirement is sql-only.
+    extra_mutation_fields = (
+        'equivalence_artifact = ".assay/schema-dump.sql"\n' if language == "sql" else ""
+    )
     lane = f"""\
 schema_version = 2
 
@@ -388,7 +398,7 @@ base = "HEAD~1"
 jobs = 1
 max_mutants = 50
 operators = {operators}
-"""
+{extra_mutation_fields}"""
     path = _write_and_commit_lane(git_repo, lane)
     (git_repo.path / "src").mkdir(exist_ok=True)
 

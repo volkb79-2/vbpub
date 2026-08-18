@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -1871,9 +1872,13 @@ def _build_judgment_r2(lane: Lane) -> JudgmentR2:
     disagree.
 
     In THIS build the derivation has exactly one reachable answer, and that
-    is deliberate rather than a shortcut (A-230d). ``config`` refuses
-    ``kill_signal_artifact`` until P34 ships a producer for the values it
-    implies, so every real P33 lane derives ``unattributed``. P33 therefore
+    is deliberate rather than a shortcut (A-230d). ``config`` (P34/W4) now
+    accepts ``kill_signal_artifact`` on a ``sql`` lane, but
+    ``cli._built_in_registry`` does not register the SQL adapter until P34's
+    own W6, so no build this package ships can resolve a ``sql`` lane past
+    ``registry.get_adapter`` at all -- every real lane THIS build can run is
+    still Python or Go, both of which ``config`` still refuses the field for,
+    so every one of them still derives ``unattributed``. P33 therefore
     SPECIFIES the rule and enforces it for documents; it does not claim to
     witness it, and no construction seam exists here whose only purpose
     would be to make that claim testable.
@@ -2155,6 +2160,42 @@ def run_lane(
     never cleans the consumer's tree to make a claim true.
     """
     _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
+
+    # (A-253/A-284, W3) The external-tool PATH preflight, at the TOP of this
+    # function -- before ANY snapshot, command or Git work -- guarded on
+    # *adapter* being resolved. There is no earlier "the adapter was just
+    # resolved" position inside this function to slot into: `run_lane`
+    # never resolves an adapter itself (see this function's own docstring
+    # above -- that is `assay.cli`'s job), so `adapter` arrives already
+    # resolved or not at all. `adapter is None` exactly when NEITHER `"R1"`
+    # nor `"R2"` is declared, so an R0-only lane never reaches the loop
+    # below; every lane that DOES carry an adapter is checked here before
+    # either dispatch state (direct R0 or `_run_higher_rigor_lane`) begins,
+    # which is the one insertion point that covers both.
+    #
+    # `refuse_lane` (never a bare `raise`): this function's other pre-work
+    # refusals below build a complete refusal artifact the same way, and a
+    # bare exception here would propagate past every later terminal path
+    # this build already promises emits one (work item 3's "every later
+    # terminal path must emit a complete artifact") -- `commit` is already
+    # resolved by the time `run_lane` is called, so an un-auditable refusal
+    # here would be exactly the shape P17 exists to remove.
+    if adapter is not None:
+        for tool in adapter.external_tools:
+            if shutil.which(tool) is None:
+                return refuse_lane(
+                    lane,
+                    commit=commit,
+                    status=Outcome.NO_MEASUREMENT,
+                    reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                    argv_append=argv_append,
+                    passthrough_source=passthrough_source,
+                    assay_version=assay_version,
+                    evidence=evidence,
+                    declared_evidence=declared_evidence,
+                    clock=clock,
+                )
+
     if deadline is None:
         # A library convenience for a non-CLI caller only -- CLI always
         # passes the instance it started before HEAD resolution (A-212).

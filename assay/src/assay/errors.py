@@ -128,10 +128,13 @@ class ReasonCode(StrEnum):
     EMPTY_COVERAGE = "EMPTY_COVERAGE"
     MISSING_ATTESTATION = "MISSING_ATTESTATION"
     STALE_ATTESTATION = "STALE_ATTESTATION"
-    #: (P21/A-163, RESERVED for P27) a declared adapter prerequisite named in
-    #: `LanguageAdapter.external_tools` is absent, so the check it gates
-    #: cannot run. Reserved by the one pre-adoption schema migration so P27
-    #: can render it without a second version bump (A-013/A-086/A-144).
+    #: (P21/A-163) a declared adapter prerequisite named in
+    #: `LanguageAdapter.external_tools` is absent from the effective PATH, so
+    #: the check it gates cannot run. Reserved by the one pre-adoption schema
+    #: migration so its eventual producer could render it without a second
+    #: version bump (A-013/A-086/A-144) -- no longer reserved: P34/A-253
+    #: lands the producer, `runner.run_lane`'s own preflight (A-284), before
+    #: any snapshot, command or Git work.
     MISSING_EXTERNAL_TOOL = "MISSING_EXTERNAL_TOOL"
     # BUDGET_EXCEEDED
     LANE_TIMEOUT = "LANE_TIMEOUT"
@@ -144,8 +147,8 @@ class ReasonCode(StrEnum):
     #: No longer reserved: P22/P23 landed both producers -- `isolation.py`'s
     #: `_limit_exceeded` and `git.py`'s object-closure bound raise it, and
     #: `tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`
-    #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is still reserved;
-    #: this one is live.
+    #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is likewise no
+    #: longer reserved as of P34/A-253; both are live.
     SNAPSHOT_LIMIT_EXCEEDED = "SNAPSHOT_LIMIT_EXCEEDED"
     # INCONCLUSIVE
     NO_MUTANTS = "NO_MUTANTS"

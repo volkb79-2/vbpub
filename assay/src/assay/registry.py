@@ -31,19 +31,22 @@ into: the CLI (:mod:`assay.cli`) builds its own registry naming Python at
 refused exactly the same way an unknown language string is — never a
 guess, never "the adapter exists so the level must work."
 
-**Deferred, deliberately: external-tool preflighting.** DESIGN-GUIDE §11
-and A-013 both say a declared adapter prerequisite tool that is absent from
-``PATH`` should render ``NO_MEASUREMENT`` rather than fail unpredictably
-mid-run — but the closed reason-code vocabulary (``errors.py``, outside
-this package's own ``scope.touch``) has no member for it yet. A-086
-recorded this gap explicitly and A-087 (P08, the Go adapter) already
-declined to add one: Go ships with ``external_tools = ()``, so "no
-missing-tool state becomes reachable, so adding its reason would be
-decorative." The identical reasoning applies here — the only adapter this
-package's own built-in registry advertises (Python, at R1) also declares
-``external_tools = ()`` — so this module adds no preflight machinery of its
-own; the reason code, and the check that raises it, belong to whichever
-future package first registers an adapter that actually needs one.
+**External-tool preflighting lives in `assay.runner`, not here (P34/A-253).**
+DESIGN-GUIDE §11 and A-013 both say a declared adapter prerequisite tool
+that is absent from ``PATH`` should render ``NO_MEASUREMENT`` rather than
+fail unpredictably mid-run. A-086 recorded this as a gap in the closed
+reason-code vocabulary, and A-087 (P08, the Go adapter) declined to close it
+there: Go ships with ``external_tools = ()``, so "no missing-tool state
+becomes reachable, so adding its reason would be decorative." That reasoning
+is still why THIS module adds no preflight machinery of its own — every
+adapter a built-in registry can advertise today (Python, Go, and P34's own
+SQL) declares ``external_tools = ()``, so no real entry here ever exercises
+one. But the check itself is no longer deferred: :func:`assay.runner.run_lane`
+raises ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` at the top of every run,
+for ANY adapter a caller resolves through this module's :func:`get_adapter` —
+general infrastructure that does not wait for a registered adapter to need
+it, the same way the rest of `run_lane`'s pre-work refusals do not wait for
+a lane that exercises them.
 """
 
 from __future__ import annotations
