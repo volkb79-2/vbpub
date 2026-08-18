@@ -9,8 +9,10 @@ linking against assay itself.
 
 - **License / distribution:** estate-internal; distributed as local wheels
   (see [Installing](#installing)), not published to a public index.
-- **Status:** Python is fully supported (R0–R3). Go and SQL have reserved
-  schema surface but no real adapter yet — see
+- **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
+  supported at **R2 only** (no SQL R1, no SQL R3 — see
+  [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below). Go
+  still has reserved schema surface but no real adapter yet — see
   [What assay is not (yet)](#what-assay-is-not-yet).
 
 ---
@@ -114,9 +116,11 @@ where to run it.**
 
 ### What assay is not (yet)
 
-The verdict schema reserves a `go:*` and a `sql:*` operator vocabulary, and
-`external_tools`/`helpers` machinery for adapters that shell out to a real
-toolchain. **None of that is a working Go or SQL adapter today.** Go support
+The verdict schema reserves a `go:*` operator vocabulary and
+`external_tools`/`helpers` machinery for a Go adapter. **None of that is a
+working Go adapter today** — `judge.language = "go"` is refused
+`ERROR`/`BAD_LANE_CONFIG` at every rigor level; the schema surface exists so
+a later package does not need a compatibility bump to fill it in. Go support
 in particular is blocked on a real, proven design problem: `go test
 -coverprofile` cannot express which physical line a statement starts on —
 only a block's byte extent plus a bare statement *count* — and two different
@@ -128,10 +132,41 @@ documented before any Go code shipped. See decisions A-172, A-217, A-218 in
 finding and the ruling (build a real statement-position oracle, not a
 line-range heuristic).
 
-If you see `go:` or `sql:` anywhere in the schema or vocabulary and are
-wondering whether you can use them today: no. Declaring a rigor level a lane
-can't actually back up is exactly the failure this project exists to
-prevent, so don't be the first exception.
+If you see `go:` anywhere in the schema or vocabulary and are wondering
+whether you can use it today: no. Declaring a rigor level a lane can't
+actually back up is exactly the failure this project exists to prevent, so
+don't be the first exception. **`sql:*` is different — see below.**
+
+### SQL/DDL mutation testing (R2 only)
+
+Unlike Go, SQL has a real, working adapter: `judge.language = "sql"` resolves
+at **R2 only**. There is deliberately no SQL R1 (DDL has no coverage tool)
+and no SQL R3 (A-192 forbids R3 without R1) — this is a settled design
+choice, not a gap waiting on a later package. The adapter is a stdlib-only
+byte-span lexer over tracked `.sql` files, never a database connection: it
+locates and replaces one span of DDL text outside every comment, string
+literal and quoted identifier, and classifies the mutant using only the
+project-declared command's exit status and the bytes of two files the lane
+itself declares. See
+[§11 of the design guide](docs/DESIGN-GUIDE.md#sqlddl-mutation-a-stdlib-lexer-not-a-database-connection)
+for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
+a worked, pasteable lane.
+
+The seven closed `judge.mutation.operators` values a SQL lane may declare:
+
+```
+sql:drop-check         sql:drop-unique        sql:drop-not-null
+sql:drop-foreign-key    sql:weaken-delete-action    sql:drop-trigger
+sql:widen-check-in
+```
+
+Two `judge.mutation` config keys exist only for a SQL lane:
+`equivalence_artifact` (a project-relative path the lane's command writes
+after applying a mutant; **required** on every SQL lane — without it a
+mutant that never actually mutated is recorded `survived`, a false
+statement about your tests) and `kill_signal_artifact` (optional; declaring
+it turns on kill attribution). Both share `judge.coverage.artifact`'s own
+path grammar and must be gitignored, exactly like a coverage artifact.
 
 ## How it works
 

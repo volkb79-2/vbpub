@@ -1047,15 +1047,16 @@ committed-object snapshot and runs the lane's one already-declared command plan
 against that snapshot.
 
 This boundary applies even when the language's tests need substantial external
-state. A future SQL/DDL adapter may learn SQL syntax through a parser/helper and
-replace a constraint or trigger declaration in tracked DDL; the project's
-declared command may then provision a fresh test database and apply that
-mutated schema. Assay and the adapter do not receive a DSN, connect to the
-database, choose an image, or manage rollback. Those facts remain project/
-environment-owned inputs to the declared command. A component that instead
-introspects and mutates a live database is a separate producer whose structured
-result may be consumed as Tier-2 adjudicated evidence; it is not a
-`LanguageAdapter` shortcut around the source/snapshot contract.
+state. P34's SQL/DDL adapter (below) learns SQL syntax through a stdlib-only
+lexer — never a parser, never a helper process — and replaces a constraint or
+trigger declaration in tracked DDL; the project's declared command then
+provisions a fresh test database and applies that mutated schema. Assay and
+the adapter do not receive a DSN, connect to the database, choose an image, or
+manage rollback. Those facts remain project/environment-owned inputs to the
+declared command. A component that instead introspects and mutates a live
+database is a separate producer whose structured result may be consumed as
+Tier-2 adjudicated evidence; it is not a `LanguageAdapter` shortcut around the
+source/snapshot contract.
 
 Consequently, R2 judges the selected mutation catalogue over the changed
 tracked source in scope. It never silently upgrades itself into a whole-project
@@ -1070,7 +1071,9 @@ finds zero sites instead renders `INCONCLUSIVE/NO_MUTANTS` with an exact
 zero/zero mutation payload (A-183). This absent-versus-empty distinction keeps
 “we cannot analyse this language” from masquerading as measured evidence that
 nothing was mutable. Python raises the typed discovery failure for invalid
-syntax; Go returns `UNSUPPORTED` until P29 lands its helper.
+syntax; SQL raises the analogous `MutationDiscoveryError` for an unterminated
+string, dollar quote or block comment (below); Go returns `UNSUPPORTED` until
+P29 lands its helper.
 
 Adapters **may** shell out (Go's `has_executable_code` genuinely needs to parse
 Go), but must declare it in `external_tools` so a lane's prerequisites are
@@ -1115,6 +1118,164 @@ the CLI's `--verdict-json`, where `./out.json` is an idiomatic, harmless
 spelling; refusing it would be user-hostile for a safety property that path
 has no way to lose. Measured before ruling, not asserted: no live lane in the
 estate uses a `./`-prefixed spelling today, so accepting it costs nothing real.
+
+### SQL/DDL mutation: a stdlib lexer, not a database connection
+
+**Why a lexer and not a parser or an external helper.** No SQL parser or
+linter exists on this host or inside the shared gate image, so route (ii) —
+add a dependency to the shared test image — starts by re-risking every other
+project's gate before locating a single byte span, which A-005's
+zero-runtime-dependency claim exists to make unnecessary. What the seven
+operators need is not grammar; it is knowing which bytes are *code* — a bare
+keyword regex over raw file bytes produces phantom matches inside comments,
+string literals and dollar-quoted bodies (measured: 13.3% phantom over a real
+316KB DDL corpus, and every real `ON DELETE RESTRICT` site in that corpus was
+a phantom under the naive rule). The fix is a two-phase *mask*, not a parser:
+walk the source once, classify every byte as code or not-code, and recurse
+exactly one level into each dollar-quoted body — real projects put their
+idempotent DDL there, and a body left opaque loses real sites, including both
+of a real corpus's only two `ON DELETE RESTRICT` foreign keys. A parser would
+buy nothing further, because none of the seven operators needs to know what
+*kind* of statement it is in — only where its own span starts and ends.
+
+**Fail closed, not fail open.** An unterminated string, dollar quote, or
+block comment raises `MutationDiscoveryError` (`ERROR`/
+`MUTATION_DISCOVERY_FAILED`) rather than silently discovering sites in the
+valid prefix of a file real PostgreSQL would refuse outright. A discovery
+routine that degrades gracefully on malformed input turns a measurement gap
+into evidence that looks clean.
+
+**`language = "sql"` resolves at R2 only.** There is no SQL R1 (DDL has no
+coverage tool to report changed-line execution against) and no SQL R3 (A-192
+forbids a canary without R1 to attribute it against) — settled by the same
+rigor-ladder discipline that governs every other language, not a gap SQL
+happens to have. That single registry fact is also what makes
+`has_executable_code`/`normalize_coverage_key`/`statement_spans`/
+`inject_import_break`/`inject_uncovered_line` provably unreachable through
+the shipped CLI: nothing at R0 or R1 or R3 ever resolves an adapter for a
+language this build's one registry entry names R2-only, so none of those
+five methods is ever called — they raise `NotImplementedError` rather than
+carry dead logic.
+
+**What this buys you, stated exactly, and what it does not.** For each
+mutant it reports, assay proves that exactly one byte span of one tracked,
+changed DDL file — located outside every comment, string literal and quoted
+identifier, at both the outer and the dollar-quoted lexical level — was
+replaced by a recorded replacement, and classifies that mutant using only the
+project-declared command's exit status and the bytes of the two files the
+lane itself declared. That is mechanical, and it is the whole claim. It does
+**not** give you:
+
+1. Proof that a mutant is valid DDL (a widened integer `IN`-list with a
+   string literal is DDL real PostgreSQL refuses; nothing in assay can tell
+   that from a mutant the tests happened to kill).
+2. Proof that the operator name matches what actually changed in the
+   database catalog (`sql:drop-check` and `sql:widen-check-in` produce an
+   *empty* delta over `pg_constraint`'s names — only a schema dump sees the
+   change).
+3. Proof that each mutant was judged against an isolated database (a mutant
+   applied to a database that already carries the un-mutated schema exits
+   0 with the mutation never having happened — the next subsection is the
+   refusal that converts that into an honest terminal rather than a false
+   pass).
+4. Verification of a kill's cause (with kill attribution `declared`, assay
+   records verbatim whatever string the project's own command wrote; it
+   never checks that string against the mutation that produced it).
+5. A whole-schema audit (sites come only from changed lines in tracked files
+   under the declared `source_roots`, further bounded by `max_mutants`).
+6. Any connection to a database, ever (A-215): no DSN, no catalog read, no
+   provisioned image.
+
+### Mutant classification needs more than exit status (the equivalence artifact)
+
+Every other language's R2 classification reads exit status alone: the
+command passed, so the mutant survived; it failed, so it was killed. That
+mapping is silently wrong for SQL, because a non-zero exit from a DDL apply
+command does not mean "a test caught the mutation" — it can mean "the
+mutated DDL was never valid in the first place" (a widened `IN`-list against
+the wrong literal type, measured to fail with `invalid input syntax for
+type integer`), which is not a kill, it is a **crashed mutant an exit-status
+mapping would misreport as a kill**.
+
+So when — and only when — a lane declares
+`judge.mutation.equivalence_artifact`, classification becomes a function of
+`(exit outcome, artifact presence, artifact bytes)` rather than exit status
+alone:
+
+| exit outcome | equivalence artifact | bucket | why |
+|---|---|---|---|
+| `PASS` | absent | `crashed` | the lane declared an artifact its command did not write; nothing was measured |
+| `PASS` | present, **≠** baseline | `survived` | the mutated schema was built and the suite did not notice |
+| `PASS` | present, **=** baseline | `equivalent` | the mutant provably changed nothing |
+| `FAIL` | present, ≠ baseline | `killed` | the mutated schema was built, and something refused it |
+| `FAIL` | present, = baseline | `equivalent` | it never mutated (residue, or a never-firing guard); the failure is about something else |
+| `FAIL` | absent | `crashed` | the schema never got built — an invalid mutant, **not a kill** |
+
+Two properties matter more than any one row. **The table contains zero SQL
+knowledge** — exit status, file presence, byte equality, nothing else — so
+it stays in the language-free core rather than becoming a SQL special case.
+And **it is inert for every existing lane**: with no `equivalence_artifact`
+declared, the original exit-status-only mapping applies completely
+unchanged, so no Python lane's verdict moves by one bit — a property this
+package proves with a byte-identical-verdict test rather than asserting it.
+
+**Why `equivalence_artifact` is REQUIRED on a SQL lane rather than optional.**
+The tempting shape is "opt in, like everything else". Rejected, because the
+two failure modes are not symmetric. Without it, the single most likely way
+a real consumer gets isolation wrong — a mutant applied to a database that
+already carries the previous run's residue — surfaces as `survived`, and
+`survived` is an assertion about *the consumer's own test suite* that is
+false: assay would say "no test asserts this constraint" about a constraint
+that was never actually removed. That is worse than a missing feature; it is
+exactly the class of false statement this whole project exists to remove.
+With the artifact declared, the identical run is `equivalent` instead, and if
+every mutant lands there the claim is loud and non-green —
+`INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT` — rather than a quiet false pass.
+
+### The consumer command order is one token wide: apply, dump, then test (A-279)
+
+**Requirement.** A SQL lane's project-declared command must write
+`equivalence_artifact` **after the schema has been fully and successfully
+applied, and regardless of whether the test step that follows passes or
+fails.** The canonical shape is:
+
+```
+apply && dump && test
+```
+
+**never** `apply && test && dump`.
+
+**Consequence of getting the order backwards.** A kill *is* the test step
+exiting non-zero. Under `apply && test && dump`, shell `&&` short-circuits
+the instant `test` fails, so `dump` never runs. assay's own
+`safeio.reserve_output(...).arm()` has already unlinked any pre-existing
+artifact file before the command started, so the equivalence artifact is now
+simply absent. The classification table above reads `(FAIL, absent)` as
+`crashed`, never `killed` — and `judge_mutation` ranks `crashed` above every
+other bucket, so **one such mutant renders the entire lane
+`ERROR`/`EXEC_FAILED`.** The feature's headline outcome — a real kill — could
+never be produced under this ordering, and the very first mutant a
+consumer's suite genuinely caught turns the lane red for a reason that reads
+as "assay is broken" rather than "your command is ordered wrong".
+
+This is not a hypothetical failure mode; it is measured on the shipped CLI,
+not merely reasoned about. `nyxloom-trove/carve-assets/W3/MANIFEST.md`
+freezes two repositories, identical in DDL, lane and mutant, differing only
+in this one ordering, both driven through the real `assay run`:
+
+| consumer command | `killed` | `crashed` | lane outcome |
+|---|---|---|---|
+| `apply && dump && test` | **1** | 0 | `PASS`, exit 0 |
+| `apply && test && dump` | **0** | 1 | `ERROR`/`EXEC_FAILED`, exit 2 |
+
+assay cannot verify this ordering itself — it sees two files, not a
+pipeline — which is exactly why it is documented as a requirement with its
+consequence rather than left to be discovered the first time a real kill
+turns a lane red. See
+[the consumer guide](CONSUMERS.md#the-command-order-is-one-token-wide-apply-dump-then-test-a-279)
+for the worked shape, including how to make the companion `pg_dump`
+reproducibility obligation red-on-violation in your own gate rather than
+trusted silently.
 
 ## 12. Lane file structure = D7's three questions, literally
 
@@ -1470,8 +1631,10 @@ this project's most expensive recurring defect (A-124, A-131):
    and declares the current `LANE_SCHEMA_VERSION`;
 2. every value of every **closed public vocabulary a consumer must type** —
    `isolation.snapshot_selection`, `judge.mode`, the rigor levels, the coverage
-   `format` registry — appears in at least one of the three, so a capability
-   cannot ship undocumented;
+   `format` registry, the closed `ReasonCode` vocabulary (A-277), and
+   (P34/A-287) `judge.mutation.operators` scoped to every REGISTERED
+   language's own catalogue — appears in at least one of the three, so a
+   capability cannot ship undocumented;
 3. every DESIGN-GUIDE anchor the README links to **resolves**.
 
 A documentation example is a claim, and A-232 applies to it unchanged: it is
