@@ -21,8 +21,11 @@ drain — it opens a transaction that itself fails and retains a new worktree, s
 deliberately left rather than hand-deleting another product's transaction
 state after a successful release.
 
-**Next, in order:** B007 (the deferred multi-target R3 canary — first post-v6
-schema item), then wave 2 (B004), then wave 3 (B001/P34).
+**Next, in order:** ~~B007 (the deferred multi-target R3 canary — first post-v6
+schema item), then wave 2 (B004), then wave 3 (B001/P34).~~ **Superseded — see
+[`W2-RESUME.md`](W2-RESUME.md).** Wave 2 ran next and ruled B004 deferred
+(A-275/A-276); the order is now **B001/P34 (wave 3) → B007**, and B007 gained a
+schema passenger rather than remaining a solo migration.
 
 ---
 
