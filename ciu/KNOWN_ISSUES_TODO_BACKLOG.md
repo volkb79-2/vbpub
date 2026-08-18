@@ -9,7 +9,10 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-12 (CIU-27 FIXED: `ciu provenance --no-preflight` is an
+Last updated: 2026-08-17 (**CIU-28 FILED, OPEN** — `provenance` adjudicates
+vendor images ciu did not build, so `verified-match` is unreachable on a live
+instance; filed by assay's B004 wave, which it blocks entirely). Earlier:
+2026-08-12 (CIU-27 FIXED: `ciu provenance --no-preflight` is an
 explicit no-check break-glass bypass; it performs no config, Git, or Docker access,
 and rejects `--json` because it produces no evidence verdict. CIU-24 FIXED — code + tests + spec + docs,
 `ciu-P03-worktree-concurrency-budget`, S16.3. Earlier the same day: CIU-22
@@ -66,6 +69,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-25 | No leak detector for worktree instances: an orphaned stack (crashed child, killed session, forgotten `worktree rm`) is never reaped, silently consuming host resources indefinitely | Low | OPEN |
 | CIU-26 | CIU-23's `worktree.PostgresProvisioner` (the real, shipped S16.2 data-isolation default) has no live-server proof: its naming/ordering/force/idempotency contract is proven in-gate only against a FAKE `DataIsolationProvisioner`, because `tester-unified:local` has no live Postgres server to provision against. Needs an integration lane (outside this repo's own gate) that runs `PostgresProvisioner` against a real Postgres and confirms `provision`/`drop` actually create/remove a database, not just that the mechanism dispatches correctly | Low | OPEN |
 | CIU-27 | S17.2 stated that `ciu provenance --no-preflight` skips the check, but the parser did not accept it. Fixed: it is now a true no-check break-glass bypass and rejects `--json`, which must not fabricate an evidence verdict. | Medium | FIXED |
+| CIU-28 | `provenance` compares **every** running container's `org.opencontainers.image.revision` against this repository's own commit, including third-party vendor images that stamp their own upstream repository's revision. On a correctly built, clean-tree instance that pins `overall` at `"mismatch"` permanently, so `verified-match` is unreachable outside ciu's own fixture. Blocks assay B004 entirely (a consumer cannot adjudicate a verdict that can never be green). Two adjacent findings in the same measurement: the comparison is full-40-hex against an abbreviated `commit_under_test`, and the process exit status is not the verdict (0 covers both `--ignore-mismatch` over a mismatch and a not-verified dirty tree, while 2 means mismatch) | High | OPEN |
 
 ### CIU-27 — `provenance --no-preflight` was specified but not implemented — FIXED
 
@@ -75,6 +79,67 @@ Docker. It is a break-glass bypass, not a new S17.3 verdict. Consequently it is
 incompatible with `--json`: a machine-readable document would look like evidence
 when no check occurred, so argparse refuses that combination (exit 2). The
 parser, S17.2, CLI reference, and focused behavior tests changed together.
+
+### CIU-28 detail: `provenance` adjudicates images ciu did not build, so `verified-match` is unreachable — OPEN
+
+**Filed by:** assay's B004 wave, 2026-08-17, out of the carve that tried to
+consume `ciu provenance --json` as adjudicated Tier-2 evidence. Assay's own
+record is `assay/nyxloom-trove/W2-CARVE-B004-provenance-verified.md` and ruling
+A-275; per this file's own rule, the issue lives **here** and assay keeps only
+the pointer.
+
+**Measured**, ciu 6.0.3, `/workspaces/dstdns`, instance `dstdns-98535c`,
+`tree_state: "clean"`, `ciu provenance --json` exiting **2**:
+
+```
+overall: "mismatch"
+20 containers: 16 "unlabelled", 4 "mismatch"
+  otel-aggregator      1400269f8ace841f8d0492f4f9c6c7f305f95268   (otel's own commit)
+  otel-collector-node  1400269f8ace841f8d0492f4f9c6c7f305f95268   (otel's own commit)
+  postgres             refs/heads/master                          (timescale's own ref)
+  skywalking-ui        9fc54aa114c2b00ac9af791d14f2b5ae009bacc5   (skywalking's own commit)
+```
+
+The document is frozen at
+`assay/nyxloom-trove/carve-assets/W2/ciu-provenance-live-mismatch.json`,
+`sha256 78a433755ff569a91d1afeee6f552392b51401f97196ace1a13e4368b7aa3cce`.
+
+**The defect.** `verify_running_provenance` compares every running container's
+revision label against this repository's short hash. A vendor image stamps that
+label with *its own* upstream revision, so each such container is a permanent
+false `mismatch`, and `overall` is pinned at `"mismatch"` **regardless of what
+this repository builds**. No running dstdns-owned image carries the label at all
+(16 of 20 are `unlabelled`). `verified-match` therefore exists only in
+`nyxloom-trove/carve-assets/ciu-P01-worktree-isolation-primitives/provenance-verified-match.json`
+— which `tests/tests/test_ciu_provenance_json.py:78` does pin to the producer's
+own `result.to_dict()`, so the producer *can* emit it; nothing real does.
+
+**What the consumer needs is one property, not a mechanism:** a correctly
+deployed instance must be able to produce `overall: "verified-match"`. How is
+ciu's design decision. The obvious shape is to restrict the comparison to images
+ciu itself produced — e.g. have `bake` stamp a ciu-owned marker label and have
+`verify_running_provenance` consider only containers carrying it — but assay is
+not prescribing that.
+
+**Two further findings from the same measurement, both worth fixing with it.**
+
+1. **The comparison is 40-hex against a short hash.** `commit_under_test` is
+   abbreviated (`682b5b01`) while a labelled revision is full length. Scoping
+   alone will not make green reachable if a ciu-built image stamps its full
+   revision and the comparison is equality rather than prefix.
+2. **The exit status is not the verdict**, measured three ways:
+   `--json` over a mismatch exits **2**; `--ignore-mismatch --json` over the same
+   instance exits **0**; and a dirty tree exits **0** with
+   `[WARN] [S17] working tree is dirty — provenance NOT verified`. A consumer
+   must read `overall` and never the status. Worth stating in S17.3 so the next
+   consumer does not learn it the way this one did.
+
+**Related, not blocking.** The document is a point-in-time reading: three
+invocations minutes apart during the carve returned three different documents,
+including `containers: null` and `not-verified-dirty`, because dstdns has a
+concurrent committer. A `generated_at` timestamp would let a consumer refuse a
+stale document; without one, a green document satisfies forever. Assay records
+that as a limitation of its own design rather than a requirement on ciu.
 
 ## Resolved / not-a-gap
 
