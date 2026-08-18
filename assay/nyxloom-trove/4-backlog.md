@@ -3,8 +3,8 @@ kind: backlog
 schema_version: 1
 items:
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
-  - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
-  - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
+  - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
+  - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. COMPLETE: publication waited on B002's release step, which landed; both assay-v2.0.0 and assay-v2.1.0 publish assay-<version>.pyz with a .sha256 sidecar, and dstdns consumes the zipapp. Measured bonus: the .pyz is byte-reproducible across independent builds at different commits, while the wheel is not.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
   - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. CARVED, REVIEWED and DEFERRED (wave 2, A-275/A-276). CIU-20 has SHIPPED and is no longer the blocker; the blockers are now (1) one new ReasonCode, PROVENANCE_UNVERIFIED, reserved by name and awaiting a schema bump another item pays for, and (2) ciu CIU-28 -- provenance compares vendor images ciu never built, so verified-match is unreachable on any live host. The recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
   - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, documented, and proven end to end through the real CLI — a target absent from the artifact refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than reporting 100% of zero.", type: feature, component: evaluate, context_estimate: medium}
   - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
@@ -225,11 +225,27 @@ C14).
 ## B002 — adopt cmru for assay's release process (design checkpoint, NOT landed)
 
 **Proposed by:** the operator, standing intent, scoped here 2026-08-11 by C-sol-1.
-**Status:** **IMPLEMENTED 2026-08-11 (A-249/A-250)**, except the first real
-release (step 6), which needs `main` pushed plus explicit authorisation — see
-A-250. A-247 recorded the original stop-short and A-248 lifted it. The two
-blockers below became rulings: adopt cmru's orchestration, decline its build;
-the release manifest is authoritative over a `.sha256` sidecar. **The plan
+**Status:** **COMPLETE.** Implemented 2026-08-11 (A-249/A-250); the one open
+step — the first real release — is discharged, twice: `assay-v2.0.0`
+(2026-08-17) and `assay-v2.1.0` (2026-08-18) were both cut by
+`./cmru.release.sh --project assay`, which owns snapshot → gate → tag → build →
+publish and generates the dated `CHANGES.md` entry. A-247 recorded the original
+stop-short and A-248 lifted it. The two blockers below became rulings: adopt
+cmru's orchestration, decline its build; the release manifest is authoritative
+over a `.sha256` sidecar.
+
+> **Reconciled 2026-08-18.** The frontmatter row still read "design checkpoint,
+> STOPPED SHORT of landing" two releases after cmru had cut them both — the same
+> stale-row shape found in B001, B004, and `CHANGES.md` itself this wave. What
+> the adoption is still owed is *upstream*, not here: the 2.1.0 run produced five
+> findings, filed as **cmru KI-12…KI-16**. KI-12 is the one with teeth — cmru
+> computes its release plan from `git tag --list`, which includes unpushed local
+> refs, so a hand-made local tag silently decided a release; and a tag pointing
+> at the snapshot commit makes a project permanently unreleasable while looking
+> exactly like "unchanged". The operational rule that falls out of it, and that
+> binds anyone releasing assay: **never hand-tag a cmru-managed project** — cmru
+> owns tag creation, so a manual tag is indistinguishable from a completed
+> release. **The plan
 below is kept as written, because what it got wrong is worth more than a tidy
 record: it treated the mtime normalisation as the whole reproducibility story,
 and a real build showed the wheel itself was non-deterministic until
@@ -323,12 +339,25 @@ the case the carve rules say to hand back rather than land.
 **Proposed by:** Fable, round-3 review, 2026-08-11, as the near-zero-cost
 answer for consumers with no installed Python package manager (A-O04's srdm
 blocker). Scoped and measured the same day.
-**Status:** **IMPLEMENTED 2026-08-11 (A-249)** as part of
-`gate/distribution/build_release.py`; publication of the `.pyz` asset itself
-waits on A-250's release step. Two things this scoping did not find, both caught
-by building for real: the WHEEL is also non-reproducible without
-`SOURCE_DATE_EPOCH`, and `zipapp -m` would have discarded every non-zero exit
-code.
+**Status:** **COMPLETE.** Implemented 2026-08-11 (A-249) as part of
+`gate/distribution/build_release.py`; the publication step it waited on landed
+with B002, and `assay-<version>.pyz` plus its `.sha256` sidecar are published
+assets of both `assay-v2.0.0` and `assay-v2.1.0`. dstdns consumes the zipapp,
+not the wheel, so this is the artifact its notify carries a hash for. Two
+things this scoping did not find, both caught by building for real: the WHEEL
+is also non-reproducible without `SOURCE_DATE_EPOCH`, and `zipapp -m` would
+have discarded every non-zero exit code.
+
+> **Reconciled 2026-08-18, with one measurement worth keeping.** The 2.1.0
+> zipapp was built twice by independent paths — once locally at `52534ef7`, once
+> by cmru at its own release commit `a3ae580d` — and both produced
+> `sha256 f2f13021…`, byte-identical. The wheel did **not**: `aff153b7…` locally
+> versus `5e883444…` published. So the zipapp is reproducible across commits
+> while the wheel is only reproducible within one. That asymmetry favours the
+> artifact consumers actually pin, and it is worth preserving deliberately
+> rather than by luck — if a future change makes the `.pyz` embed build-varying
+> state, a consumer verifying a re-vendored artifact against a recorded hash
+> starts failing for no real reason.
 
 ### Measured, not assumed — a zipapp really works
 

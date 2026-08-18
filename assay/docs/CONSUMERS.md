@@ -433,6 +433,99 @@ commit in between either runs a v1 assay against a v2 file (rejected as an unkno
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
 
+## Practices that prevent the failures we actually hit
+
+Every item below cost someone real time — here, in a consumer's repo, or in
+assay's own development. None is stylistic.
+
+### Your existing CI script probably cannot be the lane command
+
+A lane command runs inside an **ephemeral snapshot of a commit**, not your
+working tree, with no deployed services around it. Four requirements, and a
+script written for CI usually fails at least one:
+
+- **No mandatory arguments** beyond what `argv` declares. A wrapper whose first
+  positional parameter is required exits non-zero before doing anything, and
+  every mutant is then `crashed`.
+- **Hermetic.** No dependency on a running deployment, a named container, a
+  shared network, or anything discovered from the host. The snapshot has your
+  committed files and nothing else.
+- **Writes every artifact it declared**, at the right moment — see the SQL
+  ordering rule above, which generalises: an artifact assay compares must be
+  written before the step that can fail, or it will be missing exactly when it
+  matters.
+- **Leaves the tree clean.** Anything written into the snapshot and left
+  untracked-but-present makes the run `NO_MEASUREMENT`/`DIRTY_TREE`.
+
+A real example of all three failing at once: a consumer's schema gate took a
+mandatory positional path, contained no dump step at all, and drove `docker`
+against its *deployed* application network. None of that is visible from
+reading the script — it only surfaces when a snapshot tries to run it.
+
+### Add rigor in order, not all at once
+
+`R0` → `R1` → `R2`, each green before the next. R3 requires R1 by construction.
+A lane that declares everything on day one fails for several unrelated reasons
+simultaneously, and you cannot tell them apart.
+
+### Keep assay's own output out of the repo under test
+
+Writing `--verdict-json` to a path *inside* the project makes the tree dirty,
+and the run refuses `NO_MEASUREMENT`/`DIRTY_TREE` before attempting anything.
+We hit this while hand-driving a lane. Write verdicts outside the tree, and
+gitignore every declared artifact.
+
+### If equivalence depends on an artifact, that artifact must be byte-reproducible
+
+The `pg_dump --restrict-key` obligation above is one instance of a general
+rule. Any producer that embeds a timestamp, a random key, an absolute path, or
+a hash-seed ordering will differ between two runs over identical state — and
+the whole `equivalent` bucket then silently empties, so **nothing goes red**.
+Test it directly: run your artifact step twice against unchanged state and
+`cmp` the results. Where practical, do that check *inside* the command so it
+fails loudly rather than degrading quietly.
+
+### Read `outcome` and `reason_code` — non-green is not always failure
+
+| terminal | what it means | what to do |
+|---|---|---|
+| `INCONCLUSIVE`/`NO_MUTANTS` | a supported analysis ran and found nothing eligible | usually fine; check your `source_roots` and changed range |
+| `INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT` | every mutant provably changed nothing, so the run says nothing about your tests | almost always a misconfigured artifact — start with reproducibility |
+| `BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED` | discovery hit `max_mutants` and **stopped before submitting** | a refusal, not a truncated sample. Raise the cap or narrow the change |
+| `NO_MEASUREMENT`/… | assay declined to claim anything | fix the environment; re-running unchanged will refuse again |
+| `ERROR`/`EXEC_FAILED` | your command failed in a way that is not a kill | read the command's own output; a crashed mutant outranks every other bucket |
+
+### A green run over an empty subject is not a pass
+
+If a claim's `total` is `0`, nothing was tested — and a gate that goes green on
+it is telling you about its own emptiness, not your code. This bit assay itself
+more than once: a release embargo iterated an empty tag list, and an audit
+looped over an empty tool tuple. **Assert your subject is non-empty**, in your
+own gates as well as in ours.
+
+### Never edit an expected artifact toward green
+
+If a witnessed/expected artifact stops matching, re-witness it from a real run
+and read the diff first. An expectation edited until it passes proves only that
+you edited it. The same applies to frozen evidence: capture a new artifact,
+never amend an old one.
+
+### Pin the version you consume, and verify it
+
+Take the `.pyz` (or wheel) from a release, verify its published `sha256`, and
+pin it. Every release publishes a `.sha256` sidecar and a `release-manifest.json`
+next to the artifact. Floating on "latest" means a schema cut can arrive on a
+day you were not planning a migration.
+
+### Efficiency
+
+R2 cost is roughly *mutants × (snapshot + full command run)*, so the two levers
+that matter are how many mutants you generate and how fast one command run is.
+Narrow `source_roots` to what you actually judge, keep `max_mutants` at a value
+whose *total* runtime you are willing to pay, and raise `jobs` only as far as
+your command tolerates concurrent execution — a command that contends on a
+shared fixture will get slower, not faster.
+
 ## What is not shipped
 
 Assay has no remote worker, offsite dispatcher, or asynchronous fuzzing service. Its Python
