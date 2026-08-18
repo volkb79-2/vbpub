@@ -351,6 +351,33 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
            Re-run, or pass --allow-tag-at-head to skip this project deliberately.
    ```
 
+   > **CORRECTION, 2026-08-18, measured against the first implementation — the
+   > two-state rule above is WRONG and must not be built as written.** Driving
+   > the implemented functions against real repositories with a real bare origin
+   > showed that "tag at or ahead of the snapshot" covers a *benign* state and an
+   > anomalous one, and that the benign state is the common one:
+   >
+   > 1. **baseline tag not pushed** → refuse. Defect (1) above already catches
+   >    this correctly, and it is the state the assay incident was actually in.
+   > 2. **tag pushed AND equal to the snapshot commit** → **benign.** This is the
+   >    normal state after *any* successful release. The rule as written aborts
+   >    here, telling the operator a tag "was created by hand" and advising
+   >    `git tag -d <tag>` — advice which, followed, **deletes a legitimate
+   >    pushed release tag**. It must be an informative skip instead:
+   >    `Unchanged, skipping: proj (already released as proj-v1.0.0 at the
+   >    snapshot commit; nothing new since)`.
+   > 3. **tag pushed AND strictly ahead of the snapshot commit** → genuine
+   >    anomaly: a tag exists on a commit absent from the snapshot's history,
+   >    i.e. a previous release tagged and pushed but failed before promoting
+   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-at-head`
+   >    as the override.
+   >
+   > `git merge-base --is-ancestor` cannot separate 2 from 3; compare the
+   > resolved commit objects. Measurement that settled it: with an unpushed
+   > hand-made tag at HEAD, `require_pushed_baseline` alone already refuses with
+   > the correct message, so as originally specified the tag-at-head abort
+   > contributed **only** the false positive.
+
    The *root cause* was hand-tagging a cmru-managed project. cmru owns `tag` in its own
    pipeline (`snapshot → gate → tag → build → publish`), so a manual tag is indistinguishable
    from a completed release. Detection is the guard; `SPEC.md` should also state the rule
