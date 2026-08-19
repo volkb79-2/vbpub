@@ -544,3 +544,39 @@ document above it. So the message sends the reader to the wrong file.
 **every** missing variable at once, rather than failing on the first; (b) name the real source
 in the message — *"normally supplied by `cmru.orchestration.toml [env]`; run through `cmru
 release`, or export it"*. Documented as a workaround in `docs/CONTRIBUTING.md` §3 meanwhile.
+
+### KI-18 — cmru's own mutation gate diffs `origin/main`, finding zero candidates at release time — *shipped*
+**Reported by:** cmru's first self-release attempt after the KI-12…KI-17 batch, 2026-08-19.
+
+**What happened.** `cmru release --project cmru` ran the full gate — tests, 100% coverage, and
+the Assay R0 lane all passed — then failed the `run-tests` mutation step with `RuntimeError:
+the declared source diff produced no mutation candidates`. Nothing was tagged, built, or
+published (fail-closed; the transaction worktree was retained).
+
+**Root cause.** `cmru/cmru.toml`'s mutation step ran `tools/mutation_campaign.py --base
+origin/main --require-candidates`. A release is an isolated transaction that **snapshots
+`origin/main`** (`S-CLI.5`) and requires the change to already be pushed there, so inside the
+transaction `git diff origin/main HEAD` contains only the generated `CHANGES.md` — **zero
+`src/cmru` candidates** — and `--require-candidates` correctly refuses an empty sample. The
+`--base origin/main` value only ever makes sense for a *pre-push CI* run (where `origin/main`
+is the prior state); it is degenerate for the release gate, which is the one context that must
+pass to publish. Latent since the S15/mutation gate landed in the unreleased KI-12…KI-16 batch;
+this was simply the first self-release to exercise it. cmru is the only project with a mutation
+gate, so the bug is cmru-local.
+
+**Fix.** The base is now the **previous cmru release tag**, resolved at gate time:
+`--base $(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main)`.
+That returns the nearest ancestor release tag (`cmru-v4.0.1` today), so the campaign mutates
+every source line changed **since the last release** — exactly the surface a release must
+verify — and always finds candidates for a real change. It is future-proof (each release's
+`git describe` picks up the newly-created tag as the next baseline) and falls back to
+`origin/main` only when no `cmru-v*` tag exists yet (first-ever/bootstrap release). The
+tester-gate container already mounts the checkout's real git common dir (`FIX-01`), so the
+release tags are visible to `git describe` in-container. Consequence: the release-gate campaign
+now covers the whole since-last-release diff, so it runs longer than a single-change campaign.
+
+**Note on the release engine (KI-11, observed here too).** The installed `cmru 4.0.1` could not
+even parse the current config (it predates S15's `[[project.tool_dependencies]]`), so this
+release had to run through the source engine. The clean resolution is to bootstrap the current
+wheel first — `cmru/build-initial-standalone.sh` builds it without a pre-installed cmru — then
+`pip install` it so the installed command matches the source before running `cmru.release.sh`.
