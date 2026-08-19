@@ -1,4 +1,4 @@
-# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 2)
+# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 3)
 
 **Where you are:** the worktree `/workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog`,
 branch `docs/ciu-worktree-automation-backlog`, base `3639b18c` (= the branch's worktree-identity
@@ -48,14 +48,28 @@ artifacts, not branches.
   **per-service replica index**, not the workspace `INSTANCE_ID` — P08's docs must
   disambiguate (its O3).
 
-## Environment / gate (run inside THIS worktree)
+## Environment / gate — the evidence ladder (rev 3 clarification)
 
-- `cd /workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog/ciu`
-- Iterate: `python -m venv .venv && .venv/bin/pip install -e '.[test,ssh]' && .venv/bin/python run-ciu-tests.py`
-  — this IS the coverage gate (≈2,076 tests, 100/100 at the branch checkpoint).
-- Hermetic proof (if the tester-unified image is available): the trove
-  `[gates.tester-unified]` argv in `nyxloom-trove/nyxloom.toml`. If not available, say so
-  explicitly in the LOG — never claim the hermetic run happened.
+Two distinct levels; never conflate them in a LOG or REPORT:
+
+1. **Iteration signal (implementer runs this, freely):**
+   `cd /workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog/ciu && python -m venv .venv
+   && .venv/bin/pip install -e '.[test,ssh]' && .venv/bin/python run-ciu-tests.py`
+   — the same suite and the same 100% line+branch fail-under, but in a LOCAL venv whose
+   dependency closure is NOT the gate's. A green here is a working signal only. Record it as
+   "venv run", never as "the gate".
+2. **Checkpoint evidence (run at review time, NOT by the implementer):** the trove
+   `[gates.tester-unified]` argv (`nyxloom-trove/nyxloom.toml`) inside `tester-unified:local` —
+   `run-ciu-tests.py` PLUS `nyxloom.coverage_gate` (changed-line floor). The operator/controller
+   runs it once per checkpoint at merge review. Implementers do NOT hand-roll the docker
+   invocation (detached-form + physical-path + cgroup subtleties; LESSONS L18) and do NOT
+   start their own tester-unified container.
+   **Scheduling:** tester-unified runs land in the shared `nyxloom-gates.slice`; while a cmru
+   release/mutation campaign occupies it (CPU-heavy, hours), serialize — run the checkpoint
+   gate after the campaign finishes rather than alongside it.
+3. **Assay is not part of ciu's gate yet.** Moving ciu's gate to the released assay artifact
+   IS package `ciu-P07` (checkpoint B). Until P07 merges, checkpoints use (2) as-is; after it,
+   the assay-based gate replaces it.
 - One package per commit series; write `nyxloom-trove/reports/ciu-P0N-…-LOG.md` per its
   handoff; commit on THIS branch; do NOT merge to main — the operator/controller merges at
   the checkpoints.
