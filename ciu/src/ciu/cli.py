@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 from .cli_utils import get_cli_version
-from .config_constants import WORKSPACE_ENV
+from .config_constants import GLOBAL_CONFIG_DEFAULTS, WORKSPACE_ENV
 from .output import consume_cli_flags
 
 _USAGE = """\
@@ -43,10 +44,13 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     profiles                    list available host profiles
 
   WORKTREE INSTANCES (S16)
-    worktree add NAME [--base REF] [--profile P1,P2]
-                                create a worktree + its own CIU instance
-    worktree rm NAME [-y]       ciu clean, THEN remove the checkout (in that order)
-    worktree list               registered worktrees
+    worktree create LOGICAL [--prefix P --feature F] [--json]
+                                allocate a new managed instance
+    worktree adopt LOGICAL PATH explicitly manage an existing linked checkout
+    worktree ensure LOGICAL     reuse/create/resume an exact managed instance
+    worktree add NAME           human shorthand for create
+    worktree rm LOGICAL [-y]    ciu clean, THEN remove the checkout
+    worktree list               list linked checkouts
 
   EVIDENCE
     provenance [--ignore-mismatch | --no-preflight] [--json]
@@ -94,6 +98,18 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 # ---------------------------------------------------------------------------
 
 _VERB_HELP: dict[str, str] = {
+    "worktree": """\
+ciu worktree create LOGICAL [--name DISPLAY | --prefix P --feature F]
+                             [--branch BRANCH] [--path PATH] [--json]
+ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+ciu worktree ensure LOGICAL [create options] [--json]
+ciu worktree add NAME [--base REF] [--profile P1,P2]
+ciu worktree rm LOGICAL [-y] [--force]
+ciu worktree list
+  Manage durable, family-scoped worktree identities. Creation and ensure do
+  not start the instance. Generated UTC branch/directory names are identical;
+  adopt is the only operation that owns an unmanaged existing checkout.
+""",
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
 ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
@@ -341,7 +357,14 @@ def _env_generate(rest: list[str]) -> int:
     p.add_argument("--define-root", "--root-folder", dest="define_root",
                    type=Path, default=None, metavar="PATH",
                    help="Override repository root directory (no parent walking)")
+    p.add_argument("--identity-only", action="store_true", default=False,
+                   help=_ap.SUPPRESS)
     opts = p.parse_args(rest)
+    if opts.identity_only:
+        from .workspace_env import generate_ciu_env, resolve_env_root
+        root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+        generate_ciu_env(root)
+        return 0
     from .deploy import action_generate_env
     return action_generate_env(opts.define_root, Path.cwd())
 
@@ -537,7 +560,7 @@ def _provenance(rest: list[str]) -> int:
 
 
 def _worktree(rest: list[str]) -> int:
-    """Handle `ciu worktree add|rm|list` (S16)."""
+    """Handle the S16 managed-worktree lifecycle."""
     import argparse as _ap
 
     from . import worktree as wt_mod
@@ -558,15 +581,54 @@ def _worktree(rest: list[str]) -> int:
                        default=None, metavar="S1,S2")
     p_add.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                        default=None, metavar="R1,R2")
+    p_add.add_argument("--json", action="store_true", default=False)
+
+    def add_create_options(parser) -> None:
+        parser.add_argument("--base", default="main", metavar="REF")
+        parser.add_argument("--profile", default=None, metavar="P1,P2")
+        parser.add_argument("--worktree-dir", dest="worktree_dir",
+                            default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
+        parser.add_argument("--name", dest="display_name", default=None, metavar="DISPLAY")
+        parser.add_argument("--prefix", default=None, metavar="PROJECT_OR_COMPONENT")
+        parser.add_argument("--feature", default=None, metavar="FEATURE")
+        parser.add_argument("--branch", default=None, metavar="BRANCH")
+        parser.add_argument("--path", type=Path, default=None, metavar="PATH")
+        parser.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
+        parser.add_argument("--shared-infra-services", dest="shared_infra_services",
+                            default=None, metavar="S1,S2")
+        parser.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
+                            default=None, metavar="R1,R2")
+        parser.add_argument("--json", action="store_true", default=False)
+
+    p_create = sub.add_parser("create", add_help=False)
+    p_create.add_argument("logical_name")
+    add_create_options(p_create)
+
+    p_ensure = sub.add_parser("ensure", add_help=False)
+    p_ensure.add_argument("logical_name")
+    add_create_options(p_ensure)
+
+    p_adopt = sub.add_parser("adopt", add_help=False)
+    p_adopt.add_argument("logical_name")
+    p_adopt.add_argument("path")
+    p_adopt.add_argument("--profile", default=None, metavar="P1,P2")
+    p_adopt.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
+    p_adopt.add_argument("--shared-infra-services", dest="shared_infra_services",
+                         default=None, metavar="S1,S2")
+    p_adopt.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
+                         default=None, metavar="R1,R2")
+    p_adopt.add_argument("--json", action="store_true", default=False)
 
     p_rm = sub.add_parser("rm", add_help=False)
     p_rm.add_argument("name")
     p_rm.add_argument("-y", "--yes", action="store_true", default=False)
     p_rm.add_argument("--force", action="store_true", default=False)
 
-    sub.add_parser("list", add_help=False)
+    p_list = sub.add_parser("list", add_help=False)
 
-    for parser in (p, p_add, p_rm):
+    for parser in (
+        p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list,
+    ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
     opts = p.parse_args(rest)
@@ -576,6 +638,19 @@ def _worktree(rest: list[str]) -> int:
     repo_root = resolve_repo_root(getattr(opts, "define_root", None), Path.cwd())
 
     try:
+        def emit_record(operation: str, record) -> None:
+            if getattr(opts, "json", False):
+                print(json.dumps({
+                    "schema_version": record.schema_version,
+                    "operation": operation,
+                    "status": record.state,
+                    "instance": record.to_dict(),
+                }, sort_keys=True))
+            else:
+                print(f"worktree ready: {record.git_worktree_path}")
+                print(f"  CIU root: {record.ciu_root}")
+                print(f"  next: cd {record.ciu_root} && ciu up")
+
         if opts.action == "add":
             path = wt_mod.add(
                 repo_root, opts.name, base=opts.base, profile=opts.profile,
@@ -584,8 +659,39 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
             )
-            print(f"worktree ready: {path}")
-            print(f"  next: cd {path} && source ciu.env && ciu up")
+            if getattr(opts, "json", False):
+                record = wt_mod.find_instance_record(repo_root, opts.name)
+                if record is None:
+                    raise wt_mod.WorktreeError(
+                        f"[S16] add completed at {path}, but no managed record was found"
+                    )
+                emit_record("add", record)
+            else:
+                print(f"worktree ready: {path}")
+                print(f"  next: cd {path} && ciu up")
+            return 0
+
+        if opts.action in ("create", "ensure"):
+            lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
+            record = lifecycle(
+                repo_root, opts.logical_name, base=opts.base, profile=opts.profile,
+                worktree_dir=opts.worktree_dir, display_name=opts.display_name,
+                prefix=opts.prefix, feature=opts.feature, branch=opts.branch,
+                path=opts.path, shared_infra=opts.shared_infra,
+                shared_infra_services=opts.shared_infra_services,
+                shared_infra_ref_projects=opts.shared_infra_ref_projects,
+            )
+            emit_record(opts.action, record)
+            return 0
+
+        if opts.action == "adopt":
+            record = wt_mod.adopt(
+                repo_root, opts.logical_name, opts.path, profile=opts.profile,
+                shared_infra=opts.shared_infra,
+                shared_infra_services=opts.shared_infra_services,
+                shared_infra_ref_projects=opts.shared_infra_ref_projects,
+            )
+            emit_record("adopt", record)
             return 0
 
         if opts.action == "rm":

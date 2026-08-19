@@ -1,6 +1,7 @@
 """CLI dispatch tests for the S16 worktree lifecycle."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -78,6 +79,19 @@ class TestWorktreeAddDispatch:
         monkeypatch.setattr(wt_mod, "add", fake_add)
         assert cli._worktree(["add", "mypkg"]) == 2
         assert "[S16] boom" in capsys.readouterr().err
+
+    def test_add_json_refuses_missing_postcondition_record(self, monkeypatch, capsys):
+        monkeypatch.setattr(wt_mod, "add", lambda *_a, **_kw: Path("/tmp/checkout"))
+        monkeypatch.setattr(wt_mod, "find_instance_record", lambda *_a: None)
+        assert cli._worktree(["add", "mypkg", "--json"]) == 2
+        assert "no managed record" in capsys.readouterr().err
+
+    def test_add_json_emits_managed_record(self, monkeypatch, capsys):
+        record = _ready_record()
+        monkeypatch.setattr(wt_mod, "add", lambda *_a, **_kw: record.git_worktree_path)
+        monkeypatch.setattr(wt_mod, "find_instance_record", lambda *_a: record)
+        assert cli._worktree(["add", "mypkg", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["operation"] == "add"
 
 
 class TestWorktreeAddSharedInfraDispatch:
@@ -220,3 +234,74 @@ class TestWorktreeListDispatch:
         out = capsys.readouterr().out
         assert "(primary)" in out
         assert "pkg" in out
+
+
+def _ready_record() -> wt_mod.WorktreeInstanceRecord:
+    return wt_mod.WorktreeInstanceRecord(
+        logical_name="task-one", display_name="ciu-20260817_123456-task",
+        branch="ciu-20260817_123456-task",
+        git_worktree_path=Path("/tmp/repo/.worktrees/ciu-20260817_123456-task"),
+        ciu_root_offset=Path("."), created_at_utc="2026-08-17T12:34:56Z",
+        base_ref="main", state="ready", instance_id="abc123",
+        network="repo-abc123-network",
+    )
+
+
+class TestManagedLifecycleDispatch:
+    def test_create_forwards_generated_and_advanced_identity(self, monkeypatch):
+        seen = {}
+
+        def fake_create(repo_root, logical_name, **kwargs):
+            seen.update(logical_name=logical_name, **kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "create", fake_create)
+        assert cli._worktree([
+            "create", "task-one", "--prefix", "ciu", "--feature", "exact-exec",
+            "--branch", "advanced", "--path", "/tmp/advanced",
+        ]) == 0
+        assert seen["logical_name"] == "task-one"
+        assert seen["prefix"] == "ciu"
+        assert seen["feature"] == "exact-exec"
+        assert seen["branch"] == "advanced"
+        assert seen["path"] == Path("/tmp/advanced")
+
+    def test_ensure_json_is_versioned(self, monkeypatch, capsys):
+        monkeypatch.setattr(wt_mod, "ensure", lambda *_a, **_kw: _ready_record())
+        assert cli._worktree(["ensure", "task-one", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["schema_version"] == 1
+        assert payload["operation"] == "ensure"
+        assert payload["status"] == "ready"
+        assert payload["instance"]["logical_name"] == "task-one"
+
+    def test_adopt_forwards_only_explicit_target(self, monkeypatch):
+        seen = {}
+
+        def fake_adopt(repo_root, logical_name, path, **kwargs):
+            seen.update(logical_name=logical_name, path=path, **kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree(["adopt", "task-one", "/tmp/existing"]) == 0
+        assert seen["logical_name"] == "task-one"
+        assert seen["path"] == "/tmp/existing"
+
+
+def test_identity_only_env_generation_writes_facts_without_bootstrap(
+    tmp_path, monkeypatch
+):
+    from ciu import workspace_env
+
+    seen = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        workspace_env, "resolve_env_root",
+        lambda start, define, defaults: seen.setdefault("root", tmp_path),
+    )
+    monkeypatch.setattr(
+        workspace_env, "generate_ciu_env",
+        lambda root: seen.setdefault("generated", root / "ciu.env"),
+    )
+    assert cli._env_generate(["--identity-only"]) == 0
+    assert seen == {"root": tmp_path, "generated": tmp_path / "ciu.env"}

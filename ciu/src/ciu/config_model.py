@@ -42,6 +42,7 @@ from typing import Mapping
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_OVERRIDES,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
@@ -408,7 +409,11 @@ def render_global_chain(
     aborts with exit 2.
 
     Each template is rendered against the config merged SO FAR (v1 behaviour).
-    After the chain: write ciu.global.toml at repo_root; empty result → ValueError.
+    After the committed chain, an optional sparse, gitignored
+    ``ciu.global.worktree.toml.j2`` at *repo_root* is rendered and merged last.
+    It is the durable local configuration layer for one linked worktree and is
+    never searched for in parent/intermediate directories. Then write
+    ciu.global.toml at repo_root; empty result → ValueError.
 
     S3.3 fix (B11): the leaf directory (working_dir) IS processed; repo_root
     is NOT processed twice.
@@ -457,6 +462,17 @@ def render_global_chain(
                 environ=environ,
             )
             merged = deep_merge(merged, overrides_config)
+
+    worktree_overrides_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    if worktree_overrides_path.exists():
+        raw_override = worktree_overrides_path.read_text(encoding="utf-8")
+        scan_override_for_secrets(raw_override, str(worktree_overrides_path))
+        worktree_overrides = render_toml_template(
+            worktree_overrides_path,
+            _make_render_context(merged, environ=environ),
+            environ=environ,
+        )
+        merged = deep_merge(merged, worktree_overrides)
 
     if not merged:
         raise ValueError(

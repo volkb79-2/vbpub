@@ -9,6 +9,16 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## Unreleased
 
+### Added
+
+- Added schema-v1 managed worktree identity records; family-locked UTC name
+  allocation; explicit `create`, `adopt`, and idempotent `ensure`; nested CIU
+  root translation; runtime collision admission; and versioned lifecycle JSON.
+- Added the gitignored sparse `ciu.global.worktree.toml.j2` layer. It is merged
+  after committed global configuration and preserved by `ciu clean` and
+  `ciu env generate`; managed profile/shared-infrastructure choices no longer
+  contaminate generated machine-identity `ciu.env`.
+
 ### Removed
 
 - **Breaking:** withdrew the unused `ciu worktree add --data-isolation` API,

@@ -1466,7 +1466,7 @@ def main_execution(
             # engine.ComposeError`), never escape and crash the whole run.
             if docker_result["status"] == "success":
                 try:
-                    shared_infra_intent = worktree.parse_shared_infra_intent(os.environ)
+                    shared_infra_intent = worktree.parse_shared_infra_config(global_config)
                     if shared_infra_intent is not None:
                         print("[STEP 16/17] Joining declared shared-infra services...", flush=True)
                         worktree.connect_shared_infra_after_up(
@@ -1620,7 +1620,7 @@ def run_shipped(
         # crash the whole `ciu deploy` run instead of failing one stack.
         if docker_result["status"] == "success":
             try:
-                shared_infra_intent = worktree.parse_shared_infra_intent(os.environ)
+                shared_infra_intent = worktree.parse_shared_infra_config(global_config)
                 if shared_infra_intent is not None:
                     if shipped_project is None:
                         raise ComposeError(

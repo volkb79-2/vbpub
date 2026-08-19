@@ -38,6 +38,7 @@ Why constants here, and not in ``ciu.global.toml``?
 # Global configuration (repository root)
 GLOBAL_CONFIG_DEFAULTS = 'ciu.global.defaults.toml.j2'
 GLOBAL_CONFIG_OVERRIDES = 'ciu.global.toml.j2'
+GLOBAL_CONFIG_WORKTREE_OVERRIDES = 'ciu.global.worktree.toml.j2'
 GLOBAL_CONFIG_RENDERED = 'ciu.global.toml'
 
 # Stack configuration (per stack directory: applications/*, infra/*, tools/*)
@@ -114,6 +115,7 @@ def is_config_file(filename: str) -> bool:
     config_files = {
         GLOBAL_CONFIG_DEFAULTS,
         GLOBAL_CONFIG_OVERRIDES,
+        GLOBAL_CONFIG_WORKTREE_OVERRIDES,
         GLOBAL_CONFIG_RENDERED,
         STACK_CONFIG_DEFAULTS,
         STACK_CONFIG_OVERRIDES,

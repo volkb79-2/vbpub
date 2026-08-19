@@ -156,7 +156,9 @@ requirements are marked *(withdrawn)*.
 - **S3.1** File roles:
   `ciu.global.defaults.toml.j2` (committed, full defaults) +
   `ciu.global.toml.j2` (**committed sparse override**, see S3.1a; optional —
-  if absent, defaults apply only) → rendered `ciu.global.toml` (gitignored);
+  if absent, defaults apply only) + optional gitignored
+  `ciu.global.worktree.toml.j2` (S3.1b, merged last) → rendered
+  `ciu.global.toml` (gitignored);
   per stack `ciu.defaults.toml.j2` (committed, full defaults) +
   `ciu.toml.j2` (**committed sparse override**, see S3.1a; optional, **not
   auto-created** — if absent, defaults apply only) → rendered `ciu.toml`
@@ -167,7 +169,8 @@ requirements are marked *(withdrawn)*.
   no generated intermediate now, so nothing can go stale.)
 
 - **S3.1a** Override constraints — apply identically to the global override
-  (`ciu.global.toml.j2`) and the per-stack override (`ciu.toml.j2`):
+  (`ciu.global.toml.j2`), worktree-local override
+  (`ciu.global.worktree.toml.j2`), and per-stack override (`ciu.toml.j2`):
   1. **Secret-free**: CIU MUST scan the raw template text before rendering.
      Any PEM key/certificate block (`-----BEGIN`) or sensitive key name
      (`password`, `token`, `secret`, `api_key`, `credential`, …) paired
@@ -180,10 +183,19 @@ requirements are marked *(withdrawn)*.
      recursively. Lists in the override replace the defaults list entirely
      (no concatenation). Key deletion is not supported — use the falsy
      equivalent (`false`, `""`, `[]`) to disable a default.
-  4. **Not auto-created**: CIU never generates either override file. Create it
+  4. **Committed overrides are not auto-created**: CIU never generates the
+     committed global or stack override. Create it
      manually in the repository with only the structural overrides needed; an
      absent override is the normal case (defaults apply alone). `clean`/`--reset`
      remove rendered outputs but MUST NOT remove a committed override.
+
+- **S3.1b** The optional `<ciu-root>/ciu.global.worktree.toml.j2` is a sparse,
+  non-secret, gitignored input for one checkout. It is merged after every
+  committed global layer and before stack defaults. Managed lifecycle commands
+  may create its initial `ciu.instance.service_profiles` and
+  `ciu.instance.shared_infra` values; operators may add ordinary sparse global
+  overrides afterward. `ciu clean` and `ciu env generate` MUST preserve it.
+  Worktree configuration MUST NOT be appended to generated `ciu.env`.
 
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
@@ -2078,15 +2090,22 @@ Migration recipes: docs/MIGRATION-V2.md.
 
 ## S16 — Worktree instances (`ciu worktree`)
 
-A git worktree of a CIU repo is already a distinct instance: `INSTANCE_ID` is a
+A git worktree of a CIU repo is already a distinct runtime: `INSTANCE_ID` is a
 hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
 container prefix and volumes. `ciu worktree` is the verb that composes what CIU
 already knows into one operation.
 
-- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--shared-infra REF --shared-infra-services S1,S2 --shared-infra-ref-projects R1,R2]`** —
-  creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
-  `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
-  `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
+- **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout.
+  Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
+  branch and directory basename are identical, with a suffix only on an actual
+  same-second collision under the Git-family allocation lock.
+- **`worktree ensure LOGICAL [...]`** — returns an exact ready match without
+  rewriting it, creates when absent, or resumes only a mechanically recognized
+  CIU-owned partial allocation. Any requested identity mismatch refuses.
+- **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
+  ownership of a registered unmanaged linked checkout.
+- **`worktree add NAME [...]`** — retained human shorthand for create with
+  logical/display/branch/directory basename all equal to NAME. It does NOT deploy: `add`
   prepares an instance, it does not decide you want it running. `--shared-infra`
   joins the new instance's declared diverging services onto an existing
   reference instance's shared network (S16.1).
@@ -2099,7 +2118,28 @@ already knows into one operation.
   `--force`.
 - **`worktree list`** — registered worktrees, primary marked.
 
-Both sub-operations run as SUBPROCESSES under the target worktree's environment.
+Every managed linked checkout has an atomic schema-v1, non-secret
+`<target-ciu-root>/ciu.worktree-instance.json`. It records the family-scoped
+logical identity, display/branch/Git-path facts, exact Git-root-to-CIU-root
+offset, allocation time, base reference, lifecycle state
+(`allocating | ready | recovery-required`), and runtime identity once derived.
+Current HEAD is inspected from Git and is never frozen in the record. The
+record owns identity/lifecycle; `ciu.global.worktree.toml.j2` owns local
+configuration; `ciu.env` owns generated machine facts. Each fact has one
+authority.
+
+Create/adopt admission rejects an occupied logical identity, path, or active
+branch before allocation. CIU first writes an `allocating` record into a
+`--no-checkout` linked worktree, so interruption remains attributable; it then
+checks out the base and generates identity-only `ciu.env`. Before any network
+bootstrap it rejects duplicate family `INSTANCE_ID`/network values and an
+already-existing exact Docker network (independent-clone collision). Docker
+absence is valid for local-only projects; a present but failing Docker endpoint
+is not treated as absence. Only full env bootstrap followed by an unchanged
+identity marks the record `ready`; failure writes one closed recovery status.
+
+Environment generation and clean run as subprocesses at the exact target CIU
+root (which may be nested below the Git worktree root).
 In-process would violate S1.1 (`--define-root` must agree with `REPO_ROOT`,
 which describes the PRIMARY checkout) and, for generation, would derive the new
 instance's identity from the old instance's environment. The worktree's
@@ -2127,10 +2167,9 @@ reference Compose project (`--shared-infra-ref-projects`) has a running
 container on that network — AND-combined, never OR, and scoped to both the
 network and the exact project label, so a bare labelled-container count
 elsewhere on the host is never mistaken for liveness. Only then does it
-create the checkout and record the resolved intent
-(`CIU_SHARED_INFRA_REF_PATH`, `CIU_SHARED_INFRA_NETWORK`,
-`CIU_SHARED_INFRA_SERVICES`, `CIU_SHARED_INFRA_REF_PROJECTS`) into the new
-worktree's OWN `ciu.env`. The actual `docker network connect` calls happen
+create the checkout and record the resolved intent under
+`[ciu.instance.shared_infra]` in the new worktree's OWN
+`ciu.global.worktree.toml.j2`. The actual `docker network connect` calls happen
 later, in the new worktree's own process, after `docker compose up`
 succeeds — never during `add`, and never before Compose has brought this
 instance's own stack up on its own network.
@@ -2249,11 +2288,10 @@ rather than silently treating a real ambient request as "no cap".
 
 **The deployment classifier.** Candidates are exclusively the entries in
 `git worktree list --porcelain`; the primary is always included. A candidate
-is *registered* only when its own `<git-worktree>/ciu.env` exists, parses,
+is *registered* only when its own `<git-worktree>/<ciu-root-offset>/ciu.env` exists, parses,
 and supplies a distinct, non-empty `DOCKER_NETWORK_INTERNAL` — the same file
-location `worktree.add` already writes to and S16.1's shared-infra join
-already reads from (a per-worktree machine-identity file, not something
-nested inside an offset-translated CIU root). For each registered candidate,
+location managed lifecycle writes to and S16.1's shared-infra join already
+reads from. For each registered candidate,
 its own CIU root is `entry.path / offset` and its own stack is that root plus
 the caller's relative `stack_rel` — a literal path append that retains every
 component of a nested CIU root. A candidate stack genuinely absent from a

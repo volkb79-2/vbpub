@@ -296,8 +296,8 @@ class TestMainExecutionBudgetWiring:
         monkeypatch.setattr(engine.worktree, "worktree_budget_slot", spy_slot)
         # Simulate a declared shared-infra intent so the P02 call site runs.
         monkeypatch.setattr(
-            engine.worktree, "parse_shared_infra_intent",
-            lambda values: object(),  # any non-None sentinel
+            engine.worktree, "parse_shared_infra_config",
+            lambda config: object(),  # any non-None sentinel
         )
         spy_connect = SpyConnect(order=order)
         monkeypatch.setattr(engine.worktree, "connect_shared_infra_after_up", spy_connect)
@@ -399,7 +399,7 @@ class TestRunShippedBudgetWiring:
         spy_slot = SpyBudgetSlot(order=order)
         monkeypatch.setattr(engine.worktree, "worktree_budget_slot", spy_slot)
         monkeypatch.setattr(
-            engine.worktree, "parse_shared_infra_intent", lambda values: object(),
+            engine.worktree, "parse_shared_infra_config", lambda config: object(),
         )
         spy_connect = SpyConnect(order=order)
         monkeypatch.setattr(engine.worktree, "connect_shared_infra_after_up", spy_connect)
