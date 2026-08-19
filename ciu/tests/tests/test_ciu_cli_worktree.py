@@ -235,6 +235,105 @@ class TestWorktreeListDispatch:
         assert "(primary)" in out
         assert "pkg" in out
 
+    def test_list_json_emits_managed_document(self, monkeypatch, capsys):
+        doc = {
+            "schema_version": 1,
+            "operation": "list",
+            "status": "ready",
+            "instances": [],
+        }
+        monkeypatch.setattr(wt_mod, "list_instances", lambda *_a: doc)
+        assert cli._worktree(["list", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == doc
+
+
+class TestWorktreeInspectDispatch:
+    def test_inspect_json_emits_document(self, monkeypatch, capsys):
+        doc = {
+            "schema_version": 1,
+            "operation": "inspect",
+            "status": "ready",
+            "instance": {"logical_name": "logical-one"},
+            "git": {"registered": True, "path": "/tmp/wt",
+                    "branch": "main", "head": "abc12345", "dirty": False},
+        }
+        monkeypatch.setattr(wt_mod, "inspect_instance", lambda *_a, **_kw: doc)
+        assert cli._worktree(["inspect", "logical-one", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == doc
+
+    def test_inspect_prose_uses_document_facts(self, monkeypatch, capsys):
+        doc = {
+            "schema_version": 1,
+            "operation": "inspect",
+            "status": "ready",
+            "instance": {"logical_name": "logical-one"},
+            "git": {"registered": True, "path": "/tmp/wt", "branch": "main",
+                    "head": "abc12345", "dirty": False, "detached": False,
+                    "primary": False},
+        }
+        monkeypatch.setattr(wt_mod, "inspect_instance", lambda *_a, **_kw: doc)
+        assert cli._worktree(["inspect", "logical-one"]) == 0
+        out = capsys.readouterr().out
+        assert "logical-one" in out
+        assert "abc12345" in out
+
+    def test_inspect_error_maps_to_exit_2(self, monkeypatch, capsys):
+        def fail(*_a, **_kw):
+            raise wt_mod.WorktreeError("[S16] boom")
+
+        monkeypatch.setattr(wt_mod, "inspect_instance", fail)
+        assert cli._worktree(["inspect", "logical-one", "--json"]) == 2
+        assert "[S16] boom" in capsys.readouterr().err
+
+
+class TestWorktreeRmJsonDispatch:
+    def test_rm_json_emits_removal_document(self, monkeypatch, capsys):
+        doc = {
+            "schema_version": 1,
+            "operation": "remove",
+            "status": "removed",
+            "removed_path": "/tmp/wt",
+        }
+        monkeypatch.setattr(
+            wt_mod, "remove_document", lambda *_a, **_kw: doc
+        )
+        assert cli._worktree(["rm", "mypkg", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == doc
+
+    def test_rm_json_failure_emits_no_success_document(self, monkeypatch, capsys):
+        def fail(*_a, **_kw):
+            raise wt_mod.WorktreeError("[S16] clean failed")
+
+        monkeypatch.setattr(wt_mod, "remove_document", fail)
+        assert cli._worktree(["rm", "mypkg", "--json"]) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "[S16] clean failed" in captured.err
+
+
+class TestCapabilitiesDispatch:
+    def test_capabilities_json_dispatch(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["ciu", "capabilities", "--json"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 0
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["schema_version"] == 1
+        assert doc["capabilities"] == [
+            "worktree.identity.v1",
+            "worktree.inspect.v1",
+            "worktree.lifecycle-json.v1",
+        ]
+
+    def test_capabilities_prose_dispatch(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["ciu", "capabilities"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "worktree.identity.v1" in out
+        assert "worktree.inspect.v1" in out
+
 
 def _ready_record() -> wt_mod.WorktreeInstanceRecord:
     return wt_mod.WorktreeInstanceRecord(

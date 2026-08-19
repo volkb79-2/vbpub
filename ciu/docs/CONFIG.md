@@ -468,6 +468,19 @@ too, so they can reach the reference instance's `idp`/`vault`. Every other
 container in `pkg-under-test` (anything not named in
 `--shared-infra-services`) stays on its own network only.
 
+### Machine-facing worktree facts [S16.4]
+
+The machine surfaces for this layer are the versioned JSON documents:
+`ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
+lifecycle verbs with `--json`, and `ciu worktree rm --json`. They emit one
+`schema_version: 1` document with the persisted
+`ciu.worktree-instance.json` record under `instance`, freshly derived Git
+facts under `git`, and a closed `operation`/`status` vocabulary
+([SPEC S16.4](SPEC.md#s164--structured-json-documents-d-009)). The
+`[ciu.worktree]` table above remains the only file configuration; `list
+--json` reads it but the JSON documents themselves are never written into
+`ciu.env` or the overlay.
+
 ---
 
 ## Host Inventory File [S14.3]

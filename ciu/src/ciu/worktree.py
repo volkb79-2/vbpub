@@ -222,7 +222,7 @@ def _write_instance_record(record: WorktreeInstanceRecord) -> None:
     except OSError as exc:
         try:
             tmp.unlink()
-        except OSError:  # pragma: no cover - best-effort cleanup after write failure
+        except OSError:
             pass
         raise WorktreeError(f"[S16] could not atomically write {path}: {exc}") from exc
 
@@ -411,7 +411,7 @@ def _write_worktree_overlay(
     except OSError as exc:
         try:
             tmp.unlink()
-        except OSError:  # pragma: no cover - best-effort cleanup after write failure
+        except OSError:
             pass
         raise WorktreeError(f"[S16] could not write {path}: {exc}") from exc
 
@@ -665,9 +665,164 @@ def find_instance_record(repo_root: Path, logical_name: str) -> WorktreeInstance
         record for record in list_instance_records(repo_root)
         if record.logical_name == logical_name
     ]
-    if len(matches) > 1:  # pragma: no cover - list_instance_records refuses first
+    if len(matches) > 1:
         raise WorktreeError(f"[S16] ambiguous logical identity {logical_name!r}")
     return matches[0] if matches else None
+
+
+# ---------------------------------------------------------------------------
+# S16.4 / S16.5 — structured JSON documents and capability discovery (D-009)
+# ---------------------------------------------------------------------------
+
+WORKTREE_JSON_SCHEMA_VERSION = 1
+CAPABILITIES_SCHEMA_VERSION = 1
+
+# Closed operation vocabulary for every structured document. The status
+# vocabulary is WORKTREE_LIFECYCLE_STATES plus the terminal "removed"; a
+# recovery-required instance additionally carries a closed recovery_status
+# (WORKTREE_RECOVERY_STATUSES).
+WORKTREE_JSON_OPERATIONS = frozenset({
+    "add", "adopt", "create", "ensure", "inspect", "list", "remove",
+})
+WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
+
+# The closed, sorted allowlist of shipped machine contracts. Consumers
+# allowlist these identifiers instead of inferring features from SemVer
+# (D-009). An identifier is added only when its code path ships in the SAME
+# release; `up`/`exec` arrive in P05/P06 and are NOT advertised here.
+WORKTREE_CAPABILITIES = (
+    "worktree.identity.v1",
+    "worktree.inspect.v1",
+    "worktree.lifecycle-json.v1",
+)
+
+
+def build_instance_document(
+    operation: str,
+    record: WorktreeInstanceRecord,
+    git_facts: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One versioned instance document: the persisted record plus, when
+    *git_facts* is supplied, freshly derived Git facts (S16.4). *operation*
+    must be a member of the closed :data:`WORKTREE_JSON_OPERATIONS`
+    vocabulary; *status* is the record's own lifecycle state."""
+    if operation not in WORKTREE_JSON_OPERATIONS:
+        raise WorktreeError(
+            f"[S16] unknown document operation {operation!r}; closed vocabulary: "
+            f"{', '.join(sorted(WORKTREE_JSON_OPERATIONS))}"
+        )
+    doc: dict[str, Any] = {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": operation,
+        "status": record.state,
+        "instance": record.to_dict(),
+    }
+    if git_facts is not None:
+        doc["git"] = dict(git_facts)
+    return doc
+
+
+def _current_git_facts(repo_root: Path, record: WorktreeInstanceRecord) -> dict[str, Any]:
+    """Freshly read Git facts for one managed instance (S16.4).
+
+    The registered path, branch/detached state and HEAD come from the CURRENT
+    ``git worktree list``; dirty comes from ``git status --porcelain``. A
+    record whose checkout is no longer a registered worktree, or whose status
+    cannot be read, is a refusal — never a repaired or guessed value.
+    """
+    wt = find_worktree(repo_root, str(record.git_worktree_path))
+    if wt is None:
+        raise WorktreeError(
+            f"[S16] instance record claims {record.git_worktree_path}, but Git "
+            f"no longer registers that checkout as a worktree under {repo_root}"
+        )
+    status = _git(["status", "--porcelain"], wt.path)
+    if status.returncode != 0:
+        raise WorktreeError(
+            f"[S16] could not read git status for {wt.path}: "
+            f"{(status.stderr or status.stdout).strip()}"
+        )
+    return {
+        "registered": True,
+        "path": str(wt.path),
+        "branch": wt.branch,
+        "detached": wt.branch == "(detached)",
+        "primary": wt.is_primary,
+        "head": wt.head,
+        "dirty": bool(status.stdout.strip()),
+    }
+
+
+def inspect_instance(repo_root: Path, logical_name: str) -> dict[str, Any]:
+    """Build the ``ciu worktree inspect LOGICAL --json`` document (S16.4).
+
+    No logical record is a refusal; a record whose Git facts cannot be read
+    truthfully is a refusal. Never a stale-record-only result.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    return build_instance_document(
+        "inspect", record, _current_git_facts(repo_root, record)
+    )
+
+
+def list_instances(repo_root: Path) -> dict[str, Any]:
+    """Build the ``ciu worktree list --json`` document: every managed
+    instance with its freshly derived Git facts, in git's own order."""
+    repo_root = Path(repo_root).resolve()
+    instances = [
+        build_instance_document(
+            "inspect", record, _current_git_facts(repo_root, record)
+        )
+        for record in list_instance_records(repo_root)
+    ]
+    return {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": "list",
+        "status": "ready",
+        "instances": instances,
+    }
+
+
+def remove_document(
+    repo_root: Path,
+    name: str,
+    *,
+    yes: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Run the existing clean-then-remove and return the versioned removal
+    document (S16.4). The validated pre-state (the instance record, when the
+    worktree is managed) is captured before removal; success is emitted only
+    after BOTH clean and ``git worktree remove`` complete. A failure is the
+    existing :class:`WorktreeError` (identifying retained resources) — no
+    success document is ever produced."""
+    repo_root = Path(repo_root).resolve()
+    record = find_instance_record(repo_root, name)
+    removed_path = remove(repo_root, name, yes=yes, force=force)
+    doc: dict[str, Any] = {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": "remove",
+        "status": "removed",
+        "removed_path": str(removed_path),
+    }
+    if record is not None:
+        doc["instance"] = record.to_dict()
+    return doc
+
+
+def capabilities_document() -> dict[str, Any]:
+    """The versioned, closed capability allowlist (S16.5 / D-009). Only
+    machine contracts shipped in THIS release are advertised."""
+    return {
+        "schema_version": CAPABILITIES_SCHEMA_VERSION,
+        "capabilities": sorted(WORKTREE_CAPABILITIES),
+    }
 
 
 def _branch_exists(repo_root: Path, branch: str) -> bool:

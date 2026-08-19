@@ -829,3 +829,221 @@ class TestWorktreeSubprocessEnvironment:
         )
         with pytest.raises(worktree.WorktreeError, match="could not read.*denied"):
             worktree._clean_in(tmp_path, yes=False)
+
+
+class TestBestEffortCleanupArcs:
+    """The three arcs formerly hidden behind `pragma: no cover` (from
+    checkpoint 71f5ec79) — reachable, so tested rather than excluded: the
+    best-effort tmp-unlink OSError arcs in the two atomic writers and the
+    defensive ambiguous-identity arc in find_instance_record."""
+
+    def _record(self, tmp_path: Path) -> worktree.WorktreeInstanceRecord:
+        return worktree._record_from_dict(
+            {
+                "schema_version": 1,
+                "logical_name": "logical-one",
+                "display_name": "display-one",
+                "branch": "display-one",
+                "git_worktree_path": str(tmp_path),
+                "ciu_root_offset": ".",
+                "created_at_utc": "2026-08-17T12:00:00Z",
+                "base_ref": "main",
+                "state": "allocating",
+                "runtime": {"instance_id": None, "network": None},
+                "recovery_status": None,
+            },
+            tmp_path / "source",
+        )
+
+    def _replace_fails(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            worktree.os, "replace",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+    def _unlink_fails(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            Path, "unlink",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("unlink denied")),
+        )
+
+    def test_record_write_unlink_failure_is_best_effort(self, tmp_path, monkeypatch):
+        """os.replace fails AND the tmp cleanup unlink fails too — the inner
+        `except OSError: pass` must swallow the cleanup failure and still
+        surface the atomic-write error."""
+        self._replace_fails(monkeypatch)
+        self._unlink_fails(monkeypatch)
+        with pytest.raises(worktree.WorktreeError, match="atomically write"):
+            worktree._write_instance_record(self._record(tmp_path))
+
+    def test_overlay_write_unlink_failure_is_best_effort(self, tmp_path, monkeypatch):
+        """Same double-failure arc for the worktree-overlay writer."""
+        self._replace_fails(monkeypatch)
+        self._unlink_fails(monkeypatch)
+        with pytest.raises(worktree.WorktreeError, match="could not write"):
+            worktree._write_worktree_overlay(tmp_path, "core", None)
+
+    def test_find_instance_record_ambiguous_constructed_duplicate(
+        self, tmp_path, monkeypatch
+    ):
+        """len(matches) > 1 is defensive (list_instance_records refuses first),
+        so it is exercised with a constructed duplicate-record list."""
+        rec = worktree.WorktreeInstanceRecord(
+            logical_name="dup", display_name="a", branch="a",
+            git_worktree_path=tmp_path / "a", ciu_root_offset=Path("."),
+            created_at_utc="2026-08-17T12:00:00Z", base_ref="main",
+            state="ready", instance_id="x", network="y",
+        )
+        monkeypatch.setattr(
+            worktree, "list_instance_records", lambda repo_root: [rec, rec]
+        )
+        with pytest.raises(worktree.WorktreeError, match="ambiguous logical identity"):
+            worktree.find_instance_record(tmp_path, "dup")
+
+
+class TestStructuredControlDocuments:
+    """S16.4/S16.5 — versioned JSON documents, removal envelope, and the
+    closed capability allowlist (D-009)."""
+
+    def _record(self, tmp_path: Path, logical: str = "logical-one") -> worktree.WorktreeInstanceRecord:
+        return worktree.WorktreeInstanceRecord(
+            logical_name=logical, display_name=logical, branch=logical,
+            git_worktree_path=tmp_path / ".worktrees" / logical,
+            ciu_root_offset=Path("."), created_at_utc="2026-08-17T12:00:00Z",
+            base_ref="main", state="ready", instance_id="abc123",
+            network="repo-abc123-network",
+        )
+
+    # -- capabilities (O3) ---------------------------------------------------
+
+    def test_capabilities_document_is_versioned_and_closed(self):
+        doc = worktree.capabilities_document()
+        assert doc["schema_version"] == 1
+        assert doc["capabilities"] == sorted(worktree.WORKTREE_CAPABILITIES)
+        assert doc["capabilities"] == [
+            "worktree.identity.v1",
+            "worktree.inspect.v1",
+            "worktree.lifecycle-json.v1",
+        ]
+
+    def test_capabilities_advertise_no_unshipped_contract(self):
+        assert "worktree.up.v1" not in worktree.WORKTREE_CAPABILITIES
+        assert not any(c.endswith("exec") for c in worktree.WORKTREE_CAPABILITIES)
+
+    # -- document builder (O1/O2) -------------------------------------------
+
+    def test_build_instance_document_without_git_facts_is_lifecycle_envelope(self, tmp_path):
+        record = self._record(tmp_path)
+        doc = worktree.build_instance_document("create", record)
+        assert doc == {
+            "schema_version": 1,
+            "operation": "create",
+            "status": "ready",
+            "instance": record.to_dict(),
+        }
+        assert "git" not in doc
+
+    def test_build_instance_document_rejects_unknown_operation(self, tmp_path):
+        with pytest.raises(worktree.WorktreeError, match="closed vocabulary"):
+            worktree.build_instance_document("explode", self._record(tmp_path))
+
+    # -- inspect (O1) --------------------------------------------------------
+
+    def test_inspect_document_reports_fresh_git_facts(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "logical-one")
+        doc = worktree.inspect_instance(tmp_repo, "logical-one")
+        assert doc["schema_version"] == 1
+        assert doc["operation"] == "inspect"
+        assert doc["status"] == "ready"
+        assert doc["instance"]["logical_name"] == "logical-one"
+        git = doc["git"]
+        assert git == {
+            "registered": True,
+            "path": str(record.git_worktree_path),
+            "branch": record.branch,
+            "detached": False,
+            "primary": False,
+            "head": git["head"],
+            "dirty": False,
+        }
+
+    def test_inspect_reports_dirty_worktree(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "logical-one")
+        (record.git_worktree_path / "scratch.txt").write_text("x", encoding="utf-8")
+        assert worktree.inspect_instance(tmp_repo, "logical-one")["git"]["dirty"] is True
+
+    def test_inspect_unknown_name_refuses(self, tmp_repo):
+        with pytest.raises(worktree.WorktreeError, match="no managed worktree instance"):
+            worktree.inspect_instance(tmp_repo, "ghost")
+
+    def test_inspect_unreadable_git_status_refuses(self, tmp_repo, fake_generate_env, monkeypatch):
+        worktree.create(tmp_repo, "logical-one")
+        real_git = worktree._git
+
+        def fail_status(args, cwd):
+            if args and args[0] == "status":
+                return subprocess.CompletedProcess(["git"], 1, "", "corrupt repo")
+            return real_git(args, cwd)
+
+        monkeypatch.setattr(worktree, "_git", fail_status)
+        with pytest.raises(worktree.WorktreeError, match="could not read git status"):
+            worktree.inspect_instance(tmp_repo, "logical-one")
+
+    def test_current_git_facts_refuses_unregistered_path(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "logical-one")
+        phantom = worktree.replace(record, git_worktree_path=tmp_repo / "phantom")
+        with pytest.raises(worktree.WorktreeError, match="no longer registers"):
+            worktree._current_git_facts(tmp_repo, phantom)
+
+    # -- managed list (O1) ---------------------------------------------------
+
+    def test_list_instances_empty(self, tmp_repo):
+        doc = worktree.list_instances(tmp_repo)
+        assert doc["schema_version"] == 1
+        assert doc["operation"] == "list"
+        assert doc["status"] == "ready"
+        assert doc["instances"] == []
+
+    def test_list_instances_includes_managed_with_git_facts(self, tmp_repo, fake_generate_env):
+        worktree.create(tmp_repo, "logical-one")
+        doc = worktree.list_instances(tmp_repo)
+        assert len(doc["instances"]) == 1
+        entry = doc["instances"][0]
+        assert entry["operation"] == "inspect"
+        assert entry["status"] == "ready"
+        assert entry["instance"]["logical_name"] == "logical-one"
+        assert entry["git"]["dirty"] is False
+
+    # -- removal (O2) --------------------------------------------------------
+
+    def test_remove_document_managed_success(self, tmp_repo, fake_generate_env, monkeypatch):
+        worktree.add(tmp_repo, "wt1", base="main")
+        monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
+        doc = worktree.remove_document(tmp_repo, "wt1")
+        assert doc["schema_version"] == 1
+        assert doc["operation"] == "remove"
+        assert doc["status"] == "removed"
+        assert doc["removed_path"] == str(tmp_repo / ".worktrees" / "wt1")
+        assert doc["instance"]["logical_name"] == "wt1"
+        assert not (tmp_repo / ".worktrees" / "wt1").exists()
+
+    def test_remove_document_unmanaged_omits_instance(self, tmp_repo, monkeypatch):
+        target = tmp_repo / "unmanaged"
+        assert _git(
+            ["worktree", "add", "--no-checkout", "-b", "unmanaged", str(target), "main"],
+            tmp_repo,
+        ).returncode == 0
+        monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
+        doc = worktree.remove_document(tmp_repo, "unmanaged", force=True)
+        assert doc["operation"] == "remove"
+        assert doc["status"] == "removed"
+        assert "instance" not in doc
+        assert doc["removed_path"] == str(target)
+
+    def test_remove_document_failed_clean_produces_no_success_document(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        worktree.add(tmp_repo, "wt1", base="main")
+        monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
+        with pytest.raises(worktree.WorktreeError, match="NOT removing"):
+            worktree.remove_document(tmp_repo, "wt1")

@@ -11,6 +11,17 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Added
 
+- Added structured worktree control (CIU-29/D-009): `ciu worktree inspect
+  LOGICAL --json`, `ciu worktree list --json`, and `ciu worktree rm --json`
+  emit one versioned (`schema_version: 1`) JSON document with a closed
+  `operation`/`status` vocabulary, the persisted instance record, and freshly
+  derived Git facts (registered path, branch/detached, HEAD, dirty, primary) —
+  a record/Git mismatch refuses, never guesses. Added `ciu capabilities
+  --json`: a separately versioned, closed allowlist of shipped machine
+  contracts (`worktree.identity.v1`, `worktree.inspect.v1`,
+  `worktree.lifecycle-json.v1`). SPEC S16.4/S16.5; new
+  docs/DESIGN-GUIDE.md (WHY) and docs/CONSUMERS.md (HOW) with a
+  documentation-contract test.
 - Added optional `schema` to configfile entries (CIU-37): the rendered app
   config is validated against the app's JSON Schema (Draft 2020-12, TOML
   targets only) at render time, failing with the key path. `jsonschema` is an

@@ -5,7 +5,8 @@ host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
 - identity and evidence: `ciu version`, `ciu provenance [--json]`
-- managed instances: `ciu worktree create|adopt|ensure|rm|list` (`add` remains shorthand)
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect` (`add` remains shorthand)
+- machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
 - failure explanation: `ciu diagnose [--project NAME] [--json]` (read-only)
@@ -110,6 +111,14 @@ At the repo root: `ciu.global.defaults.toml.j2` (committed, the root marker),
 rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored generated machine
 identity), and, for managed linked checkouts, `ciu.worktree-instance.json`
 (gitignored durable identity/lifecycle state).
+
+Automation surfaces are versioned and closed: `ciu worktree
+inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
+`schema_version: 1` document with a closed `operation`/`status` vocabulary and
+freshly derived Git facts — never inferred from a name or stale record —
+and `ciu capabilities --json` lists the shipped machine contracts.
+See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
+[docs/CONSUMERS.md](docs/CONSUMERS.md) (how).
 
 The rule of thumb: a `.j2` suffix means *template* (input); strip it to get the
 *rendered* output. Everything under `.ciu/` and every rendered output is

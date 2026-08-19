@@ -46,11 +46,15 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
   WORKTREE INSTANCES (S16)
     worktree create LOGICAL [--prefix P --feature F] [--json]
                                 allocate a new managed instance
-    worktree adopt LOGICAL PATH explicitly manage an existing linked checkout
+    worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
     worktree ensure LOGICAL     reuse/create/resume an exact managed instance
     worktree add NAME           human shorthand for create
-    worktree rm LOGICAL [-y]    ciu clean, THEN remove the checkout
-    worktree list               list linked checkouts
+    worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
+    worktree list [--json]      list linked checkouts
+    worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+
+  MACHINE INTERFACES (D-009)
+    capabilities [--json]       versioned, closed capability allowlist
 
   EVIDENCE
     provenance [--ignore-mismatch | --no-preflight] [--json]
@@ -104,11 +108,21 @@ ciu worktree create LOGICAL [--name DISPLAY | --prefix P --feature F]
 ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
 ciu worktree ensure LOGICAL [create options] [--json]
 ciu worktree add NAME [--base REF] [--profile P1,P2]
-ciu worktree rm LOGICAL [-y] [--force]
-ciu worktree list
+ciu worktree rm LOGICAL [-y] [--force] [--json]
+ciu worktree list [--json]
+ciu worktree inspect LOGICAL [--json]
   Manage durable, family-scoped worktree identities. Creation and ensure do
   not start the instance. Generated UTC branch/directory names are identical;
   adopt is the only operation that owns an unmanaged existing checkout.
+  `inspect` reports the persisted record plus freshly read Git facts; `list
+  --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
+  stdout (S16.4).
+""",
+    "capabilities": """\
+ciu capabilities [--json]
+  Print CIU's versioned, closed capability allowlist (D-009). Consumers
+  allowlist shipped machine-contract identifiers instead of inferring
+  features from SemVer. `--json` emits the separately versioned document.
 """,
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
@@ -623,11 +637,17 @@ def _worktree(rest: list[str]) -> int:
     p_rm.add_argument("name")
     p_rm.add_argument("-y", "--yes", action="store_true", default=False)
     p_rm.add_argument("--force", action="store_true", default=False)
+    p_rm.add_argument("--json", action="store_true", default=False)
 
     p_list = sub.add_parser("list", add_help=False)
+    p_list.add_argument("--json", action="store_true", default=False)
+
+    p_inspect = sub.add_parser("inspect", add_help=False)
+    p_inspect.add_argument("logical_name")
+    p_inspect.add_argument("--json", action="store_true", default=False)
 
     for parser in (
-        p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list,
+        p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -640,12 +660,10 @@ def _worktree(rest: list[str]) -> int:
     try:
         def emit_record(operation: str, record) -> None:
             if getattr(opts, "json", False):
-                print(json.dumps({
-                    "schema_version": record.schema_version,
-                    "operation": operation,
-                    "status": record.state,
-                    "instance": record.to_dict(),
-                }, sort_keys=True))
+                print(json.dumps(
+                    wt_mod.build_instance_document(operation, record),
+                    sort_keys=True,
+                ))
             else:
                 print(f"worktree ready: {record.git_worktree_path}")
                 print(f"  CIU root: {record.ciu_root}")
@@ -695,15 +713,42 @@ def _worktree(rest: list[str]) -> int:
             return 0
 
         if opts.action == "rm":
-            path = wt_mod.remove(
-                repo_root, opts.name, yes=opts.yes, force=opts.force
-            )
-            print(f"removed: {path}")
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.remove_document(
+                        repo_root, opts.name, yes=opts.yes, force=opts.force
+                    ),
+                    sort_keys=True,
+                ))
+            else:
+                path = wt_mod.remove(
+                    repo_root, opts.name, yes=opts.yes, force=opts.force
+                )
+                print(f"removed: {path}")
             return 0
 
-        for info in wt_mod.list_worktrees(repo_root):
-            tag = "  (primary)" if info.is_primary else ""
-            print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
+        if opts.action == "inspect":
+            doc = wt_mod.inspect_instance(repo_root, opts.logical_name)
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                git = doc["git"]
+                print(f"worktree inspect: {doc['instance']['logical_name']}")
+                print(f"  status: {doc['status']}")
+                print(f"  git path: {git['path']}")
+                print(f"  branch: {git['branch']}")
+                print(f"  HEAD: {git['head']}")
+                print(f"  dirty: {git['dirty']}")
+            return 0
+
+        # Every action above returned; the only remaining action is "list"
+        # (argparse's required subparsers make it one of the registered set).
+        if getattr(opts, "json", False):
+            print(json.dumps(wt_mod.list_instances(repo_root), sort_keys=True))
+        else:
+            for info in wt_mod.list_worktrees(repo_root):
+                tag = "  (primary)" if info.is_primary else ""
+                print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
         return 0
     except wt_mod.WorktreeError as exc:
         print(str(exc), file=sys.stderr)
@@ -939,6 +984,20 @@ def main() -> None:
 
     elif verb == "worktree":
         raise SystemExit(_worktree(rest))
+
+    elif verb == "capabilities":
+        import argparse as _ap
+
+        from . import worktree as wt_mod
+        p = _ap.ArgumentParser(prog="ciu capabilities", add_help=False)
+        p.add_argument("--json", action="store_true", default=False)
+        opts = p.parse_args(rest)
+        if opts.json:
+            print(json.dumps(wt_mod.capabilities_document(), sort_keys=True))
+        else:
+            for identifier in sorted(wt_mod.WORKTREE_CAPABILITIES):
+                print(identifier)
+        raise SystemExit(0)
 
     elif verb == "provenance":
         raise SystemExit(_provenance(rest))

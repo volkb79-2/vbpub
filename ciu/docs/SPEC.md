@@ -2389,6 +2389,45 @@ contention (real `fcntl.flock`, no sleeps) proves the second waiter of two
 simultaneous cold starts re-counts and refuses once the first's deployment
 becomes visible.
 
+### S16.4 — Structured JSON documents (D-009)
+
+`ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
+lifecycle verbs (`create`/`ensure`/`adopt`/`add`) with `--json`, and
+`ciu worktree rm --json` each emit **exactly one JSON document on stdout**
+(`schema_version: 1`); diagnostics go to stderr. The `operation` vocabulary is
+closed (`create | ensure | adopt | add | inspect | list | remove`) and the
+`status` vocabulary is closed (`allocating | ready | recovery-required |
+removed`); a `recovery-required` instance additionally carries a closed
+`recovery_status` (`checkout-incomplete | env-generation-failed |
+runtime-collision`). The persisted schema-v1 instance record is nested under
+`instance` (`WorktreeInstanceRecord.to_dict()`); current Git facts are nested
+under `git`.
+
+Git facts are freshly read from Git, never inferred from a name or a stale
+record: `git.registered` (the record's checkout is a current registered
+worktree), `git.path`, `git.branch` (or `(detached)`), `git.detached`,
+`git.primary`, `git.head`, and `git.dirty` (`git status --porcelain`). A record
+whose checkout is no longer registered, or whose status cannot be read, is a
+refusal — never a repaired or guessed value; a missing logical record is a
+refusal; a duplicate or mismatched record is a refusal (S16's existing
+family-scan rules). `list --json` emits an array of the same per-instance
+documents, primary first in git's own order.
+
+Removal captures the validated pre-state (the instance record, when managed)
+and emits success only after BOTH `ciu clean` and `git worktree remove`
+complete; a failure is the existing `WorktreeError` identifying the retained
+resources — never a success document.
+
+### S16.5 — Capability discovery (D-009)
+
+`ciu capabilities [--json]` exposes a **separately versioned, closed
+allowlist** of shipped machine contracts (`schema_version: 1`,
+`capabilities`: sorted identifiers). Consumers allowlist these identifiers
+instead of inferring features from SemVer. An identifier is added only when
+its code path ships in the same release. Initial identifiers:
+`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`.
+`up`/`exec` identifiers are NOT advertised before their packages ship.
+
 ## S17 — Image provenance
 
 ### S17.1 — Stamping
