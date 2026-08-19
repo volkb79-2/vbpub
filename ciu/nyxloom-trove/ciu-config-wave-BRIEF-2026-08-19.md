@@ -1,4 +1,4 @@
-# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 3)
+# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 4)
 
 **Where you are:** the worktree `/workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog`,
 branch `docs/ciu-worktree-automation-backlog`, base `3639b18c` (= the branch's worktree-identity
@@ -19,9 +19,16 @@ superseded — one lane, one branch, serial order below.
 | **B** | `ciu-P04` → `ciu-P05` → `ciu-P06` → `ciu-P07` | The branch's own worktree-automation milestone, in its carved dependency order. P07 (assay qualification) closes this branch's CIU-28/CIU-29 (worktree identity/control — NOT the renumbered CIU-39 provenance ask). |
 | **C** | `ciu-P10-deploy-layouts` (depends P08) → `ciu-P11-host-scoped-secrets` | Both touch `cli.py` (`_USAGE`, `_VERB_HELP`, verb chain) — the surface P04–P06 rewrite, so they go AFTER B. P10 carries `[deployment] environment` per layout (dstdns D-105 Q2's endgame). |
 
-After each checkpoint: operator/controller reviews the diff, merges the branch to main
-(`--no-ff`, branch continues), updates `KNOWN_ISSUES_TODO_BACKLOG.md` rows (FIXED with
-evidence) + `CHANGES.md`, and cuts a release via the cmru flow — dstdns pins released
+**Rev 4 correction (2026-08-19, after the checkpoint-A review):** checkpoint A is
+**review-only** — ✅ DONE, see `nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md`
+(P08+P09 approved on-branch; hermetic gate 2092/0, 100.00%). Merging at A would have carried
+the branch's not-yet-P07-qualified worktree code to main. **The first merge-to-main + release
+happens after checkpoint B**, the second after C. The B merge must also clear the trove gate's
+changed-line finding recorded in that review: 6 `pragma: no cover` lines in
+`src/ciu/worktree.py` (`:225-226`, `:414-415`, `:668-669`, from `71f5ec79`) — test those arcs
+inside B (worktree.py is B's scope) or make `--allow-excluded` an explicit reviewed argv
+change. At each merge: review, `--no-ff`, update `KNOWN_ISSUES_TODO_BACKLOG.md` rows (FIXED
+with evidence) + `CHANGES.md`, cut a release via the cmru flow — dstdns pins released
 artifacts, not branches.
 
 ## Branch-specific deltas an implementer must know (measured at `3639b18c`)
