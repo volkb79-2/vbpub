@@ -35,153 +35,36 @@ container. This module refuses to remove a checkout it has not cleaned.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from . import config_model
 from . import procutil
+from .config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES
+from .paths import to_physical_path
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
-
-# S16.1 — shared-infra join intent keys (CIU-22). A worktree created with
-# `--shared-infra` carries these four in its OWN ciu.env; see
-# SharedInfraIntent / parse_shared_infra_intent below.
-SHARED_INFRA_REF_PATH = "CIU_SHARED_INFRA_REF_PATH"
-SHARED_INFRA_NETWORK = "CIU_SHARED_INFRA_NETWORK"
-SHARED_INFRA_SERVICES = "CIU_SHARED_INFRA_SERVICES"
-SHARED_INFRA_REF_PROJECTS = "CIU_SHARED_INFRA_REF_PROJECTS"
-
+WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
+WORKTREE_INSTANCE_SCHEMA_VERSION = 1
+WORKTREE_LIFECYCLE_STATES = frozenset(
+    {"allocating", "ready", "recovery-required"}
+)
+WORKTREE_RECOVERY_STATUSES = frozenset(
+    {"checkout-incomplete", "env-generation-failed", "runtime-collision"}
+)
+_ALLOCATION_LOCK_NAME = "ciu-worktree-allocation.lock"
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 class WorktreeError(RuntimeError):
     """A worktree operation failed (configuration/environment; exit 2)."""
-
-
-class DataIsolationError(RuntimeError):
-    """A data-isolation provision/drop operation failed (S16.2, CIU-23)."""
-
-
-class DataIsolationProvisioner(Protocol):
-    """Injectable seam (S16.2/CIU-23) for namespaced per-worktree data isolation.
-
-    `worktree add --data-isolation <profile>` needs a real Postgres (or
-    similar) server to prove naming/ordering/force/idempotency against, which
-    `tester-unified:local` cannot supply (no live database in this package's
-    gate). This Protocol is the injected test seam instead: tests exercise
-    the full contract against a FAKE implementation; :class:`PostgresProvisioner`
-    is the shipped, real default, exercised live only outside this gate
-    (CIU-26 tracks that deferred proof).
-    """
-
-    def provision(self, entity: str, profile: str) -> str:
-        """Create the namespaced *entity* under *profile* if absent.
-
-        Returns its connection DSN. Idempotent: re-provisioning an existing
-        entity must not fail or lose data. Raise :class:`DataIsolationError`
-        on a genuine failure.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement provision()"
-        )
-
-    def drop(self, entity: str, profile: str) -> None:
-        """Idempotently remove the namespaced *entity*.
-
-        Dropping an ALREADY-ABSENT entity is a no-op SUCCESS, never an error
-        — this is what makes a retried `worktree rm` safe after a prior
-        partial failure (see :func:`_drop_data_isolation_in`). Raise
-        :class:`DataIsolationError` only on a genuine failure (cannot
-        connect, permission denied, ...).
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement drop()"
-        )
-
-
-@dataclass(frozen=True)
-class PostgresProvisioner:
-    """Shipped default S16.2 provisioner: a thin wrapper around
-    ``docker exec <container> psql`` — the same docker-exec idiom
-    `provisioning.py`'s existing ``pg:`` probes already use, so this adds no
-    new dependency (no DB driver import).
-
-    *profile* is the target container's name (e.g. the compose service name
-    of the shared Postgres this worktree's databases live on); it defaults to
-    ``"postgres"`` when empty. This class's naming/ordering/force/idempotency
-    behaviour is proven in this package's gate against a FAKE
-    (:class:`DataIsolationProvisioner`) — it is not itself exercised live
-    in-gate (CIU-26 tracks the deferred real-server proof).
-    """
-
-    admin_user: str = "postgres"
-
-    def _psql(self, container: str, *args: str):
-        from . import procutil
-        return procutil.docker(
-            ["exec", container, "psql", "-U", self.admin_user, "-tAc", *args],
-            capture=True, check=False,
-        )
-
-    def _psql_script(self, container: str, sql: str):
-        """Run *sql* fed on STDIN (``-f -``), not ``-c``.
-
-        ``-c`` cannot mix a SQL statement with a ``\\gexec`` meta-command in
-        one argument — psql rejects it with a syntax error unconditionally.
-        Feeding the same text as a script on stdin has no such restriction.
-        ``docker exec -i`` is required so the daemon-side psql actually
-        receives what's piped in; without ``-i`` stdin is closed and ``-f -``
-        reads EOF immediately (an empty, silently-successful no-op that never
-        creates anything).
-        """
-        from . import procutil
-        return procutil.docker(
-            ["exec", "-i", container, "psql", "-U", self.admin_user, "-tA", "-f", "-"],
-            capture=True, check=False, input=sql,
-        )
-
-    def provision(self, entity: str, profile: str) -> str:
-        container = profile or "postgres"
-        sql = (
-            f"SELECT 'CREATE DATABASE \"{entity}\"' WHERE NOT EXISTS "
-            f"(SELECT FROM pg_database WHERE datname='{entity}')\\gexec\n"
-        )
-        result = self._psql_script(container, sql)
-        if result.returncode != 0:
-            raise DataIsolationError(
-                f"could not provision database {entity!r} on {container!r}: "
-                f"{(result.stderr or result.stdout or '').strip()}"
-            )
-        return f"postgresql://{self.admin_user}@{container}/{entity}"
-
-    def drop(self, entity: str, profile: str) -> None:
-        container = profile or "postgres"
-        result = self._psql(container, f'DROP DATABASE IF EXISTS "{entity}"')
-        if result.returncode != 0:
-            raise DataIsolationError(
-                f"could not drop database {entity!r} on {container!r}: "
-                f"{(result.stderr or result.stdout or '').strip()}"
-            )
-
-
-def _default_provisioner() -> DataIsolationProvisioner:
-    return PostgresProvisioner()
-
-
-def _data_isolation_entity(instance_id: str) -> str:
-    """The namespaced entity name for *instance_id* (S16.2).
-
-    A pure function of INSTANCE_ID (a hash of the PHYSICAL repo path, S2) —
-    NEVER of the worktree's ``name``. Two different CLONES of this repo can
-    legitimately choose the same worktree name; because they have different
-    physical paths they get different INSTANCE_IDs, so their entities never
-    collide. A name-keyed scheme would collide there; this cannot.
-    """
-    return f"ciu_{instance_id}"
 
 
 @dataclass(frozen=True)
@@ -196,6 +79,168 @@ class WorktreeInfo:
     def is_primary(self) -> bool:
         """True for the main checkout (never a candidate for `rm`)."""
         return not (self.path / ".git").is_file()
+
+
+@dataclass(frozen=True)
+class WorktreeInstanceRecord:
+    """Schema-v1 durable identity for one CIU-managed linked worktree.
+
+    The record deliberately contains no current Git revision (derived during
+    inspection) and no secret-bearing values.  It is written at the target
+    CIU root, which can be below the Git worktree root in a monorepo.
+    """
+
+    logical_name: str
+    display_name: str
+    branch: str
+    git_worktree_path: Path
+    ciu_root_offset: Path
+    created_at_utc: str
+    base_ref: str
+    state: str
+    instance_id: str | None = None
+    network: str | None = None
+    recovery_status: str | None = None
+    schema_version: int = WORKTREE_INSTANCE_SCHEMA_VERSION
+
+    @property
+    def ciu_root(self) -> Path:
+        return self.git_worktree_path / self.ciu_root_offset
+
+    @property
+    def record_path(self) -> Path:
+        return self.ciu_root / WORKTREE_INSTANCE_RECORD
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "logical_name": self.logical_name,
+            "display_name": self.display_name,
+            "branch": self.branch,
+            "git_worktree_path": str(self.git_worktree_path),
+            "ciu_root_offset": str(self.ciu_root_offset),
+            "created_at_utc": self.created_at_utc,
+            "base_ref": self.base_ref,
+            "state": self.state,
+            "runtime": {
+                "instance_id": self.instance_id,
+                "network": self.network,
+            },
+            "recovery_status": self.recovery_status,
+        }
+
+
+def _validate_name(value: str, *, label: str) -> str:
+    if not _NAME_RE.fullmatch(value):
+        raise WorktreeError(
+            f"[S16] invalid {label} {value!r}: expected one non-hidden Git-safe "
+            "component containing only letters, digits, '.', '_' or '-'"
+        )
+    return value
+
+
+def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
+    if not isinstance(raw, dict):
+        raise WorktreeError(f"[S16] {path} must contain one JSON object")
+    required = {
+        "schema_version", "logical_name", "display_name", "branch",
+        "git_worktree_path", "ciu_root_offset", "created_at_utc", "base_ref",
+        "state", "runtime", "recovery_status",
+    }
+    if set(raw) != required:
+        missing = sorted(required - set(raw))
+        unknown = sorted(set(raw) - required)
+        raise WorktreeError(
+            f"[S16] malformed {path}: missing={missing}, unknown={unknown}"
+        )
+    if raw["schema_version"] != WORKTREE_INSTANCE_SCHEMA_VERSION:
+        raise WorktreeError(
+            f"[S16] unsupported worktree record schema_version "
+            f"{raw['schema_version']!r} in {path}"
+        )
+    runtime = raw["runtime"]
+    if not isinstance(runtime, dict) or set(runtime) != {"instance_id", "network"}:
+        raise WorktreeError(f"[S16] malformed runtime identity in {path}")
+    scalar_strings = (
+        "logical_name", "display_name", "branch", "git_worktree_path",
+        "ciu_root_offset", "created_at_utc", "base_ref", "state",
+    )
+    if any(not isinstance(raw[key], str) or not raw[key] for key in scalar_strings):
+        raise WorktreeError(f"[S16] malformed required string field in {path}")
+    _validate_name(raw["logical_name"], label="logical name")
+    _validate_name(raw["display_name"], label="display name")
+    state = raw["state"]
+    if state not in WORKTREE_LIFECYCLE_STATES:
+        raise WorktreeError(f"[S16] unknown lifecycle state {state!r} in {path}")
+    recovery = raw["recovery_status"]
+    if recovery is not None and recovery not in WORKTREE_RECOVERY_STATUSES:
+        raise WorktreeError(f"[S16] unknown recovery status {recovery!r} in {path}")
+    for key, value in runtime.items():
+        if value is not None and (not isinstance(value, str) or not value):
+            raise WorktreeError(f"[S16] malformed runtime.{key} in {path}")
+    if state == "ready" and (
+        not runtime["instance_id"] or not runtime["network"] or recovery is not None
+    ):
+        raise WorktreeError(f"[S16] ready record lacks a closed runtime identity in {path}")
+    if state != "recovery-required" and recovery is not None:
+        raise WorktreeError(f"[S16] {state!r} record carries recovery_status in {path}")
+    offset = Path(raw["ciu_root_offset"])
+    if offset.is_absolute() or ".." in offset.parts:
+        raise WorktreeError(f"[S16] unsafe ciu_root_offset in {path}: {offset}")
+    git_path = Path(raw["git_worktree_path"])
+    if not git_path.is_absolute():
+        raise WorktreeError(f"[S16] git_worktree_path is not absolute in {path}")
+    return WorktreeInstanceRecord(
+        logical_name=raw["logical_name"], display_name=raw["display_name"],
+        branch=raw["branch"], git_worktree_path=git_path,
+        ciu_root_offset=offset, created_at_utc=raw["created_at_utc"],
+        base_ref=raw["base_ref"], state=state,
+        instance_id=runtime["instance_id"], network=runtime["network"],
+        recovery_status=recovery,
+    )
+
+
+def read_instance_record(path: Path) -> WorktreeInstanceRecord:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorktreeError(f"[S16] could not read valid instance record {path}: {exc}") from exc
+    return _record_from_dict(raw, path)
+
+
+def _write_instance_record(record: WorktreeInstanceRecord) -> None:
+    """Atomically replace one record; a crash yields old-or-new, never partial."""
+    path = record.record_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = json.dumps(record.to_dict(), indent=2, sort_keys=True) + "\n"
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise WorktreeError(f"[S16] could not atomically write {path}: {exc}") from exc
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def generated_worktree_name(prefix: str, feature: str, *, now: datetime | None = None) -> str:
+    """Return the unsuffixed human-sortable generated name (D-005)."""
+    _validate_name(prefix, label="generated prefix")
+    _validate_name(feature, label="feature description")
+    instant = now or _utc_now()
+    if instant.tzinfo is None:
+        raise WorktreeError("[S16] generated-name clock must be timezone-aware")
+    stamp = instant.astimezone(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{prefix}-{stamp}-{feature}"
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -247,7 +292,8 @@ class SharedInfraIntent:
     """S16.1/CIU-22 — a worktree's recorded intent to join a reference
     instance's shared-infra network, resolved and validated once at
     ``worktree add --shared-infra`` time and persisted verbatim into this
-    worktree's own ``ciu.env`` (see :func:`parse_shared_infra_intent`,
+    worktree's own global worktree overlay (see
+    :func:`parse_shared_infra_config`,
     :func:`connect_shared_infra_after_up`)."""
 
     ref_path: Path
@@ -275,39 +321,100 @@ def _split_unique_list(raw: str, *, label: str) -> tuple[str, ...]:
     return tuple(items)
 
 
-def parse_shared_infra_intent(values: Mapping[str, str]) -> SharedInfraIntent | None:
-    """The SOLE reader of the S16.1 shared-infra intent recorded in a
-    worktree's own ``ciu.env`` (CIU-22). Called by ``engine.py`` against
-    ``os.environ`` after bootstrap.
+def _config_string_list(value: Any, *, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise WorktreeError(f"[S16.1] {label} must be a non-empty string array")
+    items = tuple(item.strip() for item in value)
+    if len(set(items)) != len(items):
+        raise WorktreeError(f"[S16.1] {label} contains a duplicate item")
+    return items
 
-    All four fields absent returns ``None`` — an ordinary worktree, unaffected
-    by this feature. Any PARTIAL, empty, malformed, or duplicate-containing
-    group raises :class:`WorktreeError`: no consumer may silently proceed on a
-    corrupt intent (a hand-edited or truncated ``ciu.env``).
-    """
-    keys = (
-        SHARED_INFRA_REF_PATH, SHARED_INFRA_NETWORK,
-        SHARED_INFRA_SERVICES, SHARED_INFRA_REF_PROJECTS,
-    )
-    present = [k for k in keys if values.get(k)]
-    if not present:
+
+def parse_shared_infra_config(global_config: Mapping[str, Any]) -> SharedInfraIntent | None:
+    """Read the closed S16.1 intent from the rendered worktree config layer."""
+    ciu = global_config.get("ciu", {})
+    if not isinstance(ciu, dict):
+        raise WorktreeError("[S16.1] [ciu] must be a table")
+    instance = ciu.get("instance", {})
+    if not isinstance(instance, dict):
+        raise WorktreeError("[S16.1] [ciu.instance] must be a table")
+    raw = instance.get("shared_infra")
+    if raw is None:
         return None
-    missing = [k for k in keys if not values.get(k)]
-    if missing:
+    if not isinstance(raw, dict):
+        raise WorktreeError("[S16.1] [ciu.instance.shared_infra] must be a table")
+    required = {"ref_path", "network", "services", "ref_projects"}
+    if set(raw) != required:
         raise WorktreeError(
-            f"[S16.1] partial shared-infra intent in ciu.env: {', '.join(missing)} "
-            f"missing while {', '.join(present)} set. This checkout's ciu.env is "
-            "corrupt or was hand-edited; regenerate it via `ciu worktree add "
-            "--shared-infra ...` or remove all four CIU_SHARED_INFRA_* fields."
+            "[S16.1] malformed [ciu.instance.shared_infra]: "
+            f"missing={sorted(required - set(raw))}, "
+            f"unknown={sorted(set(raw) - required)}"
         )
+    if not isinstance(raw["ref_path"], str) or not raw["ref_path"]:
+        raise WorktreeError("[S16.1] shared_infra.ref_path must be a non-empty string")
+    if not isinstance(raw["network"], str) or not raw["network"]:
+        raise WorktreeError("[S16.1] shared_infra.network must be a non-empty string")
     return SharedInfraIntent(
-        ref_path=Path(values[SHARED_INFRA_REF_PATH]),
-        network=values[SHARED_INFRA_NETWORK],
-        services=_split_unique_list(values[SHARED_INFRA_SERVICES], label=SHARED_INFRA_SERVICES),
-        ref_projects=_split_unique_list(
-            values[SHARED_INFRA_REF_PROJECTS], label=SHARED_INFRA_REF_PROJECTS
+        ref_path=Path(raw["ref_path"]), network=raw["network"],
+        services=_config_string_list(raw["services"], label="shared_infra.services"),
+        ref_projects=_config_string_list(
+            raw["ref_projects"], label="shared_infra.ref_projects"
         ),
     )
+
+
+def _worktree_overlay_text(
+    profile: str | None, shared_infra: SharedInfraIntent | None
+) -> str | None:
+    """Render CIU-owned initial local settings as a sparse TOML template."""
+    profiles = _split_unique_list(profile, label="--profile") if profile else ()
+    if not profiles and shared_infra is None:
+        return None
+    lines = [
+        "# Worktree-local sparse global override (S3.1b / S16).",
+        "# Durable configuration: preserved by `ciu clean` and `ciu env generate`.",
+        "[ciu.instance]",
+    ]
+    if profiles:
+        lines.append(f"service_profiles = {json.dumps(list(profiles))}")
+    if shared_infra is not None:
+        lines.extend([
+            "",
+            "[ciu.instance.shared_infra]",
+            f"ref_path = {json.dumps(str(shared_infra.ref_path))}",
+            f"network = {json.dumps(shared_infra.network)}",
+            f"services = {json.dumps(list(shared_infra.services))}",
+            f"ref_projects = {json.dumps(list(shared_infra.ref_projects))}",
+        ])
+    return "\n".join(lines) + "\n"
+
+
+def _write_worktree_overlay(
+    ciu_root: Path, profile: str | None, shared_infra: SharedInfraIntent | None
+) -> None:
+    payload = _worktree_overlay_text(profile, shared_infra)
+    if payload is None:
+        return
+    path = ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    if path.exists():
+        raise WorktreeError(
+            f"[S16] refusing to overwrite existing worktree override {path}"
+        )
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("x", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise WorktreeError(f"[S16] could not write {path}: {exc}") from exc
 
 
 def _check_reference_network_and_projects(network: str, ref_projects: tuple[str, ...]) -> None:
@@ -371,7 +478,11 @@ def _preflight_shared_infra_for_add(
     checks only; see the module's O1 contract."""
     from .workspace_env import parse_workspace_env
 
-    ref = find_worktree(repo_root, shared_infra)
+    managed_ref = find_instance_record(repo_root, shared_infra)
+    ref = (
+        find_worktree(repo_root, str(managed_ref.git_worktree_path))
+        if managed_ref is not None else find_worktree(repo_root, shared_infra)
+    )
     if ref is None:
         raise WorktreeError(
             f"[S16.1] --shared-infra {shared_infra!r} does not resolve to a "
@@ -379,7 +490,7 @@ def _preflight_shared_infra_for_add(
             "what exists."
         )
 
-    ref_env_file = ref.path / "ciu.env"
+    ref_env_file = ref.path / _ciu_root_offset(repo_root) / "ciu.env"
     if not ref_env_file.is_file():
         raise WorktreeError(
             f"[S16.1] {ref_env_file} does not exist, so CIU cannot read the "
@@ -409,7 +520,7 @@ def _preflight_shared_infra_for_add(
     )
 
 
-def _generate_env_in(worktree: Path) -> int:
+def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
     """Run ``ciu env generate`` INSIDE *worktree*, with the primary checkout's
     repo-path variables STRIPPED from the child environment.
 
@@ -427,6 +538,8 @@ def _generate_env_in(worktree: Path) -> int:
                      "INSTANCE_ID", "REPO_NAME", "CIU_SERVICES_PROFILE")
     }
     argv = [sys.executable, "-m", "ciu.cli", "env", "generate"]
+    if identity_only:
+        argv.append("--identity-only")
     try:
         return subprocess.run(argv, cwd=str(worktree), env=env, check=False).returncode
     except OSError as exc:  # pragma: no cover - environmental
@@ -475,26 +588,813 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
         raise WorktreeError(f"[S16] could not run `ciu clean`: {exc}") from exc
 
 
-def add(
+@contextmanager
+def _allocation_lock(repo_root: Path) -> Iterator[None]:
+    lock_path = _git_common_dir(repo_root) / _ALLOCATION_LOCK_NAME
+    try:
+        lock_fh = open(lock_path, "a+")
+    except OSError as exc:
+        raise WorktreeError(f"[S16] could not open allocation lock {lock_path}: {exc}") from exc
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+
+
+def _record_ignore_pattern(offset: Path) -> str:
+    parts = [] if offset == Path(".") else list(offset.parts)
+    return "/" + "/".join([*parts, WORKTREE_INSTANCE_RECORD])
+
+
+def _ensure_record_is_excluded(repo_root: Path, offset: Path) -> None:
+    """Locally exclude CIU's identity record for every sibling checkout."""
+    exclude = _git_common_dir(repo_root) / "info" / "exclude"
+    pattern = _record_ignore_pattern(offset)
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        if pattern not in existing:
+            with exclude.open("a", encoding="utf-8") as fh:
+                if existing and exclude.stat().st_size:
+                    fh.write("\n" if not exclude.read_text(encoding="utf-8").endswith("\n") else "")
+                fh.write(pattern + "\n")
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not exclude machine identity record via {exclude}: {exc}"
+        ) from exc
+
+
+def list_instance_records(repo_root: Path) -> list[WorktreeInstanceRecord]:
+    """Read and cross-check every managed record in one Git family."""
+    offset = _ciu_root_offset(repo_root)
+    records: list[WorktreeInstanceRecord] = []
+    logical_names: set[str] = set()
+    for wt in list_worktrees(repo_root):
+        path = wt.path / offset / WORKTREE_INSTANCE_RECORD
+        if not path.is_file():
+            continue
+        record = read_instance_record(path)
+        if record.git_worktree_path.resolve() != wt.path.resolve():
+            raise WorktreeError(
+                f"[S16] {path} claims Git path {record.git_worktree_path}, "
+                f"but Git registers {wt.path}"
+            )
+        if record.ciu_root_offset != offset:
+            raise WorktreeError(
+                f"[S16] {path} claims CIU-root offset {record.ciu_root_offset}, "
+                f"but this family derives {offset}"
+            )
+        if record.branch != wt.branch:
+            raise WorktreeError(
+                f"[S16] {path} claims branch {record.branch!r}, "
+                f"but Git registers {wt.branch!r}"
+            )
+        if record.logical_name in logical_names:
+            raise WorktreeError(
+                f"[S16] duplicate logical worktree identity {record.logical_name!r} "
+                "within one Git family"
+            )
+        logical_names.add(record.logical_name)
+        records.append(record)
+    return records
+
+
+def find_instance_record(repo_root: Path, logical_name: str) -> WorktreeInstanceRecord | None:
+    matches = [
+        record for record in list_instance_records(repo_root)
+        if record.logical_name == logical_name
+    ]
+    if len(matches) > 1:
+        raise WorktreeError(f"[S16] ambiguous logical identity {logical_name!r}")
+    return matches[0] if matches else None
+
+
+# ---------------------------------------------------------------------------
+# S16.4 / S16.5 — structured JSON documents and capability discovery (D-009)
+# ---------------------------------------------------------------------------
+
+WORKTREE_JSON_SCHEMA_VERSION = 1
+CAPABILITIES_SCHEMA_VERSION = 1
+
+# Closed operation vocabulary for every structured document. The status
+# vocabulary is WORKTREE_LIFECYCLE_STATES plus the terminal "removed"; a
+# recovery-required instance additionally carries a closed recovery_status
+# (WORKTREE_RECOVERY_STATUSES).
+WORKTREE_JSON_OPERATIONS = frozenset({
+    "add", "adopt", "create", "ensure", "inspect", "list", "remove",
+})
+WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
+
+# The closed, sorted allowlist of shipped machine contracts. Consumers
+# allowlist these identifiers instead of inferring features from SemVer
+# (D-009). An identifier is added only when its code path ships in the SAME
+# release; `worktree.up.v1`/`worktree.exec-local.v1` ship in P05;
+# `worktree.exec-target.v1` ships in P06.
+WORKTREE_CAPABILITIES = (
+    "worktree.identity.v1",
+    "worktree.inspect.v1",
+    "worktree.lifecycle-json.v1",
+    "worktree.up.v1",
+    "worktree.exec-local.v1",
+    "worktree.exec-target.v1",
+)
+
+
+def build_instance_document(
+    operation: str,
+    record: WorktreeInstanceRecord,
+    git_facts: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One versioned instance document: the persisted record plus, when
+    *git_facts* is supplied, freshly derived Git facts (S16.4). *operation*
+    must be a member of the closed :data:`WORKTREE_JSON_OPERATIONS`
+    vocabulary; *status* is the record's own lifecycle state."""
+    if operation not in WORKTREE_JSON_OPERATIONS:
+        raise WorktreeError(
+            f"[S16] unknown document operation {operation!r}; closed vocabulary: "
+            f"{', '.join(sorted(WORKTREE_JSON_OPERATIONS))}"
+        )
+    doc: dict[str, Any] = {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": operation,
+        "status": record.state,
+        "instance": record.to_dict(),
+    }
+    if git_facts is not None:
+        doc["git"] = dict(git_facts)
+    return doc
+
+
+def _current_git_facts(repo_root: Path, record: WorktreeInstanceRecord) -> dict[str, Any]:
+    """Freshly read Git facts for one managed instance (S16.4).
+
+    The registered path, branch/detached state and HEAD come from the CURRENT
+    ``git worktree list``; dirty comes from ``git status --porcelain``. A
+    record whose checkout is no longer a registered worktree, or whose status
+    cannot be read, is a refusal — never a repaired or guessed value.
+    """
+    wt = find_worktree(repo_root, str(record.git_worktree_path))
+    if wt is None:
+        raise WorktreeError(
+            f"[S16] instance record claims {record.git_worktree_path}, but Git "
+            f"no longer registers that checkout as a worktree under {repo_root}"
+        )
+    status = _git(["status", "--porcelain"], wt.path)
+    if status.returncode != 0:
+        raise WorktreeError(
+            f"[S16] could not read git status for {wt.path}: "
+            f"{(status.stderr or status.stdout).strip()}"
+        )
+    return {
+        "registered": True,
+        "path": str(wt.path),
+        "branch": wt.branch,
+        "detached": wt.branch == "(detached)",
+        "primary": wt.is_primary,
+        "head": wt.head,
+        "dirty": bool(status.stdout.strip()),
+    }
+
+
+def inspect_instance(repo_root: Path, logical_name: str) -> dict[str, Any]:
+    """Build the ``ciu worktree inspect LOGICAL --json`` document (S16.4).
+
+    No logical record is a refusal; a record whose Git facts cannot be read
+    truthfully is a refusal. Never a stale-record-only result.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    return build_instance_document(
+        "inspect", record, _current_git_facts(repo_root, record)
+    )
+
+
+def list_instances(repo_root: Path) -> dict[str, Any]:
+    """Build the ``ciu worktree list --json`` document: every managed
+    instance with its freshly derived Git facts, in git's own order."""
+    repo_root = Path(repo_root).resolve()
+    instances = [
+        build_instance_document(
+            "inspect", record, _current_git_facts(repo_root, record)
+        )
+        for record in list_instance_records(repo_root)
+    ]
+    return {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": "list",
+        "status": "ready",
+        "instances": instances,
+    }
+
+
+def remove_document(
     repo_root: Path,
     name: str,
+    *,
+    yes: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Run the existing clean-then-remove and return the versioned removal
+    document (S16.4). The validated pre-state (the instance record, when the
+    worktree is managed) is captured before removal; success is emitted only
+    after BOTH clean and ``git worktree remove`` complete. A failure is the
+    existing :class:`WorktreeError` (identifying retained resources) — no
+    success document is ever produced."""
+    repo_root = Path(repo_root).resolve()
+    record = find_instance_record(repo_root, name)
+    removed_path = remove(repo_root, name, yes=yes, force=force)
+    doc: dict[str, Any] = {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": "remove",
+        "status": "removed",
+        "removed_path": str(removed_path),
+    }
+    if record is not None:
+        doc["instance"] = record.to_dict()
+    return doc
+
+
+def capabilities_document() -> dict[str, Any]:
+    """The versioned, closed capability allowlist (S16.5 / D-009). Only
+    machine contracts shipped in THIS release are advertised."""
+    return {
+        "schema_version": CAPABILITIES_SCHEMA_VERSION,
+        "capabilities": sorted(WORKTREE_CAPABILITIES),
+    }
+
+
+# ---------------------------------------------------------------------------
+# S16.6 — exact selected-worktree control (`worktree up` / `worktree exec`)
+# ---------------------------------------------------------------------------
+
+# Ambient environment keys that describe SOME CIU instance (root, identity,
+# network, profile). They are stripped from the child environment so a
+# sibling checkout's values can never contaminate the selected instance.
+_CIU_IDENTITY_ENV_KEYS = (
+    "REPO_ROOT",
+    "PHYSICAL_REPO_ROOT",
+    "DOCKER_NETWORK_INTERNAL",
+    "INSTANCE_ID",
+    "REPO_NAME",
+    "CIU_SERVICES_PROFILE",
+)
+
+# The exact target ciu.env keys required to identify the selected record/root.
+_REQUIRED_TARGET_ENV_KEYS = (
+    "REPO_ROOT",
+    "PHYSICAL_REPO_ROOT",
+    "INSTANCE_ID",
+    "DOCKER_NETWORK_INTERNAL",
+    "REPO_NAME",
+)
+
+
+def _require_ready_record(
+    repo_root: Path, logical_name: str
+) -> WorktreeInstanceRecord:
+    """One exact ready managed record, or a refusal (missing or not ready)."""
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    if record.state != "ready":
+        raise WorktreeError(
+            f"[S16] instance {logical_name!r} is {record.state}, not ready; "
+            f"resume it with `ciu worktree ensure {logical_name}`"
+        )
+    return record
+
+
+def _sanitized_target_env(
+    repo_root: Path, record: WorktreeInstanceRecord
+) -> dict[str, str]:
+    """The child environment for the selected instance (S16.6).
+
+    Ambient process environment MINUS every CIU root/identity/network/profile
+    key, then overlaid with the target's OWN exact parsed ``ciu.env`` values —
+    never sourced through a shell, never inherited from a sibling. The parsed
+    values must identify the selected record/root: a missing key, or a
+    REPO_ROOT / INSTANCE_ID / network that disagrees with the record, is a
+    refusal, never an invented fallback.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
+    env_path = record.ciu_root / "ciu.env"
+    from .workspace_env import parse_workspace_env
+
+    try:
+        parsed = parse_workspace_env(env_path)
+    except (OSError, ValueError) as exc:
+        raise WorktreeError(f"[S16] could not parse {env_path}: {exc}") from exc
+    missing = [k for k in _REQUIRED_TARGET_ENV_KEYS if not parsed.get(k)]
+    if missing:
+        raise WorktreeError(
+            f"[S16] {env_path} lacks required identity key(s): "
+            f"{', '.join(missing)}"
+        )
+    if Path(parsed["REPO_ROOT"]).resolve() != record.ciu_root.resolve():
+        raise WorktreeError(
+            f"[S16] {env_path} REPO_ROOT {parsed['REPO_ROOT']!r} does not "
+            f"match the selected instance's CIU root {record.ciu_root}"
+        )
+    if parsed["INSTANCE_ID"] != record.instance_id:
+        raise WorktreeError(
+            f"[S16] {env_path} INSTANCE_ID {parsed['INSTANCE_ID']!r} does not "
+            f"match the selected record's {record.instance_id!r}"
+        )
+    if parsed["DOCKER_NETWORK_INTERNAL"] != record.network:
+        raise WorktreeError(
+            f"[S16] {env_path} DOCKER_NETWORK_INTERNAL "
+            f"{parsed['DOCKER_NETWORK_INTERNAL']!r} does not match the "
+            f"selected record's {record.network!r}"
+        )
+    env.update(parsed)
+    return env
+
+
+def _run_child(
+    argv: list[str], cwd: Path, env: Mapping[str, str]
+) -> subprocess.CompletedProcess:
+    """Run *argv* (no shell) in *cwd* under *env*; return the raw result.
+
+    The single subprocess seam for `worktree up`/`worktree exec`, so tests
+    replace exactly this call — never the whole subprocess module, which would
+    also swallow the git plumbing.
+    """
+    return subprocess.run(list(argv), cwd=str(cwd), env=dict(env), check=False)
+
+
+def up_instance(repo_root: Path, logical_name: str) -> int:
+    """``ciu worktree up LOGICAL`` — start the selected ready instance exactly.
+
+    Parses that instance's OWN ``ciu.env`` by exact path, builds the
+    sanitized child environment (:func:`_sanitized_target_env`), and invokes
+    CIU's existing up entry point as a subprocess in the instance's CIU root —
+    never in-process, so the target's own ``REPO_ROOT``/identity rule honestly.
+    Returns the child's exact exit code; a missing/not-ready record, an
+    invalid/mismatched target env, or a child-start failure refuses loudly.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    env = _sanitized_target_env(repo_root, record)
+    import sys
+
+    argv = [sys.executable, "-m", "ciu.cli", "up"]
+    try:
+        res = _run_child(argv, record.ciu_root, env)
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not run `ciu up` in {record.ciu_root}: {exc}"
+        ) from exc
+    return res.returncode
+
+
+def exec_instance(repo_root: Path, logical_name: str, argv: list[str]) -> int:
+    """``ciu worktree exec LOGICAL -- ARGV...`` — run exact argv WITHOUT a
+    shell in the selected ready instance's CIU root, under the sanitized
+    target environment. Never starts/cleans/renders anything implicitly.
+    Returns the child's exact exit code (never a wrapper-masked value).
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    if not argv or argv[0] != "--":
+        raise WorktreeError(
+            "[S16] `ciu worktree exec LOGICAL -- ARGV...` requires a `--` "
+            "separator and at least one argv element"
+        )
+    child_argv = argv[1:]
+    if not child_argv:
+        raise WorktreeError(
+            "[S16] exec requires at least one argv element after `--`"
+        )
+    env = _sanitized_target_env(repo_root, record)
+    try:
+        res = _run_child(child_argv, record.ciu_root, env)
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not run exec argv in {record.ciu_root}: {exc}"
+        ) from exc
+    return res.returncode
+
+
+# ---------------------------------------------------------------------------
+# S16.7 — declared worktree container targets (`exec --target`)
+# ---------------------------------------------------------------------------
+
+_EXEC_TARGET_KEYS = frozenset({"stack", "service", "workdir", "requires_worktree_mount"})
+
+
+@dataclass(frozen=True)
+class ExecTarget:
+    """One declared ``[ciu.worktree.exec_targets.<alias>]`` entry (S16.7).
+
+    The alias is a Git-safe single component; ``stack``/``service``/``workdir``
+    are required non-empty strings; ``requires_worktree_mount`` is a boolean
+    defaulting to true (false is the only opt-out). Exactly these four keys
+    exist — there is no arbitrary service-selection escape hatch.
+    """
+
+    alias: str
+    stack: str
+    service: str
+    workdir: str
+    requires_worktree_mount: bool
+
+
+def parse_exec_targets(raw: Mapping[str, Any]) -> dict[str, ExecTarget]:
+    """Validate ``[ciu.worktree.exec_targets]`` and return ``alias ->
+    ExecTarget``. Unknown keys, unknown aliases, empty strings, or malformed
+    booleans refuse loudly.
+    """
+    targets: dict[str, ExecTarget] = {}
+    for alias, entry in raw.items():
+        _validate_name(alias, label="exec target alias")
+        if not isinstance(entry, Mapping):
+            raise WorktreeError(f"[S16.7] exec target {alias!r} must be a table")
+        unknown = set(entry) - _EXEC_TARGET_KEYS
+        if unknown:
+            raise WorktreeError(
+                f"[S16.7] exec target {alias!r} has unknown key(s): "
+                f"{', '.join(sorted(unknown))}"
+            )
+        for key in ("stack", "service", "workdir"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value:
+                raise WorktreeError(
+                    f"[S16.7] exec target {alias!r} requires a non-empty "
+                    f"string '{key}'"
+                )
+        requires = entry.get("requires_worktree_mount", True)
+        if not isinstance(requires, bool):
+            raise WorktreeError(
+                f"[S16.7] exec target {alias!r} 'requires_worktree_mount' must "
+                f"be a boolean, got {requires!r}"
+            )
+        targets[alias] = ExecTarget(
+            alias=alias,
+            stack=entry["stack"],
+            service=entry["service"],
+            workdir=entry["workdir"],
+            requires_worktree_mount=requires,
+        )
+    return targets
+
+
+def resolve_exec_targets_config(
+    global_config: Mapping[str, Any],
+) -> dict[str, ExecTarget]:
+    """Extract and validate ``[ciu.worktree.exec_targets]`` from a rendered
+    global config; empty mapping when none is declared."""
+    ciu = global_config.get("ciu", {})
+    if not isinstance(ciu, dict):
+        raise WorktreeError("[S16.7] [ciu] must be a table")
+    worktree_cfg = ciu.get("worktree")
+    if worktree_cfg is None:
+        return {}
+    if not isinstance(worktree_cfg, dict):
+        raise WorktreeError("[S16.7] [ciu.worktree] must be a table")
+    raw_targets = worktree_cfg.get("exec_targets")
+    if raw_targets is None:
+        return {}
+    if not isinstance(raw_targets, dict):
+        raise WorktreeError("[S16.7] [ciu.worktree.exec_targets] must be a table")
+    return parse_exec_targets(raw_targets)
+
+
+def _resolve_target_container(project: str, service: str, network: str) -> str:
+    """Exactly one RUNNING container for the selected compose project/service
+    on the selected instance's own network — never a substring match, and
+    never an implicit `up`. Zero or multiple matches refuse.
+    """
+    try:
+        res = procutil.docker(
+            [
+                "ps",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--filter", f"label=com.docker.compose.service={service}",
+                "--filter", f"network={network}",
+                "--format", "{{.ID}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not query target container for project {project!r} "
+            f"service {service!r} on network {network!r}: {exc}"
+        ) from exc
+    ids = [line for line in (res.stdout or "").splitlines() if line.strip()]
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.7] `docker ps` failed for target project {project!r} "
+            f"service {service!r}: {(res.stderr or res.stdout or '').strip()}"
+        )
+    if len(ids) != 1:
+        raise WorktreeError(
+            f"[S16.7] expected exactly one running container for project "
+            f"{project!r} service {service!r} on network {network!r}, found "
+            f"{len(ids)}; no `up` is ever started implicitly"
+        )
+    return ids[0]
+
+
+def _workdir_within(workdir: str, destination: str) -> bool:
+    """True when the container *workdir* equals *destination* or is a strict
+    subdirectory of it (path-component comparison, no filesystem access)."""
+    work = workdir.rstrip("/")
+    dest = destination.rstrip("/")
+    return work == dest or work.startswith(dest + "/")
+
+
+def _verify_worktree_mount(
+    container_id: str,
+    record: WorktreeInstanceRecord,
+    workdir: str,
+    env: Mapping[str, str],
+) -> None:
+    """Require a bind mount whose HOST source is the selected Git worktree's
+    physical path and whose CONTAINER destination contains the declared
+    workdir (S16.7).
+
+    Docker's own ``inspect`` output is the ONLY namespace authority: the
+    host-side ``Source`` is compared against the physical (host-namespace)
+    translation of the record's Git path (derived with the target's own
+    REPO_ROOT/PHYSICAL_REPO_ROOT), and the container-side ``Destination``
+    against the declared workdir. No local filesystem predicate is ever run on
+    a path belonging to the other namespace.
+    """
+    try:
+        res = procutil.docker(
+            ["inspect", "--format", "{{json .Mounts}}", container_id],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not inspect target container {container_id} "
+            f"mounts: {exc}"
+        ) from exc
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.7] `docker inspect` failed for {container_id}: "
+            f"{(res.stderr or res.stdout or '').strip()}"
+        )
+    try:
+        mounts = json.loads(res.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise WorktreeError(
+            f"[S16.7] `docker inspect` returned unparseable mounts for "
+            f"{container_id}"
+        ) from exc
+    physical = os.path.normpath(str(to_physical_path(
+        record.git_worktree_path,
+        repo_root=Path(env["REPO_ROOT"]),
+        physical_root=Path(env["PHYSICAL_REPO_ROOT"]),
+    )))
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        source = mount.get("Source")
+        destination = mount.get("Destination")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            continue
+        if os.path.normpath(source) != physical:
+            continue
+        if _workdir_within(workdir, destination):
+            return
+    raise WorktreeError(
+        f"[S16.7] target container {container_id} does not mount the selected "
+        f"worktree {physical} at a path containing workdir {workdir!r}"
+    )
+
+
+def exec_target_instance(
+    repo_root: Path, logical_name: str, alias: str, argv: list[str]
+) -> int:
+    """``ciu worktree exec LOGICAL --target ALIAS -- ARGV...`` — run exact
+    argv (no shell) inside the ONE already-running container for the declared
+    target of the selected instance.
+
+    All config/selection/mount validation happens BEFORE any Docker
+    execution; `up` is never started implicitly. The selected target's own
+    global chain is rendered (without writing) under the instance's exact
+    environment; the exact compose project/service/network identity is
+    derived with the existing naming rule; exactly one running container must
+    match; the worktree-mount proof is mandatory by default. Returns the exact
+    ``docker exec`` exit code.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    env = _sanitized_target_env(repo_root, record)
+    if not argv or argv[0] != "--":
+        raise WorktreeError(
+            "[S16.7] `ciu worktree exec LOGICAL --target ALIAS -- ARGV...` "
+            "requires a `--` separator and at least one argv element"
+        )
+    child_argv = argv[1:]
+    if not child_argv:
+        raise WorktreeError(
+            "[S16.7] exec --target requires at least one argv element after `--`"
+        )
+
+    global_config = config_model.render_global_chain(
+        record.ciu_root, record.ciu_root, write_rendered=False, environ=env
+    )
+    targets = resolve_exec_targets_config(global_config)
+    target = targets.get(alias)
+    if target is None:
+        declared = ", ".join(sorted(targets)) or "(none)"
+        raise WorktreeError(
+            f"[S16.7] no exec target alias {alias!r} declared in "
+            f"{record.ciu_root}; declared: {declared}"
+        )
+
+    from . import engine
+
+    stack = record.ciu_root / target.stack
+    try:
+        project = engine.compose_project_name(global_config, stack)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.7] could not derive the compose project for target "
+            f"{alias!r}: {exc}"
+        ) from exc
+    network = env["DOCKER_NETWORK_INTERNAL"]
+
+    container_id = _resolve_target_container(project, target.service, network)
+    if target.requires_worktree_mount:
+        _verify_worktree_mount(container_id, record, target.workdir, env)
+
+    # NO `--` in the docker argv: `docker exec` stops option-parsing at the
+    # CONTAINER positional, so a `--` after it would be executed AS the
+    # command inside the container (measured live at review: exit 127,
+    # `exec: "--": executable file not found`). The CLI-level `--` separator
+    # was already consumed by the parser; child_argv is verbatim.
+    docker_argv = ["exec", "-w", target.workdir, container_id, *child_argv]
+    try:
+        res = procutil.docker(docker_argv, capture=False, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not run `docker exec` in {container_id}: {exc}"
+        ) from exc
+    return res.returncode
+
+
+def _branch_exists(repo_root: Path, branch: str) -> bool:
+    return _git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], repo_root).returncode == 0
+
+
+def _runtime_identity(ciu_root: Path) -> tuple[str, str]:
+    from .workspace_env import parse_workspace_env
+
+    env_path = ciu_root / "ciu.env"
+    try:
+        values = parse_workspace_env(env_path)
+    except (OSError, ValueError) as exc:
+        raise WorktreeError(f"[S16] could not read generated runtime identity {env_path}: {exc}") from exc
+    instance_id = values.get("INSTANCE_ID", "")
+    network = values.get("DOCKER_NETWORK_INTERNAL", "")
+    if not instance_id or not network:
+        raise WorktreeError(
+            f"[S16] {env_path} lacks INSTANCE_ID or DOCKER_NETWORK_INTERNAL"
+        )
+    return instance_id, network
+
+
+def _check_runtime_collision(
+    repo_root: Path, record: WorktreeInstanceRecord, instance_id: str, network: str
+) -> None:
+    for other in list_instance_records(repo_root):
+        if other.logical_name == record.logical_name:
+            continue
+        if other.instance_id == instance_id:
+            raise WorktreeError(
+                f"[S16] runtime INSTANCE_ID {instance_id!r} already belongs to "
+                f"logical instance {other.logical_name!r}"
+            )
+        if other.network == network:
+            raise WorktreeError(
+                f"[S16] runtime network {network!r} already belongs to "
+                f"logical instance {other.logical_name!r}"
+            )
+
+
+def _docker_network_exists(network: str) -> bool:
+    """Check one exact host network name; Docker absence means local-only CIU."""
+    try:
+        result = procutil.docker(
+            ["network", "ls", "--filter", f"name=^{network}$", "--format", "{{.Name}}"],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    if result.returncode != 0:
+        raise WorktreeError(
+            f"[S16] could not verify host runtime-network uniqueness for "
+            f"{network!r}: {(result.stderr or result.stdout or '').strip()}"
+        )
+    return network in {line.strip() for line in (result.stdout or "").splitlines()}
+
+
+def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInstanceRecord:
+    failed = replace(record, state="recovery-required", recovery_status=status)
+    _write_instance_record(failed)
+    return failed
+
+
+def _finish_allocation(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    *,
+    checkout_required: bool,
+    allow_existing_network: bool = False,
+) -> WorktreeInstanceRecord:
+    if checkout_required:
+        checkout = _git(["reset", "--hard", record.base_ref], record.git_worktree_path)
+        if checkout.returncode != 0:
+            _mark_recovery(record, "checkout-incomplete")
+            raise WorktreeError(
+                f"[S16] allocated {record.git_worktree_path}, but checkout of "
+                f"{record.base_ref!r} failed: {(checkout.stderr or checkout.stdout).strip()}. "
+                f"Resume with `ciu worktree ensure {record.logical_name}`."
+            )
+
+    rc = _generate_env_in(record.ciu_root, identity_only=True)
+    if rc != 0:
+        _mark_recovery(record, "env-generation-failed")
+        raise WorktreeError(
+            f"[S16] worktree exists at {record.git_worktree_path}, but "
+            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+            f"Resume with `ciu worktree ensure {record.logical_name}`."
+        )
+    try:
+        instance_id, network = _runtime_identity(record.ciu_root)
+        _check_runtime_collision(repo_root, record, instance_id, network)
+        if not allow_existing_network and _docker_network_exists(network):
+            raise WorktreeError(
+                f"[S16] host runtime network {network!r} already exists before "
+                "this allocation; refusing a possible independent-clone collision"
+            )
+    except WorktreeError:
+        _mark_recovery(record, "runtime-collision")
+        raise
+    allocating = replace(
+        record, state="allocating", instance_id=instance_id, network=network,
+        recovery_status=None,
+    )
+    _write_instance_record(allocating)
+
+    rc = _generate_env_in(record.ciu_root)
+    if rc != 0:
+        _mark_recovery(allocating, "env-generation-failed")
+        raise WorktreeError(
+            f"[S16] worktree exists at {record.git_worktree_path}, but full "
+            f"`ciu env generate` failed in {record.ciu_root} (exit {rc}). "
+            f"Resume with `ciu worktree ensure {record.logical_name}`."
+        )
+    confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
+    if (confirmed_id, confirmed_network) != (instance_id, network):
+        _mark_recovery(allocating, "runtime-collision")
+        raise WorktreeError(
+            "[S16] runtime identity changed between identity-only and full env generation"
+        )
+    ready = replace(
+        allocating, state="ready", instance_id=instance_id, network=network,
+        recovery_status=None,
+    )
+    _write_instance_record(ready)
+    return ready
+
+
+def create(
+    repo_root: Path,
+    logical_name: str,
     *,
     base: str = "main",
     profile: str | None = None,
     worktree_dir: str = DEFAULT_WORKTREE_DIR,
-    data_isolation: str | None = None,
-    provisioner: DataIsolationProvisioner | None = None,
+    display_name: str | None = None,
+    prefix: str | None = None,
+    feature: str | None = None,
+    branch: str | None = None,
+    path: Path | None = None,
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
-) -> Path:
-    """Create worktree *name* and make it a ready-to-deploy CIU instance.
+) -> WorktreeInstanceRecord:
+    """Create a new managed worktree after family-wide collision admission.
 
-    Creates ``<repo>/<worktree_dir>/<name>`` on a new branch named *name* off
+    Creates ``<primary-git-root>/<worktree_dir>/<display>`` off
     *base*, then generates that checkout's own ``ciu.env`` — which is what gives
-    it a distinct ``INSTANCE_ID``, network and container prefix (S2). With
-    *profile*, narrows the instance to those service profiles (S7.5) by writing
-    ``CIU_SERVICES_PROFILE`` into the new ``ciu.env``.
+    it a distinct ``INSTANCE_ID``, network and container prefix (S2).
+    Worktree-local configuration is persisted separately in
+    ``ciu.global.worktree.toml.j2`` and survives env regeneration and clean.
 
     The worktree lives UNDER the repo root deliberately. A consumer whose gating
     test container bind-mounts the repo can then see it for free; a worktree in
@@ -502,16 +1402,6 @@ def add(
 
     Deploy is deliberately NOT performed: `add` prepares an instance, it does
     not decide that you want it running.
-
-    With *data_isolation* (S16.2/CIU-23), also provisions a database/schema
-    namespaced by THIS worktree's own ``INSTANCE_ID`` (never its *name* — see
-    :func:`_data_isolation_entity`) via an injectable *provisioner* (the real
-    Postgres-backed :class:`PostgresProvisioner` by default), and writes the
-    resulting connection identity into the new worktree's own ``ciu.env``.
-    That value MAY be credential-bearing (it can embed a DB user/host/name) —
-    it must NEVER be recommended as an ``env_passthrough`` candidate for a
-    consumer's own assay lane: a passthrough value lands in every verdict
-    artifact in cleartext.
 
     With *shared_infra* (S16.1/CIU-22), joins this instance's declared
     diverging-tier services onto an EXISTING reference worktree's shared-infra
@@ -524,25 +1414,23 @@ def add(
     partial input is a loud :class:`WorktreeError`, never silent inference
     from a compose file. The reference is fully validated (registered, its own
     ``ciu.env`` network, every declared reference project actually running on
-    it) BEFORE any side effect; `add` records the resolved intent into the new
-    worktree's own ``ciu.env`` but never joins anything itself — the actual
+    it) BEFORE any side effect; `create` records the resolved intent into the
+    new worktree's own local config overlay but never joins anything itself — the actual
     ``docker network connect`` calls happen later, at ``ciu up`` time, in the
     new worktree's own process (see :func:`connect_shared_infra_after_up`).
     This instance keeps its OWN ``DOCKER_NETWORK_INTERNAL`` throughout; only
     the declared diverging services later gain a SECOND membership.
     """
-    if not name or "/" in name or name.startswith("."):
-        raise WorktreeError(
-            f"[S16] invalid worktree name {name!r}: must be a single path "
-            "component, not starting with '.'"
-        )
-
-    target = repo_root / worktree_dir / name
-    if target.exists():
-        raise WorktreeError(
-            f"[S16] {target} already exists. Use `ciu worktree rm {name}` first, "
-            "or pick another name."
-        )
+    repo_root = Path(repo_root).resolve()
+    _validate_name(logical_name, label="logical name")
+    if bool(prefix) != bool(feature):
+        raise WorktreeError("[S16] --prefix and --feature must be supplied together")
+    if display_name is not None and prefix is not None:
+        raise WorktreeError("[S16] explicit display name conflicts with generated naming")
+    if display_name is not None:
+        _validate_name(display_name, label="display name")
+    if branch is not None and not branch:
+        raise WorktreeError("[S16] --branch cannot be empty")
 
     shared_infra_intent: SharedInfraIntent | None = None
     if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
@@ -560,159 +1448,211 @@ def add(
             shared_infra_ref_projects=shared_infra_ref_projects,
         )
 
-    res = _git(["worktree", "add", "-b", name, str(target), base], repo_root)
-    if res.returncode != 0:
-        raise WorktreeError(
-            f"[S16] `git worktree add` failed: "
-            f"{(res.stderr or res.stdout).strip()}"
-        )
+    offset = _ciu_root_offset(repo_root)
+    primary = primary_worktree_root(repo_root).resolve()
+    instant = _utc_now()
+    generated_base = (
+        generated_worktree_name(prefix, feature, now=instant)
+        if prefix is not None and feature is not None else None
+    )
 
-    # The new checkout's OWN ciu.env. Without this it would inherit whatever the
-    # ambient environment says and collide with the primary instance's network
-    # and container names — the failure this verb exists to prevent.
-    #
-    # Subprocess, for the same reason as _clean_in: this process's REPO_ROOT /
-    # PHYSICAL_REPO_ROOT normally describe the PRIMARY checkout, and generation
-    # reads them (CIU-10's reconciliation). Generating in-process would derive
-    # the new instance's identity from the old instance's environment.
-    rc = _generate_env_in(target)
-    if rc != 0:
-        raise WorktreeError(
-            f"[S16] worktree created at {target}, but `ciu env generate` failed "
-            f"there (exit {rc}). The checkout is NOT a usable instance yet; fix "
-            f"the cause and re-run `ciu env generate` in {target}."
-        )
+    with _allocation_lock(repo_root):
+        if find_instance_record(repo_root, logical_name) is not None:
+            raise WorktreeError(
+                f"[S16] logical worktree identity {logical_name!r} already exists; "
+                "use `ciu worktree ensure` to resume it"
+            )
+        _ensure_record_is_excluded(repo_root, offset)
 
-    if profile:
-        env_file = target / "ciu.env"
-        with env_file.open("a", encoding="utf-8") as fh:
-            fh.write(
-                "\n# Instance service narrowing (Seam 4 / S7.5), set by "
-                "`ciu worktree add --profile`\n"
-                f'export CIU_SERVICES_PROFILE="{profile}"\n'
+        suffix = 1
+        while True:
+            candidate_display = display_name or generated_base or logical_name
+            if generated_base is not None and suffix > 1:
+                candidate_display = f"{generated_base}-{suffix}"
+            _validate_name(candidate_display, label="display name")
+            candidate_branch = branch or candidate_display
+            target = (
+                (path if path.is_absolute() else primary / path)
+                if path is not None else primary / worktree_dir / candidate_display
+            ).resolve()
+            occupied = (
+                target.exists() or _branch_exists(repo_root, candidate_branch)
+                or any(wt.path.resolve() == target for wt in list_worktrees(repo_root))
+            )
+            if generated_base is not None and branch is None and path is None and occupied:
+                suffix += 1
+                continue
+            if occupied:
+                raise WorktreeError(
+                    f"[S16] requested branch/path is occupied: branch "
+                    f"{candidate_branch!r}, path {target}"
+                )
+            break
+
+        if generated_base is not None and (
+            candidate_branch != candidate_display or target.name != candidate_display
+        ):
+            raise WorktreeError(
+                "[S16] generated branch and worktree directory basename must be identical"
             )
 
-    if data_isolation:
-        instance_id = _read_instance_id(target)
-        entity = _data_isolation_entity(instance_id)
-        prov = provisioner or _default_provisioner()
+        res = _git(
+            ["worktree", "add", "--no-checkout", "-b", candidate_branch, str(target), base],
+            repo_root,
+        )
+        if res.returncode != 0:
+            raise WorktreeError(
+                f"[S16] `git worktree add` failed: "
+                f"{(res.stderr or res.stdout).strip()}"
+            )
+
+        record = WorktreeInstanceRecord(
+            logical_name=logical_name,
+            display_name=candidate_display,
+            branch=candidate_branch,
+            git_worktree_path=target,
+            ciu_root_offset=offset,
+            created_at_utc=instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            base_ref=base,
+            state="allocating",
+        )
+        _write_instance_record(record)
         try:
-            dsn = prov.provision(entity, data_isolation)
-        except DataIsolationError as exc:
-            raise WorktreeError(
-                f"[S16.2] worktree created at {target}, but provisioning the "
-                f"isolated database failed: {exc}. The checkout exists but has "
-                "no working data isolation; fix the cause and re-run "
-                "`ciu worktree add`, or omit --data-isolation."
-            ) from exc
-        env_file = target / "ciu.env"
-        with env_file.open("a", encoding="utf-8") as fh:
-            fh.write(
-                "\n# Data isolation (S16.2/CIU-23), set by "
-                "`ciu worktree add --data-isolation`.\n"
-                "# WARNING: this value MAY be credential-bearing (it can embed "
-                "a DB user/host/name). NEVER add it to a consumer's assay "
-                "env_passthrough list -- passthrough values land in every "
-                "verdict artifact in cleartext.\n"
-                f'export CIU_DATA_ISOLATION_ENTITY="{entity}"\n'
-                f'export CIU_DATA_ISOLATION_PROFILE="{data_isolation}"\n'
-                f'export CIU_DATA_ISOLATION_DSN="{dsn}"\n'
+            _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        except WorktreeError:
+            _mark_recovery(record, "checkout-incomplete")
+            raise
+        return _finish_allocation(repo_root, record, checkout_required=True)
+
+
+def add(
+    repo_root: Path,
+    name: str,
+    **kwargs: Any,
+) -> Path:
+    """Backward-compatible human create spelling; returns the checkout path."""
+    return create(repo_root, name, **kwargs).git_worktree_path
+
+
+def ensure(
+    repo_root: Path,
+    logical_name: str,
+    **create_kwargs: Any,
+) -> WorktreeInstanceRecord:
+    """Return an exact ready match or resume one CIU-owned partial allocation."""
+    _validate_name(logical_name, label="logical name")
+    with _allocation_lock(repo_root):
+        record = find_instance_record(repo_root, logical_name)
+        if record is not None:
+            requested_prefix = create_kwargs.get("prefix")
+            requested_feature = create_kwargs.get("feature")
+            if bool(requested_prefix) != bool(requested_feature):
+                raise WorktreeError("[S16] --prefix and --feature must be supplied together")
+            if requested_prefix and requested_feature:
+                created = datetime.fromisoformat(record.created_at_utc.replace("Z", "+00:00"))
+                expected_base = generated_worktree_name(
+                    requested_prefix, requested_feature, now=created
+                )
+                if not (
+                    record.display_name == expected_base
+                    or re.fullmatch(
+                        re.escape(expected_base) + r"-(?:[2-9]|[1-9][0-9]+)",
+                        record.display_name,
+                    )
+                ):
+                    raise WorktreeError(
+                        f"[S16] ensure generated-name mismatch: record has "
+                        f"{record.display_name!r}, requested base is {expected_base!r}"
+                    )
+            constraints = {
+                "display_name": create_kwargs.get("display_name"),
+                "branch": create_kwargs.get("branch"),
+                "git_worktree_path": create_kwargs.get("path"),
+            }
+            for field, expected in constraints.items():
+                if expected is None:
+                    continue
+                actual = getattr(record, field)
+                if field == "git_worktree_path":
+                    requested_path = Path(expected)
+                    expected = (
+                        requested_path if requested_path.is_absolute()
+                        else primary_worktree_root(repo_root) / requested_path
+                    ).resolve()
+                    actual = Path(actual).resolve()
+                if actual != expected:
+                    raise WorktreeError(
+                        f"[S16] ensure mismatch for {field}: record has "
+                        f"{actual!r}, caller requested {expected!r}"
+                    )
+            if record.state == "ready":
+                return record
+            checkout_required = record.recovery_status in (None, "checkout-incomplete")
+            return _finish_allocation(
+                repo_root, record, checkout_required=checkout_required,
+                allow_existing_network=record.recovery_status == "env-generation-failed",
             )
-
-    if shared_infra_intent is not None:
-        env_file = target / "ciu.env"
-        with env_file.open("a", encoding="utf-8") as fh:
-            fh.write(
-                "\n# Shared-infra join intent (S16.1/CIU-22), set by "
-                "`ciu worktree add --shared-infra`. Resolved and validated at "
-                "add-time; `ciu up` re-validates before joining -- this "
-                "instance's OWN DOCKER_NETWORK_INTERNAL never changes.\n"
-                f'export {SHARED_INFRA_REF_PATH}="{shared_infra_intent.ref_path}"\n'
-                f'export {SHARED_INFRA_NETWORK}="{shared_infra_intent.network}"\n'
-                f'export {SHARED_INFRA_SERVICES}="{",".join(shared_infra_intent.services)}"\n'
-                f'export {SHARED_INFRA_REF_PROJECTS}='
-                f'"{",".join(shared_infra_intent.ref_projects)}"\n'
-            )
-    return target
+    return create(repo_root, logical_name, **create_kwargs)
 
 
-def _read_instance_id(worktree: Path) -> str:
-    """The freshly-generated ``ciu.env``'s ``INSTANCE_ID`` (S2.7/S16.2)."""
-    from .workspace_env import parse_workspace_env
-
-    env_file = worktree / "ciu.env"
-    values = parse_workspace_env(env_file)
-    instance_id = values.get("INSTANCE_ID")
-    if not instance_id:
-        raise WorktreeError(
-            f"[S16.2] {env_file} has no INSTANCE_ID; `ciu env generate` should "
-            "always write one (S2.7), so this checkout is not a usable "
-            "instance. Cannot derive a namespaced data-isolation entity "
-            "without it."
-        )
-    return instance_id
-
-
-def _drop_data_isolation_in(
-    worktree: Path,
+def adopt(
+    repo_root: Path,
+    logical_name: str,
+    target: str,
     *,
-    force: bool,
-    provisioner: DataIsolationProvisioner | None,
-) -> None:
-    """S16.2/CIU-23 — drop this worktree's namespaced data-isolation entity.
-
-    A no-op when the worktree was never given ``--data-isolation`` (no
-    ``ciu.env``, or no ``CIU_DATA_ISOLATION_ENTITY`` in it) — fully backward
-    compatible with a worktree that has none.
-
-    Idempotent: dropping an already-absent entity is a provisioner-level
-    no-op success (see :class:`DataIsolationProvisioner`), which is what makes
-    a RETRIED ``worktree rm`` safe after a prior partial failure — if this
-    drop succeeded on an earlier attempt but ``_clean_in`` then failed and
-    aborted removal, the entity is already gone, ``ciu.env`` still names it,
-    and this function's next attempt re-runs against an absent entity and
-    succeeds trivially before ``_clean_in`` is retried.
-
-    Extends the module's clean-before-remove ordering rule to a SECOND
-    precondition: a FAILED drop aborts removal unless *force*, the same as a
-    failed ``ciu clean``. Unlike ``_clean_in``'s own SILENT force path, a
-    forced-through drop failure is NOT silent: it warns, naming the entity
-    that was not dropped and stating it is now the operator's problem.
-    """
-    env_file = worktree / "ciu.env"
-    if not env_file.is_file():
-        return
-
-    from .workspace_env import parse_workspace_env
-
-    try:
-        env = parse_workspace_env(env_file)
-    except OSError:
-        return  # unreadable; _clean_in raises its own, clearer error next
-
-    entity = env.get("CIU_DATA_ISOLATION_ENTITY")
-    if not entity:
-        return  # this worktree was never given --data-isolation
-
-    data_isolation_profile = env.get("CIU_DATA_ISOLATION_PROFILE", "")
-    prov = provisioner or _default_provisioner()
-    try:
-        prov.drop(entity, data_isolation_profile)
-    except DataIsolationError as exc:
-        if not force:
+    profile: str | None = None,
+    shared_infra: str | None = None,
+    shared_infra_services: str | None = None,
+    shared_infra_ref_projects: str | None = None,
+) -> WorktreeInstanceRecord:
+    """Explicitly take ownership of one registered, unmanaged linked checkout."""
+    repo_root = Path(repo_root).resolve()
+    _validate_name(logical_name, label="logical name")
+    shared_infra_intent: SharedInfraIntent | None = None
+    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+        if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
             raise WorktreeError(
-                f"[S16.2] could not drop data-isolation entity {entity!r}: "
-                f"{exc}. NOT proceeding with `ciu clean` — the database would "
-                "outlive the checkout that names it. Fix the cause and retry "
-                "(the drop is idempotent: an already-dropped entity is a "
-                "no-op), or pass --force to remove anyway (the entity becomes "
-                "your problem)."
-            ) from exc
-        print(
-            f"[WARN] [S16.2] --force: could not drop data-isolation entity "
-            f"{entity!r} ({exc}); it was NOT dropped and is now the "
-            "operator's problem.",
-            flush=True,
+                "[S16.1] adopt shared-infra options and --profile are all-or-nothing"
+            )
+        shared_infra_intent = _preflight_shared_infra_for_add(
+            repo_root, shared_infra=shared_infra,
+            shared_infra_services=shared_infra_services,
+            shared_infra_ref_projects=shared_infra_ref_projects,
+        )
+    with _allocation_lock(repo_root):
+        if find_instance_record(repo_root, logical_name) is not None:
+            raise WorktreeError(f"[S16] logical identity {logical_name!r} is already managed")
+        wt = find_worktree(repo_root, target)
+        if wt is None:
+            raise WorktreeError(f"[S16] {target!r} is not a registered worktree")
+        if wt.is_primary or wt.branch in ("(detached)", "(unknown)"):
+            raise WorktreeError("[S16] adopt requires one non-primary attached-branch worktree")
+        offset = _ciu_root_offset(repo_root)
+        record_path = wt.path / offset / WORKTREE_INSTANCE_RECORD
+        if record_path.exists():
+            raise WorktreeError(f"[S16] {wt.path} already has a managed instance record")
+        _ensure_record_is_excluded(repo_root, offset)
+        head = _git(["rev-parse", "HEAD"], wt.path)
+        if head.returncode != 0:
+            raise WorktreeError(f"[S16] cannot derive adopted checkout HEAD: {head.stderr.strip()}")
+        record = WorktreeInstanceRecord(
+            logical_name=logical_name, display_name=wt.path.name, branch=wt.branch,
+            git_worktree_path=wt.path.resolve(), ciu_root_offset=offset,
+            created_at_utc=_utc_now().isoformat().replace("+00:00", "Z"),
+            base_ref=head.stdout.strip(), state="allocating",
+        )
+        _write_instance_record(record)
+        if (record.ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES).exists() and (
+            profile or shared_infra_intent is not None
+        ):
+            _mark_recovery(record, "env-generation-failed")
+            raise WorktreeError(
+                f"[S16] {record.ciu_root} already has a worktree override; "
+                "refusing to replace it with adopt flags"
+            )
+        _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        return _finish_allocation(
+            repo_root, record, checkout_required=False, allow_existing_network=True
         )
 
 
@@ -722,23 +1662,20 @@ def remove(
     *,
     yes: bool = False,
     force: bool = False,
-    provisioner: DataIsolationProvisioner | None = None,
 ) -> Path:
-    """Dispose of worktree *name*: drop data isolation, ``ciu clean``, then
-    remove the checkout.
+    """Dispose of worktree *name*: ``ciu clean``, then remove the checkout.
 
     Never reorders those steps — see the module docstring. A clean that fails
     ABORTS the removal (unless *force*), because removing the checkout after a
     failed clean destroys the only config that could complete it and leaves
     root-owned volume dirs no unprivileged operator can delete.
 
-    When this worktree was created with ``--data-isolation`` (S16.2/CIU-23),
-    its namespaced database/schema is dropped FIRST, before ``ciu clean`` —
-    see :func:`_drop_data_isolation_in` for the full ordering/force/retry
-    contract, which mirrors and extends this function's own clean-before-
-    remove rule. A worktree with no data isolation is unaffected.
     """
-    wt = find_worktree(repo_root, name)
+    managed = find_instance_record(repo_root, name)
+    wt = (
+        find_worktree(repo_root, str(managed.git_worktree_path))
+        if managed is not None else find_worktree(repo_root, name)
+    )
     if wt is None:
         raise WorktreeError(
             f"[S16] no worktree named {name!r} under {repo_root}. "
@@ -750,12 +1687,11 @@ def remove(
             "not a worktree instance."
         )
 
-    _drop_data_isolation_in(wt.path, force=force, provisioner=provisioner)
-
-    rc = _clean_in(wt.path, yes=yes)
+    ciu_root = managed.ciu_root if managed is not None else wt.path / _ciu_root_offset(repo_root)
+    rc = _clean_in(ciu_root, yes=yes)
     if rc != 0 and not force:
         raise WorktreeError(
-            f"[S16] `ciu clean` failed (exit {rc}) in {wt.path}; NOT removing the "
+            f"[S16] `ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
             "checkout. Removing it now would destroy the rendered config that "
             "tells CIU what to clean, stranding root-owned vol-* directories "
             "that an unprivileged `rm -rf` cannot delete. Fix the cause and "
@@ -891,7 +1827,7 @@ def connect_shared_infra_after_up(
             "recorded reference, or `ciu down` this instance."
         )
 
-    ref_env_file = ref.path / "ciu.env"
+    ref_env_file = ref.path / _ciu_root_offset(repo_root) / "ciu.env"
     if not ref_env_file.is_file():
         raise WorktreeError(
             f"[S16.1] {ref_env_file} does not exist; the shared-infra reference "

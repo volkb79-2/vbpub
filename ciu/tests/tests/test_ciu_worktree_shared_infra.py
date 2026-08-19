@@ -5,7 +5,7 @@ Covers the handoff's three oracles:
 
 - O1: add-time validation (`_preflight_shared_infra_for_add`,
   `worktree.add`'s all-or-nothing group) and the recorded intent grammar
-  (`parse_shared_infra_intent`).
+  (`parse_shared_infra_config`).
 - O2/O3: the post-up join (`connect_shared_infra_after_up`) — reference
   revalidation, target-service discovery, Docker-STATE (never Docker
   diagnostic TEXT) concurrent-connect detection, and reverse-order rollback
@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,7 @@ def fake_generate_env(monkeypatch):
     synthetic ciu.env carrying a deterministic INSTANCE_ID and
     DOCKER_NETWORK_INTERNAL for the target's own physical path — no
     docker/subprocess dependency."""
-    def fake(path: Path) -> int:
+    def fake(path: Path, **_kw) -> int:
         (path / "ciu.env").write_text(
             f'export INSTANCE_ID="{hashlib.sha256(str(path).encode()).hexdigest()[:6]}"\n'
             f'export DOCKER_NETWORK_INTERNAL="{_network_for(path)}"\n',
@@ -75,6 +76,7 @@ def fake_generate_env(monkeypatch):
         )
         return 0
     monkeypatch.setattr(worktree, "_generate_env_in", fake)
+    monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
     return fake
 
 
@@ -200,17 +202,16 @@ class TestAddSharedInfra:
             shared_infra_services="api,worker",
             shared_infra_ref_projects="idp-dev-idp,vault-dev-vault",
         )
-        env_text = (target / "ciu.env").read_text(encoding="utf-8")
-        assert f'export CIU_SHARED_INFRA_REF_PATH="{ref_path}"' in env_text
-        assert f'export CIU_SHARED_INFRA_NETWORK="{ref_network}"' in env_text
-        assert 'export CIU_SHARED_INFRA_SERVICES="api,worker"' in env_text
-        assert 'export CIU_SHARED_INFRA_REF_PROJECTS="idp-dev-idp,vault-dev-vault"' in env_text
+        overlay_text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        assert f'ref_path = "{ref_path}"' in overlay_text
+        assert f'network = "{ref_network}"' in overlay_text
+        assert 'services = ["api", "worker"]' in overlay_text
+        assert 'ref_projects = ["idp-dev-idp", "vault-dev-vault"]' in overlay_text
+        assert "CIU_SHARED_INFRA" not in (target / "ciu.env").read_text(encoding="utf-8")
 
-    def test_success_round_trips_through_parse_shared_infra_intent(
+    def test_success_round_trips_through_parse_shared_infra_config(
         self, tmp_repo, fake_generate_env, ref_worktree, monkeypatch
     ):
-        from ciu.workspace_env import parse_workspace_env
-
         ref_path, ref_network = ref_worktree
         fake = ScriptedDocker()
         fake.on(lambda a: _is_network_inspect_exists(a, ref_network), _proc(0))
@@ -223,8 +224,10 @@ class TestAddSharedInfra:
             shared_infra_services="api",
             shared_infra_ref_projects="idp-dev-idp",
         )
-        values = parse_workspace_env(target / "ciu.env")
-        intent = worktree.parse_shared_infra_intent(values)
+        values = tomllib.loads(
+            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        )
+        intent = worktree.parse_shared_infra_config(values)
         assert intent == worktree.SharedInfraIntent(
             ref_path=ref_path, network=ref_network,
             services=("api",), ref_projects=("idp-dev-idp",),
@@ -472,22 +475,24 @@ class TestAddSharedInfra:
 
 
 # ---------------------------------------------------------------------------
-# parse_shared_infra_intent — the sole reader
+# parse_shared_infra_config — the sole reader
 # ---------------------------------------------------------------------------
 
 
-class TestParseSharedInfraIntent:
+class TestParseSharedInfraConfig:
     def test_all_absent_returns_none(self):
-        assert worktree.parse_shared_infra_intent({}) is None
-        assert worktree.parse_shared_infra_intent({"UNRELATED": "1"}) is None
+        assert worktree.parse_shared_infra_config({}) is None
+        assert worktree.parse_shared_infra_config({"unrelated": {"value": 1}}) is None
 
     def test_complete_intent_parses_in_order(self):
-        intent = worktree.parse_shared_infra_intent({
-            "CIU_SHARED_INFRA_REF_PATH": "/repo/.worktrees/primary-ref",
-            "CIU_SHARED_INFRA_NETWORK": "net-abc123",
-            "CIU_SHARED_INFRA_SERVICES": "api,worker",
-            "CIU_SHARED_INFRA_REF_PROJECTS": "idp-dev-idp,vault-dev-vault",
-        })
+        intent = worktree.parse_shared_infra_config({"ciu": {"instance": {
+            "shared_infra": {
+                "ref_path": "/repo/.worktrees/primary-ref",
+                "network": "net-abc123",
+                "services": ["api", "worker"],
+                "ref_projects": ["idp-dev-idp", "vault-dev-vault"],
+            }
+        }}})
         assert intent == worktree.SharedInfraIntent(
             ref_path=Path("/repo/.worktrees/primary-ref"),
             network="net-abc123",
@@ -496,30 +501,34 @@ class TestParseSharedInfraIntent:
         )
 
     def test_partial_intent_raises_naming_missing_fields(self):
-        with pytest.raises(worktree.WorktreeError, match="CIU_SHARED_INFRA_NETWORK"):
-            worktree.parse_shared_infra_intent({
-                "CIU_SHARED_INFRA_REF_PATH": "/repo/.worktrees/primary-ref",
-                "CIU_SHARED_INFRA_SERVICES": "api",
-                "CIU_SHARED_INFRA_REF_PROJECTS": "idp-dev-idp",
-            })
+        with pytest.raises(worktree.WorktreeError, match="missing=.*network"):
+            worktree.parse_shared_infra_config({"ciu": {"instance": {
+                "shared_infra": {
+                    "ref_path": "/repo/.worktrees/primary-ref",
+                    "services": ["api"],
+                    "ref_projects": ["idp-dev-idp"],
+                }
+            }}})
 
-    def test_duplicate_service_in_stored_env_raises(self):
-        with pytest.raises(worktree.WorktreeError, match="duplicate item"):
-            worktree.parse_shared_infra_intent({
-                "CIU_SHARED_INFRA_REF_PATH": "/repo/.worktrees/primary-ref",
-                "CIU_SHARED_INFRA_NETWORK": "net-abc123",
-                "CIU_SHARED_INFRA_SERVICES": "api,api",
-                "CIU_SHARED_INFRA_REF_PROJECTS": "idp-dev-idp",
-            })
+    def test_duplicate_service_in_stored_config_raises(self):
+        with pytest.raises(worktree.WorktreeError, match="duplicate"):
+            worktree.parse_shared_infra_config({"ciu": {"instance": {
+                "shared_infra": {
+                    "ref_path": "/repo/.worktrees/primary-ref",
+                    "network": "net-abc123", "services": ["api", "api"],
+                    "ref_projects": ["idp-dev-idp"],
+                }
+            }}})
 
-    def test_blank_item_in_stored_env_raises(self):
-        with pytest.raises(worktree.WorktreeError, match="blank items"):
-            worktree.parse_shared_infra_intent({
-                "CIU_SHARED_INFRA_REF_PATH": "/repo/.worktrees/primary-ref",
-                "CIU_SHARED_INFRA_NETWORK": "net-abc123",
-                "CIU_SHARED_INFRA_SERVICES": "api",
-                "CIU_SHARED_INFRA_REF_PROJECTS": "idp-dev-idp,,vault-dev-vault",
-            })
+    def test_blank_item_in_stored_config_raises(self):
+        with pytest.raises(worktree.WorktreeError, match="non-empty string array"):
+            worktree.parse_shared_infra_config({"ciu": {"instance": {
+                "shared_infra": {
+                    "ref_path": "/repo/.worktrees/primary-ref",
+                    "network": "net-abc123", "services": ["api"],
+                    "ref_projects": ["idp-dev-idp", "", "vault-dev-vault"],
+                }
+            }}})
 
 
 # ---------------------------------------------------------------------------

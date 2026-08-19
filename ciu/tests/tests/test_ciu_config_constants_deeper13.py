@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.config_constants import (  # noqa: E402
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_OVERRIDES,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
@@ -71,6 +72,7 @@ def test_non_rendered_names_are_not_partially_converted(filename):
     [
         GLOBAL_CONFIG_DEFAULTS,
         GLOBAL_CONFIG_OVERRIDES,
+        GLOBAL_CONFIG_WORKTREE_OVERRIDES,
         GLOBAL_CONFIG_RENDERED,
         STACK_CONFIG_DEFAULTS,
         STACK_CONFIG_OVERRIDES,

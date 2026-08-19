@@ -7,6 +7,63 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## Unreleased
+
+### Added
+
+- Added declared container targets for worktree exec (CIU-29/D-007):
+  `ciu worktree exec LOGICAL --target ALIAS -- ARGV...` runs exact argv (no
+  shell) inside the ONE already-running container for a target declared as
+  `[ciu.worktree.exec_targets.<alias>]` (closed four-key grammar: `stack`,
+  `service`, `workdir`, `requires_worktree_mount` defaulting to true; unknown
+  keys/aliases/empty strings/malformed booleans refuse before Docker). Exact
+  project/service/network selection (never a substring), exactly one running
+  container required (never an implicit `up`), a Docker-namespace-correct
+  worktree-mount proof by default, and the exact `docker exec` exit code
+  returned. Capability adds `worktree.exec-target.v1`. SPEC S16.7.
+- Added exact selected-worktree control (CIU-29/D-007): `ciu worktree up
+  LOGICAL` starts one `ready` instance under its OWN parsed `ciu.env` (ambient
+  CIU identity stripped, target values overlaid and cross-checked against the
+  record; mismatch refuses) and returns the child's exact exit code; `ciu
+  worktree exec LOGICAL -- ARGV...` runs exact argv with no shell in that
+  root, never starts anything implicitly, and propagates the exact code.
+  Capabilities add `worktree.up.v1` + `worktree.exec-local.v1`. SPEC S16.6.
+- Added structured worktree control (CIU-29/D-009): `ciu worktree inspect
+  LOGICAL --json`, `ciu worktree list --json`, and `ciu worktree rm --json`
+  emit one versioned (`schema_version: 1`) JSON document with a closed
+  `operation`/`status` vocabulary, the persisted instance record, and freshly
+  derived Git facts (registered path, branch/detached, HEAD, dirty, primary) —
+  a record/Git mismatch refuses, never guesses. Added `ciu capabilities
+  --json`: a separately versioned, closed allowlist of shipped machine
+  contracts (`worktree.identity.v1`, `worktree.inspect.v1`,
+  `worktree.lifecycle-json.v1`). SPEC S16.4/S16.5; new
+  docs/DESIGN-GUIDE.md (WHY) and docs/CONSUMERS.md (HOW) with a
+  documentation-contract test.
+- Added optional `schema` to configfile entries (CIU-37): the rendered app
+  config is validated against the app's JSON Schema (Draft 2020-12, TOML
+  targets only) at render time, failing with the key path. `jsonschema` is an
+  optional dependency (`pip install 'ciu[schema]'`); declared schemas fail
+  loudly when it is absent, never silently skip. SPEC S5.7.
+- Added `[deploy].landscape_id` (CIU-36): a consumer-opt-in shared-landscape
+  identity exposed to templates, validated as a DNS-label-safe slug
+  (`^[a-z][a-z0-9-]{0,62}$`) on the final merged global config (including the
+  worktree overlay). Documented in CONFIG.md/SPEC.md S3.11.
+- Added schema-v1 managed worktree identity records; family-locked UTC name
+  allocation; explicit `create`, `adopt`, and idempotent `ensure`; nested CIU
+  root translation; runtime collision admission; and versioned lifecycle JSON.
+- Added the gitignored sparse `ciu.global.worktree.toml.j2` layer. It is merged
+  after committed global configuration and preserved by `ciu clean` and
+  `ciu env generate`; managed profile/shared-infrastructure choices no longer
+  contaminate generated machine-identity `ciu.env`.
+
+### Removed
+
+- **Breaking:** withdrew the unused `ciu worktree add --data-isolation` API,
+  `DataIsolationProvisioner`, and `PostgresProvisioner`. CIU-23 was based on an
+  incorrect description of dstdns's schema gate: that consumer deliberately
+  uses a disposable PostgreSQL container and never adopted CIU's shared-server
+  provider. CIU-26 is consequently obsolete rather than fixed.
+
 ## [6.0.3] - 2026-08-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=5681b42b5b8e2a21acfbd6b5578e5bd26f293118 -->
@@ -177,4 +234,3 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 - Applied `standalone_root` consistently to render operations and corrected
   stale physical-root detection in Docker-outside-of-Docker environments.
-

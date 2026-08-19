@@ -1433,9 +1433,93 @@ def test_action_clean_invariant_passes_when_clean(monkeypatch, tmp_path):
     assert rc == 0
 
 
+def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
+    """S16: clean removes runtime/rendered state, never instance inputs."""
+    config = _teardown_config()
+    profile = MagicMock()
+    profile.config = config
+    durable = {
+        "ciu.env": 'export INSTANCE_ID="abc123"\n',
+        "ciu.global.worktree.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
+        "ciu.worktree-instance.json": '{"schema_version": 1}\n',
+    }
+    for name, body in durable.items():
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
+    monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg: [])
+
+    assert deploy.action_clean(tmp_path, profile, [], ignore_errors=True) == 0
+    for name, body in durable.items():
+        assert (tmp_path / name).read_text(encoding="utf-8") == body
+
+
 # ---------------------------------------------------------------------------
 # Seam 4 — --profile repeatable + comma form (§8 AC#7)
 # ---------------------------------------------------------------------------
+
+
+def test_worktree_local_service_profiles_are_default_selection(monkeypatch):
+    cfg = {
+        "ciu": {"instance": {"service_profiles": ["core", "db"]}},
+        "deploy": {
+            "phases": {
+                "phase_1": {"enabled": True, "services": []},
+                "phase_2": {"enabled": True, "services": []},
+            },
+            "profiles": {
+                "core": {"phases": ["phase_1"]},
+                "db": {"phases": ["phase_2"]},
+            },
+        },
+    }
+    monkeypatch.setenv("CIU_SERVICES_PROFILE", "ignored-legacy-env")
+    profile = deploy.resolve_profiles(cfg, None)
+    assert profile.phase_keys == {"phase_1", "phase_2"}
+
+
+def test_cli_service_profiles_override_worktree_local_selection():
+    cfg = {
+        "ciu": {"instance": {"service_profiles": ["core"]}},
+        "deploy": {
+            "phases": {
+                "phase_1": {"enabled": True, "services": []},
+                "phase_2": {"enabled": True, "services": []},
+            },
+            "profiles": {
+                "core": {"phases": ["phase_1"]},
+                "db": {"phases": ["phase_2"]},
+            },
+        },
+    }
+    profile = deploy.resolve_profiles(cfg, ["db"])
+    assert profile.phase_keys == {"phase_2"}
+
+
+@pytest.mark.parametrize(
+    "instance",
+    [
+        {"service_profiles": []},
+        {"service_profiles": ["core", ""]},
+        {"service_profiles": ["core", 3]},
+    ],
+)
+def test_worktree_local_service_profiles_reject_malformed_values(instance):
+    with pytest.raises(ValueError, match="non-empty string array"):
+        deploy.resolve_profiles({"ciu": {"instance": instance}}, None)
+
+
+def test_worktree_local_service_profiles_reject_duplicates():
+    with pytest.raises(ValueError, match="duplicate"):
+        deploy.resolve_profiles(
+            {"ciu": {"instance": {"service_profiles": ["core", "core"]}}}, None
+        )
+
+
+def test_non_table_ciu_or_instance_does_not_invent_worktree_selection(monkeypatch):
+    monkeypatch.delenv("CIU_SERVICES_PROFILE", raising=False)
+    assert deploy.resolve_profiles({"ciu": []}, None).name is None
+    assert deploy.resolve_profiles({"ciu": {"instance": []}}, None).name is None
 
 class TestDeployParseArgsProfileSeam4:
     """Tests for the deploy.parse_args --profile repeatable flag."""

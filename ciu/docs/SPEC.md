@@ -156,7 +156,9 @@ requirements are marked *(withdrawn)*.
 - **S3.1** File roles:
   `ciu.global.defaults.toml.j2` (committed, full defaults) +
   `ciu.global.toml.j2` (**committed sparse override**, see S3.1a; optional —
-  if absent, defaults apply only) → rendered `ciu.global.toml` (gitignored);
+  if absent, defaults apply only) + optional gitignored
+  `ciu.global.worktree.toml.j2` (S3.1b, merged last) → rendered
+  `ciu.global.toml` (gitignored);
   per stack `ciu.defaults.toml.j2` (committed, full defaults) +
   `ciu.toml.j2` (**committed sparse override**, see S3.1a; optional, **not
   auto-created** — if absent, defaults apply only) → rendered `ciu.toml`
@@ -167,7 +169,8 @@ requirements are marked *(withdrawn)*.
   no generated intermediate now, so nothing can go stale.)
 
 - **S3.1a** Override constraints — apply identically to the global override
-  (`ciu.global.toml.j2`) and the per-stack override (`ciu.toml.j2`):
+  (`ciu.global.toml.j2`), worktree-local override
+  (`ciu.global.worktree.toml.j2`), and per-stack override (`ciu.toml.j2`):
   1. **Secret-free**: CIU MUST scan the raw template text before rendering.
      Any PEM key/certificate block (`-----BEGIN`) or sensitive key name
      (`password`, `token`, `secret`, `api_key`, `credential`, …) paired
@@ -180,10 +183,19 @@ requirements are marked *(withdrawn)*.
      recursively. Lists in the override replace the defaults list entirely
      (no concatenation). Key deletion is not supported — use the falsy
      equivalent (`false`, `""`, `[]`) to disable a default.
-  4. **Not auto-created**: CIU never generates either override file. Create it
+  4. **Committed overrides are not auto-created**: CIU never generates the
+     committed global or stack override. Create it
      manually in the repository with only the structural overrides needed; an
      absent override is the normal case (defaults apply alone). `clean`/`--reset`
      remove rendered outputs but MUST NOT remove a committed override.
+
+- **S3.1b** The optional `<ciu-root>/ciu.global.worktree.toml.j2` is a sparse,
+  non-secret, gitignored input for one checkout. It is merged after every
+  committed global layer and before stack defaults. Managed lifecycle commands
+  may create its initial `ciu.instance.service_profiles` and
+  `ciu.instance.shared_infra` values; operators may add ordinary sparse global
+  overrides afterward. `ciu clean` and `ciu env generate` MUST preserve it.
+  Worktree configuration MUST NOT be appended to generated `ciu.env`.
 
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
@@ -234,6 +246,19 @@ requirements are marked *(withdrawn)*.
   `{{ auto_generated.* }}` (not `${BUILD_VERSION}` interpolation).
 - **S3.10** Hyphenated path components map to underscores for key lookup
   (v1 behavior ratified).
+- **S3.11** A consumer MAY declare `[deploy].landscape_id` in global config
+  (opt-in; absence is legal) as the shared identity of one deployment
+  landscape — e.g. a consumer renders its Consul KV root
+  `dstdns/<landscape_id>/…` and mesh ACL tags from it. When present, CIU MUST
+  validate it on the **final merged** global config — after the committed
+  chain and the worktree overlay (S3.1b) — and it MUST match
+  `^[a-z][a-z0-9-]{0,62}$` (a DNS-label-safe slug: lowercase letter first,
+  then lowercase letters, digits, or hyphens). Violation = abort naming the
+  key and the pattern. Validation is once-per-render, never per chain
+  directory, so a later layer that corrects an earlier value is honored. This
+  value is distinct from the configfile render context's `instance_id`
+  (S7.5b) — a per-service replica index, not the workspace `INSTANCE_ID`
+  (S2) and not landscape-scoped.
 
 ## S4 — Secrets
 
@@ -401,6 +426,24 @@ requirements are marked *(withdrawn)*.
   secrets = files".
 - **S5.6** v1's unused `SERVICE_CONFIG_DEFAULTS`/`SERVICE_CONFIG_ACTIVE`
   constants are withdrawn.
+- **S5.7** A configfile section MAY declare an optional
+  `schema = "<path relative to the stack dir>"` key: a JSON Schema (Draft
+  2020-12) for the rendered config (CIU-37). The consumer's generated schema
+  is the source; CIU performs no schema authoring, defaulting, or coercion.
+  Declaration errors are caught in the same key-validation block as
+  `template`/`target`/`instances`, BEFORE any render: a non-path or missing
+  schema file aborts immediately. v1 validates **TOML targets only**: the
+  rendered bytes are parsed with `tomllib` and validated against the schema
+  immediately after the atomic write (S8.4) and before the mount is emitted
+  (S5.3). A violation fails the run with a tagged error naming the service,
+  the configfile (with its per-instance suffix when `instances > 1`), and the
+  offending KEY PATH (jsonschema's `absolute_path` joined with '.'); the
+  invalid rendered file is removed so it is never consumable. `jsonschema` is
+  an OPTIONAL dependency (`ciu[schema]`): when a schema is declared and it is
+  not importable, the run fails loudly pointing at the extra — never a silent
+  skip. With no schema key declared anywhere, the library is never imported.
+  This runs on the up/dev path (engine step 12); the `ciu render` verb renders
+  TOML configs only and does not validate configfiles.
 
 ### S5.3a — Directory-level mount, not file-level (hardening)
 
@@ -2078,30 +2121,56 @@ Migration recipes: docs/MIGRATION-V2.md.
 
 ## S16 — Worktree instances (`ciu worktree`)
 
-A git worktree of a CIU repo is already a distinct instance: `INSTANCE_ID` is a
+A git worktree of a CIU repo is already a distinct runtime: `INSTANCE_ID` is a
 hash of the PHYSICAL repo path (S2), so a second checkout gets its own network,
 container prefix and volumes. `ciu worktree` is the verb that composes what CIU
 already knows into one operation.
 
-- **`worktree add NAME [--base REF] [--profile P1,P2] [--worktree-dir DIR] [--data-isolation PROFILE] [--shared-infra REF --shared-infra-services S1,S2 --shared-infra-ref-projects R1,R2]`** —
-  creates `<repo>/<dir>/NAME` on a new branch NAME off `--base` (default
-  `main`), then generates that checkout's OWN `ciu.env`. `--profile` writes
-  `CIU_SERVICES_PROFILE` into it (S7.5 narrowing). It does NOT deploy: `add`
-  prepares an instance, it does not decide you want it running. `--data-isolation`
-  additionally provisions a namespaced data slot (S16.2). `--shared-infra`
+- **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout.
+  Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
+  branch and directory basename are identical, with a suffix only on an actual
+  same-second collision under the Git-family allocation lock.
+- **`worktree ensure LOGICAL [...]`** — returns an exact ready match without
+  rewriting it, creates when absent, or resumes only a mechanically recognized
+  CIU-owned partial allocation. Any requested identity mismatch refuses.
+- **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
+  ownership of a registered unmanaged linked checkout.
+- **`worktree add NAME [...]`** — retained human shorthand for create with
+  logical/display/branch/directory basename all equal to NAME. It does NOT deploy: `add`
+  prepares an instance, it does not decide you want it running. `--shared-infra`
   joins the new instance's declared diverging services onto an existing
   reference instance's shared network (S16.1).
-- **`worktree rm NAME [-y] [--force]`** — when the worktree was created with
-  `--data-isolation`, first drops its namespaced data slot (S16.2), then runs
-  `ciu clean` INSIDE the worktree under that worktree's own `ciu.env`, and only
-  then `git worktree remove`. **The order is normative.** `ciu down` preserves
+- **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
+  under that worktree's own `ciu.env`, and only then `git worktree remove`.
+  **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
   config that tells CIU what to clean. A failed clean ABORTS the removal unless
-  `--force`; a failed data-isolation drop does too (S16.2).
+  `--force`.
 - **`worktree list`** — registered worktrees, primary marked.
 
-Both sub-operations run as SUBPROCESSES under the target worktree's environment.
+Every managed linked checkout has an atomic schema-v1, non-secret
+`<target-ciu-root>/ciu.worktree-instance.json`. It records the family-scoped
+logical identity, display/branch/Git-path facts, exact Git-root-to-CIU-root
+offset, allocation time, base reference, lifecycle state
+(`allocating | ready | recovery-required`), and runtime identity once derived.
+Current HEAD is inspected from Git and is never frozen in the record. The
+record owns identity/lifecycle; `ciu.global.worktree.toml.j2` owns local
+configuration; `ciu.env` owns generated machine facts. Each fact has one
+authority.
+
+Create/adopt admission rejects an occupied logical identity, path, or active
+branch before allocation. CIU first writes an `allocating` record into a
+`--no-checkout` linked worktree, so interruption remains attributable; it then
+checks out the base and generates identity-only `ciu.env`. Before any network
+bootstrap it rejects duplicate family `INSTANCE_ID`/network values and an
+already-existing exact Docker network (independent-clone collision). Docker
+absence is valid for local-only projects; a present but failing Docker endpoint
+is not treated as absence. Only full env bootstrap followed by an unchanged
+identity marks the record `ready`; failure writes one closed recovery status.
+
+Environment generation and clean run as subprocesses at the exact target CIU
+root (which may be nested below the Git worktree root).
 In-process would violate S1.1 (`--define-root` must agree with `REPO_ROOT`,
 which describes the PRIMARY checkout) and, for generation, would derive the new
 instance's identity from the old instance's environment. The worktree's
@@ -2129,10 +2198,9 @@ reference Compose project (`--shared-infra-ref-projects`) has a running
 container on that network — AND-combined, never OR, and scoped to both the
 network and the exact project label, so a bare labelled-container count
 elsewhere on the host is never mistaken for liveness. Only then does it
-create the checkout and record the resolved intent
-(`CIU_SHARED_INFRA_REF_PATH`, `CIU_SHARED_INFRA_NETWORK`,
-`CIU_SHARED_INFRA_SERVICES`, `CIU_SHARED_INFRA_REF_PROJECTS`) into the new
-worktree's OWN `ciu.env`. The actual `docker network connect` calls happen
+create the checkout and record the resolved intent under
+`[ciu.instance.shared_infra]` in the new worktree's OWN
+`ciu.global.worktree.toml.j2`. The actual `docker network connect` calls happen
 later, in the new worktree's own process, after `docker compose up`
 succeeds — never during `add`, and never before Compose has brought this
 instance's own stack up on its own network.
@@ -2173,7 +2241,7 @@ explicitly `ciu down`.
 The gate (`tester-unified:local`) has no Docker socket, so every branch
 above — liveness, target discovery, the concurrent-connect state check, and
 rollback — is proven against a scripted fake at the `procutil.docker`
-boundary, the same seam S16.2's provisioner tests use.
+boundary.
 
 **`--shipped` (S8.5/S8.7) with no derivable compose project is a deliberate
 additional refusal.** When `deploy.project_name`/`environment_tag` are unset,
@@ -2187,45 +2255,6 @@ which value Compose actually chose, not because a wrong value would corrupt
 anything (an unmatched filter just finds zero containers and fails the
 existing "no running container" check harmlessly). The ordinary no-intent
 legacy fallback is completely unaffected.
-
-### S16.2 — Namespaced data isolation (CIU-23)
-
-`worktree add --data-isolation <profile>` provisions a database/schema
-namespaced by the new instance's own `INSTANCE_ID` (S2) — NEVER by its
-`NAME` — via an injectable `DataIsolationProvisioner` (a `Protocol`
-implemented by `worktree.PostgresProvisioner`, the real Postgres-backed
-shipped default). Naming by `INSTANCE_ID` rather than `NAME` is load-bearing:
-`INSTANCE_ID` is a hash of the PHYSICAL repo path, so two different CLONES of
-the repo that independently choose the SAME worktree name get different
-`INSTANCE_ID`s and therefore never collide on one entity — a name-keyed
-scheme would.
-
-The resulting connection identity (entity name, profile, DSN) is written into
-the new worktree's own `ciu.env` as `CIU_DATA_ISOLATION_ENTITY` /
-`CIU_DATA_ISOLATION_PROFILE` / `CIU_DATA_ISOLATION_DSN`. **This value MAY be
-credential-bearing** (a DSN can embed a database user/host/name) and MUST
-NEVER be recommended as an `env_passthrough` candidate for a consumer's own
-assay lane — a passthrough value lands in every verdict artifact in
-cleartext.
-
-`worktree rm` drops the namespaced entity BEFORE `ciu clean` (extending the
-module's clean-before-remove ordering to a second precondition). The drop is
-IDEMPOTENT: dropping an already-absent entity is a no-op success, which is
-what makes a RETRIED `worktree rm` safe after a prior partial failure — if
-the drop succeeded on an earlier attempt but `ciu clean` then failed and
-aborted removal, the checkout and its `ciu.env` (naming the now-dead DSN)
-remain; the retried `rm` re-runs the drop as a no-op, then retries `ciu
-clean`. A FAILED drop aborts removal unless `--force`. Unlike `worktree
-rm`'s existing `--force` path over a failed `ciu clean` (which proceeds
-silently), a `--force`-masked drop failure WARNS, naming the entity that was
-not dropped and stating it is now the operator's problem — it is not mirrored
-from the existing silent path, it improves on it.
-
-The injectable provisioner is deliberately the test seam: this package's gate
-(`tester-unified:local`) has no live Postgres server, so naming, ordering,
-force semantics, and the idempotent-retry contract are proven against a FAKE
-implementation of `DataIsolationProvisioner`. A real-server proof against the
-shipped `PostgresProvisioner` is deliberately deferred — tracked as CIU-26.
 
 ### S16.3 — Worktree instance concurrency budget (CIU-24)
 
@@ -2290,11 +2319,10 @@ rather than silently treating a real ambient request as "no cap".
 
 **The deployment classifier.** Candidates are exclusively the entries in
 `git worktree list --porcelain`; the primary is always included. A candidate
-is *registered* only when its own `<git-worktree>/ciu.env` exists, parses,
+is *registered* only when its own `<git-worktree>/<ciu-root-offset>/ciu.env` exists, parses,
 and supplies a distinct, non-empty `DOCKER_NETWORK_INTERNAL` — the same file
-location `worktree.add` already writes to and S16.1's shared-infra join
-already reads from (a per-worktree machine-identity file, not something
-nested inside an offset-translated CIU root). For each registered candidate,
+location managed lifecycle writes to and S16.1's shared-infra join already
+reads from. For each registered candidate,
 its own CIU root is `entry.path / offset` and its own stack is that root plus
 the caller's relative `stack_rel` — a literal path append that retains every
 component of a nested CIU root. A candidate stack genuinely absent from a
@@ -2354,12 +2382,112 @@ the count/start decision any safer.
 
 The gate (`tester-unified:local`) has no Docker socket, so the classifier,
 the lock discipline, and both engine call sites are proven against the same
-scripted `worktree.procutil.docker` fake S16.1 and S16.2's tests use; the
+scripted `worktree.procutil.docker` fake S16.1's tests use; the
 lock's held-continuously-across-the-executor discipline is proven by wrapping
 the real `fcntl.flock` and recording every transition, and genuine two-thread
 contention (real `fcntl.flock`, no sleeps) proves the second waiter of two
 simultaneous cold starts re-counts and refuses once the first's deployment
 becomes visible.
+
+### S16.4 — Structured JSON documents (D-009)
+
+`ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
+lifecycle verbs (`create`/`ensure`/`adopt`/`add`) with `--json`, and
+`ciu worktree rm --json` each emit **exactly one JSON document on stdout**
+(`schema_version: 1`); diagnostics go to stderr. The `operation` vocabulary is
+closed (`create | ensure | adopt | add | inspect | list | remove`) and the
+`status` vocabulary is closed (`allocating | ready | recovery-required |
+removed`); a `recovery-required` instance additionally carries a closed
+`recovery_status` (`checkout-incomplete | env-generation-failed |
+runtime-collision`). The persisted schema-v1 instance record is nested under
+`instance` (`WorktreeInstanceRecord.to_dict()`); current Git facts are nested
+under `git`.
+
+Git facts are freshly read from Git, never inferred from a name or a stale
+record: `git.registered` (the record's checkout is a current registered
+worktree), `git.path`, `git.branch` (or `(detached)`), `git.detached`,
+`git.primary`, `git.head`, and `git.dirty` (`git status --porcelain`). A record
+whose checkout is no longer registered, or whose status cannot be read, is a
+refusal — never a repaired or guessed value; a missing logical record is a
+refusal; a duplicate or mismatched record is a refusal (S16's existing
+family-scan rules). `list --json` emits an array of the same per-instance
+documents, primary first in git's own order.
+
+Removal captures the validated pre-state (the instance record, when managed)
+and emits success only after BOTH `ciu clean` and `git worktree remove`
+complete; a failure is the existing `WorktreeError` identifying the retained
+resources — never a success document.
+
+### S16.5 — Capability discovery (D-009)
+
+`ciu capabilities [--json]` exposes a **separately versioned, closed
+allowlist** of shipped machine contracts (`schema_version: 1`,
+`capabilities`: sorted identifiers). Consumers allowlist these identifiers
+instead of inferring features from SemVer. An identifier is added only when
+its code path ships in the same release. Shipped identifiers:
+`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
+`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
+
+### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
+
+`ciu worktree up LOGICAL` and `ciu worktree exec LOGICAL -- ARGV...` operate
+on **exactly one** selected `ready` managed record. A missing record, or a
+record in `allocating`/`recovery-required`, refuses — no child starts.
+
+Both build the child environment from the target's OWN exact
+`<record.ciu_root>/ciu.env` (parsed, never sourced through a shell): the
+ambient process environment MINUS every CIU root/identity/network/profile key
+(`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`, `INSTANCE_ID`,
+`REPO_NAME`, `CIU_SERVICES_PROFILE`), then overlaid with the parsed target
+values. The parsed target must carry `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
+`INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`, and `REPO_NAME`, and each must match
+the selected record/root: a missing key, a `REPO_ROOT` other than the record's
+CIU root, or an `INSTANCE_ID`/network differing from the record is a refusal,
+never a fallback and never a sibling's value.
+
+`worktree up` invokes CIU's existing up entry point as a subprocess in
+`record.ciu_root` under that environment; `worktree exec` runs the exact argv
+(after a mandatory `--` separator) with no shell in that root. Both propagate
+the child's exact exit code — never a wrapper-masked value. `exec` never
+starts, cleans, or renders anything implicitly; the presence of `--` and of at
+least one argv element is enforced, so a leading-dash argument is never
+misparsed as a CIU flag.
+
+### S16.7 — Declared worktree container targets (`exec --target`)
+
+`ciu worktree exec LOGICAL --target ALIAS -- ARGV...` runs exact argv (no
+shell) inside the ONE already-running container for a DECLARED target of the
+selected instance. There is no arbitrary service-selection escape hatch:
+targets are declared in the instance's own global config as
+`[ciu.worktree.exec_targets.<alias>]` with exactly four keys — `stack`
+(required non-empty string), `service` (required non-empty string), `workdir`
+(required absolute container workdir), and `requires_worktree_mount`
+(boolean, default **true**; false is the only opt-out). The alias is a
+Git-safe single component. Unknown keys, unknown aliases, empty strings, or
+malformed booleans refuse before any Docker call.
+
+Flow: resolve the selected `ready` record and its exact environment (S16.6);
+render the target's own global chain WITHOUT writing under that environment;
+derive the exact Compose project (`engine.compose_project_name`), service
+(declared), and network (the instance's own `DOCKER_NETWORK_INTERNAL`);
+require **exactly one already-running container** for that project/service/
+network — zero or multiple refuse, and `up` is NEVER started implicitly.
+`docker ps`/`inspect` filters use the exact labels/network, never a
+service/container-name substring.
+
+The worktree-mount proof (default): `docker inspect` the container's mount
+records and require a bind mount whose host `Source` equals the selected Git
+worktree's PHYSICAL path (translated with the target's own REPO_ROOT /
+PHYSICAL_REPO_ROOT) and whose container `Destination` contains the declared
+`workdir` (path-component containment). The comparison uses only Docker's own
+reported namespaces — never a local filesystem predicate on a path belonging
+to the other namespace. A wrong mount (e.g. the primary checkout mounted while
+a linked checkout is selected) refuses. `requires_worktree_mount = false`
+permits a deliberate non-source utility container without weakening
+project/service/network uniqueness.
+
+Execution is `docker exec -w WORKDIR CONTAINER -- ARGV...` (no shell), and the
+exact exit code is returned.
 
 ## S17 — Image provenance
 

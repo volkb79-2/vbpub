@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 from .cli_utils import get_cli_version
-from .config_constants import WORKSPACE_ENV
+from .config_constants import GLOBAL_CONFIG_DEFAULTS, WORKSPACE_ENV
 from .output import consume_cli_flags
 
 _USAGE = """\
@@ -43,10 +44,21 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     profiles                    list available host profiles
 
   WORKTREE INSTANCES (S16)
-    worktree add NAME [--base REF] [--profile P1,P2]
-                                create a worktree + its own CIU instance
-    worktree rm NAME [-y]       ciu clean, THEN remove the checkout (in that order)
-    worktree list               registered worktrees
+    worktree create LOGICAL [--prefix P --feature F] [--json]
+                                allocate a new managed instance
+    worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+    worktree ensure LOGICAL     reuse/create/resume an exact managed instance
+    worktree add NAME           human shorthand for create
+    worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
+    worktree list [--json]      list linked checkouts
+    worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree up LOGICAL         start the selected ready instance, exactly
+    worktree exec LOGICAL [--target ALIAS] -- ARGV...
+                                run exact argv (no shell) in the selected root
+                                or inside its declared container target
+
+  MACHINE INTERFACES (D-009)
+    capabilities [--json]       versioned, closed capability allowlist
 
   EVIDENCE
     provenance [--ignore-mismatch | --no-preflight] [--json]
@@ -94,6 +106,33 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 # ---------------------------------------------------------------------------
 
 _VERB_HELP: dict[str, str] = {
+    "worktree": """\
+ciu worktree create LOGICAL [--name DISPLAY | --prefix P --feature F]
+                             [--branch BRANCH] [--path PATH] [--json]
+ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+ciu worktree ensure LOGICAL [create options] [--json]
+ciu worktree add NAME [--base REF] [--profile P1,P2]
+ciu worktree rm LOGICAL [-y] [--force] [--json]
+ciu worktree list [--json]
+ciu worktree inspect LOGICAL [--json]
+ciu worktree up LOGICAL
+ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
+  Manage durable, family-scoped worktree identities. Creation and ensure do
+  not start the instance. Generated UTC branch/directory names are identical;
+  adopt is the only operation that owns an unmanaged existing checkout.
+  `inspect` reports the persisted record plus freshly read Git facts; `list
+  --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
+  stdout (S16.4). `up` starts the selected ready instance under its OWN
+  ciu.env; `exec` runs exact argv (no shell) in that root and never starts
+  anything implicitly (S16.6). `exec --target ALIAS` runs inside the ONE
+  already-running declared container (S16.7).
+""",
+    "capabilities": """\
+ciu capabilities [--json]
+  Print CIU's versioned, closed capability allowlist (D-009). Consumers
+  allowlist shipped machine-contract identifiers instead of inferring
+  features from SemVer. `--json` emits the separately versioned document.
+""",
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
 ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
@@ -341,7 +380,14 @@ def _env_generate(rest: list[str]) -> int:
     p.add_argument("--define-root", "--root-folder", dest="define_root",
                    type=Path, default=None, metavar="PATH",
                    help="Override repository root directory (no parent walking)")
+    p.add_argument("--identity-only", action="store_true", default=False,
+                   help=_ap.SUPPRESS)
     opts = p.parse_args(rest)
+    if opts.identity_only:
+        from .workspace_env import generate_ciu_env, resolve_env_root
+        root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+        generate_ciu_env(root)
+        return 0
     from .deploy import action_generate_env
     return action_generate_env(opts.define_root, Path.cwd())
 
@@ -536,12 +582,68 @@ def _provenance(rest: list[str]) -> int:
     return 0
 
 
+def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
+    """`ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...`.
+
+    Parsed manually because argparse REMAINDER cannot both consume a
+    `--target` option and keep a `--` separator byte-identical for the child.
+    The separator is mandatory; a leading-dash argument is never misparsed as
+    a CIU flag. Returns the exact child exit code.
+    """
+    from . import worktree as wt_mod
+
+    if len(rest) < 2:
+        raise wt_mod.WorktreeError(
+            "[S16] `ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` "
+            "requires a logical name and a `--` separator"
+        )
+    logical_name = rest[1]
+    define_root: str | None = None
+    target_alias: str | None = None
+    argv: list[str] = []
+    i = 2
+    while i < len(rest):
+        token = rest[i]
+        if token == "--define-root":
+            if i + 1 >= len(rest):
+                raise wt_mod.WorktreeError("[S16] --define-root requires a PATH")
+            define_root = rest[i + 1]
+            i += 2
+            continue
+        if token == "--target":
+            if i + 1 >= len(rest):
+                raise wt_mod.WorktreeError("[S16] --target requires an alias")
+            target_alias = rest[i + 1]
+            i += 2
+            continue
+        if token == "--":
+            argv = ["--"] + rest[i + 1:]
+            break
+        raise wt_mod.WorktreeError(
+            f"[S16] unexpected argument {token!r} for `ciu worktree exec`; "
+            "usage: ciu worktree exec LOGICAL [--target ALIAS] -- ARGV..."
+        )
+    repo_root = resolve_repo_root(define_root, Path.cwd())
+    if target_alias is not None:
+        return wt_mod.exec_target_instance(
+            repo_root, logical_name, target_alias, argv
+        )
+    return wt_mod.exec_instance(repo_root, logical_name, argv)
+
+
 def _worktree(rest: list[str]) -> int:
-    """Handle `ciu worktree add|rm|list` (S16)."""
+    """Handle the S16 managed-worktree lifecycle."""
     import argparse as _ap
 
     from . import worktree as wt_mod
     from .dev import resolve_repo_root
+
+    if rest and rest[0] == "exec":
+        try:
+            return _worktree_exec(rest, resolve_repo_root)
+        except wt_mod.WorktreeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     p = _ap.ArgumentParser(prog="ciu worktree", add_help=False)
     sub = p.add_subparsers(dest="action", required=True)
@@ -552,23 +654,74 @@ def _worktree(rest: list[str]) -> int:
     p_add.add_argument("--profile", default=None, metavar="P1,P2")
     p_add.add_argument("--worktree-dir", dest="worktree_dir",
                        default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
-    p_add.add_argument("--data-isolation", dest="data_isolation", default=None,
-                       metavar="PROFILE")
     p_add.add_argument("--shared-infra", dest="shared_infra", default=None,
                        metavar="REF")
     p_add.add_argument("--shared-infra-services", dest="shared_infra_services",
                        default=None, metavar="S1,S2")
     p_add.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                        default=None, metavar="R1,R2")
+    p_add.add_argument("--json", action="store_true", default=False)
+
+    def add_create_options(parser) -> None:
+        parser.add_argument("--base", default="main", metavar="REF")
+        parser.add_argument("--profile", default=None, metavar="P1,P2")
+        parser.add_argument("--worktree-dir", dest="worktree_dir",
+                            default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
+        parser.add_argument("--name", dest="display_name", default=None, metavar="DISPLAY")
+        parser.add_argument("--prefix", default=None, metavar="PROJECT_OR_COMPONENT")
+        parser.add_argument("--feature", default=None, metavar="FEATURE")
+        parser.add_argument("--branch", default=None, metavar="BRANCH")
+        parser.add_argument("--path", type=Path, default=None, metavar="PATH")
+        parser.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
+        parser.add_argument("--shared-infra-services", dest="shared_infra_services",
+                            default=None, metavar="S1,S2")
+        parser.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
+                            default=None, metavar="R1,R2")
+        parser.add_argument("--json", action="store_true", default=False)
+
+    p_create = sub.add_parser("create", add_help=False)
+    p_create.add_argument("logical_name")
+    add_create_options(p_create)
+
+    p_ensure = sub.add_parser("ensure", add_help=False)
+    p_ensure.add_argument("logical_name")
+    add_create_options(p_ensure)
+
+    p_adopt = sub.add_parser("adopt", add_help=False)
+    p_adopt.add_argument("logical_name")
+    p_adopt.add_argument("path")
+    p_adopt.add_argument("--profile", default=None, metavar="P1,P2")
+    p_adopt.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
+    p_adopt.add_argument("--shared-infra-services", dest="shared_infra_services",
+                         default=None, metavar="S1,S2")
+    p_adopt.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
+                         default=None, metavar="R1,R2")
+    p_adopt.add_argument("--json", action="store_true", default=False)
 
     p_rm = sub.add_parser("rm", add_help=False)
     p_rm.add_argument("name")
     p_rm.add_argument("-y", "--yes", action="store_true", default=False)
     p_rm.add_argument("--force", action="store_true", default=False)
+    p_rm.add_argument("--json", action="store_true", default=False)
 
-    sub.add_parser("list", add_help=False)
+    p_list = sub.add_parser("list", add_help=False)
+    p_list.add_argument("--json", action="store_true", default=False)
 
-    for parser in (p, p_add, p_rm):
+    p_inspect = sub.add_parser("inspect", add_help=False)
+    p_inspect.add_argument("logical_name")
+    p_inspect.add_argument("--json", action="store_true", default=False)
+
+    p_up = sub.add_parser("up", add_help=False)
+    p_up.add_argument("logical_name")
+
+    # `exec` is parsed manually in `_worktree_exec` (argparse REMAINDER can
+    # neither consume a `--target` option nor keep a `--` separator intact),
+    # so no exec subparser is registered here.
+
+    for parser in (
+        p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
+        p_up,
+    ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
     opts = p.parse_args(rest)
@@ -578,29 +731,100 @@ def _worktree(rest: list[str]) -> int:
     repo_root = resolve_repo_root(getattr(opts, "define_root", None), Path.cwd())
 
     try:
+        def emit_record(operation: str, record) -> None:
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.build_instance_document(operation, record),
+                    sort_keys=True,
+                ))
+            else:
+                print(f"worktree ready: {record.git_worktree_path}")
+                print(f"  CIU root: {record.ciu_root}")
+                print(f"  next: cd {record.ciu_root} && ciu up")
+
         if opts.action == "add":
             path = wt_mod.add(
                 repo_root, opts.name, base=opts.base, profile=opts.profile,
                 worktree_dir=opts.worktree_dir,
-                data_isolation=opts.data_isolation,
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
             )
-            print(f"worktree ready: {path}")
-            print(f"  next: cd {path} && source ciu.env && ciu up")
+            if getattr(opts, "json", False):
+                record = wt_mod.find_instance_record(repo_root, opts.name)
+                if record is None:
+                    raise wt_mod.WorktreeError(
+                        f"[S16] add completed at {path}, but no managed record was found"
+                    )
+                emit_record("add", record)
+            else:
+                print(f"worktree ready: {path}")
+                print(f"  next: cd {path} && ciu up")
+            return 0
+
+        if opts.action in ("create", "ensure"):
+            lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
+            record = lifecycle(
+                repo_root, opts.logical_name, base=opts.base, profile=opts.profile,
+                worktree_dir=opts.worktree_dir, display_name=opts.display_name,
+                prefix=opts.prefix, feature=opts.feature, branch=opts.branch,
+                path=opts.path, shared_infra=opts.shared_infra,
+                shared_infra_services=opts.shared_infra_services,
+                shared_infra_ref_projects=opts.shared_infra_ref_projects,
+            )
+            emit_record(opts.action, record)
+            return 0
+
+        if opts.action == "adopt":
+            record = wt_mod.adopt(
+                repo_root, opts.logical_name, opts.path, profile=opts.profile,
+                shared_infra=opts.shared_infra,
+                shared_infra_services=opts.shared_infra_services,
+                shared_infra_ref_projects=opts.shared_infra_ref_projects,
+            )
+            emit_record("adopt", record)
             return 0
 
         if opts.action == "rm":
-            path = wt_mod.remove(
-                repo_root, opts.name, yes=opts.yes, force=opts.force
-            )
-            print(f"removed: {path}")
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.remove_document(
+                        repo_root, opts.name, yes=opts.yes, force=opts.force
+                    ),
+                    sort_keys=True,
+                ))
+            else:
+                path = wt_mod.remove(
+                    repo_root, opts.name, yes=opts.yes, force=opts.force
+                )
+                print(f"removed: {path}")
             return 0
 
-        for info in wt_mod.list_worktrees(repo_root):
-            tag = "  (primary)" if info.is_primary else ""
-            print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
+        if opts.action == "inspect":
+            doc = wt_mod.inspect_instance(repo_root, opts.logical_name)
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                git = doc["git"]
+                print(f"worktree inspect: {doc['instance']['logical_name']}")
+                print(f"  status: {doc['status']}")
+                print(f"  git path: {git['path']}")
+                print(f"  branch: {git['branch']}")
+                print(f"  HEAD: {git['head']}")
+                print(f"  dirty: {git['dirty']}")
+            return 0
+
+        if opts.action == "up":
+            return wt_mod.up_instance(repo_root, opts.logical_name)
+
+        # Every action above returned; the only remaining action is "list"
+        # (argparse's required subparsers make it one of the registered set).
+        if getattr(opts, "json", False):
+            print(json.dumps(wt_mod.list_instances(repo_root), sort_keys=True))
+        else:
+            for info in wt_mod.list_worktrees(repo_root):
+                tag = "  (primary)" if info.is_primary else ""
+                print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
         return 0
     except wt_mod.WorktreeError as exc:
         print(str(exc), file=sys.stderr)
@@ -836,6 +1060,20 @@ def main() -> None:
 
     elif verb == "worktree":
         raise SystemExit(_worktree(rest))
+
+    elif verb == "capabilities":
+        import argparse as _ap
+
+        from . import worktree as wt_mod
+        p = _ap.ArgumentParser(prog="ciu capabilities", add_help=False)
+        p.add_argument("--json", action="store_true", default=False)
+        opts = p.parse_args(rest)
+        if opts.json:
+            print(json.dumps(wt_mod.capabilities_document(), sort_keys=True))
+        else:
+            for identifier in sorted(wt_mod.WORKTREE_CAPABILITIES):
+                print(identifier)
+        raise SystemExit(0)
 
     elif verb == "provenance":
         raise SystemExit(_provenance(rest))

@@ -45,7 +45,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Fail-closed host-key pinning** | Connections are refused when no `known_host` is pinned; `CIU_SSH_INSECURE_TOFU=1` is a documented bootstrap-only escape hatch. | S14.4a |
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
-| **Isolated worktree instances** | `ciu worktree` creates checkout-local identity, network, Compose project, and volumes; optional shared-infra join, namespaced data, and a primary-config concurrency cap cover parallel real lanes. | S16 |
+| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own `ciu.env`, and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
 | **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 
 ---
@@ -76,7 +76,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, remove, or list isolated CIU instances | `add NAME --base REF --profile P1,P2`; `rm NAME -y`; `list`; optional data isolation/shared infra (S16) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
+| `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
 | `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
@@ -135,10 +136,10 @@ adopting the primary checkout's containers, network, or volumes:
 
 ```bash
 # Prepare a separate instance; this does not start it.
-ciu worktree add feature-x --base main --profile dev
-cd ../.worktrees/feature-x
-source ciu.env
-ciu up --profile dev
+ciu worktree create feature-x --prefix myapp --feature api-retry --profile dev
+# Output reports both the Git checkout and exact CIU root. Creation never starts it.
+ciu worktree ensure feature-x --json
+# Enter the reported CIU root, then: source ciu.env && ciu up
 
 # Before a live test/evidence lane, record the artifact identity CIU inspected.
 ciu provenance --json
@@ -149,11 +150,8 @@ ciu worktree rm feature-x -y
 ```
 
 For a diverging application tier that shares already-running identity, secret,
-or observability services, use `worktree add --shared-infra ...` exactly as
+or observability services, use `worktree create --shared-infra ...` exactly as
 shown in [CONFIG.md's shared-infra example](CONFIG.md#shared-infra-join-example-s161).
-For per-instance database/schema provisioning, add `--data-isolation <profile>`.
-The emitted `CIU_DATA_ISOLATION_DSN` can be credential-bearing: do not pass it
-to an assay or other evidence tool as an environment capture.
 
 This makes CIU a useful companion to **nyxloom** for parallel implementation
 work and to **assay** for proving a live lane exercised the intended image.

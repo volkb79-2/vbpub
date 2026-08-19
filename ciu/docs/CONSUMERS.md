@@ -1,0 +1,159 @@
+# CIU — Consumers guide: structured worktree control (HOW)
+
+Worked examples for adopting CIU's machine-readable worktree surface. Read
+this after [README.md](../README.md) (what) and [DESIGN-GUIDE.md](DESIGN-GUIDE.md)
+(why); the normative contract is [SPEC.md](SPEC.md) (§S16.4, §S16.5).
+
+Everything below is copy-paste-able. All examples assume a CIU-managed
+worktree family: run `ciu worktree create` first (see below).
+
+## 1. Declare the config a consumer needs (valid TOML)
+
+A consumer project declares the ordinary global configuration that this
+surface reads:
+
+```toml
+[ciu.worktree]
+max_concurrent_instances = 3
+
+[deploy]
+project_name = "myapp"
+environment_tag = "dev"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+landscape_id = "prod-eu"
+```
+
+`landscape_id` is opt-in [S3.11](SPEC.md#s3--configuration-model): a
+DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) that a consumer renders its
+Consul KV root (`dstdns/<landscape_id>/…`) and mesh ACL tags from.
+
+## 2. Create a managed instance and read its lifecycle JSON
+
+```console
+$ ciu worktree create pkg-under-test --prefix myapp --feature pkg-under-test --json
+{"schema_version": 1, "operation": "create", "status": "ready", "instance": {...}}
+```
+
+Every lifecycle verb (`create`, `ensure`, `adopt`, `add`) with `--json` emits
+the same envelope. `status` is one of `allocating`, `ready`,
+`recovery-required`; a `recovery-required` instance carries a closed
+`recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
+`runtime-collision`. Resume a partial allocation with `ensure`.
+
+## 3. Inspect one instance with fresh Git facts
+
+```console
+$ ciu worktree inspect pkg-under-test --json
+{"schema_version": 1, "operation": "inspect", "status": "ready",
+ "instance": {...}, "git": {"registered": true, "path": "...",
+ "branch": "myapp-...", "detached": false, "primary": false,
+ "head": "abc12345", "dirty": false}}
+```
+
+`git.*` is freshly read from Git, never inferred from the record. A record
+whose checkout is gone, a branch mismatch, a duplicate logical identity, or
+an unreadable `git status` is a refusal on stderr with exit 2 — never a
+guessed value. `dirty` is true when `git status --porcelain` is non-empty.
+
+## 4. List every managed instance
+
+```console
+$ ciu worktree list --json
+{"schema_version": 1, "operation": "list", "status": "ready",
+ "instances": [{"operation": "inspect", "status": "ready", "instance": {...},
+ "git": {...}}]}
+```
+
+The prose `ciu worktree list` still shows every git worktree; `--json` shows
+only managed instances, each with fresh Git facts.
+
+## 5. Remove and read the removal document
+
+```console
+$ ciu worktree rm pkg-under-test --json
+{"schema_version": 1, "operation": "remove", "status": "removed",
+ "removed_path": "...", "instance": {...}}
+```
+
+`rm` runs `ciu clean` then `git worktree remove` (that order is normative,
+[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). A failed clean or
+git removal raises with exit 2 and **no** success document; the error names
+the retained resources.
+
+## 6. Start the selected instance, exactly (S16.6)
+
+```console
+$ ciu worktree up pkg-under-test
+```
+
+`up` resolves one `ready` managed record, parses **that** checkout's
+`ciu.env` by exact path, strips every inherited CIU identity/root/network key
+from the ambient environment, overlays the target's own values, and invokes
+CIU's existing up entry point in that root. The target's `REPO_ROOT`,
+`INSTANCE_ID`, and `DOCKER_NETWORK_INTERNAL` must match the record — a
+missing, mismatched, or not-ready instance refuses before anything starts.
+The exact child exit code is returned. Plain `ciu up` from a shell inside the
+primary checkout would run the PRIMARY instance, not this one; `worktree up`
+exists precisely so a consumer cannot get that wrong.
+
+## 7. Run exact argv in the selected root (no shell, no implicit up)
+
+```console
+$ ciu worktree exec pkg-under-test -- ./scripts/gate.sh --strict
+$ ciu worktree exec pkg-under-test -- echo 'a b' '$(whoami)' ';' '-x' '*'
+```
+
+`exec` runs the exact argv (after the mandatory `--`) with **no shell** in
+the selected checkout, under the same sanitized target environment as `up`.
+Spaces, globs, `$()`, semicolons, and leading dashes arrive byte-for-byte at
+the child; nothing is interpreted by a shell and nothing is misparsed as a
+CIU flag. It **never** runs `up`, `render`, or `clean` implicitly — it is the
+execute-in-this-exact-place primitive, so a non-container consumer can gate
+against the checkout without starting anything. The child's exact exit code
+is returned.
+
+## 8. Run inside a declared container target (S16.7)
+
+Declare the target in the selected instance's global config — a Git-safe
+alias with exactly these four keys:
+
+```toml
+[ciu.worktree.exec_targets.tester]
+stack = "test"                        # required non-empty string
+service = "tester"                    # required non-empty string
+workdir = "/workspace"                # required absolute container workdir
+requires_worktree_mount = true        # optional boolean; true by default
+```
+
+```console
+$ ciu worktree exec pkg-under-test --target tester -- ./scripts/gate.sh --strict
+```
+
+`exec --target` resolves the declared target's exact rendered stack and
+Compose project/service/network under the instance's own `ciu.env`, requires
+**exactly one already-running container** (zero or multiple refuse; `up` is
+never started implicitly), and — by default — proves that container has a
+bind mount whose host source is the selected Git worktree at a path
+containing the declared `workdir` before running `docker exec -w WORKDIR
+CONTAINER -- ARGV...` (no shell, exact argv, exact exit code). Set
+`requires_worktree_mount = false` only for a deliberate non-source utility
+container; it does not weaken project/service/network uniqueness.
+
+## 9. Discover capabilities instead of guessing from the version
+
+```console
+$ ciu capabilities --json
+{"schema_version": 1, "capabilities": ["worktree.exec-local.v1",
+ "worktree.exec-target.v1", "worktree.identity.v1",
+ "worktree.inspect.v1", "worktree.lifecycle-json.v1", "worktree.up.v1"]}
+```
+
+Allowlist the identifiers you depend on.
+
+## Failure vocabulary, one place
+
+`allocating` — allocation in progress; `ready` — a complete, closed runtime
+identity; `recovery-required` — an interrupted allocation with a closed
+`recovery_status`; `removed` — the terminal removal state. Every JSON document
+carries `schema_version: 1` and a closed `operation`. Unknown shapes fail
+fast.

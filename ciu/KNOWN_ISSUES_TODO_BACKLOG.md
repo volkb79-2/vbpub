@@ -19,7 +19,9 @@ vbpub@b4d7c749), four of them carved as `ciu-P08..P11`
 `nyxloom-trove/ciu-config-wave-BRIEF-2026-08-19.md`); and assay's provenance
 defect renumbered **CIU-28 → CIU-39** at this merge (this branch had also
 independently allocated CIU-28 for worktree identity — assay-side references
-updated the same day).
+updated the same day). Same day: **CIU-36 marked FIXED** by ciu-P08
+(landscape_id validation + docs; S3.11) and **CIU-37 marked FIXED** by ciu-P09
+(schema-validated configfile render; S5.7).
 
 Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 
@@ -31,11 +33,11 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | OPEN — later milestone |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
-| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — carved as P04-P06; qualification P07 |
+| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19); qualification P07 pending, closes this row |
 | CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | OPEN — carved as ciu-P10-deploy-layouts (depends ciu-P08); `environment` per layout (dstdns D-105 Q2) |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | OPEN — carved as ciu-P11-host-scoped-secrets |
-| CIU-36 | No `landscape_id` identity dimension | Low | OPEN — carved as ciu-P08-landscape-identity (validate+document only) |
-| CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | OPEN — carved as ciu-P09-configfile-schema-validation |
+| CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
+| CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
 | CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
 | CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | OPEN |
 
@@ -127,12 +129,29 @@ target, later movable to Vault by the existing directives.
 **CIU-36 — `landscape_id` dimension.** A first-class identity value (beside
 project/instance) exposed to templates and to S16 worktree instances, so a
 consumer can render its Consul KV root (`dstdns/<landscape_id>/…`) and mesh ACL
-tags from one source.
+tags from one source. **FIXED** on 2026-08-19 (ciu-P08): `[deploy].landscape_id`
+is now validated as a DNS-label-safe slug (`^[a-z][a-z0-9-]{0,62}$`) on the
+final merged global config (incl. the worktree overlay) with a tagged S3.11
+abort, and documented in CONFIG.md + SPEC.md S3.11 with an explicit
+disambiguation from the configfile-context `instance_id` (a per-service replica
+index, not the workspace `INSTANCE_ID`). Evidence: 6 behavioral tests in
+`tests/tests/test_ciu_config_model_landscape.py`; gate 100% line+branch.
+Templates read it via `{{ deploy.landscape_id }}` with no plumbing change.
 
 **CIU-37 — schema-validated render.** `[<root>.<service>.configfile.app]` (or the
 render step) accepts `schema = "path/to/config-schema.json"` and validates the
 rendered TOML against it, failing the render with the key path — the app's
-generated JSON schema is the source, ciu only checks.
+generated JSON schema is the source, ciu only checks. **FIXED** on 2026-08-19
+(ciu-P09): optional `schema` key per configfile entry, validated against the
+app's JSON Schema (Draft 2020-12, TOML targets only) immediately after the
+atomic write and before mount emission; violation names service, configfile
+(per-instance suffix when `instances > 1`), and key path, and removes the
+invalid rendered file. `jsonschema` is an optional extra (`ciu[schema]`);
+declared schemas fail loudly when it is absent, never silently skip. Evidence:
+10 behavioral tests in `tests/tests/test_ciu_configfile_schema.py`; gate 100%
+line+branch. Runs on the up/dev path (engine step 12) — `ciu render` renders
+TOML configs only; a dedicated `ciu render --configfiles` verb remains a
+possible follow-up candidate (not in this package).
 
 **CIU-38 — per-service AppRole.** Vault stack provisions one AppRole + policy per
 declared service and a template helper delivers `role_id` + a `secret_id` file
@@ -332,6 +351,8 @@ archived handoffs/reports, and Git history rather than this active tracker.
 | CIU-22 | FIXED | S16.1 shared-infrastructure join |
 | CIU-24 | FIXED | S16.3 worktree concurrency budget |
 | CIU-27 | FIXED | S17.2 explicit no-preflight break-glass behavior |
+| CIU-36 | FIXED | S3.11 `[deploy].landscape_id` validation + docs |
+| CIU-37 | FIXED | S5.7 schema-validated configfile render (`ciu[schema]` extra) |
 
 `CIU-COMMENT-ENV` is fixed under S3.2: environment expansion ignores TOML
 comments while preserving comment text.

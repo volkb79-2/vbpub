@@ -190,7 +190,23 @@ def load_global_config(repo_root: Path) -> dict:
 
 
 def resolve_profiles(global_cfg: dict, names: Optional[list[str]]) -> profiles_pkg.Profile:
-    """Resolve the active service profile(s) (Seam 4). Default env CIU_SERVICES_PROFILE."""
+    """Resolve profiles: CLI, then worktree-local config, then legacy env."""
+    if not names:
+        ciu = global_cfg.get("ciu", {})
+        instance = ciu.get("instance", {}) if isinstance(ciu, dict) else {}
+        configured = instance.get("service_profiles") if isinstance(instance, dict) else None
+        if configured is not None:
+            if not isinstance(configured, list) or not configured or any(
+                not isinstance(item, str) or not item.strip() for item in configured
+            ):
+                raise ValueError(
+                    "[S16] ciu.instance.service_profiles must be a non-empty string array"
+                )
+            names = [item.strip() for item in configured]
+            if len(set(names)) != len(names):
+                raise ValueError(
+                    "[S16] ciu.instance.service_profiles contains a duplicate"
+                )
     return profiles_pkg.resolve_profiles(global_cfg, names)
 
 
