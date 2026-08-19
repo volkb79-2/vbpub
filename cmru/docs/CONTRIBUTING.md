@@ -71,14 +71,18 @@ PYTHONPATH=cmru/src python3 -m cmru.cli tool-deps    --config ./cmru.orchestrati
 and call the guarded plan computation directly — see
 `version.detect_changed_projects`'s release-path keyword arguments.
 
-## 3. A gate step copied from `cmru.toml` does not run standalone
+## 3. A gate step copied from `cmru.toml` — export the orchestration `[env]` first
 
 The `argv` in a project's `[steps.*]` depends on environment the
-**orchestration** layer injects from `cmru.orchestration.toml`'s `[env]`. Nothing
-in the step says so, and the error messages name the project's own `cmru.toml`,
-which is the wrong file.
+**orchestration** layer injects from `cmru.orchestration.toml`'s `[env]` — not
+the project's own `cmru.toml`. So a step copied out by hand — what you do when a
+release goes red — needs that `[env]` block exported first; §1's snippet carries
+the current set.
 
-Reproducing a step by hand — what you do when a release goes red — therefore
-fails **one missing variable at a time**, each costing a container spin-up.
-Export the whole `[env]` block first; §1's snippet carries the current set.
-Tracked as **KI-17**.
+**KI-17 is fixed** (SPEC S2.6a): `tester-gate` now validates the whole required
+set up front and, if anything is missing, aborts **once, naming every missing
+variable together**, before any container spin-up — no more failing one variable
+at a time. Each message now names `cmru.orchestration.toml [env]` (inherited
+through `cmru release`) as the real source instead of pointing at the wrong
+file. Exporting the `[env]` block by hand is still the way to reproduce a step
+standalone; the tool just tells you the complete list in one shot now.

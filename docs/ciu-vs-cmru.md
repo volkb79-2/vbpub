@@ -70,7 +70,7 @@ project's explicit `prepare`, `run-tests`, selected `build_step`, and `push` com
 can be composed explicitly for wheel/tarball/normal OCI operations; it never replaces a
 project's declared command. See [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) *S-REL*.
 
-- **`cmru build --project X`** creates a retained isolated `cmru/build/<id>` worktree and
+- **`cmru build --project X`** creates a retained isolated `cmru-build-<id>` worktree and
   runs X's `prepare` (if declared), release gate, and explicit `build_step`—never `push`.
   It is a release-contract diagnostic, not a local dev image. Its logs and artifacts stay in
   that worktree; the console names the exact location.

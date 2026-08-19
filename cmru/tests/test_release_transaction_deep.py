@@ -51,7 +51,7 @@ def test_create_resume_and_remove_workspace_are_real_git_lifecycle(tmp_path):
     root = _repo(tmp_path)
     base = _git(root, "rev-parse", "HEAD")
     workspace = transaction.create_workspace(root, base=base, purpose="build")
-    assert workspace.branch.startswith("cmru/build/")
+    assert workspace.branch.startswith("cmru-build-")
     with pytest.raises(ValueError, match="unknown CMRU workspace purpose"):
         transaction.create_workspace(root, base=base, purpose="other")
     with pytest.raises(RuntimeError, match="retained cmru release branch"):

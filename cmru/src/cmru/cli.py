@@ -2533,7 +2533,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         parser.add_argument(
             "--discard-build-worktree", metavar="PATH",
-            help="Discard one exact inspected failed cmru/build/* worktree",
+            help="Discard one exact inspected failed cmru-build-* worktree",
         )
         parser.add_argument(
             "--yes", action="store_true",

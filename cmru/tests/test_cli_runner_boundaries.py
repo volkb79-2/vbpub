@@ -214,7 +214,9 @@ def test_tester_gate_main_refuses_missing_image_before_host_launch(monkeypatch):
     for name in ("CMRU_TESTER_UNIFIED_IMAGE", "CMRU_TESTER_CGROUP_PARENT",
                  "CGROUP_PARENT_DEV_BACKGROUND"):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(SystemExit, match="no test image configured"):
+    # KI-17: the missing image now surfaces at the aggregate preflight, up
+    # front and before any host/container launch, naming the variable.
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_UNIFIED_IMAGE"):
         tester_gate.main(["--cwd", ".", "--", "true"])
 
 

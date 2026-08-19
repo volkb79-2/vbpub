@@ -107,7 +107,7 @@ def test_transaction_create_workspace_fetches_when_base_is_not_supplied(tmp_path
     root = repo(tmp_path)
     with patch.object(transaction, "fetch_origin_main", return_value=git(root, "rev-parse", "HEAD")):
         workspace = transaction.create_workspace(root, purpose="build")
-    assert workspace.branch.startswith("cmru/build/")
+    assert workspace.branch.startswith("cmru-build-")
     transaction.remove_workspace(workspace)
 
 

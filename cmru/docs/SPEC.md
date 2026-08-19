@@ -53,7 +53,8 @@ clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `ge
 
 **S-CLI.4 — Retained-worktree discovery.** `cmru worktrees` is read-only and derives the
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
-`cmru/release/*` and `cmru/build/*` worktree, including a path not visible through the current
+`cmru-release-*` and `cmru-build-*` worktree (and legacy nested `cmru/release/*`,
+`cmru/build/*` ones; see S-CLI.5b), including a path not visible through the current
 bind-mount view. It MUST print the exact `--resume` or `--discard-build-worktree` command only
 for a visible path; it MUST never guess a cleanup target.
 
@@ -66,7 +67,7 @@ project in this run's scope (`--project <name>`, else every orchestrated project
 `orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
 no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
-`cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree (KI-16; see S-CLI.5b) at that exact
+`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (KI-16; see S-CLI.5b) at that exact
 remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
@@ -102,7 +103,7 @@ Before the release:
   release branch:  (does not exist yet)
 
 The release runs entirely inside an ISOLATED WORKTREE — a separate checkout on
-its own cmru/release/<id> branch. repo_root's own `main` is never checked out,
+its own cmru-release-<id> branch. repo_root's own `main` is never checked out,
 never touched, during any of this. push_backup_branch runs once, up front
 (origin gets a copy of this branch for durability, before any project starts).
 Each changed project then promotes SEPARATELY, one after another (S-CLI.5a) —
@@ -175,33 +176,38 @@ request `--abandon <path>|all-previous` after its logs and artifacts are no long
 
 The repository-root secret document is copied mode `0600`, never committed.
 
-**S-CLI.5b — Transaction branch/worktree naming (KI-16).** Every `cmru/release/*` and
-`cmru/build/*` transaction this tool creates is named:
+**S-CLI.5b — Transaction branch/worktree naming (KI-16, ciu-aligned).** Every `cmru-release-*`
+and `cmru-build-*` transaction this tool creates is named:
 
 ```
-branch:     cmru/<purpose>/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
-directory:  .worktrees/cmru-<purpose>-<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
+branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
 ```
 
-`<purpose>` is `release` or `build`. `<YYYYMMDD-HHMMSS>` is UTC, for chronological sort.
-`<scope>` is the `--project` value when the run is scoped, sanitised to `[a-z0-9-]`, else
-`all`. `<uuid8>` is 8 hex characters from `uuid4()` and MUST NOT be removed or made
-deterministic: cleanup (`remove_workspace`, `abandon_workspace`) depends on a transaction being
-able to assume it exclusively owns the name it created, so the scheme MUST stay
-collision-free even for two runs on the same scope in the same second. The directory name is
-the branch name with every `/` replaced by `-`, 1:1 derivable in both directions — never
-computed by `mkdtemp`-then-`rmdir`. `git worktree add` on its own is NOT sufficient here: it
-fails closed on a non-empty existing directory but silently ADOPTS an empty one, which would
+The branch is a FLAT single token with no nested ref path, so the branch string and the
+worktree directory basename are byte-for-byte identical — true 1:1 naming, matching ciu's
+`<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme. `<purpose>` is `release` or `build`.
+`<YYYYMMDD_HHMMSS>` is UTC, for chronological sort, with `_` separating date from time so that
+boundary stays visually distinct from the `-` field separators. `<scope>` is the `--project`
+value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. `<uuid8>` is 8 hex
+characters from `uuid4()` and MUST NOT be removed or made deterministic: cleanup
+(`remove_workspace`, `abandon_workspace`) depends on a transaction being able to assume it
+exclusively owns the name it created, so the scheme MUST stay collision-free even for two runs
+on the same scope in the same second — this collision-freedom is why the name is NOT purely
+`<prefix>-<timestamp>-<feature>` like ciu's. The directory basename equals the branch (identity;
+never computed by `mkdtemp`-then-`rmdir`). `git worktree add` on its own is NOT sufficient here:
+it fails closed on a non-empty existing directory but silently ADOPTS an empty one, which would
 violate "this ONE transaction exclusively owns the name it created" if a uuid8 collision or a
 stale leftover ever left an empty directory in the way — the code MUST therefore refuse
 explicitly (any existing path, empty or not) before ever calling `git worktree add`.
 
-Both `startswith("cmru/release/")` and `startswith("cmru/build/")` are preserved by this
-scheme, so every existing refspec/glob keeps working, and a worktree retained under the OLDER
-`cmru/<purpose>/<12-hex>` naming remains just as discoverable (`cmru worktrees`,
-`list_cmru_workspaces`), resumable (`--resume`), and removable as one created under the new
-scheme — nothing in discovery or cleanup parses the directory name; only the branch prefix and
-whatever `git worktree list --porcelain` itself reports are load-bearing.
+Discovery, resume, and cleanup recognise a transaction branch through predicates
+(`_is_release_branch`, `_is_build_branch`) that accept BOTH the flat `cmru-<purpose>-` names
+created here AND the legacy nested `cmru/<purpose>/` prefix, so a worktree retained under either
+the current scheme or the OLDER `cmru/<purpose>/<12-hex>` naming remains just as discoverable
+(`cmru worktrees`, `list_cmru_workspaces`), resumable (`--resume`), and removable — nothing in
+discovery or cleanup parses the directory name; only the branch and whatever `git worktree list
+--porcelain` itself reports are load-bearing.
 
 ### File conventions (all `cmru.`-prefixed)
 
@@ -340,7 +346,7 @@ project cleanup remains the sole operation allowed to delete managed Releases an
 **S-REL.4d — Local-build cleanup.** `cmru cleanup --project P --delete-build-output ID --yes`
 deletes only the exact commit-addressed local build record identified by its `build.json`;
 `--dry-run` is the non-mutating preview. `cmru cleanup --discard-build-worktree PATH --yes`
-deletes only an exact, visible `cmru/build/*` worktree under this repository's managed
+deletes only an exact, visible `cmru-build-*` (or legacy `cmru/build/*`) worktree under this repository's managed
 `.worktrees/` directory. Neither operation accepts a glob, an age range, an inferred latest
 record, or a release worktree. A missing, incomplete, symlinked, or unauthenticated target MUST
 fail rather than widen deletion.
@@ -563,6 +569,21 @@ host-systemd probe-image values (CLI options or the effective `[env]`). `--enabl
 requires a nested-Docker image. `wheel-build` requires `CMRU_WHEEL_BUILDER_IMAGE`; CMRU
 does not fall back to the cockpit's Python environment.
 
+**S2.6a — tester-gate environment preflight (KI-17).** These values are normally supplied by
+`cmru.orchestration.toml [env]` and reach a step through `cmru release`; they are NOT usually
+set in the project's own `cmru.toml [env]`. So a step copied out of `cmru.toml` and run by hand
+(what an operator does when a release goes red) would otherwise fail one missing variable at a
+time, each costing a container spin-up, and each message would send the reader to the wrong
+file. `tester-gate` MUST therefore, before any resolver with a side effect (the slice-existence
+probe, the container launch): (1) validate the full required set at once — image, memory,
+memory/swap, CPU, probe image, and the nested-Docker image when `--enable-docker` — resolving
+each at `explicit flag > environment` precedence, and abort naming EVERY still-missing variable
+together; and (2) in that report and in each individual resolver's message, name
+`cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source. This is
+the same required set `cmru standards` validates statically against a project's declared config
+(one shared constant, `REQUIRED_TESTER_ENV`); `cgroup_parent` is deliberately excluded from the
+preflight because it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback.
+
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 
 **S2.5 — Cleanup selectors are explicit.** In `cmru.orchestration.toml`, an
@@ -654,7 +675,7 @@ and artifacts for inspection/resume. Successful release MUST remove the worktree
 `<project>/logs/cmru-release/<immutable-id>/`; `--retain-artifacts-on-release` moves the
 declared `project.release.artifact_dirs` to `<project>/artifacts/<immutable-id>/` and writes
 `release.json` with source commit and SHA-256 inventory. `cmru build` MUST use an isolated
-`cmru/build/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to
 `<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256

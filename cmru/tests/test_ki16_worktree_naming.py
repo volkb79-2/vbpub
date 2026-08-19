@@ -1,16 +1,18 @@
-"""KI-16: chronologically-sortable, 1:1-derivable release/build transaction naming.
+"""KI-16 (ciu-aligned): chronologically-sortable, true 1:1 release/build naming.
 
-    branch:     cmru/<purpose>/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
-    directory:  .worktrees/cmru-<purpose>-<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
+    branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+    directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
 
-(SPEC S-CLI.5b). The directory name is the branch name with every ``/``
-replaced by ``-`` — derivable in both directions — and the trailing uuid8
-(not the old scheme's 12-hex token) is what keeps two transactions from ever
-colliding, which is what lets cleanup assume it exclusively owns whatever it
-created. Retained worktrees from the OLD ``cmru/<purpose>/<12-hex>`` naming
-must keep working unchanged: nothing in discovery/cleanup parses a directory
-name, only the branch prefix and whatever ``git worktree list --porcelain``
-itself reports.
+(SPEC S-CLI.5b). The branch is a FLAT single token with no nested ref path, so
+the branch string and the worktree directory basename are one and the same —
+true 1:1, matching ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>`` scheme, with
+``_`` separating date from time so that boundary stays visually distinct from
+the ``-`` field separators. The trailing uuid8 (not the old scheme's 12-hex
+token) is what keeps two transactions from ever colliding, which is what lets
+cleanup assume it exclusively owns whatever it created. Retained worktrees from
+the OLD nested ``cmru/<purpose>/<12-hex>`` naming must keep working unchanged:
+discovery/cleanup recognise a transaction branch under EITHER scheme and never
+parse a directory name.
 """
 from __future__ import annotations
 
@@ -52,14 +54,8 @@ def _repo(tmp_path: Path) -> Path:
 
 
 _BRANCH_RE = re.compile(
-    r"^cmru/(release|build)/(\d{8})-(\d{6})-([a-z0-9-]+)-([0-9a-f]{8})$"
+    r"^cmru-(release|build)-(\d{8})_(\d{6})-([a-z0-9-]+)-([0-9a-f]{8})$"
 )
-
-
-def _dirname_to_branch(dirname: str) -> str:
-    """The documented reverse derivation (SPEC S-CLI.5b): only the first
-    ``cmru-<purpose>-`` needs its dashes turned back into slashes."""
-    return re.sub(r"^cmru-(release|build)-", r"cmru/\1/", dirname, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -134,25 +130,50 @@ def test_new_transaction_branch_timestamp_is_utc_in_yyyymmdd_hhmmss_order():
         monkeypatch.setattr(transaction, "datetime", _FixedDatetime)
         branch = transaction._new_transaction_branch("release", "demo")
 
-    assert branch == "cmru/release/20260818-230507-demo-" + branch.rsplit("-", 1)[-1]
+    assert branch == "cmru-release-20260818_230507-demo-" + branch.rsplit("-", 1)[-1]
     match = _BRANCH_RE.match(branch)
     assert match.group(2) == "20260818"
     assert match.group(3) == "230507"
 
 
-def test_worktree_dirname_is_the_branch_with_slashes_as_dashes():
-    branch = "cmru/release/20260818-195012-assay-a3ae580d"
-    dirname = transaction._worktree_dirname(branch)
-    assert dirname == "cmru-release-20260818-195012-assay-a3ae580d"
-    assert dirname == branch.replace("/", "-")
-    assert _dirname_to_branch(dirname) == branch
+def test_worktree_dirname_is_identity_for_a_flat_branch():
+    """True 1:1: a flat ``cmru-<purpose>-...`` branch (no ``/``) IS its own
+    worktree directory basename, nothing to transform in either direction."""
+    branch = "cmru-release-20260818_195012-assay-a3ae580d"
+    assert transaction._worktree_dirname(branch) == branch
+    branch = "cmru-build-20260818_195012-all-7f2c1b04"
+    assert transaction._worktree_dirname(branch) == branch
 
 
-def test_worktree_dirname_for_build_purpose_round_trips_too():
-    branch = "cmru/build/20260818-195012-all-7f2c1b04"
-    dirname = transaction._worktree_dirname(branch)
-    assert dirname == "cmru-build-20260818-195012-all-7f2c1b04"
-    assert _dirname_to_branch(dirname) == branch
+def test_worktree_dirname_maps_a_legacy_nested_branch_slashes_to_dashes():
+    """A legacy nested ``cmru/<purpose>/...`` branch (never created here any
+    more, but retained worktrees still carry it) maps its ``/`` to ``-`` so an
+    older on-disk basename remains derivable."""
+    assert (
+        transaction._worktree_dirname("cmru/release/20260818-195012-assay-a3ae580d")
+        == "cmru-release-20260818-195012-assay-a3ae580d"
+    )
+    assert (
+        transaction._worktree_dirname("cmru/build/20260818-195012-all-7f2c1b04")
+        == "cmru-build-20260818-195012-all-7f2c1b04"
+    )
+
+
+@pytest.mark.parametrize(
+    ("branch", "expected_token"),
+    [
+        ("cmru-release-20260818_195012-assay-a3ae580d", "20260818_195012-assay-a3ae580d"),
+        ("cmru-build-20260818_195012-all-7f2c1b04", "20260818_195012-all-7f2c1b04"),
+        ("cmru/release/20260818-195012-assay-a3ae580d", "20260818-195012-assay-a3ae580d"),
+        ("cmru/build/deadbeefcafe", "deadbeefcafe"),
+    ],
+)
+def test_release_token_is_prefix_free_under_both_schemes(tmp_path, branch, expected_token):
+    """The sidecar-state token strips the scheme prefix so a flat branch does
+    not carry ``cmru-release-`` into every marker filename, while a legacy
+    nested branch still yields its last path segment."""
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, branch, "")
+    assert transaction._release_token(workspace) == expected_token
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +189,12 @@ def test_create_workspace_branch_and_directory_are_1to1_derivable(tmp_path, purp
     workspace = transaction.create_workspace(root, base=base, purpose=purpose, scope=scope)
     try:
         assert _BRANCH_RE.match(workspace.branch), workspace.branch
-        assert workspace.path.name == workspace.branch.replace("/", "-")
-        assert _dirname_to_branch(workspace.path.name) == workspace.branch
-        # Existing code/refspecs glob on this prefix (transaction.py ~149/~713/~729) —
-        # the new scheme must keep satisfying it.
-        assert workspace.branch.startswith(f"cmru/{purpose}/")
+        # True 1:1: the branch string IS the worktree directory basename.
+        assert workspace.path.name == workspace.branch
+        # Discovery/cleanup recognise this flat prefix (transaction.py
+        # _is_release_branch / _is_build_branch) — the new scheme must satisfy it.
+        assert workspace.branch.startswith(f"cmru-{purpose}-")
+        assert "/" not in workspace.branch  # flat: no nested ref path
     finally:
         transaction.remove_workspace(workspace)
 
@@ -220,7 +242,7 @@ def test_create_workspace_succeeds_normally_without_a_collision(tmp_path):
     workspace = transaction.create_workspace(root, base=base, purpose="release", scope="demo")
     try:
         assert workspace.path.is_dir()
-        assert workspace.branch.startswith("cmru/release/")
+        assert workspace.branch.startswith("cmru-release-")
     finally:
         transaction.remove_workspace(workspace)
 

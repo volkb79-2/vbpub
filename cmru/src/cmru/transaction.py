@@ -2,7 +2,7 @@
 
 ``cmru release`` is deliberately launched from an ordinary developer checkout but
 never publishes from it.  A transaction pins ``origin/main`` to a commit, creates
-an isolated worktree on a private ``cmru/release/<id>`` branch, and executes the
+an isolated worktree on a private ``cmru-release-<id>`` branch, and executes the
 release child there.  The caller's uncommitted files therefore cannot leak into a
 wheel, image, tag, or release asset.
 
@@ -129,26 +129,60 @@ def _sanitize_scope(scope: str | None) -> str:
     return cleaned or "all"
 
 
-def _new_transaction_branch(purpose: str, scope: str | None) -> str:
-    """``cmru/<purpose>/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>`` (KI-16).
+# Transaction branch prefixes. The FLAT ``cmru-<purpose>-`` scheme is what this
+# code now creates (KI-16, aligned to ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feat>``
+# naming): the branch string and its worktree directory basename are then one and
+# the same, with no nested ref path. The OLD nested ``cmru/<purpose>/`` scheme is
+# still recognised for discovery/resume/cleanup so retained worktrees created
+# before this change stay just as removable -- a transaction created under either
+# scheme must remain identifiable as the release/build it is.
+_FLAT_RELEASE_PREFIX = "cmru-release-"
+_FLAT_BUILD_PREFIX = "cmru-build-"
+_NESTED_RELEASE_PREFIX = "cmru/release/"
+_NESTED_BUILD_PREFIX = "cmru/build/"
 
-    UTC timestamp for chronological sort; sanitized scope for readability; a
-    trailing 8 hex from ``uuid4`` for collision-freedom -- cleanup depends on a
-    transaction being able to assume it exclusively owns the name it created,
-    so the random suffix is required, not decorative, and this name is
-    deliberately NOT made purely deterministic from timestamp+scope alone.
+
+def _is_release_branch(branch: str) -> bool:
+    """True for a release transaction branch under EITHER naming scheme."""
+    return branch.startswith(_FLAT_RELEASE_PREFIX) or branch.startswith(_NESTED_RELEASE_PREFIX)
+
+
+def _is_build_branch(branch: str) -> bool:
+    """True for a build transaction branch under EITHER naming scheme."""
+    return branch.startswith(_FLAT_BUILD_PREFIX) or branch.startswith(_NESTED_BUILD_PREFIX)
+
+
+def _is_transaction_branch(branch: str) -> bool:
+    return _is_release_branch(branch) or _is_build_branch(branch)
+
+
+def _new_transaction_branch(purpose: str, scope: str | None) -> str:
+    """``cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`` (KI-16, ciu-aligned).
+
+    Flat single-token name -- no nested ref path -- so the branch string IS the
+    worktree directory basename (see :func:`_worktree_dirname`). The ``_``
+    between date and time matches ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>``
+    scheme and keeps the date/time boundary visually distinct from the ``-``
+    field separators. UTC timestamp for chronological sort; sanitized scope for
+    readability; a trailing 8 hex from ``uuid4`` for collision-freedom --
+    cleanup depends on a transaction being able to assume it exclusively owns
+    the name it created, so the random suffix is required, not decorative, and
+    this name is deliberately NOT made purely deterministic from
+    timestamp+scope alone.
     """
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     token = uuid.uuid4().hex[:8]
-    return f"cmru/{purpose}/{timestamp}-{_sanitize_scope(scope)}-{token}"
+    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{token}"
 
 
 def _worktree_dirname(branch: str) -> str:
-    """The worktree directory name for ``branch``, 1:1 derivable in both
-    directions (KI-16): forward, it is simply ``branch`` with every ``/``
-    replaced by ``-``; backward, since ``purpose`` is always exactly
-    ``release`` or ``build``, ``re.sub(r"^cmru-(release|build)-",
-    r"cmru/\\1/", dirname, count=1)`` reconstructs the original branch.
+    """The worktree directory basename for ``branch`` (KI-16).
+
+    For a flat ``cmru-<purpose>-...`` branch this is the identity: branch string
+    and directory basename are exactly equal -- true 1:1 naming, nothing to
+    reconstruct in either direction. A legacy nested ``cmru/<purpose>/...``
+    branch (never created here any more) still maps its ``/`` to ``-`` so an
+    older retained worktree's on-disk basename remains derivable.
     """
     return branch.replace("/", "-")
 
@@ -164,10 +198,12 @@ def create_workspace(
     ``--project`` value when the run is scoped, else ``None`` (recorded as
     ``all``) -- see :func:`_new_transaction_branch`.
 
-    Existing code and refspecs glob on ``branch.startswith("cmru/release/")``
-    and ``startswith("cmru/build/")``; this naming preserves both prefixes, so
-    retained worktrees from the OLD ``cmru/<purpose>/<12-hex>`` scheme remain
-    just as discoverable, resumable, and removable as ones created here.
+    Discovery, resume, and cleanup recognise a transaction branch through
+    :func:`_is_release_branch` / :func:`_is_build_branch`, which accept BOTH the
+    flat ``cmru-<purpose>-`` names created here and the legacy nested
+    ``cmru/<purpose>/`` names -- so retained worktrees from either the current
+    scheme or the OLD ``cmru/<purpose>/<12-hex>`` one remain equally
+    discoverable, resumable, and removable.
     """
     if purpose not in {"release", "build"}:
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
@@ -196,14 +232,15 @@ def create_workspace(
 
 
 def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
-    """Validate and reopen a retained ``cmru/release/*`` worktree."""
+    """Validate and reopen a retained release worktree (flat ``cmru-release-*``
+    or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
     if not path.is_dir():
         raise RuntimeError(f"release worktree does not exist: {path}")
     if _common_git_dir(path) != _common_git_dir(repo_root):
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
-    if not branch.startswith("cmru/release/"):
+    if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
     return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
@@ -249,7 +286,16 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
 
 
 def _release_token(workspace: ReleaseWorkspace) -> str:
-    return workspace.branch.rsplit("/", 1)[-1]
+    """The ``<timestamp>_<scope>-<uuid8>`` token that names this transaction's
+    sidecar state files, stripped of its scheme prefix so the token is stable
+    and prefix-free under both naming schemes: a flat ``cmru-<purpose>-<token>``
+    branch drops the ``cmru-release-``/``cmru-build-`` head; a legacy nested
+    ``cmru/<purpose>/<token>`` branch takes its last path segment."""
+    branch = workspace.branch
+    for prefix in (_FLAT_RELEASE_PREFIX, _FLAT_BUILD_PREFIX):
+        if branch.startswith(prefix):
+            return branch[len(prefix):]
+    return branch.rsplit("/", 1)[-1]
 
 
 def _scope_dir(repo_root: Path) -> Path:
@@ -620,7 +666,8 @@ def delete_retained_build_output(
 
 
 def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> ReleaseWorkspace:
-    """Discard one inspected failed ``cmru/build/*`` worktree by exact path."""
+    """Discard one inspected failed build worktree (flat ``cmru-build-*`` or
+    legacy nested ``cmru/build/*``) by exact path."""
     path = path.resolve()
     expected_parent = (repo_root / ".worktrees").resolve()
     if path.parent != expected_parent:
@@ -628,7 +675,7 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
     if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
-    if not branch.startswith("cmru/build/"):
+    if not _is_build_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
@@ -798,7 +845,9 @@ def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> No
 
 
 def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
-    """Every retained ``cmru/release/*`` or ``cmru/build/*`` worktree.
+    """Every retained release or build worktree, under either the flat
+    ``cmru-release-*``/``cmru-build-*`` scheme or the legacy nested
+    ``cmru/release/*``/``cmru/build/*`` one.
 
     ``git worktree add`` records the absolute path it was given at creation
     time, and ``git worktree list`` always reports that same literal path
@@ -822,7 +871,7 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
         if not wt_path or not branch_ref:
             continue
         branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
-        if not (branch.startswith("cmru/release/") or branch.startswith("cmru/build/")):
+        if not _is_transaction_branch(branch):
             continue
         path = Path(wt_path)
         if not path.is_dir():
@@ -838,7 +887,7 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     return [
         workspace
         for workspace in list_cmru_workspaces(repo_root)
-        if workspace.branch.startswith("cmru/release/") and workspace.path.is_dir()
+        if _is_release_branch(workspace.branch) and workspace.path.is_dir()
     ]
 
 

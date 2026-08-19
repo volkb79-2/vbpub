@@ -880,6 +880,10 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     assert captured["memory"] == "3g"
     assert captured["memory_swap"] == "16g"
     assert captured["cpus"] == "1.5"
+    # The image resolved from the environment (args.image is None here) must
+    # reach the launch VERBATIM — pins the `args.image or env or ""` resolution
+    # at tester_gate.py:568 (mutation guard: an Or->And there empties it).
+    assert captured["image"] == "tester-unified:test"
 
 
 def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp_path):
@@ -908,10 +912,27 @@ def test_tester_gate_main_skips_sidecar_when_docker_not_enabled(monkeypatch, tmp
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
     assert captured.get("sidecar_name") is None
+    # Same image-resolution guard on the non-docker launch path (tester_gate.py:568).
+    assert captured["image"] == "tester-unified:test"
+
+
+def _full_tester_env(monkeypatch):
+    """Every REQUIRED_TESTER_ENV value set, so the KI-17 aggregate preflight
+    passes and a test can then isolate exactly ONE unresolvable input."""
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
 
 
 def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
+    # cgroup_parent is NOT part of the KI-17 preflight (it has the ambient
+    # CGROUP_PARENT_DEV_BACKGROUND fallback), so with the full required env set
+    # the preflight passes and control reaches resolve_cgroup_parent, which
+    # then fails on its own when BOTH parent sources are absent.
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT", raising=False)
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
@@ -926,12 +947,8 @@ def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, t
 
 
 def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_MEMORY", raising=False)
-    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
     def fail_if_called(*_a, **_k):
@@ -939,17 +956,15 @@ def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="no memory limit resolvable"):
+    # KI-17: main aborts up front, at the aggregate preflight, naming the one
+    # missing variable and its real source — before any container spin-up.
+    with pytest.raises(SystemExit, match=r"missing required configuration: CMRU_TESTER_MEMORY\b"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
 def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
-    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_MEMORY_SWAP", raising=False)
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
     def fail_if_called(*_a, **_k):
@@ -957,31 +972,25 @@ def test_tester_gate_main_errors_when_no_memory_swap_resolvable(monkeypatch, tmp
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="no memory-swap limit resolvable"):
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_MEMORY_SWAP"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
 def test_tester_gate_main_errors_when_no_cpu_limit_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
-    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
-    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_CPUS", raising=False)
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(
         tester_gate.subprocess, "run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not launch Docker")),
     )
 
-    with pytest.raises(SystemExit, match="no CPU limit resolvable"):
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_CPUS"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
 def test_tester_gate_main_errors_when_no_probe_image_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(
@@ -989,26 +998,22 @@ def test_tester_gate_main_errors_when_no_probe_image_resolvable(monkeypatch, tmp
         lambda *_a: (_ for _ in ()).throw(AssertionError("must not probe without an image")),
     )
 
-    with pytest.raises(SystemExit, match="no cgroup probe image resolvable"):
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_CGROUP_PROBE_IMAGE"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 
 def test_tester_gate_main_errors_when_no_dind_image_resolvable(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
-    monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
-    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
-    monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_DIND_IMAGE", raising=False)
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda _slice, _image: (True, "ok"))
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(
         tester_gate, "dind_sidecar",
         lambda *_a: (_ for _ in ()).throw(AssertionError("must not start Docker-in-Docker")),
     )
 
-    with pytest.raises(SystemExit, match="no nested Docker image resolvable"):
+    # DIND is required by the preflight only under --enable-docker (KI-17),
+    # matching where resolve_dind_image is actually reached.
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_DIND_IMAGE"):
         tester_gate.main(["--cwd", "cmru", "--enable-docker", "--", "true"])
 
 
@@ -1091,9 +1096,9 @@ def test_build_docker_command_adds_no_extra_mount_for_an_ordinary_checkout(monke
 
 
 def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tmp_path):
-    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
+    # Full required env so the KI-17 preflight passes and control reaches the
+    # slice existence probe — the behaviour under test here.
+    _full_tester_env(monkeypatch)
     monkeypatch.setattr(
         tester_gate, "check_slice_unit",
         lambda _slice, _image: (False, "dev-background.slice: LoadState=not-found — the unit is not installed on this host"),
@@ -1110,6 +1115,7 @@ def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tm
 
 
 def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatch, tmp_path):
+    _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_UNIFIED_IMAGE", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
 
@@ -1118,7 +1124,7 @@ def test_tester_gate_main_refuses_to_launch_without_an_explicit_image(monkeypatc
 
     monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
 
-    with pytest.raises(SystemExit, match="no test image configured"):
+    with pytest.raises(SystemExit, match="missing required configuration: CMRU_TESTER_UNIFIED_IMAGE"):
         tester_gate.main(["--cwd", "cmru", "--", "true"])
 
 

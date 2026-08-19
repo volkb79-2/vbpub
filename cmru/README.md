@@ -177,9 +177,11 @@ release tag.
 
 Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
 cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
-and creates a temporary `cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree at that
-exact commit — chronologically sortable, its `.worktrees/` directory name the branch's own
-`/`→`-` transform. A local `main` behind the remote is warned about but safe because the
+and creates a temporary `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree at that
+exact commit — chronologically sortable, and flat, so the `.worktrees/` directory name is
+byte-for-byte the branch name (true 1:1, matching ciu's `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`
+naming; the trailing `uuid8` is kept for collision-freedom). Worktrees retained under the
+older nested `cmru/release/…` naming are still recognised. A local `main` behind the remote is warned about but safe because the
 remote is authoritative. This matters because setuptools-scm sees the
 whole Git worktree: a harmless edit in another project can otherwise make a wheel dirty.
 
@@ -209,7 +211,7 @@ release action. On success it copies project logs to
 inventory and a `publication: forbidden` marker, then removes the worktree. These records are
 gitignored local consumption outputs, not release candidates and not inputs to `cmru publish`.
 If the build or retention fails, CMRU keeps the exact
-`cmru/build/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>` worktree and prints its
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree and prints its
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
 `cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with
@@ -327,8 +329,15 @@ project-owned, tested flow such as MDT's for real OCI repacking.
 
 cmru is the **outer loop** (build-to-release: version + publish across products). Its sibling **ciu** is the **inner loop** (build-to-run: build local images and run a stack on this host). They overlap only in that both can trigger a docker build — over the *same* `docker-bake.hcl`, for different ends (ciu `--load`s + runs; cmru pushes). Full map, incl. the border question: [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md).
 
+## Adopting cmru for your own product
+
+Making a product releasable by cmru — a portable `cmru.toml`, the orchestration `[env]` a
+`tester-gate` step needs, wiring a project into the estate, and the failure modes worth knowing
+before your first release — is covered step by step in **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)**.
+
 ## More
 
+- Adopting cmru (the HOW): [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 - Full contract & rationale: [`docs/SPEC.md`](docs/SPEC.md) — start at *S-CLI* and *S-REL*.
 - Monorepo tooling overview: [`../docs/RELEASE-TOOLING.md`](../docs/RELEASE-TOOLING.md).
 - Release-modes design/plan: [`../docs/plan-cmru-release-modes.md`](../docs/plan-cmru-release-modes.md).

@@ -108,8 +108,11 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 > dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
 > `S12.2a`–`S12.2e`, `S2.6`, `S15`. Mutation campaign green (115 candidates, 115
 > killed) at 1623 tests and 100% statement and branch coverage; two adversarial
-> reviews are recorded in `docs/reviews/`. **KI-17 remains open** — documented as
-> a workaround in `docs/CONTRIBUTING.md` §3, not yet fixed.
+> reviews are recorded in `docs/reviews/`.
+>
+> **KI-17 shipped 2026-08-19** in a follow-up that also re-aligned KI-16's transaction naming
+> to ciu's flat `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme (exact 1:1 branch/directory, no
+> nested paths — see the FOLLOW-UP note under KI-16 and SPEC `S-CLI.5b`/`S2.6a`).
 >
 > Worth reading before filing the next issue here: six defects were found across
 > that work and **two were in the issue text rather than the code** — KI-12(b) as
@@ -223,7 +226,7 @@ must provide equivalent consumer-verifiable evidence itself.
 environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
 ### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
-**Evidence:** `cmru build` creates an isolated `cmru/build/<id>` worktree, runs its
+**Evidence:** `cmru build` creates an isolated `cmru-build-<id>` worktree, runs its
 prepare/gate/build phases there, and on success copies logs and declared artifact directories
 into commit-addressed, gitignored local records under `<project>/logs/` and
 `<project>/artifacts/`. The `build.json` inventory binds their source SHA, digest inventory,
@@ -484,10 +487,45 @@ readable at a glance, still exclusively owned; the worktree directory should mir
 triage but does not stop accumulation. A timestamped name makes "remove retained transactions
 older than N days" expressible for the first time.
 
-### KI-17 — a gate step copied from `cmru.toml` cannot be reproduced standalone — *open*
-**Reported by:** cmru's own KI-12…KI-16 work, 2026-08-19.
+> **FOLLOW-UP, 2026-08-19 — re-aligned to ciu; the branch was flattened.** The shipped
+> scheme above kept the *nested* `cmru/release/` ref namespace, so the branch string and its
+> worktree directory (`cmru-release-…`, slashes→dashes) were 1:1 *derivable* but not
+> *identical*. ciu's next version adopts flat `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` names with
+> exact 1:1 branch/directory naming and no nested paths, and cmru now matches it (SPEC
+> `S2.6a`'s sibling, `S-CLI.5b`):
+>
+> ```
+> cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+>   e.g.  cmru-release-20260819_143022-assay-a3ae580d   (branch string == worktree dir string)
+> ```
+>
+> Two deliberate divergences from ciu, decided with the operator: the trailing **`uuid8` is
+> kept** — this section's own "collision-freedom is non-negotiable" argument stands, and ciu's
+> suffix-free name cannot make it, so cmru is ciu-*shaped* but not byte-identical — and the
+> date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
+> `cmru/build/` prefixes are **still recognised** for discovery/resume/cleanup (predicates
+> `_is_release_branch`/`_is_build_branch`), so the ~50 worktrees retained under the old naming
+> in this checkout are not stranded. The retention-policy point above is still open.
 
-**Status:** the `argv` entries in a project's `[steps.*]` depend on environment injected by the
+### KI-17 — a gate step copied from `cmru.toml` cannot be reproduced standalone — *shipped*
+**Reported by:** cmru's own KI-12…KI-16 work, 2026-08-19.
+**Shipped:** 2026-08-19, alongside the KI-16 ciu-alignment rename (SPEC `S2.6a`). Both fixes
+recommended below were taken.
+
+**Fix landed (both (a) and (b)).** `tester-gate` now runs an up-front preflight
+(`_missing_orchestration_env`) before any resolver with a side effect — the slice-existence
+probe or the container launch — that resolves every required value at `explicit flag > env`
+precedence and, if anything is missing, aborts **once, naming every missing variable together**
+(a): image, memory, memory/swap, CPU, probe image, plus the nested-Docker image under
+`--enable-docker`. The aggregate report and each individual resolver message now name
+`cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source, and say
+it is NOT usually the project's own `cmru.toml [env]` (b). The required set is one shared
+constant, `REQUIRED_TESTER_ENV`, that `cmru standards` imports for its static config check — so
+the runtime preflight and the static validator can never drift. `cgroup_parent` is deliberately
+excluded (it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback). The workaround formerly
+in `docs/CONTRIBUTING.md §3` now records the fix.
+
+**Original report (kept for the record).** The `argv` entries in a project's `[steps.*]` depend on environment injected by the
 **orchestration** layer from `cmru.orchestration.toml`'s `[env]` — `CMRU_TESTER_UNIFIED_IMAGE`,
 `CMRU_WHEEL_BUILDER_IMAGE`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
 `CMRU_TESTER_CGROUP_PROBE_IMAGE`. Nothing in the step says so.
