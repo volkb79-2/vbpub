@@ -104,6 +104,20 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ## Known Issues
 
+> **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
+> dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
+> `S12.2a`–`S12.2e`, `S2.6`, `S15`. Mutation campaign green (115 candidates, 115
+> killed) at 1623 tests and 100% statement and branch coverage; two adversarial
+> reviews are recorded in `docs/reviews/`. **KI-17 remains open** — documented as
+> a workaround in `docs/CONTRIBUTING.md` §3, not yet fixed.
+>
+> Worth reading before filing the next issue here: six defects were found across
+> that work and **two were in the issue text rather than the code** — KI-12(b) as
+> originally filed made cmru abort on the ordinary just-released state and advise
+> `git tag -d` on a real release tag. Its CORRECTION blockquote below is kept in
+> place rather than rewritten, because what the entry got wrong is worth more
+> than a tidy record.
+
 ### KI-03 — S2's single strict configuration contract was not used by `release` — *shipped*
 **Status:** resolved as an intentional breaking configuration change. `cli.load_config()` and
 the raw step runner invoke `config.load_forge_config()` before mapping any values; all CMRU
@@ -311,7 +325,7 @@ visibility endpoint, restore fully-automatic sync and re-tighten `S4.7` to MUST.
 
 ---
 
-### KI-12 — the release plan depends on UNPUSHED local tags, and a tag on the snapshot commit silently disables a project — *open*
+### KI-12 — the release plan depends on UNPUSHED local tags, and a tag on the snapshot commit silently disables a project — *shipped*
 **Reported by:** assay's wave-3 release, 2026-08-18. **Priority: high** — the only one of
 KI-12…KI-16 that produces a *wrong answer* rather than a confusing message.
 
@@ -383,7 +397,7 @@ last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`
    from a completed release. Detection is the guard; `SPEC.md` should also state the rule
    plainly: **never hand-tag a cmru-managed project.**
 
-### KI-13 — the "unchanged" path hides the comparison baseline it just used — *open*
+### KI-13 — the "unchanged" path hides the comparison baseline it just used — *shipped*
 **Reported by:** assay's wave-3 release, 2026-08-18.
 
 **Status:** cmru prints the baseline tag *only when it finds changes* — the case where you do
@@ -401,7 +415,7 @@ suggested. **Fix:** name the baseline and the reason on the unchanged path, e.g.
 `Unchanged, skipping: assay (no commits under assay/ since assay-v2.1.0 @ 52534ef7)`. That one
 line makes KI-12 self-diagnosing without any of KI-12's deeper changes.
 
-### KI-14 — `--dry-run` surfaces diagnostics a real run withholds — *open*
+### KI-14 — `--dry-run` surfaces diagnostics a real run withholds — *shipped*
 **Reported by:** assay's wave-3 release, 2026-08-18.
 
 **Status:** `--dry-run` prints `[DRY] Would tag: assay-v2.1.0` plus the full per-project plan;
@@ -413,7 +427,7 @@ worth telling an operator *before* acting is worth telling them *while* acting; 
 operators run everything twice, doubling the wall-clock cost of a gated release to obtain
 information the tool already had. Fixing KI-13 on both paths satisfies most of this.
 
-### KI-15 — cleanup prints `error:` and `failed to push` on a SUCCESSFUL run — *open*
+### KI-15 — cleanup prints `error:` and `failed to push` on a SUCCESSFUL run — *shipped*
 **Reported by:** assay's wave-3 release, 2026-08-18.
 
 **Status:** every observed run — including a **successful dry run that exited 0** — ends with:
@@ -430,7 +444,7 @@ diagnosing KI-12, and — worse for a release tool — it trains operators to re
 transaction actually pushed it, tracked as transaction state rather than attempted
 unconditionally. Any remaining best-effort delete must not print at `error:` level.
 
-### KI-16 — release branch/worktree names are opaque, unsortable, and accumulate — *open*
+### KI-16 — release branch/worktree names are opaque, unsortable, and accumulate — *shipped*
 **Reported by:** assay's wave-3 release, 2026-08-18.
 
 **Status:** the transaction name is `cmru/release/<12 hex>` from `uuid.uuid4().hex[:12]`
