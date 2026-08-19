@@ -130,6 +130,22 @@ _SLICE_PROBE_IMAGE_ENV = "CMRU_TESTER_CGROUP_PROBE_IMAGE"
 _CPUS_ENV = "CMRU_TESTER_CPUS"
 _DIND_IMAGE_ENV = "CMRU_TESTER_DIND_IMAGE"
 
+# The orchestration-injected environment every tester-gate step depends on
+# (KI-17). These are normally supplied by ``cmru.orchestration.toml [env]`` and
+# reach the step through ``cmru release`` -- they are NOT usually set in the
+# project's own ``cmru.toml [env]``. ``cmru standards`` validates this same set
+# against a project's declared config (it imports this tuple, keeping one source
+# of truth); :func:`_missing_orchestration_env` validates it at runtime so a
+# step copied out of ``cmru.toml`` and run by hand fails ONCE, naming every
+# missing variable, instead of one container spin-up at a time.
+REQUIRED_TESTER_ENV = (
+    "CMRU_TESTER_UNIFIED_IMAGE",
+    "CMRU_TESTER_MEMORY",
+    "CMRU_TESTER_MEMORY_SWAP",
+    _CPUS_ENV,
+    _SLICE_PROBE_IMAGE_ENV,
+)
+
 
 def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is genuinely installed on the DOCKER
@@ -251,17 +267,20 @@ def resolve_cgroup_parent(explicit: str | None) -> str:
 def resolve_memory(explicit: str | None) -> str:
     """Resolve the gate container's ``--memory`` limit — no hardcoded fallback.
 
-    Order: ``--memory`` (explicit) > ``CMRU_TESTER_MEMORY`` (normally set in
-    cmru.toml's ``[env]``, the one place the estate's actual default lives).
-    Unresolvable is a hard error, never a silent unbounded launch.
+    Order: ``--memory`` (explicit) > ``CMRU_TESTER_MEMORY`` (normally supplied by
+    ``cmru.orchestration.toml [env]`` and inherited through ``cmru release`` --
+    where the estate's actual default lives -- not the project's own
+    ``cmru.toml [env]``). Unresolvable is a hard error, never a silent unbounded
+    launch.
     """
     if explicit:
         return explicit
     resolved = os.environ.get("CMRU_TESTER_MEMORY")
     if not resolved:
         raise SystemExit(
-            "tester-gate: no memory limit resolvable — pass --memory explicitly, "
-            "or set CMRU_TESTER_MEMORY (e.g. in cmru.toml's [env]) in the environment. "
+            "tester-gate: no memory limit resolvable — pass --memory explicitly, or set "
+            "CMRU_TESTER_MEMORY (normally supplied by cmru.orchestration.toml [env] and "
+            "inherited through `cmru release`, not usually the project's own cmru.toml [env]). "
             "Refusing to launch an unbounded container next to production."
         )
     return resolved
@@ -271,17 +290,19 @@ def resolve_memory_swap(explicit: str | None) -> str:
     """Resolve the gate container's ``--memory-swap`` limit — no hardcoded fallback.
 
     Order: ``--memory-swap`` (explicit) > ``CMRU_TESTER_MEMORY_SWAP`` (normally
-    set in cmru.toml's ``[env]``). Unresolvable is a hard error, never a silent
-    unbounded launch. Docker's own flag semantics: this is the COMBINED
-    mem+swap total, not swap alone.
+    supplied by ``cmru.orchestration.toml [env]`` and inherited through
+    ``cmru release``, not the project's own ``cmru.toml [env]``). Unresolvable is
+    a hard error, never a silent unbounded launch. Docker's own flag semantics:
+    this is the COMBINED mem+swap total, not swap alone.
     """
     if explicit:
         return explicit
     resolved = os.environ.get("CMRU_TESTER_MEMORY_SWAP")
     if not resolved:
         raise SystemExit(
-            "tester-gate: no memory-swap limit resolvable — pass --memory-swap explicitly, "
-            "or set CMRU_TESTER_MEMORY_SWAP (e.g. in cmru.toml's [env]) in the environment. "
+            "tester-gate: no memory-swap limit resolvable — pass --memory-swap explicitly, or "
+            "set CMRU_TESTER_MEMORY_SWAP (normally supplied by cmru.orchestration.toml [env] and "
+            "inherited through `cmru release`, not usually the project's own cmru.toml [env]). "
             "Refusing to launch an unbounded container next to production."
         )
     return resolved
@@ -294,8 +315,9 @@ def _resolve_required(explicit: str | None, env_name: str, label: str) -> str:
     if configured:
         return configured
     raise SystemExit(
-        f"tester-gate: no {label} resolvable — pass the matching CLI option or set "
-        f"{env_name} explicitly in the project's cmru.toml [env]."
+        f"tester-gate: no {label} resolvable — pass the matching CLI option, or set "
+        f"{env_name} (normally supplied by cmru.orchestration.toml [env] and inherited "
+        "through `cmru release`, not usually set in the project's own cmru.toml [env])."
     )
 
 
@@ -445,6 +467,33 @@ def build_docker_command(
     return [*argv, image, *command]
 
 
+def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
+    """Every required tester-gate variable that resolves empty from BOTH its
+    explicit CLI flag and the environment (KI-17), in declared order.
+
+    Mirrors each resolver's ``explicit > env`` precedence exactly, so the
+    single up-front report matches what would otherwise fail later -- one
+    resolver, one container spin-up, at a time. ``CMRU_TESTER_DIND_IMAGE`` is
+    required only when ``--enable-docker`` is set, matching where
+    :func:`resolve_dind_image` is actually reached.
+    """
+    explicit_for = {
+        "CMRU_TESTER_UNIFIED_IMAGE": args.image,
+        "CMRU_TESTER_MEMORY": args.memory,
+        "CMRU_TESTER_MEMORY_SWAP": args.memory_swap,
+        _CPUS_ENV: args.cpus,
+        _SLICE_PROBE_IMAGE_ENV: args.cgroup_probe_image,
+    }
+    missing = [
+        name
+        for name in REQUIRED_TESTER_ENV
+        if not (explicit_for[name] or os.environ.get(name) or "").strip()
+    ]
+    if args.enable_docker and not (args.dind_image or os.environ.get(_DIND_IMAGE_ENV) or "").strip():
+        missing.append(_DIND_IMAGE_ENV)
+    return missing
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run a command in tester-unified for this worktree")
     parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
@@ -461,13 +510,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--memory", default=os.environ.get("CMRU_TESTER_MEMORY"),
-        help="Defaults to $CMRU_TESTER_MEMORY (normally set in cmru.toml's [env]). "
-             "No implicit fallback: unresolvable is a hard error, never an unbounded launch.",
+        help="Defaults to $CMRU_TESTER_MEMORY (normally from cmru.orchestration.toml [env], "
+             "inherited through `cmru release`). No implicit fallback: unresolvable is a hard "
+             "error, never an unbounded launch.",
     )
     parser.add_argument(
         "--memory-swap", default=os.environ.get("CMRU_TESTER_MEMORY_SWAP"),
-        help="Defaults to $CMRU_TESTER_MEMORY_SWAP (normally set in cmru.toml's [env]); "
-             "Docker's combined mem+swap total, not swap alone. No implicit fallback.",
+        help="Defaults to $CMRU_TESTER_MEMORY_SWAP (normally from cmru.orchestration.toml "
+             "[env], inherited through `cmru release`); Docker's combined mem+swap total, "
+             "not swap alone. No implicit fallback.",
     )
     parser.add_argument(
         "--cpus", default=None,
@@ -502,12 +553,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     if command[:1] == ["--"]:
         command = command[1:]
 
-    image = (args.image or os.environ.get("CMRU_TESTER_UNIFIED_IMAGE") or "").strip()
-    if not image:
+    missing = _missing_orchestration_env(args)
+    if missing:
         raise SystemExit(
-            "tester-gate: no test image configured — pass --image explicitly or set "
-            "CMRU_TESTER_UNIFIED_IMAGE in the project cmru.toml [env]."
+            "tester-gate: missing required configuration: " + ", ".join(missing) + ".\n"
+            "These values are normally supplied by cmru.orchestration.toml [env] and reach\n"
+            "this step through `cmru release`; they are NOT usually set in the project's own\n"
+            "cmru.toml [env]. If you copied this step out of cmru.toml to run it by hand,\n"
+            "export every variable listed above (or pass its matching CLI flag) first."
         )
+
+    # Guaranteed non-empty by the preflight above; resolvers below stay as
+    # defense-in-depth for direct callers.
+    image = (args.image or os.environ.get("CMRU_TESTER_UNIFIED_IMAGE") or "").strip()
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)

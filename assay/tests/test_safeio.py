@@ -12,6 +12,7 @@ public contract, never through :mod:`assay.runner`.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,218 @@ def test_a_project_root_that_is_not_an_openable_directory_is_refused(tmp_path: P
     with pytest.raises(AssayError) as excinfo:
         getattr(safeio, caller)(missing_root, "cov.json", limit=LIMIT)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+# --- create_missing_parents: B006(b) -------------------------------------------
+#
+# `reserve_output`'s new capability, off by default -- the whole contract, not
+# an implementation detail (W1-CARVE-branch-coverage-and-whole-target.md §2,
+# AMENDED by A-269). `create_missing_parents` is never passed below except
+# where a test's own point is proving what the explicit opt-in does; every
+# other call in this module (and every call `read_bounded_file` ever makes)
+# uses the default and must keep refusing a missing parent exactly as before.
+#
+# R0 never calls `reserve_output` at all (it declares no coverage judge), so
+# there is no real R0 call site to drive for the "default is off" proof. This
+# module's own docstring names its convention as proving `safeio`'s contract
+# DIRECTLY, never through `assay.runner` -- so the bare call below, with the
+# parameter omitted, is the faithful in-place proxy: it is the exact call
+# shape an R0/direct caller would make if it ever reserved an output at all.
+
+
+def test_reserve_output_default_refuses_a_missing_parent_and_creates_nothing(
+    tmp_path: Path,
+):
+    """The R0/in-place contract test. Paired with the must-succeed control
+    immediately below, which is the IDENTICAL fixture with only the explicit
+    opt-in added -- so a reader cannot attribute this refusal to anything
+    about the fixture itself, only to the default."""
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(tmp_path, "missing/cov.json", limit=LIMIT)
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert not (tmp_path / "missing").exists(), "the default must never create anything"
+
+
+def test_reserve_output_create_missing_parents_creates_a_single_missing_parent(
+    tmp_path: Path,
+):
+    """The paired must-succeed control for the default-off test above: same
+    project root, same artifact spelling, only `create_missing_parents=True`
+    added. Mode is checked exactly -- `0o700`, per the module docstring's
+    safety discipline, never a looser default."""
+    with safeio.reserve_output(
+        tmp_path, "missing/cov.json", limit=LIMIT, create_missing_parents=True
+    ) as reserved:
+        assert reserved.artifact == "missing/cov.json"
+    created = tmp_path / "missing"
+    assert created.is_dir()
+    assert not created.is_symlink()
+    assert stat.S_IMODE(created.stat().st_mode) == 0o700
+
+
+def test_reserve_output_create_missing_parents_creates_every_missing_intermediate_component(
+    tmp_path: Path,
+):
+    with safeio.reserve_output(
+        tmp_path, "a/b/c/cov.json", limit=LIMIT, create_missing_parents=True
+    ) as reserved:
+        assert reserved.artifact == "a/b/c/cov.json"
+    for name in ("a", "a/b", "a/b/c"):
+        created = tmp_path / name
+        assert created.is_dir()
+        assert not created.is_symlink()
+        assert stat.S_IMODE(created.stat().st_mode) == 0o700
+
+
+def test_reserve_output_create_missing_parents_refuses_a_symlinked_component_never_follows_it(
+    tmp_path: Path,
+):
+    """`os.makedirs`-style recursion following a symlinked component is the
+    exact failure mode this discipline exists to avoid: a symlinked
+    component must refuse even when creation is explicitly requested, never
+    be silently followed or replaced. Paired with the must-succeed control
+    immediately below, which differs in EXACTLY one thing -- a real
+    directory standing in for the symlink -- so this refusal cannot be
+    attributed to the missing final component, the artifact spelling, or
+    anything else the two fixtures share."""
+    escape_target = tmp_path / "escape_target"
+    escape_target.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(escape_target)
+
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(
+            tmp_path, "linked/nested/cov.json", limit=LIMIT, create_missing_parents=True
+        )
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert not (escape_target / "nested").exists(), (
+        "nothing may be created through the symlink's target"
+    )
+    assert link.is_symlink(), "the symlink itself must never be touched or replaced"
+
+
+def test_reserve_output_create_missing_parents_succeeds_through_a_real_directory_the_symlink_control(
+    tmp_path: Path,
+):
+    """The must-succeed control for the symlink refusal above: the identical
+    fixture shape -- one pre-existing top-level component, then a missing
+    'nested' component, then the basename -- except `linked` is a REAL
+    directory rather than a symlink."""
+    real = tmp_path / "linked"
+    real.mkdir()
+
+    with safeio.reserve_output(
+        tmp_path, "linked/nested/cov.json", limit=LIMIT, create_missing_parents=True
+    ) as reserved:
+        assert reserved.artifact == "linked/nested/cov.json"
+
+    created = real / "nested"
+    assert created.is_dir()
+    assert not created.is_symlink()
+
+
+def test_reserve_output_create_missing_parents_still_refuses_a_regular_file_standing_where_a_parent_belongs(
+    tmp_path: Path,
+):
+    """Creation only ever fires on genuine absence (``ENOENT``); a component
+    that already exists as the wrong type is refused exactly as it is
+    without the flag -- never replaced, with or without the opt-in."""
+    (tmp_path / "notadir").write_bytes(b"x")
+
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(
+            tmp_path, "notadir/cov.json", limit=LIMIT, create_missing_parents=True
+        )
+
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert (tmp_path / "notadir").read_bytes() == b"x", "never replaced"
+
+
+def test_reserve_output_create_missing_parents_refuses_when_the_reopen_after_creation_is_raced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The TOCTOU defence the safety discipline exists for: even a directory
+    THIS reservation itself just created is reopened with ``O_NOFOLLOW``
+    rather than trusted blind. Simulated by making the SECOND ``os.open`` of
+    the component (the post-``mkdir`` reopen) fail, right after a REAL
+    ``mkdir`` succeeded -- standing in for 'something replaced the
+    just-created directory before the reopen'."""
+    real_open = os.open
+    calls = {"n": 0}
+
+    def racing_open(path, flags, *args, dir_fd=None, **kwargs):
+        if path == "missing" and flags == safeio._OPEN_DIR_FLAGS:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated: replaced between mkdir and reopen")
+        return real_open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(safeio.os, "open", racing_open)
+
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(
+            tmp_path, "missing/cov.json", limit=LIMIT, create_missing_parents=True
+        )
+
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "could not be created or opened" in str(excinfo.value)
+    # the real `mkdir` genuinely ran (this is a reopen race, not a creation
+    # failure) -- the directory is left behind, as an aborted concurrent
+    # creation would leave it.
+    assert (tmp_path / "missing").is_dir()
+
+
+def test_reserve_output_create_missing_parents_end_to_end_arm_and_consume(tmp_path: Path):
+    """The created parent is not just present -- it is genuinely usable by
+    the rest of the reservation's own lifecycle."""
+    reserved = safeio.reserve_output(
+        tmp_path, "created/cov.json", limit=LIMIT, create_missing_parents=True
+    )
+    reserved.arm()
+    (tmp_path / "created" / "cov.json").write_bytes(b'{"files": {}}')
+    assert reserved.consume() == b'{"files": {}}'
+
+
+# --- diagnostics: the setup-failure/unreadable-artifact distinction (§2) -------
+
+
+def test_reserve_output_missing_parent_diagnostic_names_the_component_and_the_artifact(
+    tmp_path: Path,
+):
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(tmp_path, "missing/nested/cov.json", limit=LIMIT)
+    message = str(excinfo.value)
+    assert "'missing'" in message, "the missing component itself must be named"
+    assert "missing/nested/cov.json" in message, "the declared artifact path must be named"
+    assert "could not be opened" in message
+    assert "parent" in message
+
+
+def test_reserve_output_create_missing_parents_failure_diagnostic_still_names_component_and_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The other half of the setup-failure shape: creation itself fails
+    (rather than the plain open). The message stays a SETUP-failure message
+    -- 'could not be created or opened' -- never the generic wording a
+    genuinely unreadable artifact gets elsewhere in this module."""
+
+    def failing_mkdir(*args, **kwargs):
+        raise OSError("simulated: disk full")
+
+    monkeypatch.setattr(safeio.os, "mkdir", failing_mkdir)
+
+    with pytest.raises(AssayError) as excinfo:
+        safeio.reserve_output(
+            tmp_path, "missing/cov.json", limit=LIMIT, create_missing_parents=True
+        )
+    message = str(excinfo.value)
+    assert "'missing'" in message
+    assert "missing/cov.json" in message
+    assert "could not be created or opened" in message
+    assert not (tmp_path / "missing").exists()
 
 
 # --- read_bounded_file: the no-unlink sibling ----------------------------------

@@ -37,7 +37,7 @@ from assay.config import LaneConfigError, load_lane_file
 from assay.errors import Outcome, ReasonCode
 from assay.verify import verify_document
 
-_LANE = """schema_version = 1
+_LANE = """schema_version = 2
 [lanes.real]
 scope = "S3"
 rigor = ["R0"]

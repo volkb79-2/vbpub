@@ -4,7 +4,7 @@ package's changes to its BODY -- only its behaviour is extended).
 
 O1's claim: *a changed continuation line in an executed multiline Python
 statement is attributed to that statement and passes, provably (covered/
-changed_executable/missing_lines counts reflect the attribution, not merely
+executable/missing_lines counts reflect the attribution, not merely
 the final PASS outcome); the same span unexecuted fails with the statement
 start named.* Proven below with the REAL ``PythonAdapter`` and real,
 hand-derived (never adapter-generated) coverage.py semantics for the exact
@@ -85,6 +85,7 @@ def _evaluate(source: str, *, added_lines: set[int], executed, missing, excluded
         profile=profile,
         adapter=adapter,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP / "pkg",),
         fail_under=100.0,
         allow_excluded=False,
@@ -105,7 +106,7 @@ def test_an_executed_interior_line_is_attributed_and_passes_provably():
     )
 
     assert result.covered == 1
-    assert result.changed_executable == 1
+    assert result.executable == 1
     assert result.missing_lines == {}
     assert result.unclassified_lines == {}
     assert result.outcome is Outcome.PASS
@@ -124,7 +125,7 @@ def test_the_same_span_unexecuted_fails_with_the_statement_start_named():
     )
 
     assert result.covered == 0
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.missing_lines == {PATH: frozenset({2, 4})}
     assert result.outcome is Outcome.FAIL
     assert result.reason_code is ReasonCode.UNCOVERED_LINES
@@ -140,7 +141,7 @@ def test_an_unexecuted_interior_line_alone_fails_naming_itself_not_the_anchor():
     )
 
     assert result.covered == 0
-    assert result.changed_executable == 1
+    assert result.executable == 1
     assert result.missing_lines == {PATH: frozenset({4})}
     assert result.outcome is Outcome.FAIL
     assert result.reason_code is ReasonCode.UNCOVERED_LINES
@@ -154,7 +155,7 @@ def test_a_changed_line_that_is_itself_an_untracked_statement_start_is_non_code(
     source = "@decorate\ndef f():\n    return 1\n"
     result = _evaluate(source, added_lines={1}, executed=set(), missing=set())
 
-    assert result.changed_executable == 0
+    assert result.executable == 0
     assert result.missing_lines == {}
     assert result.unclassified_lines == {}
     assert result.outcome is Outcome.PASS
@@ -167,7 +168,7 @@ def test_a_line_between_statements_is_still_silently_non_code():
     source = SOURCE + "\n\nx = 1\n"  # line 6 blank, line 7 blank, line 8 code
     result = _evaluate(source, added_lines={4, 6}, executed={2}, missing=set())
 
-    assert result.changed_executable == 1  # only line 4 counted; line 6 is not code
+    assert result.executable == 1  # only line 4 counted; line 6 is not code
     assert result.unclassified_lines == {}
     assert result.outcome is Outcome.PASS
 
@@ -195,7 +196,7 @@ def test_an_interior_line_whose_anchor_is_excluded_is_genuinely_unattributable()
     assert result.reason_code is ReasonCode.UNCLASSIFIED_LINES
     # The ambiguous line contributes to NEITHER the numerator nor the
     # denominator -- it is not merely folded into a lower percentage.
-    assert result.changed_executable == 0
+    assert result.executable == 0
     assert result.covered == 0
 
 
@@ -272,6 +273,7 @@ def _evaluate_spans(
         profile=profile,
         adapter=adapter,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP / "pkg",),
         fail_under=fail_under,
         allow_excluded=False,
@@ -306,7 +308,7 @@ def test_overlapping_non_nesting_spans_render_unclassified_never_pass():
     # The ambiguous line never contributes to the numerator, even though a
     # naive resolution would have credited it as covered.
     assert result.covered == 0
-    assert result.changed_executable == 0
+    assert result.executable == 0
 
 
 def test_overlap_ambiguity_outranks_a_permissive_fail_under():

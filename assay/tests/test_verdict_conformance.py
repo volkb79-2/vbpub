@@ -25,10 +25,14 @@ rather than being deleted so that re-narrowing the audit is a visible,
 argued edit rather than a silent one.
 
 **P21 takes the vocabulary to 26 pairs**, and the audit moves with the
-capability rather than after it (A-141). Four of the seven new reasons are
-producer-reachable and fixtured here; the three that no code in this build
-can render into an artifact are listed in ``EXCLUDED_ENTIRELY`` with the
-argument for each. The size cross-check against ``tests/test_errors.py`` is
+capability rather than after it (A-141). Four of the seven new reasons were
+producer-reachable and fixtured here immediately; the three that no code in
+that build could render into an artifact were listed in
+``EXCLUDED_ENTIRELY`` with the argument for each — P34/W3 makes one of the
+three reachable in turn (``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``,
+:func:`assay.runner.run_lane`'s own external-tool preflight, A-253), so five
+of the seven are producer-reachable and fixtured as of this package, and two
+remain excluded. The size cross-check against ``tests/test_errors.py`` is
 now a set comparison rather than a literal — the literal is exactly what
 went stale when the vocabulary grew.
 
@@ -88,6 +92,9 @@ def _load_path(path: Path) -> dict:
 VOCABULARY: dict[str, tuple[str, ...]] = {
     "FAIL": (
         "UNCOVERED_LINES",
+        # wave-1 §4/A-258: a floor missed PURELY because of branches -- zero
+        # missing LINES, at least one uncovered arc.
+        "UNCOVERED_BRANCHES",
         "EXCLUDED_LINES",
         "UNCLASSIFIED_LINES",
         "MUTANTS_SURVIVED",
@@ -106,6 +113,14 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "MUTATION_DISCOVERY_FAILED",
     ),
     "NO_MEASUREMENT": (
+        # wave-1 §4/A-259: judge.require_branch=true over an "unavailable"
+        # branch capability -- a MEASURABILITY guard, checked before R1's
+        # mode dispatch.
+        "BRANCH_UNAVAILABLE",
+        # wave-1 §5/A-260: B005's anti-vacuity guard -- a whole_target
+        # target absent from the artifact, or measured with zero
+        # executable lines.
+        "TARGET_NOT_MEASURED",
         "DIRTY_TREE",
         # P21/A-178: a clean tree whose HEAD moved is not dirty.
         "HEAD_CHANGED",
@@ -113,7 +128,8 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "EMPTY_COVERAGE",
         "MISSING_ATTESTATION",
         "STALE_ATTESTATION",
-        # P21/A-163, reserved here for P27's first real external-tool preflight.
+        # P21/A-163; P34/W3 lands the producer (A-253) --
+        # `runner.run_lane`'s own external-tool preflight.
         "MISSING_EXTERNAL_TOOL",
     ),
     "BUDGET_EXCEEDED": (
@@ -143,12 +159,28 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
     (outcome, code) for outcome, codes in VOCABULARY.items() for code in codes
 )
 
-#: Empty from P17 (A-141) until P21, which added seven reasons at once — four
-#: of them producer-reachable and now fixtured below, three genuinely NOT
-#: renderable into any artifact this build can emit. Re-narrowing this audit
-#: stays a visible, argued edit: each entry states WHY no complete artifact
-#: exists, so "unreachable" carries the burden of proof A-151 put on it
-#: rather than being asserted from the code's shape.
+#: Empty from P17 (A-141) until P21, which added seven reasons at once —
+#: four of them producer-reachable and fixtured immediately, three genuinely
+#: NOT renderable into any artifact that build could emit. Re-narrowing this
+#: audit stays a visible, argued edit: each entry states WHY no complete
+#: artifact exists, so "unreachable" carries the burden of proof A-151 put on
+#: it rather than being asserted from the code's shape. P23 closed one of the
+#: three (A-190, below). P34/W3 closes a second:
+#: ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` is now producer-reachable --
+#: :func:`assay.runner.run_lane`'s own external-tool preflight (A-253) -- and
+#: fixtured in the ordinary set below, per this constant's own recorded
+#: obligation ("P34 removes this line when it makes the state reachable, and
+#: this audit turns red until it does" -- discharged). P34/W5 closes the
+#: last of the three: ``INCONCLUSIVE``/``ALL_MUTANTS_EQUIVALENT`` is now
+#: producer-reachable -- :func:`assay.mutation.run_mutation` populates the
+#: ``equivalent`` bucket by comparing a declared ``equivalence_artifact``
+#: against the baseline's own bytes (§3.6), and :func:`assay.mutation.
+#: judge_mutation` already ranked the terminal (A-223d) -- so it is fixtured
+#: in the ordinary set below (``r2_inconclusive_all_mutants_equivalent.json``,
+#: witnessed by constructing the real dataclass graph and calling the real
+#: :func:`~assay.mutation.judge_mutation`, never hand-typed toward green,
+#: A-274) and this constant's own recorded obligation is discharged. One
+#: pair remains:
 #:
 #: * ``ERROR``/``OUTPUT_WRITE_FAILED`` — structurally artifact-less. It means
 #:   assay could not write the verdict it was asked for, so the only honest
@@ -156,29 +188,14 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #:   invented"). Fixturing it would assert an artifact whose own existence
 #:   the reason denies. Proven instead by the locked CLI marker test and
 #:   ``tests/test_output_reservation.py``.
-#: * ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` — reserved by A-163 for
-#:   P27's first real external-tool preflight. Both adapters this build ships
-#:   declare ``external_tools = ()`` (A-087/A-142), so nothing can render it.
 #:
 #: P23 closes A-190: the snapshot-policy limit pair P22 reserved is now
 #: producer-reachable (a byte-identical copy of P22's own carver-owned
 #: artifact lives in the ordinary fixture set below) and is REMOVED from this
-#: set rather than left excluded. The one remaining pair is P27's own
-#: obligation to close: when it makes its terminal reachable, it removes its
-#: line here too, and this audit turns red until it does.
+#: set rather than left excluded.
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
-        ("NO_MEASUREMENT", "MISSING_EXTERNAL_TOOL"),
-        # (P33/A-223d) `ALL_MUTANTS_EQUIVALENT` is spellable in the artifact
-        # and enforced for documents, but NO P33 lane can produce it: the
-        # `equivalent` bucket is only populated by comparing a declared
-        # `equivalence_artifact`, and `config` refuses that declaration until
-        # P34 ships the producer (A-227/A-230b/A-230d). Excluded here on the
-        # same terms as P27's own reserved terminal above -- and with the
-        # same obligation: P34 removes this line when it makes the state
-        # reachable, and this audit turns red until it does.
-        ("INCONCLUSIVE", "ALL_MUTANTS_EQUIVALENT"),
     }
 )
 
@@ -831,7 +848,7 @@ def test_verify_rejects_an_r1_coverage_claim_without_judgment():
 
     failures = verify_document(document)
     assert any(
-        "an R1 coverage claim is declared without a corresponding judgment.r1" in f
+        "declared without a corresponding judgment.r1" in f
         for f in failures
     )
 
@@ -1119,7 +1136,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-        "schema_version": 5,
+        "schema_version": 6,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1138,6 +1155,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
         "env_effective": {},
         "scope": "S1",
         "enforcement": "gate",
+        "snapshot_policy": {"selection": "repository"},
         "claims": [
             {
                 "rigor": "R2",
@@ -1230,9 +1248,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 5: a verdict "
+        "schema_version 2 is not this verifier's version 6: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 5"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 6"
     ]
 
 
@@ -1251,7 +1269,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 5" in failures[0]
+    assert "schema_version 3 is not this verifier's version 6" in failures[0]
 
 
 # ============================================================================

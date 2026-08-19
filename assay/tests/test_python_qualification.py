@@ -255,6 +255,67 @@ def test_materialize_scenario_baseline_is_identical_across_different_scenarios(
     assert base_a == base_b
 
 
+def test_lane_schema_version_for_distinguishes_the_locked_release_from_every_other_owner() -> None:
+    """`_lane_schema_version_for` is the ONLY place this distinction is
+    inferred from `assay_version`; every other call site names the version
+    explicitly. `install_locked_release` already proves the release venv's
+    own reported version is exactly `RELEASE_VERSION` before returning it, so
+    this equality is not a guess about which scenario is running."""
+    module = _load_harness()
+    assert module._lane_schema_version_for(module.RELEASE_VERSION) == module.RELEASE_LANE_SCHEMA_VERSION
+    assert module.RELEASE_LANE_SCHEMA_VERSION == 1
+    for other in ("9.9.9", "1.0.1.dev307+gdd03dea6", "0.0.0"):
+        assert module._lane_schema_version_for(other) == module.CURRENT_LANE_SCHEMA_VERSION
+    assert module.CURRENT_LANE_SCHEMA_VERSION == 2
+
+
+def test_materialize_scenario_writes_a_v1_lane_for_the_locked_release_and_v2_for_everyone_else(
+    tmp_path: Path,
+) -> None:
+    """One lane generator serving two assay versions (the locked 1.2.5
+    release understands ONLY lane schema v1 -- it predates `[isolation]`
+    entirely -- while every other owner understands ONLY v2) is exactly the
+    trap a lane spelled for the wrong reader falls into SILENTLY: no verdict
+    artifact at all, no error. The two spellings must stay visibly distinct
+    on disk, not just in the generator's own head."""
+    module = _load_harness()
+    release_repo, *_ = module.materialize_scenario(
+        source_repo=REPO_ROOT,
+        scratch=tmp_path / "release",
+        spec=module.RELEASE_SMOKE,
+        lane_schema_version=module.RELEASE_LANE_SCHEMA_VERSION,
+    )
+    release_lane = (release_repo / "assay.toml").read_text(encoding="utf-8")
+    assert "schema_version = 1" in release_lane
+    assert "[lanes.topos-qualification.isolation]" not in release_lane
+    assert "snapshot_selection" not in release_lane
+
+    current_repo, *_ = module.materialize_scenario(
+        source_repo=REPO_ROOT, scratch=tmp_path / "current", spec=module.RELEASE_SMOKE
+    )
+    current_lane = (current_repo / "assay.toml").read_text(encoding="utf-8")
+    assert "schema_version = 2" in current_lane
+    assert "[lanes.topos-qualification.isolation]" in current_lane
+    assert 'snapshot_selection = "repository"' in current_lane
+
+
+def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> None:
+    module = _load_harness()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(module.QualificationError, match="lane_schema_version"):
+        module._write_lane(
+            repo,
+            base="1" * 40,
+            witness=tmp_path / "witness.json",
+            pytest_log=tmp_path / "pytest.log",
+            argv_tail=("topos/tests",),
+            allow_excluded=True,
+            lane_schema_version=3,
+        )
+    assert not (repo / "assay.toml").exists()
+
+
 #: (P33/A-226) P25's own locked `expected/` templates stay frozen at v4 as
 #: historical evidence (A-222); the harness they feed now compares against
 #: P33's carver-supplied v5 siblings, so this consumer follows it. Reading
@@ -528,7 +589,9 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
 
-    def materialize_without_exporting_the_witness(*, source_repo, scratch, spec):
+    def materialize_without_exporting_the_witness(
+        *, source_repo, scratch, spec, lane_schema_version=module.CURRENT_LANE_SCHEMA_VERSION
+    ):
         return module._materialize_negative(
             source_repo,
             scratch,
@@ -536,6 +599,7 @@ if __name__ == "__main__":
             probe_fixture=spec.probe_fixture,
             test_fixture=spec.test_fixture,
             argv_tail=spec.argv_tail,
+            lane_schema_version=lane_schema_version,
             allow_excluded=spec.allow_excluded,
             wrapper_fixture=None,
             wrapper_text=non_copying_wrapper,

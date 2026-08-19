@@ -73,6 +73,16 @@ def _write_cov_argv(files: dict) -> tuple[str, ...]:
     return ("/bin/sh", "-c", script)
 
 
+def _write_cov_argv_at(path: str, files: dict) -> tuple[str, ...]:
+    """Like :func:`_write_cov_argv`, but at an arbitrary relative *path* --
+    never itself ``mkdir``-ing anything: if *path*'s parent does not already
+    exist by the time this runs, ``cat`` fails and the run does too. Used to
+    prove B006(b)'s reservation-owned creation, not this command's own."""
+    payload = _cov_json(files)
+    script = f"cat > {path} <<'EOF'\n{payload}\nEOF"
+    return ("/bin/sh", "-c", script)
+
+
 # --- a full real PASS: R0 and R1 both, judgment.r1 present --------------------
 
 
@@ -138,6 +148,106 @@ def test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own(
     assert verdict.judgment is None
     assert verdict.started == "2026-08-08T09:00:00+00:00"
     assert verdict.ended == "2026-08-08T09:00:01+00:00"
+
+
+# --- B006(a)/A-269 WI-2: the R0/R1+ isolation conditional, re-enforced at --
+# the runner boundary (`_snapshot_policy_for_lane`) for a directly
+# constructed `Lane` -- `config.py`'s loader already enforces the identical
+# rule for every TOML-sourced lane, so these two shapes are reachable only
+# through the public `Lane` API, never through a loaded `assay.toml`.
+
+
+def test_run_lane_refuses_a_higher_rigor_lane_with_no_isolation_policy(
+    git_repo: GitRepo,
+):
+    """A directly constructed R1+ `Lane` with `isolation=None` is refused
+    before any git work -- checked BEFORE `run_lane` even chooses between
+    the direct R0-only path and `_run_higher_rigor_lane`.
+    """
+    lane = make_lane(rigor=("R0", "R1"), judge=None, isolation=None)
+
+    with pytest.raises(AssayError) as caught:
+        runner.run_lane(
+            lane,
+            commit="d" * 40,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            adapter=None,
+            assay_version="0.1.0",
+        )
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "isolation is None" in str(caught.value)
+
+    # CONTROL: the identical rigor with an explicit policy is NOT refused by
+    # this check -- it proceeds far enough to hit the next one instead (a
+    # commit that does not match `git_repo`'s real HEAD), proving the
+    # isolation conditional itself, and not some other refusal, is what
+    # fired above.
+    from assay.config import IsolationConfig
+
+    ok_lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=None,
+        isolation=IsolationConfig(
+            snapshot_selection="repository", unsafe_symlink_omissions=()
+        ),
+    )
+    verdict = runner.run_lane(
+        ok_lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+    )
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
+    assert verdict.reason_code is ReasonCode.HEAD_CHANGED
+
+
+def test_run_lane_refuses_an_r0_only_lane_that_declares_an_isolation_policy(
+    git_repo: GitRepo,
+):
+    """A directly constructed R0-only `Lane` that ALSO declares an
+    isolation policy is refused: an R0-only lane runs no snapshot at all,
+    so a declared policy for one can never be honoured.
+    """
+    from assay.config import IsolationConfig
+
+    policy = IsolationConfig(
+        snapshot_selection="repository", unsafe_symlink_omissions=()
+    )
+    lane = make_lane(rigor=("R0",), judge=None, isolation=policy)
+
+    with pytest.raises(AssayError) as caught:
+        runner.run_lane(
+            lane,
+            commit="d" * 40,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            adapter=None,
+            assay_version="0.1.0",
+        )
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "R0-only" in str(caught.value)
+
+    # CONTROL: the identical rigor with no isolation policy at all is not
+    # refused by this check and runs to completion, exactly like
+    # `test_run_lane_r0_only_never_builds_judgment_and_ended_is_r0s_own`
+    # above.
+    ok_lane = make_lane(
+        rigor=("R0",), judge=None, isolation=None, argv=("/bin/sh", "-c", "exit 0")
+    )
+    verdict = runner.run_lane(
+        ok_lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+    )
+    assert [c.rigor for c in verdict.claims] == ["R0"]
 
 
 # --- O2: the lane command runs exactly once ------------------------------------
@@ -469,6 +579,62 @@ def test_run_lane_refuses_a_directory_at_the_artifact_path(git_repo: GitRepo, tm
     assert verdict.outcome is Outcome.ERROR
     assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert not marker.exists()
+
+
+# --- B006(b): the coverage artifact's parent, missing from a tracked-only -----
+# snapshot, is created inside the snapshot ONLY ---------------------------------
+
+
+def test_run_lane_creates_the_coverage_artifacts_missing_parent_only_inside_the_snapshot(
+    git_repo: GitRepo,
+):
+    """The consumer's actual failure mode (4-backlog.md B006(b)): the
+    near-universal convention -- write coverage JSON into a gitignored
+    scratch directory -- previously failed as UNREADABLE_ARTIFACT, because
+    the P22 snapshot materialises tracked files only, so a gitignored
+    directory never existed inside it for `reserve_output` to open. The
+    reservation now creates the missing parent chain itself, from inside
+    `_execute_snapshot_unit`'s own reservation call -- but only inside the
+    ephemeral snapshot: this test also proves the consumer's own real
+    worktree never gains the directory, neither during nor after the run.
+    """
+    git_repo.write(".gitignore", "cov_out/\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\nLINE4\nLINE5\n")
+    head_rev = git_repo.commit_all("add pkg head")
+    assert not (git_repo.path / "cov_out").exists(), "never tracked, never on disk yet"
+
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",),
+        base=base_rev,
+        coverage_artifact="cov_out/nested/cov.json",
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv_at(
+            "cov_out/nested/cov.json", {"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.PASS
+    assert verdict.claims[1].status is Outcome.PASS
+    assert verdict.claims[1].coverage.pct == 100.0
+    # The whole point: the consumer's REAL worktree never gained the
+    # gitignored directory -- only the ephemeral, already-destroyed snapshot
+    # did.
+    assert not (git_repo.path / "cov_out").exists()
 
 
 # --- R1 renders honestly regardless of R0's own outcome (work item 5) ---------

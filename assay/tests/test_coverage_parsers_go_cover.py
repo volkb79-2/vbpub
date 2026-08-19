@@ -16,14 +16,17 @@ a malformed block line, or selecting a parser from sniffed content rather
 than the declared one, makes a reject fixture load. Negative (O3): reporting
 ``excluded=frozenset()`` instead of ``None`` falsely claims this format can
 say "zero exclusions" — DESIGN-GUIDE §11's own worked example for why
-``None`` exists at all.
+``None`` exists at all. Negative (wave-1 O3, branches): reporting
+``branches=BranchCoverage(by_line={})`` instead of ``None`` would claim this
+format measured branches and found none, when it structurally cannot
+measure them at all -- the identical A-008-class lie one field over.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from assay.coverage import FileCoverage, load_coverage_profile
+from assay.coverage import FileCoverage, derive_branch_capability, load_coverage_profile
 from assay.coverage_parsers import go_cover
 from assay.errors import AssayError, Outcome, ReasonCode
 
@@ -83,6 +86,19 @@ def test_excluded_is_always_none_for_this_format():
     )
     for file_coverage in profile.files.values():
         assert file_coverage.excluded is None
+
+
+def test_branches_is_always_none_for_this_format():
+    """O3 (wave-1): a real go-cover fixture parses to
+    ``branch_capability = "unavailable"`` -- the format is a statement-count
+    profile with no arc concept at all, declared rather than omitted (the
+    parser sets ``branches=None`` unconditionally, module docstring)."""
+    profile = load_coverage_profile(
+        DRIVE_LETTER_AND_OVERLAP_ARTIFACT, declared_format="go-cover"
+    )
+    for file_coverage in profile.files.values():
+        assert file_coverage.branches is None
+    assert derive_branch_capability(profile) == "unavailable"
 
 
 def test_a_non_go_extension_parses_identically_proving_no_language_binding():

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "instance": "dstdns-dev",
+  "commit_under_test": "1b369e23",
+  "tree_state": "clean",
+  "containers": [
+    {
+      "name": "dstdns-dev-controller-1",
+      "image": "dstdns/controller:1b369e23",
+      "labelled_revision": "1b369e23",
+      "status": "match"
+    },
+    {
+      "name": "dstdns-dev-worker-1",
+      "image": "dstdns/worker:1b369e23",
+      "labelled_revision": "1b369e23",
+      "status": "match"
+    }
+  ],
+  "overall": "verified-match"
+}

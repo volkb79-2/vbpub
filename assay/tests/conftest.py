@@ -33,7 +33,14 @@ from typing import Mapping
 import pytest
 from jsonschema import Draft202012Validator
 
-from assay.config import CanaryConfig, CoverageConfig, JudgeConfig, Lane, MutationConfig
+from assay.config import (
+    CanaryConfig,
+    CoverageConfig,
+    IsolationConfig,
+    JudgeConfig,
+    Lane,
+    MutationConfig,
+)
 
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
@@ -64,9 +71,11 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 collect_ignore_glob = ["fixtures/canary/python/**", "fixtures/mutation_exec/python/**"]
 
 #: A complete, minimal R0 lane: the eight required top-level fields and nothing
-#: else. An R0-only lane has NO [judge] table (A-048).
+#: else. An R0-only lane has NO [judge] table (A-048), and -- since B006(a)/
+#: A-269's schema v2 -- no [isolation] table either: that table is required
+#: for R1/R2/R3 and forbidden here.
 R0_LANE = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -80,10 +89,13 @@ allow_argv_append = false
 """
 
 #: A complete R1 lane: the eight, plus all five conditionally-required `judge`
-#: fields, plus a `[…where]` table assay must carry and never interpret.
-#: `source_roots` name directories the `project` fixture really creates.
+#: fields, plus a `[…where]` table assay must carry and never interpret, plus
+#: (B006a/A-269, schema v2) the `[…isolation]` table R1+ now requires --
+#: `"repository"`, the migration rule for a lane that is not itself testing
+#: omission mode. `source_roots` name directories the `project` fixture
+#: really creates.
 R1_LANE = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S2"
@@ -94,6 +106,9 @@ env = { MOCK_MODE = "true", TZ = "UTC" }
 env_passthrough = ["PATH"]
 budget = "1h30m"
 allow_argv_append = true
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -260,12 +275,24 @@ def git_repo(tmp_path: Path) -> GitRepo:
 # of P22/P23's own construction rules.
 
 
+#: (B006a/A-269 WI-2) The default :class:`~assay.config.IsolationConfig` for
+#: every `prepared_snapshot`/`make_lane` caller that does not itself care
+#: about the isolation axis -- plain repository mode, no omissions. Kept as
+#: ONE shared literal rather than reconstructed at each call site, so a test
+#: that DOES pass its own `snapshot_policy`/`isolation` is unambiguously
+#: opting out of this default rather than merely repeating it.
+REPOSITORY_SNAPSHOT_POLICY = IsolationConfig(
+    snapshot_selection="repository", unsafe_symlink_omissions=()
+)
+
+
 def prepared_snapshot(
     repo: GitRepo,
     *,
     commit: str | None = None,
     project_prefix: str = ".",
     scratch_root: Path,
+    snapshot_policy: IsolationConfig | None = None,
     timeout: float = 60.0,
 ):
     """A real P22 :class:`~assay.isolation.SnapshotRepository` context,
@@ -273,6 +300,12 @@ def prepared_snapshot(
     same construction :func:`~assay.runner.run_lane`'s own higher-rigor path
     uses, so a test exercising :mod:`assay.mutation`/:mod:`assay.canary`
     through it proves the real substrate, not a hand-rolled stand-in.
+
+    *snapshot_policy* defaults to :data:`REPOSITORY_SNAPSHOT_POLICY`: every
+    caller that is not itself testing the omission axis gets plain
+    repository mode without having to spell it out, and a caller that IS
+    testing omissions passes its own :class:`~assay.config.IsolationConfig`
+    explicitly.
     """
     from assay import isolation
 
@@ -281,6 +314,9 @@ def prepared_snapshot(
         commit=repo.head() if commit is None else commit,
         project_prefix=PurePosixPath(project_prefix),
         scratch_root=scratch_root.resolve(),
+        snapshot_policy=(
+            REPOSITORY_SNAPSHOT_POLICY if snapshot_policy is None else snapshot_policy
+        ),
         limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
     )
     return isolation.prepare_snapshot(spec, timeout=timeout)
@@ -535,6 +571,15 @@ def mutation_verdict_fixture(name: str) -> dict:
 # test actually is.
 
 
+#: A sentinel distinct from `None`, so `make_lane` can tell "the caller did
+#: not pass `isolation` at all" (auto-derive from `rigor`, B006a/A-269 WI-2)
+#: apart from "the caller explicitly passed `isolation=None`" (a deliberate
+#: R1+/no-isolation pairing -- exactly the shape a `_snapshot_policy_for_lane`
+#: differential negative test needs to construct). A plain `None` default
+#: could not distinguish the two.
+_ISOLATION_UNSET = object()
+
+
 def make_lane(
     *,
     name: str = "package",
@@ -548,7 +593,24 @@ def make_lane(
     budget_seconds: float = 300.0,
     allow_argv_append: bool = False,
     judge: "JudgeConfig | None" = None,
+    isolation: "IsolationConfig | None" = _ISOLATION_UNSET,  # type: ignore[assignment]
 ) -> Lane:
+    if isolation is _ISOLATION_UNSET:
+        # (B006a/A-269 WI-2) `run_lane` now enforces the SAME R0/R1+
+        # isolation conditional `config.py`'s loader enforces, so a runner-
+        # level test that builds a higher-rigor `Lane` directly (bypassing
+        # the loader, which is the whole point of `make_lane`) needs a real
+        # `IsolationConfig` or it now refuses before doing any of the work
+        # that test actually means to exercise. Every test file across this
+        # suite that is not itself about the isolation axis is orthogonal to
+        # WHICH policy is declared, so this default is the plain
+        # `"repository"` selection -- mirroring exactly the rule WI-1 used
+        # to migrate the equivalent TOML literals ("R1+ gets explicit
+        # repository unless the test is specifically an omission test").
+        # A test that DOES care passes `isolation=...` (or explicit `None`
+        # to construct the invalid pairing) and this default never applies.
+        higher_rigor = any(level != "R0" for level in rigor)
+        isolation = REPOSITORY_SNAPSHOT_POLICY if higher_rigor else None
     return Lane(
         name=name,
         scope=scope,
@@ -562,6 +624,7 @@ def make_lane(
         allow_argv_append=allow_argv_append,
         judge=judge,
         where=None,
+        isolation=isolation,
     )
 
 
@@ -582,8 +645,11 @@ def make_r1_judge(
     allow_excluded: bool = False,
     coverage_format: str = "coverage-py-json",
     coverage_artifact: str = "cov.json",
-    base: str = "main",
+    base: str | None = "main",
     mutation: "MutationConfig | None" = None,
+    mode: str | None = None,
+    targets: tuple[str, ...] | None = None,
+    require_branch: bool | None = None,
 ) -> JudgeConfig:
     """A fully-resolved R1 ``JudgeConfig`` — every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
@@ -593,7 +659,19 @@ def make_r1_judge(
     ref straight to that function, not through this field -- only
     ``runner.run_lane`` reads ``judge.base`` itself. *mutation* (P18)
     lets a caller build a combined R1+R2 judge without a second
-    constructor -- ``None`` (the default) is unchanged R1-only behaviour."""
+    constructor -- ``None`` (the default) is unchanged R1-only behaviour.
+
+    *mode*/*targets*/*require_branch* (wave-1 §4/§5, A-259/A-260) default
+    to ``None`` -- the identical "declared value or None, never a filled-in
+    default" discipline :class:`JudgeConfig` itself keeps -- so every
+    caller written before this wave is unaffected: ``None``/``None``/
+    ``None`` still resolves to ``"changed_lines"``/no targets/``False`` at
+    the one named place (:mod:`assay.runner`'s ``evaluate_r1``). A caller
+    building a ``whole_target`` lane passes ``mode="whole_target"`` and
+    ``targets=(...)`` explicitly; passing ``targets`` without ``base=None``
+    is legal here (this helper does not enforce the config loader's own
+    "base forbidden under whole_target with no R2" rule -- that is
+    :mod:`assay.config`'s OWN test surface, not this bypass helper's)."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),
@@ -604,6 +682,9 @@ def make_r1_judge(
         mutation=mutation,
         canary=None,
         base=base,
+        mode=mode,
+        targets=targets,
+        require_branch=require_branch,
     )
 
 
@@ -718,17 +799,51 @@ def write_coverage_json(path: Path, files: Mapping[str, Mapping[str, list]]) -> 
     fake, non-Python LANGUAGE to demonstrate format and language are
     independent axes (DESIGN-GUIDE §11): a synthetic ``.zzz`` file can be
     "measured" by a real, already-proven coverage FORMAT parser.
+
+    (wave-1 §3, Addendum A8) A record may additionally carry
+    ``executed_branches``/``missing_branches`` -- lists of ``[src, dst]``
+    pairs, the exact shape the parser's own module docstring documents.
+    When ANY file record supplies either array, the document also carries
+    ``meta.branch_coverage = true`` (coverage.py's own real convention);
+    when none does, ``meta`` is omitted entirely, which the parser reads as
+    branch capability ``"unavailable"`` for every file -- so every caller
+    written before this wave, which never mentions either key, is
+    byte-for-byte unaffected.
     """
-    document = {
+    any_branches = any(
+        "executed_branches" in record or "missing_branches" in record
+        for record in files.values()
+    )
+    document: dict = {
         "files": {
             key: {
                 "executed_lines": list(record.get("executed_lines", [])),
                 "missing_lines": list(record.get("missing_lines", [])),
                 "excluded_lines": list(record.get("excluded_lines", [])),
+                **(
+                    {
+                        "executed_branches": [
+                            list(pair) for pair in record["executed_branches"]
+                        ]
+                    }
+                    if "executed_branches" in record
+                    else {}
+                ),
+                **(
+                    {
+                        "missing_branches": [
+                            list(pair) for pair in record["missing_branches"]
+                        ]
+                    }
+                    if "missing_branches" in record
+                    else {}
+                ),
             }
             for key, record in files.items()
         }
     }
+    if any_branches:
+        document["meta"] = {"branch_coverage": True}
     path.write_text(json.dumps(document), encoding="utf-8")
 
 

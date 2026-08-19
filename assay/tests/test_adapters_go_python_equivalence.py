@@ -99,6 +99,7 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
         ),
         adapter=PythonAdapter(),
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP,),
         fail_under=100.0,
         allow_excluded=False,
@@ -124,6 +125,7 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
         ),
         adapter=GoAdapter(),
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP,),
         fail_under=100.0,
         allow_excluded=False,
@@ -132,7 +134,7 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
 
     # Equivalent numeric results for genuinely equivalent constructs (O2):
     for result, label in ((python_result, "python"), (go_result, "go")):
-        assert result.changed_executable == 4, label
+        assert result.executable == 4, label
         assert result.covered == 3, label
         assert result.pct == 75.0, label
         assert result.outcome is Outcome.FAIL, label
@@ -178,6 +180,7 @@ def test_an_unknown_go_region_absent_from_coverage_renders_uncovered_lines():
         profile=profile,
         adapter=GoAdapter(),
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP,),
         fail_under=100.0,
         allow_excluded=False,

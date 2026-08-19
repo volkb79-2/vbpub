@@ -25,12 +25,18 @@ base = "main"
 """
 
 
+#: B006a/A-269, schema v2: every R1+ lane requires an explicit [isolation]
+#: table; this module's own subject is `judge.mutation`, so every case here
+#: picks the plain "repository" selection.
+_ISOLATION_TABLE = '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
+
+
 def _lane_with_mutation(mutation_table: str, *, language: str = "python") -> str:
     """(P33/V5-2) *language* is now a parameter, because the operator
     vocabulary is closed PER LANGUAGE: which operators a lane may declare is
     a function of what it says it is."""
     body = set_key(R0_LANE, "rigor", '["R0", "R2"]')
-    return body + R2_JUDGE.format(language=language) + mutation_table
+    return body + _ISOLATION_TABLE + R2_JUDGE.format(language=language) + mutation_table
 
 
 def test_a_minimal_valid_mutation_table_loads(project: Project):
@@ -52,12 +58,21 @@ def test_every_declared_operator_is_accepted(project: Project):
     owns it** (P33/V5-2). Iterating the per-language map rather than the flat
     tuple is what makes this a real sweep now: the flat tuple would have
     declared `sql:drop-check` on a Python lane, which is precisely the
-    combination v5 exists to refuse."""
+    combination v5 exists to refuse.
+
+    (P34/W4) A ``sql`` lane also needs ``equivalence_artifact`` -- it is
+    REQUIRED on that language alone, so the extra line is conditional and
+    this sweep still proves nothing about Python/Go's own table shape."""
     for language, operators in MUTATION_OPERATORS_BY_LANGUAGE.items():
         for operator in sorted(operators):
+            extra = (
+                'equivalence_artifact = ".assay/schema-dump.sql"\n'
+                if language == "sql"
+                else ""
+            )
             lane = _lane_with_mutation(
                 f"\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
-                f'operators = ["{operator}"]\n',
+                f'operators = ["{operator}"]\n{extra}',
                 language=language,
             )
             judge = load_lane_file(project.write(lane, name=f"{operator}.toml")).lane(
@@ -183,4 +198,183 @@ def test_mutation_as_declared_round_trips_exactly(project: Project):
         "jobs": 3,
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:falsy-swap"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# P34/W4 -- the two v6 artifact fields, unreserved ONLY for a sql lane
+# (A-227/A-230b's own refusal must survive for every other language).
+# ---------------------------------------------------------------------------
+
+
+def _sql_mutation_table(*, bad_field: str | None = None, bad_value: str = "") -> str:
+    """A SQL R2 mutation table declaring BOTH artifact keys at a valid
+    default, with exactly one optionally overridden to *bad_value* -- so a
+    rejection test exercises exactly one defect at a time, never two at
+    once (the other field, if itself required, stays valid so it cannot be
+    the thing that actually raised)."""
+    fields = {
+        "equivalence_artifact": '".assay/schema-dump.sql"',
+        "kill_signal_artifact": '".assay/kill-signal.txt"',
+    }
+    if bad_field is not None:
+        fields[bad_field] = bad_value
+    body = "".join(f"{name} = {value}\n" for name, value in fields.items())
+    return (
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["sql:drop-check"]\n' + body
+    )
+
+
+def test_a_sql_lane_accepts_both_artifact_keys(project: Project):
+    lane = _lane_with_mutation(_sql_mutation_table(), language="sql")
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
+    assert judge.mutation.kill_signal_artifact == ".assay/kill-signal.txt"
+
+
+def test_a_sql_lane_accepts_equivalence_artifact_alone(project: Project):
+    """`kill_signal_artifact` stays OPTIONAL even on a sql lane (A-223b
+    derives `kill_attribution` from its presence) -- only
+    `equivalence_artifact` is required."""
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["sql:drop-check"]\n'
+        'equivalence_artifact = ".assay/schema-dump.sql"\n',
+        language="sql",
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
+    assert judge.mutation.kill_signal_artifact is None
+
+
+def test_a_sql_lane_without_equivalence_artifact_is_rejected(project: Project):
+    """The carve's single most consequential config decision (§4.3):
+    without it, a mutant that never actually mutated is recorded
+    'survived', a false statement about the consumer's tests."""
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["sql:drop-check"]\n',
+        language="sql",
+    )
+    with pytest.raises(
+        LaneConfigError, match="equivalence_artifact' is required on a sql lane"
+    ):
+        load_lane_file(project.write(lane))
+
+
+@pytest.mark.parametrize("language", ["python", "go"])
+@pytest.mark.parametrize("field", ["kill_signal_artifact", "equivalence_artifact"])
+def test_a_non_sql_lane_still_refuses_each_artifact_key(
+    field: str, language: str, project: Project
+):
+    operator = {"python": "python:compare-swap", "go": "go:compare-swap"}[language]
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        f'operators = ["{operator}"]\n'
+        f'{field} = ".assay/x.txt"\n',
+        language=language,
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(lane))
+
+    message = str(excinfo.value)
+    assert field in message, "the refusal must name the offending field"
+    assert "sql" in message, "the refusal must say WHICH language may declare it"
+    assert f"{language!r}" in message, "the refusal must name the lane's own language"
+    assert "unknown" not in message.lower(), (
+        "a language-scoped refusal must not read like a plain typo"
+    )
+
+
+@pytest.mark.parametrize("field", ["equivalence_artifact", "kill_signal_artifact"])
+def test_an_absolute_sql_artifact_path_is_rejected(
+    field: str, project: Project, tmp_path
+):
+    absolute = str(tmp_path / "outside.txt")
+    lane = _lane_with_mutation(
+        _sql_mutation_table(bad_field=field, bad_value=f'"{absolute}"'),
+        language="sql",
+    )
+    with pytest.raises(LaneConfigError, match="is absolute"):
+        load_lane_file(project.write(lane))
+
+
+@pytest.mark.parametrize("field", ["equivalence_artifact", "kill_signal_artifact"])
+def test_a_sql_artifact_path_escaping_the_project_root_via_dotdot_is_rejected(
+    field: str, project: Project
+):
+    lane = _lane_with_mutation(
+        _sql_mutation_table(bad_field=field, bad_value='"../outside/x.txt"'),
+        language="sql",
+    )
+    with pytest.raises(LaneConfigError, match="not contained beneath the project root"):
+        load_lane_file(project.write(lane))
+
+
+@pytest.mark.parametrize("field", ["equivalence_artifact", "kill_signal_artifact"])
+def test_an_empty_sql_artifact_path_is_rejected(field: str, project: Project):
+    lane = _lane_with_mutation(
+        _sql_mutation_table(bad_field=field, bad_value='""'), language="sql"
+    )
+    with pytest.raises(LaneConfigError, match=f"{field}' is empty"):
+        load_lane_file(project.write(lane))
+
+
+@pytest.mark.parametrize("field", ["equivalence_artifact", "kill_signal_artifact"])
+def test_a_symlinked_project_root_ancestor_escaping_via_the_sql_artifact_is_rejected(
+    field: str, project: Project, tmp_path
+):
+    # The identical escape `_resolve_source_root`/`judge.coverage.artifact`
+    # already guard for: a symlink INSIDE the project resolving outside it.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = project.root / "linked"
+    link.symlink_to(outside)
+    lane = _lane_with_mutation(
+        _sql_mutation_table(bad_field=field, bad_value='"linked/x.txt"'),
+        language="sql",
+    )
+    with pytest.raises(LaneConfigError, match="not contained beneath the project root"):
+        load_lane_file(project.write(lane))
+
+
+@pytest.mark.parametrize("field", ["equivalence_artifact", "kill_signal_artifact"])
+def test_a_relative_sql_artifact_path_inside_the_project_loads(
+    field: str, project: Project
+):
+    lane = _lane_with_mutation(
+        _sql_mutation_table(bad_field=field, bad_value='"build/x.txt"'),
+        language="sql",
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.mutation is not None
+    assert getattr(judge.mutation, field) == "build/x.txt"
+
+
+def test_the_sql_artifact_need_not_exist_yet_at_load_time(project: Project):
+    # A-048's own timing: both artifacts are OUTPUTS of the lane's command.
+    assert not (project.root / ".assay").exists()
+    lane = _lane_with_mutation(_sql_mutation_table(), language="sql")
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
+
+
+def test_sql_mutation_as_declared_round_trips_both_artifact_keys(project: Project):
+    lane = _lane_with_mutation(_sql_mutation_table(), language="sql")
+    loaded = load_lane_file(project.write(lane)).lane("package")
+
+    assert loaded.as_declared()["judge"]["mutation"] == {
+        "jobs": 1,
+        "max_mutants": 50,
+        "operators": ["sql:drop-check"],
+        "equivalence_artifact": ".assay/schema-dump.sql",
+        "kill_signal_artifact": ".assay/kill-signal.txt",
     }

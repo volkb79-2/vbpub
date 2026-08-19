@@ -2,7 +2,7 @@
 
 ``cmru release`` is deliberately launched from an ordinary developer checkout but
 never publishes from it.  A transaction pins ``origin/main`` to a commit, creates
-an isolated worktree on a private ``cmru/release/<id>`` branch, and executes the
+an isolated worktree on a private ``cmru-release-<id>`` branch, and executes the
 release child there.  The caller's uncommitted files therefore cannot leak into a
 wheel, image, tag, or release asset.
 
@@ -113,25 +113,118 @@ def assert_local_main_not_ahead(repo_root: Path) -> int:
     return behind
 
 
+_SCOPE_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _sanitize_scope(scope: str | None) -> str:
+    """Normalise ``--project`` (or the unscoped ``all``) into a branch/path-safe
+    token (KI-16): lowercase, ``[a-z0-9-]`` only, collapsed, never empty. A
+    project name is already constrained by config validation, but this feeds
+    directly into a branch name and a worktree directory and must not assume
+    that holds -- an unscoped run, an empty string, or an unexpected character
+    must all still produce a safe, non-empty token."""
+    if not scope:
+        return "all"
+    cleaned = _SCOPE_INVALID_RE.sub("-", scope.strip().lower()).strip("-")
+    return cleaned or "all"
+
+
+# Transaction branch prefixes. The FLAT ``cmru-<purpose>-`` scheme is what this
+# code now creates (KI-16, aligned to ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feat>``
+# naming): the branch string and its worktree directory basename are then one and
+# the same, with no nested ref path. The OLD nested ``cmru/<purpose>/`` scheme is
+# still recognised for discovery/resume/cleanup so retained worktrees created
+# before this change stay just as removable -- a transaction created under either
+# scheme must remain identifiable as the release/build it is.
+_FLAT_RELEASE_PREFIX = "cmru-release-"
+_FLAT_BUILD_PREFIX = "cmru-build-"
+_NESTED_RELEASE_PREFIX = "cmru/release/"
+_NESTED_BUILD_PREFIX = "cmru/build/"
+
+
+def _is_release_branch(branch: str) -> bool:
+    """True for a release transaction branch under EITHER naming scheme."""
+    return branch.startswith(_FLAT_RELEASE_PREFIX) or branch.startswith(_NESTED_RELEASE_PREFIX)
+
+
+def _is_build_branch(branch: str) -> bool:
+    """True for a build transaction branch under EITHER naming scheme."""
+    return branch.startswith(_FLAT_BUILD_PREFIX) or branch.startswith(_NESTED_BUILD_PREFIX)
+
+
+def _is_transaction_branch(branch: str) -> bool:
+    return _is_release_branch(branch) or _is_build_branch(branch)
+
+
+def _new_transaction_branch(purpose: str, scope: str | None) -> str:
+    """``cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`` (KI-16, ciu-aligned).
+
+    Flat single-token name -- no nested ref path -- so the branch string IS the
+    worktree directory basename (see :func:`_worktree_dirname`). The ``_``
+    between date and time matches ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>``
+    scheme and keeps the date/time boundary visually distinct from the ``-``
+    field separators. UTC timestamp for chronological sort; sanitized scope for
+    readability; a trailing 8 hex from ``uuid4`` for collision-freedom --
+    cleanup depends on a transaction being able to assume it exclusively owns
+    the name it created, so the random suffix is required, not decorative, and
+    this name is deliberately NOT made purely deterministic from
+    timestamp+scope alone.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    token = uuid.uuid4().hex[:8]
+    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{token}"
+
+
+def _worktree_dirname(branch: str) -> str:
+    """The worktree directory basename for ``branch`` (KI-16).
+
+    For a flat ``cmru-<purpose>-...`` branch this is the identity: branch string
+    and directory basename are exactly equal -- true 1:1 naming, nothing to
+    reconstruct in either direction. A legacy nested ``cmru/<purpose>/...``
+    branch (never created here any more) still maps its ``/`` to ``-`` so an
+    older retained worktree's on-disk basename remains derivable.
+    """
+    return branch.replace("/", "-")
+
+
 def create_workspace(
-    repo_root: Path, *, base: str | None = None, purpose: str = "release",
+    repo_root: Path, *, base: str | None = None, purpose: str = "release", scope: str | None = None,
 ) -> ReleaseWorkspace:
     """Create a worktree at one already-fetched authoritative remote commit.
 
     ``purpose`` is intentionally visible in the branch/path. A successful release
     is ephemeral; a normal build is retained for inspection and must therefore
-    never be mistaken for a failed, resumable release attempt.
+    never be mistaken for a failed, resumable release attempt. ``scope`` is the
+    ``--project`` value when the run is scoped, else ``None`` (recorded as
+    ``all``) -- see :func:`_new_transaction_branch`.
+
+    Discovery, resume, and cleanup recognise a transaction branch through
+    :func:`_is_release_branch` / :func:`_is_build_branch`, which accept BOTH the
+    flat ``cmru-<purpose>-`` names created here and the legacy nested
+    ``cmru/<purpose>/`` names -- so retained worktrees from either the current
+    scheme or the OLD ``cmru/<purpose>/<12-hex>`` one remain equally
+    discoverable, resumable, and removable.
     """
     if purpose not in {"release", "build"}:
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
     if base is None:
         base = fetch_origin_main(repo_root)
-    token = uuid.uuid4().hex[:12]
-    branch = f"cmru/{purpose}/{token}"
+    branch = _new_transaction_branch(purpose, scope)
     parent = repo_root / ".worktrees"
     parent.mkdir(exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix=f"cmru-{purpose}-{token}-", dir=parent))
-    path.rmdir()  # git worktree requires a path that does not exist yet.
+    path = parent / _worktree_dirname(branch)
+    # Uniqueness comes from the branch's own uuid8 now, so there is nothing to
+    # mkdtemp+rmdir for. Explicitly refuse an existing path rather than
+    # trusting `git worktree add` to: git only fails closed on a NON-EMPTY
+    # existing directory -- it silently ADOPTS an empty pre-existing one,
+    # which would not be "this ONE transaction exclusively owns the name it
+    # created" if that ever happened (uuid8 collision, or a stale leftover).
+    if path.exists():
+        raise RuntimeError(
+            f"worktree path already exists: {path} (uuid8 collision or a stale leftover "
+            "directory -- this should not happen; inspect and remove it manually before "
+            "retrying)"
+        )
     subprocess.run(
         ["git", "worktree", "add", "-b", branch, str(path), base], cwd=repo_root, check=True,
     )
@@ -139,14 +232,15 @@ def create_workspace(
 
 
 def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
-    """Validate and reopen a retained ``cmru/release/*`` worktree."""
+    """Validate and reopen a retained release worktree (flat ``cmru-release-*``
+    or legacy nested ``cmru/release/*``)."""
     path = path.resolve()
     if not path.is_dir():
         raise RuntimeError(f"release worktree does not exist: {path}")
     if _common_git_dir(path) != _common_git_dir(repo_root):
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
-    if not branch.startswith("cmru/release/"):
+    if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
     return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
@@ -192,7 +286,16 @@ def remove_workspace(workspace: ReleaseWorkspace) -> None:
 
 
 def _release_token(workspace: ReleaseWorkspace) -> str:
-    return workspace.branch.rsplit("/", 1)[-1]
+    """The ``<timestamp>_<scope>-<uuid8>`` token that names this transaction's
+    sidecar state files, stripped of its scheme prefix so the token is stable
+    and prefix-free under both naming schemes: a flat ``cmru-<purpose>-<token>``
+    branch drops the ``cmru-release-``/``cmru-build-`` head; a legacy nested
+    ``cmru/<purpose>/<token>`` branch takes its last path segment."""
+    branch = workspace.branch
+    for prefix in (_FLAT_RELEASE_PREFIX, _FLAT_BUILD_PREFIX):
+        if branch.startswith(prefix):
+            return branch[len(prefix):]
+    return branch.rsplit("/", 1)[-1]
 
 
 def _scope_dir(repo_root: Path) -> Path:
@@ -230,6 +333,61 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
+    _forget_plan_refused(repo_root, workspace)
+    _forget_backup_pushed(repo_root, workspace)
+
+
+def mark_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that :func:`push_backup_branch` actually pushed this exact
+    transaction's durability backup to origin (KI-15).
+
+    :func:`remove_backup_branch` checks :func:`backup_was_pushed` before
+    attempting any delete, instead of special-casing every caller known
+    (today) not to have pushed one -- a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`, and an unconditional
+    best-effort delete on those paths is exactly what made a genuinely
+    successful, side-effect-free run print `error: unable to delete '...':
+    remote ref does not exist` / `error: failed to push some refs to '...'`.
+    Tracking this transaction's OWN observed push state -- rather than
+    enumerating which call sites are "known safe" -- also guards the opposite,
+    worse failure: a push that genuinely happened must still be reliably
+    recognised as pushed, or its backup branch is orphaned on origin forever.
+    """
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.backup-pushed").write_text("1", encoding="utf-8")
+
+
+def backup_was_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if :func:`mark_backup_pushed` was called for this exact workspace."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").exists()
+
+
+def _forget_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").unlink(missing_ok=True)
+
+
+def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that this transaction's release-plan integrity check
+    (S12.2a/S12.2b) refused before any project's cycle started. Nothing was
+    gated, promoted, or tagged, so the worktree is safe to discard exactly
+    like a success would be -- the parent process checks
+    :func:`plan_was_refused` (its child exited non-zero, same as any other
+    failure) to tell that apart from a genuine mid-release failure, which
+    MUST be retained for inspection instead."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.plan-refused").write_text("1", encoding="utf-8")
+
+
+def plan_was_refused(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if :func:`mark_plan_refused` was called for this exact workspace."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").exists()
+
+
+def _forget_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").unlink(missing_ok=True)
 
 
 def write_release_result(
@@ -508,7 +666,8 @@ def delete_retained_build_output(
 
 
 def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> ReleaseWorkspace:
-    """Discard one inspected failed ``cmru/build/*`` worktree by exact path."""
+    """Discard one inspected failed build worktree (flat ``cmru-build-*`` or
+    legacy nested ``cmru/build/*``) by exact path."""
     path = path.resolve()
     expected_parent = (repo_root / ".worktrees").resolve()
     if path.parent != expected_parent:
@@ -516,7 +675,7 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
     if not path.is_dir() or _common_git_dir(path) != _common_git_dir(repo_root):
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
     branch = _git(path, "branch", "--show-current")
-    if not branch.startswith("cmru/build/"):
+    if not _is_build_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
@@ -686,7 +845,9 @@ def _forget_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> No
 
 
 def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
-    """Every retained ``cmru/release/*`` or ``cmru/build/*`` worktree.
+    """Every retained release or build worktree, under either the flat
+    ``cmru-release-*``/``cmru-build-*`` scheme or the legacy nested
+    ``cmru/release/*``/``cmru/build/*`` one.
 
     ``git worktree add`` records the absolute path it was given at creation
     time, and ``git worktree list`` always reports that same literal path
@@ -710,7 +871,7 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
         if not wt_path or not branch_ref:
             continue
         branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
-        if not (branch.startswith("cmru/release/") or branch.startswith("cmru/build/")):
+        if not _is_transaction_branch(branch):
             continue
         path = Path(wt_path)
         if not path.is_dir():
@@ -726,7 +887,7 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     return [
         workspace
         for workspace in list_cmru_workspaces(repo_root)
-        if workspace.branch.startswith("cmru/release/") and workspace.path.is_dir()
+        if _is_release_branch(workspace.branch) and workspace.path.is_dir()
     ]
 
 
@@ -846,22 +1007,44 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     name (pushed by an EARLIER call in this same run, before the rebase) then
     diverges from the local rewritten history, and a plain push would itself
     hit the identical non-fast-forward rejection this function exists to avoid.
+
+    Records that THIS transaction actually pushed the backup
+    (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
+    later checks before attempting any cleanup delete.
     """
     subprocess.run(
         ["git", "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}"],
         cwd=workspace.path, check=True,
     )
+    mark_backup_pushed(workspace.repo_root, workspace)
 
 
 def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
     """Delete the durability backup branch from origin after a fully successful release.
 
-    Best-effort: a release that already succeeded should not fail cleanup over a
-    missing/already-gone remote branch.
+    Only attempted when THIS transaction actually pushed one
+    (:func:`backup_was_pushed`, KI-15) — a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`; unconditionally attempting
+    a delete on those paths is exactly what made a genuinely successful,
+    side-effect-free run print `error: unable to delete '...': remote ref does
+    not exist` / `error: failed to push some refs to '...'` — training operators
+    to read this release tool's `error:` output as noise.
+
+    When a push DID happen, the delete still always runs — this transaction
+    state is tracked precisely so that case is never mistaken for "nothing to
+    clean up" either, which would orphan a real backup branch on origin
+    forever. Best-effort: output is captured rather than left to reach the
+    real stderr, so even a genuine failure here (branch already gone,
+    network blip) stays silent rather than alarming — a release that already
+    succeeded should not fail, or look like it failed, over cleanup of a
+    branch whose job is already done.
     """
+    if not backup_was_pushed(workspace.repo_root, workspace):
+        return
     subprocess.run(
         ["git", "push", "origin", "--delete", workspace.branch],
-        cwd=workspace.path, check=False,
+        cwd=workspace.path, check=False, capture_output=True, text=True,
     )
 
 

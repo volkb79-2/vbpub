@@ -27,7 +27,7 @@ from assay.config import load_lane_file
 from assay.errors import LaneConfigError
 
 LANE = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -38,6 +38,9 @@ env = {}
 env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"

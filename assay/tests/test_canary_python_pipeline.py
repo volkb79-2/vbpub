@@ -27,9 +27,15 @@ from jsonschema import Draft202012Validator
 
 from assay import canary
 from assay.adapters.python import PythonAdapter
-from assay.config import CoverageConfig, JudgeConfig, Lane
+from assay.config import CoverageConfig, IsolationConfig, JudgeConfig, Lane
 from assay.errors import Outcome, ReasonCode
-from assay.verdict import Judgment, JudgmentR3, JudgmentResolved, Verdict
+from assay.verdict import (
+    Judgment,
+    JudgmentR3,
+    JudgmentResolved,
+    SnapshotPolicy,
+    Verdict,
+)
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "canary" / "python"
 assert (FIXTURE_DIR / "pkg" / "greet.py").is_file(), (
@@ -59,6 +65,7 @@ def _materialize_control(repo: GitRepo) -> str:
 
 def _lane(repo_path: Path, rigor: tuple[str, ...]) -> Lane:
     judge = None
+    isolation = None
     if "R1" in rigor:
         judge = JudgeConfig(
             language="python",
@@ -70,6 +77,12 @@ def _lane(repo_path: Path, rigor: tuple[str, ...]) -> Lane:
             mutation=None,
             canary=None,
             base="main",
+        )
+        # B006a/A-269, schema v2: an R1+ lane requires an explicit isolation
+        # policy. This module's own subject (the real canary pipeline) is not
+        # an omission test, so the migration rule gives it repository mode.
+        isolation = IsolationConfig(
+            snapshot_selection="repository", unsafe_symlink_omissions=()
         )
     return Lane(
         name="package",
@@ -87,6 +100,7 @@ def _lane(repo_path: Path, rigor: tuple[str, ...]) -> Lane:
         allow_argv_append=False,
         judge=judge,
         where=None,
+        isolation=isolation,
     )
 
 
@@ -145,6 +159,7 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
             r3=JudgmentR3(mechanism=canary.MECHANISM_IMPORT_BREAK, target=TARGET_PATH),
         ),
         claims=(r0_claim, claim),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     document = __import__("json").loads(verdict.to_json())
     assert why_invalid(validator, document) == []

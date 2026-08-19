@@ -113,6 +113,11 @@ _R2_ONLY_CODES = frozenset(
     }
 )
 
+#: (wave-1 §4/§5, A-259/A-260) reason codes the schema binds to the R1 claim
+#: specifically -- read off R1's own guard sequence and nowhere else, the
+#: identical shape `_R2_ONLY_CODES` already gives one tier over.
+_R1_ONLY_CODES = frozenset({"BRANCH_UNAVAILABLE", "TARGET_NOT_MEASURED"})
+
 #: (P21) the payload each of those codes requires, or must NOT carry.
 #: `NO_MUTANTS` is the SUPPORTED empty analysis, so it records its
 #: zero/zero result; `MUTANT_LIMIT_EXCEEDED` records the pre-submission
@@ -177,6 +182,12 @@ def a_claim_with(status: str, code: str | None) -> dict:
     document = verdict_fixture("PASS")
     for key in LANE_RESOLVED_KEYS:
         document.pop(key, None)
+    # wave-1 §6: snapshot_policy is its OWN conditional (required iff
+    # declared_rigor contains R1/R2/R3), not part of LANE_RESOLVED_KEYS --
+    # stripping the lane-resolved group without also stripping this leaves a
+    # document that carries a policy for a lane that (as far as this document
+    # says) never resolved at all.
+    document.pop("snapshot_policy", None)
     document["outcome"] = "PASS"
     document["exit_code"] = 0
     document.pop("reason_code", None)
@@ -187,8 +198,14 @@ def a_claim_with(status: str, code: str | None) -> dict:
     # fact the schema was previously silent about. The claim this helper
     # builds therefore has to be honest about rigor and payload -- otherwise
     # every row below would be asserting that the schema accepts a claim no
-    # producer can emit.
-    rigor = "R2" if code in _R2_ONLY_CODES else "R0"
+    # producer can emit. wave-1 §4/§5 (A-259/A-260) adds the identical
+    # binding for R1's own two new payload-free terminals.
+    if code in _R2_ONLY_CODES:
+        rigor = "R2"
+    elif code in _R1_ONLY_CODES:
+        rigor = "R1"
+    else:
+        rigor = "R0"
     claim = {
         "rigor": rigor,
         "source": "computed",
@@ -253,8 +270,10 @@ def test_every_declared_code_is_exercised_by_the_accept_half():
     # MISSING_EXTERNAL_TOOL, MUTANT_LIMIT_EXCEEDED, SNAPSHOT_LIMIT_EXCEEDED,
     # MUTATION_UNSUPPORTED). The literal is kept rather than derived: it is
     # the thing that makes an accidental vocabulary addition a red test.
-    # P33/A-223d adds the 27th: ALL_MUTANTS_EQUIVALENT.
-    assert len(VALID_PAIRS) == len(ReasonCode) == 27
+    # P33/A-223d adds the 27th: ALL_MUTANTS_EQUIVALENT. wave-1 §4/§5/§6
+    # (A-258/A-259/A-260) adds three more: UNCOVERED_BRANCHES,
+    # BRANCH_UNAVAILABLE, TARGET_NOT_MEASURED -- 30.
+    assert len(VALID_PAIRS) == len(ReasonCode) == 30
 
 
 # --- a code valid for a DIFFERENT outcome is rejected -------------------------
@@ -275,7 +294,7 @@ def test_a_code_belonging_to_another_outcome_is_rejected(
 
 def test_the_cross_matrix_is_not_empty():
     assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
-    assert len(CROSS_PAIRS) == 5 * 27 - 27
+    assert len(CROSS_PAIRS) == 5 * 30 - 30
 
 
 @pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])

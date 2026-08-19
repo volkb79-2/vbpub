@@ -253,7 +253,7 @@ def test_run_evaluates_a_real_r2_pass_end_to_end(git_repo: GitRepo):
     git_repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
     git_repo.commit_all("introduce a compare-swap site")
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -264,6 +264,9 @@ env = {{}}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -340,9 +343,8 @@ operators = ["python:compare-swap"]
     assert "helpers" not in document
 
 
-@pytest.mark.parametrize("language", ["go", "sql"])
 def test_run_refuses_an_r2_lane_for_an_unregistered_language(
-    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator, language: str
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
     """(P33 work item 5 / A-225) v5 gives Go and SQL an operator SPELLING; it
     gives neither a producer, and this test exists so a later package cannot
@@ -354,14 +356,21 @@ def test_run_refuses_an_r2_lane_for_an_unregistered_language(
     executes (A-139). That was true before v5 and is still true after it --
     populating the vocabulary changed the artifact contract, not the
     registry. The marker file is the proof that nothing ran.
+
+    **P34/W6 says so explicitly, as this test's own docstring promised it
+    would:** SQL is no longer unregistered -- `_built_in_registry` now names
+    it at R2 (`test_run_evaluates_a_real_r2_pass_end_to_end_for_sql` below
+    is the positive proof), so it is dropped from this parametrization.
+    SQL's own R1/R3 refusal (still `BAD_LANE_CONFIG`, for the DIFFERENT
+    reason that its one registry entry is R2-only) is
+    `test_run_refuses_sql_at_r1_the_language_is_registered_r2_only` and
+    `test_run_refuses_sql_at_r3_the_language_is_registered_r2_only` below.
+    Go remains here: it still has no producer path wired to any rigor level
+    (P22).
     """
     marker = tmp_path / "the-command-ran"
-    operators = {
-        "go": '["go:compare-swap"]',
-        "sql": '["sql:drop-check"]',
-    }[language]
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -373,15 +382,18 @@ env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
 
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
 [lanes.package.judge]
-language = "{language}"
+language = "go"
 source_roots = ["src"]
 base = "HEAD~1"
 
 [lanes.package.judge.mutation]
 jobs = 1
 max_mutants = 50
-operators = {operators}
+operators = ["go:compare-swap"]
 """
     path = _write_and_commit_lane(git_repo, lane)
     (git_repo.path / "src").mkdir(exist_ok=True)
@@ -396,6 +408,129 @@ operators = {operators}
     assert why_invalid(validator, document) == []
     assert document["outcome"] == "ERROR"
     assert document["reason_code"] == "BAD_LANE_CONFIG"
+
+
+# --- P34/W6: SQL is registered at R2 only -------------------------------------
+
+
+def test_run_evaluates_a_real_r2_pass_end_to_end_for_sql(git_repo: GitRepo):
+    """(P34/W6) `cli._built_in_registry` now names `SqlAdapter` at R2 --
+    proven the same way ``test_run_evaluates_a_real_r2_pass_end_to_end``
+    proves Python's own R2 wiring: a real two-commit diff introduces one
+    ``sql:drop-check`` site (the CHECK constraint is ADDED at HEAD, so its
+    whole line is the changed-line target), a real ``/bin/sh`` command
+    copies the live schema file to the declared ``equivalence_artifact``
+    then greps it for the literal substring the mutant's own replacement
+    removes -- PASSES and writes the baseline's own dump against the
+    unmutated schema, FAILS with a DIFFERENT dump against the one generated
+    mutant (whose own splice reads ``CHECK (true)``) -- a genuine kill
+    through the installed CLI, never a hand-asserted claim, and the exact
+    proof that `SqlAdapter`'s five raising methods are unreachable through
+    this build: reaching a judged R2 claim at all means `has_executable_code`/
+    `normalize_coverage_key`/etc. were never called, because nothing at R0/R1
+    ever needed them for a language this registry declares R2-only.
+    """
+    (git_repo.path / "src").mkdir()
+    # A-140/A-175: the declared `equivalence_artifact` must be git-ignored,
+    # exactly like `cov.json` in the R1/R2 fixtures one level up -- the
+    # post-command dirty check refuses the whole run if the lane's command
+    # leaves an un-ignored file behind, and `.assay/schema-dump.sql` is
+    # precisely that if it rides in uncovered.
+    git_repo.write(".gitignore", ".assay/\n")
+    git_repo.write("src/schema.sql", "CREATE TABLE t (a INT);\n")
+    base_rev = git_repo.commit_all("add schema.sql")
+    git_repo.write(
+        "src/schema.sql",
+        "CREATE TABLE t (a INT, CONSTRAINT ck CHECK (a > 0));\n",
+    )
+    git_repo.commit_all("add the check constraint")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "mkdir -p .assay && cp src/schema.sql .assay/schema-dump.sql && grep -q 'CHECK (a > 0)' src/schema.sql"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "sql"
+source_roots = ["src"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 50
+operators = ["sql:drop-check"]
+equivalence_artifact = ".assay/schema-dump.sql"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    # A kill is the SUITE succeeding at its job, not a lane failure: with
+    # nothing survived/crashed/budget-exceeded and one real kill,
+    # `judge_mutation`'s own mapping renders PASS (A-116/A-117) -- the exact
+    # opposite of what a naive "any non-zero mutant exit fails the lane"
+    # reading would produce.
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["outcome"] == "PASS"
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "PASS"
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["budget_exceeded"] == []
+    assert mutation["equivalent"] == []
+    assert len(mutation["killed"]) == 1
+    killed = mutation["killed"][0]
+    assert killed["operator"] == "sql:drop-check"
+    assert killed["path"] == "src/schema.sql"
+    assert document["judgment"]["resolved"]["language"] == "sql"
+    assert document["judgment"]["r2"]["equivalence_artifact"] == ".assay/schema-dump.sql"
+    assert document["judgment"]["r2"]["kill_attribution"] == "unattributed"
+
+
+def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
+    """(P34/W6) The registry gate that refuses an entirely unknown language
+    ALSO refuses a KNOWN one at a level this build never wired it to
+    (A-139): SQL is registered R2 only, so R1 is `BAD_LANE_CONFIG` exactly
+    like Go's own total non-registration one test up -- proving W6's
+    `rigor=frozenset({{"R2"}})` is what makes this refusal fire, not merely
+    an unregistered-language special case."""
+    marker = tmp_path / "the-command-ran"
+    lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"sql"')
+    path = _write_and_commit_lane(git_repo, lane)
+    for name in ("src", "scripts"):
+        (git_repo.path / name).mkdir(exist_ok=True)
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 2
+    assert not marker.exists()
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
+        ("R0", "ERROR"),
+        ("R1", "ERROR"),
+    ]
+    assert document.get("judgment") is None
+    assert "sql" in err
 
 
 def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
@@ -453,7 +588,7 @@ def test_run_evaluates_a_real_r3_pass_end_to_end(git_repo: GitRepo):
     )
     git_repo.commit_all("add pkg")
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -464,6 +599,9 @@ env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
 env_passthrough = ["PATH"]
 budget = "2m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -512,6 +650,8 @@ def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
     lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
     lane = set_key(lane, "rigor", '["R0", "R3"]')
     lane += (
+        "\n[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n'
         "\n[lanes.package.judge]\n"
         'language = "go"\nsource_roots = ["src"]\n'
         '\n[lanes.package.judge.canary]\n'
@@ -533,6 +673,48 @@ def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
     ]
     assert document.get("judgment") is None
     assert "go" in err
+
+
+def test_run_refuses_sql_at_r3_the_language_is_registered_r2_only(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
+    """(P34/W6) The R3-level mirror of
+    ``test_run_refuses_sql_at_r1_the_language_is_registered_r2_only``: SQL
+    is registered R2 only, so R3 is refused too, the same
+    ``BAD_LANE_CONFIG`` shape Go's own total non-registration gets two
+    tests up -- proving the registry gate still guards R3 even though this
+    build's OWN `SqlAdapter` now reaches R2."""
+    marker = tmp_path / "the-command-ran"
+    (git_repo.path / "src").mkdir(exist_ok=True)
+    (git_repo.path / "src" / "schema.sql").write_text(
+        "CREATE TABLE t (a INT);\n", encoding="utf-8"
+    )
+    lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
+    lane = set_key(lane, "rigor", '["R0", "R3"]')
+    lane += (
+        "\n[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n'
+        "\n[lanes.package.judge]\n"
+        'language = "sql"\nsource_roots = ["src"]\n'
+        '\n[lanes.package.judge.canary]\n'
+        'mechanism = "import-break"\ntarget = "src/schema.sql"\n'
+    )
+    path = _write_and_commit_lane(git_repo, lane)
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 2
+    assert not marker.exists()
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
+        ("R0", "ERROR"),
+        ("R3", "ERROR"),
+    ]
+    assert document.get("judgment") is None
+    assert "sql" in err
 
 
 def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Path):
@@ -569,7 +751,7 @@ def test_run_evaluates_a_real_r1_pass_end_to_end(git_repo: GitRepo, tmp_path: Pa
     )
     write_cov = f"cat > cov.json <<'EOF'\n{cov_json}\nEOF"
     lane = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S1"
@@ -580,6 +762,9 @@ env = {{}}
 env_passthrough = ["PATH"]
 budget = "1m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
@@ -617,6 +802,10 @@ base = "{base_rev}"
         "coverage_artifact",
         "fail_under",
         "allow_excluded",
+        # wave-1 §6 (A-260): mode/require_branch are now required and
+        # therefore always present; targets stays absent in changed-line mode.
+        "mode",
+        "require_branch",
     }
 
 
@@ -698,7 +887,7 @@ def test_an_attestation_timeout_outranks_an_adapter_that_would_refuse(
     """
     sentinel_file = tmp_path / "command-really-ran"
     lane_text = f"""\
-schema_version = 1
+schema_version = 2
 
 [lanes.attested]
 scope = "S1"

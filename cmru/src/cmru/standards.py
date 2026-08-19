@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
+from cmru.tester_gate import REQUIRED_TESTER_ENV
 
 
 PROJECT_TEMPLATE_REVISION = 4
@@ -82,14 +83,9 @@ def assess_projects(
         uses_tester_gate = any("tester-gate" in command.argv for command in commands)
         if uses_tester_gate:
             env = getattr(project, "env", {})
-            required = (
-                "CMRU_TESTER_UNIFIED_IMAGE",
-                "CMRU_TESTER_MEMORY",
-                "CMRU_TESTER_MEMORY_SWAP",
-                "CMRU_TESTER_CPUS",
-                "CMRU_TESTER_CGROUP_PROBE_IMAGE",
-            )
-            missing = [key for key in required if not str(env.get(key, "")).strip()]
+            # One source of truth for the required set, shared with the runtime
+            # preflight in tester_gate (KI-17).
+            missing = [key for key in REQUIRED_TESTER_ENV if not str(env.get(key, "")).strip()]
             if missing:
                 problems.append(
                     "tester-gate requires explicit [env] values: " + ", ".join(missing)

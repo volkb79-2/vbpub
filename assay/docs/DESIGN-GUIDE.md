@@ -114,6 +114,55 @@ separate axes; it does not make R0 consume coverage/mutation/canary policy.
 Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
 designed. It is not a seventh outcome hidden inside an evidence entry.
 
+## 3a. Why the rigor levels are not redundant — three techniques, three defect classes
+
+The most common objection to R2 and R3 is "we already have 100% coverage". The
+answer is not that coverage is bad; it is that **the three techniques detect
+disjoint classes of defect, and none of them finds the others'.**
+
+| technique | the question it answers | the defect it alone catches |
+|---|---|---|
+| **R1 — coverage** | did this line *run*? | code no test exercises at all |
+| **R2 — mutation** | would anything *notice* if this line were wrong? | assertions that execute the right code and prove nothing about it |
+| **R3 — canary** | does the harness *report* a failure it was given? | a suite whose failures never reach the verdict |
+
+That middle row is the one consumers underestimate, so it is worth a measured
+example from this estate's own tooling rather than a hypothetical. A release
+tool's change set reached a passing suite at **100% statement and branch
+coverage** and its mutation campaign still found **six surviving mutants** —
+one of them in the single line deciding whether a pinned version was stale.
+Coverage was never wrong; it was answering a different question.
+
+**Two shapes account for most survivors, and one of them is not a test defect.**
+
+**A weak assertion.** Asserting an exception's *type* proves nothing when two
+different causes raise the same type — a mutant that skipped one `raise` fell
+through to a second, raised the same class, and the test passed. Assert what
+distinguishes the causes, or arrange for the mutated path to *succeed* where the
+correct path refuses.
+
+**An equivalent mutant, which no test can kill.** Given
+
+```python
+if   pinned == highest:  ...   # current
+elif pinned <  highest:  ...   # stale
+```
+
+the `elif` is reachable only when the values differ, so `<` and `<=` are
+semantically identical there. No assertion can separate them.
+
+**This is a defect in the code's shape, not a gap in the tests, and it is the
+exact mirror of A-124/A-131.** There, a branch that cannot fire is a defect
+wearing thoroughness as a disguise. Here, an *operator that cannot matter* is
+the same defect — a redundant guard has made the comparison non-discriminating.
+The repair is to restructure so every operator discriminates (lead with `<`,
+then `>`, let equality fall to `else`), after which the ordinary equality test
+kills both mutants. Coverage cannot see either defect; only mutation can.
+
+This is also why `ALL_MUTANTS_EQUIVALENT` is a loud `INCONCLUSIVE` terminal and
+not a pass: a run in which every mutant was provably inert has told you nothing
+about your tests, and saying so is the only honest available answer.
+
 ## 4. The boundary with ciu, and why they are not one tool
 
 D7's split is WHERE (ciu) / WHAT (the project) / HOW (a testing library).
@@ -212,6 +261,8 @@ could ever satisfy it. This is what lets an environment invariant hold by
 construction rather than by hope:
 
 ```toml
+schema_version = 2
+
 [lanes.integration]
 scope = "S3"
 rigor = ["R0"]
@@ -235,6 +286,40 @@ asserted by whoever ran it. Two caveats that matter:
 * **Pass identities through, never secrets.** Everything in `env_passthrough`
   that is present lands in the artifact in cleartext. That is the point for an
   instance id and a disaster for a token.
+
+### A whole-target `target` names a regular file, never a directory (A-260)
+
+B005's whole-target judge (§6) applies this same doctrine one layer down, and
+the applied form is stricter than `source_roots` because the failure mode is
+worse. `source_roots` fails loudly at load time when it names a path that does
+not exist; a `whole_target` `target` must additionally refuse the shape that
+*does* exist but silently under-measures.
+
+A draft of B005 let a target name a directory, expanding it to every
+adapter-recognised source file beneath it, with the anti-vacuity guard applied
+to the expansion rather than to each declared file. That is anti-pattern #2 —
+the *consumer* (the expansion) inventing coverage for files it never actually
+checked are measured. Concretely: a directory expanding to 36 files, of which
+one appears in the coverage artifact, **passes** — the other 35 go silently
+unjudged, which is `--cov`'s own vacuity hole with a first-class judge wrapped
+around it, precisely the hole B005 exists to close. The rule was withdrawn
+before shipping (see `nyxloom-trove/W1-CARVE-branch-coverage-and-whole-target.md`
+§5's Declaration bullet, kept struck through rather than deleted, so the next
+proposal to relax this starts from why the last one failed rather than from a
+blank page).
+
+What ships instead: `evaluate._resolve_whole_target` refuses a non-regular-file
+target — a directory, a symlink, anything but a tracked regular source file
+under a declared source root — with `ERROR`/`BAD_LANE_CONFIG` naming it. A
+target present in `targets` but absent from the coverage artifact, or present
+with zero executable lines, is `NO_MEASUREMENT`/`TARGET_NOT_MEASURED` rather
+than a vacuous 0/0 PASS — the anti-vacuity guarantee that is the entire point
+of B005: **every declared target is either measured, or the lane refuses**,
+never silently absent from what was judged. The accepted cost is real: a
+consumer owning 25 modules names 25 paths, and a file somebody adds is not
+judged until it is declared — the honest failure direction, since an
+undeclared file is visibly missing from `targets`, where an unmeasured file
+under directory expansion was invisibly present.
 
 ## 6. The verdict contract
 
@@ -267,11 +352,38 @@ must stop and ask, never invent one:
 | Outcome | `reason_code` |
 |---|---|
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
-| `FAIL` | `UNCOVERED_LINES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
+| `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
-| `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE` |
+| `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
+
+**(A-277) `ALL_MUTANTS_EQUIVALENT` was missing from this table from the moment
+v5 introduced it (A-223d) until wave 2 found it.** It fires when `killed +
+survived == 0` while `equivalent` is non-empty — every mutant the analysis
+produced turned out to be semantically identical to the original, so the suite
+was never given anything to catch. That is not a pass: rendering it green is
+A-026/A-035's 0-of-0-is-100% bug, which is why it has its own terminal rather
+than folding into `NO_MUTANTS`. The two differ in what they say about the
+analysis — `NO_MUTANTS` means discovery found no site to mutate, this means it
+found sites and every one of them was inert.
+
+The omission is worth recording rather than quietly fixing, because this table
+declares itself **closed** and tells implementers to stop and ask for anything
+not listed — so for two schema versions it was authoritative and wrong. A-270's
+vocabulary check (§16) originally derived four vocabularies and not this one;
+`test_every_reason_code_is_documented` now closes that, which is the only
+reason the next omission will be caught by the gate instead of by a reader.
+
+**(wave-1) Three additions, each a distinct new terminal, not a repurposed
+old one.** `UNCOVERED_BRANCHES` ranks identically to `UNCOVERED_LINES` in the
+outcome precedence but is never the same sentence: "which mechanism refused"
+is the distinction this project exists to keep, one layer up from B001's own
+false-PASS story. `BRANCH_UNAVAILABLE` and `TARGET_NOT_MEASURED` are
+`NO_MEASUREMENT`, not `ERROR` — the lane is well-formed and the command ran
+cleanly; what is missing is measurability of a *declared* thing (branch data,
+or one named target), the same category `DIRTY_TREE`/`BASE_IS_HEAD` already
+occupy. See the two subsections below for why each exists.
 
 The outcome set stays fixed while the reason vocabulary grows only for named,
 reachable terminals. The field is required on every non-PASS outcome, so a
@@ -296,7 +408,7 @@ percentage means anything.* **`NO_MEASUREMENT` outranks `FAIL` in the rollup
 because in all three cases the delta being judged is not the delta under test.**
 
 **When `outcome == NO_MEASUREMENT`, the coverage block is omitted entirely, not
-zeroed.** Emitting `{"covered": 0, "changed_executable": 0, "pct": 100.0}`
+zeroed.** Emitting `{"covered": 0, "executable": 0, "pct": 100.0}`
 beside it rebuilds the exact ambiguity one layer up: a consumer reading `pct`
 and ignoring `outcome` gets `100.0`. The existing copies avoid this only
 incidentally (they never reach `evaluate`). Making it a schema rule — *no
@@ -616,7 +728,7 @@ claims knowledge must say what it knows it from.
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 5` (an integer, bumped on any breaking shape change) and
+carries `schema_version: 6` (an integer, bumped on any breaking shape change) and
 `assay_version`.
 
 **A version bump is a migration for the consumer, never an upgrade by the
@@ -656,6 +768,152 @@ relative verdict path belongs to the CLI process cwd, not to the measured
 project. An object that appears or changes after reservation is preserved and
 the process exits ERROR; it is never overwritten to make emission succeed.
 
+### Two R1 modes, one claim per lane (A-260)
+
+R1 always answers "is this measured?", but wave 1 lets a lane pick *which*
+lines the question is about: `judge.mode = "changed_lines"` (absent means
+this — the only mode that existed before wave 1, so no existing lane needs an
+edit) measures the `base..HEAD` diff; `mode = "whole_target"` measures one or
+more explicitly declared files (§5, above), with no base and no diff at all.
+
+**This is a MODE of the one R1 claim, not a second rigor level, and not an
+"R1.5".** `claims[]` carries exactly one computed entry per `declared_rigor`
+level ("Computed rigor and external evidence are separate axes", above), and
+`_check_claims_cover_declared_rigor` enforces one claim per level as a closed
+invariant. Inventing a second R1 shape would either break that invariant or
+require a new level nobody asked assay to define, for a mode switch that
+changes only *which lines feed the same arithmetic*, not what kind of evidence
+is produced. A consumer wanting both a changed-line gate and a whole-module
+floor declares **two lanes**, each with its own one claim; the verdict
+distinguishes them by `judgment.r1.mode`, required in the artifact even though
+optional in the lane file — the lane file records what a human declared, the
+artifact records what actually judged, and that asymmetry is `judgment`'s
+whole reason for existing (P16).
+
+`judge.base` is forbidden under `whole_target` unless the lane also declares
+R2: a whole-target claim resolves no diff, so recording a `base` would imply a
+comparison that never happened. `JUDGE_FIELDS_BY_RIGOR` stays the single
+source for this — R1's required-field set becomes mode-dependent rather than
+duplicated into a second table, so an `R0,R1,R2` lane in whole-target mode
+still declares and records a `base` for R2's own sake.
+
+### Branch coverage is judged whenever the artifact reports it (A-258)
+
+Not opt-in, and deliberately so: a changed line that is a branch source with
+an untaken arc lowers `pct` in *every* lane whose coverage artifact carries
+branch data, including a lane that declared R1 before wave 1 shipped. The
+alternative — judge branches only when a lane explicitly asks — was rejected
+because it inverts who is trusted with the floor: the *artifact* already
+measured the arc, and reporting a line-only PASS over data that disagrees is
+exactly the laundering this project exists to remove. This is also why the
+change lands with a schema major bump (v6) rather than quietly inside v5: it
+changes what PASS **means** for an existing R1 lane whose argv already passes
+`--cov-branch`, which is a compatibility fact a reader needs before upgrading,
+not an implementation detail.
+
+`pct` becomes the COMBINED line+branch percentage the moment branches are
+present — `(covered + branches_covered) / (executable + branches_total)`,
+exactly `coverage.py`'s own `summary.percent_covered` under `--cov-branch`.
+`covered`/`executable` stay line-only and the branch side gets its own two
+integers, so a consumer can re-derive `pct` from the payload alone rather than
+trusting a pre-combined number. When branch capability is `"unavailable"`,
+`branches_total` is 0 and the formula degenerates to today's line-only value
+with no special case.
+
+A floor missed purely because of branches renders `FAIL`/`UNCOVERED_BRANCHES`,
+never `UNCOVERED_LINES`: which mechanism refused is exactly the distinction
+this project exists to keep (the reason-code table, above; B001's false-PASS
+story one layer up).
+
+### `require_branch` governs absence, never presence (A-259)
+
+`judge.require_branch` (default `false`, legal on any R1 lane) guards against
+exactly one failure: an argv edit that quietly drops `--cov-branch`, turning a
+line+branch gate into a line-only gate that still says PASS, with nothing in
+the verdict admitting the rigor dropped. With it `true`, an artifact whose
+branch capability is `"unavailable"` renders `NO_MEASUREMENT`/
+`BRANCH_UNAVAILABLE` — payload-free, decided before any evaluation, beside
+`check_empty_coverage` in the same guard sequence rather than inside the
+arithmetic, because "can this even be measured" is a measurability question,
+not something the four-way union should have to special-case.
+
+It is asymmetric on purpose. `require_branch` never *demotes* a capable
+artifact: when branches ARE reported, they are always judged (A-258, above) —
+there is no lane-level opt-out of real evidence the artifact already
+produced. The flag only ever answers "is it acceptable for this lane to fall
+back to line-only", never "should branch data count when present". Naming it
+`require_branch` rather than, say, `judge_branches`, is deliberate: the
+latter would read as a toggle over presence, which is the exact silent
+downgrade this key exists to forbid.
+
+### Snapshot selection: an affirmative materialisation boundary, not a sandbox (B006a)
+
+Every R1/R2/R3 lane now declares `[lanes.X.isolation]` — required the moment
+a lane claims R1, R2 or R3, refused on an R0-only lane, with no default and
+no inference from where `assay.toml` happens to sit (inferring it was
+considered and rejected: it would silently re-scope every existing R1+
+consumer, whose lane files all sit in subdirectories, so a lane whose tests
+read a sibling path would begin failing for a reason nothing in its config
+mentions — the exact failure class this item exists to remove).
+
+`snapshot_selection` is closed to two values. `"repository"` materialises the
+whole resolved commit, as every R1+ lane has always run. `"repository-minus-
+unsafe-symlinks"` additionally omits exactly the declared, commit-validated
+symlink leaves that P22's existing hermeticity guard ("Repeated execution
+runs on committed objects", above) would otherwise refuse for the WHOLE tree
+regardless of `source_roots` — one tracked absolute symlink anywhere in a
+monorepo (Topos's deliberate `/etc/passwd` fixtures, in this estate) used to
+fail every R1+ lane in every unrelated project permanently. The exact
+property, quoted rather than paraphrased because a paraphrase drifts toward a
+stronger claim than the mechanism delivers:
+
+> For each higher-rigor unit using omission mode, assay initially hands the
+> command a private worktree in which every declared, commit-validated
+> P22-unsafe symlink is absent and every other P22-supported tracked path
+> from the resolved commit is materialised.
+
+**What this is not, stated because a security-adjacent claim that overstates
+its mechanism is worse than no claim.** It is not a project ownership
+boundary — safe symlinks and ordinary files under sibling projects remain
+materialised, so CMRU's repository-root reads (`cmru.project.sample.toml`,
+`cmru.release.sh`) need no declaration at all. It is not a confidentiality,
+filesystem, execution or network sandbox: the executed command is still a
+bare `subprocess.run(cwd=snapshot.project_root)`, and a mount-namespace or
+Landlock sandbox — which would deliver that stronger property — is **rejected
+here, not deferred** (§7, below, and A-030); that property belongs to the
+execution environment, never to this library. And it does not remove the
+omitted symlink's blob from the private Git object closure: `git show
+HEAD:<omitted path>` still reads its target string, and a command that clears
+the `skip-worktree` bit itself (`git checkout`, `git worktree add`) can
+restore an omitted leaf — measured, not theoretical, and unavoidable once
+B006.3's own requirement to retain the complete resolved commit is honoured.
+What assay guarantees is narrower and provable: *it* never materialises the
+path.
+
+An earlier draft of this design (`nyxloom-trove/W1-CARVE-branch-coverage-and-
+whole-target.md` §1, marked dead in place rather than deleted) instead scoped
+the snapshot to a declared project prefix plus an explicit `inputs`
+allowlist. It failed three independent adversarial reviews — 8, then 9, then
+11 blocking findings, diverging rather than converging — because a finite
+`inputs` list cannot prove it enumerates every real dependency (CMRU's own
+suite reads repository-root files no source-root scoping would have found),
+and because relaxing a directory-shaped input to expand automatically
+reopened the exact per-file vacuity hole B005 exists to close, one mechanism
+over. The shape that shipped instead omits only symlink leaves P22 would
+already refuse, so it can never hide a source file, a test, or a B005 target
+— the vacuity guarantee stays structurally shut without an enumeration anyone
+has to keep complete by hand.
+
+**A duplicated compatibility fact, stated here because it is the reason a
+consumer cannot silently straddle both versions.** The lane schema bump to 2
+is separate from verdict schema v6: it is a hard cut for the same reason v6
+is — interpreting an old missing `[isolation]` table as repository mode would
+give one `schema_version` two meanings (the prohibited shadowing default, §5
+above), and an old binary cannot parse the new table regardless. A v2 assay
+refuses a v1 lane file's now-required table; a v1-pinned assay cannot read a
+v2 file's `[isolation]` table at all. See the consumer guide's ordered
+adoption step for the commit-ordering consequence this creates.
+
 ## 7. What assay must never become
 
 | Creep | The line |
@@ -663,7 +921,7 @@ the process exits ERROR; it is never overwritten to make emission succeed.
 | **a test runner** | never discovers, selects, orders, parallelises or retries tests. Executes one declared argv and reads what it produced. Flags may be *appended by the caller* and are recorded verbatim (§6); they are never *derived* by assay. |
 | **a CI system** | no scheduling, triggers, queues or webhooks. Impact-based lane selection belongs to the caller. |
 | **a reporting dashboard** | no history, trends, storage, server or cross-run aggregation. One artifact, one lane, one commit. Anything longitudinal consumes those artifacts; assay never retains them. |
-| **a coverage tool** | never instruments, traces or computes global coverage. Global/branch floors stay `coverage --fail-under`'s job. |
+| **a coverage tool** | never instruments, traces, or computes a coverage percentage itself — it only judges numbers a real coverage tool already produced. `mode = "whole_target"` (§6, above) lets a lane assert a floor over an explicitly DECLARED file rather than only a diff, but the file list is a lane's own declaration, never a discovered or globbed set, and the percentage is still `coverage.py`'s own arithmetic re-consumed, not re-derived. An undeclared floor over the whole project stays `coverage --fail-under`'s job. |
 | **an LLM-mediated reviewer** | Tier 3 exists precisely so this stays out. A model dependency makes the gate non-deterministic, and a non-deterministic gate is not a gate. |
 | **a policy engine** | Tier 2 applies a *declared threshold* to structured output. No expressions, rule DSLs or conditionals. If a lane needs a rule language, that rule belongs in the tool being adjudicated. |
 | **an environment tool** | no container, network, image, instance or provisioning knowledge, permanently. `[…where]` is data assay parses and never interprets. |
@@ -776,13 +1034,44 @@ by format, and a `LanguageAdapter` keyed by language.**
 The registry's output type carries one distinction the current copies lack:
 
 ```
-FileCoverage(executed, missing, excluded: frozenset[int] | None)
+FileCoverage(executed, missing, excluded: frozenset[int] | None,
+             branches: BranchCoverage | None)
 ```
 
 `None` ≠ empty set. coverage.py has `excluded_lines`; a Go cover profile has no
 such concept. Without the distinction, a Go lane reports *"0 changed lines
 excluded by pragma — verified"* when the format simply cannot say. That is the
 NO-MEASUREMENT discipline one level down, and it falls out for free.
+
+**`branches` (wave-1, A-257) keeps exactly the same discipline one field
+over.** `BranchCoverage(by_line: Mapping[int, tuple[int, int]])` — source line
+to `(covered_arcs, total_arcs)` — is `None` when the format cannot express
+branch arcs at all (a Go cover profile: statement counts, no arcs, ever;
+`go-cover`'s parser sets it unconditionally and a test asserts that as a
+*measured* property of the format, not an omission that later looks like an
+oversight, A-O16). It is a `BranchCoverage` with an EMPTY `by_line` for a real
+branch-tracking artifact's file that happens to have no branches — the exact
+trap `lcov` proves is real: `coverage.py` emits `BRF`/`BRH` for one file and
+nothing at all for a branch-free sibling in the SAME artifact, so capability
+is decided once for the whole artifact, never per file (a per-file rule would
+call that single, correct artifact "mixed" and refuse it).
+
+**An artifact's branch DETAIL is authoritative over its capability METADATA
+(A-265), and disagreement is a refusal, never a silent resolution either
+way.** The obvious alternative — "trust the metadata" — has a false-PASS hole:
+an artifact whose `meta.branch_coverage` is absent or `false` but whose arc
+arrays are genuinely present would read as `"unavailable"`, silently
+discarding real branch evidence, and a lane with `require_branch = false`
+would then report a line-only PASS over an artifact that had measured
+branches all along — making A-258's "judged whenever reported" false in
+exactly the case metadata is wrong. **Arc identities are validated for
+uniqueness and executed/missing disjointness BEFORE aggregation into per-line
+`(covered, total)` counts**, because aggregation throws the identities away:
+a tampered artifact that simply repeats one covered arc inflates the
+numerator, and once the (also tampered) stated totals are bumped to match, no
+per-line check downstream can tell — the same reasoning `FileCoverage`
+already applies to its three independent executed/missing/excluded arrays as
+adversarial input (above).
 
 Adapter surface (pure where it can be — nyxloom's `inject_*` currently writes
 the file; in assay they return text, so adapters are testable with no
@@ -807,15 +1096,16 @@ committed-object snapshot and runs the lane's one already-declared command plan
 against that snapshot.
 
 This boundary applies even when the language's tests need substantial external
-state. A future SQL/DDL adapter may learn SQL syntax through a parser/helper and
-replace a constraint or trigger declaration in tracked DDL; the project's
-declared command may then provision a fresh test database and apply that
-mutated schema. Assay and the adapter do not receive a DSN, connect to the
-database, choose an image, or manage rollback. Those facts remain project/
-environment-owned inputs to the declared command. A component that instead
-introspects and mutates a live database is a separate producer whose structured
-result may be consumed as Tier-2 adjudicated evidence; it is not a
-`LanguageAdapter` shortcut around the source/snapshot contract.
+state. P34's SQL/DDL adapter (below) learns SQL syntax through a stdlib-only
+lexer — never a parser, never a helper process — and replaces a constraint or
+trigger declaration in tracked DDL; the project's declared command then
+provisions a fresh test database and applies that mutated schema. Assay and
+the adapter do not receive a DSN, connect to the database, choose an image, or
+manage rollback. Those facts remain project/environment-owned inputs to the
+declared command. A component that instead introspects and mutates a live
+database is a separate producer whose structured result may be consumed as
+Tier-2 adjudicated evidence; it is not a `LanguageAdapter` shortcut around the
+source/snapshot contract.
 
 Consequently, R2 judges the selected mutation catalogue over the changed
 tracked source in scope. It never silently upgrades itself into a whole-project
@@ -830,7 +1120,9 @@ finds zero sites instead renders `INCONCLUSIVE/NO_MUTANTS` with an exact
 zero/zero mutation payload (A-183). This absent-versus-empty distinction keeps
 “we cannot analyse this language” from masquerading as measured evidence that
 nothing was mutable. Python raises the typed discovery failure for invalid
-syntax; Go returns `UNSUPPORTED` until P29 lands its helper.
+syntax; SQL raises the analogous `MutationDiscoveryError` for an unterminated
+string, dollar quote or block comment (below); Go returns `UNSUPPORTED` until
+P29 lands its helper.
 
 Adapters **may** shell out (Go's `has_executable_code` genuinely needs to parse
 Go), but must declare it in `external_tools` so a lane's prerequisites are
@@ -844,6 +1136,196 @@ prefix-boundary reconciliation (topos's fixed `_rel_to_source`) is universal and
 lives in the core; the language-specific prefix strip (Go's module path,
 srdm's `stripModulePrefix`) is an adapter hook.
 
+### Two path grammars, not one — deliberately (A-271)
+
+`judge.targets` and `isolation.unsafe_symlink_omissions` refuse a
+non-canonical spelling outright at load — `./x`, `x//y`, `x/`, an interior
+`.` — while `safeio.reserve_output` (the coverage artifact, and any
+CLI-supplied destination) accepts and normalises the same shapes. A-145
+requires every boundary to say WHICH spelling it speaks (project-relative vs
+repo-top-relative); it does not require every boundary to reject a
+non-canonical form, and this is the deliberate asymmetry rather than an
+inconsistency to "fix" into uniformity.
+
+The strictness has one specific job: `targets` and
+`unsafe_symlink_omissions` are **lists that get aggregated or compared for
+exactness**. `src/good.py` and `src//good.py` are two distinct strings naming
+one file — a raw-string uniqueness check accepts both, and TOML's own
+`uniqueItems`-style schema check accepts both, so a whole-target lane would
+count one well-covered target TWICE, inflating the aggregate enough to carry
+a poorly covered sibling over the floor. That is a false PASS reachable from
+a plausible typo, and `unsafe_symlink_omissions` is strict for the identical
+structural reason: it is compared for exactness against the materialised
+skip-worktree set, and a spelling that "means" the same path but does not
+match it byte-for-byte silently fails to omit anything.
+
+The coverage artifact has no such exposure. It is exactly ONE path, aggregated
+with nothing else, and `PurePosixPath` normalisation is lexical with no
+traversal risk — every actually escaping form (`..`, absolute, a symlinked
+component) is still refused loudly regardless. Tightening it would also reach
+the CLI's `--verdict-json`, where `./out.json` is an idiomatic, harmless
+spelling; refusing it would be user-hostile for a safety property that path
+has no way to lose. Measured before ruling, not asserted: no live lane in the
+estate uses a `./`-prefixed spelling today, so accepting it costs nothing real.
+
+### SQL/DDL mutation: a stdlib lexer, not a database connection
+
+**Why a lexer and not a parser or an external helper.** No SQL parser or
+linter exists on this host or inside the shared gate image, so route (ii) —
+add a dependency to the shared test image — starts by re-risking every other
+project's gate before locating a single byte span, which A-005's
+zero-runtime-dependency claim exists to make unnecessary. What the seven
+operators need is not grammar; it is knowing which bytes are *code* — a bare
+keyword regex over raw file bytes produces phantom matches inside comments,
+string literals and dollar-quoted bodies (measured: 13.3% phantom over a real
+316KB DDL corpus, and every real `ON DELETE RESTRICT` site in that corpus was
+a phantom under the naive rule). The fix is a two-phase *mask*, not a parser:
+walk the source once, classify every byte as code or not-code, and recurse
+exactly one level into each dollar-quoted body — real projects put their
+idempotent DDL there, and a body left opaque loses real sites, including both
+of a real corpus's only two `ON DELETE RESTRICT` foreign keys. A parser would
+buy nothing further, because none of the seven operators needs to know what
+*kind* of statement it is in — only where its own span starts and ends.
+
+**Fail closed, not fail open.** An unterminated string, dollar quote, or
+block comment raises `MutationDiscoveryError` (`ERROR`/
+`MUTATION_DISCOVERY_FAILED`) rather than silently discovering sites in the
+valid prefix of a file real PostgreSQL would refuse outright. A discovery
+routine that degrades gracefully on malformed input turns a measurement gap
+into evidence that looks clean.
+
+**`language = "sql"` resolves at R2 only.** There is no SQL R1 (DDL has no
+coverage tool to report changed-line execution against) and no SQL R3 (A-192
+forbids a canary without R1 to attribute it against) — settled by the same
+rigor-ladder discipline that governs every other language, not a gap SQL
+happens to have. That single registry fact is also what makes
+`has_executable_code`/`normalize_coverage_key`/`statement_spans`/
+`inject_import_break`/`inject_uncovered_line` provably unreachable through
+the shipped CLI: nothing at R0 or R1 or R3 ever resolves an adapter for a
+language this build's one registry entry names R2-only, so none of those
+five methods is ever called — they raise `NotImplementedError` rather than
+carry dead logic.
+
+**What this buys you, stated exactly, and what it does not.** For each
+mutant it reports, assay proves that exactly one byte span of one tracked,
+changed DDL file — located outside every comment, string literal and quoted
+identifier, at both the outer and the dollar-quoted lexical level — was
+replaced by a recorded replacement, and classifies that mutant using only the
+project-declared command's exit status and the bytes of the two files the
+lane itself declared. That is mechanical, and it is the whole claim. It does
+**not** give you:
+
+1. Proof that a mutant is valid DDL (a widened integer `IN`-list with a
+   string literal is DDL real PostgreSQL refuses; nothing in assay can tell
+   that from a mutant the tests happened to kill).
+2. Proof that the operator name matches what actually changed in the
+   database catalog (`sql:drop-check` and `sql:widen-check-in` produce an
+   *empty* delta over `pg_constraint`'s names — only a schema dump sees the
+   change).
+3. Proof that each mutant was judged against an isolated database (a mutant
+   applied to a database that already carries the un-mutated schema exits
+   0 with the mutation never having happened — the next subsection is the
+   refusal that converts that into an honest terminal rather than a false
+   pass).
+4. Verification of a kill's cause (with kill attribution `declared`, assay
+   records verbatim whatever string the project's own command wrote; it
+   never checks that string against the mutation that produced it).
+5. A whole-schema audit (sites come only from changed lines in tracked files
+   under the declared `source_roots`, further bounded by `max_mutants`).
+6. Any connection to a database, ever (A-215): no DSN, no catalog read, no
+   provisioned image.
+
+### Mutant classification needs more than exit status (the equivalence artifact)
+
+Every other language's R2 classification reads exit status alone: the
+command passed, so the mutant survived; it failed, so it was killed. That
+mapping is silently wrong for SQL, because a non-zero exit from a DDL apply
+command does not mean "a test caught the mutation" — it can mean "the
+mutated DDL was never valid in the first place" (a widened `IN`-list against
+the wrong literal type, measured to fail with `invalid input syntax for
+type integer`), which is not a kill, it is a **crashed mutant an exit-status
+mapping would misreport as a kill**.
+
+So when — and only when — a lane declares
+`judge.mutation.equivalence_artifact`, classification becomes a function of
+`(exit outcome, artifact presence, artifact bytes)` rather than exit status
+alone:
+
+| exit outcome | equivalence artifact | bucket | why |
+|---|---|---|---|
+| `PASS` | absent | `crashed` | the lane declared an artifact its command did not write; nothing was measured |
+| `PASS` | present, **≠** baseline | `survived` | the mutated schema was built and the suite did not notice |
+| `PASS` | present, **=** baseline | `equivalent` | the mutant provably changed nothing |
+| `FAIL` | present, ≠ baseline | `killed` | the mutated schema was built, and something refused it |
+| `FAIL` | present, = baseline | `equivalent` | it never mutated (residue, or a never-firing guard); the failure is about something else |
+| `FAIL` | absent | `crashed` | the schema never got built — an invalid mutant, **not a kill** |
+
+Two properties matter more than any one row. **The table contains zero SQL
+knowledge** — exit status, file presence, byte equality, nothing else — so
+it stays in the language-free core rather than becoming a SQL special case.
+And **it is inert for every existing lane**: with no `equivalence_artifact`
+declared, the original exit-status-only mapping applies completely
+unchanged, so no Python lane's verdict moves by one bit — a property this
+package proves with a byte-identical-verdict test rather than asserting it.
+
+**Why `equivalence_artifact` is REQUIRED on a SQL lane rather than optional.**
+The tempting shape is "opt in, like everything else". Rejected, because the
+two failure modes are not symmetric. Without it, the single most likely way
+a real consumer gets isolation wrong — a mutant applied to a database that
+already carries the previous run's residue — surfaces as `survived`, and
+`survived` is an assertion about *the consumer's own test suite* that is
+false: assay would say "no test asserts this constraint" about a constraint
+that was never actually removed. That is worse than a missing feature; it is
+exactly the class of false statement this whole project exists to remove.
+With the artifact declared, the identical run is `equivalent` instead, and if
+every mutant lands there the claim is loud and non-green —
+`INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT` — rather than a quiet false pass.
+
+### The consumer command order is one token wide: apply, dump, then test (A-279)
+
+**Requirement.** A SQL lane's project-declared command must write
+`equivalence_artifact` **after the schema has been fully and successfully
+applied, and regardless of whether the test step that follows passes or
+fails.** The canonical shape is:
+
+```
+apply && dump && test
+```
+
+**never** `apply && test && dump`.
+
+**Consequence of getting the order backwards.** A kill *is* the test step
+exiting non-zero. Under `apply && test && dump`, shell `&&` short-circuits
+the instant `test` fails, so `dump` never runs. assay's own
+`safeio.reserve_output(...).arm()` has already unlinked any pre-existing
+artifact file before the command started, so the equivalence artifact is now
+simply absent. The classification table above reads `(FAIL, absent)` as
+`crashed`, never `killed` — and `judge_mutation` ranks `crashed` above every
+other bucket, so **one such mutant renders the entire lane
+`ERROR`/`EXEC_FAILED`.** The feature's headline outcome — a real kill — could
+never be produced under this ordering, and the very first mutant a
+consumer's suite genuinely caught turns the lane red for a reason that reads
+as "assay is broken" rather than "your command is ordered wrong".
+
+This is not a hypothetical failure mode; it is measured on the shipped CLI,
+not merely reasoned about. `nyxloom-trove/carve-assets/W3/MANIFEST.md`
+freezes two repositories, identical in DDL, lane and mutant, differing only
+in this one ordering, both driven through the real `assay run`:
+
+| consumer command | `killed` | `crashed` | lane outcome |
+|---|---|---|---|
+| `apply && dump && test` | **1** | 0 | `PASS`, exit 0 |
+| `apply && test && dump` | **0** | 1 | `ERROR`/`EXEC_FAILED`, exit 2 |
+
+assay cannot verify this ordering itself — it sees two files, not a
+pipeline — which is exactly why it is documented as a requirement with its
+consequence rather than left to be discovered the first time a real kill
+turns a lane red. See
+[the consumer guide](CONSUMERS.md#the-command-order-is-one-token-wide-apply-dump-then-test-a-279)
+for the worked shape, including how to make the companion `pg_dump`
+reproducibility obligation red-on-violation in your own gate rather than
+trusted silently.
+
 ## 12. Lane file structure = D7's three questions, literally
 
 The file's shape carries the boundary rather than asserting it in prose. Top
@@ -852,21 +1334,27 @@ reads it), `[…where]` is **WHERE** (an environment tool reads it). A project
 adopting only assay writes no `where`; one adopting only ciu writes no `judge`.
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
-scope = "S1"; rigor = ["R0","R1","R2"]; enforcement = "gate"
+scope = "S1"
+rigor = ["R0","R1","R2","R3"]
+enforcement = "gate"
 argv = ["pytest", "tests/unit", "-q", "--cov-report=json:cov.json"]
 env = { MOCK_MODE = "true" }
-env_passthrough = []
+env_passthrough = ["PATH"]
 budget = "5m"
 allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
 
 [lanes.package.judge]
 language = "python"
 source_roots = ["libs/common/src", "applications/controller/src", "scripts"]
 fail_under = 100.0
 allow_excluded = false
+base = "origin/main"
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
 mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
@@ -874,13 +1362,17 @@ attestation_dir = ".assay/attestations"
 evidence = [{source = "attested", key = "adversarial-review"}]
 
 [lanes.package.where]
-service = "test-runner"; instance = "worktree"
+service = "test-runner"
+instance = "worktree"
 ```
 
-**Declared rigor is enforced, not merely recorded.** `R1` makes all five of
-`judge.{coverage, fail_under, allow_excluded, source_roots, language}` required
-to load; `R2` additionally requires `judge.mutation`; `R3` additionally requires
-`judge.canary`. A lane claiming R1 with no coverage config fails at parse time.
+**Declared rigor is enforced, not merely recorded.** `R1` in its default
+`changed_lines` mode makes all six of `judge.{coverage, fail_under,
+allow_excluded, source_roots, language, base}` required to load (`base`
+resolves nothing and is instead FORBIDDEN under `mode = "whole_target"` with
+no R2 declared — above, "Two R1 modes, one claim per lane"); `R2` additionally
+requires `judge.mutation`; `R3` additionally requires `judge.canary`. A lane
+claiming R1 with no coverage config fails at parse time.
 Each of those three sub-tables is CLOSED, and each is cross-checked at load
 time against the vocabulary its own module owns: `coverage.format` against
 `assay.coverage.FORMAT_REGISTRY` (A-068), `mutation.operators` against
@@ -1148,6 +1640,65 @@ mismatch: Topos cannot express exclusion provenance, so `allow_excluded =
 false` correctly produces Assay `FAIL/EXCLUDED_LINES` against a Topos
 `PASS` — recorded as the expected capability gap, not compared as a
 terminal.
+
+---
+
+## 16. Where documentation lives, and why it merges with the code (A-270)
+
+§11 says where language-specificity lives. This says where *knowledge about the
+product* lives, for the same reason: when a question has no single home, every
+document grows a partial answer and they drift apart.
+
+**Three documents, one job each.**
+
+| document | its one job |
+|---|---|
+| **`README.md`** | **WHAT** assay does — the user-facing feature surface. A reader deciding whether assay solves their problem stops here. |
+| **`docs/DESIGN-GUIDE.md`** (this file) | **WHY** it does it that way — choices, rejected alternatives, implementation reasoning, and the arguments that must not be re-had. |
+| **`docs/CONSUMERS.md`** | **HOW** to adopt it — worked examples and real use cases, in a form an adopter can paste. |
+
+The boundaries are load-bearing in both directions. A README that argues its
+own rationale becomes a second, diverging design guide — and it had already
+started. A design guide that lists features becomes a second, staler README.
+So: **a README feature links here rather than re-arguing; this file explains
+rather than enumerating; CONSUMERS.md shows rather than describes.**
+
+**Documentation merges with the change, not after it.** A capability is not
+shipped when its code is green; it is shipped when someone who does not know it
+exists can find it, understand why it works that way, and adopt it. Any work
+item that adds, removes or changes a user-facing capability, a public config
+key, a closed vocabulary value, or a compatibility fact is **incomplete until
+all three are in sync**, and each such work item names the affected documents in
+its own file list — a doc obligation that is not written down is a doc
+obligation that is skipped.
+
+**Three checks make this a test rather than an intention**, because "we will
+remember" is exactly the check that cannot fail, and a check that cannot fail is
+this project's most expensive recurring defect (A-124, A-131):
+
+1. every TOML example in all three documents **parses with the shipped loader**
+   and declares the current `LANE_SCHEMA_VERSION`;
+2. every value of every **closed public vocabulary a consumer must type** —
+   `isolation.snapshot_selection`, `judge.mode`, the rigor levels, the coverage
+   `format` registry, the closed `ReasonCode` vocabulary (A-277), and
+   (P34/A-287) `judge.mutation.operators` scoped to every REGISTERED
+   language's own catalogue — appears in at least one of the three, so a
+   capability cannot ship undocumented;
+3. every DESIGN-GUIDE anchor the README links to **resolves**.
+
+A documentation example is a claim, and A-232 applies to it unchanged: it is
+evidence only if something executed it.
+
+**Why this is a ruling and not a habit.** Wave 1's plan went through a carve,
+three failed adversarial review rounds, a complete recarve and an independent
+review — and every one of them missed that this README's headline bullet said
+"changed-line coverage, *not* whole-project coverage" while the wave was
+shipping precisely the whole-target mode that sentence denies, and that
+`CONSUMERS.md` appeared in no work item at all while its adoption steps had gone
+stale against a newly mandatory `[isolation]` table. The trove documents were
+immaculate throughout, because the process touches them daily. The documents
+facing a human adopter were touched only when someone remembered, and nobody
+did.
 
 ---
 

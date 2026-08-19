@@ -42,6 +42,7 @@ def _evaluate(profile: CoverageProfile):
         profile=profile,
         adapter=adapter,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP,),
         fail_under=100.0,
         allow_excluded=False,

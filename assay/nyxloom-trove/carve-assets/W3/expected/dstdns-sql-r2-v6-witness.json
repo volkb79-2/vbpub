@@ -1,0 +1,138 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "sh",
+    "tools/witness-gate.sh"
+  ],
+  "argv_effective": [
+    "sh",
+    "tools/witness-gate.sh"
+  ],
+  "argv_modified": false,
+  "assay_version": "@ASSAY_VERSION@",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "mutation": {
+        "budget_exceeded": [],
+        "candidate_count": 6,
+        "crashed": [],
+        "equivalent": [],
+        "killed": [
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 495,
+            "kill_signal": "schema test command failed (exit 3) against database witness: psql -v ON_ERROR_STOP=1 -U postgres -d \"$SCHEMA_GATE_DBNAME\" -f /witness-assert.sql",
+            "lineno": 9,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 487
+          }
+        ],
+        "survived": [
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 561,
+            "lineno": 11,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 553
+          },
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 676,
+            "lineno": 14,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 668
+          },
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 824,
+            "lineno": 18,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 816
+          },
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 1240,
+            "lineno": 25,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 1232
+          },
+          {
+            "description": "NOT NULL -> NULL",
+            "end_byte": 1296,
+            "lineno": 26,
+            "operator": "sql:drop-not-null",
+            "path": "infra/db-init/init-scripts/20-create-corpora.sql",
+            "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
+            "start_byte": 1288
+          }
+        ],
+        "total": 6
+      },
+      "reason_code": "MUTANTS_SURVIVED",
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "@HEAD_OID@",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "ended": "@ENDED@",
+  "enforcement": "gate",
+  "env_declared": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "env_effective": {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  },
+  "evidence": [],
+  "exit_code": 1,
+  "judgment": {
+    "r2": {
+      "equivalence_artifact": ".assay/schema-dump.sql",
+      "jobs": 1,
+      "kill_attribution": "declared",
+      "kill_signal_artifact": ".assay/kill-signal.txt",
+      "max_mutants": 6,
+      "operators": [
+        "sql:drop-not-null"
+      ]
+    },
+    "resolved": {
+      "base": "@BASE_OID@",
+      "language": "sql",
+      "source_roots": [
+        "infra/db-init/init-scripts"
+      ]
+    }
+  },
+  "lane": "dstdns_sql_qualification",
+  "outcome": "FAIL",
+  "reason_code": "MUTANTS_SURVIVED",
+  "schema_version": 6,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "@STARTED@"
+}

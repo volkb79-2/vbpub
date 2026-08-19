@@ -92,6 +92,23 @@ class VariantConfig:
 
 
 @dataclass(frozen=True)
+class ToolDependency:
+    """A first-party artifact this project's OWN tests/tooling consume (S15).
+
+    Distinct from ``[orchestration.project.<id>].depends_on``: that graph is release
+    ORDER (S2.2a) and cannot express this edge without creating a cycle (assay already
+    depends_on cmru; cmru's own test steps run a vendored assay zipapp -- the reverse
+    edge is resolved by vendoring a pinned artifact instead of by ordering). A tool
+    dependency is reported by ``cmru dependencies`` but explicitly EXCLUDED from
+    ``project_order`` validation (dependencies.py) -- see S15.2.
+    """
+    project: str   # first-party project in this estate that produces the artifact
+    version: str   # the pinned version
+    path: str      # project-relative path to the vendored artifact
+    sha256: str    # recorded digest of the vendored bytes (lowercase hex)
+
+
+@dataclass(frozen=True)
 class ProjectS2Config:
     name: str
     template_revision: Optional[int]
@@ -105,6 +122,9 @@ class ProjectS2Config:
     # ``[project.release] changelog = false`` is the explicit opt-out.
     changelog: Optional[str] = "CHANGES.md"
     variants: List[VariantConfig] = field(default_factory=list)  # empty ⇒ single-asset (S-REL.6)
+    # First-party artifacts this project's tests/tooling consume (S15). Empty ⇒ no
+    # declared tool dependency (today's behaviour, unchanged).
+    tool_dependencies: List[ToolDependency] = field(default_factory=list)
     description: str = ""
     project_root: Optional[Path] = None
     env: Mapping[str, str] = field(default_factory=dict)
@@ -346,6 +366,87 @@ def _parse_variants(name: str, raw: dict) -> List[VariantConfig]:
     return variants
 
 
+# A recorded digest is always the lowercase hex sha256 of the vendored bytes -- never
+# a filename or version string (S15.1); reject anything that is not exactly that shape
+# as early as possible, rather than let a malformed value reach verification later.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_KNOWN_TOOL_DEPENDENCY_KEYS = {"project", "version", "path", "sha256"}
+
+
+def _parse_tool_dependencies(name: str, raw: dict) -> List[ToolDependency]:
+    """Parse ``[[project.tool_dependencies]]`` -- fail-fast, unknown keys rejected (S15.1).
+
+    This is purely syntactic/structural validation local to ONE project document (a
+    project stays portable to a fresh repository root, S2's own design constraint) --
+    it cannot know whether ``project`` names a REAL sibling project in this estate. That
+    cross-project check (like the analogous one for ``depends_on``) lives in
+    ``dependencies.py``'s ``build_report``, which sees every loaded project at once.
+    """
+    items = raw.get("tool_dependencies")
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        print(f"[ERROR] project.{name}.tool_dependencies must be an array of tables")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+
+    dependencies: List[ToolDependency] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        where = f"project.{name}.tool_dependencies[{index}]"
+        if not isinstance(item, dict):
+            print(f"[ERROR] {where} must be a table")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        unknown = sorted(set(item) - _KNOWN_TOOL_DEPENDENCY_KEYS)
+        if unknown:
+            print(f"[ERROR] {where}: unknown keys {unknown} (V09)")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+
+        dep_project = _require(item, "project", where)
+        version = _require(item, "version", where)
+        path = _require(item, "path", where)
+        sha256_value = _require(item, "sha256", where)
+
+        if not isinstance(dep_project, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", dep_project):
+            _error(f"{where}.project must be a lowercase project identifier")
+        if dep_project == name:
+            _error(f"{where}: project {name!r} may not declare a tool dependency on itself")
+        if not isinstance(version, str) or not version.strip():
+            _error(f"{where}.version must be a non-empty string")
+        if not isinstance(path, str) or not path.strip():
+            _error(f"{where}.path must be a non-empty string")
+        # Normalise BEFORE validating: the validated string MUST be the exact
+        # string that gets stored and later used as `project_root / path`.
+        # Validating the raw (unstripped) value while storing the stripped one
+        # let a leading-space absolute path (e.g. " /etc/passwd") slip past
+        # `is_absolute()` -- Path(" /etc/passwd") does not start with "/", so it
+        # reads as relative -- while the STORED, stripped value ("/etc/passwd")
+        # is genuinely absolute, and `project_root / "/etc/passwd"` discards
+        # project_root entirely (Path.__truediv__ with an absolute right-hand
+        # side). Same family as B1: validate one string, store another.
+        path = path.strip()
+        candidate = Path(path)
+        if candidate.is_absolute() or ".." in candidate.parts or candidate.name in ("", "."):
+            _error(
+                f"{where}.path must be a project-relative path that does not escape the "
+                "project root"
+            )
+        if not isinstance(sha256_value, str) or not _SHA256_RE.fullmatch(sha256_value.lower()):
+            _error(f"{where}.sha256 must be a 64-character lowercase hex sha256 digest")
+        if dep_project in seen:
+            _error(
+                f"project.{name}.tool_dependencies: duplicate declaration for project "
+                f"{dep_project!r}"
+            )
+        seen.add(dep_project)
+        dependencies.append(
+            ToolDependency(
+                project=dep_project, version=version.strip(), path=path,
+                sha256=sha256_value.lower(),
+            )
+        )
+    return dependencies
+
+
 def _read_toml(path: Path, expected_name: str) -> dict:
     if path.name != expected_name:
         _error(f"expected {expected_name}, got {path.name}")
@@ -560,7 +661,7 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
     _reject_unknown(
         project_raw,
         {"id", "description", "template_revision", "prefix", "artifacts", "scm_dist", "version",
-         "release", "installer", "variants"},
+         "release", "installer", "variants", "tool_dependencies"},
         "project",
     )
     name = _require(project_raw, "id", "project")
@@ -621,6 +722,7 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
     if "installer" in project_raw:
         installer = _parse_installer(name, project_raw["installer"])
     variants = _parse_variants(name, project_raw)
+    tool_dependencies = _parse_tool_dependencies(name, project_raw)
     steps = _validate_runner_steps(raw.get("steps"))
     required_steps = {"run-tests", "push"}
     missing_steps = sorted(required_steps - set(steps))
@@ -643,6 +745,7 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
             steps=steps,
             changelog=changelog,
             variants=variants,
+            tool_dependencies=tool_dependencies,
             description=description.strip(),
             project_root=config_path.parent.resolve(),
             env=env,

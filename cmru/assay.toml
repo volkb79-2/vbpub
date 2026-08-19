@@ -10,7 +10,7 @@
 # not a consumer-side bypass.  CMRU's outer tester-unified gate separately
 # enforces whole-source line and branch coverage at 100% until that capability
 # is released and pinned here.
-schema_version = 1
+schema_version = 2
 
 [lanes.cmru]
 scope = "S1"

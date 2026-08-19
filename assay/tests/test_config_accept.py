@@ -23,7 +23,7 @@ def test_complete_r0_lane_loads_with_every_value_intact(project: Project):
 
     lane_file = load_lane_file(path)
 
-    assert lane_file.schema_version == 1
+    assert lane_file.schema_version == 2
     assert lane_file.path == path.resolve()
     assert lane_file.project_root == project.root.resolve()
     assert list(lane_file.lanes) == ["package"]
@@ -92,7 +92,7 @@ def test_r1_lane_round_trips_exactly_what_the_file_declared(project: Project):
     declared = load_lane_file(path).lane("package").as_declared()
 
     assert declared == lane_table(R1_LANE)
-    assert set(declared) == {*REQUIRED_LANE_FIELDS, "judge", "where"}
+    assert set(declared) == {*REQUIRED_LANE_FIELDS, "judge", "where", "isolation"}
     assert set(declared["judge"]) == {
         "language",
         "source_roots",
@@ -159,7 +159,7 @@ def test_empty_env_and_empty_passthrough_are_declarations_not_omissions(
     # which is a different statement from omitting the key — and omitting it is
     # rejected (see test_config_reject.py).
     text = """\
-schema_version = 1
+schema_version = 2
 
 [lanes.package]
 scope = "S0"
@@ -198,3 +198,52 @@ def test_loader_accepts_a_file_given_by_relative_path(
     lane_file = load_lane_file(Path("assay.toml"))
 
     assert lane_file.project_root == project.root.resolve()
+
+
+def test_complete_sql_r2_lane_loads_with_both_artifact_keys_intact(project: Project):
+    """P34/W4: the two v6 `judge.mutation` artifact keys are legal on a
+    ``sql`` lane and round-trip exactly like every other declared value --
+    O1's ACCEPT-direction promise, one language over. The carve's own
+    §3.4 pasteable example, minus the fields this build does not yet wire
+    (``language = "sql"`` itself is still refused by the CLI's registry
+    until W6 -- this module proves only that CONFIG accepts the shape)."""
+    text = """\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["scripts/schema-gate.sh"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "sql"
+source_roots = ["src"]
+base = "origin/main"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 200
+operators = ["sql:drop-check", "sql:weaken-delete-action"]
+equivalence_artifact = ".assay/schema-dump.sql"
+kill_signal_artifact = ".assay/kill-signal.txt"
+"""
+    path = project.write(text)
+
+    lane = load_lane_file(path).lane("package")
+
+    judge = lane.judge
+    assert judge is not None
+    assert judge.language == "sql"
+    assert judge.mutation is not None
+    assert judge.mutation.operators == ("sql:drop-check", "sql:weaken-delete-action")
+    assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
+    assert judge.mutation.kill_signal_artifact == ".assay/kill-signal.txt"
+    assert lane.as_declared() == lane_table(text)

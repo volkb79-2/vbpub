@@ -34,6 +34,7 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: False)
     monkeypatch.setattr(cli.transaction, "promotion_landed", lambda *args: True)
     monkeypatch.setattr(cli.transaction, "read_release_progress", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "revert_promotion", lambda *args, **kwargs: result)

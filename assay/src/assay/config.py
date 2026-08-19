@@ -76,7 +76,9 @@ __all__ = [
     "CoverageConfig",
     "ENFORCEMENTS",
     "EvidenceConfig",
+    "IsolationConfig",
     "JUDGE_FIELDS_BY_RIGOR",
+    "JUDGE_MODES",
     "JudgeConfig",
     "LANE_FILE_NAME",
     "LANE_SCHEMA_VERSION",
@@ -86,6 +88,7 @@ __all__ = [
     "REQUIRED_LANE_FIELDS",
     "RIGOR_LEVELS",
     "SCOPES",
+    "SNAPSHOT_SELECTIONS",
     "find_lane_file",
     "load_lane_file",
     "parse_duration",
@@ -111,7 +114,18 @@ LANE_FILE_NAME = "assay.toml"
 
 #: The lane-file schema this build understands. Distinct from the *verdict*
 #: artifact's `schema_version` (§6), which is P01b's.
-LANE_SCHEMA_VERSION = 1
+#:
+#: A-269/B006(a) WI-1: bumped 1 -> 2 for `[lanes.X.isolation]`, the declared
+#: repository snapshot policy. The bump is a hard cut, not additive: an old
+#: missing `[isolation]` table cannot be interpreted as repository mode
+#: without inventing the exact shadowing default this loader exists to
+#: refuse (`config.py`'s own docstring, "a default is legitimate only when it
+#: is a policy choice that is correct in the absence of information"), and an
+#: old binary cannot parse the new table either. Only Assay-owned literals
+#: this build itself loads and executes migrate in WI-1; `cmru/assay.toml` is
+#: evaluated by a pinned v1-only binary and stays v1 until WI-6's atomic
+#: consumer adoption commit.
+LANE_SCHEMA_VERSION = 2
 
 #: A-053. TESTING-METHODOLOGY §Axis 1 / §Axis 2, and §12's table.
 SCOPES: frozenset[str] = frozenset({"S0", "S1", "S2", "S3", "S4"})
@@ -130,7 +144,31 @@ REQUIRED_LANE_FIELDS: tuple[str, ...] = (
     "allow_argv_append",
 )
 
-_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "env_required")
+_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "isolation", "env_required")
+
+#: (B006a/A-269, §3.2) The closed `isolation.snapshot_selection` vocabulary.
+#: `"repository"` materialises the whole commit; `"repository-minus-unsafe-
+#: symlinks"` additionally omits exactly the declared, commit-validated
+#: unsafe symlink leaves. There is no third value and no default -- an R1+
+#: lane must pick one, an R0-only lane must pick none.
+SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
+    {"repository", "repository-minus-unsafe-symlinks"}
+)
+
+_ISOLATION_FIELDS: tuple[str, ...] = ("snapshot_selection", "unsafe_symlink_omissions")
+
+#: (§3.2) "contains 1 through 64 strings. Empty omission mode is refused; use
+#: `\"repository\"` instead." A cap, never derived from a measured repository
+#: -- the same "no runtime consumer may invent a missing cap" reasoning
+#: `MAX_MAX_MUTANTS` already gives one policy over.
+MIN_UNSAFE_SYMLINK_OMISSIONS = 1
+MAX_UNSAFE_SYMLINK_OMISSIONS = 64
+
+#: (§3.2) The byte ceiling on one declared omission pathname, the same bound
+#: `MAX_ATTESTATION_DIR_BYTES` already applies to a different declared path
+#: one field over -- both exist so a pathological string cannot make the
+#: loader itself the resource the config file attacks.
+MAX_OMISSION_PATH_BYTES = 4096
 
 #: A-017/A-048: declared rigor is ENFORCED, and the `judge` fields are
 #: CONDITIONALLY required — an R0-only lane has no `[judge]` table at all.
@@ -165,7 +203,18 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "mutation",
     "canary",
     "base",
+    "mode",
+    "targets",
+    "require_branch",
 )
+
+#: (wave-1 §5, A-260) the closed `judge.mode` vocabulary. Absent means
+#: `"changed_lines"` -- the only mode that existed before this wave -- so
+#: `JudgeConfig.mode` stores the DECLARED value or `None`, never a filled-in
+#: default: `as_declared()` stays a faithful reproduction of the file, and
+#: the *effective* mode is resolved at exactly one named place
+#: (:mod:`assay.runner`'s `evaluate_r1`).
+JUDGE_MODES: frozenset[str] = frozenset({"changed_lines", "whole_target"})
 
 _COVERAGE_FIELDS: tuple[str, ...] = ("format", "artifact")
 
@@ -213,11 +262,17 @@ class CoverageConfig:
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
 
-#: (P33/A-227/A-230b) v5 artifact fields reserved for P34's producer. Named
-#: separately from `_MUTATION_FIELDS` so the refusal can say RESERVED rather
-#: than UNKNOWN: both are refused either way, and only the message tells a
-#: reader whether the field is a typo or a capability that is coming.
-_MUTATION_FIELDS_RESERVED_FOR_P34: tuple[str, ...] = (
+#: (P33/A-227/A-230b, narrowed P34/W4) the two v6 artifact fields, legal
+#: ONLY on a ``judge.language = "sql"`` lane. Named separately from
+#: `_MUTATION_FIELDS` so the refusal can name the specific reason (language
+#: mismatch) rather than reporting an UNKNOWN key: both are refused either
+#: way for a non-SQL lane, and only the message tells a reader whether the
+#: field is a typo or a capability this lane's own language cannot use.
+#: Through P33 both names were reserved for EVERY language (no adapter
+#: shipped a producer at all); P34 lifts the refusal for `"sql"` only --
+#: A-227's "the refusal for every other language must survive" stays a
+#: test, never a note.
+_MUTATION_SQL_ONLY_FIELDS: tuple[str, ...] = (
     "kill_signal_artifact",
     "equivalence_artifact",
 )
@@ -253,13 +308,32 @@ class MutationConfig:
     #: executions").
     max_mutants: int
     operators: tuple[str, ...]
+    #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
+    #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
+    #: value here is only ever possible on a ``judge.language = "sql"`` lane.
+    #: Optional even there: A-223b derives `kill_attribution` from this
+    #: field's own presence, so "declared" is a real, meaningful choice.
+    kill_signal_artifact: str | None = None
+    #: (P34/W4) SQL-only, and REQUIRED once ``judge.language == "sql"``
+    #: (`_load_mutation` refuses a SQL lane that omits it): without it, a
+    #: mutant that never actually mutated is recorded ``survived`` rather
+    #: than ``equivalent`` -- a false statement about the consumer's tests
+    #: (§4.3 of the P34 carve). ``None`` for every other language.
+    equivalence_artifact: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "jobs": self.jobs,
             "max_mutants": self.max_mutants,
             "operators": list(self.operators),
         }
+        # (P34/W4) Declared value or omitted, never null (A-051) -- present
+        # only for the SQL lane that actually named it.
+        if self.kill_signal_artifact is not None:
+            payload["kill_signal_artifact"] = self.kill_signal_artifact
+        if self.equivalence_artifact is not None:
+            payload["equivalence_artifact"] = self.equivalence_artifact
+        return payload
 
 
 _CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
@@ -341,6 +415,19 @@ class JudgeConfig:
     #: nor requires a computed ``judge`` field.
     attestation_dir: str | None = None
     evidence: tuple[EvidenceConfig, ...] | None = None
+    #: (wave-1 §5, A-260) the declared R1 mode, verbatim -- `None` when the
+    #: file omits `judge.mode`, which means `"changed_lines"`. Never
+    #: defaulted here: the loader stores exactly what the file said, and
+    #: `evaluate_r1` resolves the effective mode at exactly one named place.
+    mode: str | None = None
+    #: (wave-1 §5) the declared `judge.targets`, canonical project-relative
+    #: spellings in file order -- `None` iff the lane is not `whole_target`
+    #: mode (`targets` is refused at load otherwise).
+    targets: tuple[str, ...] | None = None
+    #: (wave-1 §4, A-259) the declared `judge.require_branch` -- `None` when
+    #: the file omits it, which means `false`. Legal only on a lane
+    #: declaring R1.
+    require_branch: bool | None = None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -360,10 +447,133 @@ class JudgeConfig:
             declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
+        if self.mode is not None:
+            declared["mode"] = self.mode
+        if self.targets is not None:
+            declared["targets"] = list(self.targets)
+        if self.require_branch is not None:
+            declared["require_branch"] = self.require_branch
         if self.attestation_dir is not None:
             declared["attestation_dir"] = self.attestation_dir
         if self.evidence is not None:
             declared["evidence"] = [item.as_declared() for item in self.evidence]
+        return declared
+
+
+def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
+    """One declared ``unsafe_symlink_omissions`` entry (§3.2's own order):
+    require a ``str``; require it non-empty; refuse a leading ``/``; require
+    strict UTF-8 encoding of at most :data:`MAX_OMISSION_PATH_BYTES` bytes;
+    split the raw value on ``/``; and refuse if any component is ``''``,
+    ``.``, ``..``, or ``.git``, or contains a backslash or NUL.
+
+    There is deliberately no second ``PurePosixPath(value).as_posix() ==
+    value`` branch: every spelling this rejects (``./x``, ``x//y``, ``x/``)
+    is already refused by its OWN component landing in the forbidden set
+    above (a leading ``.`` component, an empty component from a doubled or
+    trailing slash), so equality to that round-trip is a THEOREM of the
+    accepted grammar, not a separate check -- proved for every accepted path
+    by the accept-side matrix in ``tests/test_config_snapshot_selection.py``,
+    never by an unreachable extra refusal branch here.
+    """
+    if not isinstance(value, str):
+        raise LaneConfigError(f"{where}: {field} must be a string, got {_type_name(value)}")
+    if not value:
+        raise LaneConfigError(f"{where}: {field} must not be empty")
+    if value.startswith("/"):
+        raise LaneConfigError(f"{where}: {field} {value!r} must not be absolute")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise LaneConfigError(
+            f"{where}: {field} {value!r} cannot be encoded as strict UTF-8: {exc}"
+        ) from exc
+    if len(encoded) > MAX_OMISSION_PATH_BYTES:
+        raise LaneConfigError(
+            f"{where}: {field} {value!r} is {len(encoded)} UTF-8 bytes, exceeding "
+            f"the {MAX_OMISSION_PATH_BYTES}-byte ceiling"
+        )
+    for component in value.split("/"):
+        if (
+            component in ("", ".", "..", ".git")
+            or "\\" in component
+            or "\x00" in component
+        ):
+            raise LaneConfigError(
+                f"{where}: {field} {value!r} has an invalid path component "
+                f"{component!r}; a component must not be empty, '.', '..', "
+                f"'.git', or contain a backslash or NUL"
+            )
+    return value
+
+
+@dataclass(frozen=True)
+class IsolationConfig:
+    """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
+    snapshot materialisation policy for an R1/R2/R3 lane. A POLICY object,
+    never a Git fact: it says what Assay was TOLD to omit, not that a commit
+    was inspected (that is P22/WI-2's job, in :mod:`assay.isolation`).
+
+    Both constructor arguments are REQUIRED, on the loaded and the directly
+    constructed path alike -- ``__post_init__`` runs the identical closed
+    grammar either way, so a direct caller cannot construct a shape the
+    loader would have refused. Under ``"repository"`` the caller supplies the
+    derived internal empty tuple explicitly; there is no default that would
+    let one meaning of "no omissions" and one meaning of "not declared"
+    collapse into the same absent value.
+    """
+
+    snapshot_selection: str
+    unsafe_symlink_omissions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        where = "IsolationConfig"
+        if (
+            not isinstance(self.snapshot_selection, str)
+            or self.snapshot_selection not in SNAPSHOT_SELECTIONS
+        ):
+            raise LaneConfigError(
+                f"{where}: 'snapshot_selection' must be one of "
+                f"{sorted(SNAPSHOT_SELECTIONS)}, got {self.snapshot_selection!r}"
+            )
+        if self.snapshot_selection == "repository":
+            if self.unsafe_symlink_omissions != ():
+                raise LaneConfigError(
+                    f"{where}: 'unsafe_symlink_omissions' is forbidden under "
+                    f"snapshot_selection = 'repository'; declare "
+                    f"'repository-minus-unsafe-symlinks' to name omissions"
+                )
+            return
+
+        # snapshot_selection == "repository-minus-unsafe-symlinks"
+        count = len(self.unsafe_symlink_omissions)
+        if not (MIN_UNSAFE_SYMLINK_OMISSIONS <= count <= MAX_UNSAFE_SYMLINK_OMISSIONS):
+            raise LaneConfigError(
+                f"{where}: 'unsafe_symlink_omissions' must declare "
+                f"{MIN_UNSAFE_SYMLINK_OMISSIONS}..{MAX_UNSAFE_SYMLINK_OMISSIONS} "
+                f"entries under snapshot_selection = "
+                f"'repository-minus-unsafe-symlinks', got {count}; empty omission "
+                f"mode is refused -- use 'repository' instead"
+            )
+        encoded: list[bytes] = []
+        for index, item in enumerate(self.unsafe_symlink_omissions):
+            validated = _validate_omission_path(
+                item, where=where, field=f"unsafe_symlink_omissions[{index}]"
+            )
+            encoded.append(validated.encode("utf-8"))
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise LaneConfigError(
+                    f"{where}: 'unsafe_symlink_omissions' must be strictly "
+                    f"ascending by the UTF-8 bytes of the canonical spelling, "
+                    f"got {list(self.unsafe_symlink_omissions)}; the loader does "
+                    f"not silently sort a declared list"
+                )
+
+    def as_declared(self) -> dict[str, Any]:
+        declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
+        if self.unsafe_symlink_omissions:
+            declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
         return declared
 
 
@@ -387,6 +597,14 @@ class Lane:
     judge: JudgeConfig | None
     #: §7: WHERE is data assay parses and never interprets.
     where: Mapping[str, Any] | None
+    #: (B006a/A-269) The declared repository snapshot materialisation policy
+    #: -- REQUIRED, never defaulted: `None` on an R0-only lane, and the real
+    #: `IsolationConfig` object on any lane declaring R1, R2, or R3. Every
+    #: direct `Lane(...)` constructor must say one or the other explicitly;
+    #: there is no third, inferred value. Placed immediately before
+    #: `env_required` (the field order §3.2 specifies), which stays the ONLY
+    #: defaulted field.
+    isolation: IsolationConfig | None
     #: (A-254) The subset of `env_passthrough` whose ABSENCE refuses the lane
     #: before its command runs. Defaults to empty, so every lane written before
     #: this field existed is unchanged -- and it is LAST in the field order
@@ -417,6 +635,8 @@ class Lane:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
             declared["where"] = dict(self.where)
+        if self.isolation is not None:
+            declared["isolation"] = self.isolation.as_declared()
         return declared
 
 
@@ -671,11 +891,34 @@ def _load_lane(
     ):
         raise LaneConfigError(f"{where}: uncovered-line R3 requires declared R1")
 
+    # wave-1 §5: `uncovered-line` proves "a changed-line coverage floor
+    # rejects an uncovered line" -- a premise whole-target mode replaces.
+    # Outside the declared targets it would prove nothing about the floor
+    # actually enforced and would produce an accidental CANARY_SURVIVED
+    # that looks like a real finding, so it is refused at load unless the
+    # canary target is itself one of `targets`.
+    if (
+        judge is not None
+        and judge.canary is not None
+        and judge.canary.mechanism == "uncovered-line"
+        and judge.mode == "whole_target"
+        and judge.canary.target not in (judge.targets or ())
+    ):
+        raise LaneConfigError(
+            f"{where}: judge.canary.target {judge.canary.target!r} is not "
+            f"one of judge.targets {list(judge.targets or ())} under "
+            f"mode = 'whole_target'; outside the declared targets the "
+            f"uncovered-line canary proves nothing about the whole-target "
+            f"floor"
+        )
+
     where_table = table.get("where")
     if where_table is not None and not isinstance(where_table, dict):
         raise LaneConfigError(
             f"{where}: 'where' must be a table, got {_type_name(where_table)}"
         )
+
+    isolation = _load_isolation_for_lane(table.get("isolation"), rigor, where)
 
     return Lane(
         name=name,
@@ -691,7 +934,140 @@ def _load_lane(
         allow_argv_append=allow_argv_append,
         judge=judge,
         where=None if where_table is None else MappingProxyType(dict(where_table)),
+        isolation=isolation,
     )
+
+
+def _load_isolation_for_lane(
+    value: Any, rigor: Iterable[str], where: str
+) -> IsolationConfig | None:
+    """The R0/R1+ conditional (§3.2): `[isolation]` is required the moment
+    `rigor` declares R1, R2, or R3, and forbidden on an R0-only lane. There
+    is no default and no inference from the file's own location -- an R1+
+    lane that omits the table is exactly as wrong as an R0-only lane that
+    declares one.
+    """
+    higher_rigor = any(level != "R0" for level in rigor)
+    if value is None:
+        if higher_rigor:
+            raise LaneConfigError(
+                f"{where}: declares rigor {list(rigor)} but has no [isolation] "
+                f"table; R1/R2/R3 requires an explicit isolation.snapshot_selection"
+            )
+        return None
+    if not higher_rigor:
+        raise LaneConfigError(
+            f"{where}: declares an [isolation] table but rigor {list(rigor)} is "
+            f"R0-only; isolation selects a snapshot policy for a higher-rigor "
+            f"unit, which an R0-only lane never runs"
+        )
+    return _load_isolation(value, where)
+
+
+def _load_isolation(value: Any, where: str) -> IsolationConfig:
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{where}: 'isolation' must be a table, got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - set(_ISOLATION_FIELDS))
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: unknown isolation key(s): {', '.join(unknown)}; expected "
+            f"only: {', '.join(_ISOLATION_FIELDS)}"
+        )
+    if "snapshot_selection" not in value:
+        raise LaneConfigError(
+            f"{where}: missing required field 'isolation.snapshot_selection'"
+        )
+    selection = _as_str(value["snapshot_selection"], where, "isolation.snapshot_selection")
+    if selection not in SNAPSHOT_SELECTIONS:
+        raise LaneConfigError(
+            f"{where}: 'isolation.snapshot_selection' must be one of "
+            f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
+        )
+    has_omissions = "unsafe_symlink_omissions" in value
+    if selection == "repository":
+        if has_omissions:
+            raise LaneConfigError(
+                f"{where}: 'isolation.unsafe_symlink_omissions' is forbidden "
+                f"under snapshot_selection = 'repository'"
+            )
+        return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=())
+    if not has_omissions:
+        raise LaneConfigError(
+            f"{where}: missing required field "
+            f"'isolation.unsafe_symlink_omissions' (required under "
+            f"snapshot_selection = 'repository-minus-unsafe-symlinks')"
+        )
+    omissions = _as_str_list(
+        value["unsafe_symlink_omissions"], where, "isolation.unsafe_symlink_omissions"
+    )
+    return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=tuple(omissions))
+
+
+def _load_targets(value: Any, where: str) -> tuple[str, ...]:
+    """``judge.targets`` (wave-1 §5) -- required and non-empty iff
+    ``mode = "whole_target"``. Project-relative file paths, the same
+    spelling ``judge.coverage.artifact``/``judge.canary.target`` use
+    (A-145). Load-time refusal for: non-list, non-string, empty, absolute,
+    any ``.``/``..``/empty path component, backslash, or duplicate.
+
+    Existence is deliberately NOT checked here (unlike
+    :func:`_load_canary`'s target): a whole-target lane must be judgeable
+    from ANY commit, including a post-merge ``main`` (A-260), and a
+    target's existence is a fact of the commit being judged, not of the
+    declaration. Filesystem kind/containment is
+    :func:`assay.evaluate._resolve_whole_target`'s job, at judge time,
+    against the real snapshot.
+
+    The component-by-component check below is EXHAUSTIVE for canonical
+    POSIX spelling, not merely a first pass: every way
+    :class:`~pathlib.PurePosixPath` normalises a string during its own
+    ``as_posix()`` round-trip -- collapsing a doubled or trailing slash,
+    dropping a leading/embedded ``.`` component -- reduces to producing an
+    empty or ``"."`` component somewhere in ``raw.split("/")``, which the
+    loop below already refuses; a ``PurePosixPath(raw).as_posix() != raw``
+    check run AFTER this loop can therefore never fire on any input that
+    reaches it (proven by exhaustive search over every string of length <=
+    6 built from ``{"a", "/", "."}—the alphabet spanning every
+    normalisation ``PurePosixPath`` performs), and a check that can never
+    be false is not a check: it would be unreachable code and an
+    unreachable branch, not defence in depth. It is intentionally NOT
+    duplicated here.
+    """
+    declared = _as_str_list(value, where, "judge.targets")
+    if not declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.targets' is empty; whole-target mode requires "
+            f"at least one target"
+        )
+    seen: set[str] = set()
+    validated: list[str] = []
+    for index, raw in enumerate(declared):
+        field = f"judge.targets[{index}]"
+        if not raw:
+            raise LaneConfigError(f"{where}: {field} must not be empty")
+        if raw.startswith("/"):
+            raise LaneConfigError(f"{where}: {field} {raw!r} must not be absolute")
+        if "\\" in raw:
+            raise LaneConfigError(
+                f"{where}: {field} {raw!r} contains a backslash; declare it "
+                f"with forward slashes regardless of platform"
+            )
+        for component in raw.split("/"):
+            if component in ("", ".", ".."):
+                raise LaneConfigError(
+                    f"{where}: {field} {raw!r} has an invalid path component "
+                    f"{component!r}; a target must not contain an empty, "
+                    f"'.', or '..' component"
+                )
+        if raw in seen:
+            raise LaneConfigError(
+                f"{where}: 'judge.targets' declares {raw!r} more than once"
+            )
+        seen.add(raw)
+        validated.append(raw)
+    return tuple(validated)
 
 
 def _required_judge_fields(rigor: Iterable[str]) -> tuple[str, ...]:
@@ -708,7 +1084,7 @@ def _load_judge(
     table: Any, rigor: Iterable[str], where: str, project_root: Path
 ) -> JudgeConfig | None:
     rigor = tuple(rigor)
-    required = _required_judge_fields(rigor)
+    required = list(_required_judge_fields(rigor))
 
     if table is None:
         if required:
@@ -731,11 +1107,74 @@ def _load_judge(
             f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'evidence'))}"
         )
 
+    # wave-1 §5, A-260: `mode`/`targets` and §4/A-259's `require_branch` are
+    # R1-specific and OPTIONAL -- legal only on a lane declaring R1, and
+    # deliberately not folded into the generic per-rigor `required` set the
+    # way `fail_under`/`allow_excluded` are (this loader has never had a
+    # genuinely optional judge field before evidence/attestation_dir, and
+    # those are a separate axis entirely). `targets` is the one exception:
+    # it becomes REQUIRED, but only once `mode` resolves to `"whole_target"`,
+    # which is why it is folded into `required` below rather than treated
+    # like its two siblings.
+    r1_declared = "R1" in rigor
+    mode_declared = "mode" in table
+    if mode_declared and not r1_declared:
+        raise LaneConfigError(
+            f"{where}: declares 'judge.mode' but rigor {list(rigor)} does "
+            f"not include R1; mode selects the R1 judging strategy"
+        )
+    mode: str | None = None
+    if mode_declared:
+        mode = _as_str(table["mode"], where, "judge.mode")
+        if mode not in JUDGE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'judge.mode' must be one of {sorted(JUDGE_MODES)}, "
+                f"got {mode!r}"
+            )
+    # A-260: absent means "changed_lines" -- the only mode that existed
+    # before this wave. `mode` itself (the JudgeConfig field) stays the
+    # DECLARED value or None; only this local variable resolves the default,
+    # and only to decide `required`/the canary interaction below.
+    effective_mode = mode if mode is not None else "changed_lines"
+
+    require_branch_declared = "require_branch" in table
+    if require_branch_declared and not r1_declared:
+        raise LaneConfigError(
+            f"{where}: declares 'judge.require_branch' but rigor "
+            f"{list(rigor)} does not include R1"
+        )
+
+    targets_declared = "targets" in table
+    if targets_declared and effective_mode != "whole_target":
+        raise LaneConfigError(
+            f"{where}: declares 'judge.targets' but judge.mode is not "
+            f"'whole_target' -- a target list under changed-line mode does "
+            f"nothing and silently declaring one is how a consumer comes to "
+            f"believe a floor is enforced when it is not"
+        )
+
+    if r1_declared and effective_mode == "whole_target":
+        # A-260/§5: `base` resolves nothing for a whole-target lane with no
+        # R2, so it moves OUT of `required` here -- the generic surplus
+        # check below then refuses it as inert config if the lane still
+        # declares it (A6 addendum, extending A-062's own argument).
+        # `targets` moves IN: required and non-empty precisely in this mode.
+        if "base" in required and "R2" not in rigor:
+            required.remove("base")
+        # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
+        # (only this mode-specific branch ever requires it), so it can
+        # never already be in `required` here -- appended unconditionally
+        # rather than guarded by a membership check that could never be
+        # false, which would be an unreachable branch, not a real guard.
+        required.append("targets")
+    required = tuple(required)
+
     for field in required:
         if field not in table:
+            hint = " (judge.mode = 'whole_target')" if field == "targets" else ""
             raise LaneConfigError(
                 f"{where}: declares rigor {list(rigor)} but is missing required "
-                f"field 'judge.{field}'"
+                f"field 'judge.{field}'{hint}"
             )
 
     # P26/A-209: Tier-3 evidence's HOW pair is a separate axis from computed
@@ -763,7 +1202,11 @@ def _load_judge(
     # The cost is the "write the config, enable the level later" workflow,
     # which is a habit rather than a requirement: declaring the level is one
     # line in the same edit. The remedy is always visible in the message.
-    surplus = sorted(set(table) - set(required) - {"attestation_dir", "evidence"})
+    surplus = sorted(
+        set(table)
+        - set(required)
+        - {"attestation_dir", "evidence", "mode", "require_branch"}
+    )
     if surplus:
         raise LaneConfigError(
             f"{where}: declares rigor {list(rigor)}, which reads none of "
@@ -813,7 +1256,7 @@ def _load_judge(
 
     mutation = None
     if "mutation" in table:
-        mutation = _load_mutation(table["mutation"], where, language)
+        mutation = _load_mutation(table["mutation"], where, language, project_root)
     canary = None
     if "canary" in table:
         canary = _load_canary(table["canary"], where, project_root, source_root_paths)
@@ -823,6 +1266,16 @@ def _load_judge(
         base = _as_str(table["base"], where, "judge.base")
         if not base:
             raise LaneConfigError(f"{where}: 'judge.base' is empty")
+
+    require_branch = None
+    if require_branch_declared:
+        require_branch = _as_bool(
+            table["require_branch"], where, "judge.require_branch"
+        )
+
+    targets = None
+    if targets_declared:
+        targets = _load_targets(table["targets"], where)
 
     attestation_dir = None
     evidence = None
@@ -840,6 +1293,9 @@ def _load_judge(
         mutation=mutation,
         canary=canary,
         base=base,
+        mode=mode,
+        targets=targets,
+        require_branch=require_branch,
         attestation_dir=attestation_dir,
         evidence=evidence,
     )
@@ -959,6 +1415,47 @@ def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
     return tuple(items)
 
 
+def _validate_artifact_path(value: Any, where: str, project_root: Path, field: str) -> str:
+    """The project-relative OUTPUT-artifact path grammar (P17 work item 3),
+    shared by every declared artifact a lane's own command later WRITES:
+    ``judge.coverage.artifact`` and, as of P34/W4, ``judge.mutation.
+    equivalence_artifact``/``kill_signal_artifact`` -- the identical
+    containment reasoning :func:`_resolve_source_root` already applies to
+    ``source_roots``, one field over. A non-empty string, never absolute,
+    and resolving beneath *project_root* once ``..`` and any symlink are
+    collapsed. Existence is deliberately NOT checked here: every one of
+    these paths is an OUTPUT the lane's own command writes, so it need not
+    exist yet when ``assay.toml`` loads (A-048's own timing) -- only
+    :mod:`assay.runner`'s own RUNTIME checks (tracked-by-git, in
+    particular) need live filesystem/git state, and belong to the module
+    that actually executes the lane.
+
+    *field* is the fully-dotted config key *value* came from (e.g.
+    ``"judge.coverage.artifact"``), so one shared function still names the
+    SPECIFIC offending field in every message (AGENTS.md 4.2a) -- extracting
+    this out of :func:`_load_coverage` must not cost a reader the ability to
+    tell which of the three call sites refused.
+    """
+    artifact = _as_str(value, where, field)
+    if not artifact:
+        raise LaneConfigError(f"{where}: '{field}' is empty")
+    if Path(artifact).is_absolute():
+        raise LaneConfigError(
+            f"{where}: '{field}' {artifact!r} is absolute; it is relative "
+            f"to the directory containing assay.toml ({project_root})"
+        )
+    resolved_artifact = (project_root / artifact).resolve()
+    if not resolved_artifact.is_relative_to(project_root):
+        raise LaneConfigError(
+            f"{where}: '{field}' {artifact!r} resolves to "
+            f"{resolved_artifact}, which is not contained beneath the "
+            f"project root {project_root} (via '..' or a symlink) -- a lane "
+            f"must not be able to point '{field}' outside the project it "
+            f"declares"
+        )
+    return artifact
+
+
 def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
@@ -976,33 +1473,11 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
                 f"{where}: missing required field 'judge.coverage.{field}'"
             )
     fmt = _as_str(value["format"], where, "judge.coverage.format")
-    artifact = _as_str(value["artifact"], where, "judge.coverage.artifact")
     if not fmt:
         raise LaneConfigError(f"{where}: 'judge.coverage.format' is empty")
-    if not artifact:
-        raise LaneConfigError(f"{where}: 'judge.coverage.artifact' is empty")
-    # P17 (work item 3): the artifact this build will later remove-and-await
-    # a fresh copy of, and read back, must resolve inside the project it
-    # measures -- the identical containment reasoning
-    # `_resolve_source_root` already applies to `source_roots`, one field
-    # over. Existence is NOT checked here (A-048's own timing: the artifact
-    # is an OUTPUT of the lane's own command, so it need not exist yet at
-    # load time).
-    if Path(artifact).is_absolute():
-        raise LaneConfigError(
-            f"{where}: 'judge.coverage.artifact' {artifact!r} is absolute; "
-            f"it is relative to the directory containing assay.toml "
-            f"({project_root}), the same as source_roots"
-        )
-    resolved_artifact = (project_root / artifact).resolve()
-    if not resolved_artifact.is_relative_to(project_root):
-        raise LaneConfigError(
-            f"{where}: 'judge.coverage.artifact' {artifact!r} resolves to "
-            f"{resolved_artifact}, which is not contained beneath the "
-            f"project root {project_root} (via '..' or a symlink) -- a lane "
-            f"must not be able to point its coverage artifact outside the "
-            f"project it declares"
-        )
+    artifact = _validate_artifact_path(
+        value["artifact"], where, project_root, "judge.coverage.artifact"
+    )
     if fmt not in FORMAT_REGISTRY:
         # A-068: cross-checked against the parser registry's own keys, not a
         # second hardcoded list, so the vocabulary can never drift out of
@@ -1015,32 +1490,34 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
     return CoverageConfig(format=fmt, artifact=artifact)
 
 
-def _load_mutation(value: Any, where: str, language: str | None) -> MutationConfig:
+def _load_mutation(
+    value: Any, where: str, language: str | None, project_root: Path
+) -> MutationConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.mutation' must be a table, got {_type_name(value)}"
         )
-    # (P33/A-227/A-230b) The two v5 artifact fields whose PRODUCER is P34's.
-    # Checked BEFORE the unknown-key sweep on purpose: `judge.mutation` is
-    # already a closed table, so both names are already rejected today as
-    # unknown keys -- which means "the declaration is refused" is true with
-    # or without this code and distinguishes nothing. The observable is the
-    # MESSAGE. Declaring either would create a legal lane whose own artifact
-    # has no representable shape: assay ships no producer for a `kill_signal`
-    # value or for an equivalence comparison, so the lane could not emit a
-    # consistent document. Reserving the artifact shape while refusing the
-    # declaration keeps v5 stable for P34 without inventing a bounded
-    # safe-input reader inside a contract migration.
-    reserved = sorted(set(value) & set(_MUTATION_FIELDS_RESERVED_FOR_P34))
-    if reserved:
-        raise LaneConfigError(
-            f"{where}: judge.mutation key(s) {', '.join(reserved)} are "
-            f"RESERVED for P34 and cannot be declared yet; the v5 verdict "
-            f"contract carries them, but this build ships no producer for the "
-            f"values they imply, so a lane declaring one could not emit a "
-            f"consistent artifact"
-        )
-    unknown = sorted(set(value) - set(_MUTATION_FIELDS))
+    # (P33/A-227/A-230b, narrowed P34/W4) The two v6 artifact fields are
+    # legal ONLY on a `judge.language = "sql"` lane. Checked BEFORE the
+    # unknown-key sweep on purpose: for every OTHER language `judge.mutation`
+    # is still a closed table that does not name either field, so both are
+    # already rejected today as unknown keys -- which means "the declaration
+    # is refused" is true with or without this code and distinguishes
+    # nothing. The observable is the MESSAGE: a Python or Go lane declaring
+    # either gets a refusal that names WHY (language-scoped), not one that
+    # reads like a typo (A-227's "the refusal for every other language must
+    # survive" is a test, not a note).
+    if language != "sql":
+        reserved = sorted(set(value) & set(_MUTATION_SQL_ONLY_FIELDS))
+        if reserved:
+            raise LaneConfigError(
+                f"{where}: judge.mutation key(s) {', '.join(reserved)} "
+                f"require judge.language = 'sql' (P34); this lane declares "
+                f"judge.language = {language!r}, and the v6 verdict contract "
+                f"carries these fields only for a sql lane, the only "
+                f"language this build ships a producer for"
+            )
+    unknown = sorted(set(value) - set(_MUTATION_FIELDS) - set(_MUTATION_SQL_ONLY_FIELDS))
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
@@ -1117,8 +1594,45 @@ def _load_mutation(value: Any, where: str, language: str | None) -> MutationConf
             f"{', '.join(unknown_operators)}; known operators: "
             f"{', '.join(MUTATION_OPERATORS)}"
         )
+    # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
+    # carve's single most consequential config decision (§4.3): without it,
+    # a mutant that never actually mutated (residue from a previous run
+    # still in the database, say) exits 0 and is recorded `survived`, a
+    # false statement about the consumer's tests. `kill_signal_artifact`
+    # stays optional even on a sql lane (A-223b derives `kill_attribution`
+    # from its presence). Both share `judge.coverage.artifact`'s own path
+    # grammar via `_validate_artifact_path`, and neither is even INSPECTED
+    # for a non-sql lane -- the reserved-key check above already refused
+    # any lane that tried to declare one.
+    equivalence_artifact: str | None = None
+    kill_signal_artifact: str | None = None
+    if language == "sql":
+        if "equivalence_artifact" not in value:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.equivalence_artifact' is required "
+                f"on a sql lane; without it a mutant that never actually "
+                f"mutated would be recorded 'survived', a false statement "
+                f"about the consumer's tests"
+            )
+        equivalence_artifact = _validate_artifact_path(
+            value["equivalence_artifact"],
+            where,
+            project_root,
+            "judge.mutation.equivalence_artifact",
+        )
+        if "kill_signal_artifact" in value:
+            kill_signal_artifact = _validate_artifact_path(
+                value["kill_signal_artifact"],
+                where,
+                project_root,
+                "judge.mutation.kill_signal_artifact",
+            )
     return MutationConfig(
-        jobs=jobs, max_mutants=max_mutants, operators=tuple(operators)
+        jobs=jobs,
+        max_mutants=max_mutants,
+        operators=tuple(operators),
+        kill_signal_artifact=kill_signal_artifact,
+        equivalence_artifact=equivalence_artifact,
     )
 
 

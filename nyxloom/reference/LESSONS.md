@@ -824,3 +824,198 @@ world where the daemon's view happens to be locally stat-able. The oracle was
 sound; the population contained none of the only case that mattered. When a
 fix concerns two namespaces, the test must make them genuinely different —
 `tmp_path/a` vs `tmp_path/b` is not different enough if both exist.
+
+## L22 — Cross-agent prefix-sharing pays in proportion to OVERLAP; the roundtrip is the cost, not the shared prefix
+
+**Rule.** Before forking N children from a shared frozen-orientation base "to reuse
+the prompt cache," **measure the overlap between what they will actually read.**
+Cross-agent prefix caching saves in proportion to the *shared* prefix; the dominant
+cost of a discovery-driven agent is its own **tool-call roundtrip count** — each call
+re-processes the whole accumulating context at cache-read rates — which cross-sharing
+cannot touch. Fork-from-shared-base pays only when siblings share an area; for
+disjoint packages, launch separately. (Companion to **L18**/L21-style measurement
+discipline, and to **L12**, which owns *when to rotate* a reused session; this owns
+*when to share* a prefix across siblings.)
+
+**Evidence (dstdns, 2026-08-17).** Two design-planner agents — a strict
+classification engine and a mock-DNS fixture contract — launched close together, then
+measured from their transcripts (`tool_use` counts + the `cache_read`/`cache_creation`
+usage fields):
+
+| | agent A | agent B |
+|---|---|---|
+| tool calls (roundtrips to ready) | 46 | 29 |
+| cache_read (context re-read across turns) | 6.59M | 4.58M |
+| cache_creation (≈ distinct content processed) | 970k | 876k |
+| distinct files referenced | 23 | 16 |
+| **files referenced by BOTH** | **1** (~200 tok, asymmetric) | — |
+
+Overlap ≈ **0.5%**. A shared prefix would have saved ~180 tokens; the 11.2M combined
+cache_read is a function of roundtrip count, not of anything shared. Precise
+package-specific "read first" pointers *caused* the low overlap — good scoping sends
+each agent straight to its own code, so the better the prompt, the less a shared
+prefix can save. "They're mostly disjoint" is therefore the *expected* outcome of
+well-scoped prompts, to be measured rather than asserted.
+
+**How to apply.**
+- **Separate the two benefits of "frozen."** *Citation stability* (a fixed commit so
+  `file:line` findings don't rot) vs *prefix-cache reuse* (identical leading tokens
+  across co-launched siblings). Freezing the commit buys the first; sharing a prefix
+  buys the second; they are independent — freeze without sharing is the common case.
+- **Fork-from-shared-base only for same-area waves** (expect ≥50% overlap): load the
+  common contract into one base, launch children with an identical leading prefix so
+  the shared half is a cache-read (~10%) for every sibling after the first. For
+  disjoint packages, launch separately — do not pay ~10% to carry cached context a
+  sibling never touches.
+- **The real lever regardless — minimise roundtrips.** Pre-load an agent's KNOWN files
+  as prompt *content*, not path-pointers it must fetch: cheap at ~10% on every
+  re-read, and it eliminates discovery passes that each cost a full context re-read.
+  Best for read-only planners/reviewers (an implementer needs the live worktree).
+- **Measure, don't assert** (L18): dump the transcript and count. A cost is
+  asserted-plausible until the `cache_read`/`cache_creation` fields are read.
+
+## L23 — The successor-brief: a completed work unit compacts itself FORWARD, so a chain carries briefs, not transcripts
+
+**Rule (proposed — not yet incident-validated).** The context bloat in a *chain* of
+work units is not the shared orientation (L22 shows that stays small) — it is each
+unit's OWN post-orientation work, most of which is dead weight to the next unit. A
+completed unit should emit a forward-looking **successor-brief**: the distilled delta
+the next unit needs that is **not already in the files** — what was built, which
+decisions were made *and why*, and what future work must know. The next unit branches
+from **frozen-orientation + accumulated successor-briefs**, discarding the completing
+unit's transcript. Details per unit are intentionally lost — that is the mechanism,
+not a regret.
+
+**A third artifact, distinct from LOG and REPORT.** The LOG is *what I did*; the
+REPORT is *the behavioural contract I implemented* (DOCTRINE §6). The successor-brief
+is *future-facing*: what the NEXT unit must know that the files, the diff, and the LOG
+do not say — decisions with no code home ("why X not Y"), cross-unit contracts, the
+gotcha that will bite, "the gate needs Z first." For bounded tasks, **bake the
+directive into the work prompt** — *"when done, output a successor-brief: results +
+decisions-with-rationale + what-the-next-unit-needs-that-isn't-in-the-files"* — so the
+unit self-compacts; judgement-heavy units need the controller to author or verify it,
+since an agent may not know which of its own decisions the next unit depends on.
+
+**Relation.** Context compaction between work units — like the provider compaction in
+L12's closing paragraph, but forward-directed and per-unit. It composes with L22: L22
+keeps the **shared base** lean (fork only on real overlap); L23 keeps the
+**accumulated chain** lean (each unit self-compacts). Together:
+`frozen-orientation (stable) + successor-briefs (deltas)` = the context a new unit
+needs, minus every transcript.
+
+**Validation before promotion from proposal.** Needs one incident where a
+brief-plus-frozen-base chain measurably beat a transcript-carrying chain (roundtrips +
+cache_creation, per L22's method), or one where a discarded detail bit back (which
+bounds where it applies). Loss tolerance is the risk — discarding a transcript is safe
+when files + brief suffice, unsafe when a later unit needs an unbriefed detail — so
+the brief must always name WHERE the full transcript lives: lossy by default, never
+destructive.
+
+## L24 — Same-orientation fan-out via `--fork-session` from a fact-only frozen orientation: cheap in CONTEXT (no re-orientation), opportunistic in CACHE — hold the system prompt + toolset stable, but budget a fork at ~1.25× the orientation size (measured at scale)
+
+**This refines L22.** L22 measured two *different* agents with ~0.5% incidental
+context overlap and concluded prefix-sharing barely pays. That holds for *unrelated*
+agents. But when N agents branch from *one frozen orientation*, the overlap is 100%,
+and — done correctly — each branch reuses that orientation's entire cache at **~zero
+creation cost**. The fan-out you were told was expensive is cheap; the earlier pessimism
+was a confounded measurement (missing `--exclude-dynamic`, changed toolset), not a fork
+limitation.
+
+**Measured mechanism (Claude Code CLI `2.1.234`, headless `--output-format json`).**
+The prompt cache is **content-addressed (org-scoped), not session-scoped.** A branch
+that replays an identical prefix hits the cache regardless of its session id. Controlled
+test — orient once, then two branches whose *only* difference is the session id:
+
+Head-to-head, identical flag + toolset, the *only* variable being fork-vs-copy:
+
+| branch | cache_read | cache_creation |
+|---|---|---|
+| orientation (creates the cache) | 63,207 | 28,448 |
+| same-id `--resume` | ~44,350 | 78 |
+| **`--resume <O> --fork-session`** | **45,916** | **77 ≈ 0** |
+| copy `.jsonl` → new id → `--resume` | 45,993 | 0 |
+
+So **vanilla `--fork-session` is the primitive — no manual tricks needed.**
+`--resume <frozen-id> --fork-session` mints a clean new id, leaves the original frozen
+**automatically**, and reuses the entire cache at ~zero creation (77 tokens vs copy's 0
+— both full reuse). It is **parallelizable** (each fork independent) and requires no
+file manipulation or backup. A new session id is NOT a cache-breaker; only the *prefix*
+is. (An earlier run that showed fork "re-creating ~27k" was confounded — it ran WITHOUT
+`--exclude-dynamic-system-prompt-sections` and with a changed toolset, so the prefix
+genuinely differed.) Copying the frozen `.jsonl` to a new id — or truncating it back to
+the freeze point — is an **equivalent manual fallback** (also ~0 creation), useful only
+where you cannot pass `--fork-session`; it is not otherwise required.
+
+**Two hard dependencies — miss either and the prefix diverges → full re-create, no reuse:**
+1. **`--exclude-dynamic-system-prompt-sections`.** Per-machine sections (cwd, env,
+   memory paths, git status, date) otherwise sit *inside* the system prompt and drift
+   between the orientation and any later branch; a single changed byte in the system
+   prompt misses the whole session. The flag moves them into the first user message,
+   stabilizing the cacheable prefix. (Only applies with the default system prompt.)
+2. **Identical toolset across the orientation and every branch.** Tool definitions live
+   in the system prompt; enabling or disabling one tool shifts the prefix. So orient
+   with the *full* toolset every branch will use (implementer needs Edit/Write/Bash),
+   instructing the orientation not to modify anything — do not orient read-only and add
+   tools at the implementer step.
+
+Plus a lifetime constraint: the **cache TTL (1h in this tier) starts at the request**, so
+a frozen base stranded longer than that behind a long-running agent goes cold and the
+next branch pays full creation. Use a frozen base promptly, or keep it warm with a cheap
+touch within the window (a controller/daemon can automate this).
+
+**The recipe.**
+1. **Orient once, self-directed:** prompt the agent to "get ready to \<task\>, read
+   whatever you need, do NOT act yet." (Self-directed reading beats a prescribed list —
+   it surfaces load-bearing sources the controller wouldn't have named; track the
+   "unexpected reads" as a map of the controller's blind spots.) Launch it with
+   `--exclude-dynamic-system-prompt-sections` + the full toolset.
+2. **Freeze at ZERO OUTPUT — fact-only.** Stop *before* the agent writes a plan, a
+   manifest, or any conclusion. `--fork-session` leaves this base frozen automatically,
+   so no backup is required (keep one only as insurance / for a manual truncate-rewind).
+3. **Branch with `--fork-session`:** for each implementer, reviewer, and retry, run
+   `--resume <frozen-id> --fork-session` with the *same* flag + toolset and the branch's
+   task. Clean new id, original frozen automatically, full cache reuse, parallel — no
+   file manipulation.
+
+**Reviewer using the SAME orientation (the point of the fact-only freeze).** Because the
+freeze carries *facts, not conclusions*, the reviewer copies the **same** frozen base:
+it shares the authority/module/context the implementer had (cheap — full cache reuse via
+the mechanism above) but never sees the implementer's reasoning, so it forms its own
+judgment on the diff. This dissolves the DOCTRINE/L12 rule "a reviewer must be fresh,
+never a fork" into its real intent: the rule forbids inheriting the producer's
+**conclusions**; a fact-only base has none, so sharing it is both safe and cheap.
+**Safeguard:** instruct the reviewer to verify adversarially and read *beyond* the
+orientation — a shared base means a shared file-*selection*, and only independent reading
+catches a defect hiding in a file the orientation never opened.
+
+**The anti-pattern, learned the expensive way.** If the orientation runs on to produce a
+manifest/plan (conclusions) before you freeze, a reviewer branching from it inherits
+those conclusions (blind-spot trap) — so you are forced to spend a *fresh* reviewer that
+re-reads everything, forfeiting the cache win. The fix is not "always use a fresh
+reviewer"; it is **freeze earlier.** Split the orientation: fact-gathering (freeze here,
+shared) → planning (implementer-only, continues from the freeze).
+
+**Validation status — CORRECTED AT SCALE (dstdns Track-B B1, 2026-08-18, 8 slices).**
+The controlled test above holds for a *one-turn* orientation. Across the real wave —
+8 orientations of 20–31 turns (~67–104k context at freeze) and 15 forks (8 implementers,
+7 reviewers), every one launched with the flag + the identical `Read Grep Glob Edit Write
+Bash` toolset — the fork's FIRST post-fork request read the orientation cache in only
+**2 of 15** cases (`network_type` impl: 79,269 read / 12,501 create; `cdn_detection`
+impl: 82,126 / 13,308). The other **13 read exactly the base 18,650 (system+tools) and
+re-created the whole orientation (70–112k, ×1.25)** — implementer AND reviewer alike.
+Facts that rule out the obvious causes: (a) the replayed prefix is byte-identical
+(diffed the orient `.jsonl` against the fork's copied history: no difference); (b) the
+system prompt was stable (the base hit was a constant 18,650 for four hours); (c) the
+gap between freeze and fork does not discriminate (hits at 3.7 and 34 min; misses at
+3.3, 3.7, 6.7 … 52 min — all inside the 1h TTL); (d) impl and review forks of the SAME
+orientation split hit/miss. What remains is server-side: the cache is best-effort and
+long multi-turn prefixes appear to be evicted/unavailable to a new session under load
+(many hundred-k-token implementer runs were writing new prefixes in the same org).
+**Consequence: budget a fork at ~1.25× the orientation size in cache_creation
+(~$1.5 for an 80k orientation) and treat cache reuse as opportunistic, never assumed.**
+The fork's proven value is *context inheritance* — each branch skips a ~$1.5 / 20-turn
+re-orientation and, from a fact-only freeze, the reviewer stays independent — not the
+"~zero creation" of the controlled test. The wave still closed 8 slices this way at
+$10–16 per slice all-in; the harness stands, the cost model above is the honest one.
+Open experiment (worth one run): does a *short* real orientation (≤5 turns) reproduce
+the controlled result at scale, i.e. is the discriminator prefix LENGTH?

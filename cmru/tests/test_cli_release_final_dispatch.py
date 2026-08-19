@@ -54,7 +54,7 @@ def test_release_dry_run_reports_no_changed_projects_without_transaction_side_ef
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *_: [])
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append((args, kwargs)))
     cli.main(["release", "--dry-run", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])

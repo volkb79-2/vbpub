@@ -129,6 +129,13 @@ class _ConformingMultiSiteAdapter:
     name = "conforming-multi-site"
     source_globs = ("*.py",)
     excluded_dir_names = frozenset()
+    # (P34/W3) `run_lane`'s own external-tool preflight (A-253) now reads
+    # this attribute unconditionally for every resolved adapter, before
+    # this test's R2 body ever runs -- so it needs a real value the same
+    # way every shipped adapter already declares one, not a target-
+    # selection member this class happened to omit before that reader
+    # existed.
+    external_tools: tuple[str, ...] = ()
 
     def is_test_path(self, rel_path: str) -> bool:
         return False
@@ -357,7 +364,7 @@ def test_a_diverged_symbolic_judge_base_resolves_to_its_forkpoint(
     r1 = verdict.claims[1]
     assert (r1.status, r1.reason_code) == (Outcome.PASS, None)
     assert r1.coverage.considered == 1
-    assert r1.coverage.changed_executable == 2, "the fork-point diff, not an empty one"
+    assert r1.coverage.executable == 2, "the fork-point diff, not an empty one"
     # The artifact binds the FORK POINT, never the declared symbolic name and
     # never the diverged tip -- P16's "the FULL resolved comparison commit".
     assert verdict.judgment.resolved.base == fork_point

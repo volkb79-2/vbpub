@@ -37,12 +37,22 @@ import pytest
 
 from assay import git as git_module
 from assay import isolation
+from assay.config import IsolationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.isolation import (
     DEFAULT_SNAPSHOT_LIMITS,
     SnapshotLimits,
     SnapshotSpec,
     prepare_snapshot,
+)
+
+#: This module's own tests are entirely orthogonal to the isolation axis
+#: (B006a/A-269 WI-2) -- they attack the raw tree grammar, symlink
+#: containment, and the P22 lifecycle, none of which vary by declared
+#: policy. Every `_spec()` call therefore gets plain repository mode unless
+#: it overrides `snapshot_policy` explicitly.
+REPOSITORY_POLICY = IsolationConfig(
+    snapshot_selection="repository", unsafe_symlink_omissions=()
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "isolation"
@@ -145,6 +155,7 @@ def _spec(repo: Path, scratch: Path, commit: str, **changes: object) -> Snapshot
         "commit": commit,
         "project_prefix": PurePosixPath("."),
         "scratch_root": scratch.resolve(),
+        "snapshot_policy": REPOSITORY_POLICY,
         "limits": DEFAULT_SNAPSHOT_LIMITS,
     }
     values.update(changes)

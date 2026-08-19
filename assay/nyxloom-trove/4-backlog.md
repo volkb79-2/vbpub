@@ -2,12 +2,13 @@
 kind: backlog
 schema_version: 1
 items:
-  - {id: B001, title: "SQL/DDL source-mutation adapter — design/probe checkpoint after P28 and before P29. Preferred path recorded; not yet carved.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
-  - {id: B002, title: "Adopt cmru for assay's release process — design checkpoint. STOPPED SHORT of landing: two named blockers, and it edits release keys seven other products share.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
-  - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. Mechanically proven end to end; blocked only on B002's release path.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
-  - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. Hard-blocked on ciu CIU-20; the recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
-  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict.", type: feature, component: evaluate, context_estimate: medium}
-  - {id: B006, title: "Explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes — materialise only a declared project boundary plus declared tracked inputs, never an unsafe symlink ignore; also create assay-owned artifact parents in the private snapshot.", type: feature, component: isolation, context_estimate: large}
+  - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
+  - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
+  - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. COMPLETE: publication waited on B002's release step, which landed; both assay-v2.0.0 and assay-v2.1.0 publish assay-<version>.pyz with a .sha256 sidecar, and dstdns consumes the zipapp. Measured bonus: the .pyz is byte-reproducible across independent builds at different commits, while the wheel is not.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
+  - {id: B004, title: "Provenance as VERIFIED evidence, not merely recorded: ciu provenance --json as assay's first Tier-2 adjudicated integration. CARVED, REVIEWED and DEFERRED (wave 2, A-275/A-276). CIU-20 has SHIPPED and is no longer the blocker; the blockers are now (1) one new ReasonCode, PROVENANCE_UNVERIFIED, reserved by name and awaiting a schema bump another item pays for, and (2) ciu CIU-28 -- provenance compares vendor images ciu never built, so verified-match is unreachable on any live host. The recorded half already ships via A-254.", type: feature, component: evidence, context_estimate: medium}
+  - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, documented, and proven end to end through the real CLI — a target absent from the artifact refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than reporting 100% of zero.", type: feature, component: evaluate, context_estimate: medium}
+  - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
+  - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking.", type: feature, component: canary, context_estimate: large}
 ---
 
 # assay — backlog
@@ -20,8 +21,37 @@ below, so a proposal cannot be adopted without the argument that produced it.
 ## B001 — a SQL/DDL adapter, and why PostgreSQL projects are the cheapest place to prove R2/R3
 
 **Proposed by:** dstdns, 2026-08-10, out of the CW2a corpus-schema wave.
-**Status:** accepted for a Sol design/probe checkpoint after P28 and before
-P29; not accepted for implementation yet. A-215 records the disposition.
+**Status:** **CARVED and REVIEWED, wave 3, 2026-08-18 — implementation in
+progress.** Superseded the earlier "accepted for a Sol design/probe checkpoint
+after P28 and before P29; not accepted for implementation yet". A-215 still
+records the source-oriented disposition, which the carve confirms.
+
+> **The carve is `W3-CARVE-P34-sql-adapter.md`; the adversarial review is
+> `reports/assay-P34-carve-review-fable.md` (READY WITH CORRECTIONS, five
+> blocking findings, none refuted). Read BOTH plus A-279…A-283 before touching
+> anything here — five of this section's premises are corrected there.**
+>
+> Route chosen: a **stdlib-only two-level bounded DDL lexer inside assay**, not
+> an external helper. No SQL parser exists on this host *or inside
+> `tester-unified:local`*, the image assay's own gate runs in, so the helper
+> route begins by re-risking four other products' gates (A-O02); and the span
+> problem is a *lexing* problem, not a grammar one — a bare keyword regex over
+> real dstdns DDL produces 68 phantom matches out of 512, including **all three**
+> of its `ON DELETE RESTRICT` matches.
+>
+> **Verdict-schema surface needed: NO — and unlike B004, this was verified by
+> construction rather than asserted.** The most demanding artifact P34 emits is
+> model-valid, schema-valid and raw-verifier-clean at v6 unchanged, confirmed
+> twice from independent starting points. `PROVENANCE_UNVERIFIED` (A-276) stays
+> reserved; P34 pays for no bump; lane schema v2 is unchanged.
+>
+> **The correction that matters most (A-279):** this section's own framing and
+> the carve both had the consumer command as `apply && test && dump`. That makes
+> `killed` **unreachable** — a kill *is* the test failing, so `&&` short-circuits
+> and the dump the classification depends on never gets written. It is
+> `apply && dump && test`. The feature's headline outcome could not have been
+> produced under the documented shape, and no acceptance oracle would have
+> noticed, because none of them ever produced a kill.
 
 ### Assay-owner disposition — authoritative over the original proposal below
 
@@ -195,11 +225,27 @@ C14).
 ## B002 — adopt cmru for assay's release process (design checkpoint, NOT landed)
 
 **Proposed by:** the operator, standing intent, scoped here 2026-08-11 by C-sol-1.
-**Status:** **IMPLEMENTED 2026-08-11 (A-249/A-250)**, except the first real
-release (step 6), which needs `main` pushed plus explicit authorisation — see
-A-250. A-247 recorded the original stop-short and A-248 lifted it. The two
-blockers below became rulings: adopt cmru's orchestration, decline its build;
-the release manifest is authoritative over a `.sha256` sidecar. **The plan
+**Status:** **COMPLETE.** Implemented 2026-08-11 (A-249/A-250); the one open
+step — the first real release — is discharged, twice: `assay-v2.0.0`
+(2026-08-17) and `assay-v2.1.0` (2026-08-18) were both cut by
+`./cmru.release.sh --project assay`, which owns snapshot → gate → tag → build →
+publish and generates the dated `CHANGES.md` entry. A-247 recorded the original
+stop-short and A-248 lifted it. The two blockers below became rulings: adopt
+cmru's orchestration, decline its build; the release manifest is authoritative
+over a `.sha256` sidecar.
+
+> **Reconciled 2026-08-18.** The frontmatter row still read "design checkpoint,
+> STOPPED SHORT of landing" two releases after cmru had cut them both — the same
+> stale-row shape found in B001, B004, and `CHANGES.md` itself this wave. What
+> the adoption is still owed is *upstream*, not here: the 2.1.0 run produced five
+> findings, filed as **cmru KI-12…KI-16**. KI-12 is the one with teeth — cmru
+> computes its release plan from `git tag --list`, which includes unpushed local
+> refs, so a hand-made local tag silently decided a release; and a tag pointing
+> at the snapshot commit makes a project permanently unreleasable while looking
+> exactly like "unchanged". The operational rule that falls out of it, and that
+> binds anyone releasing assay: **never hand-tag a cmru-managed project** — cmru
+> owns tag creation, so a manual tag is indistinguishable from a completed
+> release. **The plan
 below is kept as written, because what it got wrong is worth more than a tidy
 record: it treated the mtime normalisation as the whole reproducibility story,
 and a real build showed the wheel itself was non-deterministic until
@@ -293,12 +339,25 @@ the case the carve rules say to hand back rather than land.
 **Proposed by:** Fable, round-3 review, 2026-08-11, as the near-zero-cost
 answer for consumers with no installed Python package manager (A-O04's srdm
 blocker). Scoped and measured the same day.
-**Status:** **IMPLEMENTED 2026-08-11 (A-249)** as part of
-`gate/distribution/build_release.py`; publication of the `.pyz` asset itself
-waits on A-250's release step. Two things this scoping did not find, both caught
-by building for real: the WHEEL is also non-reproducible without
-`SOURCE_DATE_EPOCH`, and `zipapp -m` would have discarded every non-zero exit
-code.
+**Status:** **COMPLETE.** Implemented 2026-08-11 (A-249) as part of
+`gate/distribution/build_release.py`; the publication step it waited on landed
+with B002, and `assay-<version>.pyz` plus its `.sha256` sidecar are published
+assets of both `assay-v2.0.0` and `assay-v2.1.0`. dstdns consumes the zipapp,
+not the wheel, so this is the artifact its notify carries a hash for. Two
+things this scoping did not find, both caught by building for real: the WHEEL
+is also non-reproducible without `SOURCE_DATE_EPOCH`, and `zipapp -m` would
+have discarded every non-zero exit code.
+
+> **Reconciled 2026-08-18, with one measurement worth keeping.** The 2.1.0
+> zipapp was built twice by independent paths — once locally at `52534ef7`, once
+> by cmru at its own release commit `a3ae580d` — and both produced
+> `sha256 f2f13021…`, byte-identical. The wheel did **not**: `aff153b7…` locally
+> versus `5e883444…` published. So the zipapp is reproducible across commits
+> while the wheel is only reproducible within one. That asymmetry favours the
+> artifact consumers actually pin, and it is worth preserving deliberately
+> rather than by luck — if a future change makes the `.pyz` embed build-varying
+> state, a consumer verifying a re-vendored artifact against a recorded hash
+> starts failing for no real reason.
 
 ### Measured, not assumed — a zipapp really works
 
@@ -421,8 +480,33 @@ is cmru's work and should not gate assay.
 real-lane isolation work on ciu's S16 worktree verb ("embed provenance in the
 verdict so invariant #18 holds by construction").
 **Status:** the RECORDED half shipped the same day (A-254/A-255). The VERIFIED
-half is **hard-blocked on ciu CIU-20**, which does not exist. A-256 rules the
-adjacent same-instance question as discipline, not schema.
+half was **CARVED, REVIEWED AND DEFERRED in wave 2 (2026-08-17, A-275/A-276)**.
+CIU-20 has since shipped — `ciu provenance --json` exists at CIU 6.0.3 — but the
+carve found **two new blockers in its place**, and A-256 still rules the adjacent
+same-instance question as discipline, not schema.
+
+> **CORRECTION, ruled in A-275: this section's claim below that "no
+> verdict-schema change was needed and none proposed" is FALSE of the VERIFIED
+> half.** It is true of the RECORDED half (A-255's actual finding) and was
+> carried across to the whole item by conflating *no new field* with *no new enum
+> value*. The verified step needs exactly one new `ReasonCode`, because
+> `_check_reason_code` demands a code for every non-`PASS` outcome, `adjudicated`
+> evidence has no payload slot to carry ciu's status string, and none of the 30
+> shipped codes truthfully names "the provenance tool returned a non-green
+> verdict". This section's own `mismatch → FAIL` sketch **is** the closed-enum
+> widening the table below lists as "not proposed".
+>
+> **The second blocker is external and newly measured:** ciu compares *every*
+> running container's OCI revision label against its own repository's short hash,
+> including vendor images that stamp their own upstream revision, so `overall` is
+> pinned at `"mismatch"` on a correctly built host and `verified-match` is
+> unreachable. Filed as a CIU-20 follow-on.
+>
+> `PROVENANCE_UNVERIFIED` is **reserved by name** (A-276) to ride whichever bump
+> B001/P34 or B007 already pays for. B004 unblocks when that code has shipped
+> **and** ciu can emit `verified-match`. Design detail:
+> `W2-CARVE-B004-provenance-verified.md`; review:
+> `reports/assay-B004-carve-review-fable.md`.
 
 ### What already ships — do not re-carve this part
 
@@ -431,7 +515,7 @@ artifact's `env_effective` verbatim, on every outcome including refusals, and
 the artifact verifies clean. Measured, not designed: a real `S3` lane produced
 `env_effective` carrying `CIU_IMAGE_REVISION=1b369e23` and
 `CIU_INSTANCE_ID=dstdns-pkgP96`. **No verdict-schema change was needed and none
-should be added** (A-255).
+should be added** (A-255) — true of THIS half only; see the correction above.
 
 ### What is blocked, and on exactly what
 
@@ -439,8 +523,8 @@ should be added** (A-255).
 |---|---|---|
 | Recorded, caller-asserted | `env_required` (A-254) | **SHIPPED** |
 | Recorded, ciu-**attested** | **ciu CIU-21** — inject the image's own baked `org.opencontainers.image.revision` as an env var | blocked; zero assay work when it lands |
-| **Verified** (adjudicated Tier-2 evidence) | **ciu CIU-20** — `ciu provenance --json`, a closed machine-readable verdict | blocked; this backlog item |
-| **Enforced** (refuse on mismatch) | a new `ReasonCode` → closed-enum widening → v6-class | not proposed |
+| **Verified** (adjudicated Tier-2 evidence) | ~~**ciu CIU-20**~~ **SHIPPED** at CIU 6.0.3. Now needs (i) `PROVENANCE_UNVERIFIED`, reserved by A-276, and (ii) a **CIU-20 follow-on** scoping the comparison to ciu-built images | blocked on both; carved and deferred, A-275 |
+| **Enforced** (refuse on mismatch) | a new `ReasonCode` → closed-enum widening → v6-class | not proposed — **and A-275 rules that the VERIFIED row above needs one too**, so this row was never the only one that did |
 
 The distinction the middle two rows turn on is not cosmetic. Until CIU-21, the
 recorded value is **whatever the caller put in the environment** — an assertion,
@@ -486,13 +570,23 @@ it — but it is cheap and in-estate, so it is the obvious item after.
 
 ---
 
-## B005 — a whole-module / per-callable coverage judge (R1 without a diff)
+## B005 — a whole-module / per-callable coverage judge (R1 without a diff) — IMPLEMENTED
 
 **Proposed by:** dstdns's DESIGN-AUTHORITY reconciliation program, 2026-08-16, on
 the first package that adopted an R1 coverage lane (`redirect_chain`, a
 docstring+dead-code reconcile of `libs/common/src/common/redirect_chain.py`).
-**Status:** proposed. dstdns has a working stopgap in production use; this is the
-first-class replacement.
+**Status:** **IMPLEMENTED, wave 1 (2026-08-17), as `judge.mode = "whole_target"`,
+`W1-CARVE-branch-coverage-and-whole-target.md` §5 (A-260).** The whole-module
+case shipped; the per-callable-span case named in the original proposal did
+not (a `target` names a regular file, never a callable span — see
+`docs/DESIGN-GUIDE.md`'s "A whole-target `target` names a regular file, never
+a directory" for why the file-level guard is the shipped shape and what a
+callable-span capability would need on top of it). **Not yet DONE end to end:**
+this is shipped and documented on `assay-B005-B006-coverage-v6`, gated on this
+branch, but not yet merged, released, or adopted by a real consumer lane
+(dstdns's `redirect_chain` still runs the R0 stopgap described below until it
+repins a v2-capable release per `docs/CONSUMERS.md`'s "Adopting a v2-capable
+release" and migrates its own lane).
 
 ### The claim
 
@@ -581,13 +675,53 @@ commit.
 
 ---
 
-## B006 — explicit, attested project-scoped snapshots for monorepo R1/R2/R3 lanes
+## B006 — unsafe-symlink-omission snapshots and in-snapshot artifact parents for monorepo R1/R2/R3 lanes — IMPLEMENTED
 
 **Proposed by:** dstdns's reconciliation program, 2026-08-16; expanded by CMRU's
-first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** proposed design and
-implementation carve. This blocks honest Assay R1+ claims for a project in this
-monorepo; CMRU may retain R0/direct-coverage evidence in the meantime, but must not
+first R1/R2/R3 consumer qualification, 2026-08-17. **Status:** **(a) and (b)
+both IMPLEMENTED, wave 1 (2026-08-17)** — (a) as `isolation.snapshot_selection`
+/ `unsafe_symlink_omissions`, `W1-CARVE-B006a-project-scope.md` WI-0 through
+WI-4 (A-269; supersedes the project-scoped-boundary design originally proposed
+here, see the AMENDED callout immediately below); (b) as the in-snapshot
+coverage-artifact parent-chain creation, `W1-CARVE-branch-coverage-and-whole-
+target.md` §2. Both are shipped, gated and documented on
+`assay-B005-B006-coverage-v6`. **Not yet DONE end to end:** not yet merged,
+released, or adopted by a real consumer lane — CMRU's own `assay.toml` is
+deliberately UNTOUCHED by this commit (still schema v1, R0-only; its own
+higher-rigor qualification is B006(a) WI-5, still open) and must not be read
+as proof this item is finished until that lane, the merge, and the release all
+land. Until then CMRU may retain R0/direct-coverage evidence, but must not
 relabel a project-local stopgap as Assay R1/R2/R3.
+
+> **AMENDED 2026-08-17 by ruling A-269 — read this before the prose below.**
+> The requirement stands; **the solution sketched in "(a)" below does not.**
+> This item's own words say the sketch is only "one possible implementation" and
+> that "exact TOML names are Assay's design decision", and A-269 exercises that
+> latitude after the project-prefix design failed three independent adversarial
+> reviews at 8 → 9 → 11 blocking findings.
+>
+> **What ships instead:** the FULL repository snapshot, minus exact,
+> commit-validated omissions of the symlink leaves P22 would otherwise refuse —
+> `snapshot_selection = "repository" | "repository-minus-unsafe-symlinks"` plus
+> `unsafe_symlink_omissions = [...]`. Because everything else is still
+> materialised, the `inputs` inventory that point 1 below demands is **not
+> needed and not shipped**: CMRU's repository-root reads keep working with no
+> declaration at all.
+>
+> **Consequently, in the numbered contract below:** point 1's project scope,
+> owned prefix and additional-inputs list are WITHDRAWN; point 4's five
+> containment preflights are WITHDRAWN as unreachable from any loadable
+> `assay.toml` (only the coverage-artifact/omission collision survives, and it
+> is reachable only through the public `Lane` API); point 5 is met in modified
+> form, recording the selected policy and its exact omissions rather than a
+> "project" label whose enforceable content was nil; and points 2, 3 and 6 stand
+> as written, narrowed by A-267/A-268 — assay never materialises the omitted
+> leaf, but the retained closure means the command can restore it, so no
+> confinement is claimed.
+>
+> **One measured correction to the prose below:** Topos carries **three**
+> tracked absolute `/etc/passwd` symlinks, not the single `passwd_link` named
+> here. A design that handled only the named one would still have failed.
 
 ### (a) One absolute-target symlink anywhere in the tree fails every R1+ lane
 
@@ -717,3 +851,172 @@ its message), `9f42acdc` (`.assay/.gitkeep` + gitignore), and the two intermedia
 then `PASS`; CMRU at `4b8009d5` has an honest R0 verdict and independent
 whole-source coverage gate, while its attempted R1+ run fails on the Topos
 `/etc/passwd` fixture before tests execute.
+
+---
+
+## B007 — ordered, bounded, explicitly declared multi-target R3 canary
+
+**Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
+canary, verdict and gate-judgment implementations in favour of assay through the
+public CLI/verdict boundary. **Status: ASSESSED AND DEFERRED — the first
+post-v6 schema item (v7).** Not folded into wave 1. The reasoning is below and
+is binding on whoever picks this up.
+
+### The requirement, in the proposer's words
+
+Assay already has the stronger cause-sensitive R3 contract: a known-good control
+must PASS and the transformed input must FAIL *for the mechanism's expected
+reason*. The one behaviour still unique to nyxloom is that its gate
+qualification can try **several source files in a declared order**, so a gate is
+not declared to launder known-bad code merely because one arbitrarily chosen
+module happens not to be imported or exercised.
+
+Explicitly **not** wanted: nyxloom's automatic source-file discovery and
+ranking. It is Python-specific heuristic policy and would become a hidden
+default. The operator declares targets; assay executes them deterministically.
+
+Candidate shape (spelling is assay's decision):
+
+```toml
+[lanes.<lane>.judge.canary]
+mechanism = "import-break"
+targets = ["src/pkg/api.py", "src/pkg/service.py", "src/pkg/model.py"]
+aggregation = "any"     # explicit, no default
+```
+
+Full requirements, oracles and the optional `assay canary qualify` CLI sketch
+are in the proposal as filed; the seven numbered requirements and eight
+behavioural oracles are adopted here by reference and must not be diluted.
+
+### Verified against the shipped code before assessing
+
+* **`import-break` is real**, not aspirational: `CANARY_MECHANISMS` is exactly
+  `{import-break, uncovered-line}` (`canary.py`), *"named identically to
+  nyxloom's own `gate_canary.MECHANISM_IMPORT_BREAK`/`MECHANISM_UNCOVERED_LINE`"*
+  — so the adoption story is sound and the vocabulary already matches.
+* **The singular target is load-bearing in the INDEPENDENT verifier**, not just
+  the model: `verdict.py` cross-checks `claim[R3].canary.target` against
+  `judgment.r3.target` and refuses a mismatch — *"a canary that answers for a
+  different file than the one declared is evidence about nothing the lane asked
+  for"*. Requirement 7's "must not be silently reinterpreted" is therefore
+  already enforced by shipped code, which is a good sign for the migration.
+* **Each attempt costs two isolated materialisations** (control via
+  `prepared.materialize()`, transformed via `materialize_replacement()` in
+  `run_isolated_canary`). So N targets cost **2N**; under `any` with
+  short-circuit typically 2, under `all` always 2N.
+
+### Why it is DEFERRED rather than folded into v6
+
+Judged against the proposer's own test — "if it can safely fit into the
+in-progress verdict-v6 work **without destabilising B005/B006**".
+
+1. **Nothing is blocked on it, and two things are blocked behind it.** The
+   proposal itself states nyxloom's initial adapter stays v6-compatible and must
+   not depend on this feature. Meanwhile dstdns is blocked on B005 (to retire a
+   `--cov-fail-under` stopgap) and B006 (to retire two substrate work-arounds),
+   both of which are **built and waiting only on release**. Folding in delays a
+   shipped capability for one that nobody is waiting on.
+2. **The v6 cut is already committed and verified** (99 files, suite 2814
+   passed). Reopening it re-runs a proven 41-file migration and re-derives the
+   26-node P33 successor suite, for a feature whose payload changes every
+   existing R3 fixture shape.
+3. **The delta is comparable in size to B005 itself**, not a papercut: a closed
+   `aggregation` enum; a closed "why not attempted" vocabulary; an ordered
+   per-attempt payload array; the `judgment.r3` policy gaining `targets` +
+   `aggregation`; canary sequencing with short-circuit bookkeeping; and —
+   largest — requirement 5 forces the aggregation to be **independently
+   recomputed in `verify.py`**, which by this project's deliberate discipline
+   hand-transcribes rather than importing the model. That logic gets written
+   twice, on purpose.
+4. **Wave 1 has already been destabilised twice by scope arriving mid-flight**
+   (`c7bc9b59`, then `010d1813` rewrote B006 under an in-progress
+   implementation), and the direct consequence was three adversarial review
+   rounds that diverged 8 → 9 → 11 blocking findings. A third mid-wave widening
+   after the schema cut is committed is the same move again.
+5. **The "save a schema major" argument is real but much weaker than it looks.**
+   Requirement 7 needs a version bump either way, and v6 has not shipped, so an
+   older verifier refuses the newer shape under either plan. Crucially the v6
+   work leaves behind **reusable migration machinery** — `migrate_v5_to_v6.py`'s
+   fail-closed four-bucket classifier, the frozen-successor-suite pattern, the
+   `carve-assets/W1/` layout. The first migration had to invent all of that; the
+   second inherits it. v7 is a fraction of v6's cost.
+
+### Design findings for whoever builds it — do not rediscover these
+
+* **`aggregation` is not ergonomics, it is the claim, and the verdict must say
+  which was made.** Today R3 attests *"the gate catches known-bad code in **this
+  named module**"*. Under `any` it attests *"…in **at least one of** these
+  modules"* — the same gate-level statement, a strictly weaker per-module one.
+  Under `all` it attests the per-module statement for every declared target.
+  A reviewer must not be able to read the stronger claim off an `any` verdict.
+  **An attestation stronger than its mechanism is what killed three consecutive
+  review rounds on B006(a); do not repeat it here.**
+* **`any` + short-circuit has a vacuity variant worth closing deliberately.** A
+  lane can declare 25 targets, put a trivially-always-imported module first,
+  PASS on attempt 1 forever, and never discover the other 24 are unreachable.
+  That is honest under `any`'s stated meaning but defeats the *intent* "our gate
+  protects these 25 modules". Say so plainly in CONSUMERS.md, and consider
+  whether the artifact should surface how many targets have **never** been
+  attempted across runs.
+* **The bound is a budget control, not hygiene.** At 2N materialisations, an
+  `all` aggregation over CMRU's ~25 modules is ~50 isolated snapshots per gate
+  run. Measure one materialisation before choosing the maximum, and keep
+  requirement 4's rule that budget exhaustion stays its own terminal and is
+  never converted into PASS/FAIL.
+* **It interacts with B005, which just shipped.** §5 of the wave-1 carve already
+  rules that an `uncovered-line` canary on a `whole_target` lane is refused at
+  load unless `judge.canary.target` is itself one of `judge.targets`. Under a
+  canary target LIST that rule generalises to "every canary target must be in
+  `judge.targets`", and it must be specified rather than discovered.
+* **The `assay canary qualify` CLI separation is achievable, but only one way is
+  honest.** A flag on the normal verdict is not enough — an ad-hoc override
+  would then be one field away from looking like committed gate policy. The
+  clean boundary is a **distinct document kind** that `assay verify` refuses to
+  accept as gate evidence at all, recording the committed lane plus every
+  effective override. If that cannot be made clean, the proposal's own
+  instruction stands: ship only the committed declaration.
+
+### Sequencing
+
+Wave 1 (B005 + B006) releases first, unchanged. B007 is then the first schema
+item after v6 and should be carved together with any other v7-requiring change
+so the estate pays one migration, not two — the same argument that made A-262's
+rename ride v6 rather than wait.
+
+**MEASURED 2026-08-17, after the v2.0.0 release: there is no partner, and that
+inverts the order.** The pairing argument above assumed other planned work
+would also need v7. It does not:
+
+* ~~**B004 needs no schema change at all** — its own section says so in writing
+  ("no verdict-schema change was needed and none proposed"), and the only
+  variant that would need one (enforce-on-mismatch, requiring a new
+  `ReasonCode` and therefore a closed-enum widening) is explicitly **not
+  proposed**;~~ **WRONG, and the carve proved it (A-275).** §B004's sentence is
+  true of the RECORDED half and false of the VERIFIED half; taking it at its
+  word is precisely the mistake this note asked each carve to stop making. B004
+  needs exactly one new `ReasonCode`, `PROVENANCE_UNVERIFIED`;
+* **B001/P34's producer fields are already RESERVED and survived the v6 cut** —
+  `_MUTATION_FIELDS_RESERVED_FOR_P34` (`config.py:269`) names
+  `kill_signal_artifact` and `equivalence_artifact`, and both are still present
+  in `verdict.schema.json` and `verdict.py` at v6. P34 begins producing an
+  already-reserved surface rather than widening one.
+
+So B007 alone would force a **second breaking migration on consumers days
+after v6 and lane-v2**, for one feature nobody is blocked on — nyxloom's own
+proposal states its initial adapter stays v6-compatible and must not depend on
+it. **Revised order: B004 (wave 2) → B001/P34 (wave 3) → B007.** That gives
+consumers a stable v6 period, and lets B007 accumulate a partner if any of
+wave 2 or 3's implementation turns out to want schema surface after all — a
+question their carves should each answer explicitly rather than assume.
+
+**UPDATE 2026-08-17, after wave 2's carve and review: B007 HAS ITS PARTNER, and
+it is B004.** The bullet above was wrong in exactly the direction this
+paragraph hoped for. `PROVENANCE_UNVERIFIED` is reserved by A-276 to ride
+whichever bump another item pays for, and B007's ordered multi-target R3 canary
+is the item most likely to pay it. So v7, when it comes, carries both — one
+migration, two features, which is the outcome the original pairing argument
+was written to get. **The order stands** (B001/P34 next), because P34 still
+needs no schema surface and B004's implementation is blocked on ciu regardless
+of when the code ships. What has changed is that B007 is no longer a solo
+migration nobody is blocked on, and its carve should be written knowing it will
+be asked to carry a passenger.

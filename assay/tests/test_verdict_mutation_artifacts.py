@@ -20,10 +20,29 @@ DIFFERENT ``ERROR``/``EXEC_FAILED`` shapes A-116 itself calls out: a
 crashed BASELINE (``mutation`` entirely ABSENT) versus a crashed MUTANT
 (``mutation`` present with a non-empty ``crashed`` bucket) -- proving they
 are correctly distinguishable, not conflated into one shape.
+
+**(P34/O9) SQL, all four buckets simultaneously, and the three live
+negatives.** The carve's own §5.2 target artifact -- ``language = "sql"``,
+all seven operators declared, both mutation artifacts declared,
+``kill_attribution = "declared"``, and a ``mutation`` payload populating
+``killed`` (with a ``kill_signal``), ``survived``, ``crashed`` and
+``equivalent`` simultaneously -- is accepted with ZERO changes to any of the
+three layers (schema, model, raw verifier), which is O9's positive half.
+The negative half is what makes that acceptance non-vacuous (O9, verbatim:
+"the negatives are the proof the acceptance is not vacuous; a missing one
+leaves an accept-everything oracle"): three targeted single-field breaks --
+a killed mutant with no ``kill_signal`` under declared attribution, an
+``equivalent`` bucket with no declared ``equivalence_artifact``, and a
+``python:compare-swap`` operator declared on a ``sql`` lane -- each of which
+the shipped JSON Schema CANNOT catch (A-182: no ``$data`` relation for
+cross-object arithmetic), and each of which BOTH the model (at
+``Verdict.__init__``) and :func:`assay.verify.verify_document` (over the raw
+document, independently worded) refuse.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -38,8 +57,15 @@ from assay.verdict import (
     JudgmentResolved,
     Mutation,
     MutantOutcome,
+    SnapshotPolicy,
     Verdict,
 )
+from assay.verify import verify_document
+
+#: (wave-1 §6, A-269) the plain repository-mode policy every R0,R2 verdict
+#: below carries -- none of these fixtures is itself testing the omission
+#: axis.
+REPOSITORY_POLICY = SnapshotPolicy(selection="repository")
 
 BASE = {
     "lane": "package",
@@ -53,6 +79,7 @@ BASE = {
     "env_effective": {},
     "scope": "S1",
     "enforcement": "gate",
+    "snapshot_policy": REPOSITORY_POLICY,
 }
 
 R0_PASS = Claim(rigor="R0", source="computed", status=Outcome.PASS, verified_by_assay=True)
@@ -318,6 +345,7 @@ def test_a_crashed_baseline_matches_the_hand_written_fixture(validator: Draft202
         started="2026-08-07T14:25:00+00:00",
         ended="2026-08-07T14:25:00+00:00",
         claims=(r0_crashed, r2_claim),
+        snapshot_policy=REPOSITORY_POLICY,
     )
     document = json.loads(verdict.to_json())
     assert document == mutation_verdict_fixture("r2_error_exec_failed_baseline_crashed")
@@ -444,3 +472,276 @@ def test_an_operator_outside_the_closed_catalogue_is_rejected_by_the_schema(
 
     document["claims"][1]["mutation"]["survived"][0]["operator"] = "arithmetic-swap"
     assert not validator.is_valid(document)
+
+
+# --- P34/O9: SQL, all four buckets simultaneously, and the three live -------
+# --- negatives (the carve's own §5.2 target artifact; A-279/A-287 material) --
+
+SQL_RESOLVED = JudgmentResolved(
+    language="sql",
+    source_roots=("db",),
+    base="0000000000000000000000000000000000000b",
+)
+
+#: (A-220/V5-2) the whole sql catalogue, schema order -- mirrors
+#: ``vocabulary.MUTATION_OPERATORS_BY_LANGUAGE["sql"]`` as a literal rather
+#: than importing it, so this module's own expectation is independent of
+#: that module's (A-067's "not read back from the code under test" applied
+#: to a vocabulary rather than a computed value).
+SQL_OPERATORS: tuple[str, ...] = (
+    "sql:drop-check",
+    "sql:drop-unique",
+    "sql:drop-not-null",
+    "sql:drop-foreign-key",
+    "sql:weaken-delete-action",
+    "sql:drop-trigger",
+    "sql:widen-check-in",
+)
+
+
+def _sha(seed: str) -> str:
+    """A validly-shaped, arbitrary 64-hex-char placeholder -- these fixtures
+    assert nothing about what SqlAdapter actually computes (that is
+    ``tests/test_adapters_sql_generate_mutants.py``'s job), so a mechanical
+    hash of a distinguishing seed is exactly as good as a hand-picked
+    literal and does not require inventing four of them by hand."""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+SQL_KILLED = MutantOutcome(
+    path="db/schema.sql", lineno=12, start_byte=200, end_byte=222,
+    replacement_sha256=_sha("o9-sql-killed"), operator="sql:drop-not-null",
+    description="NOT NULL -> NULL",
+    kill_signal='ERROR:  null value in column "label" violates not-null constraint',
+)
+SQL_SURVIVED = MutantOutcome(
+    path="db/schema.sql", lineno=20, start_byte=300, end_byte=330,
+    replacement_sha256=_sha("o9-sql-survived"), operator="sql:drop-check",
+    description="CHECK (...) -> CHECK (true)",
+)
+SQL_CRASHED = MutantOutcome(
+    path="db/schema.sql", lineno=30, start_byte=400, end_byte=440,
+    replacement_sha256=_sha("o9-sql-crashed"), operator="sql:widen-check-in",
+    description="widen the IN-list by one member",
+)
+SQL_EQUIVALENT = MutantOutcome(
+    path="db/schema.sql", lineno=40, start_byte=500, end_byte=530,
+    replacement_sha256=_sha("o9-sql-equivalent"), operator="sql:weaken-delete-action",
+    description="RESTRICT -> CASCADE",
+)
+
+
+def _sql_r2_policy(
+    *,
+    operators: tuple[str, ...] = SQL_OPERATORS,
+    equivalence_artifact: str | None = ".assay/schema-dump.sql",
+    kill_signal_artifact: str | None = ".assay/kill-signal.txt",
+    kill_attribution: str = "declared",
+) -> JudgmentR2:
+    return JudgmentR2(
+        jobs=1,
+        max_mutants=200,
+        operators=operators,
+        kill_attribution=kill_attribution,
+        kill_signal_artifact=kill_signal_artifact,
+        equivalence_artifact=equivalence_artifact,
+    )
+
+
+def _valid_sql_verdict() -> Verdict:
+    """(O9, positive) The carve's own §5.2 target artifact, built through
+    the MODEL: ``language = "sql"``, all seven operators declared, both
+    artifacts declared, ``kill_attribution = "declared"``, and a mutation
+    payload populating ``killed`` (carrying a ``kill_signal``), ``survived``,
+    ``crashed`` and ``equivalent`` SIMULTANEOUSLY. ``crashed`` outranks every
+    other bucket (``mutation.judge_mutation``'s own precedence), so the R2
+    claim -- and the whole verdict -- renders ``ERROR``/``EXEC_FAILED``.
+    Constructing this at all (no exception) IS the model-valid half of O9;
+    the two assertions below are the schema-valid and raw-verifier-clean
+    halves."""
+    mutation = Mutation(
+        candidate_count=4,
+        total=4,
+        killed=(SQL_KILLED,),
+        survived=(SQL_SURVIVED,),
+        crashed=(SQL_CRASHED,),
+        equivalent=(SQL_EQUIVALENT,),
+    )
+    r2_claim = Claim(
+        rigor="R2", source="computed", status=Outcome.ERROR,
+        verified_by_assay=True, reason_code=ReasonCode.EXEC_FAILED, mutation=mutation,
+    )
+    return Verdict(
+        **BASE,
+        commit="7" * 39 + "1",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.EXEC_FAILED,
+        started="2026-08-18T00:00:00+00:00",
+        ended="2026-08-18T00:00:05+00:00",
+        judgment=Judgment(resolved=SQL_RESOLVED, r2=_sql_r2_policy()),
+        claims=(R0_PASS, r2_claim),
+    )
+
+
+def test_sql_full_artifact_all_four_mutation_buckets_is_valid_at_every_layer(
+    validator: Draft202012Validator,
+):
+    """(O9, positive/must-succeed control) The full SQL artifact -- all four
+    buckets, both declared artifacts, declared attribution -- is model-valid
+    (construction above does not raise), schema-valid, and
+    raw-verifier-clean: three independent layers, none generated from
+    another (this module's own docstring). Every negative below is this
+    SAME artifact with exactly one field broken."""
+    verdict = _valid_sql_verdict()
+    document = json.loads(verdict.to_json())
+
+    _validate(document, validator)
+    assert verify_document(document) == []
+
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "EXEC_FAILED"
+    assert document["judgment"]["resolved"]["language"] == "sql"
+    assert document["judgment"]["r2"]["kill_attribution"] == "declared"
+    mutation = document["claims"][1]["mutation"]
+    assert len(mutation["killed"]) == 1
+    assert len(mutation["survived"]) == 1
+    assert len(mutation["crashed"]) == 1
+    assert len(mutation["equivalent"]) == 1
+    assert mutation["killed"][0]["kill_signal"]
+
+
+def test_o9_negative_a_sql_killed_with_no_kill_signal_under_declared_attribution(
+    validator: Draft202012Validator,
+):
+    """(O9 negative a) ``kill_attribution = "declared"`` requires a
+    ``kill_signal`` on EVERY killed entry (§3.6) -- without it a lane would
+    claim an attribution it never demonstrated. The schema alone accepts
+    this (``kill_signal`` is per-bucket-legal, never per-bucket-required --
+    A-182, no ``$data``); only the model and the raw verifier catch it,
+    which is the whole point of this negative."""
+    unsignalled = MutantOutcome(
+        path=SQL_KILLED.path, lineno=SQL_KILLED.lineno,
+        start_byte=SQL_KILLED.start_byte, end_byte=SQL_KILLED.end_byte,
+        replacement_sha256=SQL_KILLED.replacement_sha256, operator=SQL_KILLED.operator,
+        description=SQL_KILLED.description,
+    )
+    mutation = Mutation(candidate_count=1, total=1, killed=(unsignalled,))
+    with pytest.raises(ValueError, match="kill_attribution 'declared' but"):
+        Verdict(
+            **BASE,
+            commit="7" * 39 + "2",
+            outcome=Outcome.PASS,
+            started="2026-08-18T00:01:00+00:00",
+            ended="2026-08-18T00:01:05+00:00",
+            judgment=Judgment(resolved=SQL_RESOLVED, r2=_sql_r2_policy()),
+            claims=(
+                R0_PASS,
+                Claim(
+                    rigor="R2", source="computed", status=Outcome.PASS,
+                    verified_by_assay=True, mutation=mutation,
+                ),
+            ),
+        )
+
+    document = json.loads(_valid_sql_verdict().to_json())
+    del document["claims"][1]["mutation"]["killed"][0]["kill_signal"]
+    assert why_invalid(validator, document) == [], (
+        "the schema alone must accept this -- it has no cross-object $data "
+        "relation to express 'declared attribution requires every kill to "
+        "carry a signal', which is exactly why the deeper layers exist"
+    )
+    failures = verify_document(document)
+    assert failures, "raw verifier accepted a declared kill with no kill_signal"
+
+
+def test_o9_negative_b_sql_equivalent_bucket_with_no_declared_equivalence_artifact(
+    validator: Draft202012Validator,
+):
+    """(O9 negative b) The ``equivalent`` bucket and
+    ``judgment.r2.equivalence_artifact`` are both-present-or-both-absent
+    (P33/V5-3 invariant 2). Declaring neither is legal; a lane with the
+    bucket populated and no declared artifact would be claiming equivalence
+    was proven by nothing."""
+    mutation = Mutation(candidate_count=1, total=1, equivalent=(SQL_EQUIVALENT,))
+    with pytest.raises(ValueError, match="declares no equivalence_artifact"):
+        Verdict(
+            **BASE,
+            commit="7" * 39 + "3",
+            outcome=Outcome.INCONCLUSIVE,
+            reason_code=ReasonCode.ALL_MUTANTS_EQUIVALENT,
+            started="2026-08-18T00:02:00+00:00",
+            ended="2026-08-18T00:02:05+00:00",
+            judgment=Judgment(
+                resolved=SQL_RESOLVED,
+                r2=_sql_r2_policy(equivalence_artifact=None),
+            ),
+            claims=(
+                R0_PASS,
+                Claim(
+                    rigor="R2", source="computed", status=Outcome.INCONCLUSIVE,
+                    verified_by_assay=True, reason_code=ReasonCode.ALL_MUTANTS_EQUIVALENT,
+                    mutation=mutation,
+                ),
+            ),
+        )
+
+    document = json.loads(_valid_sql_verdict().to_json())
+    del document["judgment"]["r2"]["equivalence_artifact"]
+    assert why_invalid(validator, document) == [], (
+        "the schema alone must accept this too -- equivalence pairing is a "
+        "cross-object relation, not local grammar"
+    )
+    failures = verify_document(document)
+    assert failures, (
+        "raw verifier accepted an equivalent bucket with no declared "
+        "equivalence_artifact"
+    )
+
+
+def test_o9_negative_c_a_python_operator_declared_on_a_sql_lane(
+    validator: Draft202012Validator,
+):
+    """(O9 negative c) ``judgment.resolved.language`` qualifies every
+    operator a lane may declare or record (P33/V5-2 invariant 1). A sql
+    lane naming ``python:compare-swap`` -- a globally KNOWN operator, just
+    the wrong language -- is refused independently by the model and the raw
+    verifier; the schema's own ``mutation_operator`` enum is global across
+    all three languages and has no way to relate an operator to the
+    resolved language, so it alone accepts this document."""
+    with pytest.raises(ValueError, match="another language's catalogue"):
+        Verdict(
+            **BASE,
+            commit="7" * 39 + "4",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            started="2026-08-18T00:03:00+00:00",
+            ended="2026-08-18T00:03:05+00:00",
+            judgment=Judgment(
+                resolved=SQL_RESOLVED,
+                r2=_sql_r2_policy(operators=(*SQL_OPERATORS, "python:compare-swap")),
+            ),
+            claims=(
+                R0_PASS,
+                Claim(
+                    rigor="R2", source="computed", status=Outcome.ERROR,
+                    verified_by_assay=True, reason_code=ReasonCode.EXEC_FAILED,
+                    mutation=Mutation(
+                        candidate_count=4,
+                        total=4,
+                        killed=(SQL_KILLED,),
+                        survived=(SQL_SURVIVED,),
+                        crashed=(SQL_CRASHED,),
+                        equivalent=(SQL_EQUIVALENT,),
+                    ),
+                ),
+            ),
+        )
+
+    document = json.loads(_valid_sql_verdict().to_json())
+    document["judgment"]["r2"]["operators"].append("python:compare-swap")
+    assert why_invalid(validator, document) == [], (
+        "the schema's operator enum is global, not per-language, so it "
+        "must accept this -- the language cross-check is model/verifier-only"
+    )
+    failures = verify_document(document)
+    assert failures, "raw verifier accepted a foreign-language operator on a sql lane"

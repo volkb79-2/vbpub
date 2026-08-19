@@ -9,8 +9,10 @@ linking against assay itself.
 
 - **License / distribution:** estate-internal; distributed as local wheels
   (see [Installing](#installing)), not published to a public index.
-- **Status:** Python is fully supported (R0–R3). Go and SQL have reserved
-  schema surface but no real adapter yet — see
+- **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
+  supported at **R2 only** (no SQL R1, no SQL R3 — see
+  [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below). Go
+  still has reserved schema surface but no real adapter yet — see
   [What assay is not (yet)](#what-assay-is-not-yet).
 
 ---
@@ -25,10 +27,40 @@ that any assertion would have caught a wrong version of it.
 
 assay exists to close that gap mechanically, not by policy:
 
-- **Changed-line coverage, not whole-project coverage.** A diff that touches
-  12 lines is judged on those 12 lines. A 0/0 result (nothing measurable
-  changed) is reported honestly, with a `considered` count, instead of
-  silently reading as 100%.
+- **You choose which question R1 asks: changed-line, or whole-target.** In
+  `mode = "changed_lines"` (the default — an existing lane needs no edit), a
+  diff that touches 12 lines is judged on those 12 lines; a 0/0 result
+  (nothing measurable changed) is reported honestly, with a `considered`
+  count, instead of silently reading as 100%. In `mode = "whole_target"` a
+  lane instead asserts a coverage floor over one or more explicitly declared
+  **files**, independent of any diff — the mode a reconciliation program needs
+  when a method can be "fixed" by editing only its docstring, changing zero
+  executable lines. One lane declares one mode; a consumer wanting both
+  declares two lanes. See
+  [§6, two R1 modes, one claim per lane](docs/DESIGN-GUIDE.md#two-r1-modes-one-claim-per-lane-a-260).
+- **Branch coverage is judged whenever the artifact reports it — not
+  opt-in.** A changed line that is a branch source with an untaken arc lowers
+  the reported percentage in *every* lane whose coverage artifact carries
+  branch data, including a lane that declared R1 before this shipped. `pct` is
+  the combined line+branch percentage the moment branches are present. Declare
+  `judge.require_branch = true` to refuse (`NO_MEASUREMENT`/
+  `BRANCH_UNAVAILABLE`) rather than silently fall back to line-only judging
+  when the artifact's format or argv can't produce branch data — the guard
+  against an argv edit quietly downgrading a gate's rigor. See
+  [§6, branch coverage is judged whenever reported](docs/DESIGN-GUIDE.md#branch-coverage-is-judged-whenever-the-artifact-reports-it-a-258)
+  and
+  [§6, `require_branch` governs absence](docs/DESIGN-GUIDE.md#require_branch-governs-absence-never-presence-a-259).
+- **Every R1/R2/R3 lane declares its snapshot selection.** `[lanes.X.isolation]`
+  is required the moment a lane declares R1, R2 or R3 (and refused on an
+  R0-only lane): `snapshot_selection = "repository"` materialises the whole
+  commit, or `"repository-minus-unsafe-symlinks"` additionally omits exactly
+  the declared, commit-validated unsafe symlink leaves that would otherwise
+  refuse the lane. The exact property, stated once and never paraphrased
+  stronger: *for each higher-rigor unit using omission mode, assay initially
+  hands the command a private worktree in which every declared,
+  commit-validated P22-unsafe symlink is absent and every other P22-supported
+  tracked path from the resolved commit is materialised.* See
+  [§6, snapshot selection](docs/DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a).
 - **An escalating rigor ladder (R0–R3)**, so "tested" means something
   specific instead of one undifferentiated green checkmark:
   - **R0** — the declared command ran and produced a result.
@@ -56,6 +88,16 @@ assay exists to close that gap mechanically, not by policy:
   [§2 of the design guide](docs/DESIGN-GUIDE.md#2-why-it-exists-four-copies-and-each-one-is-the-sole-holder-of-something)
   for the receipts.
 
+**Compatibility, read before upgrading.** The verdict artifact is schema
+`VERDICT_SCHEMA_VERSION = 6` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v5 verdict exactly as it refuses
+v4 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
+assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
+and bump `schema_version` **in the same commit** — see
+[the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
+for why the order matters and what breaks if you split it across two commits.
+
 ## What assay is, and is not
 
 **assay judges. It does not choose what to run, and it does not choose
@@ -74,9 +116,11 @@ where to run it.**
 
 ### What assay is not (yet)
 
-The verdict schema reserves a `go:*` and a `sql:*` operator vocabulary, and
-`external_tools`/`helpers` machinery for adapters that shell out to a real
-toolchain. **None of that is a working Go or SQL adapter today.** Go support
+The verdict schema reserves a `go:*` operator vocabulary and
+`external_tools`/`helpers` machinery for a Go adapter. **None of that is a
+working Go adapter today** — `judge.language = "go"` is refused
+`ERROR`/`BAD_LANE_CONFIG` at every rigor level; the schema surface exists so
+a later package does not need a compatibility bump to fill it in. Go support
 in particular is blocked on a real, proven design problem: `go test
 -coverprofile` cannot express which physical line a statement starts on —
 only a block's byte extent plus a bare statement *count* — and two different
@@ -88,10 +132,41 @@ documented before any Go code shipped. See decisions A-172, A-217, A-218 in
 finding and the ruling (build a real statement-position oracle, not a
 line-range heuristic).
 
-If you see `go:` or `sql:` anywhere in the schema or vocabulary and are
-wondering whether you can use them today: no. Declaring a rigor level a lane
-can't actually back up is exactly the failure this project exists to
-prevent, so don't be the first exception.
+If you see `go:` anywhere in the schema or vocabulary and are wondering
+whether you can use it today: no. Declaring a rigor level a lane can't
+actually back up is exactly the failure this project exists to prevent, so
+don't be the first exception. **`sql:*` is different — see below.**
+
+### SQL/DDL mutation testing (R2 only)
+
+Unlike Go, SQL has a real, working adapter: `judge.language = "sql"` resolves
+at **R2 only**. There is deliberately no SQL R1 (DDL has no coverage tool)
+and no SQL R3 (A-192 forbids R3 without R1) — this is a settled design
+choice, not a gap waiting on a later package. The adapter is a stdlib-only
+byte-span lexer over tracked `.sql` files, never a database connection: it
+locates and replaces one span of DDL text outside every comment, string
+literal and quoted identifier, and classifies the mutant using only the
+project-declared command's exit status and the bytes of two files the lane
+itself declares. See
+[§11 of the design guide](docs/DESIGN-GUIDE.md#sqlddl-mutation-a-stdlib-lexer-not-a-database-connection)
+for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
+a worked, pasteable lane.
+
+The seven closed `judge.mutation.operators` values a SQL lane may declare:
+
+```
+sql:drop-check         sql:drop-unique        sql:drop-not-null
+sql:drop-foreign-key    sql:weaken-delete-action    sql:drop-trigger
+sql:widen-check-in
+```
+
+Two `judge.mutation` config keys exist only for a SQL lane:
+`equivalence_artifact` (a project-relative path the lane's command writes
+after applying a mutant; **required** on every SQL lane — without it a
+mutant that never actually mutated is recorded `survived`, a false
+statement about your tests) and `kill_signal_artifact` (optional; declaring
+it turns on kill attribution). Both share `judge.coverage.artifact`'s own
+path grammar and must be gitignored, exactly like a coverage artifact.
 
 ## How it works
 
@@ -115,13 +190,23 @@ prevent, so don't be the first exception.
 
 ```toml
 # assay.toml
-schema_version = 1
+schema_version = 2
 
 [lanes.unit]
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["pytest", "--cov=mypkg", "--cov-report=json:cov.json"]
+argv = ["pytest", "--cov=mypkg", "--cov-branch", "--cov-report=json:cov.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+# Required the moment a lane declares R1, R2 or R3 (refused on an R0-only
+# lane); no default. "repository" materialises the whole commit -- see the
+# design guide for "repository-minus-unsafe-symlinks", the monorepo case.
+[lanes.unit.isolation]
+snapshot_selection = "repository"
 
 [lanes.unit.judge]
 language = "python"

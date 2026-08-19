@@ -66,6 +66,11 @@ def _r1_r2_and_canary(mechanism: str) -> str:
 #: lane may not carry R1's or R2's fields just to reach the grammar check).
 _R3_ONLY_JUDGE_HEAD = '\n[lanes.package.judge]\nlanguage = "python"\nsource_roots = ["src"]\n'
 
+#: B006a/A-269, schema v2: every R1+ lane requires an explicit [isolation]
+#: table; this module's own subject is the rigor grammar, so every positive
+#: case here picks the plain "repository" selection.
+_ISOLATION_TABLE = '\n[lanes.package.isolation]\nsnapshot_selection = "repository"\n'
+
 
 @pytest.fixture
 def no_side_effects(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -162,8 +167,10 @@ def test_every_canonical_ordered_declaration_still_loads(
     refusing everything: each valid R0-led subsequence loads and keeps its
     declared order verbatim."""
     project.file("src/mod.py", "x = 1\n")
+    levels = [level.strip(' "') for level in rigor[1:-1].split(",")]
+    isolation = _ISOLATION_TABLE if any(level != "R0" for level in levels) else ""
     lane = load_lane_file(
-        project.write(set_key(R0_LANE, "rigor", rigor) + judge)
+        project.write(set_key(R0_LANE, "rigor", rigor) + isolation + judge)
     ).lane("package")
 
-    assert list(lane.rigor) == [level.strip(' "') for level in rigor[1:-1].split(",")]
+    assert list(lane.rigor) == levels

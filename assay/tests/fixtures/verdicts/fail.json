@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
@@ -56,8 +56,13 @@
       "coverage_format": "coverage-py-json",
       "coverage_artifact": "cov.json",
       "fail_under": 100.0,
-      "allow_excluded": false
+      "allow_excluded": false,
+      "mode": "changed_lines",
+      "require_branch": false
     }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
   },
   "claims": [
     {
@@ -74,7 +79,7 @@
       "reason_code": "UNCOVERED_LINES",
       "coverage": {
         "covered": 2,
-        "changed_executable": 3,
+        "executable": 3,
         "pct": 66.66666666666667,
         "considered": 1,
         "exclusion_capability": "reported",
@@ -87,7 +92,12 @@
         "unclassified_lines": {},
         "files_with_unclassified_lines": [],
         "excluded_lines": {},
-        "files_with_excluded_lines": []
+        "files_with_excluded_lines": [],
+        "branches_covered": 0,
+        "branches_total": 0,
+        "branch_capability": "unavailable",
+        "missing_branch_lines": {},
+        "files_with_missing_branch_lines": []
       }
     }
   ],

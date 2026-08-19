@@ -104,6 +104,23 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ## Known Issues
 
+> **KI-12 … KI-16 shipped together** in `merge(cmru): KI-12..KI-17 and S15 tool
+> dependencies`, with the new S15 tool-dependency feature. SPEC: `S-CLI.5b/5c/5d`,
+> `S12.2a`–`S12.2e`, `S2.6`, `S15`. Mutation campaign green (115 candidates, 115
+> killed) at 1623 tests and 100% statement and branch coverage; two adversarial
+> reviews are recorded in `docs/reviews/`.
+>
+> **KI-17 shipped 2026-08-19** in a follow-up that also re-aligned KI-16's transaction naming
+> to ciu's flat `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme (exact 1:1 branch/directory, no
+> nested paths — see the FOLLOW-UP note under KI-16 and SPEC `S-CLI.5b`/`S2.6a`).
+>
+> Worth reading before filing the next issue here: six defects were found across
+> that work and **two were in the issue text rather than the code** — KI-12(b) as
+> originally filed made cmru abort on the ordinary just-released state and advise
+> `git tag -d` on a real release tag. Its CORRECTION blockquote below is kept in
+> place rather than rewritten, because what the entry got wrong is worth more
+> than a tidy record.
+
 ### KI-03 — S2's single strict configuration contract was not used by `release` — *shipped*
 **Status:** resolved as an intentional breaking configuration change. `cli.load_config()` and
 the raw step runner invoke `config.load_forge_config()` before mapping any values; all CMRU
@@ -209,7 +226,7 @@ must provide equivalent consumer-verifiable evidence itself.
 environment loader and no alias for the removed names. `quiet` is mandatory on every step.
 
 ### KI-10 — `cmru build` artifacts cannot safely feed `cmru publish` — *open; decision required*
-**Evidence:** `cmru build` creates an isolated `cmru/build/<id>` worktree, runs its
+**Evidence:** `cmru build` creates an isolated `cmru-build-<id>` worktree, runs its
 prepare/gate/build phases there, and on success copies logs and declared artifact directories
 into commit-addressed, gitignored local records under `<project>/logs/` and
 `<project>/artifacts/`. The `build.json` inventory binds their source SHA, digest inventory,
@@ -308,3 +325,258 @@ then returns the current visibility. A successful image push no longer fails the
 Change visibility → Public*. Visibility **persists across all future pushes**, so it is never repeated.
 **Re-check upstream:** if fine-grained PATs gain Packages API support (roadmap#558), or GitHub adds a
 visibility endpoint, restore fully-automatic sync and re-tighten `S4.7` to MUST.
+
+---
+
+### KI-12 — the release plan depends on UNPUSHED local tags, and a tag on the snapshot commit silently disables a project — *shipped*
+**Reported by:** assay's wave-3 release, 2026-08-18. **Priority: high** — the only one of
+KI-12…KI-16 that produces a *wrong answer* rather than a confusing message.
+
+**What happened.** `./cmru.release.sh --project assay` reported `Release plan: no changed
+projects detected; nothing to release` and listed `assay` under `Unchanged, skipping:` —
+immediately after ~3,000 lines landed under `assay/`. Cause: a hand-made annotated tag
+`assay-v2.1.0` existed **only in the local repository, never pushed**, and pointed at the
+snapshot commit itself. `version._latest_tag_for_prefix()` runs `git tag --list "<prefix>*"`
+and takes the highest semver; `detect_changed_projects()` then calls `_git_log(repo_root,
+last_tag, *paths)`, gets an empty list because the tag *is* HEAD, and `continue`s.
+
+**Two distinct defects.**
+
+1. **The plan is not a function of the pushed repository state.** `git tag --list` returns
+   local-only refs. The baseline that decided this release existed on exactly one machine, so
+   another operator running the identical command on the identical commit would have computed a
+   different plan. For a tool whose premise (`S-CLI.5`) is that a release is an isolated
+   transaction against the *exact remote snapshot*, reading the baseline from local scratch refs
+   contradicts the isolation it just established.
+   **Fix:** derive the baseline from `git ls-remote --tags origin`, or keep the local read and
+   **refuse** when the selected baseline tag is absent from the remote.
+
+2. **A tag at or ahead of the snapshot is degenerate and must not be silent.** If a project's
+   newest tag points at the commit being released, nothing can *ever* be released for that
+   project until a new commit lands. That is almost always operator error — a stray local tag,
+   or a half-finished previous release — and the current behaviour folds it into a skip list
+   indistinguishable from "genuinely unchanged".
+   **Fix — detect, warn, abort.** Abort is the right default because continuing produces a
+   silently empty release:
+
+   ```
+   [ERROR] assay: latest tag assay-v2.1.0 points AT the snapshot commit 52534ef7.
+           Nothing can be released for this project until a new commit lands.
+           This usually means a tag was created by hand (cmru owns tag creation) or a
+           previous release half-completed. Inspect:  git tag --list 'assay-v*'
+           If hand-made and unpushed:                git tag -d assay-v2.1.0
+           Re-run, or pass --allow-tag-at-head to skip this project deliberately.
+   ```
+
+   > **CORRECTION, 2026-08-18, measured against the first implementation — the
+   > two-state rule above is WRONG and must not be built as written.** Driving
+   > the implemented functions against real repositories with a real bare origin
+   > showed that "tag at or ahead of the snapshot" covers a *benign* state and an
+   > anomalous one, and that the benign state is the common one:
+   >
+   > 1. **baseline tag not pushed** → refuse. Defect (1) above already catches
+   >    this correctly, and it is the state the assay incident was actually in.
+   > 2. **tag pushed AND equal to the snapshot commit** → **benign.** This is the
+   >    normal state after *any* successful release. The rule as written aborts
+   >    here, telling the operator a tag "was created by hand" and advising
+   >    `git tag -d <tag>` — advice which, followed, **deletes a legitimate
+   >    pushed release tag**. It must be an informative skip instead:
+   >    `Unchanged, skipping: proj (already released as proj-v1.0.0 at the
+   >    snapshot commit; nothing new since)`.
+   > 3. **tag pushed AND strictly ahead of the snapshot commit** → genuine
+   >    anomaly: a tag exists on a commit absent from the snapshot's history,
+   >    i.e. a previous release tagged and pushed but failed before promoting
+   >    `main`. Abort here, worded for *that* cause, with `--allow-tag-at-head`
+   >    as the override.
+   >
+   > `git merge-base --is-ancestor` cannot separate 2 from 3; compare the
+   > resolved commit objects. Measurement that settled it: with an unpushed
+   > hand-made tag at HEAD, `require_pushed_baseline` alone already refuses with
+   > the correct message, so as originally specified the tag-at-head abort
+   > contributed **only** the false positive.
+
+   The *root cause* was hand-tagging a cmru-managed project. cmru owns `tag` in its own
+   pipeline (`snapshot → gate → tag → build → publish`), so a manual tag is indistinguishable
+   from a completed release. Detection is the guard; `SPEC.md` should also state the rule
+   plainly: **never hand-tag a cmru-managed project.**
+
+### KI-13 — the "unchanged" path hides the comparison baseline it just used — *shipped*
+**Reported by:** assay's wave-3 release, 2026-08-18.
+
+**Status:** cmru prints the baseline tag *only when it finds changes* — the case where you do
+not need it — and withholds it when it finds none, the only confusing case:
+
+```
+changed:    [INFO] assay: assay-v2.0.0 → assay-v2.1.0 (minor)      ← baseline shown
+unchanged:  [INFO] Unchanged, skipping: ciu, cmru, assay, topos…   ← baseline hidden
+```
+
+Faced with `Unchanged, skipping: assay` right after committing to `assay/`, an operator cannot
+distinguish wrong `paths` globs, a misplaced tag, commits that missed the configured paths, or
+a genuinely unchanged project. Diagnosing KI-12 required two git commands the output never
+suggested. **Fix:** name the baseline and the reason on the unchanged path, e.g.
+`Unchanged, skipping: assay (no commits under assay/ since assay-v2.1.0 @ 52534ef7)`. That one
+line makes KI-12 self-diagnosing without any of KI-12's deeper changes.
+
+### KI-14 — `--dry-run` surfaces diagnostics a real run withholds — *shipped*
+**Reported by:** assay's wave-3 release, 2026-08-18.
+
+**Status:** `--dry-run` prints `[DRY] Would tag: assay-v2.1.0` plus the full per-project plan;
+the real run prints the plan and then goes quiet through the phases until `[INFO] Released: …`.
+The principle: **a dry run must not be the only way to learn something about a real run.** Both
+should emit the same decision-level diagnostics — plan, baseline, derived version, per-project
+reason — differing only in the `[DRY] Would …` prefix and the absence of effects. Anything
+worth telling an operator *before* acting is worth telling them *while* acting; otherwise
+operators run everything twice, doubling the wall-clock cost of a gated release to obtain
+information the tool already had. Fixing KI-13 on both paths satisfies most of this.
+
+### KI-15 — cleanup prints `error:` and `failed to push` on a SUCCESSFUL run — *shipped*
+**Reported by:** assay's wave-3 release, 2026-08-18.
+
+**Status:** every observed run — including a **successful dry run that exited 0** — ends with:
+
+```
+error: unable to delete 'cmru/release/a38b64658b35': remote ref does not exist
+error: failed to push some refs to 'https://github.com/volkb79-2/vbpub.git'
+```
+
+Cleanup tries to delete the origin backup branch on paths where it was never pushed (dry run,
+and nothing-to-release). Two harms: it made a genuine no-op look like a failure while
+diagnosing KI-12, and — worse for a release tool — it trains operators to read `error:` and
+`failed to push` as background noise. **Fix:** delete the origin backup only when this
+transaction actually pushed it, tracked as transaction state rather than attempted
+unconditionally. Any remaining best-effort delete must not print at `error:` level.
+
+### KI-16 — release branch/worktree names are opaque, unsortable, and accumulate — *shipped*
+**Reported by:** assay's wave-3 release, 2026-08-18.
+
+**Status:** the transaction name is `cmru/release/<12 hex>` from `uuid.uuid4().hex[:12]`
+(`transaction.py:129`), with worktrees `.worktrees/cmru-release-<id>-<suffix>`. Ten retained
+release worktrees exist in this checkout right now. Nothing in a name says *when* it ran, *what*
+it was releasing, or whether it is safe to remove — so triage means opening each one.
+
+**The constraint any rename must preserve.** The uuid is not decoration: `transaction.py`
+calls it the "uuid-scoped name this ONE transaction created and exclusively owns", and cleanup
+depends on that exclusivity — a transaction may delete only a ref it certainly created. A
+scheme that can collide (two runs in the same second for the same scope) risks one transaction
+deleting another's branch. Collision-freedom is non-negotiable.
+
+**On the proposed `cmru-release-<YYYYMMDD_HHMMSS>-<project-with-version>`:** the timestamp and
+readability are right and should be adopted. Two parts cannot work as literally stated:
+
+* **The version is not known when the branch is created.** Ordering is: create the worktree and
+  branch at the remote snapshot → *then* detect changed projects → *then* derive versions
+  (visible in the log: `Preparing worktree (new branch …)` precedes `assay: assay-v2.0.0 →
+  assay-v2.1.0`). Naming the branch after the plan would invert the transaction's own ordering.
+* **A run is not always one project.** `release` with no `--project` iterates every changed
+  project on a single branch (`S-CLI.5a`), so `<project>` has no single value in general;
+  `--project assay` is the scoped special case.
+
+**Proposed instead**, preserving the `cmru/release/` namespace (code and refspecs glob on
+`branch.startswith("cmru/release/")`) and collision-freedom:
+
+```
+cmru/release/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>
+  e.g.  cmru/release/20260818-195012-assay-a3ae580d
+        cmru/release/20260818-195012-all-7f2c1b04
+```
+
+`<scope>` is the `--project` value when scoped, `all` otherwise. Chronologically sortable,
+readable at a glance, still exclusively owned; the worktree directory should mirror it.
+**Pair it with a retention policy** — `cmru gc`, or a documented sweep — since readability aids
+triage but does not stop accumulation. A timestamped name makes "remove retained transactions
+older than N days" expressible for the first time.
+
+> **FOLLOW-UP, 2026-08-19 — re-aligned to ciu; the branch was flattened.** The shipped
+> scheme above kept the *nested* `cmru/release/` ref namespace, so the branch string and its
+> worktree directory (`cmru-release-…`, slashes→dashes) were 1:1 *derivable* but not
+> *identical*. ciu's next version adopts flat `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` names with
+> exact 1:1 branch/directory naming and no nested paths, and cmru now matches it (SPEC
+> `S2.6a`'s sibling, `S-CLI.5b`):
+>
+> ```
+> cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+>   e.g.  cmru-release-20260819_143022-assay-a3ae580d   (branch string == worktree dir string)
+> ```
+>
+> Two deliberate divergences from ciu, decided with the operator: the trailing **`uuid8` is
+> kept** — this section's own "collision-freedom is non-negotiable" argument stands, and ciu's
+> suffix-free name cannot make it, so cmru is ciu-*shaped* but not byte-identical — and the
+> date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
+> `cmru/build/` prefixes are **still recognised** for discovery/resume/cleanup (predicates
+> `_is_release_branch`/`_is_build_branch`), so the ~50 worktrees retained under the old naming
+> in this checkout are not stranded. The retention-policy point above is still open.
+
+### KI-17 — a gate step copied from `cmru.toml` cannot be reproduced standalone — *shipped*
+**Reported by:** cmru's own KI-12…KI-16 work, 2026-08-19.
+**Shipped:** 2026-08-19, alongside the KI-16 ciu-alignment rename (SPEC `S2.6a`). Both fixes
+recommended below were taken.
+
+**Fix landed (both (a) and (b)).** `tester-gate` now runs an up-front preflight
+(`_missing_orchestration_env`) before any resolver with a side effect — the slice-existence
+probe or the container launch — that resolves every required value at `explicit flag > env`
+precedence and, if anything is missing, aborts **once, naming every missing variable together**
+(a): image, memory, memory/swap, CPU, probe image, plus the nested-Docker image under
+`--enable-docker`. The aggregate report and each individual resolver message now name
+`cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source, and say
+it is NOT usually the project's own `cmru.toml [env]` (b). The required set is one shared
+constant, `REQUIRED_TESTER_ENV`, that `cmru standards` imports for its static config check — so
+the runtime preflight and the static validator can never drift. `cgroup_parent` is deliberately
+excluded (it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback). The workaround formerly
+in `docs/CONTRIBUTING.md §3` now records the fix.
+
+**Original report (kept for the record).** The `argv` entries in a project's `[steps.*]` depend on environment injected by the
+**orchestration** layer from `cmru.orchestration.toml`'s `[env]` — `CMRU_TESTER_UNIFIED_IMAGE`,
+`CMRU_WHEEL_BUILDER_IMAGE`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
+`CMRU_TESTER_CGROUP_PROBE_IMAGE`. Nothing in the step says so.
+
+Copying a step out of `cmru.toml` and running it by hand — which is exactly what an operator
+does when a release goes red — fails **one missing variable at a time**, and each cycle costs a
+container spin-up. Measured while running cmru's own mutation campaign: two failed attempts,
+each surfacing precisely one more missing variable, before the third ran.
+
+The individual messages are clear (`no test image configured — pass --image explicitly or set
+CMRU_TESTER_UNIFIED_IMAGE`) but they are wrong about *where* the value normally comes from: it
+is not usually set in the project's `cmru.toml [env]` at all, it is inherited from the estate
+document above it. So the message sends the reader to the wrong file.
+
+**Fix, either or both:** (a) validate the full required-environment set up front and report
+**every** missing variable at once, rather than failing on the first; (b) name the real source
+in the message — *"normally supplied by `cmru.orchestration.toml [env]`; run through `cmru
+release`, or export it"*. Documented as a workaround in `docs/CONTRIBUTING.md` §3 meanwhile.
+
+### KI-18 — cmru's own mutation gate diffs `origin/main`, finding zero candidates at release time — *shipped*
+**Reported by:** cmru's first self-release attempt after the KI-12…KI-17 batch, 2026-08-19.
+
+**What happened.** `cmru release --project cmru` ran the full gate — tests, 100% coverage, and
+the Assay R0 lane all passed — then failed the `run-tests` mutation step with `RuntimeError:
+the declared source diff produced no mutation candidates`. Nothing was tagged, built, or
+published (fail-closed; the transaction worktree was retained).
+
+**Root cause.** `cmru/cmru.toml`'s mutation step ran `tools/mutation_campaign.py --base
+origin/main --require-candidates`. A release is an isolated transaction that **snapshots
+`origin/main`** (`S-CLI.5`) and requires the change to already be pushed there, so inside the
+transaction `git diff origin/main HEAD` contains only the generated `CHANGES.md` — **zero
+`src/cmru` candidates** — and `--require-candidates` correctly refuses an empty sample. The
+`--base origin/main` value only ever makes sense for a *pre-push CI* run (where `origin/main`
+is the prior state); it is degenerate for the release gate, which is the one context that must
+pass to publish. Latent since the S15/mutation gate landed in the unreleased KI-12…KI-16 batch;
+this was simply the first self-release to exercise it. cmru is the only project with a mutation
+gate, so the bug is cmru-local.
+
+**Fix.** The base is now the **previous cmru release tag**, resolved at gate time:
+`--base $(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main)`.
+That returns the nearest ancestor release tag (`cmru-v4.0.1` today), so the campaign mutates
+every source line changed **since the last release** — exactly the surface a release must
+verify — and always finds candidates for a real change. It is future-proof (each release's
+`git describe` picks up the newly-created tag as the next baseline) and falls back to
+`origin/main` only when no `cmru-v*` tag exists yet (first-ever/bootstrap release). The
+tester-gate container already mounts the checkout's real git common dir (`FIX-01`), so the
+release tags are visible to `git describe` in-container. Consequence: the release-gate campaign
+now covers the whole since-last-release diff, so it runs longer than a single-change campaign.
+
+**Note on the release engine (KI-11, observed here too).** The installed `cmru 4.0.1` could not
+even parse the current config (it predates S15's `[[project.tool_dependencies]]`), so this
+release had to run through the source engine. The clean resolution is to bootstrap the current
+wheel first — `cmru/build-initial-standalone.sh` builds it without a pre-installed cmru — then
+`pip install` it so the installed command matches the source before running `cmru.release.sh`.

@@ -59,6 +59,7 @@ def _evaluate(added: AddedLines, profile: CoverageProfile, *, allow_excluded: bo
         profile=profile,
         adapter=ADAPTER,
         repo_top=REPO_TOP,
+        project_root=REPO_TOP,
         source_root_paths=(REPO_TOP / "pkg",),
         fail_under=100.0,
         allow_excluded=allow_excluded,
@@ -78,7 +79,7 @@ def test_a_changed_missing_line_fails_the_union():
     result = _evaluate(added, profile)
 
     assert result.covered == 1
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.pct == 50.0
     assert result.considered == 1
     assert result.missing_lines == {"pkg/mod.zzz": frozenset({3})}
@@ -99,7 +100,7 @@ def test_every_changed_line_executed_passes():
     result = _evaluate(added, profile)
 
     assert result.covered == 2
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.pct == 100.0
     assert result.missing_lines == {}
     assert result.outcome is Outcome.PASS
@@ -122,7 +123,7 @@ def test_a_changed_excluded_line_fails_even_at_100_percent():
     # The totals alone say 100% -- proving the fail comes from the excluded
     # rule, not from the percentage.
     assert result.covered == 2
-    assert result.changed_executable == 2
+    assert result.executable == 2
     assert result.pct == 100.0
     assert result.missing_lines == {}
     assert result.outcome is Outcome.FAIL
@@ -159,11 +160,11 @@ def test_a_changed_line_outside_executable_and_excluded_never_fails_it():
     result = _evaluate(added, profile)
 
     assert result.covered == 2
-    assert result.changed_executable == 2  # line 5 contributes to NEITHER
+    assert result.executable == 2  # line 5 contributes to NEITHER
     assert result.pct == 100.0
     assert result.missing_lines == {}
     assert result.outcome is Outcome.PASS
-    # Dropping this rule (counting line 5 toward changed_executable without
+    # Dropping this rule (counting line 5 toward executable without
     # a matching executed/covered contribution) would make this FAIL at
     # 66.67% -- the flip the negative names.
 
@@ -184,7 +185,7 @@ def test_a_pre_existing_uncovered_line_outside_the_diff_is_invisible():
     result = _evaluate(added, profile)
 
     assert result.covered == 2
-    assert result.changed_executable == 2  # line 9 never enters the denominator
+    assert result.executable == 2  # line 9 never enters the denominator
     assert result.pct == 100.0
     assert result.missing_lines == {}  # line 9 is not "missing" from THIS claim
     assert result.outcome is Outcome.PASS
@@ -211,7 +212,7 @@ def test_all_four_members_combine_in_one_evaluation():
     result = _evaluate(added, profile, allow_excluded=False)
 
     assert result.covered == 1
-    assert result.changed_executable == 2  # {2, 3}; 4 excluded, 5/6 non-code
+    assert result.executable == 2  # {2, 3}; 4 excluded, 5/6 non-code
     assert result.pct == 50.0
     assert result.considered == 1
     assert result.missing_lines == {"pkg/mod.zzz": frozenset({3})}

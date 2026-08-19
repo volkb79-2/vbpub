@@ -116,6 +116,52 @@ commit — HEAD may have already moved under concurrent commits; leave the bad o
 buried and land a correct new commit instead. (Inside a private worktree none of
 this applies — commit normally.)
 
+## User-facing docs are part of the change, not a follow-up (MANDATORY, estate-wide)
+
+> **A capability is not shipped when its code is green. It is shipped when a
+> human who does not know it exists can find it, understand why it works that
+> way, and adopt it — before the merge, not after.**
+
+Three documents, one job each. Do not blur them; they were already drifting
+when this rule was written.
+
+| document | its one job | failure if skipped |
+|---|---|---|
+| **README** | **WHAT** the product does — the user-facing feature surface | a reader is told the opposite of what the tool does |
+| **DESIGN-GUIDE** (`docs/`) | **WHY** it does it that way — choices, rejected alternatives, reasoning | the next agent re-argues a settled question, or reopens a rejected option |
+| **CONSUMERS.md** (`docs/`) | **HOW** to adopt it — worked examples and real use cases | an adopter follows the guide and gets a refusal with no hint why |
+
+A README feature **links** to its DESIGN-GUIDE section rather than re-arguing
+the rationale there; CONSUMERS.md shows something an adopter could **paste**,
+not a description of one.
+
+**The obligation:** any work item that adds, removes or changes a user-facing
+capability, a public config key, a closed vocabulary value, or a compatibility
+fact is **INCOMPLETE until all three are in sync**, and that sync lands in the
+work, not in a later tidy-up commit. State it in the work item's own file list
+so it cannot be forgotten silently.
+
+**Make it a test, not an intention** — "we will remember to update the docs" is
+precisely the check that cannot fail, which is this estate's most expensive
+recurring defect. Each of these must be able to go red:
+
+1. **every config example in all three documents parses with the SHIPPED
+   loader**, and declares the current schema version;
+2. **every value of every closed public vocabulary a consumer must type**
+   appears in at least one of the three, so a capability cannot ship
+   undocumented;
+3. **every cross-document anchor resolves.**
+
+Incident behind this: assay wave 1. The plan survived a carve, three failed
+review rounds, a full recarve and an independent adversarial review — and all
+of them missed that the README's headline bullet said "changed-line coverage,
+**not** whole-project coverage" while the wave was shipping exactly the
+whole-target mode that denies, and that `docs/CONSUMERS.md` was named in **no
+work item at all** while its adoption steps had gone stale against a now-
+mandatory config table. Both had the same cause: trove documents get touched
+every day by the process, and the documents facing a human adopter get touched
+only when somebody remembers. Recorded as assay `decisions.md` **A-270**.
+
 ## Carving for a project — where the specifics live
 Project-specific constraints a carve/review agent must honor (schema policy,
 gate command, stack/mutex rules, product invariants) live in that project's
@@ -125,3 +171,64 @@ layout spec), any `nyxloom-trove/STANDARD.md` sibling the project adds, and its
 `[refs]` docs before carving for it. Do NOT rely on the
 historical `legacy-workflow-origin/` docs — their live rules are already in
 nyxloom (schema/lint/review) and this file.
+
+## A check is only as strong as what it actually compares (MANDATORY, estate-wide)
+
+> **A check's message states a conclusion. The code states a comparison. When
+> the comparison is narrower than the message, the tool does not merely fail to
+> catch something — it issues a false certification, which is worse than having
+> no check at all.**
+
+The habit that finds these, and it is cheap: **for every status your code can
+report, list the distinct real-world conditions that collapse into it.** Then
+check both directions — that the benign condition is not reported as the
+alarming one, and that the alarming one is not reported as benign.
+
+| # | Anti-pattern | Shape |
+|---|---|---|
+| 1 | **Name for object** | verifying that an identifier *exists* remotely while claiming the *thing* is verified |
+| 2 | **Absence for emptiness** | folding "could not reach it" into "there is nothing there" |
+| 3 | **Type for behaviour** | asserting an exception's *type* where two different causes raise the same type |
+| 4 | **Superset refusal** | a refusal whose condition also matches an ordinary, legitimate state |
+
+Corollaries. A refusal that blocks work must have its **legitimate state
+constructed before it ships** — a gate that cries wolf on a healthy estate gets
+switched off, and then it protects nothing. Any status meaning "I could not
+determine this" must be reachable *only* from genuine indeterminacy, never as a
+fallback for a failed comparison. And when you fix such a check, re-read its
+message: it was usually already claiming the stronger thing.
+
+Incidents behind this, all four found in one cmru change set and all four the
+same shape: a tag-**name** presence check whose message asserted a verified
+release baseline (a local tag reusing a published name at a different commit
+certified a false baseline and silently dropped real work); `prefix + "-v"`
+doubling reported as *"no release exists yet"*; **HTTP 404 on a release list
+folded into "nothing published yet"**, so an inaccessible or renamed repository
+would have stopped being checked forever, fail-open; and an abort on "tag at *or
+ahead of* the snapshot" that fired on the ordinary just-released state while
+advising `git tag -d` on a real release tag. Detail: `cmru/docs/CONTRIBUTING.md`
+§5 and `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-12.
+
+## Read the exit status from the job, never from the wrapper (MANDATORY, estate-wide)
+
+> **A compound, piped, or backgrounded invocation reports *its own* status. If
+> you did not capture the status of the thing you care about, you do not know
+> it — and the number you are looking at will usually be `0`.**
+
+* Never `cmd | tail` (or `| head`, `| tee`) and then read `$?` — that is the
+  pager's status. `set -o pipefail` or `${PIPESTATUS[@]}` if you must pipe.
+* A backgrounded job's completion notice reports the *wrapper*. Append your own
+  marker and read that:
+
+  ```bash
+  <long running thing> > /tmp/x.log 2>&1
+  echo "EXIT=$?" >> /tmp/x.log
+  grep EXIT /tmp/x.log
+  ```
+
+Incidents behind this: a gate run that **failed** was reported as "exit code 0"
+because the reported status belonged to the compound command; `ciu provenance`'s
+real exit status (2) was read as 0 through a `| head`, which put a wrong
+conclusion into a design document; and two cmru mutation-campaign runs that
+executed **zero mutants** were both announced as "exit code 0" while their logs
+said `MUTATION_EXIT=1`.

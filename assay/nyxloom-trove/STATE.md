@@ -1,5 +1,36 @@
 # assay — state of play
 
+> **WAVE 1 (B005 + B006) UPDATE, 2026-08-17 — READ THIS FIRST, THEN
+> `W1-RESUME.md` FOR THE LIVE POSITION.** Everything below this notice predates
+> wave 1 and is preserved for its still-accurate Go/SQL/adoption history; do
+> not read its sequencing ("NEXT WORK WAS...") as current. `W1-RESUME.md` is
+> the authoritative live-position file for wave 1 and wins on conflict.
+>
+> **Shipped and merged onto this branch:** branch coverage in all four coverage
+> formats (§3), the changed-line judge's branch arithmetic and `require_branch`
+> (§4, A-258/A-259), B005's whole-target judge (§5, A-260), verdict schema v6
+> (§6, A-261/A-262/A-263), and B006(a)'s `snapshot_selection`/
+> `unsafe_symlink_omissions` plus B006(b)'s in-snapshot artifact-parent creation
+> (`W1-CARVE-B006a-project-scope.md` WI-0 through WI-4). Lane schema is now
+> `LANE_SCHEMA_VERSION = 2`; verdict schema is now `VERDICT_SCHEMA_VERSION = 6`.
+> Both are hard cuts — see `docs/DESIGN-GUIDE.md` §6's "Snapshot selection"
+> subsection and CONSUMERS.md's "Adopting a v2-capable release".
+>
+> **This item (documentation, sibling wave §7 item 5 + B006(a) WI-6) is
+> landing now.** `README.md`, `docs/DESIGN-GUIDE.md` and `docs/CONSUMERS.md`
+> are updated for the two facts they were wrong about before this commit: the
+> README's headline bullet used to deny the whole-target mode this wave ships,
+> and `docs/CONSUMERS.md` was not named in any work item and its adoption
+> guidance predated the mandatory `[isolation]` table. See
+> `nyxloom-trove/reports/W1-WI6-B006a-implementation.md` for the check output.
+>
+> **Not yet done:** CMRU's real R1/R2/R3 lane (B006a's own WI-5 qualification
+> plus the sibling wave's O9b — `cmru/assay.toml` is deliberately untouched by
+> this commit, still schema v1/R0-only), the controller's adversarial review,
+> the gate, the merge to `main`, and the release. `4-backlog.md`'s B005/B006
+> status lines and prose record this precisely; do not read either item as
+> fully "done" until CMRU's real lane and the release both land.
+
 > **P00–P26 ARE COMPLETE AND MERGED. THE PRODUCT IS NOT YET SAFE TO ADOPT.**
 > The current review is
 > `nyxloom-trove/reports/assay-v2-post-series-review-sol-P15-P19.md`;

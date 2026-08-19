@@ -71,6 +71,12 @@ class ReasonCode(StrEnum):
 
     # FAIL
     UNCOVERED_LINES = "UNCOVERED_LINES"
+    #: (wave-1 §4, A-258) `pct < fail_under` with zero missing LINES and at
+    #: least one uncovered branch arc. Ranked identically to
+    #: `UNCOVERED_LINES` in the outcome precedence, but never the same
+    #: sentence: "which mechanism refused" is the distinction this project
+    #: exists to keep (B001's false-PASS story one layer up).
+    UNCOVERED_BRANCHES = "UNCOVERED_BRANCHES"
     EXCLUDED_LINES = "EXCLUDED_LINES"
     UNCLASSIFIED_LINES = "UNCLASSIFIED_LINES"
     MUTANTS_SURVIVED = "MUTANTS_SURVIVED"
@@ -97,6 +103,20 @@ class ReasonCode(StrEnum):
     #: (that is `NO_MUTANTS`).
     MUTATION_DISCOVERY_FAILED = "MUTATION_DISCOVERY_FAILED"
     # NO_MEASUREMENT
+    #: (wave-1 §4, A-259) `judge.require_branch = true` over an artifact
+    #: whose branch capability is `"unavailable"` -- payload-free, guarded
+    #: before any evaluation (beside `check_empty_coverage` in `evaluate_r1`'s
+    #: own guard sequence, never inside `evaluate_coverage` itself: this is a
+    #: measurability question, not an arithmetic one). Exists so dropping
+    #: `--cov-branch` from an argv cannot silently downgrade a line+branch
+    #: gate into a line-only one that still says PASS.
+    BRANCH_UNAVAILABLE = "BRANCH_UNAVAILABLE"
+    #: (wave-1 §5, A-260) B005's own anti-vacuity guard: a `whole_target`
+    #: target absent from the coverage artifact, or present with zero
+    #: executable lines. Payload-free -- the target was never measured, so
+    #: there is nothing to judge. This is the terminal the argv stopgap it
+    #: replaces silently fails to render (it reports `100%` of zero instead).
+    TARGET_NOT_MEASURED = "TARGET_NOT_MEASURED"
     DIRTY_TREE = "DIRTY_TREE"
     #: (P21/A-178) the lane's command left a CLEAN tree but moved `HEAD`.
     #: P20 collapsed this into `DIRTY_TREE` to stay schema-v3-compatible,
@@ -108,10 +128,13 @@ class ReasonCode(StrEnum):
     EMPTY_COVERAGE = "EMPTY_COVERAGE"
     MISSING_ATTESTATION = "MISSING_ATTESTATION"
     STALE_ATTESTATION = "STALE_ATTESTATION"
-    #: (P21/A-163, RESERVED for P27) a declared adapter prerequisite named in
-    #: `LanguageAdapter.external_tools` is absent, so the check it gates
-    #: cannot run. Reserved by the one pre-adoption schema migration so P27
-    #: can render it without a second version bump (A-013/A-086/A-144).
+    #: (P21/A-163) a declared adapter prerequisite named in
+    #: `LanguageAdapter.external_tools` is absent from the effective PATH, so
+    #: the check it gates cannot run. Reserved by the one pre-adoption schema
+    #: migration so its eventual producer could render it without a second
+    #: version bump (A-013/A-086/A-144) -- no longer reserved: P34/A-253
+    #: lands the producer, `runner.run_lane`'s own preflight (A-284), before
+    #: any snapshot, command or Git work.
     MISSING_EXTERNAL_TOOL = "MISSING_EXTERNAL_TOOL"
     # BUDGET_EXCEEDED
     LANE_TIMEOUT = "LANE_TIMEOUT"
@@ -124,8 +147,8 @@ class ReasonCode(StrEnum):
     #: No longer reserved: P22/P23 landed both producers -- `isolation.py`'s
     #: `_limit_exceeded` and `git.py`'s object-closure bound raise it, and
     #: `tests/fixtures/verdicts/r0_budget_exceeded_snapshot_limit_exceeded.json`
-    #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is still reserved;
-    #: this one is live.
+    #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is likewise no
+    #: longer reserved as of P34/A-253; both are live.
     SNAPSHOT_LIMIT_EXCEEDED = "SNAPSHOT_LIMIT_EXCEEDED"
     # INCONCLUSIVE
     NO_MUTANTS = "NO_MUTANTS"
@@ -158,6 +181,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         Outcome.FAIL: frozenset(
             {
                 ReasonCode.UNCOVERED_LINES,
+                ReasonCode.UNCOVERED_BRANCHES,
                 ReasonCode.EXCLUDED_LINES,
                 ReasonCode.UNCLASSIFIED_LINES,
                 ReasonCode.MUTANTS_SURVIVED,
@@ -178,6 +202,8 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
         ),
         Outcome.NO_MEASUREMENT: frozenset(
             {
+                ReasonCode.BRANCH_UNAVAILABLE,
+                ReasonCode.TARGET_NOT_MEASURED,
                 ReasonCode.DIRTY_TREE,
                 ReasonCode.HEAD_CHANGED,
                 ReasonCode.BASE_IS_HEAD,

@@ -1,0 +1,70 @@
+{
+  "schema_version": 6,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "999999999999999999999999999999999999999c",
+  "outcome": "NO_MEASUREMENT",
+  "exit_code": 3,
+  "started": "2026-08-16T15:10:00+00:00",
+  "ended": "2026-08-16T15:10:01+00:00",
+  "reason_code": "TARGET_NOT_MEASURED",
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "exit 0"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ]
+    },
+    "r1": {
+      "coverage_format": "coverage-py-json",
+      "coverage_artifact": "cov.json",
+      "fail_under": 100.0,
+      "allow_excluded": false,
+      "mode": "whole_target",
+      "require_branch": false,
+      "targets": [
+        "pkg/mod.py"
+      ]
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R1",
+      "source": "computed",
+      "status": "NO_MEASUREMENT",
+      "verified_by_assay": true,
+      "reason_code": "TARGET_NOT_MEASURED"
+    }
+  ],
+  "evidence": []
+}

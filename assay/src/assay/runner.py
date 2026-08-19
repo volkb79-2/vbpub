@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -83,10 +84,11 @@ from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequen
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
-from .config import Lane
+from .config import IsolationConfig, Lane
+from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
-from .evaluate import evaluate_coverage
+from .evaluate import evaluate_coverage, evaluate_targets
 from .output import VerdictOutput
 from .verdict import (
     CanaryResult,
@@ -99,6 +101,7 @@ from .verdict import (
     JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
+    SnapshotPolicy,
     Verdict,
     iso_utc,
     rollup,
@@ -502,7 +505,7 @@ def evaluate_r1(
     *,
     repo: Path,
     project_root: Path,
-    base: str,
+    base: str | None,
     adapter: LanguageAdapter,
     on_base_resolved: Callable[[str], None] | None = None,
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
@@ -572,40 +575,87 @@ def evaluate_r1(
     same ``base``..``HEAD`` pair a second time, for the identical
     frozen-signature reason *on_base_resolved* exists: :mod:`assay.canary`
     already depends on this function returning a bare :class:`Claim`.
+
+    **wave-1 §4/§5 (A-258/A-259/A-260).** ``judge.mode`` (absent means
+    ``"changed_lines"``) dispatches to :func:`~assay.evaluate.
+    evaluate_coverage` (unchanged shape) or to the whole-target mode's
+    :func:`~assay.evaluate.evaluate_targets`, which has no base and no
+    diff: neither *on_base_resolved* nor *on_added_resolved* is ever called
+    on that path, and *base* itself is not read at all. ``judge.
+    require_branch`` (absent means ``False``) is a MEASURABILITY guard --
+    checked once, beside :func:`~assay.coverage.check_empty_coverage`,
+    before mode dispatch, never inside either evaluate function -- so an
+    artifact whose branch capability is ``"unavailable"`` renders
+    ``NO_MEASUREMENT``/``BRANCH_UNAVAILABLE`` regardless of which mode was
+    declared.
     """
     judge = lane.judge
+    effective_mode = judge.mode if judge.mode is not None else "changed_lines"
+    effective_require_branch = (
+        judge.require_branch if judge.require_branch is not None else False
+    )
     try:
         measurability.check_dirty_tree(repo, judge.source_root_paths, remaining=remaining)
-        resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
-        if on_base_resolved is not None:
-            on_base_resolved(resolved.base_rev)
+
+        resolved = None
+        if effective_mode == "changed_lines":
+            resolved = measurability.check_base_is_head(repo, base, remaining=remaining)
+            if on_base_resolved is not None:
+                on_base_resolved(resolved.base_rev)
+
         if profile is None:
             profile = coverage.read_coverage_artifact(
                 project_root, judge.coverage.artifact, declared_format=judge.coverage.format
             )
         coverage.check_empty_coverage(profile)
+
+        if effective_require_branch and derive_branch_capability(profile) == "unavailable":
+            raise AssayError(
+                f"judge.require_branch is true but the coverage artifact's "
+                f"branch capability is 'unavailable' -- this format cannot "
+                f"report branch arcs at all, so judging on lines alone would "
+                f"be exactly the silent rigor downgrade require_branch "
+                f"exists to refuse",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.BRANCH_UNAVAILABLE,
+            )
+
         repo_top = git.repo_top(repo, remaining=remaining)
-        diff_text = git.run(
-            repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
-            remaining=remaining,
-        )
-        added = diff.parse_added_lines(diff_text)
-        if on_added_resolved is not None:
-            on_added_resolved(added)
 
-        def read_source_text(path: str) -> str:
-            return _read_bounded_source_text(repo_top, path, why="coverage classification")
+        if effective_mode == "whole_target":
+            result = evaluate_targets(
+                profile=profile,
+                adapter=adapter,
+                repo_top=repo_top,
+                project_root=project_root,
+                targets=judge.targets or (),
+                source_root_paths=judge.source_root_paths,
+                fail_under=judge.fail_under,
+                allow_excluded=judge.allow_excluded,
+            )
+        else:
+            diff_text = git.run(
+                repo, "diff", "--unified=0", resolved.base_rev, resolved.head_rev,
+                remaining=remaining,
+            )
+            added = diff.parse_added_lines(diff_text)
+            if on_added_resolved is not None:
+                on_added_resolved(added)
 
-        result = evaluate_coverage(
-            added=added,
-            profile=profile,
-            adapter=adapter,
-            repo_top=repo_top,
-            source_root_paths=judge.source_root_paths,
-            fail_under=judge.fail_under,
-            allow_excluded=judge.allow_excluded,
-            read_source_text=read_source_text,
-        )
+            def read_source_text(path: str) -> str:
+                return _read_bounded_source_text(repo_top, path, why="coverage classification")
+
+            result = evaluate_coverage(
+                added=added,
+                profile=profile,
+                adapter=adapter,
+                repo_top=repo_top,
+                project_root=project_root,
+                source_root_paths=judge.source_root_paths,
+                fail_under=judge.fail_under,
+                allow_excluded=judge.allow_excluded,
+                read_source_text=read_source_text,
+            )
     except AssayError as exc:
         return Claim(
             rigor="R1",
@@ -623,7 +673,7 @@ def evaluate_r1(
         reason_code=result.reason_code,
         coverage=Coverage(
             covered=result.covered,
-            changed_executable=result.changed_executable,
+            executable=result.executable,
             pct=result.pct,
             considered=result.considered,
             exclusion_capability=result.exclusion_capability,
@@ -633,6 +683,11 @@ def evaluate_r1(
             files_with_unclassified_lines=result.files_with_unclassified_lines,
             excluded_lines=result.excluded_lines,
             files_with_excluded_lines=result.files_with_excluded_lines,
+            branches_covered=result.branches_covered,
+            branches_total=result.branches_total,
+            branch_capability=result.branch_capability,
+            missing_branch_lines=result.missing_branch_lines,
+            files_with_missing_branch_lines=result.files_with_missing_branch_lines,
         ),
     )
 
@@ -834,6 +889,7 @@ def assemble_verdict(
         judgment=judgment,
         claims=claims,
         evidence=evidence,
+        snapshot_policy=_verdict_snapshot_policy(lane),
     )
 
 
@@ -1017,6 +1073,142 @@ def _resolved_project_prefix(repo_top: Path, project_root: Path) -> PurePosixPat
     )
 
 
+def _snapshot_policy_for_lane(lane: Lane) -> IsolationConfig | None:
+    """(B006a/A-269 WI-2, §3.3 item 1) The R0/R1+ isolation conditional,
+    re-enforced HERE at the runner boundary.
+
+    ``config.py``'s loader already enforces this identical rule
+    (``_load_isolation_for_lane``) for every TOML-sourced lane; this is the
+    SAME rule checked again because a caller may construct a public
+    :class:`~assay.config.Lane` directly, bypassing the loader entirely
+    (§3.5's own "a public directly-constructed Lane violates the R0/R1+
+    isolation conditional"). Returns ``None`` -- never a fabricated
+    repository default -- for a valid R0-only/no-isolation pair; returns
+    ``lane.isolation`` BY IDENTITY (never copied or renormalised) for a
+    valid R1+/isolation pair; raises ``ERROR``/``BAD_LANE_CONFIG`` for
+    either impossible direct-constructor pairing.
+
+    Called by :func:`run_lane` before it chooses between the direct R0-only
+    path and :func:`_run_higher_rigor_lane`, and (WI-4) by
+    ``assemble_verdict`` -- ONE helper, so the runner and the verdict
+    producer can never disagree about which policy a lane carries.
+    """
+    higher_rigor = any(level != "R0" for level in lane.rigor)
+    if higher_rigor:
+        if lane.isolation is None:
+            raise AssayError(
+                f"lane {lane.name!r} declares rigor {list(lane.rigor)} but "
+                f"isolation is None; R1/R2/R3 requires an explicit "
+                f"snapshot_policy, and this runner never invents a "
+                f"repository default for one",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        return lane.isolation
+    if lane.isolation is not None:
+        raise AssayError(
+            f"lane {lane.name!r} declares rigor {list(lane.rigor)} (R0-only) "
+            f"but isolation is {lane.isolation!r}; an R0-only lane runs no "
+            f"snapshot and must not declare a policy for one",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+    return None
+
+
+def _verdict_snapshot_policy(lane: Lane) -> SnapshotPolicy | None:
+    """(B006(a)/A-269 WI-4, §5.2) The WIRE ``snapshot_policy`` for *lane* --
+    ``None`` exactly when :func:`_snapshot_policy_for_lane` returns
+    ``None`` (an R0-only lane), and the closed-enum copy of
+    ``lane.isolation`` otherwise. Called by :func:`assemble_verdict`, which
+    is the SINGLE construction site every producer path -- normal
+    completion, ``refuse_lane``, the attestation-timeout/adapter-refusal
+    CLI branches, dirty-tree/HEAD-drift refusals, and the generic
+    ``except AssayError`` mapping -- already funnels through, so this is
+    the one place the runner and the verdict producer can never disagree
+    about which policy a lane carries (the identical "one helper, not two
+    copies that could drift" reasoning :func:`_snapshot_policy_for_lane`'s
+    own docstring already gives).
+    """
+    policy = _snapshot_policy_for_lane(lane)
+    if policy is None:
+        return None
+    return SnapshotPolicy(
+        selection=policy.snapshot_selection,
+        unsafe_symlink_omissions=(
+            policy.unsafe_symlink_omissions
+            if policy.snapshot_selection == "repository-minus-unsafe-symlinks"
+            else None
+        ),
+    )
+
+
+def _refuse_coverage_artifact_omission_collision(
+    *,
+    lane: Lane,
+    snapshot_policy: IsolationConfig,
+    project_prefix: PurePosixPath,
+) -> None:
+    """(B006a/A-269 WI-3, §3.4) **Public-API defence-in-depth** -- NOT a
+    loadable-TOML preflight. A lane loaded from a real ``assay.toml`` cannot
+    normally reach this branch at all: ``config._load_coverage`` already
+    refuses a coverage artifact whose OWN spelling escapes the project root
+    through a live symlink, at load time, long before any snapshot exists.
+    This function exists for the shape that check cannot see -- a caller
+    that builds the public frozen :class:`~assay.config.Lane` dataclass
+    directly, bypassing the loader entirely, the same reachability §3.4
+    grants ``_snapshot_policy_for_lane`` immediately above.
+
+    Refuses ``ERROR``/``BAD_LANE_CONFIG`` when *lane*'s declared coverage
+    artifact, converted to a repo-top-relative :class:`~pathlib.PurePosixPath`
+    (never a string prefix, never a local :meth:`~pathlib.Path.resolve`
+    against a commit namespace -- both would compare the wrong namespace or
+    trust a filesystem fact this snapshot's own commit does not own), is
+    equal to or beneath a declared unsafe-symlink omission. Without this
+    check, B006(b)'s own missing-parent-chain creation could silently
+    replace an omitted committed symlink with a generated ordinary
+    directory the very first time the command's coverage artifact is
+    reserved -- exactly the "ancestor of the coverage-artifact path" row
+    §3.6's own outcome matrix names.
+
+    Called ONCE per lane, by :func:`_run_higher_rigor_lane`, after
+    ``isolation.prepare_snapshot`` has already returned (so every omission
+    compared here already survived P22's own commit-tree validation: an
+    unreadable declared target still fails ``GIT_FAILED`` and a declaration
+    that turns out not to be a real unsafe symlink still fails
+    ``BAD_LANE_CONFIG``, both from *inside* ``prepare_snapshot`` itself,
+    never from this function) but BEFORE the first
+    ``prepared.materialize()`` -- this is deliberately the very first thing
+    that runs once a prepared snapshot exists, before any unit (baseline,
+    mutant, or either canary half) ever touches a filesystem.
+
+    A no-op in repository mode (there are no declared omissions to collide
+    with) and for a lane with no declared coverage artifact at all -- an
+    R2- or R3-only lane never reserves one.
+    """
+    if snapshot_policy.snapshot_selection != "repository-minus-unsafe-symlinks":
+        return
+    if lane.judge is None or lane.judge.coverage is None:
+        return
+    artifact_repo_path = PurePosixPath(
+        (project_prefix / lane.judge.coverage.artifact).as_posix()
+    )
+    for omitted in snapshot_policy.unsafe_symlink_omissions:
+        omitted_path = PurePosixPath(omitted)
+        if artifact_repo_path.is_relative_to(omitted_path):
+            raise AssayError(
+                f"lane {lane.name!r}'s coverage artifact "
+                f"{lane.judge.coverage.artifact!r} resolves to "
+                f"{artifact_repo_path.as_posix()!r}, which is equal to or "
+                f"beneath the declared unsafe-symlink omission {omitted!r}; "
+                f"B006(b)'s coverage-artifact parent-directory creation "
+                f"must never be allowed to silently replace an omitted "
+                f"committed symlink with a generated directory",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+
+
 def _relocate_source_roots(
     lane: Lane, *, project_root: Path, scratch_project_root: Path
 ) -> Lane:
@@ -1051,12 +1243,24 @@ class SnapshotUnitResult:
     requested -- either the freshly parsed profile or the
     :class:`~assay.errors.AssayError` its own reservation/consume/parse
     raised.
+
+    *baseline_equivalence*/*equivalence_error* (P34/§3.6) are the identical
+    shape one field over, for R2's declared ``equivalence_artifact`` -- only
+    populated when a caller passed one in. Unlike coverage's *profile_error*
+    (which can be a parse failure among other things), *equivalence_error*
+    is set for exactly ONE fact this dataclass's own producer distinguishes
+    from a genuine consume failure: the baseline declared the artifact and
+    its own command did not write it (A-279's "never a comparison against
+    None" -- :func:`~assay.mutation.run_mutation` refuses that outright, so
+    this is where the caller must resolve real bytes or stop before it).
     """
 
     result: CommandResult
     post_reason: ReasonCode | None
     profile: CoverageProfile | None
     profile_error: AssayError | None
+    baseline_equivalence: bytes | None = None
+    equivalence_error: AssayError | None = None
 
 
 def _execute_snapshot_unit(
@@ -1069,6 +1273,9 @@ def _execute_snapshot_unit(
     coverage_format: str | None,
     process_runner: ProcessRunner,
     clock: Clock,
+    create_missing_parents: bool = False,
+    equivalence_artifact: str | None = None,
+    kill_signal_artifact: str | None = None,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -1085,6 +1292,34 @@ def _execute_snapshot_unit(
     caller knows whether an already-produced REAL R0 result (the lane's own
     baseline) must be preserved despite it (A-195, mirroring P20's own
     direct-path claim precedence one level down).
+
+    *create_missing_parents* (B006(b)) defaults to ``False`` and is threaded
+    straight to :func:`assay.safeio.reserve_output`'s own identically-named,
+    identically-defaulted parameter -- this function's own default is never
+    the thing that decides whether *snapshot*'s tracked-only checkout gets a
+    generated parent directory. Every caller of this function DOES run
+    entirely inside an ephemeral P22 snapshot (there is no other caller), so
+    every one of them passes ``True`` explicitly; the default stays ``False``
+    here anyway, rather than flipping it, so this function's own contract --
+    read on its own, with no caller in view -- still says "does not create"
+    until a caller affirmatively asks otherwise. A consumer's REAL worktree
+    is never reachable through this function at all: *snapshot* is always
+    :mod:`assay.isolation`'s own private, owned checkout.
+
+    *equivalence_artifact*/*kill_signal_artifact* (P34/§3.6/§3.7) are the
+    R2 baseline's own SQL-only artifact declarations, ``None`` for every
+    other lane (identical disposition to *coverage_artifact* under
+    ``wants_coverage``). Both get the SAME tracked-by-git refusal the
+    coverage artifact already gets (§3.7's "either artifact tracked ...
+    -> `runner._execute_snapshot_unit`"), checked here because a git-tracked
+    status is a fact about the COMMIT, invariant across every later mutant's
+    own single-blob-replacement snapshot of it -- one check at baseline time
+    covers all of them. Only *equivalence_artifact* is reserved/armed/
+    consumed: the baseline command is the lane's own ``apply && dump &&
+    test`` run once (A-279), so its OWN dump is read here exactly like
+    coverage's profile one field over; *kill_signal_artifact* names a file a
+    PASSING baseline has no reason to write, so it gets the tracked check
+    only, never a reservation.
     """
     reservation: safeio.OutputReservation | None = None
     if wants_coverage:
@@ -1093,6 +1328,7 @@ def _execute_snapshot_unit(
             snapshot.project_root,
             coverage_artifact,
             limit=coverage.MAX_COVERAGE_ARTIFACT_BYTES,
+            create_missing_parents=create_missing_parents,
         )
         if _coverage_artifact_is_tracked(
             snapshot.root, snapshot.project_root, coverage_artifact,
@@ -1107,6 +1343,46 @@ def _execute_snapshot_unit(
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
         reservation.arm()
+
+    equivalence_reservation: safeio.OutputReservation | None = None
+    if equivalence_artifact is not None:
+        equivalence_reservation = safeio.reserve_output(
+            snapshot.project_root,
+            equivalence_artifact,
+            limit=mutation.MAX_EQUIVALENCE_ARTIFACT_BYTES,
+            create_missing_parents=create_missing_parents,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, equivalence_artifact,
+            remaining=deadline.remaining,
+        ):
+            equivalence_reservation.close()
+            if reservation is not None:
+                reservation.close()
+            raise AssayError(
+                f"the declared equivalence_artifact {equivalence_artifact!r} "
+                f"is tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        equivalence_reservation.arm()
+
+    if kill_signal_artifact is not None and _coverage_artifact_is_tracked(
+        snapshot.root, snapshot.project_root, kill_signal_artifact,
+        remaining=deadline.remaining,
+    ):
+        if equivalence_reservation is not None:
+            equivalence_reservation.close()
+        if reservation is not None:
+            reservation.close()
+        raise AssayError(
+            f"the declared kill_signal_artifact {kill_signal_artifact!r} is "
+            f"tracked by git inside the prepared snapshot -- measurement "
+            f"output must not be committed",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
 
     result = execute_plan(
         plan,
@@ -1134,11 +1410,37 @@ def _execute_snapshot_unit(
     if reservation is not None:
         reservation.close()
 
+    baseline_equivalence: bytes | None = None
+    equivalence_error: AssayError | None = None
+    if post_reason is None and equivalence_reservation is not None:
+        try:
+            baseline_equivalence = equivalence_reservation.consume()
+        except AssayError as exc:
+            equivalence_error = exc
+        else:
+            if baseline_equivalence is None:
+                # A-279: never a comparison against None. The baseline
+                # declared this artifact and its own command did not write
+                # it -- no mutant is even attempted (§3.7's own row).
+                equivalence_error = AssayError(
+                    f"the baseline declared judge.mutation.equivalence_artifact "
+                    f"{equivalence_artifact!r} but its own command did not "
+                    f"write it -- R2 needs the baseline's own bytes to prove "
+                    f"any mutant equivalent, so no mutant can even be "
+                    f"attempted",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.EXEC_FAILED,
+                )
+    if equivalence_reservation is not None:
+        equivalence_reservation.close()
+
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
         profile=profile,
         profile_error=profile_error,
+        baseline_equivalence=baseline_equivalence,
+        equivalence_error=equivalence_error,
     )
 
 
@@ -1293,7 +1595,21 @@ def _run_prepared_lane(
     """
     coverage_artifact = lane.judge.coverage.artifact if r1_declared else None
     coverage_format = lane.judge.coverage.format if r1_declared else None
+    # P34/§3.6: `None` for every lane that does not declare R2 or whose
+    # `judge.mutation` does not name them (every Python/Go lane through this
+    # build, A-227) -- identical disposition to `coverage_artifact` above,
+    # which is what makes the undeclared lane's baseline unit byte-identical
+    # to before this item (O8).
+    equivalence_artifact = (
+        lane.judge.mutation.equivalence_artifact if r2_declared else None
+    )
+    kill_signal_artifact = (
+        lane.judge.mutation.kill_signal_artifact if r2_declared else None
+    )
 
+    # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
+    # checkout -- never the consumer's real worktree -- so this is exactly
+    # the "snapshot-running call site" that is allowed to opt in explicitly.
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
         unit = _execute_snapshot_unit(
             plan=plan,
@@ -1304,6 +1620,9 @@ def _run_prepared_lane(
             coverage_format=coverage_format,
             process_runner=process_runner,
             clock=clock,
+            create_missing_parents=True,
+            equivalence_artifact=equivalence_artifact,
+            kill_signal_artifact=kill_signal_artifact,
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
@@ -1333,6 +1652,19 @@ def _run_prepared_lane(
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
         r2_early_claim: Claim | None = None
+        if unit.equivalence_error is not None:
+            # A-279: the baseline declared `equivalence_artifact` and its
+            # own command did not write it -- ERROR/EXEC_FAILED, before any
+            # mutant. Set HERE, before diff/target resolution below, so that
+            # work is skipped entirely rather than merely discarded (the
+            # `r2_early_claim is None` guard on that block).
+            r2_early_claim = Claim(
+                rigor="R2",
+                source="computed",
+                status=unit.equivalence_error.outcome,
+                verified_by_assay=True,
+                reason_code=unit.equivalence_error.reason_code,
+            )
 
         if r1_declared:
             if unit.profile_error is not None:
@@ -1365,7 +1697,17 @@ def _run_prepared_lane(
                     remaining=deadline.remaining,
                 )
                 claims += (r1_claim,)
-                if r1_claim.coverage is not None:
+                # wave-1 §6/A-264: R1 records its policy whenever R1 was
+                # ATTEMPTED -- one case wider than "rendered a coverage
+                # payload", mirroring A-183's identical R2 widening for
+                # MUTATION_UNSUPPORTED. Without this, BRANCH_UNAVAILABLE and
+                # TARGET_NOT_MEASURED could not record which target was
+                # attempted or which floor was asked for.
+                r1_attempted = r1_claim.coverage is not None or r1_claim.reason_code in (
+                    ReasonCode.BRANCH_UNAVAILABLE,
+                    ReasonCode.TARGET_NOT_MEASURED,
+                )
+                if r1_attempted:
                     # (P33/A-223f) v5 collapses two independently-resolved
                     # `base` values into ONE field, so which wins is stated
                     # rather than left to whoever writes the code next:
@@ -1378,7 +1720,13 @@ def _run_prepared_lane(
                     # commit assay measured and the one it recorded, which
                     # must be loud rather than silently resolved in favour
                     # of whichever value happened to be assigned last.
-                    if resolved_base_holder[0] != resolved_base:
+                    # wave-1 §5/A-260: a whole-target R1 never resolves a
+                    # base at all (`on_base_resolved` is never called on
+                    # that path, evaluate_r1's own docstring), so
+                    # `resolved_base_holder` stays empty for it -- this
+                    # comparison is therefore skipped, never a forced
+                    # IndexError, whenever R1 resolved no base of its own.
+                    if resolved_base_holder and resolved_base_holder[0] != resolved_base:
                         raise AssayError(
                             f"the comparison commit resolved inside the "
                             f"snapshot ({resolved_base_holder[0]}) differs "
@@ -1389,17 +1737,28 @@ def _run_prepared_lane(
                             outcome=Outcome.ERROR,
                             reason_code=ReasonCode.GIT_FAILED,
                         )
+                    r1_effective_mode = (
+                        lane.judge.mode if lane.judge.mode is not None else "changed_lines"
+                    )
+                    r1_effective_require_branch = (
+                        lane.judge.require_branch
+                        if lane.judge.require_branch is not None
+                        else False
+                    )
                     judgment_r1 = JudgmentR1(
                         coverage_format=lane.judge.coverage.format,
                         coverage_artifact=lane.judge.coverage.artifact,
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
+                        mode=r1_effective_mode,
+                        targets=lane.judge.targets,
+                        require_branch=r1_effective_require_branch,
                     )
                 if added_holder:
                     added = added_holder[0]
             ended = iso_utc(clock())
 
-        if r2_declared and result.outcome is Outcome.PASS:
+        if r2_declared and result.outcome is Outcome.PASS and r2_early_claim is None:
             if added is None:
                 try:
                     resolved = measurability.check_base_is_head(
@@ -1482,6 +1841,9 @@ def _run_prepared_lane(
                     operators=lane.judge.mutation.operators,
                     process_runner=process_runner,
                     clock=clock,
+                    equivalence_artifact=equivalence_artifact,
+                    kill_signal_artifact=kill_signal_artifact,
+                    baseline_equivalence=unit.baseline_equivalence,
                 )
             except AssayError as exc:
                 r2_orchestration_fault = exc
@@ -1634,9 +1996,13 @@ def _build_judgment_r2(lane: Lane) -> JudgmentR2:
     disagree.
 
     In THIS build the derivation has exactly one reachable answer, and that
-    is deliberate rather than a shortcut (A-230d). ``config`` refuses
-    ``kill_signal_artifact`` until P34 ships a producer for the values it
-    implies, so every real P33 lane derives ``unattributed``. P33 therefore
+    is deliberate rather than a shortcut (A-230d). ``config`` (P34/W4) now
+    accepts ``kill_signal_artifact`` on a ``sql`` lane, but
+    ``cli._built_in_registry`` does not register the SQL adapter until P34's
+    own W6, so no build this package ships can resolve a ``sql`` lane past
+    ``registry.get_adapter`` at all -- every real lane THIS build can run is
+    still Python or Go, both of which ``config`` still refuses the field for,
+    so every one of them still derives ``unattributed``. P33 therefore
     SPECIFIES the rule and enforces it for documents; it does not claim to
     witness it, and no construction seam exists here whose only purpose
     would be to make that claim testable.
@@ -1708,6 +2074,7 @@ def _run_higher_rigor_lane(
     r1_declared: bool,
     r2_declared: bool,
     r3_declared: bool,
+    snapshot_policy: IsolationConfig,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
 ) -> Verdict:
@@ -1718,6 +2085,14 @@ def _run_higher_rigor_lane(
     CLI-started :class:`LaneDeadline` (P26/A-212, already begun before HEAD
     resolution by the caller) are shared across every unit;
     :mod:`assay.isolation` (P22) owns all Git-object isolation and refusal.
+
+    *snapshot_policy* (B006a/A-269 WI-2) is :func:`run_lane`'s own
+    ``_snapshot_policy_for_lane(lane)`` result -- always non-``None`` on this
+    path, since the caller only reaches here once ``r1_declared or
+    r2_declared or r3_declared``, which is exactly the pairing that helper
+    never returns ``None`` for. Passed into the ONE :class:`~assay.isolation.
+    SnapshotSpec` below BY IDENTITY, never re-derived from *lane* a second
+    time here.
     """
     repo_top = git.repo_top(repo, remaining=deadline.remaining)
     project_prefix = _resolved_project_prefix(repo_top, project_root)
@@ -1763,9 +2138,21 @@ def _run_higher_rigor_lane(
                 commit=commit,
                 project_prefix=project_prefix,
                 scratch_root=scratch_root,
+                snapshot_policy=snapshot_policy,
                 limits=isolation.DEFAULT_SNAPSHOT_LIMITS,
             )
             with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+                # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
+                # already commit-validated `snapshot_policy`'s declared
+                # omissions, but strictly BEFORE the first
+                # `prepared.materialize()` call inside `_run_prepared_lane`
+                # below -- so B006(b)'s own coverage-artifact parent-chain
+                # creation can never get a chance to run first.
+                _refuse_coverage_artifact_omission_collision(
+                    lane=lane,
+                    snapshot_policy=snapshot_policy,
+                    project_prefix=project_prefix,
+                )
                 outcome_holder.append(
                     _run_prepared_lane(
                         lane,
@@ -1897,6 +2284,42 @@ def run_lane(
     never cleans the consumer's tree to make a claim true.
     """
     _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
+
+    # (A-253/A-284, W3) The external-tool PATH preflight, at the TOP of this
+    # function -- before ANY snapshot, command or Git work -- guarded on
+    # *adapter* being resolved. There is no earlier "the adapter was just
+    # resolved" position inside this function to slot into: `run_lane`
+    # never resolves an adapter itself (see this function's own docstring
+    # above -- that is `assay.cli`'s job), so `adapter` arrives already
+    # resolved or not at all. `adapter is None` exactly when NEITHER `"R1"`
+    # nor `"R2"` is declared, so an R0-only lane never reaches the loop
+    # below; every lane that DOES carry an adapter is checked here before
+    # either dispatch state (direct R0 or `_run_higher_rigor_lane`) begins,
+    # which is the one insertion point that covers both.
+    #
+    # `refuse_lane` (never a bare `raise`): this function's other pre-work
+    # refusals below build a complete refusal artifact the same way, and a
+    # bare exception here would propagate past every later terminal path
+    # this build already promises emits one (work item 3's "every later
+    # terminal path must emit a complete artifact") -- `commit` is already
+    # resolved by the time `run_lane` is called, so an un-auditable refusal
+    # here would be exactly the shape P17 exists to remove.
+    if adapter is not None:
+        for tool in adapter.external_tools:
+            if shutil.which(tool) is None:
+                return refuse_lane(
+                    lane,
+                    commit=commit,
+                    status=Outcome.NO_MEASUREMENT,
+                    reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                    argv_append=argv_append,
+                    passthrough_source=passthrough_source,
+                    assay_version=assay_version,
+                    evidence=evidence,
+                    declared_evidence=declared_evidence,
+                    clock=clock,
+                )
+
     if deadline is None:
         # A library convenience for a non-CLI caller only -- CLI always
         # passes the instance it started before HEAD resolution (A-212).
@@ -1946,6 +2369,13 @@ def run_lane(
             clock=clock,
         )
 
+    # (B006a/A-269 WI-2, §3.3 item 1) Resolved BEFORE the R0/higher-rigor
+    # dispatch below, and unconditionally -- not only on the higher-rigor
+    # branch -- so a directly constructed `Lane` that pairs R0-only rigor
+    # with a declared isolation policy is refused here too, never silently
+    # accepted because its rigor happened to route it past P22 entirely.
+    snapshot_policy = _snapshot_policy_for_lane(lane)
+
     r1_declared = "R1" in lane.rigor
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
@@ -1954,6 +2384,9 @@ def run_lane(
         # A-189: exact R0 alone stays on the direct live-tree path below;
         # every higher-rigor lane uses P22's committed-snapshot state
         # machine instead, with no live-tree fallback on its refusal.
+        # `snapshot_policy` is never `None` here: `_snapshot_policy_for_lane`
+        # only returns `None` for an R0-only lane, and this branch is
+        # exactly `r1_declared or r2_declared or r3_declared`.
         return _run_higher_rigor_lane(
             lane,
             commit=commit,
@@ -1970,6 +2403,7 @@ def run_lane(
             r1_declared=r1_declared,
             r2_declared=r2_declared,
             r3_declared=r3_declared,
+            snapshot_policy=snapshot_policy,
             evidence=evidence,
             declared_evidence=declared_evidence,
         )

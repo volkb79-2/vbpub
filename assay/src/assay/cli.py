@@ -14,14 +14,16 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1, R2 and R3**, for Python only (P19 closes
-  sol finding 1 in full): ``_built_in_registry`` is the CLI's own closed
-  capability declaration (work item 2, widened by every rigor-wiring
-  package since) — Python is registered at R1, R2 and R3 and nothing else,
-  so a lane declaring ``judge.language`` as anything but ``"python"``, or a
-  rigor level for a language this registry does not know (Go, at any
-  level — P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the
-  lane's command ever runs. A declared R3 lane's own canary run happens in
+  This build evaluates **R0, R1, R2 and R3 for Python, and R2 for SQL**
+  (P19 closes sol finding 1 in full for Python; P34/W6 adds SQL at R2
+  only): ``_built_in_registry`` is the CLI's own closed capability
+  declaration (work item 2, widened by every rigor-wiring package since)
+  — Python is registered at R1, R2 and R3, SQL at R2 only, and nothing
+  else, so a lane declaring ``judge.language`` as anything but
+  ``"python"``/``"sql"``, a SQL lane declaring R1 or R3, or a rigor level
+  for a language this registry does not know at all (Go, at any level —
+  P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's
+  command ever runs. A declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
@@ -54,6 +56,7 @@ from . import __version__
 from . import attestation, git, registry, runner
 from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
+from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file
 from .errors import AssayError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output
@@ -98,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2 and Python R3."
+            "Python R2, Python R3, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -192,11 +195,23 @@ def _built_in_registry() -> registry.Registry:
     exactly the failure the whole v1.1 repair series exists to remove one
     level up (the post-series review's own finding 1) -- this is that
     discipline applied to the registry itself.
+
+    **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
+    ``SqlAdapter``'s own module docstring). That single fact is what makes
+    ``SqlAdapter.has_executable_code``/``normalize_coverage_key``/
+    ``statement_spans``/``inject_import_break``/``inject_uncovered_line``
+    provably unreachable through this CLI: none of R0's own path, R1, or
+    R3 ever resolves an adapter for a language whose one registry entry
+    names only R2, so nothing here ever calls an R0/R1/R3-only method on
+    it. Route (i) (§4.1) needs no ``external_tools`` entry, so this is the
+    entire wiring change -- no preflight, no new config surface, one more
+    entry in this one registry.
     """
     return registry.new_registry(
         registry.RegistryEntry(
             adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
+        registry.RegistryEntry(adapter=SqlAdapter(), rigor=frozenset({"R2"})),
     )
 
 

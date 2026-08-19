@@ -27,6 +27,7 @@ from assay.verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    SnapshotPolicy,
     Verdict,
 )
 from assay.errors import Outcome, ReasonCode
@@ -82,7 +83,7 @@ def r0_pass() -> Claim:
 
 def r1_pass_claim() -> Claim:
     coverage = Coverage(
-        covered=2, changed_executable=2, pct=100.0, considered=1,
+        covered=2, executable=2, pct=100.0, considered=1,
         exclusion_capability="reported",
         missing_lines={}, files_missing_coverage=(),
     )
@@ -152,32 +153,32 @@ def r3_pass_claim(*, mechanism: str = "uncovered-line") -> Claim:
 # --- Coverage: the new arithmetic invariants (P16) ---------------------------
 
 
-def test_coverage_refuses_pct_disagreeing_with_covered_and_changed_executable():
-    Coverage(covered=1, changed_executable=2, pct=50.0, considered=1, exclusion_capability="reported",
+def test_coverage_refuses_pct_disagreeing_with_covered_and_executable():
+    Coverage(covered=1, executable=2, pct=50.0, considered=1, exclusion_capability="reported",
               missing_lines={"a.py": frozenset({1})}, files_missing_coverage=())  # untouched form
 
     with pytest.raises(ValueError, match="does not agree with"):
-        Coverage(covered=1, changed_executable=2, pct=75.0, considered=1, exclusion_capability="reported",
+        Coverage(covered=1, executable=2, pct=75.0, considered=1, exclusion_capability="reported",
                   missing_lines={"a.py": frozenset({1})}, files_missing_coverage=())
 
 
 def test_coverage_refuses_a_zero_over_zero_pct_that_is_not_100():
     with pytest.raises(ValueError, match="does not agree with"):
-        Coverage(covered=0, changed_executable=0, pct=0.0, considered=0,
+        Coverage(covered=0, executable=0, pct=0.0, considered=0,
                   exclusion_capability="reported",
                   missing_lines={}, files_missing_coverage=())
 
 
 def test_coverage_refuses_missing_lines_total_disagreeing_with_the_summary():
     with pytest.raises(ValueError, match="must sum to the summary"):
-        Coverage(covered=1, changed_executable=2, pct=50.0, considered=1, exclusion_capability="reported",
+        Coverage(covered=1, executable=2, pct=50.0, considered=1, exclusion_capability="reported",
                   missing_lines={}, files_missing_coverage=())
 
 
 def test_coverage_refuses_overlapping_missing_and_excluded_lines():
     with pytest.raises(ValueError, match="exactly one classification"):
         Coverage(
-            covered=0, changed_executable=1, pct=0.0, considered=1,
+            covered=0, executable=1, pct=0.0, considered=1,
             exclusion_capability="reported",
             missing_lines={"a.py": frozenset({1})}, files_missing_coverage=(),
             excluded_lines={"a.py": frozenset({1})}, files_with_excluded_lines=("a.py",),
@@ -187,7 +188,7 @@ def test_coverage_refuses_overlapping_missing_and_excluded_lines():
 def test_coverage_refuses_overlapping_missing_and_unclassified_lines():
     with pytest.raises(ValueError, match="exactly one classification"):
         Coverage(
-            covered=0, changed_executable=1, pct=0.0, considered=1,
+            covered=0, executable=1, pct=0.0, considered=1,
             exclusion_capability="reported",
             missing_lines={"a.py": frozenset({1})}, files_missing_coverage=(),
             unclassified_lines={"a.py": frozenset({1})},
@@ -198,7 +199,7 @@ def test_coverage_refuses_overlapping_missing_and_unclassified_lines():
 def test_coverage_refuses_overlapping_excluded_and_unclassified_lines():
     with pytest.raises(ValueError, match="exactly one classification"):
         Coverage(
-            covered=0, changed_executable=0, pct=100.0, considered=1,
+            covered=0, executable=0, pct=100.0, considered=1,
             exclusion_capability="reported",
             missing_lines={}, files_missing_coverage=(),
             excluded_lines={"a.py": frozenset({1})}, files_with_excluded_lines=("a.py",),
@@ -219,7 +220,7 @@ def test_coverage_refuses_overlapping_excluded_and_unclassified_lines():
 def test_coverage_refuses_files_with_excluded_lines_that_omits_a_named_file():
     with pytest.raises(ValueError, match="files_with_excluded_lines"):
         Coverage(
-            covered=0, changed_executable=0, pct=100.0, considered=1,
+            covered=0, executable=0, pct=100.0, considered=1,
             exclusion_capability="reported",
             missing_lines={}, files_missing_coverage=(),
             excluded_lines={"a.py": frozenset({1})}, files_with_excluded_lines=(),
@@ -229,7 +230,7 @@ def test_coverage_refuses_files_with_excluded_lines_that_omits_a_named_file():
 def test_coverage_refuses_files_with_excluded_lines_naming_an_unlisted_file():
     with pytest.raises(ValueError, match="files_with_excluded_lines"):
         Coverage(
-            covered=0, changed_executable=0, pct=100.0, considered=1,
+            covered=0, executable=0, pct=100.0, considered=1,
             exclusion_capability="reported",
             missing_lines={}, files_missing_coverage=(),
             excluded_lines={"a.py": frozenset({1})},
@@ -240,7 +241,7 @@ def test_coverage_refuses_files_with_excluded_lines_naming_an_unlisted_file():
 def test_coverage_refuses_files_with_unclassified_lines_that_omits_a_named_file():
     with pytest.raises(ValueError, match="files_with_unclassified_lines"):
         Coverage(
-            covered=0, changed_executable=0, pct=100.0, considered=1,
+            covered=0, executable=0, pct=100.0, considered=1,
             exclusion_capability="reported",
             missing_lines={}, files_missing_coverage=(),
             unclassified_lines={"a.py": frozenset({1})},
@@ -256,7 +257,7 @@ def test_coverage_refuses_files_missing_coverage_that_contributes_no_missing_lin
     # The honest containment builds: "b.py" contributes missing lines from a
     # real artifact entry and is correctly absent from the summary.
     Coverage(
-        covered=0, changed_executable=2, pct=0.0, considered=2,
+        covered=0, executable=2, pct=0.0, considered=2,
         exclusion_capability="reported",
         missing_lines={"a.py": frozenset({1}), "b.py": frozenset({2})},
         files_missing_coverage=("a.py",),
@@ -264,7 +265,7 @@ def test_coverage_refuses_files_missing_coverage_that_contributes_no_missing_lin
 
     with pytest.raises(ValueError, match="contribute no line"):
         Coverage(
-            covered=0, changed_executable=1, pct=0.0, considered=2,
+            covered=0, executable=1, pct=0.0, considered=2,
             exclusion_capability="reported",
             missing_lines={"a.py": frozenset({1})},
             files_missing_coverage=("a.py", "b.py"),
@@ -376,6 +377,10 @@ def test_judgment_r1_untouched_form_builds():
         "coverage_artifact",
         "fail_under",
         "allow_excluded",
+        # wave-1 §6 (A-260): mode/require_branch are now required and
+        # therefore always present; targets stays absent in changed-line mode.
+        "mode",
+        "require_branch",
     }
 
 
@@ -606,7 +611,7 @@ def test_judgment_forbids_a_base_when_only_r3_is_present():
     made. Unreachable for this producer -- A-062 refuses `judge.base` on an
     R0,R3 lane as inert config -- and reachable for any foreign document,
     which is the population `verify.py` exists for."""
-    with pytest.raises(ValueError, match="neither r1 nor r2"):
+    with pytest.raises(ValueError, match="neither r2 nor r1"):
         Judgment(
             resolved=JudgmentResolved(**BASE_RESOLVED),
             r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),
@@ -691,6 +696,7 @@ def test_verdict_accepts_the_matched_r1_coverage_and_judgment_pair():
             resolved=JudgmentResolved(**BASE_RESOLVED),
             r1=JudgmentR1(**BASE_R1_POLICY),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     # P33/V5-1: the language now lives on `resolved`, where an R0,R2 lane can
     # record it too.
@@ -746,6 +752,7 @@ def test_verdict_accepts_the_matched_r2_mutation_and_judgment_pair():
                 **BASE_R2_POLICY,
             ),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     assert verdict.judgment.r2.jobs == 1
 
@@ -812,6 +819,7 @@ def test_verdict_accepts_the_matched_r3_canary_and_judgment_pair():
             # accepted-and-waiting-for-v4.
             r3=JudgmentR3(mechanism="uncovered-line", target="a.py"),
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
     )
     assert verdict.judgment.r3.target == "a.py"
 
@@ -864,6 +872,7 @@ def _r2_verdict(*, mutation: Mutation, policy: JudgmentR2, language: str, **over
             ),
             r2=policy,
         ),
+        snapshot_policy=SnapshotPolicy(selection="repository"),
         **overrides,
     )
 
@@ -974,7 +983,8 @@ def test_mutation_refuses_a_kill_signal_outside_the_killed_bucket():
 def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
     """(P33/V5-5, A-223c) Only the observable direction. The converse -- a
     claim produced with a helper requires an entry -- has no readable
-    antecedent in the artifact bytes, so P34 owns it."""
+    antecedent in the artifact bytes, so P29 owns it (A-282: route (i) gives
+    SQL ``external_tools = ()``, so P34 can never witness it)."""
     mutation = Mutation(
         candidate_count=1, total=1, killed=(_sql_mutant(operator="sql:drop-check"),)
     )
@@ -999,7 +1009,9 @@ def test_verdict_refuses_a_helper_entry_with_no_correspondingly_judged_claim():
         resolved_path="/opt/assay-helpers/bin/assay-go-positions",
         identity="assay-go-positions 0.1.0",
     )
-    with pytest.raises(ValueError, match="carries no an R1 claim|statement-positions"):
+    with pytest.raises(
+        ValueError, match="does not carry an R1 claim carrying a coverage payload"
+    ):
         _r2_verdict(
             mutation=mutation, policy=policy, language="sql", helpers=(positions,)
         )

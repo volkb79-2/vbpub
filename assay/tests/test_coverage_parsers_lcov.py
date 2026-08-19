@@ -69,6 +69,10 @@ def test_blank_lines_inside_a_record_are_skipped():
 
 
 def test_unrecognised_but_legal_record_types_are_ignored_not_rejected():
+    # BRDA:/BRF:/BRH: are deliberately EXCLUDED from this artifact: wave-1
+    # (§3.3) made those three meaningful (see
+    # test_coverage_parsers_lcov_branches.py), so this test now proves only
+    # the record types that remain genuinely unused for either model.
     artifact = (
         "TN:my_test\n"
         "SF:a.c\n"
@@ -77,10 +81,6 @@ def test_unrecognised_but_legal_record_types_are_ignored_not_rejected():
         "FNF:1\n"
         "FNH:1\n"
         "DA:1,3\n"
-        "BRDA:1,0,0,3\n"
-        "BRDA:1,0,1,-\n"
-        "BRF:2\n"
-        "BRH:1\n"
         "LF:1\n"
         "LH:1\n"
         "end_of_record\n"
@@ -89,6 +89,7 @@ def test_unrecognised_but_legal_record_types_are_ignored_not_rejected():
     assert profile.files["a.c"] == FileCoverage(
         executed=frozenset({1}), missing=frozenset(), excluded=None
     )
+    assert profile.files["a.c"].branches is None
 
 
 @pytest.mark.parametrize(

@@ -118,8 +118,17 @@ def test_transaction_backup_branch_uses_force_and_cleanup_is_best_effort(tmp_pat
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/x", git(root, "rev-parse", "HEAD"))
     calls = []
-    with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0)):
+    real_run = transaction.subprocess.run
+
+    def fake(argv, **kw):
+        if argv[:2] == ["git", "push"]:
+            calls.append(argv)
+            return SimpleNamespace(returncode=0)
+        return real_run(argv, **kw)  # the internal git-common-dir lookups mark/backup_was_pushed make
+
+    with patch.object(transaction.subprocess, "run", side_effect=fake):
         transaction.push_backup_branch(workspace)
+        assert transaction.backup_was_pushed(root, workspace) is True  # KI-15: recorded as pushed
         transaction.remove_backup_branch(workspace)
     assert ["--force", "origin", "HEAD:refs/heads/cmru/release/x"][-3:] == calls[0][-3:]
     assert "--delete" in calls[1]

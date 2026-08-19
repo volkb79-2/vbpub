@@ -5,11 +5,18 @@ which stage first-party wheels expose an additional source fact in
 "pip/wheels.list"; those inputs must also be represented by the orchestration
 project's "depends_on" list. This module compares the two rather than
 silently inventing an order.
+
+A project may ALSO declare a "tool" edge (S15, ``[[project.tool_dependencies]]``):
+a first-party artifact its own tests/tooling consume, distinct from a "declared"
+(release-order) or "artifact" (wheel-input) edge. A tool edge is reported here for
+visibility but is DELIBERATELY EXCLUDED from ``project_order`` validation below --
+see the comment at its construction site for why routing it through that check would
+break the estate.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -23,12 +30,23 @@ class DependencyEdge:
 
 
 @dataclass(frozen=True)
+class ToolDependencyRef:
+    """One project's declared tool-dependency edge, as reported in the graph."""
+    provider: str
+    version: str
+    path: str
+
+
+@dataclass(frozen=True)
 class DependencyReport:
     project_order: tuple[str, ...]
     declared: Mapping[str, tuple[str, ...]]
     artifact_inputs: Mapping[str, tuple[str, ...]]
     edges: tuple[DependencyEdge, ...]
     errors: tuple[str, ...]
+    # consumer -> its declared tool dependencies (S15). Defaulted so existing direct
+    # DependencyReport(...) construction (tests included) keeps working unchanged.
+    tool_dependencies: Mapping[str, tuple[ToolDependencyRef, ...]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -50,6 +68,13 @@ class DependencyReport:
                 }
                 for edge in self.edges
             ],
+            "tool_dependencies": {
+                name: [
+                    {"provider": ref.provider, "version": ref.version, "path": ref.path}
+                    for ref in refs
+                ]
+                for name, refs in self.tool_dependencies.items()
+            },
             "errors": list(self.errors),
             "ok": self.ok,
         }
@@ -151,6 +176,44 @@ def build_report(
                 )
         artifact_inputs[consumer] = tuple(resolved)
 
+    # Tool edges (S15): a first-party artifact a project's OWN tests/tooling consume
+    # (e.g. cmru's vendored assay zipapp). Reported like the two edge kinds above, but
+    # DELIBERATELY NEVER checked against `positions` / project_order: cmru's own tests
+    # run tools/assay/*.pyz while `assay` already `depends_on = ["cmru"]` for RELEASE
+    # ORDER. Routing this edge through the same ordering check as a "declared" edge
+    # would make cmru->assay a cycle against assay->cmru and break the estate -- this
+    # edge kind exists specifically because that ordering relationship is unwanted, not
+    # because it was left out by omission. Do not "fix" this by adding an ordering
+    # check here.
+    tool_dependencies: dict[str, tuple[ToolDependencyRef, ...]] = {}
+    for consumer, project in projects.items():
+        refs: list[ToolDependencyRef] = []
+        for dependency in getattr(project, "tool_dependencies", ()) or ():
+            provider = getattr(dependency, "project", None)
+            if provider not in projects:
+                errors.append(
+                    f"{consumer!r} declares a tool dependency on unknown project {provider!r}"
+                )
+                continue
+            if provider == consumer:
+                errors.append(f"{consumer!r} declares a tool dependency on itself")
+                continue
+            edges.append(
+                DependencyEdge(
+                    provider, consumer, "tool",
+                    f"{consumer}: project.tool_dependencies[{provider!r}]",
+                )
+            )
+            refs.append(
+                ToolDependencyRef(
+                    provider=provider,
+                    version=getattr(dependency, "version", ""),
+                    path=getattr(dependency, "path", ""),
+                )
+            )
+        if refs:
+            tool_dependencies[consumer] = tuple(refs)
+
     unique: dict[tuple[str, str, str], DependencyEdge] = {}
     for edge in edges:
         unique.setdefault((edge.provider, edge.consumer, edge.kind), edge)
@@ -160,6 +223,7 @@ def build_report(
         artifact_inputs=artifact_inputs,
         edges=tuple(unique.values()),
         errors=tuple(dict.fromkeys(errors)),
+        tool_dependencies=tool_dependencies,
     )
 
 
@@ -168,10 +232,16 @@ def render_text(report: DependencyReport) -> str:
     for consumer in report.project_order:
         providers = list(report.declared.get(consumer, ()))
         artifact = list(report.artifact_inputs.get(consumer, ()))
+        tool = list(report.tool_dependencies.get(consumer, ()))
         detail = ", ".join(providers) if providers else "none"
         lines.append(f"  {consumer} <- {detail}  (declared release order)")
         if artifact:
             lines.append(f"    consumes first-party wheels: {', '.join(artifact)}")
+        if tool:
+            lines.append(
+                "    consumes first-party tools (excluded from release ordering): "
+                + ", ".join(f"{ref.provider}@{ref.version}" for ref in tool)
+            )
     lines.append("")
     if report.errors:
         lines.append("PREFLIGHT: FAIL")

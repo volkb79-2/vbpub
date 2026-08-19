@@ -11,6 +11,16 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
+Last updated: 2026-08-19 — merged from main: dstdns's five configuration/
+landscape capability asks **CIU-34..38 FILED, OPEN** (renumbered from
+CIU-29..33 on main because this branch had already allocated CIU-29; recorded
+vbpub@b4d7c749), four of them carved as `ciu-P08..P11`
+(`nyxloom-trove/handoffs/`, wave brief
+`nyxloom-trove/ciu-config-wave-BRIEF-2026-08-19.md`); and assay's provenance
+defect renumbered **CIU-28 → CIU-39** at this merge (this branch had also
+independently allocated CIU-28 for worktree identity — assay-side references
+updated the same day).
+
 Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 
 ## Current status
@@ -22,6 +32,12 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — carved as P04-P06; qualification P07 |
+| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | OPEN — carved as ciu-P10-deploy-layouts (depends ciu-P08); `environment` per layout (dstdns D-105 Q2) |
+| CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | OPEN — carved as ciu-P11-host-scoped-secrets |
+| CIU-36 | No `landscape_id` identity dimension | Low | OPEN — carved as ciu-P08-landscape-identity (validate+document only) |
+| CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | OPEN — carved as ciu-P09-configfile-schema-validation |
+| CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
+| CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | OPEN |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -86,6 +102,45 @@ it must be project-declared rather than a PostgreSQL default embedded in CIU.
 
 **SPEC ownership:** remove S16.2 and reserve no replacement behavior.
 
+### CIU-34..38 detail: five asks from dstdns's configuration/landscape decision — OPEN
+
+**Filed by:** dstdns controller session, 2026-08-19, out of the configuration /
+landscape / remote-deployment decision recorded in
+`dstdns/docs/spec-configuration-and-landscape.md` (D-094…D-101). Per this file's
+rule the asks live here; dstdns keeps only the pointer (spec §11). None is a
+defect in shipped behaviour — each is a capability the decided model needs from
+its deploy tool. Verified against `docs/CONFIG.md` + `src/` before filing (a
+feature dstdns has not adopted is not a feature ciu is missing).
+
+**CIU-34 — `layout`.** Desired shape (candidate, not decided):
+`[deploy.layouts.<name>.hosts.<host>] bundles = ["core","db"]` (+ per-layout
+`topology_overrides` and opaque tunable pins passed through to the app's
+rendered config), `ciu up --layout <name>` iterating the SPEC-J host inventory
+over SSH in dependency order. Until it exists, a layout is a documented sequence
+of `ciu up --host <h> --profile <bundle>`.
+
+**CIU-35 — host-scoped local secrets.** `ASK_EXTERNAL`/`GEN_LOCAL` entries keyed
+under `[deploy.hosts.<h>.secrets]` (SSH bootstrap key, Tailscale single-use
+authkey), resolvable by `ciu ssh`/`ciu up --host` *before* any Vault exists on the
+target, later movable to Vault by the existing directives.
+
+**CIU-36 — `landscape_id` dimension.** A first-class identity value (beside
+project/instance) exposed to templates and to S16 worktree instances, so a
+consumer can render its Consul KV root (`dstdns/<landscape_id>/…`) and mesh ACL
+tags from one source.
+
+**CIU-37 — schema-validated render.** `[<root>.<service>.configfile.app]` (or the
+render step) accepts `schema = "path/to/config-schema.json"` and validates the
+rendered TOML against it, failing the render with the key path — the app's
+generated JSON schema is the source, ciu only checks.
+
+**CIU-38 — per-service AppRole.** Vault stack provisions one AppRole + policy per
+declared service and a template helper delivers `role_id` + a `secret_id` file
+path into that service's rendered config (no secret VALUES rendered). dstdns
+decided runtime Vault fetch (SM2, D-098); if this lands upstream dstdns consumes
+it, otherwise dstdns builds it locally and notes the delta here.
+
+### CIU-39 detail
 ## CIU-25 — stale worktree/stack detection and reap
 
 **Status:** OPEN, deliberately outside the current milestone.

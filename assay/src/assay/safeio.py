@@ -79,23 +79,74 @@ def _open_root(project_root: Path) -> int:
         raise _refuse(f"project root {project_root} is not an openable, non-symlink directory: {exc}") from exc
 
 
-def _open_child_dir(name: str, *, dir_fd: int) -> int:
+def _open_child_dir(
+    name: str, *, dir_fd: int, artifact: str, create_missing: bool = False
+) -> int:
+    """Open child directory *name* relative to *dir_fd*, ``O_NOFOLLOW``.
+
+    *create_missing* (B006(b), default ``False``, the module-level default a
+    caller must explicitly override -- see :func:`reserve_output`) governs
+    ONLY the ``ENOENT`` case. A component that exists as anything other than
+    an openable, non-symlink directory (a symlink, a regular file, a FIFO)
+    refuses exactly as it always has: creation is never attempted, and never
+    trusted to substitute, for a component that is already something else.
+
+    When *create_missing* is set and the component is genuinely absent, the
+    directory is created ``dir_fd``-relative (``mkdir`` at *dir_fd*, mode
+    ``0o700``) and then REOPENED with the identical ``O_DIRECTORY|O_NOFOLLOW``
+    flags used for a pre-existing component -- never trusted blind. This is
+    the discipline that stops ``os.makedirs``-style recursion from ever
+    following a symlink: if a race replaces the just-created name with a
+    symlink before the reopen, the reopen's own ``O_NOFOLLOW`` refuses it
+    exactly as it would a pre-existing one.
+    """
     try:
         return os.open(name, _OPEN_DIR_FLAGS, dir_fd=dir_fd)
+    except FileNotFoundError as exc:
+        if not create_missing:
+            raise _refuse(
+                f"declared artifact {artifact!r}: parent component {name!r} "
+                f"does not exist -- the parent could not be opened (missing, "
+                f"and creation was not requested)"
+            ) from exc
+        try:
+            os.mkdir(name, 0o700, dir_fd=dir_fd)
+            return os.open(name, _OPEN_DIR_FLAGS, dir_fd=dir_fd)
+        except OSError as create_exc:
+            raise _refuse(
+                f"declared artifact {artifact!r}: parent component {name!r} "
+                f"could not be created or opened: {create_exc}"
+            ) from create_exc
     except OSError as exc:
-        raise _refuse(f"path component {name!r} is not an existing, non-symlink directory: {exc}") from exc
+        raise _refuse(
+            f"declared artifact {artifact!r}: parent component {name!r} is "
+            f"not an existing, non-symlink directory: {exc}"
+        ) from exc
 
 
-def _open_parent_chain(project_root: Path, parts: tuple[str, ...]) -> int:
+def _open_parent_chain(
+    project_root: Path,
+    parts: tuple[str, ...],
+    *,
+    artifact: str,
+    create_missing: bool = False,
+) -> int:
     """Open and return a descriptor for the directory that directly contains
     the final component of *parts*, walking every intermediate component
     ``dir_fd``-relative with ``O_NOFOLLOW`` so a symlinked or missing parent
-    is refused rather than silently followed or auto-created.
+    is refused rather than silently followed.
+
+    *create_missing* (default ``False``, B006(b)) additionally ``mkdir``s a
+    genuinely absent intermediate component -- see :func:`_open_child_dir`
+    for the exact discipline. It never changes how a component that exists
+    as the WRONG thing is handled: that is still always a refusal.
     """
     current = _open_root(project_root)
     try:
         for name in parts[:-1]:
-            next_fd = _open_child_dir(name, dir_fd=current)
+            next_fd = _open_child_dir(
+                name, dir_fd=current, artifact=artifact, create_missing=create_missing
+            )
             os.close(current)
             current = next_fd
     except BaseException:
@@ -302,6 +353,7 @@ def reserve_output(
     artifact: str,
     *,
     limit: int,
+    create_missing_parents: bool = False,
 ) -> OutputReservation:
     """Reserve a lexical project-relative output without mutating it.
 
@@ -309,11 +361,26 @@ def reserve_output(
     ``O_DIRECTORY|O_NOFOLLOW`` operations.  Reject absolute/empty/dot/dotdot
     spellings, missing/symlinked parents, symlink/special destinations, and a
     non-positive limit.  Hold only the final parent descriptor on success.
+
+    *create_missing_parents* (B006(b)) defaults to ``False`` -- the CONTRACT,
+    not an implementation accident. Only an explicit, opt-in ``True`` from a
+    call site that KNOWS it owns an ephemeral, assay-managed snapshot (never
+    the caller's real worktree) may set it. Left at its default, a missing
+    parent refuses exactly as it always has: this is what keeps an R0/direct
+    (in-place) caller's behaviour unchanged even after this capability ships.
+    When ``True``, each missing parent component is created descriptor-
+    relative (``mkdir`` at ``dir_fd``, mode ``0o700``) and reopened with the
+    same ``O_DIRECTORY|O_NOFOLLOW`` used for a pre-existing one -- see
+    :func:`_open_child_dir`. A component that already exists as a symlink or
+    any non-directory is refused exactly as before; creation only ever fires
+    on genuine absence, never as a substitute for something already there.
     """
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
     parts = _lexical_components(artifact)
-    parent_fd = _open_parent_chain(project_root, parts)
+    parent_fd = _open_parent_chain(
+        project_root, parts, artifact=artifact, create_missing=create_missing_parents
+    )
     basename = parts[-1]
     try:
         pre = _lstat_relative(basename, dir_fd=parent_fd)
@@ -348,7 +415,7 @@ def read_bounded_file(
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
     parts = _lexical_components(artifact)
-    parent_fd = _open_parent_chain(project_root, parts)
+    parent_fd = _open_parent_chain(project_root, parts, artifact=artifact)
     try:
         return _safe_bounded_read(parts[-1], dir_fd=parent_fd, limit=limit)
     finally:

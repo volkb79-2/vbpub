@@ -51,7 +51,7 @@ def test_create_resume_and_remove_workspace_are_real_git_lifecycle(tmp_path):
     root = _repo(tmp_path)
     base = _git(root, "rev-parse", "HEAD")
     workspace = transaction.create_workspace(root, base=base, purpose="build")
-    assert workspace.branch.startswith("cmru/build/")
+    assert workspace.branch.startswith("cmru-build-")
     with pytest.raises(ValueError, match="unknown CMRU workspace purpose"):
         transaction.create_workspace(root, base=base, purpose="other")
     with pytest.raises(RuntimeError, match="retained cmru release branch"):
@@ -74,6 +74,16 @@ def test_scope_and_result_records_fail_closed_on_corrupt_json(tmp_path):
     results.write_text("[]")
     with pytest.raises(RuntimeError, match="invalid release result"):
         transaction.read_release_results(root, workspace)
+
+
+def test_plan_refused_marker_round_trips_and_is_forgotten_with_the_rest_of_scope(tmp_path):
+    root = _repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/token", "a" * 40)
+    assert transaction.plan_was_refused(root, workspace) is False  # must-succeed control: unmarked
+    transaction.mark_plan_refused(root, workspace)
+    assert transaction.plan_was_refused(root, workspace) is True
+    transaction.forget_release_scope(root, workspace)
+    assert transaction.plan_was_refused(root, workspace) is False  # cleaned up with the rest
 
 
 def test_build_output_id_is_source_commit_and_date_derived(tmp_path):
