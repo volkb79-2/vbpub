@@ -323,19 +323,22 @@ def verify_tool_dependency(
     highest = resolved["version"]
     pinned_key = _semver_key(dependency.version)
     highest_key = _semver_key(highest)
-    if pinned_key == highest_key:
-        freshness = CheckOutcome(
-            "pass", None,
-            f"pinned version {dependency.version} is the highest published "
-            f"{dependency.project} release",
-        )
-    elif pinned_key < highest_key:
+    # Ordered so every comparison here DISCRIMINATES: `<` and `>` are checked
+    # first, each against the full three-way space, with equality falling to
+    # the final `else` rather than being special-cased first. A leading
+    # `if pinned_key == highest_key: ... elif pinned_key < highest_key: ...`
+    # makes `<` reachable only once `!=` is already known -- `<` and `<=` are
+    # then semantically IDENTICAL in that branch (an equivalent mutant no
+    # test can kill). With equality last, `<` -> `<=` would send an equal pin
+    # down "stale" and `>` -> `>=` would send it down "ahead" -- both wrong,
+    # and both caught by the pinned-equals-highest test below.
+    if pinned_key < highest_key:
         freshness = CheckOutcome(
             "fail", "stale",
             f"pinned version {dependency.version} is behind the highest published "
             f"{dependency.project} release {highest}",
         )
-    else:
+    elif pinned_key > highest_key:
         # NOTE: this only says what was actually checked -- pinned is higher than
         # every NON-DRAFT, NON-PRERELEASE release resolve_latest_release scanned
         # (it deliberately excludes both, S15). It must NOT claim "not among
@@ -351,6 +354,12 @@ def verify_tool_dependency(
             f"non-draft, non-prerelease {dependency.project} release found (highest is "
             f"{highest}); this check has not confirmed this pin corresponds to any release "
             "at all",
+        )
+    else:
+        freshness = CheckOutcome(
+            "pass", None,
+            f"pinned version {dependency.version} is the highest published "
+            f"{dependency.project} release",
         )
 
     tag = f"{provider_prefix}{dependency.version}"

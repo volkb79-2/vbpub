@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from cmru.dependencies import (
     ToolDependencyRef,
@@ -155,3 +158,20 @@ def test_report_as_dict_includes_tool_dependencies(tmp_path):
         "cmru": [{"provider": "assay", "version": "1.0.0", "path": "tools/assay/assay-1.0.0.pyz"}],
     }
     assert any(e["kind"] == "tool" for e in data["edges"])
+
+
+def test_constructing_and_reading_a_tool_dependency_ref_works_normally():
+    # Paired control for the frozen-ness assertion below.
+    ref = ToolDependencyRef(provider="assay", version="1.0.0", path="tools/x.pyz")
+    assert ref.provider == "assay"
+    assert ref.version == "1.0.0"
+    assert ref.path == "tools/x.pyz"
+
+
+def test_a_tool_dependency_ref_is_frozen():
+    """ToolDependencyRef is a shared, reported graph fact (surfaced verbatim in
+    `cmru dependencies --json`); if mutable, a caller could rewrite it after
+    the report was built."""
+    ref = ToolDependencyRef(provider="assay", version="1.0.0", path="tools/x.pyz")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ref.version = "9.9.9"

@@ -7,6 +7,7 @@ fresh repository root); that cross-project check lives in
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -208,3 +209,26 @@ class TestToolDependencyParsing:
         with pytest.raises(SystemExit) as exc:
             load_forge_config(cfg)
         assert exc.value.code == 2
+
+
+class TestToolDependencyImmutability:
+    """``ToolDependency`` is a shared result object read by both the graph
+    reporter (dependencies.py) and the verifier (tool_deps.py) after a project
+    document is parsed. If it were mutable, a caller downstream of parsing
+    could rewrite a declared pin/hash after the fact -- assert frozen-ness
+    directly, not merely rely on nothing in this codebase happening to mutate
+    it today."""
+
+    def test_constructing_and_reading_a_tool_dependency_works_normally(self):
+        # Paired control: the frozen-ness assertion below must not be trivially
+        # true because construction itself is broken.
+        dep = ToolDependency(project="assay", version="1.0.0", path="tools/x.pyz", sha256="a" * 64)
+        assert dep.project == "assay"
+        assert dep.version == "1.0.0"
+        assert dep.path == "tools/x.pyz"
+        assert dep.sha256 == "a" * 64
+
+    def test_a_tool_dependency_is_frozen(self):
+        dep = ToolDependency(project="assay", version="1.0.0", path="tools/x.pyz", sha256="a" * 64)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            dep.version = "9.9.9"

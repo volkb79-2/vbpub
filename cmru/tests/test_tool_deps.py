@@ -13,6 +13,7 @@ No real network call anywhere in this file: every test monkeypatches
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import socket
@@ -130,15 +131,47 @@ def test_github_get_json_raises_on_404_when_on_404_is_error(monkeypatch):
         tool_deps._github_get_json("/x", timeout=5, on_404="error")
 
 
-def test_github_get_json_raises_on_bad_status(monkeypatch):
-    monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (500, b"err"))
-    with pytest.raises(tool_deps.NetworkUnavailable):
+# --- `if status >= 400:` boundary, pinned exactly (this is the newest,
+# least-exercised code in the package -- the B1 rewrite) -------------------------
+#
+# NOTE: every case below uses a genuinely VALID JSON body. A `>=` swapped to
+# `>` lets status 400 fall through this line into `json.loads(body)` instead
+# of raising here -- but if the body is *invalid* JSON, that fall-through
+# ALSO ends in NetworkUnavailable (via the JSONDecodeError branch below), just
+# with a different message. Asserting only the exception TYPE against an
+# invalid body is therefore blind to this exact mutant: both the real code
+# and the mutant raise the same exception class, for different reasons. A
+# valid body forces the two to diverge -- the mutant returns the parsed dict
+# instead of raising, and the message ("returned HTTP 400" vs "unparseable
+# response") is asserted explicitly so the two causes can never be conflated.
+
+def test_github_get_json_status_399_does_not_raise(monkeypatch):
+    """Paired control: 399 is still a "success" status here -- it must fall
+    through to the ordinary JSON-parse path, never NetworkUnavailable."""
+    monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (399, b'{"ok": true}'))
+    assert tool_deps._github_get_json("/x", timeout=5) == {"ok": True}
+
+
+def test_github_get_json_status_400_raises_even_with_a_genuinely_valid_json_body(monkeypatch):
+    """The regression test for the surviving GtE->Gt mutant."""
+    monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (400, b'{"ok": true}'))
+    with pytest.raises(tool_deps.NetworkUnavailable, match="returned HTTP 400"):
         tool_deps._github_get_json("/x", timeout=5)
 
 
-def test_github_get_json_raises_on_unparseable_body(monkeypatch):
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_github_get_json_raises_above_400_naming_the_exact_status(monkeypatch, status):
+    monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (status, b'{"ok": true}'))
+    with pytest.raises(tool_deps.NetworkUnavailable, match=f"returned HTTP {status}"):
+        tool_deps._github_get_json("/x", timeout=5)
+
+
+def test_github_get_json_raises_on_unparseable_body_with_a_message_naming_that_cause(monkeypatch):
+    """Kept as its own case, distinguished by MESSAGE from the bad-status path
+    right above (both raise the same exception type -- that alone is not
+    enough, per the 400 regression above)."""
     monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (200, b"not json"))
-    with pytest.raises(tool_deps.NetworkUnavailable):
+    with pytest.raises(tool_deps.NetworkUnavailable, match="unparseable response"):
         tool_deps._github_get_json("/x", timeout=5)
 
 
@@ -384,6 +417,76 @@ def test_verify_reports_authentic_but_stale_the_real_cmru_assay_state(monkeypatc
     assert status.highest_known_version == "2.1.0"
 
 
+# --- the freshness comparison itself, pinned exactly at all three outcomes --
+# (this single `elif pinned_key < highest_key:` decides stale vs. current; a
+# compare-swap here inverts staleness silently, which is the whole feature
+# failing in the direction that matters most -- fail-open)
+
+def test_freshness_pinned_less_than_highest_is_reported_stale(monkeypatch, tmp_path):
+    """pinned 1.0.0 < highest 2.1.0 -> fail/stale."""
+    monkeypatch.setattr(
+        tool_deps, "resolve_latest_release",
+        lambda *a, **k: {"version": "2.1.0", "tag": "assay-v2.1.0", "assets": []},
+    )
+    monkeypatch.setattr(tool_deps, "_github_get_json", lambda *a, **k: None)
+    status = tool_deps.verify_tool_dependency(
+        owner="o", repo="r", provider_prefix="assay-v",
+        dependency=_dep(version="1.0.0"), project_root=tmp_path, consumer="cmru",
+    )
+    assert status.freshness.status == "fail"
+    assert status.freshness.reason == "stale"
+
+
+def test_freshness_pinned_equal_to_highest_is_reported_current(monkeypatch, tmp_path):
+    """pinned 1.0.0 == highest 1.0.0 -> pass."""
+    monkeypatch.setattr(
+        tool_deps, "resolve_latest_release",
+        lambda *a, **k: {"version": "1.0.0", "tag": "assay-v1.0.0", "assets": []},
+    )
+    status = tool_deps.verify_tool_dependency(
+        owner="o", repo="r", provider_prefix="assay-v",
+        dependency=_dep(version="1.0.0"), project_root=tmp_path, consumer="cmru",
+    )
+    assert status.freshness.status == "pass"
+    assert status.freshness.reason is None
+
+
+def test_freshness_pinned_greater_than_highest_is_reported_ahead(monkeypatch, tmp_path):
+    """pinned 2.0.0 > highest 1.0.0 -> fail/ahead-of-known-releases."""
+    monkeypatch.setattr(
+        tool_deps, "resolve_latest_release",
+        lambda *a, **k: {"version": "1.0.0", "tag": "assay-v1.0.0", "assets": []},
+    )
+    monkeypatch.setattr(tool_deps, "_github_get_json", lambda *a, **k: None)
+    status = tool_deps.verify_tool_dependency(
+        owner="o", repo="r", provider_prefix="assay-v",
+        dependency=_dep(version="2.0.0"), project_root=tmp_path, consumer="cmru",
+    )
+    assert status.freshness.status == "fail"
+    assert status.freshness.reason == "ahead-of-known-releases"
+
+
+def test_freshness_comparison_is_numeric_not_lexicographic(monkeypatch, tmp_path):
+    """S5.2, numeric-aware case: pinned 1.10.0 vs highest 1.9.0. Numerically
+    pinned IS newer (1.10.0 > 1.9.0), so this MUST read as "ahead", never
+    "stale". Plain string comparison gets this backwards -- "1.10.0" <
+    "1.9.0" lexicographically (comparing the second component character by
+    character, '1' < '9') -- which would wrongly report a materially NEWER
+    pin as stale: fail-open on staleness in exactly the direction that
+    matters, silently."""
+    monkeypatch.setattr(
+        tool_deps, "resolve_latest_release",
+        lambda *a, **k: {"version": "1.9.0", "tag": "assay-v1.9.0", "assets": []},
+    )
+    monkeypatch.setattr(tool_deps, "_github_get_json", lambda *a, **k: None)
+    status = tool_deps.verify_tool_dependency(
+        owner="o", repo="r", provider_prefix="assay-v",
+        dependency=_dep(version="1.10.0"), project_root=tmp_path, consumer="cmru",
+    )
+    assert status.freshness.status == "fail"
+    assert status.freshness.reason == "ahead-of-known-releases"  # NOT "stale"
+
+
 def test_verify_reports_version_not_published_when_the_pinned_tag_has_no_release(monkeypatch, vendored):
     root, digest = vendored
     monkeypatch.setattr(
@@ -580,6 +683,44 @@ def test_verify_project_resolves_the_provider_projects_own_prefix(monkeypatch, t
     assert len(statuses) == 1
     assert statuses[0].authenticity.status == "pass"
     assert seen_prefixes == ["assay-v"]
+
+
+# --- CheckOutcome / ToolDependencyStatus immutability ---------------------------
+# Both are shared result objects passed between the three checks and every
+# reporter (render_status, status_as_dict, is_blocking, the release preflight).
+# If either became mutable, a caller could rewrite a verdict after it was
+# computed -- assert frozen-ness directly, each with a paired construct-and-read
+# control so the frozen-ness assertion isn't trivially true because
+# construction itself is broken.
+
+def test_constructing_and_reading_a_check_outcome_works_normally():
+    outcome = tool_deps.CheckOutcome("pass", None, "ok")
+    assert outcome.status == "pass"
+    assert outcome.reason is None
+    assert outcome.detail == "ok"
+
+
+def test_a_check_outcome_is_frozen():
+    outcome = tool_deps.CheckOutcome("pass", None, "ok")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        outcome.status = "fail"
+
+
+def test_constructing_and_reading_a_tool_dependency_status_works_normally():
+    dependency = _dep()
+    ok = tool_deps.CheckOutcome("pass", None, "ok")
+    status = tool_deps.ToolDependencyStatus("cmru", dependency, ok, ok, ok, "1.0.0")
+    assert status.consumer == "cmru"
+    assert status.dependency is dependency
+    assert status.integrity is ok
+    assert status.highest_known_version == "1.0.0"
+
+
+def test_a_tool_dependency_status_is_frozen():
+    ok = tool_deps.CheckOutcome("pass", None, "ok")
+    status = tool_deps.ToolDependencyStatus("cmru", _dep(), ok, ok, ok, "1.0.0")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        status.freshness = tool_deps.CheckOutcome("fail", "stale", "rewritten")
 
 
 # --- is_blocking ----------------------------------------------------------------
