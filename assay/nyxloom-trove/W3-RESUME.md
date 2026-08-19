@@ -152,7 +152,7 @@ These are the durable lessons. Each cost a wave.
   958-line carve and its adversarial review are both merged and the review
   already killed four zero-schema escapes. It unblocks only when *both*
   `PROVENANCE_UNVERIFIED` ships (reserved by name, A-276) **and** ciu fixes
-  **CIU-28** — `ciu provenance` compares vendor images ciu never built, so
+  **CIU-39** (filed as CIU-28, renumbered 2026-08-19) — `ciu provenance` compares vendor images ciu never built, so
   `verified-match` is unreachable on any live host.
 * **B002/B003** are COMPLETE as of 2.1.0; what they are still owed is upstream
   in cmru KI-12…KI-16.

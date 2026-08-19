@@ -13,7 +13,7 @@ than the pointer that already exists in ciu's tracker.
   `6724c94a` itself — `tester-unified: PASS (exit 0)` through
   `ASSAY_REGISTERED_GATE_COMPLETE=1`, including the cmru B006(a) qualification
   receipt with R0–R3 all PASS.
-* `bdc3dc78` — **CIU-28** filed in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`, High,
+* `bdc3dc78` — **CIU-28** (renumbered **CIU-39**, 2026-08-19 — the ciu worktree-automation branch had independently allocated CIU-28) filed in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`, High,
   OPEN.
 
 **A note on the second gate run, because the first attempt looks like a
