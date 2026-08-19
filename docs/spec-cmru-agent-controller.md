@@ -1,5 +1,12 @@
 # SPEC G — CMRU Agent + Controller
 
+> **Consumer status (dstdns, 2026-08-19):** dstdns decided NOT to adopt `cmru-agent` /
+> `cmru-controller` — updates are push-only via `ciu ssh` / `ciu up --host` (SPEC J); the
+> pull loop's per-host Consul client + `auto_config` + signed desired-state is more than its
+> fleet needs, and cmru is a build/release tool. Recorded in
+> `dstdns/docs/spec-configuration-and-landscape.md` §5.2 (D-097). The code stays generic
+> and available for other consumers.
+
 | | |
 |---|---|
 | **Spec ID** | G |

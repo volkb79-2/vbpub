@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-08-17 (**CIU-28 FILED, OPEN** — `provenance` adjudicates
+Last updated: 2026-08-19 (**CIU-29..33 FILED, OPEN** — five capability asks from dstdns's configuration/landscape decision: layout object, host-scoped local secrets, landscape_id dimension, schema-validated render, per-service Vault AppRole; see the detail block). Earlier: 2026-08-17 (**CIU-28 FILED, OPEN** — `provenance` adjudicates
 vendor images ciu did not build, so `verified-match` is unreachable on a live
 instance; filed by assay's B004 wave, which it blocks entirely). Earlier:
 2026-08-12 (CIU-27 FIXED: `ciu provenance --no-preflight` is an
@@ -70,6 +70,11 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | CIU-26 | CIU-23's `worktree.PostgresProvisioner` (the real, shipped S16.2 data-isolation default) has no live-server proof: its naming/ordering/force/idempotency contract is proven in-gate only against a FAKE `DataIsolationProvisioner`, because `tester-unified:local` has no live Postgres server to provision against. Needs an integration lane (outside this repo's own gate) that runs `PostgresProvisioner` against a real Postgres and confirms `provision`/`drop` actually create/remove a database, not just that the mechanism dispatches correctly | Low | OPEN |
 | CIU-27 | S17.2 stated that `ciu provenance --no-preflight` skips the check, but the parser did not accept it. Fixed: it is now a true no-check break-glass bypass and rejects `--json`, which must not fabricate an evidence verdict. | Medium | FIXED |
 | CIU-28 | `provenance` compares **every** running container's `org.opencontainers.image.revision` against this repository's own commit, including third-party vendor images that stamp their own upstream repository's revision. On a correctly built, clean-tree instance that pins `overall` at `"mismatch"` permanently, so `verified-match` is unreachable outside ciu's own fixture. Blocks assay B004 entirely (a consumer cannot adjudicate a verdict that can never be green). Two adjacent findings in the same measurement: the comparison is full-40-hex against an abbreviated `commit_under_test`, and the process exit status is not the verdict (0 covers both `--ignore-mismatch` over a mismatch and a not-verified dirty tree, while 2 means mismatch) | High | OPEN |
+| CIU-29 | No **layout** object: `[deploy.profiles.<name>]` is a per-host *bundle* ("which stacks this host runs") but nothing names the plan "host A → [core, db], host B → [worker-io×2, …]"; the assignment is implicit in whichever `ciu up --host <h> --profile <p>` the operator types. A consumer with a `dev-local` vs `3-host-split` deployment has no committed, renderable object for it | Medium | OPEN |
+| CIU-30 | Pre-Vault host adoption has no home for host-scoped secrets: `.ciu.hosts.toml` holds `ssh_key` as `ASK_VAULT:` or a bare path, but on a fresh host Vault does not exist yet and a Tailscale single-use authkey / SSH bootstrap key per host has nowhere to live in the local secret store as a *host-scoped* entry | Medium | OPEN |
+| CIU-31 | No `landscape_id` identity dimension: multistack instances (S16) are distinguished by project/instance identity, but a consumer that keys a shared Consul KV root and Tailscale ACL tags per *landscape* has no first-class dimension to render from | Low | OPEN |
+| CIU-32 | `ciu render` cannot validate a rendered application config file against an app-provided JSON schema; a wrong/missing key in `config.toml.j2` surfaces only at container boot, not at render | Medium | OPEN |
+| CIU-33 | The Vault stack provisions ONE AppRole (webapp-server); there is no per-service AppRole + policy provisioning nor a template mechanism to deliver `role_id`/`secret_id` into a service's rendered config for runtime secret fetch (consumers still consume `ASK_VAULT` as rendered/env values) | Medium | OPEN |
 
 ### CIU-27 — `provenance --no-preflight` was specified but not implemented — FIXED
 
@@ -79,6 +84,44 @@ Docker. It is a break-glass bypass, not a new S17.3 verdict. Consequently it is
 incompatible with `--json`: a machine-readable document would look like evidence
 when no check occurred, so argparse refuses that combination (exit 2). The
 parser, S17.2, CLI reference, and focused behavior tests changed together.
+
+### CIU-29..33 detail: five asks from dstdns's configuration/landscape decision — OPEN
+
+**Filed by:** dstdns controller session, 2026-08-19, out of the configuration /
+landscape / remote-deployment decision recorded in
+`dstdns/docs/spec-configuration-and-landscape.md` (D-094…D-101). Per this file's
+rule the asks live here; dstdns keeps only the pointer (spec §11). None is a
+defect in shipped behaviour — each is a capability the decided model needs from
+its deploy tool. Verified against `docs/CONFIG.md` + `src/` before filing (a
+feature dstdns has not adopted is not a feature ciu is missing).
+
+**CIU-29 — `layout`.** Desired shape (candidate, not decided):
+`[deploy.layouts.<name>.hosts.<host>] bundles = ["core","db"]` (+ per-layout
+`topology_overrides` and opaque tunable pins passed through to the app's
+rendered config), `ciu up --layout <name>` iterating the SPEC-J host inventory
+over SSH in dependency order. Until it exists, a layout is a documented sequence
+of `ciu up --host <h> --profile <bundle>`.
+
+**CIU-30 — host-scoped local secrets.** `ASK_EXTERNAL`/`GEN_LOCAL` entries keyed
+under `[deploy.hosts.<h>.secrets]` (SSH bootstrap key, Tailscale single-use
+authkey), resolvable by `ciu ssh`/`ciu up --host` *before* any Vault exists on the
+target, later movable to Vault by the existing directives.
+
+**CIU-31 — `landscape_id` dimension.** A first-class identity value (beside
+project/instance) exposed to templates and to S16 worktree instances, so a
+consumer can render its Consul KV root (`dstdns/<landscape_id>/…`) and mesh ACL
+tags from one source.
+
+**CIU-32 — schema-validated render.** `[<root>.<service>.configfile.app]` (or the
+render step) accepts `schema = "path/to/config-schema.json"` and validates the
+rendered TOML against it, failing the render with the key path — the app's
+generated JSON schema is the source, ciu only checks.
+
+**CIU-33 — per-service AppRole.** Vault stack provisions one AppRole + policy per
+declared service and a template helper delivers `role_id` + a `secret_id` file
+path into that service's rendered config (no secret VALUES rendered). dstdns
+decided runtime Vault fetch (SM2, D-098); if this lands upstream dstdns consumes
+it, otherwise dstdns builds it locally and notes the delta here.
 
 ### CIU-28 detail: `provenance` adjudicates images ciu did not build, so `verified-match` is unreachable — OPEN
 
