@@ -53,8 +53,9 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree up LOGICAL         start the selected ready instance, exactly
-    worktree exec LOGICAL -- ARGV...
+    worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
+                                or inside its declared container target
 
   MACHINE INTERFACES (D-009)
     capabilities [--json]       versioned, closed capability allowlist
@@ -115,7 +116,7 @@ ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree up LOGICAL
-ciu worktree exec LOGICAL -- ARGV...
+ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
   not start the instance. Generated UTC branch/directory names are identical;
   adopt is the only operation that owns an unmanaged existing checkout.
@@ -123,7 +124,8 @@ ciu worktree exec LOGICAL -- ARGV...
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
   stdout (S16.4). `up` starts the selected ready instance under its OWN
   ciu.env; `exec` runs exact argv (no shell) in that root and never starts
-  anything implicitly (S16.6).
+  anything implicitly (S16.6). `exec --target ALIAS` runs inside the ONE
+  already-running declared container (S16.7).
 """,
     "capabilities": """\
 ciu capabilities [--json]
@@ -580,12 +582,68 @@ def _provenance(rest: list[str]) -> int:
     return 0
 
 
+def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
+    """`ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...`.
+
+    Parsed manually because argparse REMAINDER cannot both consume a
+    `--target` option and keep a `--` separator byte-identical for the child.
+    The separator is mandatory; a leading-dash argument is never misparsed as
+    a CIU flag. Returns the exact child exit code.
+    """
+    from . import worktree as wt_mod
+
+    if len(rest) < 2:
+        raise wt_mod.WorktreeError(
+            "[S16] `ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` "
+            "requires a logical name and a `--` separator"
+        )
+    logical_name = rest[1]
+    define_root: str | None = None
+    target_alias: str | None = None
+    argv: list[str] = []
+    i = 2
+    while i < len(rest):
+        token = rest[i]
+        if token == "--define-root":
+            if i + 1 >= len(rest):
+                raise wt_mod.WorktreeError("[S16] --define-root requires a PATH")
+            define_root = rest[i + 1]
+            i += 2
+            continue
+        if token == "--target":
+            if i + 1 >= len(rest):
+                raise wt_mod.WorktreeError("[S16] --target requires an alias")
+            target_alias = rest[i + 1]
+            i += 2
+            continue
+        if token == "--":
+            argv = ["--"] + rest[i + 1:]
+            break
+        raise wt_mod.WorktreeError(
+            f"[S16] unexpected argument {token!r} for `ciu worktree exec`; "
+            "usage: ciu worktree exec LOGICAL [--target ALIAS] -- ARGV..."
+        )
+    repo_root = resolve_repo_root(define_root, Path.cwd())
+    if target_alias is not None:
+        return wt_mod.exec_target_instance(
+            repo_root, logical_name, target_alias, argv
+        )
+    return wt_mod.exec_instance(repo_root, logical_name, argv)
+
+
 def _worktree(rest: list[str]) -> int:
     """Handle the S16 managed-worktree lifecycle."""
     import argparse as _ap
 
     from . import worktree as wt_mod
     from .dev import resolve_repo_root
+
+    if rest and rest[0] == "exec":
+        try:
+            return _worktree_exec(rest, resolve_repo_root)
+        except wt_mod.WorktreeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     p = _ap.ArgumentParser(prog="ciu worktree", add_help=False)
     sub = p.add_subparsers(dest="action", required=True)
@@ -656,13 +714,13 @@ def _worktree(rest: list[str]) -> int:
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
 
-    p_exec = sub.add_parser("exec", add_help=False)
-    p_exec.add_argument("logical_name")
-    p_exec.add_argument("argv", nargs=_ap.REMAINDER)
+    # `exec` is parsed manually in `_worktree_exec` (argparse REMAINDER can
+    # neither consume a `--target` option nor keep a `--` separator intact),
+    # so no exec subparser is registered here.
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up, p_exec,
+        p_up,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -758,13 +816,6 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "up":
             return wt_mod.up_instance(repo_root, opts.logical_name)
-
-        if opts.action == "exec":
-            # argparse REMAINDER strips the `--` separator; re-insert it so
-            # exec_instance's `--`-separator contract holds and a command line
-            # with NO separator is still refused rather than silently accepted.
-            argv = (["--"] + opts.argv) if "--" in rest else []
-            return wt_mod.exec_instance(repo_root, opts.logical_name, argv)
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).

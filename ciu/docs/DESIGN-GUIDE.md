@@ -76,21 +76,19 @@ be removed by hand.
 ## Why `capabilities` is a separate, sorted, closed allowlist
 
 `worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
-`worktree.up.v1`, and `worktree.exec-local.v1` are the identifiers advertised
-in this release. Each maps to a shipped code path:
+`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1` are
+the identifiers advertised in this release. Each maps to a shipped code path:
 
 - `worktree.identity.v1` — schema-v1 instance records and the create/adopt/
   ensure/add lifecycle;
 - `worktree.inspect.v1` — the inspect document and the managed list document;
 - `worktree.lifecycle-json.v1` — the lifecycle JSON envelopes;
 - `worktree.up.v1` — exact selected-worktree `up` (S16.6);
-- `worktree.exec-local.v1` — exact local `exec` (S16.6).
+- `worktree.exec-local.v1` — exact local `exec` (S16.6);
+- `worktree.exec-target.v1` — declared container-target `exec` (S16.7).
 
-Target exec (`--target`) is deliberately **not** advertised: its package (P06)
-has not shipped, and advertising a contract before its code path exists is the
-exact "SemVer inference" failure this document exists to prevent. An
-identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the code
-path it names, or not at all.
+An identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the
+code path it names, or not at all.
 
 ## Why `up` and `exec` take one exact selected instance
 
@@ -118,6 +116,45 @@ cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
 code is returned exactly — an automation lane that runs a gate command through
 `exec` needs that code, not a wrapper's guess.
 
+## Why container targets are declared aliases, not arbitrary services
+
+`exec --target` lets an automation lane run a command *inside* the stack's
+tester container. The dangerous alternative is "pick any service by name" —
+an arbitrary service-selection escape hatch where a consumer could reach a
+container that was never meant to be an execution boundary. CIU therefore
+requires the target to be **declared** in the instance's own global config
+(`[ciu.worktree.exec_targets.<alias>]`) with exactly four keys (`stack`,
+`service`, `workdir`, `requires_worktree_mount`) — no arbitrary selection, no
+invented defaults. The alias is a Git-safe single component, and an unknown
+key or malformed value refuses before Docker is ever touched.
+
+Selection is by the **exact** compose project/service/network identity of the
+selected instance (derived with the existing naming rule and the instance's
+own `DOCKER_NETWORK_INTERNAL`), and exactly one already-running container must
+match. `up` is never started implicitly: a missing container is a refusal, not
+an invitation to create one.
+
+## Why the worktree-mount proof exists, and why it reads Docker's output
+
+A container that looks like the right project/service could still be the
+WRONG checkout — the primary worktree mounted while a linked worktree is
+selected, or a sibling's container on a different network. By default
+(`requires_worktree_mount = true`), CIU proves the container has a bind mount
+whose host source is the selected Git worktree's **physical** path at a path
+containing the declared `workdir` before running anything.
+
+The proof reads only Docker's own `inspect` output, never a local filesystem
+predicate on a path belonging to the other namespace. The host-side `Source`
+is compared against the physical translation of the record's Git path (via
+`to_physical_path` with the target's own REPO_ROOT/PHYSICAL_REPO_ROOT), and
+the container-side `Destination` against the declared container `workdir` —
+each value is compared in the namespace it belongs to. This is the estate's
+namespace-translation rule applied to containers: an `is_file()` on a
+container→host translation would ask the wrong kernel, exactly the CIU-15 /
+dstdns class of incident the doctrine records. `requires_worktree_mount =
+false` is the explicit opt-out for a deliberate non-source utility container;
+it never weakens project/service/network uniqueness.
+
 ## Rejected alternatives
 
 - **SemVer-based feature inference** — rejected: a version bump carries no
@@ -135,3 +172,6 @@ code is returned exactly — an automation lane that runs a gate command through
   (spaces, globs, `$()`, `;`), so an automation lane could not trust that
   what it asked to run is what ran. A list argv with no shell and a mandatory
   `--` is the only faithful form.
+- **Arbitrary service-name target selection** — rejected: a consumer could
+  reach a container never intended as an execution boundary. Declared aliases
+  with a closed key set are the only surface (D-007).

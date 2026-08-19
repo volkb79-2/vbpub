@@ -11,6 +11,16 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Added
 
+- Added declared container targets for worktree exec (CIU-29/D-007):
+  `ciu worktree exec LOGICAL --target ALIAS -- ARGV...` runs exact argv (no
+  shell) inside the ONE already-running container for a target declared as
+  `[ciu.worktree.exec_targets.<alias>]` (closed four-key grammar: `stack`,
+  `service`, `workdir`, `requires_worktree_mount` defaulting to true; unknown
+  keys/aliases/empty strings/malformed booleans refuse before Docker). Exact
+  project/service/network selection (never a substring), exactly one running
+  container required (never an implicit `up`), a Docker-namespace-correct
+  worktree-mount proof by default, and the exact `docker exec` exit code
+  returned. Capability adds `worktree.exec-target.v1`. SPEC S16.7.
 - Added exact selected-worktree control (CIU-29/D-007): `ciu worktree up
   LOGICAL` starts one `ready` instance under its OWN parsed `ciu.env` (ambient
   CIU identity stripped, target values overlaid and cross-checked against the

@@ -2426,8 +2426,7 @@ allowlist** of shipped machine contracts (`schema_version: 1`,
 instead of inferring features from SemVer. An identifier is added only when
 its code path ships in the same release. Shipped identifiers:
 `worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
-`worktree.up.v1`, and `worktree.exec-local.v1`. Target-exec (`--target`) is
-NOT advertised before its package ships.
+`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
 
 ### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
 
@@ -2453,6 +2452,42 @@ the child's exact exit code — never a wrapper-masked value. `exec` never
 starts, cleans, or renders anything implicitly; the presence of `--` and of at
 least one argv element is enforced, so a leading-dash argument is never
 misparsed as a CIU flag.
+
+### S16.7 — Declared worktree container targets (`exec --target`)
+
+`ciu worktree exec LOGICAL --target ALIAS -- ARGV...` runs exact argv (no
+shell) inside the ONE already-running container for a DECLARED target of the
+selected instance. There is no arbitrary service-selection escape hatch:
+targets are declared in the instance's own global config as
+`[ciu.worktree.exec_targets.<alias>]` with exactly four keys — `stack`
+(required non-empty string), `service` (required non-empty string), `workdir`
+(required absolute container workdir), and `requires_worktree_mount`
+(boolean, default **true**; false is the only opt-out). The alias is a
+Git-safe single component. Unknown keys, unknown aliases, empty strings, or
+malformed booleans refuse before any Docker call.
+
+Flow: resolve the selected `ready` record and its exact environment (S16.6);
+render the target's own global chain WITHOUT writing under that environment;
+derive the exact Compose project (`engine.compose_project_name`), service
+(declared), and network (the instance's own `DOCKER_NETWORK_INTERNAL`);
+require **exactly one already-running container** for that project/service/
+network — zero or multiple refuse, and `up` is NEVER started implicitly.
+`docker ps`/`inspect` filters use the exact labels/network, never a
+service/container-name substring.
+
+The worktree-mount proof (default): `docker inspect` the container's mount
+records and require a bind mount whose host `Source` equals the selected Git
+worktree's PHYSICAL path (translated with the target's own REPO_ROOT /
+PHYSICAL_REPO_ROOT) and whose container `Destination` contains the declared
+`workdir` (path-component containment). The comparison uses only Docker's own
+reported namespaces — never a local filesystem predicate on a path belonging
+to the other namespace. A wrong mount (e.g. the primary checkout mounted while
+a linked checkout is selected) refuses. `requires_worktree_mount = false`
+permits a deliberate non-source utility container without weakening
+project/service/network uniqueness.
+
+Execution is `docker exec -w WORKDIR CONTAINER -- ARGV...` (no shell), and the
+exact exit code is returned.
 
 ## S17 — Image provenance
 

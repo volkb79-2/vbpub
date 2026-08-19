@@ -321,6 +321,7 @@ class TestCapabilitiesDispatch:
         assert doc["schema_version"] == 1
         assert doc["capabilities"] == [
             "worktree.exec-local.v1",
+            "worktree.exec-target.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
             "worktree.lifecycle-json.v1",
@@ -421,6 +422,58 @@ class TestWorktreeUpExecDispatch:
         assert cli._worktree(["exec", "logical-one", "--", "pwd", "a b"]) == 9
         assert seen["logical"] == "logical-one"
         assert seen["argv"] == ["--", "pwd", "a b"]
+
+    def test_exec_target_forwards_alias_and_argv(self, monkeypatch):
+        seen = {}
+
+        def fake_exec_target(repo_root, logical, alias, argv):
+            seen.update(logical=logical, alias=alias, argv=argv)
+            return 5
+
+        monkeypatch.setattr(wt_mod, "exec_target_instance", fake_exec_target)
+        assert cli._worktree(["exec", "logical-one", "--target", "tester", "--", "pwd"]) == 5
+        assert seen == {"logical": "logical-one", "alias": "tester", "argv": ["--", "pwd"]}
+
+    def test_exec_forwards_define_root(self, monkeypatch):
+        seen = {}
+
+        def fake_resolve(define_root, cwd):
+            seen["define_root"] = define_root
+            return Path("/resolved")
+
+        monkeypatch.setattr(dev, "resolve_repo_root", fake_resolve)
+
+        def fake_exec(repo_root, logical, argv):
+            seen.update(repo_root=repo_root, logical=logical, argv=argv)
+            return 0
+
+        monkeypatch.setattr(wt_mod, "exec_instance", fake_exec)
+        assert cli._worktree(
+            ["exec", "logical-one", "--define-root", "/r", "--", "pwd"]
+        ) == 0
+        assert seen["define_root"] == "/r"
+        assert seen["repo_root"] == Path("/resolved")
+        assert seen["argv"] == ["--", "pwd"]
+
+    def test_exec_without_separator_refuses_exit_2(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            wt_mod, "exec_instance",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")),
+        )
+        assert cli._worktree(["exec", "logical-one", "pwd"]) == 2
+        assert "unexpected argument" in capsys.readouterr().err
+
+    def test_exec_target_missing_value_refuses_exit_2(self, monkeypatch, capsys):
+        assert cli._worktree(["exec", "logical-one", "--target"]) == 2
+        assert "--target requires an alias" in capsys.readouterr().err
+
+    def test_exec_define_root_missing_value_refuses_exit_2(self, monkeypatch, capsys):
+        assert cli._worktree(["exec", "logical-one", "--define-root"]) == 2
+        assert "--define-root requires a PATH" in capsys.readouterr().err
+
+    def test_exec_without_logical_name_refuses_exit_2(self, monkeypatch, capsys):
+        assert cli._worktree(["exec"]) == 2
+        assert "requires a logical name and a `--` separator" in capsys.readouterr().err
 
     def test_exec_error_maps_to_exit_2(self, monkeypatch, capsys):
         def fail(*_a, **_kw):

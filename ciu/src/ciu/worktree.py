@@ -49,6 +49,7 @@ from typing import Any
 from . import config_model
 from . import procutil
 from .config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES
+from .paths import to_physical_path
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
@@ -689,14 +690,15 @@ WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 # The closed, sorted allowlist of shipped machine contracts. Consumers
 # allowlist these identifiers instead of inferring features from SemVer
 # (D-009). An identifier is added only when its code path ships in the SAME
-# release; `worktree.up.v1`/`worktree.exec-local.v1` ship in P05; target
-# exec arrives in P06 and is NOT advertised here.
+# release; `worktree.up.v1`/`worktree.exec-local.v1` ship in P05;
+# `worktree.exec-target.v1` ships in P06.
 WORKTREE_CAPABILITIES = (
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
     "worktree.up.v1",
     "worktree.exec-local.v1",
+    "worktree.exec-target.v1",
 )
 
 
@@ -979,6 +981,267 @@ def exec_instance(repo_root: Path, logical_name: str, argv: list[str]) -> int:
     except OSError as exc:
         raise WorktreeError(
             f"[S16] could not run exec argv in {record.ciu_root}: {exc}"
+        ) from exc
+    return res.returncode
+
+
+# ---------------------------------------------------------------------------
+# S16.7 — declared worktree container targets (`exec --target`)
+# ---------------------------------------------------------------------------
+
+_EXEC_TARGET_KEYS = frozenset({"stack", "service", "workdir", "requires_worktree_mount"})
+
+
+@dataclass(frozen=True)
+class ExecTarget:
+    """One declared ``[ciu.worktree.exec_targets.<alias>]`` entry (S16.7).
+
+    The alias is a Git-safe single component; ``stack``/``service``/``workdir``
+    are required non-empty strings; ``requires_worktree_mount`` is a boolean
+    defaulting to true (false is the only opt-out). Exactly these four keys
+    exist — there is no arbitrary service-selection escape hatch.
+    """
+
+    alias: str
+    stack: str
+    service: str
+    workdir: str
+    requires_worktree_mount: bool
+
+
+def parse_exec_targets(raw: Mapping[str, Any]) -> dict[str, ExecTarget]:
+    """Validate ``[ciu.worktree.exec_targets]`` and return ``alias ->
+    ExecTarget``. Unknown keys, unknown aliases, empty strings, or malformed
+    booleans refuse loudly.
+    """
+    targets: dict[str, ExecTarget] = {}
+    for alias, entry in raw.items():
+        _validate_name(alias, label="exec target alias")
+        if not isinstance(entry, Mapping):
+            raise WorktreeError(f"[S16.7] exec target {alias!r} must be a table")
+        unknown = set(entry) - _EXEC_TARGET_KEYS
+        if unknown:
+            raise WorktreeError(
+                f"[S16.7] exec target {alias!r} has unknown key(s): "
+                f"{', '.join(sorted(unknown))}"
+            )
+        for key in ("stack", "service", "workdir"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value:
+                raise WorktreeError(
+                    f"[S16.7] exec target {alias!r} requires a non-empty "
+                    f"string '{key}'"
+                )
+        requires = entry.get("requires_worktree_mount", True)
+        if not isinstance(requires, bool):
+            raise WorktreeError(
+                f"[S16.7] exec target {alias!r} 'requires_worktree_mount' must "
+                f"be a boolean, got {requires!r}"
+            )
+        targets[alias] = ExecTarget(
+            alias=alias,
+            stack=entry["stack"],
+            service=entry["service"],
+            workdir=entry["workdir"],
+            requires_worktree_mount=requires,
+        )
+    return targets
+
+
+def resolve_exec_targets_config(
+    global_config: Mapping[str, Any],
+) -> dict[str, ExecTarget]:
+    """Extract and validate ``[ciu.worktree.exec_targets]`` from a rendered
+    global config; empty mapping when none is declared."""
+    ciu = global_config.get("ciu", {})
+    if not isinstance(ciu, dict):
+        raise WorktreeError("[S16.7] [ciu] must be a table")
+    worktree_cfg = ciu.get("worktree")
+    if worktree_cfg is None:
+        return {}
+    if not isinstance(worktree_cfg, dict):
+        raise WorktreeError("[S16.7] [ciu.worktree] must be a table")
+    raw_targets = worktree_cfg.get("exec_targets")
+    if raw_targets is None:
+        return {}
+    if not isinstance(raw_targets, dict):
+        raise WorktreeError("[S16.7] [ciu.worktree.exec_targets] must be a table")
+    return parse_exec_targets(raw_targets)
+
+
+def _resolve_target_container(project: str, service: str, network: str) -> str:
+    """Exactly one RUNNING container for the selected compose project/service
+    on the selected instance's own network — never a substring match, and
+    never an implicit `up`. Zero or multiple matches refuse.
+    """
+    try:
+        res = procutil.docker(
+            [
+                "ps",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--filter", f"label=com.docker.compose.service={service}",
+                "--filter", f"network={network}",
+                "--format", "{{.ID}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not query target container for project {project!r} "
+            f"service {service!r} on network {network!r}: {exc}"
+        ) from exc
+    ids = [line for line in (res.stdout or "").splitlines() if line.strip()]
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.7] `docker ps` failed for target project {project!r} "
+            f"service {service!r}: {(res.stderr or res.stdout or '').strip()}"
+        )
+    if len(ids) != 1:
+        raise WorktreeError(
+            f"[S16.7] expected exactly one running container for project "
+            f"{project!r} service {service!r} on network {network!r}, found "
+            f"{len(ids)}; no `up` is ever started implicitly"
+        )
+    return ids[0]
+
+
+def _workdir_within(workdir: str, destination: str) -> bool:
+    """True when the container *workdir* equals *destination* or is a strict
+    subdirectory of it (path-component comparison, no filesystem access)."""
+    work = workdir.rstrip("/")
+    dest = destination.rstrip("/")
+    return work == dest or work.startswith(dest + "/")
+
+
+def _verify_worktree_mount(
+    container_id: str,
+    record: WorktreeInstanceRecord,
+    workdir: str,
+    env: Mapping[str, str],
+) -> None:
+    """Require a bind mount whose HOST source is the selected Git worktree's
+    physical path and whose CONTAINER destination contains the declared
+    workdir (S16.7).
+
+    Docker's own ``inspect`` output is the ONLY namespace authority: the
+    host-side ``Source`` is compared against the physical (host-namespace)
+    translation of the record's Git path (derived with the target's own
+    REPO_ROOT/PHYSICAL_REPO_ROOT), and the container-side ``Destination``
+    against the declared workdir. No local filesystem predicate is ever run on
+    a path belonging to the other namespace.
+    """
+    try:
+        res = procutil.docker(
+            ["inspect", "--format", "{{json .Mounts}}", container_id],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not inspect target container {container_id} "
+            f"mounts: {exc}"
+        ) from exc
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.7] `docker inspect` failed for {container_id}: "
+            f"{(res.stderr or res.stdout or '').strip()}"
+        )
+    try:
+        mounts = json.loads(res.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise WorktreeError(
+            f"[S16.7] `docker inspect` returned unparseable mounts for "
+            f"{container_id}"
+        ) from exc
+    physical = os.path.normpath(str(to_physical_path(
+        record.git_worktree_path,
+        repo_root=Path(env["REPO_ROOT"]),
+        physical_root=Path(env["PHYSICAL_REPO_ROOT"]),
+    )))
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        source = mount.get("Source")
+        destination = mount.get("Destination")
+        if not isinstance(source, str) or not isinstance(destination, str):
+            continue
+        if os.path.normpath(source) != physical:
+            continue
+        if _workdir_within(workdir, destination):
+            return
+    raise WorktreeError(
+        f"[S16.7] target container {container_id} does not mount the selected "
+        f"worktree {physical} at a path containing workdir {workdir!r}"
+    )
+
+
+def exec_target_instance(
+    repo_root: Path, logical_name: str, alias: str, argv: list[str]
+) -> int:
+    """``ciu worktree exec LOGICAL --target ALIAS -- ARGV...`` — run exact
+    argv (no shell) inside the ONE already-running container for the declared
+    target of the selected instance.
+
+    All config/selection/mount validation happens BEFORE any Docker
+    execution; `up` is never started implicitly. The selected target's own
+    global chain is rendered (without writing) under the instance's exact
+    environment; the exact compose project/service/network identity is
+    derived with the existing naming rule; exactly one running container must
+    match; the worktree-mount proof is mandatory by default. Returns the exact
+    ``docker exec`` exit code.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    env = _sanitized_target_env(repo_root, record)
+    if not argv or argv[0] != "--":
+        raise WorktreeError(
+            "[S16.7] `ciu worktree exec LOGICAL --target ALIAS -- ARGV...` "
+            "requires a `--` separator and at least one argv element"
+        )
+    child_argv = argv[1:]
+    if not child_argv:
+        raise WorktreeError(
+            "[S16.7] exec --target requires at least one argv element after `--`"
+        )
+
+    global_config = config_model.render_global_chain(
+        record.ciu_root, record.ciu_root, write_rendered=False, environ=env
+    )
+    targets = resolve_exec_targets_config(global_config)
+    target = targets.get(alias)
+    if target is None:
+        declared = ", ".join(sorted(targets)) or "(none)"
+        raise WorktreeError(
+            f"[S16.7] no exec target alias {alias!r} declared in "
+            f"{record.ciu_root}; declared: {declared}"
+        )
+
+    from . import engine
+
+    stack = record.ciu_root / target.stack
+    try:
+        project = engine.compose_project_name(global_config, stack)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.7] could not derive the compose project for target "
+            f"{alias!r}: {exc}"
+        ) from exc
+    network = env["DOCKER_NETWORK_INTERNAL"]
+
+    container_id = _resolve_target_container(project, target.service, network)
+    if target.requires_worktree_mount:
+        _verify_worktree_mount(container_id, record, target.workdir, env)
+
+    # NO `--` in the docker argv: `docker exec` stops option-parsing at the
+    # CONTAINER positional, so a `--` after it would be executed AS the
+    # command inside the container (measured live at review: exit 127,
+    # `exec: "--": executable file not found`). The CLI-level `--` separator
+    # was already consumed by the parser; child_argv is verbatim.
+    docker_argv = ["exec", "-w", target.workdir, container_id, *child_argv]
+    try:
+        res = procutil.docker(docker_argv, capture=False, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.7] could not run `docker exec` in {container_id}: {exc}"
         ) from exc
     return res.returncode
 

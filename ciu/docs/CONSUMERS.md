@@ -112,17 +112,43 @@ execute-in-this-exact-place primitive, so a non-container consumer can gate
 against the checkout without starting anything. The child's exact exit code
 is returned.
 
-## 8. Discover capabilities instead of guessing from the version
+## 8. Run inside a declared container target (S16.7)
+
+Declare the target in the selected instance's global config — a Git-safe
+alias with exactly these four keys:
+
+```toml
+[ciu.worktree.exec_targets.tester]
+stack = "test"                        # required non-empty string
+service = "tester"                    # required non-empty string
+workdir = "/workspace"                # required absolute container workdir
+requires_worktree_mount = true        # optional boolean; true by default
+```
+
+```console
+$ ciu worktree exec pkg-under-test --target tester -- ./scripts/gate.sh --strict
+```
+
+`exec --target` resolves the declared target's exact rendered stack and
+Compose project/service/network under the instance's own `ciu.env`, requires
+**exactly one already-running container** (zero or multiple refuse; `up` is
+never started implicitly), and — by default — proves that container has a
+bind mount whose host source is the selected Git worktree at a path
+containing the declared `workdir` before running `docker exec -w WORKDIR
+CONTAINER -- ARGV...` (no shell, exact argv, exact exit code). Set
+`requires_worktree_mount = false` only for a deliberate non-source utility
+container; it does not weaken project/service/network uniqueness.
+
+## 9. Discover capabilities instead of guessing from the version
 
 ```console
 $ ciu capabilities --json
 {"schema_version": 1, "capabilities": ["worktree.exec-local.v1",
- "worktree.identity.v1", "worktree.inspect.v1",
- "worktree.lifecycle-json.v1", "worktree.up.v1"]}
+ "worktree.exec-target.v1", "worktree.identity.v1",
+ "worktree.inspect.v1", "worktree.lifecycle-json.v1", "worktree.up.v1"]}
 ```
 
-Allowlist the identifiers you depend on. Target-exec (`--target`) is
-intentionally absent until its package ships — do not infer it.
+Allowlist the identifiers you depend on.
 
 ## Failure vocabulary, one place
 

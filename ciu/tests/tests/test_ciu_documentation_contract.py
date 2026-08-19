@@ -32,7 +32,8 @@ DOCS = [
 TOML_FENCE_RE = re.compile(r"```toml\n(.*?)```", re.DOTALL)
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
-# Every closed public value a consumer must type (D-009 / S16.4 / S16.5).
+# Every closed public value a consumer must type (D-009 / S16.4 / S16.5 /
+# S16.7).
 CLOSED_PUBLIC_VALUES = {
     # capability identifiers
     "worktree.identity.v1",
@@ -40,6 +41,7 @@ CLOSED_PUBLIC_VALUES = {
     "worktree.lifecycle-json.v1",
     "worktree.up.v1",
     "worktree.exec-local.v1",
+    "worktree.exec-target.v1",
     # structured-document operations
     "inspect",
     "list",
@@ -47,6 +49,12 @@ CLOSED_PUBLIC_VALUES = {
     "create",
     "ensure",
     "adopt",
+    # exec-target config vocabulary (S16.7)
+    "exec_targets",
+    "requires_worktree_mount",
+    "stack",
+    "service",
+    "workdir",
     # lifecycle states
     "allocating",
     "ready",

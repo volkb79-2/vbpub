@@ -922,18 +922,23 @@ class TestStructuredControlDocuments:
         assert doc["capabilities"] == sorted(worktree.WORKTREE_CAPABILITIES)
         assert doc["capabilities"] == [
             "worktree.exec-local.v1",
+            "worktree.exec-target.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
             "worktree.lifecycle-json.v1",
             "worktree.up.v1",
         ]
 
-    def test_capabilities_advertise_no_unshipped_contract(self):
-        assert "worktree.up.v1" in worktree.WORKTREE_CAPABILITIES
-        assert "worktree.exec-local.v1" in worktree.WORKTREE_CAPABILITIES
-        # target exec ships in P06 — must NOT be advertised yet
-        assert "worktree.exec-target.v1" not in worktree.WORKTREE_CAPABILITIES
-        assert not any("target" in c for c in worktree.WORKTREE_CAPABILITIES)
+    def test_capabilities_advertise_exactly_the_shipped_contracts(self):
+        assert set(worktree.WORKTREE_CAPABILITIES) == {
+            "worktree.identity.v1",
+            "worktree.inspect.v1",
+            "worktree.lifecycle-json.v1",
+            "worktree.up.v1",
+            "worktree.exec-local.v1",
+            "worktree.exec-target.v1",
+        }
+        assert not any("future" in c for c in worktree.WORKTREE_CAPABILITIES)
 
     # -- document builder (O1/O2) -------------------------------------------
 
@@ -1244,3 +1249,318 @@ class TestExactWorktreeControl:
         )
         with pytest.raises(worktree.WorktreeError, match="could not run exec argv"):
             worktree.exec_instance(repo_root, "ctrl", ["--", "pwd"])
+
+
+class TestExecTargets:
+    """S16.7 — declared container targets for `worktree exec --target`:
+    exact config grammar (O1), exact running-container selection + worktree
+    mount proof + shell-free docker exec (O2), capability after ship (O3)."""
+
+    GLOBAL_TEMPLATE = """\
+[ciu]
+env = "test"
+
+[deploy]
+project_name = "myapp"
+environment_tag = "dev"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+
+[ciu.worktree.exec_targets.tester]
+stack = "test"
+service = "tester"
+workdir = "/workspace"
+
+[ciu.worktree.exec_targets.utility]
+stack = "test"
+service = "utility"
+workdir = "/opt"
+requires_worktree_mount = false
+"""
+
+    @pytest.fixture
+    def target_repo(self, tmp_path, fake_generate_env):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _git(["init", "-b", "main"], repo).returncode == 0
+        assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
+        assert _git(["config", "user.name", "Test"], repo).returncode == 0
+        (repo / "README.md").write_text("hello\n", encoding="utf-8")
+        (repo / ".gitignore").write_text("ciu.env\n", encoding="utf-8")
+        (repo / "ciu.global.defaults.toml.j2").write_text(
+            self.GLOBAL_TEMPLATE, encoding="utf-8"
+        )
+        assert _git(["add", "."], repo).returncode == 0
+        assert _git(["commit", "-m", "init"], repo).returncode == 0
+        worktree.create(repo, "ctrl")
+        record = worktree.find_instance_record(repo, "ctrl")
+        assert record is not None and record.state == "ready"
+        (record.ciu_root / "ciu.env").write_text(
+            f'export REPO_ROOT="{record.ciu_root}"\n'
+            f'export PHYSICAL_REPO_ROOT="{record.ciu_root}"\n'
+            f'export REPO_NAME="repo"\n'
+            f'export INSTANCE_ID="{record.instance_id}"\n'
+            f'export DOCKER_NETWORK_INTERNAL="{record.network}"\n',
+            encoding="utf-8",
+        )
+        return repo, record
+
+    def _fake_docker(
+        self, monkeypatch, *, ps_ids=(), mounts=None, exec_rc=0, exec_log=None,
+        inspect_rc=0, inspect_out=None, exec_error=None, inspect_error=None,
+    ):
+        calls = {"ps": [], "inspect": [], "exec": []}
+
+        def fake(args, **kw):
+            verb = args[0]
+            calls[verb].append(args)
+            if verb == "ps":
+                out = "\n".join(ps_ids) + ("\n" if ps_ids else "")
+                return subprocess.CompletedProcess(args, 0, out, "")
+            if verb == "inspect":
+                if inspect_error is not None:
+                    raise inspect_error
+                if inspect_out is not None:
+                    return subprocess.CompletedProcess(args, inspect_rc, inspect_out, "")
+                return subprocess.CompletedProcess(args, inspect_rc, json.dumps(mounts or []), "")
+            if verb == "exec":
+                if exec_error is not None:
+                    raise exec_error
+                if exec_log is not None:
+                    exec_log.append(args)
+                return subprocess.CompletedProcess(args, exec_rc, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        return calls
+
+    def _mount(self, record, workdir="/workspace"):
+        return {"Source": str(record.git_worktree_path), "Destination": workdir}
+
+    # -- O1: config grammar -------------------------------------------------
+
+    def test_parse_exec_targets_valid_and_mount_defaults_true(self):
+        targets = worktree.parse_exec_targets(
+            {"tester": {"stack": "test", "service": "tester", "workdir": "/workspace"}}
+        )
+        t = targets["tester"]
+        assert (t.alias, t.stack, t.service, t.workdir) == ("tester", "test", "tester", "/workspace")
+        assert t.requires_worktree_mount is True
+
+    def test_parse_exec_targets_mount_false_is_explicit_opt_out(self):
+        targets = worktree.parse_exec_targets(
+            {"tester": {"stack": "s", "service": "s", "workdir": "/w", "requires_worktree_mount": False}}
+        )
+        assert targets["tester"].requires_worktree_mount is False
+
+    def test_parse_exec_targets_rejects_unknown_key(self):
+        with pytest.raises(worktree.WorktreeError, match="unknown key.*ports"):
+            worktree.parse_exec_targets(
+                {"tester": {"stack": "s", "service": "s", "workdir": "/w", "ports": [1]}}
+            )
+
+    def test_parse_exec_targets_rejects_empty_service(self):
+        with pytest.raises(worktree.WorktreeError, match="non-empty string 'service'"):
+            worktree.parse_exec_targets(
+                {"tester": {"stack": "s", "service": "", "workdir": "/w"}}
+            )
+
+    def test_parse_exec_targets_rejects_non_string_stack(self):
+        with pytest.raises(worktree.WorktreeError, match="non-empty string 'stack'"):
+            worktree.parse_exec_targets(
+                {"tester": {"stack": 3, "service": "s", "workdir": "/w"}}
+            )
+
+    def test_parse_exec_targets_rejects_non_bool_mount_flag(self):
+        with pytest.raises(worktree.WorktreeError, match="must be a boolean"):
+            worktree.parse_exec_targets(
+                {"tester": {"stack": "s", "service": "s", "workdir": "/w", "requires_worktree_mount": "yes"}}
+            )
+
+    def test_parse_exec_targets_rejects_invalid_alias(self):
+        with pytest.raises(worktree.WorktreeError, match="invalid exec target alias"):
+            worktree.parse_exec_targets({"bad/alias": {"stack": "s", "service": "s", "workdir": "/w"}})
+
+    def test_parse_exec_targets_rejects_non_table_entry(self):
+        with pytest.raises(worktree.WorktreeError, match="must be a table"):
+            worktree.parse_exec_targets({"tester": "nope"})
+
+    def test_resolve_exec_targets_config_shapes(self):
+        good = {"ciu": {"worktree": {"exec_targets": {"t": {"stack": "s", "service": "s", "workdir": "/w"}}}}}
+        assert "t" in worktree.resolve_exec_targets_config(good)
+        assert worktree.resolve_exec_targets_config({}) == {}
+        assert worktree.resolve_exec_targets_config({"ciu": {"worktree": None}}) == {}
+        assert worktree.resolve_exec_targets_config({"ciu": {"worktree": {}}}) == {}
+        with pytest.raises(worktree.WorktreeError, match=r"\[ciu\] must be a table"):
+            worktree.resolve_exec_targets_config({"ciu": []})
+        with pytest.raises(worktree.WorktreeError, match=r"\[ciu.worktree\] must be a table"):
+            worktree.resolve_exec_targets_config({"ciu": {"worktree": []}})
+        with pytest.raises(worktree.WorktreeError, match=r"\[ciu.worktree.exec_targets\] must be a table"):
+            worktree.resolve_exec_targets_config({"ciu": {"worktree": {"exec_targets": []}}})
+
+    # -- O2: exact selection + mount proof + docker exec --------------------
+
+    def test_exec_target_success_constructs_exact_docker_exec(self, target_repo, monkeypatch):
+        repo, record = target_repo
+        exec_log = []
+        calls = self._fake_docker(
+            monkeypatch, ps_ids=["abc123"], mounts=[self._mount(record)], exec_rc=23, exec_log=exec_log,
+        )
+        assert worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd", "a b"]) == 23
+        assert calls["ps"][0] == [
+            "ps",
+            "--filter", "label=com.docker.compose.project=myapp-dev-test",
+            "--filter", "label=com.docker.compose.service=tester",
+            "--filter", f"network={record.network}",
+            "--format", "{{.ID}}",
+        ]
+        assert calls["inspect"][0] == ["inspect", "--format", "{{json .Mounts}}", "abc123"]
+        # No `--` after the container id: docker exec treats post-CONTAINER
+        # tokens verbatim, so a `--` there would be executed as the command
+        # (checkpoint-B review, measured live: exit 127).
+        assert exec_log[0] == ["exec", "-w", "/workspace", "abc123", "pwd", "a b"]
+
+    def test_exec_target_zero_containers_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(monkeypatch, ps_ids=[])
+        with pytest.raises(worktree.WorktreeError, match="exactly one running container.*found 0"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_multiple_containers_refuse(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(monkeypatch, ps_ids=["a", "b"])
+        with pytest.raises(worktree.WorktreeError, match="found 2"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_wrong_mount_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(
+            monkeypatch, ps_ids=["abc123"],
+            mounts=[{"Source": "/some/other/checkout", "Destination": "/workspace"}],
+        )
+        with pytest.raises(worktree.WorktreeError, match="does not mount the selected worktree"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_non_dict_mount_entry_is_skipped(self, target_repo, monkeypatch):
+        repo, record = target_repo
+        calls = self._fake_docker(
+            monkeypatch, ps_ids=["abc123"],
+            mounts=[["not", "a", "mount"], self._mount(record)],
+        )
+        assert worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"]) == 0
+        assert calls["exec"][0][0] == "exec"
+
+    def test_exec_target_non_string_mount_source_is_skipped(self, target_repo, monkeypatch):
+        repo, record = target_repo
+        calls = self._fake_docker(
+            monkeypatch, ps_ids=["abc123"],
+            mounts=[{"Source": 123, "Destination": "/workspace"}, self._mount(record)],
+        )
+        assert worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"]) == 0
+        assert calls["exec"][0][0] == "exec"
+
+    def test_exec_target_correct_source_wrong_destination_refuses(self, target_repo, monkeypatch):
+        """Source matches the selected worktree but the destination does not
+        contain the declared workdir — must refuse, not pass."""
+        repo, record = target_repo
+        self._fake_docker(
+            monkeypatch, ps_ids=["abc123"],
+            mounts=[{"Source": str(record.git_worktree_path), "Destination": "/other"}],
+        )
+        with pytest.raises(worktree.WorktreeError, match="does not mount the selected worktree"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_inspect_unreachable_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(
+            monkeypatch, ps_ids=["abc123"], inspect_error=OSError("daemon gone")
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not inspect target container"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_mount_opt_out_skips_proof_but_keeps_uniqueness(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        calls = self._fake_docker(monkeypatch, ps_ids=["xyz"], mounts=[])
+        assert worktree.exec_target_instance(repo, "ctrl", "utility", ["--", "pwd"]) == 0
+        assert calls["inspect"] == []
+        assert calls["ps"][0][0] == "ps"
+
+    def test_exec_target_ps_query_uses_exact_identity_filters(self, target_repo, monkeypatch):
+        repo, record = target_repo
+        calls = self._fake_docker(monkeypatch, ps_ids=["abc123"], mounts=[self._mount(record)])
+        worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+        ps_args = calls["ps"][0]
+        # a sibling worktree's service (different network) can never match
+        assert f"label=com.docker.compose.project=myapp-dev-test" in ps_args
+        assert f"label=com.docker.compose.service=tester" in ps_args
+        assert f"network={record.network}" in ps_args
+
+    def test_exec_target_unknown_alias_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(monkeypatch)
+        with pytest.raises(worktree.WorktreeError, match="no exec target alias 'ghost'.*declared: tester, utility"):
+            worktree.exec_target_instance(repo, "ctrl", "ghost", ["--", "pwd"])
+
+    def test_exec_target_requires_separator_and_argv(self, target_repo):
+        repo, _ = target_repo
+        with pytest.raises(worktree.WorktreeError, match="requires a `--` separator"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", [])
+        with pytest.raises(worktree.WorktreeError, match="at least one argv element after `--`"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--"])
+
+    def test_exec_target_ps_failure_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        monkeypatch.setattr(
+            worktree.procutil, "docker",
+            lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "daemon down"),
+        )
+        with pytest.raises(worktree.WorktreeError, match="docker ps.*failed"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_ps_unreachable_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        monkeypatch.setattr(
+            worktree.procutil, "docker",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("docker")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not query target container"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_inspect_failure_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(monkeypatch, ps_ids=["abc123"], inspect_rc=1, inspect_out="oops")
+        with pytest.raises(worktree.WorktreeError, match="docker inspect.*failed"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_inspect_unparseable_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        self._fake_docker(monkeypatch, ps_ids=["abc123"], inspect_out="not json")
+        with pytest.raises(worktree.WorktreeError, match="unparseable mounts"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_exec_unreachable_refuses(self, target_repo, monkeypatch):
+        repo, record = target_repo
+        self._fake_docker(
+            monkeypatch, ps_ids=["abc123"], mounts=[self._mount(record)],
+            exec_error=OSError("no exec"),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not run `docker exec`"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_exec_target_compose_project_undefinable_refuses(self, target_repo, monkeypatch):
+        repo, _ = target_repo
+        monkeypatch.setattr(
+            worktree.config_model, "render_global_chain",
+            lambda *a, **kw: {
+                "ciu": {"worktree": {"exec_targets": {
+                    "tester": {"stack": "test", "service": "tester", "workdir": "/workspace"},
+                }}}
+            },
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not derive the compose project"):
+            worktree.exec_target_instance(repo, "ctrl", "tester", ["--", "pwd"])
+
+    def test_workdir_within_component_semantics(self):
+        assert worktree._workdir_within("/workspace", "/workspace") is True
+        assert worktree._workdir_within("/workspace/sub dir", "/workspace") is True
+        assert worktree._workdir_within("/workspaceX", "/workspace") is False
+        assert worktree._workdir_within("/other", "/workspace") is False

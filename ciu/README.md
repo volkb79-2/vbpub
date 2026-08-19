@@ -5,7 +5,7 @@ host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
 - identity and evidence: `ciu version`, `ciu provenance [--json]`
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect` (`add` remains shorthand)
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec` (`add` remains shorthand)
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
@@ -116,11 +116,11 @@ Automation surfaces are versioned and closed: `ciu worktree
 inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
 `schema_version: 1` document with a closed `operation`/`status` vocabulary and
 freshly derived Git facts — never inferred from a name or stale record —
-`ciu worktree up` starts one selected instance under its own `ciu.env`, and
-`ciu worktree exec LOGICAL -- ARGV...` runs exact argv (no shell) in that
-root without ever starting anything implicitly. `ciu capabilities --json`
-lists the shipped machine contracts. See
-[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
+`ciu worktree up` starts one selected instance under its own `ciu.env`,
+`ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` runs exact argv
+(no shell) in that root or inside its declared already-running container
+target (S16.7). `ciu capabilities --json` lists the shipped machine
+contracts. See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
 [docs/CONSUMERS.md](docs/CONSUMERS.md) (how).
 
 The rule of thumb: a `.j2` suffix means *template* (input); strip it to get the
