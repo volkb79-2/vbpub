@@ -347,7 +347,21 @@ data = { path = "", seed = "seed-dir", uid = 1000, mode = "0750" }   # seed [S6.
 template = "config.toml.j2"           # relative to stack dir
 target   = "/etc/app/config.toml"     # absolute path in container
 mode     = "0440"                     # optional; default 0440
+schema   = "config.schema.json"       # optional; JSON Schema for the rendered config [S5.7]
 ```
+
+Optional `schema` [S5.7]: a JSON Schema (Draft 2020-12) **relative to the
+stack dir**. The rendered config is parsed as TOML and validated against it —
+TOML targets only. The app's generated schema is the source; ciu only checks
+(no authoring, defaulting, or coercion). A violation fails the render naming
+the service, the configfile (with its per-instance suffix when `instances > 1`),
+and the offending key path. Requires the optional dependency
+`pip install 'ciu[schema]'`; without it a declared schema fails loudly — never
+a silent skip.
+
+Validation runs on the **up/dev path** (engine step 12, where configfiles
+render); `ciu render` renders TOML configs only and does not run configfile
+validation.
 
 ### `[state]` — persisted hook state [S3.4, S9.4]
 

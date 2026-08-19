@@ -426,6 +426,24 @@ requirements are marked *(withdrawn)*.
   secrets = files".
 - **S5.6** v1's unused `SERVICE_CONFIG_DEFAULTS`/`SERVICE_CONFIG_ACTIVE`
   constants are withdrawn.
+- **S5.7** A configfile section MAY declare an optional
+  `schema = "<path relative to the stack dir>"` key: a JSON Schema (Draft
+  2020-12) for the rendered config (CIU-37). The consumer's generated schema
+  is the source; CIU performs no schema authoring, defaulting, or coercion.
+  Declaration errors are caught in the same key-validation block as
+  `template`/`target`/`instances`, BEFORE any render: a non-path or missing
+  schema file aborts immediately. v1 validates **TOML targets only**: the
+  rendered bytes are parsed with `tomllib` and validated against the schema
+  immediately after the atomic write (S8.4) and before the mount is emitted
+  (S5.3). A violation fails the run with a tagged error naming the service,
+  the configfile (with its per-instance suffix when `instances > 1`), and the
+  offending KEY PATH (jsonschema's `absolute_path` joined with '.'); the
+  invalid rendered file is removed so it is never consumable. `jsonschema` is
+  an OPTIONAL dependency (`ciu[schema]`): when a schema is declared and it is
+  not importable, the run fails loudly pointing at the extra — never a silent
+  skip. With no schema key declared anywhere, the library is never imported.
+  This runs on the up/dev path (engine step 12); the `ciu render` verb renders
+  TOML configs only and does not validate configfiles.
 
 ### S5.3a — Directory-level mount, not file-level (hardening)
 

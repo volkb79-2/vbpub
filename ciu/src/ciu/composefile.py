@@ -53,8 +53,10 @@ compose_file_args(stack_dir, overlay_path) -> list[str]
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
@@ -430,6 +432,77 @@ def _make_secret_fn(secret_value_fn, declared_names: set[str]):
     return secret
 
 
+def _load_jsonschema():
+    """Import the optional ``jsonschema`` dependency (S5.7); fail-loud if absent.
+
+    The import is deliberately local and lazy: when no configfile entry
+    declares a ``schema`` key, this function is never called and the library
+    is never imported. When a declared schema cannot be validated because the
+    extra is missing, the run fails with a tagged error pointing at
+    ``ciu[schema]`` — never a silent skip.
+    """
+    try:
+        import jsonschema
+    except ImportError:
+        raise ValueError(
+            "[S5.7] configfile schema validation requires the optional "
+            "'jsonschema' dependency. Install it with: pip install 'ciu[schema]'"
+        ) from None
+    return jsonschema
+
+
+def _validate_rendered_configfile_schema(
+    *,
+    rendered_text: str,
+    schema_path: Path,
+    out_path: Path,
+    service: str,
+    cfg_name: str,
+) -> None:
+    """S5.7 — validate a rendered configfile against the app's JSON schema.
+
+    The consumer's schema is opaque input: CIU performs no schema authoring,
+    defaulting, or coercion. v1 validates TOML targets only: the rendered
+    bytes are parsed with ``tomllib`` and validated against the schema (JSON
+    Schema Draft 2020-12, via the optional ``jsonschema`` extra).
+
+    On any violation the run fails with a tagged ``ValueError`` naming the
+    service, the configfile (with its per-instance suffix when ``instances >
+    1``), and the offending KEY PATH (jsonschema's ``absolute_path`` joined
+    with '.'); the invalid rendered file is removed first, so it can never be
+    left behind as consumable by a mount or a later run.
+    """
+    jsonschema = _load_jsonschema()
+    try:
+        instance = tomllib.loads(rendered_text)
+    except tomllib.TOMLDecodeError as exc:
+        out_path.unlink(missing_ok=True)
+        raise ValueError(
+            f"[S5.7] rendered configfile '{cfg_name}' of service '{service}' "
+            f"is not valid TOML, so it cannot be validated against its "
+            f"declared schema '{schema_path}' (schema validation covers TOML "
+            f"targets only): {exc}"
+        ) from exc
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        out_path.unlink(missing_ok=True)
+        raise ValueError(
+            f"[S5.7] schema file '{schema_path}' declared for configfile "
+            f"'{cfg_name}' of service '{service}' is not valid JSON: {exc}"
+        ) from exc
+    try:
+        jsonschema.validate(instance, schema)
+    except jsonschema.exceptions.ValidationError as exc:
+        out_path.unlink(missing_ok=True)
+        key_path = ".".join(str(part) for part in exc.absolute_path)
+        raise ValueError(
+            f"[S5.7] rendered configfile '{cfg_name}' of service '{service}' "
+            f"does not match its declared schema '{schema_path}': key path "
+            f"'{key_path}': {exc.message}"
+        ) from exc
+
+
 def render_configfiles(
     stack_dir: Path | str,
     root_key: str,
@@ -440,10 +513,11 @@ def render_configfiles(
 
     Discovers ``[<root_key>.<service>.configfile.<cfgname>]`` tables (keys:
     ``template``, ``target``, optional ``mode`` default ``"0440"``,
-    optional ``instances`` int). Each template (path relative to *stack_dir*)
-    is rendered with a Jinja2 context of the **guarded** config (secrets are NOT
-    readable as ``{{ root.secrets.x }}``, S4.21 — even here) plus ``env`` and
-    the explicit ``secret(name)`` function (S5.4).
+    optional ``instances`` int, optional ``schema`` path — S5.7). Each
+    template (path relative to *stack_dir*) is rendered with a Jinja2 context
+    of the **guarded** config (secrets are NOT readable as
+    ``{{ root.secrets.x }}``, S4.21 — even here) plus ``env`` and the
+    explicit ``secret(name)`` function (S5.4).
 
     **Dynamic per-instance fan-out (§6):** when a configfile section declares
     ``instances = N`` (integer ≥ 1), ``render_configfiles`` renders the template
@@ -480,10 +554,14 @@ def render_configfiles(
 
     Raises
     ------
-    FileNotFoundError : a referenced template does not exist.
+    FileNotFoundError : a referenced template does not exist, or a declared
+                        ``schema`` file does not exist (S5.7).
     ValueError        : a configfile section is missing ``template``/``target``,
                         or a template calls ``secret()`` with an unknown name,
-                        or ``instances`` is not a positive integer.
+                        or ``instances`` is not a positive integer, or
+                        ``schema`` is not a path / the rendered output or the
+                        schema file fails S5.7 validation (tagged ``[S5.7]``,
+                        naming the key path).
     """
     from .secrets.directives import discover as _discover
 
@@ -522,6 +600,7 @@ def render_configfiles(
             target = cfg.get("target")
             mode = cfg.get("mode", "0440")
             instances_raw = cfg.get("instances", None)
+            schema_rel = cfg.get("schema", None)
 
             if not isinstance(template_rel, str) or not template_rel:
                 raise ValueError(
@@ -546,6 +625,26 @@ def render_configfiles(
                     )
                 instance_count = instances_raw
                 multi_instance = instance_count > 1
+
+            # S5.7: optional JSON-schema validation of the RENDERED config.
+            # Declaration-shape + file-existence checks happen here, in the
+            # same key-validation block as template/target/instances and
+            # BEFORE any render; the content validation itself runs after the
+            # atomic write (see below).
+            if schema_rel is not None:
+                if not isinstance(schema_rel, str) or not schema_rel:
+                    raise ValueError(
+                        f"[S5.1] configfile '{cfg_name}' of service '{service_name}': "
+                        f"'schema' must be a file path relative to the stack dir."
+                    )
+                schema_path = stack_dir / schema_rel
+                if not schema_path.exists():
+                    raise FileNotFoundError(
+                        f"[S5.1] configfile schema file not found for "
+                        f"'{service_name}.{cfg_name}': {schema_path}"
+                    )
+            else:
+                schema_path = None
 
             template_path = stack_dir / template_rel
             if not template_path.exists():
@@ -620,6 +719,18 @@ def render_configfiles(
                 tmp_path.write_text(rendered_text, encoding="utf-8")
                 os.chmod(tmp_path, int(mode, 8))
                 os.replace(tmp_path, out_path)
+
+                # S5.7: validate immediately after the atomic write and BEFORE
+                # the mount is emitted — a violation fails the run (the mount
+                # is never emitted) and removes the invalid rendered file.
+                if schema_path is not None:
+                    _validate_rendered_configfile_schema(
+                        rendered_text=rendered_text,
+                        schema_path=schema_path,
+                        out_path=out_path,
+                        service=effective_service,
+                        cfg_name=effective_name,
+                    )
 
                 mounts.append(
                     ConfigFileMount(

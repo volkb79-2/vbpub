@@ -11,6 +11,11 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Added
 
+- Added optional `schema` to configfile entries (CIU-37): the rendered app
+  config is validated against the app's JSON Schema (Draft 2020-12, TOML
+  targets only) at render time, failing with the key path. `jsonschema` is an
+  optional dependency (`pip install 'ciu[schema]'`); declared schemas fail
+  loudly when it is absent, never silently skip. SPEC S5.7.
 - Added `[deploy].landscape_id` (CIU-36): a consumer-opt-in shared-landscape
   identity exposed to templates, validated as a DNS-label-safe slug
   (`^[a-z][a-z0-9-]{0,62}$`) on the final merged global config (including the
