@@ -114,6 +114,55 @@ separate axes; it does not make R0 consume coverage/mutation/canary policy.
 Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
 designed. It is not a seventh outcome hidden inside an evidence entry.
 
+## 3a. Why the rigor levels are not redundant — three techniques, three defect classes
+
+The most common objection to R2 and R3 is "we already have 100% coverage". The
+answer is not that coverage is bad; it is that **the three techniques detect
+disjoint classes of defect, and none of them finds the others'.**
+
+| technique | the question it answers | the defect it alone catches |
+|---|---|---|
+| **R1 — coverage** | did this line *run*? | code no test exercises at all |
+| **R2 — mutation** | would anything *notice* if this line were wrong? | assertions that execute the right code and prove nothing about it |
+| **R3 — canary** | does the harness *report* a failure it was given? | a suite whose failures never reach the verdict |
+
+That middle row is the one consumers underestimate, so it is worth a measured
+example from this estate's own tooling rather than a hypothetical. A release
+tool's change set reached a passing suite at **100% statement and branch
+coverage** and its mutation campaign still found **six surviving mutants** —
+one of them in the single line deciding whether a pinned version was stale.
+Coverage was never wrong; it was answering a different question.
+
+**Two shapes account for most survivors, and one of them is not a test defect.**
+
+**A weak assertion.** Asserting an exception's *type* proves nothing when two
+different causes raise the same type — a mutant that skipped one `raise` fell
+through to a second, raised the same class, and the test passed. Assert what
+distinguishes the causes, or arrange for the mutated path to *succeed* where the
+correct path refuses.
+
+**An equivalent mutant, which no test can kill.** Given
+
+```python
+if   pinned == highest:  ...   # current
+elif pinned <  highest:  ...   # stale
+```
+
+the `elif` is reachable only when the values differ, so `<` and `<=` are
+semantically identical there. No assertion can separate them.
+
+**This is a defect in the code's shape, not a gap in the tests, and it is the
+exact mirror of A-124/A-131.** There, a branch that cannot fire is a defect
+wearing thoroughness as a disguise. Here, an *operator that cannot matter* is
+the same defect — a redundant guard has made the comparison non-discriminating.
+The repair is to restructure so every operator discriminates (lead with `<`,
+then `>`, let equality fall to `else`), after which the ordinary equality test
+kills both mutants. Coverage cannot see either defect; only mutation can.
+
+This is also why `ALL_MUTANTS_EQUIVALENT` is a loud `INCONCLUSIVE` terminal and
+not a pass: a run in which every mutant was provably inert has told you nothing
+about your tests, and saying so is the only honest available answer.
+
 ## 4. The boundary with ciu, and why they are not one tool
 
 D7's split is WHERE (ciu) / WHAT (the project) / HOW (a testing library).

@@ -503,6 +503,38 @@ more than once: a release embargo iterated an empty tag list, and an audit
 looped over an empty tool tuple. **Assert your subject is non-empty**, in your
 own gates as well as in ours.
 
+### Writing tests that R2 will not embarrass
+
+R2 mutates your source and asks whether your suite notices. Two patterns
+account for most of the mutants that survive a suite its authors were proud of.
+Neither is exotic; both have been measured in this estate's own tooling.
+
+**Assert what distinguishes a failure, not merely that one occurred.** If two
+different causes raise the same exception type, `pytest.raises(ThatType)` cannot
+tell them apart — a mutant that skips one `raise` and falls through to another
+passes your test. A real case: a mutant let an HTTP status slip past its
+`raise`, the next line failed to parse the body, and the *same* exception class
+came out of the second branch. Assert the message, or construct the input so the
+mutated path **succeeds** where the correct path refuses.
+
+**A surviving mutant is sometimes a defect in your code's shape.** Given
+
+```python
+if   pinned == highest:  ...
+elif pinned <  highest:  ...
+```
+
+the `elif` runs only when the values differ, so `<` and `<=` behave identically
+there and **no test you can write will kill that mutant.** Restructure instead —
+lead with `<`, then `>`, and let equality fall to the `else` — and the ordinary
+equality test kills it. A redundant guard that makes an operator
+non-discriminating is the mirror of a branch that cannot fire: see
+[the design guide](DESIGN-GUIDE.md#3a-why-the-rigor-levels-are-not-redundant--three-techniques-three-defect-classes).
+
+If every mutant in a run is inert, assay says so loudly with
+`INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT` rather than passing you — that run
+established nothing about your tests.
+
 ### Never edit an expected artifact toward green
 
 If a witnessed/expected artifact stops matching, re-witness it from a real run
