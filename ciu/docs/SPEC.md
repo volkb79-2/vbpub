@@ -246,6 +246,19 @@ requirements are marked *(withdrawn)*.
   `{{ auto_generated.* }}` (not `${BUILD_VERSION}` interpolation).
 - **S3.10** Hyphenated path components map to underscores for key lookup
   (v1 behavior ratified).
+- **S3.11** A consumer MAY declare `[deploy].landscape_id` in global config
+  (opt-in; absence is legal) as the shared identity of one deployment
+  landscape — e.g. a consumer renders its Consul KV root
+  `dstdns/<landscape_id>/…` and mesh ACL tags from it. When present, CIU MUST
+  validate it on the **final merged** global config — after the committed
+  chain and the worktree overlay (S3.1b) — and it MUST match
+  `^[a-z][a-z0-9-]{0,62}$` (a DNS-label-safe slug: lowercase letter first,
+  then lowercase letters, digits, or hyphens). Violation = abort naming the
+  key and the pattern. Validation is once-per-render, never per chain
+  directory, so a later layer that corrects an earlier value is honored. This
+  value is distinct from the configfile render context's `instance_id`
+  (S7.5b) — a per-service replica index, not the workspace `INSTANCE_ID`
+  (S2) and not landscape-scoped.
 
 ## S4 — Secrets
 

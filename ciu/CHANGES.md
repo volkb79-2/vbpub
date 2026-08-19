@@ -11,6 +11,10 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Added
 
+- Added `[deploy].landscape_id` (CIU-36): a consumer-opt-in shared-landscape
+  identity exposed to templates, validated as a DNS-label-safe slug
+  (`^[a-z][a-z0-9-]{0,62}$`) on the final merged global config (including the
+  worktree overlay). Documented in CONFIG.md/SPEC.md S3.11.
 - Added schema-v1 managed worktree identity records; family-locked UTC name
   allocation; explicit `create`, `adopt`, and idempotent `ensure`; nested CIU
   root translation; runtime collision admission; and versioned lifecycle JSON.

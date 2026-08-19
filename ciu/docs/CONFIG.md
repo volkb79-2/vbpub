@@ -138,6 +138,7 @@ validated even when the override is present.
 | `environment_tag` | Yes | — |
 | `network_name` | Yes | S2.6 — typically `"$DOCKER_NETWORK_INTERNAL"` |
 | `log_level` | No | — |
+| `landscape_id` | No | S3.11 — DNS-label-safe slug; shared-landscape identity for consumer KV roots / mesh ACL tags |
 
 Subsections:
 
@@ -159,6 +160,18 @@ stack's rendered Compose model, not from the display label. Optional
 `health = false` excludes an ephemeral stack from orchestration health while
 still deploying it; the field is a strict boolean and defaults to `true`
 [S7.2, S7.7].
+
+`landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
+identity of one deployment landscape and render its Consul KV root
+(`dstdns/<landscape_id>/…`) and mesh ACL tags from it. When present it MUST
+match `^[a-z][a-z0-9-]{0,62}$` (a DNS-label-safe slug, lowercase first); a
+violating value fails the global render, naming the key and the pattern.
+
+Do not confuse it with the **configfile render context** name `instance_id`
+(`[<root>.<service>.configfile.<name>]`, [S5.1](SPEC.md#s5--config-file-mounts-own-apps) /
+[S7.5b](SPEC.md#s75b--dynamic-per-instance-configfile-selector)): that
+`instance_id` is the **per-service replica index** (`"<service>-<index>"`),
+NOT the workspace `INSTANCE_ID` (S2) and NOT landscape-scoped.
 
 `[deploy.groups]` is **rejected** by the v2 validator [S7.5] — see
 [MIGRATION-V2.md §6](MIGRATION-V2.md#6-groups--host-profiles-s74s75).

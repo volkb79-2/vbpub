@@ -9,6 +9,7 @@ Implements SPEC S3 (configuration model):
   S3.4  Re-render preserves only [state]; [secrets] NOT preserved
   S3.5  Stack shape: exactly one non-reserved top-level key
   S3.7  Stack root key must not collide with reserved global namespaces
+  S3.11 [deploy].landscape_id validated on the final merged global config (CIU-36)
 
 This module is standalone: it does NOT import from engine.py or deploy.py.
 Engine.py / deploy.py will import this module in the Wave-3 cutover.
@@ -480,10 +481,50 @@ def render_global_chain(
             f"Expected {GLOBAL_CONFIG_DEFAULTS} at repo root {repo_root}."
         )
 
+    # S3.11 (CIU-36): validate the FINAL merged config, once, after every layer
+    # (committed chain + worktree overlay) — never per chain directory, so a
+    # later layer that corrects an earlier bad value is honored, and an
+    # overlay-set value is covered too.
+    _validate_deploy_landscape_id(merged)
+
     if write_rendered:
         output_path = repo_root / GLOBAL_CONFIG_RENDERED
         write_rendered_toml(output_path, merged)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# S3.11 – [deploy].landscape_id validation (CIU-36)
+# ---------------------------------------------------------------------------
+
+_LANDSCAPE_ID_RE: re.Pattern[str] = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+
+def _validate_deploy_landscape_id(merged: dict) -> None:
+    """S3.11 — validate ``[deploy].landscape_id`` on the FINAL merged global config.
+
+    The key is consumer-opt-in: absence is legal. When present it MUST be a
+    DNS-label-safe slug (``^[a-z][a-z0-9-]{0,62}$``) — the shared identity of
+    one deployment landscape, which a consumer renders its Consul KV root
+    (``dstdns/<landscape_id>/...``) and mesh ACL tags from.
+
+    Runs once, on the fully merged config (including the worktree overlay),
+    never per chain directory — a leaf/override that corrects an earlier
+    layer's value must be honored, and an overlay-set value is covered too.
+
+    Raises ValueError naming the key and the pattern on violation.
+    """
+    deploy = merged.get("deploy")
+    if not isinstance(deploy, dict):
+        return
+    landscape_id = deploy.get("landscape_id")
+    if landscape_id is None:
+        return
+    if not isinstance(landscape_id, str) or not _LANDSCAPE_ID_RE.fullmatch(landscape_id):
+        raise ValueError(
+            f"[S3.11] [deploy].landscape_id must match '^[a-z][a-z0-9-]{{0,62}}$' "
+            f"(a DNS-label-safe slug); got {landscape_id!r}."
+        )
 
 
 # ---------------------------------------------------------------------------
