@@ -1,4 +1,4 @@
-# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 4)
+# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 5)
 
 **Where you are:** the worktree `/workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog`,
 branch `docs/ciu-worktree-automation-backlog`, base `3639b18c` (= the branch's worktree-identity
@@ -18,6 +18,12 @@ superseded — one lane, one branch, serial order below.
 | **A — first** | `ciu-P08-landscape-identity` → `ciu-P09-configfile-schema-validation` | Small; what dstdns's config-cutover consumes (P09 = render-time fail-fast for app configs; P08 = landscape_id validation). They touch `config_model.py`/`composefile.py`/docs only — **no overlap with P04–P07's `worktree.py`/`cli.py` surface**, so doing them first cannot disturb the carved anchors of the worktree packages. |
 | **B** | `ciu-P04` → `ciu-P05` → `ciu-P06` → `ciu-P07` | The branch's own worktree-automation milestone, in its carved dependency order. P07 (assay qualification) closes this branch's CIU-28/CIU-29 (worktree identity/control — NOT the renumbered CIU-39 provenance ask). |
 | **C** | `ciu-P10-deploy-layouts` (depends P08) → `ciu-P11-host-scoped-secrets` | Both touch `cli.py` (`_USAGE`, `_VERB_HELP`, verb chain) — the surface P04–P06 rewrite, so they go AFTER B. P10 carries `[deployment] environment` per layout (dstdns D-105 Q2's endgame). |
+
+**Rev 5 (2026-08-19, after the checkpoint-B review):** P04–P06 APPROVED + MERGED +
+RELEASED (operator decision; hermetic 2173/0, 100.00%, diff-coverage 819/819 — see the review
+record's checkpoint-B section, incl. the live-probe `docker exec --` fix). **`ciu-P07`
+(assay qualification) is the branch's NEXT package**, then checkpoint C (P10 → P11) — each
+still ends with review + hermetic gate + merge + release.
 
 **Rev 4 correction (2026-08-19, after the checkpoint-A review):** checkpoint A is
 **review-only** — ✅ DONE, see `nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md`

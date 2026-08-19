@@ -33,7 +33,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | OPEN — later milestone |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
-| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — carved as P04-P06; qualification P07 |
+| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19); qualification P07 pending, closes this row |
 | CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | OPEN — carved as ciu-P10-deploy-layouts (depends ciu-P08); `environment` per layout (dstdns D-105 Q2) |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | OPEN — carved as ciu-P11-host-scoped-secrets |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |

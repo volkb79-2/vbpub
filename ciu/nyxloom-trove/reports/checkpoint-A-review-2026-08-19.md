@@ -58,3 +58,40 @@ own plan ("once P04–P07 are complete and the serial branch is finally merged")
 **A = review-only (this record). First merge + release happens after checkpoint B** (P07
 qualification + the pragma finding cleared); second after C. No dstdns cost: config-cutover is
 not blocked on a ciu release.
+
+---
+
+# Checkpoint B review — ciu-P04..P06 — 2026-08-19 (same reviewer)
+
+**Verdict: APPROVED — MERGED + RELEASED as P04–P06 (operator decision: release now;
+`ciu-P07-assay-qualification` is DEFERRED to the next checkpoint, not abandoned).**
+Implementer: opencode (DeepSeek V4 Flash); its session ended mid-P06 — the controller
+committed P06 from its completed working tree with a controller-authored LOG.
+
+## Evidence (hermetic, tester-unified, full recipe from checkpoint A)
+
+- `run-ciu-tests.py`: **2173 passed / 0 failed, 100.00% line+branch (7159 stmts / 2808 br)**, exit 0.
+- `nyxloom.coverage_gate --base main`: **819/819 changed executable lines covered — exit 0.**
+  The checkpoint-A finding (6 pragma-excluded changed lines in `worktree.py`) was fixed in P04
+  (pragmas removed, arcs tested); the 3 remaining pragmas in that file predate the branch and
+  sit on unchanged lines.
+- Scope: P04/P05/P06 commits each within their handoff's scope.touch; forbid lists untouched.
+  The operator's own local `cmru/build-initial-standalone.sh` note-edit and the untracked
+  `_last-summary.txt` were excluded from all commits.
+
+## Review finding FIXED at review (would have been a total functional failure)
+
+P06 passed `--` to `docker exec` after the CONTAINER positional; docker executes it AS the
+in-container command. **Measured live: exit 127** (`exec: "--": executable file not found`).
+Every `exec --target` call would have failed despite a green suite — the argv was pinned
+against a fake docker, which proves construction, not acceptance. Fixed in the P06 commit
+(`666ccd9d`); test updated. **Standing lesson: any NEW docker argv shape gets one live
+acceptance probe at review.**
+
+## Deviations record
+
+1. P07 deferred (operator: release now). CIU-29 row stays OPEN with "qualification P07
+   pending"; the branch continues with P07 as its next package, followed by checkpoint C
+   (P10, P11).
+2. P06's LOG is controller-authored (implementer session ended pre-LOG); its content was
+   verified against the diff, not taken from the implementer's summary on trust.
