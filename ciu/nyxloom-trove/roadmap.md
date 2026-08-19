@@ -22,7 +22,11 @@ move together.
 4. Preserve CIU-25 as an open leak-detection issue; it is not silently folded
    into this milestone.
 
-### Package B — identity, allocation, and resume (CIU-28, in progress)
+### Package B — identity, allocation, and resume (CIU-28, checkpoint complete)
+
+Implemented on the serial feature branch at `71f5ec79`. The full cockpit
+diagnostic suite passed 2,076 tests at 100% line and branch coverage. Final
+Assay-backed qualification and issue closure remain in Package D/P07.
 
 1. Add atomic schema-v1 `ciu.worktree-instance.json` records and exact lookup by
    family-scoped logical identity.
@@ -40,7 +44,7 @@ move together.
    mechanically inspectable and recoverable; mismatches fail closed.
 7. Return versioned lifecycle JSON while preserving intentional human output.
 
-### Package C — machine control and execution (CIU-29)
+### Package C — machine control and execution (CIU-29; P04-P06)
 
 1. Add versioned JSON to list/inspect/remove and expose resolved root, logical
    identity, Git state, lifecycle state, runtime identity, and non-secret
@@ -57,6 +61,10 @@ move together.
    no shell, and propagate the child's exact exit code.
 
 ### Package D — gate, documentation, and qualification
+
+Carved as P07 after P04-P06. User-facing documentation is not deferred here:
+each Package C handoff updates README, DESIGN-GUIDE, and CONSUMERS in the same
+change. P07 verifies them and qualifies the complete milestone.
 
 1. Add CIU's real `assay.toml` lane(s) and a gate launcher pinned to the
    released Assay 1.0.0 artifact.

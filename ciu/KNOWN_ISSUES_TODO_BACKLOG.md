@@ -20,8 +20,8 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
 | CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | OPEN — later milestone |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
-| CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | OPEN — current Package B |
-| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — current Package C |
+| CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
+| CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — carved as P04-P06; qualification P07 |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
