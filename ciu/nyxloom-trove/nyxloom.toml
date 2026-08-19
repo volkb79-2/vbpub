@@ -26,6 +26,10 @@ docs_dir = "docs"
 # than `coverage run`) is necessary: xdist workers are separate processes.
 # The second command rejects every changed executable CIU source line that the
 # coverage JSON marks missing; both shell layers fail closed.
+# Manual reproduction of this gate: see vbpub AGENTS.md "Manual tester-unified
+# gate runs — the four traps" (cgroup env passthrough, dual-path mount for
+# worktree gitfiles, safe.directory, detached run form) and the checkpoint-A
+# review record in nyxloom-trove/reports/.
 [gates.tester-unified]
 argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && export PYTHONPATH=src && /opt/tester-venv/bin/python run-ciu-tests.py && PYTHONPATH=../nyxloom/src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --repo . --base main --coverage-json coverage.json --source src/ciu'"]
 phase = "implementation"

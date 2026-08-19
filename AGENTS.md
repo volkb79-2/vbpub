@@ -94,6 +94,32 @@ silently auto-creates an unlimited transient slice), so any code that accepts
 a slice name should verify it's actually a loaded unit first
 (`systemctl show <slice> --property=LoadState`) rather than trust it blindly.
 
+## Manual tester-unified gate runs — the four traps (estate-wide)
+
+Gates are normally launched by nyxloomd or `cmru tester-gate`, which handle all
+of this. A HAND-ROLLED `docker run` of `tester-unified:local` (e.g. a controller
+reproducing a trove gate at review) needs ALL four, or it fails in misleading
+ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
+`ciu/nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md`):
+
+1. **Pass `-e CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND`** —
+   governance tests read it ambiently (S15.2 by design) and fail without it;
+   the failures look like product bugs, not a missing variable.
+2. **Dual-mount the repo** at BOTH its physical host path and its devcontainer
+   path (`-v /home/.../vbpub:/home/.../vbpub -v /home/.../vbpub:/workspaces/vbpub`):
+   a git WORKTREE's `.git` gitfile records the path of whichever namespace
+   created it, so a single mount breaks `git` with `not a git repository: (null)`.
+3. **`git config --global safe.directory '*'`** inside the container (uid
+   mismatch between the mount's owner and the container user).
+4. **Detached form** — `docker run -d` → `docker wait` → `docker logs`, with
+   `--cgroup-parent=nyxloom-gates.slice` (see the cgroup section above; the
+   attached form can forge exit codes over a lying transport — LESSONS L18).
+
+Related, from the same review wave: an argv **pinned against a fake docker
+proves construction, not acceptance** — any NEW `docker` argv shape needs one
+live acceptance probe (a `--` placed after `docker exec`'s CONTAINER positional
+is executed AS the in-container command: exit 127).
+
 ## Worktree protocol
 Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
 Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.
