@@ -442,3 +442,26 @@ readable at a glance, still exclusively owned; the worktree directory should mir
 **Pair it with a retention policy** — `cmru gc`, or a documented sweep — since readability aids
 triage but does not stop accumulation. A timestamped name makes "remove retained transactions
 older than N days" expressible for the first time.
+
+### KI-17 — a gate step copied from `cmru.toml` cannot be reproduced standalone — *open*
+**Reported by:** cmru's own KI-12…KI-16 work, 2026-08-19.
+
+**Status:** the `argv` entries in a project's `[steps.*]` depend on environment injected by the
+**orchestration** layer from `cmru.orchestration.toml`'s `[env]` — `CMRU_TESTER_UNIFIED_IMAGE`,
+`CMRU_WHEEL_BUILDER_IMAGE`, `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
+`CMRU_TESTER_CGROUP_PROBE_IMAGE`. Nothing in the step says so.
+
+Copying a step out of `cmru.toml` and running it by hand — which is exactly what an operator
+does when a release goes red — fails **one missing variable at a time**, and each cycle costs a
+container spin-up. Measured while running cmru's own mutation campaign: two failed attempts,
+each surfacing precisely one more missing variable, before the third ran.
+
+The individual messages are clear (`no test image configured — pass --image explicitly or set
+CMRU_TESTER_UNIFIED_IMAGE`) but they are wrong about *where* the value normally comes from: it
+is not usually set in the project's `cmru.toml [env]` at all, it is inherited from the estate
+document above it. So the message sends the reader to the wrong file.
+
+**Fix, either or both:** (a) validate the full required-environment set up front and report
+**every** missing variable at once, rather than failing on the first; (b) name the real source
+in the message — *"normally supplied by `cmru.orchestration.toml [env]`; run through `cmru
+release`, or export it"*. Documented as a workaround in `docs/CONTRIBUTING.md` §3 meanwhile.
