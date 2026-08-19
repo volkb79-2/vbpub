@@ -29,9 +29,9 @@ scm_dist = "cmru"
 # release time and on demand; it never runs during `pytest` (see docs/SPEC.md S15).
 [[project.tool_dependencies]]
 project = "assay"
-version = "1.0.0"
-path    = "tools/assay/assay-1.0.0.pyz"
-sha256  = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"
+version = "2.1.0"
+path    = "tools/assay/assay-2.1.0.pyz"
+sha256  = "f2f13021a1bb781cacb0af5f370b78d172cde909ea485293fda2f35fb812806d"
 
 [project.version]
 strategy = "scm"
@@ -47,10 +47,10 @@ quiet = true
 commands = [
   # The consumer-owned, hash-pinned zipapp makes the rigor claim explicit.
   # tester-unified deliberately does not bake an ambient Assay version.
-  { label = "cmru: verify pinned Assay", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "cd tools/assay && /usr/bin/sha256sum -c assay-1.0.0.pyz.sha256"], cwd = ".." },
+  { label = "cmru: verify pinned Assay", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "cd tools/assay && /usr/bin/sha256sum -c assay-2.1.0.pyz.sha256"], cwd = ".." },
   { label = "cmru: whole-source line and branch coverage", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=src/cmru", "--cov-branch", "--cov-fail-under=100", "--cov-report=json:coverage.json"], cwd = ".." },
-  { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/assay/assay-1.0.0.pyz run cmru --file assay.toml --verdict-json .assay/verdict-cmru.json"], cwd = ".." },
-  { label = "cmru: complete changed-source mutation campaign", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-1.0.0.pyz --repo-root .. --project-root . --base origin/main --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"], cwd = ".." },
+  { label = "cmru: Assay R0 in tester-unified", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run cmru --file assay.toml --verdict-json .assay/verdict-cmru.json"], cwd = ".." },
+  { label = "cmru: complete changed-source mutation campaign", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-2.1.0.pyz --repo-root .. --project-root . --base origin/main --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"], cwd = ".." },
   { label = "cmru: cause-sensitive coverage canary", argv = ["cmru", "tester-gate", "--cwd", "cmru", "--", "/bin/sh", "-ec", "mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root .. --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"], cwd = ".." },
 ]
 
