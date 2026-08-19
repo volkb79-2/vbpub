@@ -7,6 +7,37 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.1.0] - 2026-08-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=7eefaba031d9b4aeae6929b2e197caa2d30a1b0e -->
+
+### Added
+- feat(ciu): declared exact container targets for worktree exec (CIU-29 / S16.7) (666ccd9d)
+- feat(ciu): exact selected-worktree up and local exec (CIU-29 / D-007) (257057a4)
+- feat(ciu): structured worktree control + capability discovery (CIU-29 / D-009) (59289f19)
+- feat(ciu): schema-validate rendered configfiles against the app's JSON schema (CIU-37) (f1b8e727)
+- feat(ciu): adopt [deploy] landscape_id as a validated identity key (CIU-36) (f19e5451)
+- feat(ciu): add durable worktree identity lifecycle (71f5ec79)
+- feat(ciu): withdraw ungrounded data isolation (cd978017)
+
+### Changed
+- checkpoint B review: P04-P06 APPROVED (hermetic 2173/0 100%, diff-coverage 819/819); docker-exec '--' defect fixed at review; P07 deferred to next checkpoint (operator); brief rev 5 (b055afa6)
+- checkpoint A review: P08+P09 APPROVED on-branch (hermetic 2092/0, 100.00%); merge deferred to B (P07 qualification + the 6 worktree.py pragma lines); brief rev 4 + gate-invocation recipe (156d5767)
+- brief rev 3: evidence ladder — venv = iteration signal only; tester-unified gate runs at checkpoint review (serialized vs cmru campaigns); assay joins only via P07 (cd672648)
+- config-wave brief rev 2: one-lane serial plan (A: P08+P09, B: P04-P07, C: P10+P11) with merge-to-main checkpoints; handoff input_revisions re-frozen to this branch; anchor-drift deltas recorded (b2538012)
+- merge main: dstdns asks CIU-34..38 + ciu-P08..P11 carves + config-wave brief; provenance ask renumbered CIU-28->CIU-39 (this branch had independently allocated CIU-28 for worktree identity) (3639b18c)
+- ciu: config-wave controller brief — release grouping R1(P08+P09 now, parallel-safe)/R2(P10)/R3(P11), recon hints, gate + merge discipline (eb56184d)
+- ciu: carve CIU-34..37 as ciu-P08..P11 (lint-clean); CIU-38 ruled consumer-side-first (dstdns builds, upstreaming ask stays) (5ca2bf32)
+- ciu(backlog): renumber dstdns asks CIU-29..33 -> CIU-34..38 (worktree branch pre-allocated CIU-29 for worktree control) (b4d7c749)
+- backlog(ciu): CIU-29..33 — five capability asks from dstdns's configuration/landscape decision (layout, host-scoped local secrets, landscape_id, schema-validated render, per-service AppRole); SPEC G consumer-status note (75b65a01)
+- backlog(ciu): CIU-28 -- provenance adjudicates images ciu did not build (bdc3dc78)
+
+### Documentation
+- docs(ciu): carve remaining worktree automation packages (fb5eefd4)
+- docs(ciu): define worktree-local config layer (077e87f1)
+- docs(ciu): fix automation milestone decisions (d1c3f4e9)
+- docs(ciu): file automation-safe worktree lifecycle gaps (0e6142c7)
+
 ## Unreleased
 
 ### Added
