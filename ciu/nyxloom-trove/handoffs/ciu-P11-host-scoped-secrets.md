@@ -5,7 +5,7 @@ project: ciu
 component: secrets
 title: "Host-scoped local secrets: [deploy.hosts.<h>.secrets] entries (ASK_EXTERNAL/GEN_LOCAL) materialized under the project store's hosts/<h>/ namespace, resolvable before any Vault exists on the target"
 tier: implement-2
-input_revision: "0b920f806b4aedcc12014ebb028b917858450de0"
+input_revision: "3639b18c7500c1e5e09ea5bb2bf88dc6bfe8c6de"   # re-frozen at the main-merge into this branch (rev-2 brief); file:line anchors measured on pre-merge main — RE-VERIFY each (P08: _make_render_context :317, render_global_chain :392 on this branch)
 source: {kind: backlog, ref: "KNOWN_ISSUES_TODO_BACKLOG.md#CIU-35"}
 stack: none
 depends_on: []
