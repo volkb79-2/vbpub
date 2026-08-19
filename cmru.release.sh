@@ -48,4 +48,11 @@ export CMRU_RUN_LOG="$log_file"
 # orchestration output. Quiet project detail is appended directly to CMRU_RUN_LOG
 # by the runner, so this is a complete debug transcript without console noise.
 exec > >(tee -a "$log_file") 2>&1
-exec "$cmru_bin" release --config "$repo_dir/cmru.orchestration.toml" "${args[@]}"
+# Mirror each released project's artifact + logs into <project>/artifacts/<id>/
+# and <project>/logs/cmru-release/<id>/ on success, by default. The GitHub
+# Release stays authoritative; these are a local convenience/audit copy. Safe
+# for every estate project because all declare project.release.artifact_dirs
+# (--retain-artifacts-on-release errors only when that is missing). Both are
+# no-ops under --dry-run. User args follow, so nothing here blocks a flag.
+exec "$cmru_bin" release --config "$repo_dir/cmru.orchestration.toml" \
+    --retain-artifacts-on-release --retain-logs-on-release "${args[@]}"
