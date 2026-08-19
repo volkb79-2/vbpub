@@ -59,6 +59,9 @@ cmru build   --project <name>     # isolated local build; retains logs/artifacts
 cmru worktrees                    # list retained failed build/release worktrees
 cmru dependencies                 # show + preflight the project dependency graph
 cmru dependencies --write         # refresh its generated root-TOML comment block
+cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
+cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
+cmru tool-deps --refresh assay    # explicit, deliberate re-vendor + pin/hash update (never automatic)
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
@@ -219,6 +222,59 @@ writes a derived version into `<project>/cmru.vars`: cmru reads it and owns the 
 Never use a build or publish step to make an unreviewed source commit.
 See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
 project-author requirements, and the current gate-adoption audit.
+
+## Tool dependencies
+
+A project's OWN tests/tooling may consume a first-party artifact released by ANOTHER
+project in the same estate — cmru's own `run-tests` step runs a pinned
+`tools/assay/assay-1.0.0.pyz` zipapp, for example. `assay` independently
+`depends_on = ["cmru"]` for release ORDER, so declaring the reverse edge there would be a
+cycle; that is exactly why the relationship is resolved by vendoring a pinned artifact
+instead, and exactly why nothing previously expressed it — cmru could silently test
+against a version of assay far behind what assay itself ships, with no signal to anyone.
+
+`[[project.tool_dependencies]]` in `cmru.toml` makes that edge explicit:
+
+```toml
+[[project.tool_dependencies]]
+project = "assay"                          # a first-party project in this estate
+version = "1.0.0"                          # the pinned version
+path    = "tools/assay/assay-1.0.0.pyz"    # project-relative path to the vendored artifact
+sha256  = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"
+```
+
+`cmru dependencies` reports it as a third edge kind (`tool`, alongside `declared` and
+`artifact`) but — deliberately, and permanently — never validates it against
+`project_order`: routing it through that same check would make cmru→assay a cycle
+against assay→cmru and refuse to load a config that is not actually broken.
+
+`cmru tool-deps` runs three DISTINCT checks per declared dependency, never conflated in
+either code or their messages:
+
+* **Integrity** — do the vendored bytes match the recorded `sha256`? Local only, no
+  network, always resolvable.
+* **Authenticity** — does that hash equal the digest of the PUBLISHED release asset, for
+  that project and exact pinned version? A file named `assay-1.0.0.pyz` is not thereby
+  assay 1.0.0 — the published bytes are downloaded and hashed; the filename only picks
+  which asset to fetch, never evidence of authenticity by itself.
+* **Freshness** — is the pin the HIGHEST released version for that project? The staleness
+  check, independent of authenticity: a pin can be authentic and simultaneously stale.
+
+A stale or mismatched tool dependency is an **error by default** — both for `cmru
+tool-deps` and inside `cmru release`'s own preflight (same phase as the tag-verification
+preflight, before any project's cycle starts; scoped to only the projects this run
+actually releases; runs identically for `--dry-run`). `--allow-stale-tool-deps` overrides
+staleness only — there is no override for an integrity or authenticity failure. A fresh
+clone with nothing released yet, or an unreachable network, is reported as a THIRD,
+explicit `unresolved` outcome — never as a pass, and never as a failure. `cmru tool-deps
+--refresh assay` re-vendors from the latest published release and rewrites the pin + hash
+deliberately; nothing here ever refreshes automatically.
+
+**This verification never runs during `pytest`/`cmru tester-gate`.** That is not a
+performance shortcut — it is the entire reason a pinned artifact is vendored instead of
+fetched: the test suite stays hermetic, reproducible, and bootstrappable from a bare
+clone with no network at all. See [SPEC.md S15](docs/SPEC.md#s15--tool-dependencies-declaration--verification)
+for the full contract.
 
 ## Config & secrets
 

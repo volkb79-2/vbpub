@@ -66,6 +66,21 @@ typed failure: no project's cycle has started yet, so cmru discards the just-cre
 worktree exactly like a success would, instead of retaining it the way a genuine
 mid-release failure is retained for inspection.
 
+At the same point in the plan — for exactly the projects this run will actually
+release — cmru also verifies every declared `[[project.tool_dependencies]]` (SPEC
+S15): a first-party artifact a project's own tests consume that was vendored, rather
+than release-ordered, specifically to avoid a dependency cycle (cmru's own tests run a
+pinned `assay` zipapp while `assay` itself `depends_on = ["cmru"]`). Integrity (do the
+vendored bytes match the recorded hash?), authenticity (does that hash match the
+PUBLISHED release asset's bytes — never just the filename or version string?), and
+freshness (is the pin the highest published version?) are three distinct checks; a
+stale or mismatched pin refuses the release the same way a bad tag state does
+(`--allow-stale-tool-deps` overrides staleness only — never an integrity or
+authenticity failure). A fresh clone with nothing published yet, or an unreachable
+network, is its own explicit "unresolved" outcome, never a pass and never a failure.
+This check makes zero network calls when nothing in this run declares a tool
+dependency, or when nothing changed. See `cmru tool-deps` for the standalone verb.
+
 Every project this plan skips (equal, ahead-and-allowed, or the ordinary "behind" case) prints
 its own `[INFO] Unchanged, skipping: <name> (…)` line naming the exact baseline tag and reason —
 never a bare list of names (SPEC S12.2e); see the worked example below. This computation runs

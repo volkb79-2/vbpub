@@ -19,6 +19,9 @@ cmru release                # 2. isolated transaction: prepare → gate → inte
    ├─ cmru build            #    local-only transaction: prepare → gate → build_step → retain output
    └─ cmru publish          #    run an explicit project's push step
 cmru worktrees              # discover retained failed build/release worktrees (read-only)
+cmru tool-deps [--allow-stale-tool-deps] [--refresh PROJECT]
+                             # verify declared tool dependencies (S15): integrity/authenticity/freshness
+                             # (network; also runs inside `release`'s preflight — never during tests)
 cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
 cmru cleanup --project P --delete-unmanaged-release-tag TAG --yes
@@ -567,6 +570,35 @@ empty `cleanup.release_tag_prefixes` or `cleanup.ghcr_packages` list selects
 nothing. Only an explicit `"*"` selects every release or package. CMRU MUST
 never reinterpret an empty destructive selector as a wildcard.
 
+**S2.6 — Tool dependencies** (`[[project.tool_dependencies]]`, S15). A project
+declares a first-party artifact its OWN tests/tooling consume (not a released
+product output — see S1). This is distinct from
+`[orchestration.project.<id>].depends_on`, which is release ORDER: cmru's own
+test steps run a vendored `assay` zipapp while `assay` itself
+`depends_on = ["cmru"]` for release order, so declaring the reverse edge there
+would be a cycle — resolved by vendoring a pinned artifact instead of by
+ordering (S15.2 covers the graph consequence).
+
+```toml
+[[project.tool_dependencies]]
+project = "assay"                          # required: a first-party project in this estate
+version = "1.0.0"                          # required: the pinned version
+path    = "tools/assay/assay-1.0.0.pyz"    # required: project-relative path to the vendored artifact
+sha256  = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"  # required: lowercase hex digest of the vendored bytes
+```
+
+Validated strictly, like the rest of S2 (exit 2 on any violation): unknown keys
+are rejected; `project`, `version`, `path`, `sha256` are all required
+non-empty strings; `project` MUST be a lowercase project identifier and MUST
+NOT equal the declaring project's own `id` (a project may not declare a tool
+dependency on itself); `path` MUST be project-relative and MUST NOT escape the
+project root (no absolute path, no `..` segment); `sha256` MUST be exactly 64
+lowercase hex characters. Whether `project` names a REAL sibling project in
+this estate cannot be checked from one project document alone (a project
+document stays portable to a fresh repository root, S2's own design
+constraint) — that cross-project check is performed by `cmru.dependencies`'
+`build_report`, alongside the analogous check for `depends_on` (S15.1).
+
 ---
 
 ## S3 — Single Runner Contract
@@ -824,7 +856,7 @@ asset `<tag><asset_suffix>`).
 
 ---
 
-## S7 — External supply-chain tooling (not yet a CMRU config feature)
+## S7 — External (third-party) supply-chain tooling (not yet a CMRU config feature)
 
 CMRU does **not** accept a `[project.delegated]` table. Earlier documentation
 advertised one even though no release lifecycle invoked it; the strict schema rejects it.
@@ -835,6 +867,13 @@ added, it MUST have an explicit artifact/digest input, an output location and pu
 rule, a fail-closed prerequisite policy, provenance binding, and an end-to-end release test.
 The source-first `CHANGES.md` transaction record remains the CMRU-native release history;
 `git-cliff` is not a replacement for it.
+
+This section is about tooling from OUTSIDE the estate (e.g. `git-cliff`), which remains
+unimplemented pending those contracts. It is distinct from S15's `[[project.tool_dependencies]]`
+— a FIRST-PARTY artifact produced and released by another project already inside this same
+estate (e.g. cmru's own vendored `assay` zipapp) — which is a config feature and IS
+implemented, precisely because it can reuse the estate's own release/publish/digest machinery
+instead of inventing a new provenance story for an external tool.
 
 ---
 
@@ -917,6 +956,12 @@ _This section enumerates all config validation rules. Each rule references the s
 | V16 | `installer.required_commands` are checked before network I/O (exit 3) | 3 |
 | V17 | Token file for `--github-token-file` must be owned by current user and chmod 600 | 2 |
 | V22 | `[[project.variants]].name` is present, unique, and filename-safe (`[A-Za-z0-9][A-Za-z0-9._-]*`); unknown variant keys are rejected | 2 |
+| V23 | `[[project.tool_dependencies]]` entries have all four required non-empty string keys (`project`, `version`, `path`, `sha256`); unknown keys are rejected (S2.6) | 2 |
+| V24 | `[[project.tool_dependencies]].project` is a lowercase project identifier and MUST NOT equal the declaring project's own `id` | 2 |
+| V25 | `[[project.tool_dependencies]].path` is project-relative and MUST NOT escape the project root | 2 |
+| V26 | `[[project.tool_dependencies]].sha256` is exactly 64 lowercase hex characters | 2 |
+| V27 | `[[project.tool_dependencies]].project` names a real first-party project in the loaded estate (cross-project check, `cmru.dependencies.build_report`, S15.1) | 2 |
+| V28 | A tool dependency (S15) whose integrity, authenticity, or (absent `--allow-stale-tool-deps`) freshness check fails MUST refuse `cmru release`; `cmru tool-deps` exits the same way on demand | 2 |
 
 ---
 
@@ -1129,6 +1174,140 @@ mutation. It is not a supported CMRU release feature. A project that needs OCI r
 MUST own an explicit tested command and its reproducibility, resource-governance, digest
 verification, and runtime-smoke evidence. MDT is the estate example; its implementation is
 not silently generalized as a CMRU profile.
+
+---
+
+## S15 — Tool Dependencies (declaration + verification)
+
+A cmru-managed project's OWN tests/tooling may consume a first-party artifact
+produced and released by ANOTHER project in the same estate — e.g. cmru's own
+`run-tests` step runs a pinned `tools/assay/assay-1.0.0.pyz` zipapp. `assay`
+independently `depends_on = ["cmru"]` for release ORDER (S2.2a): assay's own
+tests need a released `cmru` wheel before assay can build. Declaring the
+reverse edge (cmru depends_on assay) in `orchestration.project.<id>.depends_on`
+would therefore create a two-project cycle — exactly why this relationship was
+resolved by **vendoring a pinned artifact** instead of by ordering, and exactly
+why nothing anywhere previously expressed it: cmru could silently test against
+an assay release far behind what assay itself ships, with no signal to anyone.
+S15 makes that edge an explicit, first-class fact and adds three distinct
+verifications for it.
+
+**S15.1 — Declaration** (`[[project.tool_dependencies]]`, S2.6). Each entry
+names the provider `project`, the pinned `version`, the vendored artifact's
+project-relative `path`, and its recorded `sha256`. Structural validation
+(unknown keys, required non-empty fields, path safety, digest shape,
+no-self-declaration) happens per-document in `cmru.config` (S2.6); whether
+`project` names a real sibling project in THIS estate is a cross-project
+check, performed once every project document is loaded, by
+`cmru.dependencies.build_report` — the same module, and the same "declared vs.
+actual" comparison discipline, that already reconciles `depends_on` against
+first-party wheel inputs (S1). A tool dependency is reported there as a THIRD
+edge `kind` (`"tool"`, alongside `"declared"` and `"artifact"`).
+
+**S15.2 — A tool edge is reported but MUST NEVER be validated against
+`project_order`.** `depends_on` edges (`"declared"`) and first-party wheel
+edges (`"artifact"`) are both checked against `project_order` — the provider
+MUST release before the consumer. Routing a `"tool"` edge through that SAME
+check would make cmru→assay a cycle against assay→cmru (S15's own opening
+paragraph) and refuse to load a config that is not actually broken. This
+exclusion is deliberate and permanent, not an oversight to "complete" later —
+`cmru.dependencies.build_report`'s tool-edge loop carries an explicit comment
+saying so, precisely so a future change does not silently reintroduce the
+cycle by generalizing the ordering check across all edge kinds.
+
+**S15.3 — Three checks, kept distinct in code and in every message.** A
+declared tool dependency is verified along three INDEPENDENT axes; a
+verification MUST never conflate one for another, and every reported line
+names exactly which one it is:
+
+1. **Integrity** — do the vendored bytes match the recorded `sha256`? Purely
+   local, never touches the network, always resolvable (pass/fail only). This
+   is what a project's own `sha256sum -c *.sha256` test step already proves
+   (S9); S15 makes it an explicit, machine-readable fact in the same model as
+   the other two checks, rather than a fact that exists only inside one
+   project's shell command.
+2. **Authenticity** — does that recorded hash equal the digest of the
+   PUBLISHED release asset, for that project and EXACT pinned version? This is
+   the name-versus-object check for artifacts (the same shape as S12.2a's tag
+   name-versus-object check, and for the identical underlying reason a prior
+   defect there was found and fixed): a file named `assay-1.0.0.pyz` is not
+   thereby assay 1.0.0. The published asset's bytes are downloaded and hashed;
+   the filename is used only to locate WHICH asset to download, never as
+   evidence of authenticity in itself, and the recorded/local digest is never
+   compared against a version string.
+3. **Freshness** — is the pinned version the HIGHEST released version for that
+   project's tag prefix? This is the staleness check, and it is orthogonal to
+   authenticity: a pin can be simultaneously authentic (genuinely is what it
+   claims to be) AND stale (a newer real release exists it does not yet use).
+
+Authenticity and freshness both require the published-release catalog for the
+provider project — network state that is legitimately absent (S15.4) or
+unreachable (S15.5). Integrity has neither state; it is always resolvable
+without any network access.
+
+**S15.4 — Bootstrap: no release exists yet.** A fresh estate with nothing
+released on `origin` MUST still build, and MUST NOT report a corrupt or
+mismatched vendored artifact merely because nothing has been published yet to
+compare it against. When the provider project's tag prefix has zero published
+releases, authenticity and freshness are both reported as `unresolved`
+(`reason = "no-release"`) — a THIRD, explicit outcome, distinct from both
+`pass` and `fail`. Integrity still runs and still reports pass/fail normally.
+
+**S15.5 — Network unavailable is its own distinct outcome, and MUST NOT
+hang.** Every GitHub request S15 verification makes carries an explicit
+timeout (`cmru tool-deps --timeout`, default 10s). A connect/DNS/timeout
+failure, or an unexpected HTTP status, is reported as `unresolved` (`reason =
+"network-error"`) for authenticity and/or freshness — never silently folded
+into a passing result (a hidden mismatch would defeat the entire feature) and
+never reported as a failure (an operator's flaky network is not evidence of a
+corrupted or inauthentic artifact). A genuine hash mismatch or a corrupted
+local file MUST NEVER be reported as merely "could not check" (S15.3's
+distinction exists precisely so this cannot happen), and "could not check"
+MUST NEVER be reported as success.
+
+**S15.6 — Verification runs at release time and on demand; NEVER during
+tests.** `cmru tool-deps [--project P ...] [--json] [--allow-stale-tool-deps]
+[--refresh PROVIDER_PROJECT] [--timeout S]` runs all three checks and reports
+per dependency (read-only; `--refresh` is the one exception, S15.8). The same
+verification is wired into the isolated release transaction's plan-computation
+phase (S12.2a/S12.2b's own network-touching preflight, before any project's
+prepare/gate/promote cycle starts), scoped to exactly the projects this run
+will release — an unrelated orchestrated project's stale or unreachable tool
+dependency MUST NOT block a run that never touches it, and a no-op run (no
+project changed) makes zero network calls for this check. It runs identically
+for `--dry-run`, for the same reason S-CLI.5c requires the tag preflight to
+(a preview and a real run report identical decision-level diagnostics).
+
+Verification MUST NEVER run as a side effect of `cmru tester-gate` / `pytest` /
+any part of the test suite. This is not a performance optimization — it is the
+entire reason a pinned artifact is vendored rather than fetched: the test
+suite MUST stay hermetic, reproducible, and bootstrappable from a bare clone
+with no network access at all. A project's `run-tests` step MAY still run its
+OWN local integrity check (e.g. `sha256sum -c`, S15.3's first check) — that is
+local-only and always was safe; only the network-touching
+authenticity/freshness checks are excluded from the test path.
+
+**S15.7 — A stale or mismatched tool dependency is an ERROR by default.** An
+integrity failure (corrupted local bytes) or an authenticity failure (the
+recorded hash does not match the published object, or the pinned version was
+never published at all) MUST block a release, with NO override — these are
+objective evidence of a bad artifact. A freshness failure (stale: a newer real
+release exists) MUST also block a release by default, but MAY be overridden
+with `--allow-stale-tool-deps` — staleness is a policy judgement an operator
+may deliberately accept, not a corruption signal. `unresolved` outcomes
+(S15.4, S15.5) never block: "could not check" is not evidence of a problem.
+
+**S15.8 — Refresh is explicit and NEVER automatic.** `cmru tool-deps --refresh
+PROVIDER_PROJECT` re-vendors the declared artifact from PROVIDER_PROJECT's
+latest published release: it downloads the new asset, writes it under the
+declaring project's own tree (renaming to embed the new version, removing the
+old file), and rewrites exactly that one `[[project.tool_dependencies]]`
+entry's `version`/`path`/`sha256` in `cmru.toml` — a marked, surgical text edit
+that leaves the rest of a hand-formatted document untouched (the same
+discipline as `cmru dependencies --write`'s generated comment block and `cmru
+standards --update`'s revision-marker edit). No verification path, and no
+release, ever calls this on its own; it is a deliberate, separate operator
+action, reviewed like any other source change before it is committed.
 
 ---
 

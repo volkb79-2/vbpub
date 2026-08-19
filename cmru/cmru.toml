@@ -22,6 +22,17 @@ prefix = "cmru-v"
 artifacts = ["wheel"]
 scm_dist = "cmru"
 
+# S15: a first-party artifact cmru's OWN tests/tooling consume, distinct from
+# orchestration.project.<id>.depends_on (release ORDER). assay already depends_on
+# cmru, so declaring the reverse edge here would be a cycle -- resolved by vendoring
+# a pinned artifact instead of by ordering. `cmru tool-deps` verifies this pin at
+# release time and on demand; it never runs during `pytest` (see docs/SPEC.md S15).
+[[project.tool_dependencies]]
+project = "assay"
+version = "1.0.0"
+path    = "tools/assay/assay-1.0.0.pyz"
+sha256  = "6224f784f96f5ad9d10264a69dd69594639959c5eda847dcede822a7adc515bf"
+
 [project.version]
 strategy = "scm"
 bump = "conventional"
