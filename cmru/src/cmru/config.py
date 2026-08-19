@@ -414,6 +414,16 @@ def _parse_tool_dependencies(name: str, raw: dict) -> List[ToolDependency]:
             _error(f"{where}.version must be a non-empty string")
         if not isinstance(path, str) or not path.strip():
             _error(f"{where}.path must be a non-empty string")
+        # Normalise BEFORE validating: the validated string MUST be the exact
+        # string that gets stored and later used as `project_root / path`.
+        # Validating the raw (unstripped) value while storing the stripped one
+        # let a leading-space absolute path (e.g. " /etc/passwd") slip past
+        # `is_absolute()` -- Path(" /etc/passwd") does not start with "/", so it
+        # reads as relative -- while the STORED, stripped value ("/etc/passwd")
+        # is genuinely absolute, and `project_root / "/etc/passwd"` discards
+        # project_root entirely (Path.__truediv__ with an absolute right-hand
+        # side). Same family as B1: validate one string, store another.
+        path = path.strip()
         candidate = Path(path)
         if candidate.is_absolute() or ".." in candidate.parts or candidate.name in ("", "."):
             _error(
@@ -430,7 +440,7 @@ def _parse_tool_dependencies(name: str, raw: dict) -> List[ToolDependency]:
         seen.add(dep_project)
         dependencies.append(
             ToolDependency(
-                project=dep_project, version=version.strip(), path=path.strip(),
+                project=dep_project, version=version.strip(), path=path,
                 sha256=sha256_value.lower(),
             )
         )

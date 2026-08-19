@@ -270,6 +270,16 @@ explicit `unresolved` outcome — never as a pass, and never as a failure. `cmru
 --refresh assay` re-vendors from the latest published release and rewrites the pin + hash
 deliberately; nothing here ever refreshes automatically.
 
+Two easy-to-miss traps this check is measured against: a repository with genuinely **zero**
+releases returns HTTP 200 with an empty list (bootstrap, `unresolved`); a repository that
+is missing/private/misspelled returns 404 on that *same* listing call, and a 404 there is
+never read as bootstrap — it is a network/inaccessible outcome instead, so an estate that
+loses access to a repo can't silently and permanently stop being checked. And because
+resolving a dependency's provider (its tag prefix) needs the whole estate, `cmru tool-deps`
+requires `cmru.orchestration.toml` whenever the selected project(s) declare one — a plain
+`--config <project>/cmru.toml` invocation refuses cleanly with that explanation rather than
+reporting a perfectly authentic pin as an authenticity failure it has no way to check.
+
 **This verification never runs during `pytest`/`cmru tester-gate`.** That is not a
 performance shortcut — it is the entire reason a pinned artifact is vendored instead of
 fetched: the test suite stays hermetic, reproducible, and bootstrappable from a bare

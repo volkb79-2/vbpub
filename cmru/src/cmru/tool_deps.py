@@ -42,6 +42,7 @@ import re
 import sys
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from http.client import HTTPException
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Mapping, Optional
 from urllib.error import HTTPError, URLError
@@ -165,17 +166,45 @@ def _get(url: str, *, timeout: int) -> tuple[int, bytes]:
             return response.status, response.read()
     except HTTPError as exc:
         return exc.code, (exc.read() if exc.fp else b"")
-    except (URLError, OSError, TimeoutError) as exc:
+    except (URLError, OSError, TimeoutError, HTTPException) as exc:
+        # HTTPException (IncompleteRead, BadStatusLine, ...) is NOT a subclass of
+        # OSError/URLError -- a truncated/malformed response mid-transfer would
+        # otherwise escape this function as a raw exception, propagate through
+        # the release-plan phase uncaught, and get treated as a genuine
+        # mid-release failure (worktree retained) for what was only a flaky
+        # network read.
         raise NetworkUnavailable(str(exc)) from exc
 
 
-def _github_get_json(path: str, *, timeout: int) -> Optional[dict]:
-    """GET one GitHub REST path. ``None`` on 404 (cleanly absent). Any other
-    non-2xx status, or a body that doesn't parse as JSON, is NetworkUnavailable
-    -- never silently treated as absent."""
+def _github_get_json(path: str, *, timeout: int, on_404: str = "absent") -> Optional[dict]:
+    """GET one GitHub REST path.
+
+    ``on_404="absent"`` (default): a 404 means this EXACT thing legitimately
+    does not exist (e.g. no release under one specific tag) -- returns
+    ``None``, a real, checked fact.
+
+    ``on_404="error"``: a 404 means the endpoint itself could not be reached
+    as expected (e.g. listing releases for a repo that is missing, renamed,
+    private, or misspelled in ``[github]``) -- raises NetworkUnavailable.
+    Measured: a repository with genuinely ZERO releases returns HTTP 200 with
+    an empty ``[]`` body, never 404 -- so a 404 on the LIST endpoint can NEVER
+    mean "nothing published yet" (S15.4's bootstrap case). Conflating the two
+    would let an inaccessible repo silently and permanently stop being
+    checked, reported as the benign "could not check" outcome forever -- the
+    exact conflation S15.4/S15.5 exist to prevent.
+
+    Either way, any other non-2xx status, or a body that doesn't parse as
+    JSON, is NetworkUnavailable -- never silently treated as absent.
+    """
     status, body = _get(f"{API_BASE}{path}", timeout=timeout)
     if status == 404:
-        return None
+        if on_404 == "absent":
+            return None
+        raise NetworkUnavailable(
+            f"GitHub API {path} returned HTTP 404 -- the repository is missing, renamed, "
+            "private, or misspelled in [github]; this is NOT the same as a repository with "
+            "zero releases (which returns 200 and an empty list)"
+        )
     if status >= 400:
         raise NetworkUnavailable(f"GitHub API {path} returned HTTP {status}")
     try:
@@ -195,8 +224,13 @@ def _list_releases(owner: str, repo: str, *, timeout: int) -> list[dict]:
     out: list[dict] = []
     page = 1
     while True:
+        # on_404="error": see _github_get_json's docstring -- a 404 here means
+        # the repository itself is inaccessible, never "zero releases" (S15
+        # B1: that reads 200 + []). Every page uses the same rule; GitHub
+        # returns 200 + [] past the last page of a real repo, never 404.
         data = _github_get_json(
             f"/repos/{owner}/{repo}/releases?per_page=100&page={page}", timeout=timeout,
+            on_404="error",
         )
         batch = data or []
         out.extend(batch)
@@ -302,10 +336,21 @@ def verify_tool_dependency(
             f"{dependency.project} release {highest}",
         )
     else:
+        # NOTE: this only says what was actually checked -- pinned is higher than
+        # every NON-DRAFT, NON-PRERELEASE release resolve_latest_release scanned
+        # (it deliberately excludes both, S15). It must NOT claim "not among
+        # published releases": a draft or prerelease could exist under this
+        # exact tag (resolve_latest_release would never see it, since it is
+        # excluded from the "highest" candidate set) -- the authenticity check
+        # right below does its own direct, exact-tag lookup and can still find
+        # and confirm one. Overclaiming here would then contradict a PASSING
+        # authenticity outcome on the very same status.
         freshness = CheckOutcome(
-            "fail", "unpublished-version",
-            f"pinned version {dependency.version} is not among published {dependency.project} "
-            f"releases (highest published is {highest})",
+            "fail", "ahead-of-known-releases",
+            f"pinned version {dependency.version} is higher than every published, "
+            f"non-draft, non-prerelease {dependency.project} release found (highest is "
+            f"{highest}); this check has not confirmed this pin corresponds to any release "
+            "at all",
         )
 
     tag = f"{provider_prefix}{dependency.version}"
@@ -386,10 +431,15 @@ def verify_project(
     for dependency in getattr(project, "tool_dependencies", ()) or ():
         provider = projects.get(dependency.project)
         if provider is None:
-            # Estate-graph preflight (dependencies.py) already rejects an unknown
-            # provider before load_config ever returns one; this is defensive
-            # depth for direct callers of this function, not a reachable path
-            # through the CLI.
+            # Two independent guards keep this unreachable via the CLI today:
+            # an orchestration-mode load already rejects an unknown provider at
+            # `load_config` time (dependencies.py's build_report), and a
+            # single-project-mode load -- which can never see a sibling
+            # provider at all, even for a perfectly real, authentic pin -- is
+            # refused up front by tool_deps_main's own orchestration-required
+            # check (S15.6/B2) before verify_project is ever called. This
+            # branch is defensive depth for a direct caller of this function
+            # (verified by a direct unit test) that skips both.
             unresolved = CheckOutcome(
                 "fail", "unknown-provider",
                 f"tool dependency provider project {dependency.project!r} is not part of the "
@@ -545,6 +595,25 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
     unknown = sorted(set(selected) - set(projects))
     if unknown:
         parser.error(f"unknown project(s): {', '.join(unknown)}")
+
+    # S15.6/B2: a single-project load (`cmru.toml`, e.g. run from a project
+    # directory, or `--config <project>/cmru.toml`) only EVER sees its own
+    # project -- `load_config` cannot resolve a sibling PROVIDER project's tag
+    # prefix from there, no matter how real and authentic the pin is. That is a
+    # gap in what THIS INVOCATION can resolve, not a finding about the vendored
+    # artifact -- it must never be reported as an authenticity failure (which
+    # would be unfixable: there is no override for authenticity). Refuse the
+    # invocation itself, explicitly, before any check runs.
+    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        declaring = [name for name in selected if getattr(projects[name], "tool_dependencies", ())]
+        if declaring:
+            parser.error(
+                f"cmru tool-deps needs {ORCHESTRATION_CONFIG_FILENAME} to resolve a tool "
+                "dependency's PROVIDER project (its release tag prefix) -- a single-project "
+                f"load ({config_path.name}) only ever sees its own project, never a sibling: "
+                f"{', '.join(declaring)} declare one. Re-run with --config pointing at the "
+                f"estate's {ORCHESTRATION_CONFIG_FILENAME}, or from the estate root."
+            )
 
     if args.refresh:
         _run_refresh(

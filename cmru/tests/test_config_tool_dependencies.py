@@ -173,6 +173,28 @@ class TestToolDependencyParsing:
             load_forge_config(cfg)
         assert exc.value.code == 2
 
+    @pytest.mark.parametrize("bad_path", [" /etc/passwd", "/etc/passwd ", " ../escape.pyz"])
+    def test_leading_or_trailing_whitespace_may_not_smuggle_an_unsafe_path_past_the_check(
+        self, tmp_path, bad_path,
+    ):
+        """The regression test: validating the RAW string while storing the
+        STRIPPED one let a leading space defeat Path.is_absolute() (a string
+        starting with a space is never absolute) while the STORED, stripped
+        value genuinely was -- and `project_root / <that stored value>`
+        discards project_root entirely for an absolute right-hand side."""
+        cfg = _write(tmp_path, _base_toml(_valid_entry(path=bad_path)))
+        with pytest.raises(SystemExit) as exc:
+            load_forge_config(cfg)
+        assert exc.value.code == 2
+
+    def test_whitespace_around_an_otherwise_safe_path_is_normalised_and_accepted(self, tmp_path):
+        """Paired control: the fix must not reject legitimate whitespace-padded
+        input outright -- it normalises first, then validates and stores the
+        SAME (now-clean) string."""
+        cfg = _write(tmp_path, _base_toml(_valid_entry(path="  tools/assay/assay-1.0.0.pyz  ")))
+        deps = load_forge_config(cfg).projects["naf"].tool_dependencies
+        assert deps[0].path == "tools/assay/assay-1.0.0.pyz"
+
     @pytest.mark.parametrize("bad_sha", ["short", "z" * 64, "G" * 64, "6224f78" ])
     def test_sha256_must_be_64_hex_characters(self, tmp_path, bad_sha):
         cfg = _write(tmp_path, _base_toml(_valid_entry(sha256=bad_sha)))

@@ -96,11 +96,38 @@ def test_get_raises_network_unavailable_on_url_error(monkeypatch):
         tool_deps._get("https://x", timeout=5)
 
 
+def test_get_raises_network_unavailable_on_http_exception(monkeypatch):
+    """http.client.HTTPException (IncompleteRead, BadStatusLine, ...) is NOT a
+    subclass of OSError/URLError -- a truncated/malformed response mid-transfer
+    must still map to NetworkUnavailable, not escape as a raw exception that
+    the release-plan phase would treat as a genuine mid-release failure."""
+    import http.client
+
+    monkeypatch.setattr(
+        tool_deps, "urlopen",
+        lambda req, timeout: (_ for _ in ()).throw(http.client.IncompleteRead(b"partial")),
+    )
+    with pytest.raises(tool_deps.NetworkUnavailable):
+        tool_deps._get("https://x", timeout=5)
+
+
 # --- _github_get_json / _download_asset -----------------------------------------
 
-def test_github_get_json_returns_none_on_404(monkeypatch):
+def test_github_get_json_returns_none_on_404_by_default(monkeypatch):
+    """The default (`on_404="absent"`) is for a lookup where 404 legitimately
+    means "this exact thing doesn't exist" (e.g. one release tag)."""
     monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (404, b""))
     assert tool_deps._github_get_json("/x", timeout=5) is None
+
+
+def test_github_get_json_raises_on_404_when_on_404_is_error(monkeypatch):
+    """B1: `on_404="error"` is for a lookup where 404 means the endpoint itself
+    could not be reached as expected (the releases LIST for an inaccessible
+    repo) -- it must never collapse to the same "absent" outcome as a single
+    missing tag."""
+    monkeypatch.setattr(tool_deps, "_get", lambda url, timeout: (404, b""))
+    with pytest.raises(tool_deps.NetworkUnavailable):
+        tool_deps._github_get_json("/x", timeout=5, on_404="error")
 
 
 def test_github_get_json_raises_on_bad_status(monkeypatch):
@@ -134,14 +161,29 @@ def test_download_asset_raises_on_non_200(monkeypatch):
 # --- _list_releases / resolve_latest_release ------------------------------------
 
 def test_list_releases_single_short_page(monkeypatch):
-    monkeypatch.setattr(tool_deps, "_github_get_json", lambda path, timeout: [{"tag_name": "a"}])
+    monkeypatch.setattr(
+        tool_deps, "_github_get_json", lambda path, timeout, on_404: [{"tag_name": "a"}],
+    )
     assert tool_deps._list_releases("o", "r", timeout=5) == [{"tag_name": "a"}]
+
+
+def test_list_releases_passes_on_404_error_so_an_inaccessible_repo_never_reads_as_empty(monkeypatch):
+    """B1, at the seam: `_list_releases` MUST ask `_github_get_json` to raise
+    (not return None) on 404 -- locks in the fix at the call-site level, in
+    addition to the measured-HTTP-level tests below."""
+    seen = []
+    monkeypatch.setattr(
+        tool_deps, "_github_get_json",
+        lambda path, timeout, on_404: (seen.append(on_404), [])[1],
+    )
+    tool_deps._list_releases("o", "r", timeout=5)
+    assert seen == ["error"]
 
 
 def test_list_releases_paginates_on_a_full_page(monkeypatch):
     calls = []
 
-    def fake(path, timeout):
+    def fake(path, timeout, on_404):
         calls.append(path)
         # NOTE: `per_page=100` always contains the substring "page=1", so this
         # must check the trailing `&page=<N>` specifically, not `in`.
@@ -155,9 +197,32 @@ def test_list_releases_paginates_on_a_full_page(monkeypatch):
     assert len(calls) == 2
 
 
-def test_list_releases_treats_a_404_as_empty(monkeypatch):
-    monkeypatch.setattr(tool_deps, "_github_get_json", lambda path, timeout: None)
+# --- B1: measured against GitHub's real API (see the coordinator's report) --
+#   real repo, has releases   -> HTTP 200  body starts [{"url":...
+#   real repo, ZERO releases  -> HTTP 200  body []
+#   absent / private repo     -> HTTP 404
+# A 404 on the LIST endpoint can never mean "zero releases": that is 200+[].
+
+def test_list_releases_raises_when_the_repository_is_inaccessible_measured_at_the_http_level(monkeypatch):
+    """The actual regression test: a 404 on the releases LIST (repo missing,
+    renamed, private, or misspelled) MUST NOT be read as bootstrap."""
+    monkeypatch.setattr(tool_deps, "urlopen", lambda req, timeout: (_ for _ in ()).throw(_http_error(404, b"")))
+    with pytest.raises(tool_deps.NetworkUnavailable):
+        tool_deps._list_releases("o", "r", timeout=5)
+
+
+def test_list_releases_returns_empty_for_a_real_repo_with_zero_releases_measured_at_the_http_level(monkeypatch):
+    """Paired control: the genuine bootstrap state (200 + []) must still work
+    after the 404 fix -- this is the state the fix must NOT break."""
+    monkeypatch.setattr(tool_deps, "urlopen", lambda req, timeout: _Response(200, b"[]"))
     assert tool_deps._list_releases("o", "r", timeout=5) == []
+
+
+def test_list_releases_returns_releases_for_a_real_repo_with_releases_measured_at_the_http_level(monkeypatch):
+    """Paired control: the ordinary case (200 + a real releases array)."""
+    body = json.dumps([{"tag_name": "assay-v1.0.0"}]).encode()
+    monkeypatch.setattr(tool_deps, "urlopen", lambda req, timeout: _Response(200, body))
+    assert tool_deps._list_releases("o", "r", timeout=5) == [{"tag_name": "assay-v1.0.0"}]
 
 
 def test_resolve_latest_release_picks_highest_semver_ignoring_drafts_prereleases_and_other_prefixes(monkeypatch):
@@ -176,6 +241,24 @@ def test_resolve_latest_release_picks_highest_semver_ignoring_drafts_prereleases
 def test_resolve_latest_release_returns_none_when_nothing_matches(monkeypatch):
     monkeypatch.setattr(tool_deps, "_list_releases", lambda owner, repo, timeout: [])
     assert tool_deps.resolve_latest_release("o", "r", "assay-v", timeout=5) is None
+
+
+def test_resolve_latest_release_still_reads_a_genuinely_empty_catalog_as_bootstrap(monkeypatch):
+    """B1 paired control, one level up: resolve_latest_release (what
+    verify_tool_dependency actually calls) still returns None -- the bootstrap
+    signal downstream code depends on -- for a REAL repo with zero releases,
+    proven at the HTTP layer, not by mocking _list_releases away."""
+    monkeypatch.setattr(tool_deps, "urlopen", lambda req, timeout: _Response(200, b"[]"))
+    assert tool_deps.resolve_latest_release("o", "r", "assay-v", timeout=5) is None
+
+
+def test_resolve_latest_release_raises_instead_of_reading_bootstrap_when_the_repo_is_inaccessible(monkeypatch):
+    """B1's actual regression, one level up: an inaccessible repo (404 on the
+    list) must propagate as NetworkUnavailable out of resolve_latest_release,
+    never silently collapse to the same None a genuinely empty catalog returns."""
+    monkeypatch.setattr(tool_deps, "urlopen", lambda req, timeout: (_ for _ in ()).throw(_http_error(404, b"")))
+    with pytest.raises(tool_deps.NetworkUnavailable):
+        tool_deps.resolve_latest_release("o", "r", "assay-v", timeout=5)
 
 
 # --- _check_integrity: local only, always resolvable ----------------------------
@@ -336,7 +419,7 @@ def test_verify_reports_network_error_fetching_the_specific_pinned_release(monke
     assert status.authenticity.reason == "network-error"
 
 
-def test_verify_reports_unpublished_version_and_asset_missing_when_pin_is_ahead_of_every_release(monkeypatch, vendored):
+def test_verify_reports_ahead_of_known_releases_and_asset_missing_when_pin_is_ahead_of_every_release(monkeypatch, vendored):
     root, digest = vendored
     monkeypatch.setattr(
         tool_deps, "resolve_latest_release",
@@ -351,9 +434,39 @@ def test_verify_reports_unpublished_version_and_asset_missing_when_pin_is_ahead_
         project_root=root, consumer="cmru",
     )
     assert status.freshness.status == "fail"
-    assert status.freshness.reason == "unpublished-version"
+    assert status.freshness.reason == "ahead-of-known-releases"
     assert status.authenticity.status == "fail"
     assert status.authenticity.reason == "asset-missing"
+
+
+def test_verify_freshness_message_never_overclaims_when_a_draft_exists_under_the_exact_pinned_tag(monkeypatch, vendored):
+    """Issue 5: `resolve_latest_release` deliberately excludes drafts/prereleases
+    from its "highest" computation, so freshness's "ahead" branch must NOT claim
+    the pin "is not among published releases" -- a draft or prerelease release
+    can still exist under that EXACT tag, and the authenticity check's own
+    direct, exact-tag lookup can find and confirm it, as it does here. The old
+    wording would have directly contradicted a PASSING authenticity outcome on
+    the very same status."""
+    root, digest = vendored
+    monkeypatch.setattr(
+        tool_deps, "resolve_latest_release",
+        lambda *a, **k: {"version": "0.9.0", "tag": "assay-v0.9.0", "assets": []},
+    )
+    monkeypatch.setattr(
+        tool_deps, "_github_get_json",
+        lambda *a, **k: {"assets": [{"name": "assay-1.0.0.pyz", "browser_download_url": "https://asset"}]},
+    )
+    monkeypatch.setattr(tool_deps, "_download_asset", lambda *a, **k: b"payload")
+
+    status = tool_deps.verify_tool_dependency(
+        owner="o", repo="r", provider_prefix="assay-v", dependency=_dep(sha256=digest),
+        project_root=root, consumer="cmru",
+    )
+    assert status.authenticity.status == "pass"  # a real release under this exact tag WAS found
+    assert status.freshness.status == "fail"
+    assert status.freshness.reason == "ahead-of-known-releases"
+    assert "is not among published" not in status.freshness.detail
+    assert "non-draft, non-prerelease" in status.freshness.detail
 
 
 def test_verify_reports_network_error_downloading_the_published_asset(monkeypatch, vendored):
@@ -757,6 +870,45 @@ def test_tool_deps_main_errors_on_an_unknown_project(monkeypatch, tmp_path, caps
     with pytest.raises(SystemExit) as exc:
         tool_deps.tool_deps_main(["--project", "ghost"])
     assert exc.value.code == 2
+
+
+# --- B2: a single-project load can never resolve a sibling PROVIDER project --
+
+def test_tool_deps_main_refuses_a_single_project_load_that_declares_a_tool_dependency(monkeypatch, tmp_path, capsys):
+    """The regression test: `--config cmru/cmru.toml` (or running from that
+    project directory) MUST NOT report the exact pin an estate-scoped run
+    proves authentic as an 'authenticity FAIL (unknown-provider)' -- it must
+    refuse the INVOCATION, with exit 2, and a message that says why."""
+    monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.toml")
+    monkeypatch.setattr(
+        "cmru.cli.load_config", lambda cfg: _cli_config(tmp_path, cmru_tool_deps=(_dep(),)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        tool_deps.tool_deps_main([])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "cmru.orchestration.toml" in err
+    assert "authenticity" not in err.lower()  # never phrased as a finding about the artifact
+
+
+def test_tool_deps_main_allows_a_single_project_load_that_declares_nothing(monkeypatch, tmp_path, capsys):
+    """Paired control: the B2 guard must not fire merely because this is a
+    single-project load -- only when there is something it cannot resolve."""
+    monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.toml")
+    monkeypatch.setattr("cmru.cli.load_config", lambda cfg: _cli_config(tmp_path))
+    tool_deps.tool_deps_main([])  # must NOT raise
+    assert "no project declares a tool dependency" in capsys.readouterr().out
+
+
+def test_tool_deps_main_refresh_also_refuses_a_single_project_load(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("cmru.cli._resolve_config", lambda cfg: tmp_path / "cmru.toml")
+    monkeypatch.setattr(
+        "cmru.cli.load_config", lambda cfg: _cli_config(tmp_path, cmru_tool_deps=(_dep(),)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        tool_deps.tool_deps_main(["--refresh", "assay"])
+    assert exc.value.code == 2
+    assert "cmru.orchestration.toml" in capsys.readouterr().err
 
 
 def test_tool_deps_main_passes_and_exits_zero(monkeypatch, tmp_path, capsys):

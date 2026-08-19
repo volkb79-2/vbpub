@@ -1253,6 +1253,23 @@ releases, authenticity and freshness are both reported as `unresolved`
 (`reason = "no-release"`) — a THIRD, explicit outcome, distinct from both
 `pass` and `fail`. Integrity still runs and still reports pass/fail normally.
 
+**S15.4a — Bootstrap MUST be established by a genuinely empty release list,
+never by a repository the check could not see.** Measured against GitHub's
+real API: a repository with genuinely zero releases returns HTTP 200 with an
+empty `[]` body; a repository that is missing, renamed, private, or
+misspelled in `[github]` returns HTTP 404 on that same listing endpoint. A 404
+on the releases-LIST call therefore MUST NEVER be read as S15.4's bootstrap
+case — it MUST raise the S15.5 network/inaccessible outcome instead. Treating
+list-404 as bootstrap would let a repository that becomes inaccessible stop
+being checked silently and permanently, reported as the benign "could not
+check" outcome forever, while authenticity/freshness verification has in
+truth stopped happening entirely — a real, standing mismatch condition wearing
+S15.3's "could not check" outcome, which S15.3–S15.5 exist specifically to
+prevent. (A 404 for one EXACT tag, e.g. `/releases/tags/<tag>`, is a different,
+legitimate, directly-checked fact — "this specific version was never
+published" — once the release list itself has already been read successfully;
+S15.4a is about the LIST endpoint only.)
+
 **S15.5 — Network unavailable is its own distinct outcome, and MUST NOT
 hang.** Every GitHub request S15 verification makes carries an explicit
 timeout (`cmru tool-deps --timeout`, default 10s). A connect/DNS/timeout
@@ -1286,6 +1303,22 @@ with no network access at all. A project's `run-tests` step MAY still run its
 OWN local integrity check (e.g. `sha256sum -c`, S15.3's first check) — that is
 local-only and always was safe; only the network-touching
 authenticity/freshness checks are excluded from the test path.
+
+**S15.6a — Cross-project verification REQUIRES `cmru.orchestration.toml`; a
+single-project invocation refuses rather than misreport.** Authenticity and
+freshness resolve a dependency's PROVIDER project's own tag `prefix` (S15.1),
+which requires seeing that sibling project — impossible from a single
+`<project>/cmru.toml` load (S2's own portability rule: a project document
+stays runnable in a fresh repository root with no visibility into a former
+monorepo's siblings). `cmru tool-deps` (and `--refresh`) MUST detect this
+up front — any selected project that declares a tool dependency, loaded from
+anything other than `cmru.orchestration.toml` — and refuse the INVOCATION
+with a message naming the missing estate-wide context, before any check runs.
+It MUST NOT fall through to `verify_project`'s "provider not found" outcome:
+that outcome is an authenticity FAILURE with no override, so a documented,
+perfectly ordinary single-project invocation of a genuinely authentic pin
+would otherwise hard-fail for a reason that has nothing to do with the
+artifact.
 
 **S15.7 — A stale or mismatched tool dependency is an ERROR by default.** An
 integrity failure (corrupted local bytes) or an authenticity failure (the
