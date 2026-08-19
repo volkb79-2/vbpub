@@ -52,6 +52,9 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree up LOGICAL         start the selected ready instance, exactly
+    worktree exec LOGICAL -- ARGV...
+                                run exact argv (no shell) in the selected root
 
   MACHINE INTERFACES (D-009)
     capabilities [--json]       versioned, closed capability allowlist
@@ -111,12 +114,16 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree up LOGICAL
+ciu worktree exec LOGICAL -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
   not start the instance. Generated UTC branch/directory names are identical;
   adopt is the only operation that owns an unmanaged existing checkout.
   `inspect` reports the persisted record plus freshly read Git facts; `list
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
-  stdout (S16.4).
+  stdout (S16.4). `up` starts the selected ready instance under its OWN
+  ciu.env; `exec` runs exact argv (no shell) in that root and never starts
+  anything implicitly (S16.6).
 """,
     "capabilities": """\
 ciu capabilities [--json]
@@ -646,8 +653,16 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    p_up = sub.add_parser("up", add_help=False)
+    p_up.add_argument("logical_name")
+
+    p_exec = sub.add_parser("exec", add_help=False)
+    p_exec.add_argument("logical_name")
+    p_exec.add_argument("argv", nargs=_ap.REMAINDER)
+
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
+        p_up, p_exec,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -740,6 +755,16 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  HEAD: {git['head']}")
                 print(f"  dirty: {git['dirty']}")
             return 0
+
+        if opts.action == "up":
+            return wt_mod.up_instance(repo_root, opts.logical_name)
+
+        if opts.action == "exec":
+            # argparse REMAINDER strips the `--` separator; re-insert it so
+            # exec_instance's `--`-separator contract holds and a command line
+            # with NO separator is still refused rather than silently accepted.
+            argv = (["--"] + opts.argv) if "--" in rest else []
+            return wt_mod.exec_instance(repo_root, opts.logical_name, argv)
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).

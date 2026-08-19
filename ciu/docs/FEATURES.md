@@ -45,7 +45,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Fail-closed host-key pinning** | Connections are refused when no `known_host` is pinned; `CIU_SSH_INSECURE_TOFU=1` is a documented bootstrap-only escape hatch. | S14.4a |
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
-| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts, and `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5 |
+| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own `ciu.env`; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6 |
 | **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 
 ---
@@ -76,7 +76,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, adopt, ensure, remove, inspect, or list managed CIU instances | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]` (S16) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, or start managed CIU instances | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `up LOGICAL`; `exec LOGICAL -- ARGV...` (S16, S16.6) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
 | `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 

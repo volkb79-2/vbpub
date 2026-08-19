@@ -116,8 +116,11 @@ Automation surfaces are versioned and closed: `ciu worktree
 inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
 `schema_version: 1` document with a closed `operation`/`status` vocabulary and
 freshly derived Git facts — never inferred from a name or stale record —
-and `ciu capabilities --json` lists the shipped machine contracts.
-See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
+`ciu worktree up` starts one selected instance under its own `ciu.env`, and
+`ciu worktree exec LOGICAL -- ARGV...` runs exact argv (no shell) in that
+root without ever starting anything implicitly. `ciu capabilities --json`
+lists the shipped machine contracts. See
+[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
 [docs/CONSUMERS.md](docs/CONSUMERS.md) (how).
 
 The rule of thumb: a `.j2` suffix means *template* (input); strip it to get the

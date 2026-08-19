@@ -38,6 +38,8 @@ CLOSED_PUBLIC_VALUES = {
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
+    "worktree.up.v1",
+    "worktree.exec-local.v1",
     # structured-document operations
     "inspect",
     "list",

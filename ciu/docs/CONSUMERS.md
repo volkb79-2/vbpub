@@ -80,16 +80,49 @@ $ ciu worktree rm pkg-under-test --json
 git removal raises with exit 2 and **no** success document; the error names
 the retained resources.
 
-## 6. Discover capabilities instead of guessing from the version
+## 6. Start the selected instance, exactly (S16.6)
+
+```console
+$ ciu worktree up pkg-under-test
+```
+
+`up` resolves one `ready` managed record, parses **that** checkout's
+`ciu.env` by exact path, strips every inherited CIU identity/root/network key
+from the ambient environment, overlays the target's own values, and invokes
+CIU's existing up entry point in that root. The target's `REPO_ROOT`,
+`INSTANCE_ID`, and `DOCKER_NETWORK_INTERNAL` must match the record — a
+missing, mismatched, or not-ready instance refuses before anything starts.
+The exact child exit code is returned. Plain `ciu up` from a shell inside the
+primary checkout would run the PRIMARY instance, not this one; `worktree up`
+exists precisely so a consumer cannot get that wrong.
+
+## 7. Run exact argv in the selected root (no shell, no implicit up)
+
+```console
+$ ciu worktree exec pkg-under-test -- ./scripts/gate.sh --strict
+$ ciu worktree exec pkg-under-test -- echo 'a b' '$(whoami)' ';' '-x' '*'
+```
+
+`exec` runs the exact argv (after the mandatory `--`) with **no shell** in
+the selected checkout, under the same sanitized target environment as `up`.
+Spaces, globs, `$()`, semicolons, and leading dashes arrive byte-for-byte at
+the child; nothing is interpreted by a shell and nothing is misparsed as a
+CIU flag. It **never** runs `up`, `render`, or `clean` implicitly — it is the
+execute-in-this-exact-place primitive, so a non-container consumer can gate
+against the checkout without starting anything. The child's exact exit code
+is returned.
+
+## 8. Discover capabilities instead of guessing from the version
 
 ```console
 $ ciu capabilities --json
-{"schema_version": 1, "capabilities": ["worktree.identity.v1",
- "worktree.inspect.v1", "worktree.lifecycle-json.v1"]}
+{"schema_version": 1, "capabilities": ["worktree.exec-local.v1",
+ "worktree.identity.v1", "worktree.inspect.v1",
+ "worktree.lifecycle-json.v1", "worktree.up.v1"]}
 ```
 
-Allowlist the identifiers you depend on. `worktree.up`/`exec` identifiers are
-intentionally absent until their packages ship — do not infer them.
+Allowlist the identifiers you depend on. Target-exec (`--target`) is
+intentionally absent until its package ships — do not infer it.
 
 ## Failure vocabulary, one place
 

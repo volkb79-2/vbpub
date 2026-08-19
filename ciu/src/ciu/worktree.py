@@ -689,11 +689,14 @@ WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 # The closed, sorted allowlist of shipped machine contracts. Consumers
 # allowlist these identifiers instead of inferring features from SemVer
 # (D-009). An identifier is added only when its code path ships in the SAME
-# release; `up`/`exec` arrive in P05/P06 and are NOT advertised here.
+# release; `worktree.up.v1`/`worktree.exec-local.v1` ship in P05; target
+# exec arrives in P06 and is NOT advertised here.
 WORKTREE_CAPABILITIES = (
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
+    "worktree.up.v1",
+    "worktree.exec-local.v1",
 )
 
 
@@ -823,6 +826,161 @@ def capabilities_document() -> dict[str, Any]:
         "schema_version": CAPABILITIES_SCHEMA_VERSION,
         "capabilities": sorted(WORKTREE_CAPABILITIES),
     }
+
+
+# ---------------------------------------------------------------------------
+# S16.6 — exact selected-worktree control (`worktree up` / `worktree exec`)
+# ---------------------------------------------------------------------------
+
+# Ambient environment keys that describe SOME CIU instance (root, identity,
+# network, profile). They are stripped from the child environment so a
+# sibling checkout's values can never contaminate the selected instance.
+_CIU_IDENTITY_ENV_KEYS = (
+    "REPO_ROOT",
+    "PHYSICAL_REPO_ROOT",
+    "DOCKER_NETWORK_INTERNAL",
+    "INSTANCE_ID",
+    "REPO_NAME",
+    "CIU_SERVICES_PROFILE",
+)
+
+# The exact target ciu.env keys required to identify the selected record/root.
+_REQUIRED_TARGET_ENV_KEYS = (
+    "REPO_ROOT",
+    "PHYSICAL_REPO_ROOT",
+    "INSTANCE_ID",
+    "DOCKER_NETWORK_INTERNAL",
+    "REPO_NAME",
+)
+
+
+def _require_ready_record(
+    repo_root: Path, logical_name: str
+) -> WorktreeInstanceRecord:
+    """One exact ready managed record, or a refusal (missing or not ready)."""
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    if record.state != "ready":
+        raise WorktreeError(
+            f"[S16] instance {logical_name!r} is {record.state}, not ready; "
+            f"resume it with `ciu worktree ensure {logical_name}`"
+        )
+    return record
+
+
+def _sanitized_target_env(
+    repo_root: Path, record: WorktreeInstanceRecord
+) -> dict[str, str]:
+    """The child environment for the selected instance (S16.6).
+
+    Ambient process environment MINUS every CIU root/identity/network/profile
+    key, then overlaid with the target's OWN exact parsed ``ciu.env`` values —
+    never sourced through a shell, never inherited from a sibling. The parsed
+    values must identify the selected record/root: a missing key, or a
+    REPO_ROOT / INSTANCE_ID / network that disagrees with the record, is a
+    refusal, never an invented fallback.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
+    env_path = record.ciu_root / "ciu.env"
+    from .workspace_env import parse_workspace_env
+
+    try:
+        parsed = parse_workspace_env(env_path)
+    except (OSError, ValueError) as exc:
+        raise WorktreeError(f"[S16] could not parse {env_path}: {exc}") from exc
+    missing = [k for k in _REQUIRED_TARGET_ENV_KEYS if not parsed.get(k)]
+    if missing:
+        raise WorktreeError(
+            f"[S16] {env_path} lacks required identity key(s): "
+            f"{', '.join(missing)}"
+        )
+    if Path(parsed["REPO_ROOT"]).resolve() != record.ciu_root.resolve():
+        raise WorktreeError(
+            f"[S16] {env_path} REPO_ROOT {parsed['REPO_ROOT']!r} does not "
+            f"match the selected instance's CIU root {record.ciu_root}"
+        )
+    if parsed["INSTANCE_ID"] != record.instance_id:
+        raise WorktreeError(
+            f"[S16] {env_path} INSTANCE_ID {parsed['INSTANCE_ID']!r} does not "
+            f"match the selected record's {record.instance_id!r}"
+        )
+    if parsed["DOCKER_NETWORK_INTERNAL"] != record.network:
+        raise WorktreeError(
+            f"[S16] {env_path} DOCKER_NETWORK_INTERNAL "
+            f"{parsed['DOCKER_NETWORK_INTERNAL']!r} does not match the "
+            f"selected record's {record.network!r}"
+        )
+    env.update(parsed)
+    return env
+
+
+def _run_child(
+    argv: list[str], cwd: Path, env: Mapping[str, str]
+) -> subprocess.CompletedProcess:
+    """Run *argv* (no shell) in *cwd* under *env*; return the raw result.
+
+    The single subprocess seam for `worktree up`/`worktree exec`, so tests
+    replace exactly this call — never the whole subprocess module, which would
+    also swallow the git plumbing.
+    """
+    return subprocess.run(list(argv), cwd=str(cwd), env=dict(env), check=False)
+
+
+def up_instance(repo_root: Path, logical_name: str) -> int:
+    """``ciu worktree up LOGICAL`` — start the selected ready instance exactly.
+
+    Parses that instance's OWN ``ciu.env`` by exact path, builds the
+    sanitized child environment (:func:`_sanitized_target_env`), and invokes
+    CIU's existing up entry point as a subprocess in the instance's CIU root —
+    never in-process, so the target's own ``REPO_ROOT``/identity rule honestly.
+    Returns the child's exact exit code; a missing/not-ready record, an
+    invalid/mismatched target env, or a child-start failure refuses loudly.
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    env = _sanitized_target_env(repo_root, record)
+    import sys
+
+    argv = [sys.executable, "-m", "ciu.cli", "up"]
+    try:
+        res = _run_child(argv, record.ciu_root, env)
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not run `ciu up` in {record.ciu_root}: {exc}"
+        ) from exc
+    return res.returncode
+
+
+def exec_instance(repo_root: Path, logical_name: str, argv: list[str]) -> int:
+    """``ciu worktree exec LOGICAL -- ARGV...`` — run exact argv WITHOUT a
+    shell in the selected ready instance's CIU root, under the sanitized
+    target environment. Never starts/cleans/renders anything implicitly.
+    Returns the child's exact exit code (never a wrapper-masked value).
+    """
+    repo_root = Path(repo_root).resolve()
+    record = _require_ready_record(repo_root, logical_name)
+    if not argv or argv[0] != "--":
+        raise WorktreeError(
+            "[S16] `ciu worktree exec LOGICAL -- ARGV...` requires a `--` "
+            "separator and at least one argv element"
+        )
+    child_argv = argv[1:]
+    if not child_argv:
+        raise WorktreeError(
+            "[S16] exec requires at least one argv element after `--`"
+        )
+    env = _sanitized_target_env(repo_root, record)
+    try:
+        res = _run_child(child_argv, record.ciu_root, env)
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] could not run exec argv in {record.ciu_root}: {exc}"
+        ) from exc
+    return res.returncode
 
 
 def _branch_exists(repo_root: Path, branch: str) -> bool:

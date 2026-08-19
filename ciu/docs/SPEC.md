@@ -2424,9 +2424,35 @@ resources — never a success document.
 allowlist** of shipped machine contracts (`schema_version: 1`,
 `capabilities`: sorted identifiers). Consumers allowlist these identifiers
 instead of inferring features from SemVer. An identifier is added only when
-its code path ships in the same release. Initial identifiers:
-`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`.
-`up`/`exec` identifiers are NOT advertised before their packages ship.
+its code path ships in the same release. Shipped identifiers:
+`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
+`worktree.up.v1`, and `worktree.exec-local.v1`. Target-exec (`--target`) is
+NOT advertised before its package ships.
+
+### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
+
+`ciu worktree up LOGICAL` and `ciu worktree exec LOGICAL -- ARGV...` operate
+on **exactly one** selected `ready` managed record. A missing record, or a
+record in `allocating`/`recovery-required`, refuses — no child starts.
+
+Both build the child environment from the target's OWN exact
+`<record.ciu_root>/ciu.env` (parsed, never sourced through a shell): the
+ambient process environment MINUS every CIU root/identity/network/profile key
+(`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`, `INSTANCE_ID`,
+`REPO_NAME`, `CIU_SERVICES_PROFILE`), then overlaid with the parsed target
+values. The parsed target must carry `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
+`INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`, and `REPO_NAME`, and each must match
+the selected record/root: a missing key, a `REPO_ROOT` other than the record's
+CIU root, or an `INSTANCE_ID`/network differing from the record is a refusal,
+never a fallback and never a sibling's value.
+
+`worktree up` invokes CIU's existing up entry point as a subprocess in
+`record.ciu_root` under that environment; `worktree exec` runs the exact argv
+(after a mandatory `--` separator) with no shell in that root. Both propagate
+the child's exact exit code — never a wrapper-masked value. `exec` never
+starts, cleans, or renders anything implicitly; the presence of `--` and of at
+least one argv element is enforced, so a leading-dash argument is never
+misparsed as a CIU flag.
 
 ## S17 — Image provenance
 

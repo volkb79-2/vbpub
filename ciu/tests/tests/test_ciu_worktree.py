@@ -921,14 +921,19 @@ class TestStructuredControlDocuments:
         assert doc["schema_version"] == 1
         assert doc["capabilities"] == sorted(worktree.WORKTREE_CAPABILITIES)
         assert doc["capabilities"] == [
+            "worktree.exec-local.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.up.v1",
         ]
 
     def test_capabilities_advertise_no_unshipped_contract(self):
-        assert "worktree.up.v1" not in worktree.WORKTREE_CAPABILITIES
-        assert not any(c.endswith("exec") for c in worktree.WORKTREE_CAPABILITIES)
+        assert "worktree.up.v1" in worktree.WORKTREE_CAPABILITIES
+        assert "worktree.exec-local.v1" in worktree.WORKTREE_CAPABILITIES
+        # target exec ships in P06 — must NOT be advertised yet
+        assert "worktree.exec-target.v1" not in worktree.WORKTREE_CAPABILITIES
+        assert not any("target" in c for c in worktree.WORKTREE_CAPABILITIES)
 
     # -- document builder (O1/O2) -------------------------------------------
 
@@ -1047,3 +1052,195 @@ class TestStructuredControlDocuments:
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
         with pytest.raises(worktree.WorktreeError, match="NOT removing"):
             worktree.remove_document(tmp_repo, "wt1")
+
+
+class TestExactWorktreeControl:
+    """S16.6 — `worktree up` and `worktree exec` with an exact sanitized
+    target environment, exact argv, and exact child exit-code propagation."""
+
+    @pytest.fixture
+    def ready(self, tmp_repo, fake_generate_env):
+        """A ready managed instance whose ciu.env carries the FULL required
+        identity vocabulary (REPO_ROOT, PHYSICAL_REPO_ROOT, REPO_NAME,
+        INSTANCE_ID, DOCKER_NETWORK_INTERNAL), all matching the record."""
+        worktree.create(tmp_repo, "ctrl")
+        record = worktree.find_instance_record(tmp_repo, "ctrl")
+        assert record is not None and record.state == "ready"
+        (record.ciu_root / "ciu.env").write_text(
+            f'export REPO_ROOT="{record.ciu_root}"\n'
+            f'export PHYSICAL_REPO_ROOT="{record.ciu_root}"\n'
+            f'export REPO_NAME="repo"\n'
+            f'export INSTANCE_ID="{record.instance_id}"\n'
+            f'export DOCKER_NETWORK_INTERNAL="{record.network}"\n',
+            encoding="utf-8",
+        )
+        return tmp_repo, record
+
+    @pytest.fixture
+    def fake_run(self, monkeypatch):
+        seen = {"calls": []}
+
+        def fake_run(argv, cwd, env):
+            seen["last"] = (argv, {"cwd": cwd, "env": env})
+            seen["calls"].append(argv)
+            return subprocess.CompletedProcess(argv, 0, "out", "")
+
+        monkeypatch.setattr(worktree, "_run_child", fake_run)
+        return seen
+
+    # -- sanitized target environment ----------------------------------------
+
+    def test_sanitized_env_strips_sibling_identity_and_overlays_target(self, ready, monkeypatch):
+        repo_root, record = ready
+        monkeypatch.setenv("REPO_ROOT", "/sibling-A")
+        monkeypatch.setenv("INSTANCE_ID", "sibling-id-A")
+        monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "sibling-A-network")
+        monkeypatch.setenv("CIU_SERVICES_PROFILE", "core")
+        monkeypatch.setenv("KEEP_ME", "ambient")
+        env = worktree._sanitized_target_env(repo_root, record)
+        assert env["REPO_ROOT"] == str(record.ciu_root)
+        assert env["INSTANCE_ID"] == record.instance_id
+        assert env["DOCKER_NETWORK_INTERNAL"] == record.network
+        assert "CIU_SERVICES_PROFILE" not in env
+        assert env["KEEP_ME"] == "ambient"
+
+    def test_sanitized_env_refuses_missing_required_key(self, ready):
+        repo_root, record = ready
+        env_path = record.ciu_root / "ciu.env"
+        env_path.write_text(
+            "\n".join(
+                line for line in env_path.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("export REPO_NAME=")
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(worktree.WorktreeError, match="lacks required identity.*REPO_NAME"):
+            worktree._sanitized_target_env(repo_root, record)
+
+    def test_sanitized_env_refuses_root_instance_or_network_mismatch(self, ready):
+        repo_root, record = ready
+        env_path = record.ciu_root / "ciu.env"
+        cases = [
+            ("REPO_ROOT", "/elsewhere", r"REPO_ROOT.*does not match"),
+            ("INSTANCE_ID", "wrong-id", r"INSTANCE_ID.*does not match"),
+            ("DOCKER_NETWORK_INTERNAL", "wrong-net", r"DOCKER_NETWORK_INTERNAL.*does not match"),
+        ]
+        for key, value, match in cases:
+            lines = [
+                f'export {key}="{value}"' if line.startswith(f"export {key}=") else line
+                for line in env_path.read_text(encoding="utf-8").splitlines()
+            ]
+            env_path.write_text("\n".join(lines), encoding="utf-8")
+            with pytest.raises(worktree.WorktreeError, match=match):
+                worktree._sanitized_target_env(repo_root, record)
+            env_path.write_text(
+                f'export REPO_ROOT="{record.ciu_root}"\n'
+                f'export PHYSICAL_REPO_ROOT="{record.ciu_root}"\n'
+                f'export REPO_NAME="repo"\n'
+                f'export INSTANCE_ID="{record.instance_id}"\n'
+                f'export DOCKER_NETWORK_INTERNAL="{record.network}"\n',
+                encoding="utf-8",
+            )
+
+    def test_sanitized_env_surfaces_unreadable_env(self, ready, monkeypatch):
+        repo_root, record = ready
+        from ciu import workspace_env
+
+        monkeypatch.setattr(
+            workspace_env, "parse_workspace_env",
+            lambda _p: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not parse.*denied"):
+            worktree._sanitized_target_env(repo_root, record)
+
+    # -- up_instance ---------------------------------------------------------
+
+    def test_up_invokes_existing_up_in_target_root(self, ready, fake_run):
+        repo_root, record = ready
+        assert worktree.up_instance(repo_root, "ctrl") == 0
+        argv, kwargs = fake_run["last"]
+        assert argv == [sys.executable, "-m", "ciu.cli", "up"]
+        assert kwargs["cwd"] == record.ciu_root
+        assert kwargs["env"]["REPO_ROOT"] == str(record.ciu_root)
+
+    def test_up_propagates_exact_child_exit_code(self, ready, monkeypatch, capsys):
+        repo_root, record = ready
+        monkeypatch.setattr(
+            worktree, "_run_child",
+            lambda argv, cwd, env: subprocess.CompletedProcess(argv, 17, "out", ""),
+        )
+        assert worktree.up_instance(repo_root, "ctrl") == 17
+        capsys.readouterr()  # output captured; the exit code is still 17
+
+    def test_up_refuses_missing_instance(self, tmp_repo):
+        with pytest.raises(worktree.WorktreeError, match="no managed worktree instance"):
+            worktree.up_instance(tmp_repo, "ghost")
+
+    def test_up_refuses_not_ready_instance(self, ready, monkeypatch):
+        repo_root, record = ready
+        allocating = worktree.replace(record, state="allocating")
+        monkeypatch.setattr(
+            worktree, "find_instance_record", lambda *_a, **_kw: allocating
+        )
+        with pytest.raises(worktree.WorktreeError, match="allocating, not ready"):
+            worktree.up_instance(repo_root, "ctrl")
+
+    def test_up_surfaces_child_start_failure(self, ready, monkeypatch):
+        repo_root, record = ready
+        monkeypatch.setattr(
+            worktree, "_run_child",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("no exec")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not run `ciu up`"):
+            worktree.up_instance(repo_root, "ctrl")
+
+    # -- exec_instance -------------------------------------------------------
+
+    def test_exec_passes_exact_hostile_argv_without_shell(self, ready, fake_run):
+        repo_root, record = ready
+        hostile = ["--", "echo", "a b", "$(whoami)", ";", "-x", "*"]
+        assert worktree.exec_instance(repo_root, "ctrl", hostile) == 0
+        argv, kwargs = fake_run["last"]
+        assert argv == ["echo", "a b", "$(whoami)", ";", "-x", "*"]
+        assert kwargs["cwd"] == record.ciu_root
+        assert "shell" not in kwargs
+
+    def test_exec_propagates_exact_exit_code_even_when_output_captured(self, ready, monkeypatch, capsys):
+        repo_root, record = ready
+        monkeypatch.setattr(
+            worktree, "_run_child",
+            lambda argv, cwd, env: subprocess.CompletedProcess(argv, 17, "out", ""),
+        )
+        assert worktree.exec_instance(repo_root, "ctrl", ["--", "true"]) == 17
+        capsys.readouterr()
+
+    def test_exec_requires_separator_and_argv(self, ready):
+        repo_root, record = ready
+        with pytest.raises(worktree.WorktreeError, match="requires a `--` separator"):
+            worktree.exec_instance(repo_root, "ctrl", [])
+        with pytest.raises(worktree.WorktreeError, match="requires a `--` separator"):
+            worktree.exec_instance(repo_root, "ctrl", ["echo", "hi"])
+        with pytest.raises(worktree.WorktreeError, match="at least one argv element after `--`"):
+            worktree.exec_instance(repo_root, "ctrl", ["--"])
+
+    def test_exec_never_starts_cleans_or_renders_implicitly(self, ready, fake_run):
+        repo_root, record = ready
+        worktree.exec_instance(repo_root, "ctrl", ["--", "pwd"])
+        assert fake_run["calls"] == [["pwd"]]
+
+    def test_exec_real_child_propagates_exact_exit_code(self, ready):
+        """A REAL subprocess integration fixture: exec_instance runs the child
+        through the actual _run_child/subprocess path, and the child's own
+        exit code (23) is what comes back — no wrapper masking."""
+        repo_root, record = ready
+        argv = ["--", sys.executable, "-c", "import sys; sys.exit(23)"]
+        assert worktree.exec_instance(repo_root, "ctrl", argv) == 23
+
+    def test_exec_surfaces_child_start_failure(self, ready, monkeypatch):
+        repo_root, record = ready
+        monkeypatch.setattr(
+            worktree, "_run_child",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("no exec")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not run exec argv"):
+            worktree.exec_instance(repo_root, "ctrl", ["--", "pwd"])

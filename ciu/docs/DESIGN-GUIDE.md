@@ -75,20 +75,48 @@ be removed by hand.
 
 ## Why `capabilities` is a separate, sorted, closed allowlist
 
-`worktree.identity.v1`, `worktree.inspect.v1`, and
-`worktree.lifecycle-json.v1` are the identifiers advertised in this release.
-Each maps to a shipped code path:
+`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
+`worktree.up.v1`, and `worktree.exec-local.v1` are the identifiers advertised
+in this release. Each maps to a shipped code path:
 
 - `worktree.identity.v1` — schema-v1 instance records and the create/adopt/
   ensure/add lifecycle;
 - `worktree.inspect.v1` — the inspect document and the managed list document;
-- `worktree.lifecycle-json.v1` — the lifecycle JSON envelopes.
+- `worktree.lifecycle-json.v1` — the lifecycle JSON envelopes;
+- `worktree.up.v1` — exact selected-worktree `up` (S16.6);
+- `worktree.exec-local.v1` — exact local `exec` (S16.6).
 
-`up` and `exec` are deliberately **not** advertised: their packages (P05/P06)
-have not shipped, and advertising a contract before its code path exists is
-the exact "SemVer inference" failure this document exists to prevent. An
+Target exec (`--target`) is deliberately **not** advertised: its package (P06)
+has not shipped, and advertising a contract before its code path exists is the
+exact "SemVer inference" failure this document exists to prevent. An
 identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the code
 path it names, or not at all.
+
+## Why `up` and `exec` take one exact selected instance
+
+A worktree family has one primary checkout and many linked ones; each linked
+checkout is a distinct CIU instance with its own `INSTANCE_ID`, network, and
+`REPO_ROOT` (a hash of the *physical* path, S2). Running a command "in the
+worktree" from the wrong process environment is therefore the same failure as
+the one inspection guards against: the ambient `REPO_ROOT` describes the
+PRIMARY checkout, so a naive `cd <worktree> && ciu up` would argue about which
+instance is real, and could act on the wrong one.
+
+Both `worktree up` and `worktree exec` therefore build the child environment
+from the SELECTED instance's own `ciu.env`, by exact path, after stripping
+every CIU identity key from the ambient environment. The selected value must
+agree with the durable record (`REPO_ROOT` = the record's CIU root, and the
+record's `INSTANCE_ID`/network) — a mismatch refuses rather than running with
+a mixed identity. This is the same "derive or read, never invent" rule as
+inspection, applied to where a command executes.
+
+`exec` deliberately never starts anything: it is the *execute-in-this-exact-
+place* primitive, not a shortcut for `up`. It requires a `--` separator and
+passes argv to `subprocess.run` as a list with no shell, so spaces, globs,
+`$()`, semicolons, and leading dashes arrive byte-for-byte at the child and
+cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
+code is returned exactly — an automation lane that runs a gate command through
+`exec` needs that code, not a wrapper's guess.
 
 ## Rejected alternatives
 
@@ -103,3 +131,7 @@ path it names, or not at all.
   rejected: closed vocabulary + a fixed schema version is what lets a
   consumer fail fast on an unexpected shape instead of silently ignoring
   unknown fields.
+- **Shell-form exec (`sh -c "..."`)** — rejected: a shell rewrites argv
+  (spaces, globs, `$()`, `;`), so an automation lane could not trust that
+  what it asked to run is what ran. A list argv with no shell and a mandatory
+  `--` is the only faithful form.

@@ -320,9 +320,11 @@ class TestCapabilitiesDispatch:
         doc = json.loads(capsys.readouterr().out)
         assert doc["schema_version"] == 1
         assert doc["capabilities"] == [
+            "worktree.exec-local.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.up.v1",
         ]
 
     def test_capabilities_prose_dispatch(self, monkeypatch, capsys):
@@ -385,6 +387,48 @@ class TestManagedLifecycleDispatch:
         assert cli._worktree(["adopt", "task-one", "/tmp/existing"]) == 0
         assert seen["logical_name"] == "task-one"
         assert seen["path"] == "/tmp/existing"
+
+
+class TestWorktreeUpExecDispatch:
+    def test_up_forwards_logical_and_returns_exact_child_code(self, monkeypatch):
+        seen = {}
+
+        def fake_up(repo_root, logical):
+            seen.update(repo_root=repo_root, logical=logical)
+            return 17
+
+        monkeypatch.setattr(wt_mod, "up_instance", fake_up)
+        assert cli._worktree(["up", "logical-one"]) == 17
+        assert seen["logical"] == "logical-one"
+        assert seen["repo_root"] == seen["repo_root"]
+
+    def test_up_error_maps_to_exit_2(self, monkeypatch, capsys):
+        def fail(*_a, **_kw):
+            raise wt_mod.WorktreeError("[S16] not ready")
+
+        monkeypatch.setattr(wt_mod, "up_instance", fail)
+        assert cli._worktree(["up", "logical-one"]) == 2
+        assert "not ready" in capsys.readouterr().err
+
+    def test_exec_forwards_logical_and_argv_and_returns_exact_code(self, monkeypatch):
+        seen = {}
+
+        def fake_exec(repo_root, logical, argv):
+            seen.update(logical=logical, argv=argv)
+            return 9
+
+        monkeypatch.setattr(wt_mod, "exec_instance", fake_exec)
+        assert cli._worktree(["exec", "logical-one", "--", "pwd", "a b"]) == 9
+        assert seen["logical"] == "logical-one"
+        assert seen["argv"] == ["--", "pwd", "a b"]
+
+    def test_exec_error_maps_to_exit_2(self, monkeypatch, capsys):
+        def fail(*_a, **_kw):
+            raise wt_mod.WorktreeError("[S16] missing --")
+
+        monkeypatch.setattr(wt_mod, "exec_instance", fail)
+        assert cli._worktree(["exec", "logical-one"]) == 2
+        assert "missing --" in capsys.readouterr().err
 
 
 def test_identity_only_env_generation_writes_facts_without_bootstrap(

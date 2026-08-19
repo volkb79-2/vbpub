@@ -479,7 +479,9 @@ facts under `git`, and a closed `operation`/`status` vocabulary
 ([SPEC S16.4](SPEC.md#s164--structured-json-documents-d-009)). The
 `[ciu.worktree]` table above remains the only file configuration; `list
 --json` reads it but the JSON documents themselves are never written into
-`ciu.env` or the overlay.
+`ciu.env` or the overlay. Control verbs `ciu worktree up LOGICAL` and `ciu
+worktree exec LOGICAL -- ARGV...` act on one exact selected instance under
+its own `ciu.env` ([SPEC S16.6](SPEC.md#s166--exact-selected-worktree-control-worktree-up--worktree-exec)).
 
 ---
 

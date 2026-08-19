@@ -11,6 +11,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Added
 
+- Added exact selected-worktree control (CIU-29/D-007): `ciu worktree up
+  LOGICAL` starts one `ready` instance under its OWN parsed `ciu.env` (ambient
+  CIU identity stripped, target values overlaid and cross-checked against the
+  record; mismatch refuses) and returns the child's exact exit code; `ciu
+  worktree exec LOGICAL -- ARGV...` runs exact argv with no shell in that
+  root, never starts anything implicitly, and propagates the exact code.
+  Capabilities add `worktree.up.v1` + `worktree.exec-local.v1`. SPEC S16.6.
 - Added structured worktree control (CIU-29/D-009): `ciu worktree inspect
   LOGICAL --json`, `ciu worktree list --json`, and `ciu worktree rm --json`
   emit one versioned (`schema_version: 1`) JSON document with a closed
