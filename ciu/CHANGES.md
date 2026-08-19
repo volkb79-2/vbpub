@@ -7,6 +7,15 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- feat(ciu): deploy layouts — `[deploy.layouts.<name>]` names a host→bundles plan + its
+  environment; `ciu up --layout <name>` drives the SPEC-J push per host in declared order
+  with `CIU_SERVICES_PROFILE` / `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT`
+  exported to the remote command; `ciu layouts` lists declarations (CIU-34, dstdns D-105 Q2,
+  SPEC S7.5c)
+
 ## [6.1.0] - 2026-08-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=7eefaba031d9b4aeae6929b2e197caa2d30a1b0e -->

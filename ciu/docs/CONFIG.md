@@ -152,6 +152,7 @@ Subsections:
 | `[deploy.phases.phase_N]` | Ordered phase tables (numeric order, `phase_<uint>`) | S7.1 |
 | `[deploy.profiles.<name>]` | Host profiles: which phases/stacks run on this host | S7.4 |
 | `[deploy.profiles.<name>.topology_overrides]` | Deep-merged over `[topology.*]` while profile is active | S7.4 |
+| `[deploy.layouts.<name>]` | Named host→bundles plan + the deployment's environment | S7.5c |
 
 Each `[[deploy.phases.phase_N.services]]` entry identifies a stack with `path`;
 its `name` is display text only. The orchestration health gate discovers exact
@@ -175,6 +176,80 @@ NOT the workspace `INSTANCE_ID` (S2) and NOT landscape-scoped.
 
 `[deploy.groups]` is **rejected** by the v2 validator [S7.5] — see
 [MIGRATION-V2.md §6](MIGRATION-V2.md#6-groups--host-profiles-s74s75).
+
+### `[deploy.layouts.<name>]` — named host→bundles plans [S7.5c]
+
+A **layout** is the durable home of a deployment's environment plus its
+host→bundles plan: *who runs what, in what order, in which environment*
+(dstdns D-105 Q2). A layout only **references** profiles (S7.4) and the host
+inventory ([S14.3](SPEC.md#s143--host-inventory)); it never merges either.
+
+| Key | Required | Spec | Meaning |
+|---|---|---|---|
+| `environment` | Yes | S7.5c | Closed vocabulary: `dev` \| `test` \| `staging` \| `prod`. Exported to every remote command as `CIU_DEPLOY_ENVIRONMENT`. |
+| `description` | No | S7.5c | Free text. |
+| `[deploy.layouts.<name>.hosts.<host>]` | Yes (non-empty) | S7.5c | One sub-table per host, in **declaration order = execution order**; each must declare `bundles = [<profile names>]`. Every bundle must resolve via `[deploy.profiles]`; every host must exist in the hosts inventory. |
+
+**The remote-command environment contract (the consumer's whole reason for the
+ask).** `ciu up --layout <name>` runs the SPEC-J push (S14.2) per host and
+exports, into the single remote command string, exactly:
+
+| Variable | Value | Example |
+|---|---|---|
+| `CIU_SERVICES_PROFILE` | The host's `bundles`, comma-joined | `core,db` |
+| `CIU_LAYOUT` | The layout name | `prod-edge` |
+| `CIU_LAYOUT_HOST` | The current host | `edge-a` |
+| `CIU_DEPLOY_ENVIRONMENT` | The layout's `environment` | `prod` |
+
+Consumers reference them in templates via `{{ env.* }}` / `$VAR` expansion
+(e.g. a Consul KV root `dstdns/{{ env.CIU_LAYOUT_HOST }}/…` or a per-host
+env file the activation contract reads). The exports are confined to the
+remote command — they never leak into the local process. A host failure
+**aborts** the sequence (no continue-on-error in v1), naming the failed host
+and the not-yet-deployed remainder. `--layout` is mutually exclusive with
+`--host` and `--profile` (the layout owns host order and bundles). `ciu
+layouts` lists declared layouts (name, environment, ordered hosts) without
+validating them.
+
+**Worked example 1 — a single dev-local host:**
+
+```toml
+[deploy.layouts.dev-local]
+environment = "dev"
+description = "single-host dev box"
+
+[deploy.layouts.dev-local.hosts.devbox]
+bundles = ["core", "db"]
+```
+
+```bash
+ciu up --layout dev-local
+# → push to devbox with CIU_SERVICES_PROFILE='core,db'
+#   CIU_LAYOUT='dev-local' CIU_LAYOUT_HOST='devbox' CIU_DEPLOY_ENVIRONMENT='dev'
+```
+
+**Worked example 2 — a 3-host prod split** (edge nodes run `core`; the
+backend runs `db` + `worker-io`, whose `topology_overrides` point at the
+edge nodes' external endpoints — S7.4/S7.5a):
+
+```toml
+[deploy.layouts.prod-edge]
+environment = "prod"
+
+[deploy.layouts.prod-edge.hosts.edge-a]
+bundles = ["core"]
+
+[deploy.layouts.prod-edge.hosts.edge-b]
+bundles = ["core"]
+
+[deploy.layouts.prod-edge.hosts.backend]
+bundles = ["db", "worker-io"]
+```
+
+```bash
+ciu layouts          # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
+ciu up --layout prod-edge
+```
 
 ### `[vault]` — Vault location and path registry [S4.16, S4.9]
 

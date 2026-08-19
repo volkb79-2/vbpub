@@ -42,6 +42,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
   AUTHORING
     render                      render ciu.global.toml from Jinja2 template
     profiles                    list available host profiles
+    layouts                     list declared deploy layouts
 
   WORKTREE INSTANCES (S16)
     worktree create LOGICAL [--prefix P --feature F] [--json]
@@ -66,7 +67,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 commit under test, before a live lane runs (S17.2)
 
   STACK ORCHESTRATION
-    up   [--profile NAME | --dir PATH]   start Docker Compose stack
+    up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
     down [--profile NAME]                stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
@@ -168,8 +169,14 @@ ciu render --host NAME [selection flags]
 ciu profiles
   List available host profiles. Takes no options.
 """,
+    "layouts": """\
+ciu layouts
+  List declared deploy layouts ([deploy.layouts.<name>]) with their
+  environment and ordered host list (S7.5c). Takes no options; shows what is
+  DECLARED — `ciu up --layout` is the validating consumer.
+""",
     "up": """\
-ciu up [--profile NAME | --dir PATH] [selection/options]
+ciu up [--profile NAME | --dir PATH | --layout NAME] [selection/options]
 ciu up --host NAME [selection...]                              # render-on-target
 ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
   Render + materialise secrets + start the Docker Compose stack(s).
@@ -182,6 +189,14 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
+
+  Layout mode (S7.5c) — push-deploy a named host→bundles plan:
+  --layout NAME      resolve [deploy.layouts.<name>] and push to each host in
+                     declaration order. Each host's remote command runs with
+                     CIU_SERVICES_PROFILE set to that host's bundles and
+                     CIU_LAYOUT / CIU_LAYOUT_HOST / CIU_DEPLOY_ENVIRONMENT
+                     exported (S7.5c). A host failure aborts the sequence.
+                     Mutually exclusive with --host and --profile.
 
   Single-stack mode (`--dir`) additionally accepts engine options:
   --dir PATH         deploy one stack directory
@@ -898,8 +913,91 @@ def main() -> None:
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--list-profiles"] + rest))
 
+    elif verb == "layouts":
+        # S7.5c — pure listing of DECLARED layouts (no validation, no
+        # inventory requirement); `ciu up --layout` is the validating consumer.
+        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        config = _load_remote_config(repo_root)
+        from .deploy_pkg.layouts import list_layouts
+        rows = list_layouts(config)
+        if not rows:
+            print("(no layouts declared)")
+            raise SystemExit(0)
+        for name, environment, hosts in rows:
+            env_part = f" environment={environment}" if environment else ""
+            hosts_part = ", ".join(hosts) if hosts else "(no hosts)"
+            print(f"{name}:{env_part} hosts=[{hosts_part}]")
+        raise SystemExit(0)
+
     elif verb == "up":
-        if "--host" in rest:
+        if "--layout" in rest:
+            # S7.5c — push-deploy a named host→bundles plan. The layout owns
+            # host order and bundles, so --host/--profile are excluded: a
+            # passthrough --profile would silently override the exported
+            # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--layout", dest="layout", default=None)
+            opts, remaining = p.parse_known_args(rest)
+            if "--host" in rest or "--profile" in rest:
+                print(
+                    "[S7.5c] --layout is mutually exclusive with --host and "
+                    "--profile (the layout owns the host order and the bundles).",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            config = _load_remote_config(repo_root)
+            from .deploy_pkg.layouts import resolve_layout
+            from .hosts import get_host, load_hosts
+            from .transport_ssh import ssh_exec, ssh_sync
+            try:
+                layout = resolve_layout(config, load_hosts(repo_root), opts.layout)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            # Pure orchestration: delegate each host to the EXISTING up --host
+            # path, with the layout's exports prepended to the single remote
+            # argv string (one-argv discipline, same as the --host branch).
+            for index, host in enumerate(layout.hosts):
+                not_deployed = layout.hosts[index + 1:]
+                try:
+                    host_cfg = get_host(repo_root, host)
+                except ValueError as exc:
+                    print(f"[ERROR] {exc}", file=sys.stderr)
+                    raise SystemExit(2)
+                bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+                exports = (
+                    f"export CIU_SERVICES_PROFILE={shlex.quote(','.join(layout.bundles[host]))}; "
+                    f"export CIU_LAYOUT={shlex.quote(layout.name)}; "
+                    f"export CIU_LAYOUT_HOST={shlex.quote(host)}; "
+                    f"export CIU_DEPLOY_ENVIRONMENT={shlex.quote(layout.environment)}; "
+                )
+                rc = ssh_sync(host_cfg, str(repo_root), bundle_dir,
+                              config=config, repo_root=repo_root)
+                if rc != 0:
+                    print(
+                        f"[ERROR] layout '{layout.name}': bundle sync failed on host "
+                        f"'{host}' ({rc}); not deployed: {', '.join(not_deployed) or '(none)'}.",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(rc)
+                remote_cmd = (
+                    exports
+                    + f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && "
+                    + f"ciu render && {shlex.join(['ciu', 'up', *remaining])}"
+                )
+                rc = ssh_exec(host_cfg, [remote_cmd],
+                              config=config, repo_root=repo_root)
+                if rc != 0:
+                    print(
+                        f"[ERROR] layout '{layout.name}': up failed on host '{host}' "
+                        f"({rc}); not deployed: {', '.join(not_deployed) or '(none)'}.",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(rc)
+            raise SystemExit(0)
+        elif "--host" in rest:
             # Remote push-deploy path
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)

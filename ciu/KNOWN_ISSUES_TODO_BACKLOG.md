@@ -34,7 +34,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19); qualification P07 pending, closes this row |
-| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | OPEN — carved as ciu-P10-deploy-layouts (depends ciu-P08); `environment` per layout (dstdns D-105 Q2) |
+| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c) |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | OPEN — carved as ciu-P11-host-scoped-secrets |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
@@ -114,12 +114,23 @@ defect in shipped behaviour — each is a capability the decided model needs fro
 its deploy tool. Verified against `docs/CONFIG.md` + `src/` before filing (a
 feature dstdns has not adopted is not a feature ciu is missing).
 
-**CIU-34 — `layout`.** Desired shape (candidate, not decided):
-`[deploy.layouts.<name>.hosts.<host>] bundles = ["core","db"]` (+ per-layout
-`topology_overrides` and opaque tunable pins passed through to the app's
-rendered config), `ciu up --layout <name>` iterating the SPEC-J host inventory
-over SSH in dependency order. Until it exists, a layout is a documented sequence
-of `ciu up --host <h> --profile <bundle>`.
+**CIU-34 — `layout`.** **FIXED** on 2026-08-19 (ciu-P10): `[deploy.layouts.<name>]`
+now names a host→bundles plan plus the deployment's `environment`
+(closed `dev|test|staging|prod`, the durable home of the environment value —
+dstdns D-105 Q2). `ciu up --layout <name>` resolves + validates the layout
+(unknown layout / bad `environment` / unknown bundle / unknown host / empty
+hosts table → tagged `[S7.5c]` abort before any transport opens), then drives
+the SPEC-J push (S14.2) to each host in declaration order with
+`CIU_SERVICES_PROFILE` set to the host's bundles and
+`CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT` exported to the
+remote command; a host failure aborts naming the not-yet-deployed remainder.
+`--layout` is mutually exclusive with `--host`/`--profile`; `ciu layouts`
+lists declarations. Evidence: `Layout`/`resolve_layout`/`list_layouts` in
+`src/ciu/deploy_pkg/layouts.py` (14 model tests in
+`tests/tests/test_ciu_deploy_layouts.py`, 12 CLI tests in
+`tests/tests/test_ciu_cli_layouts.py` — fake ssh seams only, no live
+transport); gate 100% line+branch; docs: SPEC S7.5c, CONFIG.md
+`[deploy.layouts.<name>]` section, CHANGES.md.
 
 **CIU-35 — host-scoped local secrets.** `ASK_EXTERNAL`/`GEN_LOCAL` entries keyed
 under `[deploy.hosts.<h>.secrets]` (SSH bootstrap key, Tailscale single-use

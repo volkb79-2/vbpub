@@ -687,6 +687,27 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   context additionally exposes `instance_index` (1-based int) and
   `instance_id` (`"<service>-<index>"`). Single-instance configfiles (no
   `instances` key, or `instances = 1`) behave identically to before.
+- **S7.5c** *Deploy layouts.* `[deploy.layouts.<name>]` is a named
+  host→bundles plan: `environment` (REQUIRED, one closed value of
+  `dev|test|staging|prod` — the durable home of a deployment's environment,
+  dstdns D-105 Q2), an ordered `[deploy.layouts.<name>.hosts.<host>]` table
+  whose `bundles = [<profile names>]` lists S7.4 profiles, and optional
+  `description`. `ciu up --layout <name>` drives the SPEC-J push (S14.2) to
+  each host **in declaration order**; every host's remote command runs with
+  `CIU_SERVICES_PROFILE` set to that host's bundles (joined by comma) and
+  `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT` exported into
+  the remote command environment (consumers read them via `{{ env.* }}` /
+  `$VAR`). Validation (all before any transport opens, all tagged
+  `[S7.5c]`): unknown layout; missing or non-closed `environment`; unknown
+  bundle (naming layout+host+bundle); unknown host (naming layout+host);
+  an empty or non-table `hosts`. A host failure **aborts** the sequence (no
+  continue-on-error in v1), naming the failed host and the not-yet-deployed
+  remainder. `--layout` is mutually exclusive with `--host` and `--profile`
+  (the layout owns host order and bundles; a passthrough `--profile` would
+  silently override the exported `CIU_SERVICES_PROFILE` under S7.5 CLI
+  precedence). `ciu layouts` lists declared layouts (name, environment,
+  ordered hosts) without validating them — `ciu up --layout` is the
+  validating consumer.
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —

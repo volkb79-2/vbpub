@@ -8,6 +8,7 @@ Public API re-exported from sub-modules:
               service_health_enabled, iter_enabled_services, parse_env_overrides
   profiles:   Profile, resolve_profiles, resolve_profile (shim), reject_groups,
               dedupe_keep_order
+  layouts:    Layout, resolve_layout, list_layouts
   health:     classify, evaluate_gate, wait_for_gate, anchored_name_filter
   registry:   check_registry_auth
 """
@@ -20,6 +21,7 @@ from .health import (
     wait_for_gate,
 )
 from .http_util import http_get_json
+from .layouts import Layout, list_layouts, resolve_layout
 from .phases import (
     PHASE_KEY_RE,
     iter_enabled_services,
@@ -53,6 +55,10 @@ __all__ = [
     "resolve_profile",
     "reject_groups",
     "dedupe_keep_order",
+    # layouts
+    "Layout",
+    "resolve_layout",
+    "list_layouts",
     # health
     "classify",
     "evaluate_gate",
