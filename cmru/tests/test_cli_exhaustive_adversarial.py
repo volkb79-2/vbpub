@@ -78,7 +78,7 @@ def test_main_release_child_dry_run_has_no_promotion_or_workspace_mutation(monke
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _loaded(tmp_path, project))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    monkeypatch.setattr("cmru.version.detect_changed_projects", lambda *_: [("demo", "patch")])
+    monkeypatch.setattr("cmru.version.detect_changed_projects", lambda *_, **__: [("demo", "patch")])
     calls = []
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(cli, "_transaction_workspace_from_env", lambda _root: transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40))

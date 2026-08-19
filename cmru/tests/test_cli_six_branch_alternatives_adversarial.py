@@ -103,7 +103,7 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru/release/x")
     monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *args: [("demo", "changed")])
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
     cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
@@ -115,7 +115,7 @@ def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *args: [("demo", "changed")])
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
     cli.main(["release", "--_transaction-child", "--dry-run", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])

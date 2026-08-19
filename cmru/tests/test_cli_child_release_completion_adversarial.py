@@ -24,7 +24,7 @@ def test_child_release_persists_scope_pushes_backup_and_reports_completion(monke
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *args: [("demo", "changed")])
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     monkeypatch.setenv(transaction.BRANCH_ENV, "cmru/release/child")
     monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     scope = []

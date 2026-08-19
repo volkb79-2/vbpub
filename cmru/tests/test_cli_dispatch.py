@@ -332,7 +332,7 @@ def test_help_lists_verbs_and_ordering():
     with redirect_stdout(out):
         cli.main(["--help"])
     text = out.getvalue()
-    for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "run-step"):
+    for verb in ("status", "release", "changelog", "build", "worktrees", "publish", "resolve", "get", "cleanup", "version", "run-step", "tool-deps"):
         assert verb in text, f"{verb} missing from help"
     assert "TYPICAL WORKFLOW" in text
 
@@ -348,6 +348,7 @@ def test_help_lists_every_public_option():
         "--format", "--prefix", "--output", "--delete-unmanaged-release-tag",
         "--delete-build-output", "--discard-build-worktree", "--yes", "--step", "--write",
         "--log-prefix-time-short", "--help",
+        "--allow-stale-tool-deps", "--refresh", "--timeout",
     ):
         assert option in text, f"{option} missing from usage()"
 

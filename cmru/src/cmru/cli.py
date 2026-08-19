@@ -69,6 +69,9 @@ class ProjectConfig:
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
     build_step: str = ""                # explicit [project.release].build_step
     github_token: str = ""              # root credential or explicit project-secret override
+    # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
+    # no declared tool dependency (today's behaviour, unchanged).
+    tool_dependencies: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -431,6 +434,7 @@ def load_config(
             artifact_dirs=tuple(parsed.artifact_dirs),
             build_step=parsed.build_step,
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
+            tool_dependencies=tuple(parsed.tool_dependencies),
         )
 
     cleanup_raw = forge.cleanup
@@ -1637,6 +1641,42 @@ def _run_release_gates(
         run_project_step(project, "run-tests", repo_root, log_dir)
 
 
+def _check_release_tool_dependencies(
+    scoped: Mapping[str, "ProjectConfig"],
+    configs: Mapping[str, "ProjectConfig"],
+    *,
+    github_config: "GitHubConfig",
+    allow_stale: bool,
+) -> None:
+    """Release-preflight tool-dependency verification (S15) -- the release refuses
+    to ship a product whose vendored tool is stale or not what it claims to be.
+    ``scoped`` is what THIS run will actually release; ``configs`` is the whole
+    loaded estate, used only to resolve each dependency's PROVIDER project's tag
+    ``prefix``. Raises :class:`cmru.version.ReleasePlanRefused` -- exactly like the
+    tag-preflight beside it -- so a blocking finding is a typed, clean refusal
+    before any project's prepare/gate/promote cycle starts, never a mid-release
+    failure. A project that declares nothing is a silent no-op: zero network calls."""
+    from cmru.tool_deps import is_blocking, render_status, verify_project
+    from cmru.version import ReleasePlanRefused
+
+    blocking: List[str] = []
+    for name, project in scoped.items():
+        for status in verify_project(
+            owner=github_config.owner, repo=github_config.repo, project=project, projects=configs,
+        ):
+            log_info(f"tool-deps: {render_status(status)}")
+            if is_blocking(status, allow_stale=allow_stale):
+                blocking.append(render_status(status))
+    if blocking:
+        raise ReleasePlanRefused(
+            "tool dependency preflight refused release (S15) -- "
+            + " | ".join(line.replace("\n", "; ") for line in blocking)
+            + ". Pass --allow-stale-tool-deps to proceed despite a stale (behind-latest) pin "
+              "only; there is no override for an integrity or authenticity failure. Run "
+              "`cmru tool-deps --refresh <provider-project>` to re-vendor deliberately."
+        )
+
+
 def _worktree_changed_paths(repo_root: Path, *, paths: Optional[List[str]] = None) -> List[str]:
     """Return every non-ignored changed path (tracked diff + staged + untracked),
     optionally scoped to ``paths`` — otherwise repo-wide."""
@@ -1777,6 +1817,11 @@ def usage() -> str:
         "                                                  catalog an already-published tagged release\n"
         "    standards [--config C] [--project P ...] [--update]\n"
         "                                                  check/update CMRU framework markers\n"
+        "    tool-deps [--config C] [--project P ...] [--json] [--timeout S]\n"
+        "              [--allow-stale-tool-deps] [--refresh PROVIDER_PROJECT]\n"
+        "                                                  verify declared tool dependencies (S15):\n"
+        "                                                  integrity + authenticity + freshness\n"
+        "                                                  (network; never run during tests)\n"
         "    build    [--config C] [--project P] [--show-run-details] [--log-append]\n"
         "                                                  isolated local build; retains outputs on success\n"
         "    publish  [--config C] [--project P] [--show-run-details] [--log-append]\n"
@@ -1988,7 +2033,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                             f"Local main is {behind} commit(s) behind origin/main; "
                             f"build uses fetched origin/main {base[:12]}."
                         )
-                    workspace = transaction.create_workspace(repo_root, base=base, purpose="build")
+                    workspace = transaction.create_workspace(
+                        repo_root, base=base, purpose="build", scope=vargs.project,
+                    )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
@@ -2097,6 +2144,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         from cmru.standards import standards_main
         standards_main(rest)
 
+    elif verb == "tool-deps":
+        from cmru.tool_deps import tool_deps_main
+        tool_deps_main(rest)
+
     elif verb in ("release", "status"):
         import argparse as _ap
         parser = _ap.ArgumentParser(description=f"cmru {verb}")
@@ -2119,6 +2170,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--allow-uncommitted", action="store_true",
                             help="release: proceed even though a released project's path has "
                                  "local uncommitted changes (which origin/main won't include)")
+        parser.add_argument(
+            "--allow-tag-ahead-of-head", "--allow-tag-at-head",
+            dest="allow_tag_ahead_of_head", action="store_true",
+            help="release: downgrade to a skip, instead of aborting, when a project's latest "
+                 "tag is pushed but strictly AHEAD of the snapshot commit -- a half-completed "
+                 "prior release (S12.2b). --allow-tag-at-head is a deprecated alias: a tag "
+                 "exactly AT the snapshot commit is never an error and needs no override.",
+        )
+        parser.add_argument(
+            "--allow-stale-tool-deps", action="store_true",
+            help="release: proceed even though a declared tool dependency (S15) is behind the "
+                 "highest published release for its project. Never overrides an integrity or "
+                 "authenticity failure -- there is no override for either of those.",
+        )
         parser.add_argument("--_transaction-child", action="store_true", help=_ap.SUPPRESS)
         parser.add_argument(
             "--show-run-details", action="store_true",
@@ -2141,6 +2206,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
             log_error("--resume and --abandon are mutually exclusive.")
             _sys.exit(2)
+        if "--allow-tag-at-head" in rest:
+            log_warn("--allow-tag-at-head is a deprecated alias; use --allow-tag-ahead-of-head.")
 
         cfg_path = _resolve_config(vargs.config)
         (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
@@ -2228,7 +2295,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 f"Local main is {behind} commit(s) behind origin/main; "
                                 f"release uses fetched origin/main {base[:12]}."
                             )
-                        workspace = transaction.create_workspace(repo_root, base=base)
+                        workspace = transaction.create_workspace(repo_root, base=base, scope=vargs.project)
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
@@ -2264,6 +2331,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                                 "conflict); resolve manually — `git rebase origin/main`."
                             )
                         log_info("Release transaction complete; isolated worktree removed.")
+                    elif transaction.plan_was_refused(repo_root, workspace):
+                        # The release plan itself refused (S12.2a/S12.2b) before any
+                        # project's cycle started: no gate ran, nothing was promoted or
+                        # tagged, and `push_backup_branch` never ran either -- there is
+                        # nothing here worth retaining a worktree for, unlike a genuine
+                        # mid-release failure. Discard it exactly like a success would
+                        # (the detailed refusal was already printed by the child above).
+                        transaction.remove_workspace(workspace)
+                        transaction.forget_release_scope(repo_root, workspace)
+                        transaction.sync_local_main(repo_root)
+                        log_error(
+                            "Release plan refused before any project started; no changes "
+                            "were made (see the error above). Worktree discarded."
+                        )
                     else:
                         if transaction.promotion_landed(repo_root, workspace):
                             # Projects release one after another (each project's own
@@ -2306,15 +2387,39 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _sys.exit(1)
 
         # --- release: detect → tag → push → build → publish -------------------
-        from cmru.version import release_cmd, detect_changed_projects
+        from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
-        changed = detect_changed_projects(repo_root, ordered)
-        if vargs.project:
-            changed = [c for c in changed if c[0] == vargs.project]
+        # Scope to what this run will actually touch *before* computing the plan
+        # (not by filtering the result afterward): an unrelated orchestrated
+        # project's degenerate tag state must not abort a `--project`-scoped run
+        # that never touches it.
+        release_scope = [vargs.project] if vargs.project else list(ordered.keys())
+        scoped_for_plan = {name: ordered[name] for name in release_scope}
+        # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
+        # preview or a `changelog` migration — MUST be a function of the pushed
+        # repository, and a tag pushed but strictly ahead of the snapshot commit
+        # MUST abort loudly rather than look identical to a genuinely unchanged
+        # project (S-CLI.5: continuing here would silently produce an empty
+        # release). `--allow-tag-ahead-of-head` downgrades only that one check;
+        # a tag exactly AT the snapshot commit is always reported and skipped,
+        # never an error. A refusal here means no project's cycle ever started
+        # -- nothing was gated, promoted, or tagged -- so the parent discards
+        # this worktree exactly like a success, never retaining it for
+        # inspection (there would be nothing there to inspect).
+        try:
+            changed = detect_changed_projects(
+                repo_root, scoped_for_plan,
+                require_pushed_baseline=True,
+                check_tag_at_head=True,
+                allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
+            )
+        except ReleasePlanRefused as exc:
+            log_error(str(exc))
+            transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+            _sys.exit(exit_codes.FAILURE)
         changed_names = {c[0] for c in changed}
 
         release_names = [name for name in project_order if name in changed_names]
-        skipped_names = [name for name in project_order if name not in changed_names]
         if release_names:
             log_info(
                 f"Release plan: {len(release_names)}/{len(project_order)} project(s) changed "
@@ -2322,8 +2427,34 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         else:
             log_info("Release plan: no changed projects detected; nothing to release.")
-        if skipped_names:
-            log_info(f"Unchanged, skipping: {', '.join(skipped_names)}")
+        # KI-13/S12.2e: every unchanged project already printed its own specific
+        # "[INFO] Unchanged, skipping: <name> (<baseline tag> @ <reason>)" line
+        # above, from inside detect_changed_projects (this isolated transaction
+        # always passes check_tag_at_head=True) -- one line per project naming
+        # its exact baseline and reason, not a second, bare name-only list here.
+        # This also runs identically whether or not --dry-run is set (KI-14):
+        # the plan above is computed once, before the dry-run/real branch below.
+
+        # S15: declared tool dependencies (e.g. cmru's own vendored assay zipapp)
+        # are verified here, alongside the tag-preflight above -- same phase (no
+        # project's cycle has started), same network-touching plan-computation
+        # step, same typed refusal. This is deliberately scoped to `release_names`
+        # (what THIS run will actually ship), so an unrelated orchestrated
+        # project's stale/unreachable tool dependency never blocks a run that
+        # never touches it -- and NEVER runs when nothing changed (no network
+        # call for a no-op run). It runs identically for --dry-run too, for the
+        # same S-CLI.5c reason the tag preflight above does.
+        try:
+            _check_release_tool_dependencies(
+                {name: configs[name] for name in release_names},
+                configs,
+                github_config=github_config,
+                allow_stale=vargs.allow_stale_tool_deps,
+            )
+        except ReleasePlanRefused as exc:
+            log_error(str(exc))
+            transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+            _sys.exit(exit_codes.FAILURE)
 
         if vargs.dry_run:
             # Preview only: show what would be tagged for every changed project, no

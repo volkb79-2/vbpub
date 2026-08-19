@@ -74,20 +74,168 @@ def _git_has_changes(repo_root: Path, since_ref: str, *paths: str) -> bool:
     return bool(_git_log(repo_root, since_ref, *paths))
 
 
-def _latest_tag_for_prefix(repo_root: Path, prefix: str) -> Optional[str]:
-    """Return the most recent tag matching prefix* by semver order, or None."""
+class ReleasePlanRefused(RuntimeError):
+    """A release-plan integrity check (S12.2a/S12.2b) refused before any
+    project's cycle started: no gate ran, nothing was promoted or tagged.
+    A dedicated subclass (still a plain ``RuntimeError`` to callers that
+    only ``except RuntimeError`` today) so the isolated release transaction
+    can tell "this worktree is unmodified, safe to discard" apart from a
+    genuine mid-release failure, which must be retained for inspection."""
+
+
+def _tag_pushed_to_origin(repo_root: Path, tag: str) -> bool:
+    """True if ``tag`` exists on ``origin`` right now AND points at the exact
+    same commit locally and remotely (S12.2a / KI-12a).
+
+    Checking only the ref NAME is not enough: a hand-made local tag can share
+    a name with a genuinely-published tag while pointing at a different
+    commit -- every later decision (S12.2b's tag-vs-HEAD comparison, the
+    version this tag implies) must run against the PUBLISHED object, never a
+    same-named local one. One ``git ls-remote`` call, querying both the plain
+    ref and its peeled ``^{}`` form, covers annotated and lightweight tags
+    alike with no extra network round trip: an annotated tag returns both
+    lines (the tag object and the commit it targets); a lightweight tag
+    returns only the plain line, which already IS the commit.
+
+    Exit code 2 ("no matching refs") means genuinely absent -> False. Any
+    other non-zero exit means origin could not even be queried -> raises
+    (never silently treated as either pushed or unpushed). A found ref whose
+    resolved commit disagrees with the local one also raises immediately,
+    naming both SHAs -- that is not "absent", so it must not be reported
+    with the "push it" remedy that implies nothing exists there yet.
+    """
+    result = subprocess.run(
+        ["git", "ls-remote", "--exit-code", "--tags", "origin",
+         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode == 2:
+        return False
+    if result.returncode != 0:
+        raise ReleasePlanRefused(
+            f"cannot verify tag {tag!r} against origin's tags (git ls-remote exited "
+            f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. "
+            "The release baseline must reflect the pushed repository (S12.2a); check "
+            "network connectivity/auth to origin and retry."
+        )
+    plain_sha = peeled_sha = None
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref == f"refs/tags/{tag}^{{}}":
+            peeled_sha = sha
+        elif ref == f"refs/tags/{tag}":
+            plain_sha = sha
+    remote_commit = peeled_sha or plain_sha  # lightweight tags have no peeled line
+    if remote_commit is None:
+        raise ReleasePlanRefused(
+            f"git ls-remote found a ref for tag {tag!r} but its output could not be "
+            f"parsed: {result.stdout.strip()!r}"
+        )
+    local_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
+    if remote_commit != local_commit:
+        raise ReleasePlanRefused(
+            f"tag {tag!r} disagrees with origin: local points at {local_commit} but "
+            f"origin's {tag!r} points at {remote_commit}. The release baseline must "
+            "reflect the pushed repository (S12.2a) -- this local tag is not the same "
+            "object as the published one, almost always a hand-made tag created with "
+            "the same name over an existing published release. If the local one is a "
+            f"mistake, delete and re-fetch it: git tag -d {tag} && "
+            "git fetch --tags --force origin."
+        )
+    return True
+
+
+def _highest_remote_tag_for_prefix(repo_root: Path, prefix: str, tag_key) -> Optional[str]:
+    """The highest-semver tag NAME matching ``prefix*`` that exists on
+    ``origin`` right now, or None (S12.2a / KI-12a).
+
+    Used only to detect a newer origin-only tag this local clone has not
+    fetched: a stale local view would otherwise compute a baseline behind
+    what is actually published, derive a version that already exists, and
+    fail mid-release -- after ``origin/main`` has already been promoted for
+    this project, exactly the half-completed state S12.2b now aborts on.
+    ``tag_key`` is the caller's own ``_semver_key``-based ordering (over the
+    same ``prefix``), so remote and local candidates are compared identically.
+    """
+    result = subprocess.run(
+        ["git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise ReleasePlanRefused(
+            f"cannot list origin's tags for prefix {prefix!r} (git ls-remote exited "
+            f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}. "
+            "The release baseline must reflect the pushed repository (S12.2a); check "
+            "network connectivity/auth to origin and retry."
+        )
+    names: set[str] = set()
+    for line in result.stdout.splitlines():
+        _, _, ref = line.partition("\t")
+        if not ref.startswith("refs/tags/"):
+            continue
+        name = ref[len("refs/tags/"):]
+        if name.endswith("^{}"):
+            name = name[: -len("^{}")]
+        names.add(name)
+    return max(names, key=tag_key) if names else None
+
+
+def _latest_tag_for_prefix(
+    repo_root: Path, prefix: str, *, require_pushed: bool = False,
+) -> Optional[str]:
+    """Return the most recent tag matching prefix* by semver order, or None.
+
+    ``require_pushed=True`` (S12.2a / KI-12a) additionally refuses the result
+    unless it is a true function of the pushed repository, in two ways:
+
+    1. Origin must not carry a HIGHER matching tag than this local clone
+       knows about -- a stale local view (never fetched, or fetched before
+       another operator's release landed) would otherwise derive a version
+       that already exists on origin, an even more silent variant of the
+       original defect. Checked whether or not a local candidate exists at
+       all (a "first release" locally can still be stale).
+    2. Whatever candidate this local clone does select must be present on
+       origin AND point at the exact same commit there (:func:`_tag_pushed_to_origin`)
+       -- ``git tag --list`` alone returns local-only refs, and a hand-made,
+       never-pushed (or same-named-but-different-object) tag would otherwise
+       silently become the baseline every operator's release plan is computed
+       from.
+
+    Callers that don't need either guarantee (read-only previews, migrations)
+    get today's plain local read by leaving this False.
+    """
     result = subprocess.run(
         ["git", "tag", "--list", f"{prefix}*"],
         cwd=repo_root, capture_output=True, text=True,
     )
     tags = [t for t in result.stdout.splitlines() if t.strip()]
-    if not tags:
-        return None
     from cmru.release import _semver_key
     def _tag_key(tag: str) -> tuple:
         ver = tag[len(prefix):]
         return _semver_key(ver)
-    return max(tags, key=_tag_key)
+    candidate = max(tags, key=_tag_key) if tags else None
+
+    if require_pushed:
+        remote_candidate = _highest_remote_tag_for_prefix(repo_root, prefix, _tag_key)
+        if remote_candidate is not None and (
+            candidate is None or _tag_key(remote_candidate) > _tag_key(candidate)
+        ):
+            raise ReleasePlanRefused(
+                f"origin has a newer tag for prefix {prefix!r} ({remote_candidate}) than "
+                f"this local clone knows about ({candidate or 'none locally'}). The release "
+                "baseline must reflect the pushed repository (S12.2a); fetch tags and "
+                "re-run: git fetch --tags origin"
+            )
+        if candidate is not None and not _tag_pushed_to_origin(repo_root, candidate):
+            raise ReleasePlanRefused(
+                f"latest local tag {candidate!r} (prefix {prefix!r}) is not present on origin. "
+                "A release baseline must reflect the pushed repository (S12.2a), not local-only "
+                "scratch refs -- cmru owns tag creation for a cmru-managed project, so this usually "
+                "means a tag was created by hand. If it is real, push it first "
+                f"(git push origin {candidate}); if it was a mistake, delete it "
+                f"(git tag -d {candidate})."
+            )
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -258,22 +406,156 @@ def _apply_strategy_counter(
 # Change detection (S12.2)
 # ---------------------------------------------------------------------------
 
+def _tag_covers_head(repo_root: Path, tag: str) -> bool:
+    """True if HEAD is already an ancestor of (or equal to) ``tag``'s commit —
+    true for BOTH the benign "already released as of this exact commit" state
+    and the anomalous "tag is strictly ahead of this commit" state (S12.2b);
+    it alone cannot distinguish them, which is exactly why
+    :func:`_tag_head_relationship` additionally compares the resolved commit
+    objects. Also true, trivially, for the ordinary "genuinely unchanged"
+    case's opposite (tag behind HEAD) being False.
+    """
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", "HEAD", tag],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode not in (0, 1):
+        raise ReleasePlanRefused(
+            f"cannot compare HEAD against tag {tag!r} (git merge-base exited "
+            f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.returncode == 0
+
+
+def _tag_head_relationship(repo_root: Path, tag: str) -> str:
+    """Classify ``tag`` against HEAD once a path-scoped ``git log`` is already
+    known to be empty for it (S12.2b) — three states, not two:
+
+    * ``"equal"``  — the tag's commit IS HEAD: the ordinary, benign state right
+      after any successful release (nothing has landed anywhere since). Not an
+      error.
+    * ``"ahead"``  — the tag's commit is a strict descendant of HEAD: a tag
+      that is pushed but not (yet) in this snapshot's history at all, almost
+      always because a previous release tagged and pushed this project but
+      failed before promoting ``origin/main`` to that commit. A genuine
+      anomaly worth aborting on.
+    * ``"behind"`` — the tag is a strict ancestor of HEAD: the ordinary
+      genuinely-unchanged case (some other project's commits moved HEAD, this
+      project's own paths didn't change). Not an error.
+
+    ``git merge-base --is-ancestor`` alone cannot separate "equal" from
+    "ahead" (both make HEAD an ancestor-or-equal of the tag), so the commit
+    objects are resolved and compared directly first.
+    """
+    tag_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
+    head_commit = _git(repo_root, "rev-parse", "HEAD")
+    if tag_commit == head_commit:
+        return "equal"
+    if _tag_covers_head(repo_root, tag):
+        return "ahead"
+    return "behind"
+
+
+def _tag_ahead_error(repo_root: Path, name: str, prefix: str, tag: str) -> ReleasePlanRefused:
+    head = _git(repo_root, "rev-parse", "HEAD")
+    return ReleasePlanRefused(
+        f"{name}: latest tag {tag} is AHEAD of the snapshot commit {head[:8]} being "
+        "released — it points at a commit that is not (yet) in this snapshot's history.\n"
+        "        This usually means a previous release tagged and pushed this project but\n"
+        "        failed before promoting origin/main to that commit (a half-completed\n"
+        "        release) — inspect the prior attempt before proceeding. Compare:\n"
+        f"        git log --oneline {head[:8]}..{tag}\n"
+        "        Re-run once origin/main includes that commit, or pass\n"
+        "        --allow-tag-ahead-of-head to skip this project deliberately."
+    )
+
+
+def _unchanged_reason(repo_root: Path, name: str, last_tag: str, paths: List[str]) -> str:
+    """KI-13/S12.2e: the ordinary "nothing changed under this project's own
+    paths since its last release" line -- names the exact baseline tag AND
+    the commit it resolves to, not a bare project-name list. Package A's
+    "already released ... at the snapshot commit" message (the "equal"
+    state) already has this shape; this is the "behind" state's equivalent
+    (some OTHER project's commits moved HEAD, this one's own paths didn't
+    change) -- by far the most common skip reason, and previously the one
+    with no message at all. An operator who just committed under one of
+    ``paths`` can now immediately tell that apart from a wrong ``paths``
+    glob or a misplaced/unpushed tag -- both of which are refused earlier,
+    by S12.2a/S12.2b, before this line is ever reached."""
+    tag_commit = _git(repo_root, "rev-parse", f"{last_tag}^{{commit}}")
+    where = ", ".join(f"{p}/" for p in paths)
+    return (
+        f"[INFO] Unchanged, skipping: {name} (no commits under {where} "
+        f"since {last_tag} @ {tag_commit[:8]})"
+    )
+
+
 def detect_changed_projects(
     repo_root: Path,
     projects: Dict[str, Any],
+    *,
+    require_pushed_baseline: bool = False,
+    check_tag_at_head: bool = False,
+    allow_tag_ahead_of_head: bool = False,
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
-    Projects with no prior tag are always included (first release).
+    Projects with no prior tag are always included (first release) -- never
+    reported as "unchanged", and never printed below (S12.2).
+
+    ``require_pushed_baseline`` (S12.2a) and ``check_tag_at_head`` (S12.2b)
+    default to False, preserving today's plain-local-read, skip-silently
+    behaviour for read-only previews (``cmru status``) and migrations
+    (``cmru changelog``). The isolated release transaction (S-CLI.5) is the
+    one caller that turns both on unconditionally: see ``cli.py``'s
+    release-plan computation.
+
+    When ``check_tag_at_head`` is True, EVERY unchanged/skipped state below
+    prints exactly one informative line naming the project, the baseline tag,
+    and the specific reason (KI-13/S12.2e; one shape, shared by all three
+    states, not a competing style per state):
+
+    * "equal" (a pushed tag exactly at the snapshot commit, the ordinary
+      result right after a completed release) is ALWAYS reported — never an
+      error, and never gated by ``allow_tag_ahead_of_head``, which controls
+      only the "ahead" state below.
+    * "ahead" (S12.2b's genuine anomaly) raises unless
+      ``allow_tag_ahead_of_head`` is True (``--allow-tag-ahead-of-head``, née
+      ``--allow-tag-at-head``), in which case it too is reported and skipped
+      rather than silently folded away.
+    * "behind" (the ordinary case: some other project's commits moved HEAD,
+      this project's own paths didn't change) is reported via
+      :func:`_unchanged_reason`.
+
+    With ``check_tag_at_head`` False, ALL of this is skipped and every state
+    folds back into today's plain silent skip -- ``allow_tag_ahead_of_head``
+    is meaningless without it, and callers that want the old silent preview
+    (``cmru status``, ``cmru changelog``) are unaffected.
     """
     changed = []
     for name, proj in projects.items():
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
-        last_tag = _latest_tag_for_prefix(repo_root, prefix)
+        last_tag = _latest_tag_for_prefix(repo_root, prefix, require_pushed=require_pushed_baseline)
         if last_tag:
             messages = _git_log(repo_root, last_tag, *paths)
             if not messages:
+                if check_tag_at_head:
+                    relationship = _tag_head_relationship(repo_root, last_tag)
+                    if relationship == "equal":
+                        print(
+                            f"[INFO] Unchanged, skipping: {name} (already released as "
+                            f"{last_tag} at the snapshot commit; nothing new since)"
+                        )
+                    elif relationship == "ahead":
+                        if not allow_tag_ahead_of_head:
+                            raise _tag_ahead_error(repo_root, name, prefix, last_tag)
+                        print(
+                            f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
+                            "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
+                        )
+                    else:  # "behind" -- the ordinary, by-far-most-common skip reason
+                        print(_unchanged_reason(repo_root, name, last_tag, paths))
                 continue  # no changes
         else:
             messages = []  # first release — always eligible

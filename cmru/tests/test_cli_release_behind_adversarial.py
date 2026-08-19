@@ -31,7 +31,7 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     with pytest.raises(SystemExit) as exc:
         cli.main(["release", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
-    assert workspace_args == {"base": "b" * 40}
+    assert workspace_args == {"base": "b" * 40, "scope": "demo"}
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output

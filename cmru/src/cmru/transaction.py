@@ -113,25 +113,82 @@ def assert_local_main_not_ahead(repo_root: Path) -> int:
     return behind
 
 
+_SCOPE_INVALID_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _sanitize_scope(scope: str | None) -> str:
+    """Normalise ``--project`` (or the unscoped ``all``) into a branch/path-safe
+    token (KI-16): lowercase, ``[a-z0-9-]`` only, collapsed, never empty. A
+    project name is already constrained by config validation, but this feeds
+    directly into a branch name and a worktree directory and must not assume
+    that holds -- an unscoped run, an empty string, or an unexpected character
+    must all still produce a safe, non-empty token."""
+    if not scope:
+        return "all"
+    cleaned = _SCOPE_INVALID_RE.sub("-", scope.strip().lower()).strip("-")
+    return cleaned or "all"
+
+
+def _new_transaction_branch(purpose: str, scope: str | None) -> str:
+    """``cmru/<purpose>/<YYYYMMDD-HHMMSS>-<scope>-<uuid8>`` (KI-16).
+
+    UTC timestamp for chronological sort; sanitized scope for readability; a
+    trailing 8 hex from ``uuid4`` for collision-freedom -- cleanup depends on a
+    transaction being able to assume it exclusively owns the name it created,
+    so the random suffix is required, not decorative, and this name is
+    deliberately NOT made purely deterministic from timestamp+scope alone.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    token = uuid.uuid4().hex[:8]
+    return f"cmru/{purpose}/{timestamp}-{_sanitize_scope(scope)}-{token}"
+
+
+def _worktree_dirname(branch: str) -> str:
+    """The worktree directory name for ``branch``, 1:1 derivable in both
+    directions (KI-16): forward, it is simply ``branch`` with every ``/``
+    replaced by ``-``; backward, since ``purpose`` is always exactly
+    ``release`` or ``build``, ``re.sub(r"^cmru-(release|build)-",
+    r"cmru/\\1/", dirname, count=1)`` reconstructs the original branch.
+    """
+    return branch.replace("/", "-")
+
+
 def create_workspace(
-    repo_root: Path, *, base: str | None = None, purpose: str = "release",
+    repo_root: Path, *, base: str | None = None, purpose: str = "release", scope: str | None = None,
 ) -> ReleaseWorkspace:
     """Create a worktree at one already-fetched authoritative remote commit.
 
     ``purpose`` is intentionally visible in the branch/path. A successful release
     is ephemeral; a normal build is retained for inspection and must therefore
-    never be mistaken for a failed, resumable release attempt.
+    never be mistaken for a failed, resumable release attempt. ``scope`` is the
+    ``--project`` value when the run is scoped, else ``None`` (recorded as
+    ``all``) -- see :func:`_new_transaction_branch`.
+
+    Existing code and refspecs glob on ``branch.startswith("cmru/release/")``
+    and ``startswith("cmru/build/")``; this naming preserves both prefixes, so
+    retained worktrees from the OLD ``cmru/<purpose>/<12-hex>`` scheme remain
+    just as discoverable, resumable, and removable as ones created here.
     """
     if purpose not in {"release", "build"}:
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
     if base is None:
         base = fetch_origin_main(repo_root)
-    token = uuid.uuid4().hex[:12]
-    branch = f"cmru/{purpose}/{token}"
+    branch = _new_transaction_branch(purpose, scope)
     parent = repo_root / ".worktrees"
     parent.mkdir(exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix=f"cmru-{purpose}-{token}-", dir=parent))
-    path.rmdir()  # git worktree requires a path that does not exist yet.
+    path = parent / _worktree_dirname(branch)
+    # Uniqueness comes from the branch's own uuid8 now, so there is nothing to
+    # mkdtemp+rmdir for. Explicitly refuse an existing path rather than
+    # trusting `git worktree add` to: git only fails closed on a NON-EMPTY
+    # existing directory -- it silently ADOPTS an empty pre-existing one,
+    # which would not be "this ONE transaction exclusively owns the name it
+    # created" if that ever happened (uuid8 collision, or a stale leftover).
+    if path.exists():
+        raise RuntimeError(
+            f"worktree path already exists: {path} (uuid8 collision or a stale leftover "
+            "directory -- this should not happen; inspect and remove it manually before "
+            "retrying)"
+        )
     subprocess.run(
         ["git", "worktree", "add", "-b", branch, str(path), base], cwd=repo_root, check=True,
     )
@@ -230,6 +287,61 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
     _forget_release_progress(repo_root, workspace)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.results.json").unlink(missing_ok=True)
+    _forget_plan_refused(repo_root, workspace)
+    _forget_backup_pushed(repo_root, workspace)
+
+
+def mark_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that :func:`push_backup_branch` actually pushed this exact
+    transaction's durability backup to origin (KI-15).
+
+    :func:`remove_backup_branch` checks :func:`backup_was_pushed` before
+    attempting any delete, instead of special-casing every caller known
+    (today) not to have pushed one -- a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`, and an unconditional
+    best-effort delete on those paths is exactly what made a genuinely
+    successful, side-effect-free run print `error: unable to delete '...':
+    remote ref does not exist` / `error: failed to push some refs to '...'`.
+    Tracking this transaction's OWN observed push state -- rather than
+    enumerating which call sites are "known safe" -- also guards the opposite,
+    worse failure: a push that genuinely happened must still be reliably
+    recognised as pushed, or its backup branch is orphaned on origin forever.
+    """
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.backup-pushed").write_text("1", encoding="utf-8")
+
+
+def backup_was_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if :func:`mark_backup_pushed` was called for this exact workspace."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").exists()
+
+
+def _forget_backup_pushed(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.backup-pushed").unlink(missing_ok=True)
+
+
+def mark_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    """Record that this transaction's release-plan integrity check
+    (S12.2a/S12.2b) refused before any project's cycle started. Nothing was
+    gated, promoted, or tagged, so the worktree is safe to discard exactly
+    like a success would be -- the parent process checks
+    :func:`plan_was_refused` (its child exited non-zero, same as any other
+    failure) to tell that apart from a genuine mid-release failure, which
+    MUST be retained for inspection instead."""
+    scope_dir = _scope_dir(repo_root)
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / f"{_release_token(workspace)}.plan-refused").write_text("1", encoding="utf-8")
+
+
+def plan_was_refused(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
+    """True if :func:`mark_plan_refused` was called for this exact workspace."""
+    return (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").exists()
+
+
+def _forget_plan_refused(repo_root: Path, workspace: ReleaseWorkspace) -> None:
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.plan-refused").unlink(missing_ok=True)
 
 
 def write_release_result(
@@ -846,22 +958,44 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     name (pushed by an EARLIER call in this same run, before the rebase) then
     diverges from the local rewritten history, and a plain push would itself
     hit the identical non-fast-forward rejection this function exists to avoid.
+
+    Records that THIS transaction actually pushed the backup
+    (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
+    later checks before attempting any cleanup delete.
     """
     subprocess.run(
         ["git", "push", "--force", "origin", f"HEAD:refs/heads/{workspace.branch}"],
         cwd=workspace.path, check=True,
     )
+    mark_backup_pushed(workspace.repo_root, workspace)
 
 
 def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
     """Delete the durability backup branch from origin after a fully successful release.
 
-    Best-effort: a release that already succeeded should not fail cleanup over a
-    missing/already-gone remote branch.
+    Only attempted when THIS transaction actually pushed one
+    (:func:`backup_was_pushed`, KI-15) — a dry run, a "nothing to release" run,
+    and a refused release plan (S12.2a/S12.2b) all reach a successful exit
+    without ever calling :func:`push_backup_branch`; unconditionally attempting
+    a delete on those paths is exactly what made a genuinely successful,
+    side-effect-free run print `error: unable to delete '...': remote ref does
+    not exist` / `error: failed to push some refs to '...'` — training operators
+    to read this release tool's `error:` output as noise.
+
+    When a push DID happen, the delete still always runs — this transaction
+    state is tracked precisely so that case is never mistaken for "nothing to
+    clean up" either, which would orphan a real backup branch on origin
+    forever. Best-effort: output is captured rather than left to reach the
+    real stderr, so even a genuine failure here (branch already gone,
+    network blip) stays silent rather than alarming — a release that already
+    succeeded should not fail, or look like it failed, over cleanup of a
+    branch whose job is already done.
     """
+    if not backup_was_pushed(workspace.repo_root, workspace):
+        return
     subprocess.run(
         ["git", "push", "origin", "--delete", workspace.branch],
-        cwd=workspace.path, check=False,
+        cwd=workspace.path, check=False, capture_output=True, text=True,
     )
 
 

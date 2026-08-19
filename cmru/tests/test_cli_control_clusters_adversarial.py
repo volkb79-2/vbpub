@@ -52,7 +52,7 @@ def test_release_child_non_dry_run_with_no_changes_returns_without_release_calls
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_: None)
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *_: [])
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *_, **__: [])
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("release")))
     cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
     output = capsys.readouterr().out
