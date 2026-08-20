@@ -272,3 +272,88 @@ Source: branch REPORT §12 (opus, 479,721 subagent tokens / 210 calls / 46 min; 
 - Second confirmed gap: import-graph cost ("what importing sections.py COSTS") is invisible to content packs — 4 calls.
 - Sweep-tabulation doctrine worked: the implementer's OWN tabulated sweep caught a 4th missed consumer (comment-only), absorbed by directory-scope rather than enumeration — the D-128 B1 defense-in-depth held.
 - GUIDE.md deliberately unpacked (standing doc) — correct call, but O5 unrunnable without it; standing-doc reads are a fixed per-package orientation cost the pack cannot amortize.
+
+## E-006 — context-growth curves, checkpoint simulation, reviewer read-set overlap (P110/P111, measured 2026-08-20)
+
+**Tool.** `dstdns nyxloom-trove/orientation/jsonl-metrics.py` (subcommands `curve`,
+`simulate`, `readset`, `overlap`) — reusable for later E-NNN runs; never reads a
+transcript into a model's own context, only prints small aggregate tables.
+
+**Method note.** The six source transcripts (subagent JSONLs under
+`~/.claude/projects/-workspaces-dstdns/…/subagents/`) were **still being appended to
+live** during measurement (`ae3da96851c90d08c` grew 194→245→250 lines across three
+touches — an in-flight fix-verification resume). All numbers below are computed
+against a **frozen snapshot taken 2026-08-20T18:57:58Z**, copied before any
+measurement ran, so every table is internally consistent to that instant.
+
+Cost model: `normalized_cost = input×1.0 + cache_read×0.1 + cache_creation×1.25 +
+output×5.0`, in input-token-equivalent units.
+
+### Task A1/A2 — per-agent summary
+
+| transcript | role | calls | wall min | final context | cache-hit ratio | normalized cost |
+|---|---|---:|---:|---:|---:|---:|
+| `ade3ee8341f502776` | P110 implementer (opus) | 504 | 74.2 | 595,315 | 0.9952 | 21,110,074.5 |
+| `ae091ba50b2174b26` | P110 code reviewer (+resume) | 173 | 27.0 | 242,727 | 0.9677 | 4,137,711.9 |
+| `a7a50a660ded0597c` | P111 carve reviewer (+resume) | 162 | 20.9 | 232,667 | 0.9475 | 3,856,345.4 |
+| `a5398dae84bd7dbbd` | P111 implementer (opus) | 329 | 46.1 | 477,084 | 0.9928 | 11,812,360.8 |
+| `ae3da96851c90d08c` | P111 code reviewer | 155 | 26.6 | 252,662 | 0.9525 | 4,260,349.0 |
+| `a6b1163277d943422` | P110 repair successor (sonnet) | 166 | 9.7 | 141,108 | 0.9793 | 2,188,199.7 |
+
+### Task A3 — growth shape
+
+`frac@N%` = context size at that fraction of calls, as a fraction of final context. Knee = the single call with the largest one-step context jump.
+
+| transcript | shape | knee (call, % of run, jump) | frac@25% | frac@50% | frac@75% |
+|---|---|---|---:|---:|---:|
+| `ade3ee8341f502776` | roughly linear | call 7, 1.4%, +26,919 | 0.415 | 0.661 | 0.850 |
+| `ae091ba50b2174b26` | roughly linear | call 3, 1.7%, +9,600 | 0.489 | 0.691 | 0.867 |
+| `a7a50a660ded0597c` | roughly linear | call 141, 87.0%, +12,403 | 0.413 | 0.560 | 0.714 |
+| `a5398dae84bd7dbbd` | front-loaded | call 322, 97.9%, +17,303 | 0.506 | 0.673 | 0.839 |
+| `ae3da96851c90d08c` | roughly linear | call 3, 1.9%, +14,782 | 0.445 | 0.700 | 0.853 |
+| `a6b1163277d943422` | front-loaded | call 9, 5.4%, +6,230 | 0.532 | 0.702 | 0.829 |
+
+### Task A4 — checkpoint-restart simulation (brief = 25,000 cache_creation tokens)
+
+Savings % = `(actual_full_cost − restart_cost) / actual_full_cost`, where restart_cost = actual cost through the checkpoint + a one-time 25k brief + the remaining calls re-priced with context rebuilt from 25k using the SAME per-call context deltas as the real run.
+
+| transcript | savings@25% | savings@50% | savings@75% | break-even (first call, context, savings) |
+|---|---:|---:|---:|---|
+| `ade3ee8341f502776` | 40.50% | 44.25% | 28.82% | call 1, 40,712 tok, 5.35% |
+| `ae091ba50b2174b26` | 43.62% | 42.89% | 31.19% | call 1, 42,433 tok, 25.26% |
+| `a7a50a660ded0597c` | 44.24% | 42.40% | 33.75% | call 1, 41,711 tok, 33.22% |
+| `a5398dae84bd7dbbd` | 46.07% | 41.85% | 26.04% | call 1, 41,336 tok, 6.88% |
+| `ae3da96851c90d08c` | 44.80% | 46.41% | 35.59% | call 1, 42,687 tok, 32.43% |
+| `a6b1163277d943422` | 30.24% | 28.72% | 17.55% | call 1, 47,615 tok, 25.74% |
+
+### Task B — reviewer read-set vs orientation pack
+
+Pack fileset = `read-list.txt` ∪ files resolved from `grep '^=== ' pack.md` slice headers. Extras (`read_set∖pack`) exclude the reviewer's own reads of `pack.md`/`read-list.txt`.
+
+| reviewer | pack | pack files | read-set | ∩ | read_set∖pack | pack∖read_set (dead) | ∩/read_set | ∩/pack |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| P110 code reviewer (`ae091ba`) | config-plane-api | 17 | 26 | 4 | 22 | 13 | 15.4% | 23.5% |
+| P111 carve reviewer (`a7a50a`) | auth-config-cutover | 28 | 34 | 19 | 15 | 9 | 55.9% | 67.9% |
+| P111 code reviewer (`ae3da9`) | auth-config-cutover | 28 | 15 | 7 | 8 | 21 | 46.7% | 25.0% |
+
+`read_set∖pack` by category (heuristic label on exact counts — gate/test artifact = filename matches `LOG.md`/`REPORT.md`/test-runner patterns; sweep/probe = everything else, split by the Bash subtool used):
+
+| reviewer | gate/test artifact | sweep/probe (grep) | sweep/probe (cat/head/tail/sed) | sweep/probe (Read) |
+|---|---:|---:|---:|---:|
+| P110 code reviewer | 2 | 8 | 11 | 1 |
+| P111 carve reviewer | 1 | 4 | 10 | 0 |
+| P111 code reviewer | 2 | 2 | 3 | 1 |
+
+Recurring `read_set∖pack` files across reviewers: prior-round `LOG.md`/`REPORT.md` (own gate evidence), `nyxloom-trove/GUIDE.md` + `decisions.md` (standing cross-reference), `docs/ARCHITECTURE-OVERVIEW.md` / `docs/product/SCREEN-API-MAP.md` / `docs/PRODUCT-CAPABILITIES-AND-ROADMAP.md` / `docs/DESIGN-AUTHORITY.md` / `docs/CORE-WORKFLOW-STATUS.md` (authority docs), and adjacency/test files never in the edit set (`landscape.py`, `config_endpoints.py`, `test_scope_authority.py`, `test_consul_deploy_control.py`, `scripts/schema-gate.sh`).
+
+### Conclusions
+
+- **Growth is continuous, not batch-then-flat, in all 6 transcripts.** 4/6 classify as "roughly linear" by the script's heuristic; the 2 "front-loaded" agents (P111 implementer, P110 repair) still only reach frac@25%≈0.51–0.53 — no agent front-loads more than ~half its final context in the first quarter, so there's no clean "read everything, then work" phase to target for a mid-run intervention; a checkpoint mechanism has to work against continuous growth, not a one-time spike.
+- **Cache is doing its job.** Hit ratio ranges 0.9475–0.9952 across all 6 agents regardless of role or final context size (141k–595k) — caching absorbs the repeated-context cost as designed; the growth-curve cost pressure comes from cache_creation (new content) and output, not redundant cache_read pricing.
+- **Mid-run checkpointing pays for itself on every measured agent, and early.** All 6 transcripts show restart savings turning positive by roughly call 1 (context ~40–48k) under the stated cost weights, and land at 25–46% savings by the 25% checkpoint. This is real given the weights (cache_read priced 12.5× cheaper than cache_creation, 50× cheaper than output) — but the near-call-1 break-even is a **model artifact**: it reflects that any constant reduction in the ongoing cache_read tail compounds over however many calls remain, not a claim that restarting after one real call is operationally sound (the 25k brief doesn't model catch-up reads, coordination cost, or interrupting mid-reasoning).
+- **Savings peak in the 25–50% checkpoint band and fall off by 75%.** Every agent's 75%-checkpoint savings is its lowest of the three (17.6–35.6% vs 26–46% at 25/50%) — later checkpoints leave less "restart runway" to recoup the one-time brief, so **checkpoint earlier rather than later** is the actionable read, not "checkpoint as soon as possible."
+- **The two long opus runs (504 and 329 calls) show the biggest absolute payoff**: `ade3ee8341f502776` (P110 implementer, 21.1M normalized cost) and `a5398dae84bd7dbbd` (P111 implementer, 11.8M) both save >40% of total run cost at their best checkpoint — roughly half of a long implementer run's cost is attributable to carrying an ever-growing cache_read tail rather than new work.
+- **Reviewer pack overlap is bimodal, not uniform.** The P111 carve reviewer used the auth-config-cutover pack heavily (19/28 pack files touched, 55.9% of its own read-set came from the pack); the P110 code reviewer barely touched the config-plane-api pack (4/17 files, 15.4% of its read-set). The P111 code reviewer's small 15-file read-set was 46.7% pack-derived despite only covering 25% of the pack — consistent with an inherited/forked orientation context (B1 mechanism) needing far fewer direct reads overall than a cold-started reviewer.
+- **Dead weight is the dominant failure mode, not missing content.** 13/17 (76%) and 21/28 (75%) of pack files went untouched by the P110 and P111 code reviewers respectively — an implementer-scoped pack (full edit-set comprehension + consumer files) is mostly irrelevant to a reviewer who is verifying a diff, not building a mental model of the whole subsystem from scratch.
+- **What a reviewer-tailored pack must add, per the recurring `read_set∖pack` files:** (a) the prior round's own gate evidence (`LOG.md`/`REPORT.md`) — every reviewer reads it to check claims against reality; (b) 5–7 standing cross-reference docs (`GUIDE.md`, `decisions.md`, and the architecture/product/design-authority docs) that reviewers consult for context an implementer pack never needed; (c) adjacency/consumer files outside the edit set that reviewers independently rediscover via grep every time (this repeats E-002 addendum 4/5's "consumer dimension" gap, now confirmed from the reviewer side too).
+- **Recommendation:** a reviewer-tailored pack variant should be `{files actually changed in the diff}` + `{prior-round LOG/REPORT}` + `{the standing cross-reference set}`, with the implementer's comprehension-only slices dropped and the consumer/adjacency sweep pre-tabulated into the pack rather than left for the reviewer to rediscover ad hoc — this is the same "sweep must be tabulated, not just executed" rule already codified in dstdns D-128 #10, extended to pack curation itself.
