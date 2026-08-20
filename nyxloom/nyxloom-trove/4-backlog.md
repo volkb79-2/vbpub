@@ -463,6 +463,23 @@ items:
   component: gate
   context_estimate: medium
   folds_into: F008
+- id: B46
+  title: 'session-compaction + checkpoint service for long-running agents: (1) agents
+    self-checkpoint at a context threshold (~300k) -- finish the current work item,
+    write a continuation brief (designed retention prompt) to a well-known path, stop;
+    (2) a helper watches registered sessions and, on a deposited compact-request or
+    threshold crossing, performs the compaction EXTERNALLY on that session so the agent
+    can resume with its designed prompt instead of undirected auto-compaction --
+    FIRST VALIDATE the mechanism (does headless `claude --resume <id> -p "/compact
+    <prompt>"` compact-and-persist? unverified); (3) integrate with dispatch: long
+    tasks continue across compactions without re-billing full transcripts, and
+    controller-side fallback stays checkpoint+successor-spawn (works today, no
+    service needed). Origin: dstdns operator directive 2026-08-20; complements the
+    validated orientation-freeze/fork reuse (dstdns B1 mechanism, ~1.25x orientation
+    cost per fork, saving = not re-deriving orientation).'
+  type: feature
+  component: dispatch
+  context_estimate: medium
 - id: B45
   title: 'structured issue-ledger standard (PROPOSAL ONLY -- do not migrate
     consumers yet): replace free-form mutable backlog state with one tracked
