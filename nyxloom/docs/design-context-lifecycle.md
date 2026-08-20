@@ -165,7 +165,11 @@ transcript is dropped, never re-read.
 They compose: a (b)-chain worker that hits an *unplanned* deep-dive mid-iteration
 can use (a) once to survive it, then return to the chain at the next boundary.
 
-## 5. Validation plan (none of these are done)
+## 5. Validation plan
+
+> **Status 2026-08-20:** V3 **PASS** and V4 **SPLIT** (oracle a FAIL, oracle b PASS),
+> measured on a synthetic haiku-only scenario — see the experiments log's `## V3/V4`
+> section. Everything else in this table is still unrun.
 
 | id | test | oracle |
 |---|---|---|
@@ -173,15 +177,16 @@ can use (a) once to survive it, then return to the chain at the next boundary.
 | V2 | (a) designed-vs-auto A/B: same transcript, default auto-compact vs agent-authored prompt | blind grading of the two summaries against a checklist of the facts the NEXT item actually needed |
 | V2b | (b) distilled-brief quality: orientation session → brief → fresh seeded snapshot; a probe task run from the snapshot vs from the raw orientation session | equal task performance at ~5-7× less re-read cost; brief omissions surface as measurable re-reads |
 | V2c | tiered orientation: haiku/sonnet-authored brief vs premium-authored brief, same task, premium worker | equal worker performance; brief-lint catches the cheap model's omissions; premium orientation cost collapses to one 20-30k creation |
-| V3 | (b) 3-iteration chain on a real task | per-iteration cache_creation ≈ summary size (warm) or ≈ snapshot size (cold), never ≈ transcript; final work product correct |
-| V4 | (b) parallel forks: implementer + reviewer from the same mid-chain snapshot | both pure-reuse (within TTL); reviewer independence preserved (no leaked implementer conclusions in the snapshot) |
+| V3 **PASS** | (b) 3-iteration chain on a real task | per-iteration cache_creation ≈ summary size (warm) or ≈ snapshot size (cold), never ≈ transcript; final work product correct |
+| V4 **a FAIL / b PASS** | (b) parallel forks: implementer + reviewer from the same mid-chain snapshot | both pure-reuse (within TTL); reviewer independence preserved (no leaked implementer conclusions in the snapshot) |
 | V5 | (b) anticipation failure injection: summary deliberately omits a fact the next iteration needs | agent recovers via durable files at bounded cost (re-read, not restart); measures the mitigation |
 | V6 | re-orientation trigger: chain past the size budget / base moved | fresh orientation cheaper than continuing the chain (measure crossover) |
 | V7 | `--model` on the compact invocation: which model summarizes? | usage/modelUsage in the compact result names the summarizer; if steerable, cheap-model compaction for (a) |
 | V8 | cross-CLI survey: do codex/opencode/amp expose resume+fork+compact equivalents? | per-CLI mechanism table (seed: badlogic gist); decides AGENTS.md vs CLAUDE.md placement (§7) |
 | V9 | cost accounting harness: parse usage from session JSONL per pattern | automated per-agent cost report (feeds the nyxloom dashboard) |
 
-V1/V3 are the gate for adoption; V2/V5 justify the "designed" part; V7/V8 shape
+V1/V3 are the gate for adoption (V3 cleared 2026-08-20; note that V4 measured
+parallel forks paying full snapshot-body creation, so fan-out must be budgeted cold); V2/V5 justify the "designed" part; V7/V8 shape
 placement and the service.
 
 ## 6. Adoption plan

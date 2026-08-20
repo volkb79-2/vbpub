@@ -892,3 +892,266 @@ should not be checkpointed. The dispatch-prompt checkpoint clause in the
 fresh successor) and is not what this experiment measured — it should be
 restated in terms of remaining-work size, not re-anchored to 120k without its
 own measurement.
+
+## V3/V4 · 2026-08-20 · pattern (b) snapshot chain, end-to-end — SYNTHETIC scenario, haiku only
+
+Runs the two adoption-gate rows of `design-context-lifecycle.md` §5: **V3** (3-iteration
+chain: fork → work → iteration-summary → re-fork) and **V4** (parallel implementer +
+reviewer forks off one mid-chain snapshot), plus the one **CONTROL** the chain exists to
+beat (resume the working transcript instead of the summary-minted snapshot).
+
+**Why synthetic.** Operator rule: A/B and chain experiments never run on real dstdns work —
+a chain experiment must be free to re-run an iteration, and a real package's gate is not a
+controlled variable. Scenario, harness and all artifacts live in a throwaway git repo
+outside both repos (`…/scratchpad/v3-chain/`, `git init`); nothing here touched dstdns or
+vbpub source.
+
+**Model discipline.** Every call is `--model haiku` (`claude-haiku-4-5-20251001`), no
+`--effort` flag, identical toolset, `--safe-mode` (no CLAUDE.md / skills / hooks / MCP in
+the prefix) and `--exclude-dynamic-system-prompt-sections` — the four L24 prefix invariants,
+held flat across all 19 calls. CLI build 2.1.238. No flag was missing and `--fork-session`
+behaved correctly headlessly, so there is no BLOCKED row.
+
+### Scenario
+
+A `shop` package: 17 Python files / 1,007 lines + README + `pytest.ini`, no third-party
+deps. Three sequential work items of similar size, each 3–4 files, each with a pre-written
+test file that FAILS at the baseline commit and must go green:
+
+| item | change | files | dependency on earlier items |
+|---|---|---|---|
+| WI-1 | migrate builtin exceptions onto the `shop.errors` hierarchy | `validation.py`, `inventory.py`, `orders.py` | — |
+| WI-2 | add `utils.round_cents` (Decimal `ROUND_HALF_UP`), route pricing/discounts/tax through it | `utils.py`, `pricing.py`, `discounts.py`, `tax.py` | — |
+| WI-3 | `models.OrderSummary` + `Order.totals()` + `shipping.estimate_for_order` + `orders.finalize_order` + `reports.summarize_orders` | `models.py`, `shipping.py`, `orders.py`, `reports.py` | needs WI-1's `OrderError` **and** WI-2's `round_cents` — so the chain must actually carry them |
+
+Gate per item: plain `python3 -m pytest …` inside the scratch repo (no dstdns gate).
+Regression floor `tests/test_base.py` must stay green at every commit.
+
+**Orientation payload** is the E-002 model-free pack: verbatim concatenation of every
+tracked file, built by script at zero tokens — `notes/orientation-pack.md`, 34,030 B =
+**16,819 billed tokens** (2.02 B/tok, consistent with E-002's "bytes÷4 undercounts code").
+
+### Protocol (reproducible)
+
+```bash
+# invariants held on EVERY call
+COMMON=(--model haiku --output-format json
+        --exclude-dynamic-system-prompt-sections --safe-mode --dangerously-skip-permissions)
+
+# S0 — frozen orientation snapshot: read the pack in ONE call, answer "ORIENTED", stop.
+claude -p "${COMMON[@]}" --session-id "$S0" "$(cat prompts/orientation.txt)"
+
+# per iteration i:
+claude -p "${COMMON[@]}" --resume "$S_{i-1}" --fork-session "$(cat prompts/wi$i.txt)"  # -> W_i, works+commits
+claude -p "${COMMON[@]}" --resume "$W_i"                    "$(cat prompts/summary.txt)" # -> notes/summary-i.md
+cat prompts/mint.txt notes/summary-$i.md > runs/mint$i.prompt
+claude -p "${COMMON[@]}" --resume "$S_{i-1}" --fork-session "$(cat runs/mint$i.prompt)"  # -> S_i, replies ACK
+# W_i is then abandoned: never resumed again.
+```
+
+`prompts/summary.txt` is the self-compaction contract: ≤45 lines, sections **DONE / SEAMS /
+GATE / NEXT**, explicitly *"an INDEX, not an archive — the durable state is the git history
+and the files, so an omission costs the next iteration a re-read, never a loss"*, and
+*"write nothing the next work item cannot use"*. `prompts/mint.txt` frames the summary as
+fact superseding the pack and demands a bare `ACK` with no tool use.
+
+Usage is read only from the JSON result (`jq` on `usage` / per-turn `message.usage`); no
+transcript JSONL was ever loaded into a context.
+
+### Chain topology (billed context at freeze)
+
+| snapshot | minted from | summary injected | snapshot size (tok) | Δ vs parent |
+|---|---|---|---|---|
+| S0 | `--session-id`, pack read | — | 35,818 | — (18,999 system+tools + 16,819 pack) |
+| S1 | fork S0 | `summary-1.md`, 1,402 B | 36,684 | **+866** |
+| S2 | fork S1 | `summary-2.md`, 1,601 B | 37,509 | **+825** |
+| S3 | fork S2 | `summary-3.md`, 1,251 B | 38,234 | **+725** |
+
+Working transcripts at the moment they were abandoned: **W1 53,035 · W2 50,213 · W3 51,988**
+tokens. The chain grows ~800 tok/iteration; the thing it refuses to carry is ~50k each time.
+
+### Per-call usage (all `claude-haiku-4-5`)
+
+`first_cc` / `first_cr` = the fork's **first turn** — the only number the V3/V4 oracle is
+about. `last_ctx` = billed context on the final turn (= session size at exit).
+
+| call | role | turns | wall s | in | cc | cr | out | first_cc | first_cr | last_ctx |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `s0-orientation` | mint S0 | 2 | 6 | 18 | 16,811 | 41,045 | 462 | 3,047 | 18,999 | 35,818 |
+| `w1-work` | V3 iter 1 (fork S0) | 23 | 86 | 186 | 14,338 | 1,003,708 | 8,525 | **776** | 35,810 | 50,156 |
+| `w1-summary` | self-compact W1 | 4 | 18 | 34 | 34,028 | 174,534 | 1,565 | 31,745 | 18,999 | 53,035 |
+| `s1-mint` | mint S1 | 1 | 2 | 10 | 17,675 | 18,999 | 168 | 17,675 | 18,999 | 36,684 |
+| `w2-work` | V3 iter 2 (fork S1) | 20 | 38 | 66 | 9,946 | 337,366 | 4,903 | **641** | 36,674 | 46,628 |
+| `ctl-w2-naive` | **CONTROL** (fork W1) | 15 | 43 | 122 | 42,101 | 828,192 | 3,389 | **34,662** | 18,999 | 61,108 |
+| `w2-summary` | self-compact W2 | 5 | 35 | 42 | 31,206 | 213,688 | 2,181 | 28,096 | 18,999 | 50,213 |
+| `s2-mint-fix` | mint S2 | 1 | 2 | 10 | 18,500 | 18,999 | 167 | 18,500 | 18,999 | 37,509 |
+| `v4-impl-wi3` | V4 implementer (fork S2) | 16 | 57 | 106 | 28,858 | 550,732 | 5,400 | 19,499 | 18,999 | 47,865 |
+| `v4-reviewer` | V4 reviewer (fork S2) | 3 | 31 | 26 | 21,118 | 95,369 | 2,691 | 19,049 | 18,999 | 40,125 |
+| `probeA-seq-fork-s2` | cache probe | 1 | 1 | 10 | 18,747 | 18,999 | 48 | 18,747 | 18,999 | 37,756 |
+| `probeB-seq-fork-s1` | cache probe | 1 | 1 | 10 | 17,948 | 18,999 | 50 | 17,948 | 18,999 | 36,957 |
+| `probeC-refork-s2-immediate` | cache probe | 1 | 1 | 10 | **0** | 37,746 | 55 | **0** | 37,746 | 37,756 |
+| `v4b-par-fork-1` | V4 re-run, warm | 1 | 1 | 10 | **0** | 37,746 | 46 | **0** | 37,746 | 37,756 |
+| `v4b-par-fork-2` | V4 re-run, warm | 1 | 1 | 10 | **0** | 37,746 | 48 | **0** | 37,746 | 37,756 |
+| `w3-summary` | self-compact W3 | 5 | 27 | 42 | 32,981 | 219,060 | 2,597 | 29,384 | 18,999 | 51,988 |
+| `s3-mint` | mint S3 | 1 | 2 | 10 | 19,225 | 18,999 | 154 | 19,225 | 18,999 | 38,234 |
+| `warm-w-fork-s2` | controlled probe | 1 | 3 | 10 | 18,750 | 18,999 | 95 | 18,750 | 18,999 | 37,759 |
+| `clean-par-y` | controlled probe, parallel | 1 | 3 | 10 | 18,750 | 18,999 | 72 | 18,750 | 18,999 | 37,759 |
+| `clean-par-z` | controlled probe, parallel | 1 | 3 | 10 | 18,750 | 18,999 | 69 | 18,750 | 18,999 | 37,759 |
+
+(`s2-mint` — a discarded first attempt that wrongly re-injected `summary-1` alongside
+`summary-2` — and the initial `PROBE-OK` smoke call are in the raw log but not the analysis.
+**22 `claude -p` calls total**, budget was 25.)
+
+### V3 — verdict **PASS**
+
+*Oracle a: per-iteration `cache_creation` ≈ summary size (warm) or ≈ snapshot size (cold),
+never ≈ transcript size.*
+
+| iteration | fork of | first-turn `cache_creation` | vs snapshot (36–38k) | vs abandoned transcript (~50k) |
+|---|---|---|---|---|
+| 1 | S0 (warm) | **776** | 2 % | 1.5 % |
+| 2 | S1 (warm) | **641** | 1.7 % | 1.3 % |
+| 3 | S2 (cold) | **19,499** | 52 % | 39 % |
+
+Cold worst case is bounded by the snapshot body (16,819 tok pack + ~2k of summaries), and
+never approaches a transcript. **Refinement to the oracle's wording:** in the *warm* case
+creation is not "≈ summary size" but ≈ **the new work prompt only** (641–776 tok) — the
+summary's cost is paid once, at mint, and shows up as the permanent +725…+866 tok of
+snapshot growth, not per fork. The design's cost model is right; its warm-case constant is
+smaller than predicted.
+
+*Oracle b: the final work product is correct.* `python3 -m pytest -q` at the tip
+(`2bb6339`): **30 passed, 0 failed** across all four test files. Each iteration also passed
+its own gate before committing (18, 23, 30 passed). WI-3 correctly used both `OrderError`
+(WI-1) and `round_cents` (WI-2) — i.e. the chain really did carry the two earlier items'
+contracts.
+
+*Side oracle, unplanned but decisive:* **zero pack re-reads.** `grep -c orientation-pack` is
+0 in all four worker sessions — no fork ever spent a turn re-orienting. The snapshot is
+doing the job the raw transcript would otherwise be doing.
+
+### CONTROL — chain vs. naive resume (the cost the chain avoids)
+
+Both ran within ~1 minute of each other, same work item (WI-2), same prompt body, the naive
+one operating on a copy of the repo at the post-WI-1 commit so both started from identical
+code. Both succeeded (`23 passed`).
+
+| metric | chain (`w2-work`, fork of S1) | naive (`ctl-w2-naive`, fork of W1) | ratio |
+|---|---|---|---|
+| first-turn `cache_creation` | **641** | **34,662** | **54.1×** |
+| first-turn prefix (in+cc+cr) | 37,325 | 53,671 | 1.44× |
+| whole call, billed tokens (in+cc+cr) | 347,378 | 870,415 | **2.51×** |
+| assistant turns | 35 | 36 | 1.03× |
+| mean billed context per turn | 42,681 | 58,017 | 1.36× |
+| context at exit | 46,628 | 61,108 | 1.31× |
+
+The turn counts are within 3 % of each other, so the 2.51× is prefix weight, not extra work.
+Read the ratios as a family: 1.44× more prefix on turn one compounds into 2.51× over a
+20-turn iteration, and the gap widens with every further iteration because the naive branch
+carries iteration 1's transcript forever while the chain carries an 825-token summary.
+
+### V4 — verdict **SPLIT: oracle (a) FAIL, oracle (b) PASS**
+
+*Oracle a: both parallel forks show pure reuse (`cache_creation` ≈ 0) within TTL.* **FAIL.**
+The real run — implementer and reviewer launched concurrently 16 s after S2 was minted —
+each paid `cc ≈ 19,000` with `cr = 18,999`: the system+tools block hit, the snapshot body
+did not. A controlled re-test (below) reproduced the miss and could not produce a genuine
+hit on S2 at all.
+
+> **Retraction, same run.** An intermediate re-run (`probeC`, `v4b-par-fork-1/2`) *did*
+> measure `cache_creation = 0`, `cache_read = 37,746` on two simultaneous forks and briefly
+> looked like a PASS. It was an artifact: those three calls reused `runs/probeA.txt`, so
+> each was a **byte-identical replay of `probeA`'s entire request**, not a fork with new
+> work. The tell is in the number — 37,746 + 10 input = 37,756 = `probeA`'s *full* context
+> including its trailing user message, whereas a genuine fork can only read up to the
+> *parent's* last message. Recorded here rather than deleted, because it is exactly the
+> false-green an A/B on cache numbers invites: **a cache probe must vary the trailing
+> message, or it measures request replay.**
+
+Controlled re-test — one warming fork, then two concurrent forks, all three off S2 with
+**distinct** trailing prompts, all within ~5 s of each other:
+
+| call | first-turn `cc` | first-turn `cr` |
+|---|---|---|
+| `warm-w-fork-s2` | 18,750 | 18,999 |
+| `clean-par-y` (parallel) | 18,750 | 18,999 |
+| `clean-par-z` (parallel) | 18,750 | 18,999 |
+
+Every fork paid the snapshot body once. **Parallel fan-out off a snapshot must be budgeted
+as N × snapshot-body creation, not N × 0.** The "warm the cache with a throwaway fork first"
+recipe that the artifact suggested does **not** work and is not recommended.
+
+*Oracle b: reviewer independence.* **PASS.** The implementer's prompt carried a token
+(`V4IMPL-Q7ZR3X`) it had to echo in its reply and never write to disk. Result: **1**
+occurrence in the implementer's session JSON, **0** in the reviewer's, **0** anywhere in the
+working tree, **0** in the git history. The reviewer, forked from the same S2, reached its
+own verdict (`ACCEPT`, with a correct *unprompted* warning that `shipping.shipping_cost`
+still uses banker's `round_money` and will mix with `round_cents` in WI-3) in **2 Bash
+calls** (`git log`, `git show`) and 3 turns. Shared grounding, zero cross-contamination —
+the reusable-snapshot half of §3's "snapshots are reusable and parallel-friendly" holds even
+though the free-cache half did not.
+
+### When the fork cache *did* hit — and the arithmetic that identifies the block
+
+Two of the three chain links reused the snapshot body exactly, and the numbers are
+unambiguous about what was reused:
+
+| fork | parent's write | fork's `cr` | check |
+|---|---|---|---|
+| `w1-work` ← S0 (Δt 8 s) | `s0-orientation` cc 16,811 | 35,810 | 18,999 + 16,811 = **35,810** ✓ |
+| `w2-work` ← S1 (Δt 25 s) | `s1-mint` cc 17,675 | 36,674 | 18,999 + 17,675 = **36,674** ✓ |
+| `v4-impl` / `v4-reviewer` ← S2 (Δt 16 s) | `s2-mint-fix` cc 18,500 | 18,999 | 18,999 + 18,500 = 37,499 ✗ **missed** |
+
+So the mechanism is real and exact — a fork reads precisely the block its parent's last
+request wrote, system+tools plus body — but it was **not reproducible**: S2 and S3 never
+served their body to any fork, at Δt from 16 s to 13 min, including immediately after a
+fresh write, while S0 and S1 served theirs at Δt 8 s and 25 s. Every `cache_creation` in all
+22 calls was reported in the **`ephemeral_1h`** bucket, so the advertised TTL explains
+nothing here. The 18,999-token system+tools block hit unconditionally in all 22 calls; only
+the conversation body was unreliable.
+
+We could not isolate the cause inside this experiment's budget, and it is not worth
+attributing to the CLI: one host, one account, one 10-minute window, shared cache pressure.
+The operational conclusion does not depend on the cause:
+
+1. **Budget the chain on bounded context, never on warm cache.** The unconditional,
+   always-present win is that a fork's prefix is the snapshot (37k, growing ~800 tok per
+   iteration) instead of the transcript (54k after one iteration, and unbounded after
+   several). The cache is a bonus you may not get.
+2. **Cold worst case is still bounded by the snapshot**, which is the whole point: 18.5–19.5k
+   creation, ~37 % of the transcript the chain refused to carry, and it does not grow with
+   the work done.
+3. **Sequence fan-out immediately after minting anyway** — it costs nothing to try, and when
+   it lands (as it did twice here) the fork's marginal creation drops to 641–776 tokens.
+4. Any future cache A/B **must vary the trailing message** (see the retraction above).
+
+### Caveats
+
+- Synthetic, small (1,007 lines) and haiku-only. The token *ratios* transfer; the absolute
+  sizes do not, and a 16.8k pack is ~8× smaller than a real dstdns orientation pack (E-002:
+  42k curated), which makes cold-fork creation proportionally worse there, not better.
+- Iterations were 15–23 turns. A real implementer is 300+ turns, where the naive branch's
+  1.36× per-turn premium compounds much harder than the 2.51× measured here.
+- The control ran once, by budget rule. Its first-turn numbers are exact; its whole-call
+  number carries the noise of one agent's turn count (35 vs 36 — small, but n=1).
+- `s2-mint` shows the one authoring mistake worth naming: the mint prompt must carry **only
+  the current iteration's summary**. Re-injecting an earlier one duplicates content the
+  parent snapshot already holds and inflates the chain. The corrected call is `s2-mint-fix`.
+- The V4 oracle-(a) FAIL is a **negative result about the prompt cache on this host on this
+  afternoon**, not about the snapshot-chain mechanism, which V3 shows working. Re-measure
+  before designing anything (B46 `advance-chain`, nyxloomd fan-out) around free forks.
+- Summary quality was not adversarially graded here (that is V5's job). The evidence that
+  the summaries were sufficient is indirect but strong: zero pack re-reads and WI-3 using
+  both predecessors' new APIs without being told them again.
+
+### Totals
+
+22 `claude -p` calls, **all `claude-haiku-4-5-20251001`**, no other model invoked:
+input **772** · cache_creation **402,422** · cache_read **3,766,057** · output **32,982** ·
+**$1.35**. (Of that, ~$0.09 is the cache-behaviour probing that produced — and then
+retracted — the V4 oracle-(a) result.)
+
+Artifacts (throwaway, outside both repos):
+`…/scratchpad/v3-chain/` — `prompts/` (the seven prompt files), `runs/*.json` (raw results),
+`runs/usage.tsv`, `runs/chain.env` (the snapshot chain S0→S3 + W1→W3), `notes/summary-{1,2,3}.md`,
+`notes/orientation-pack.md`, `lib.sh` (the `call` wrapper that enforces the four invariants).
