@@ -7,6 +7,25 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.2.0] - 2026-08-20
+<!-- cmru: generated -->
+<!-- cmru: source-end=ac964b60f0d8ca4691997378b1c6246827d513cd -->
+
+### Added
+- feat(ciu): Assay-backed implementation gate + vendored pinned Assay (P07, CIU-28/29, S18) (b68e8a4d)
+
+### Fixed
+- fix(ciu): P07 gate argv defect 3 — sha256sum -c must run from the pin's directory (cmru precedent shape) (db861ac2)
+- fix(ciu): P07 gate argv — pass CGROUP_PARENT_DEV_BACKGROUND into the container; LoadState check only where systemd is reachable (1a29b9f4)
+- fix(ciu): pass through the suite's ambient env vars in the assay lane (S18.2) (f087b00d)
+
+### Changed
+- ciu-P07: BLOCKED — released Assay v2.1.0 not installed in tester-unified (escalate_if #1) (3271681f)
+- AGENTS: manual tester-unified gate runs — the four traps (estate-wide) + pointer at ciu's gate declaration (98549075)
+
+### Documentation
+- docs(ciu): P07 qualification LOG — unblock via vendoring, lane validation, canaries, adversarial review (ccaf841f)
+
 ## [Unreleased]
 
 ### Changed
