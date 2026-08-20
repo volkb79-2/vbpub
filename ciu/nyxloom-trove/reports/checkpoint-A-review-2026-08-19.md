@@ -136,3 +136,39 @@ filename against the wrong CWD (cmru's `cd tools/assay &&` shape restored).
 Full detail in the P07 LOG's controller-review addenda. **Fourth consecutive
 checkpoint where the only defects were in never-executed invocations against
 a 100%-green suite.**
+
+---
+
+# Checkpoint C review — ciu-P10 + ciu-P11 — 2026-08-20 (same reviewer)
+
+**Verdict: APPROVED-AFTER-FIXES — MERGED (`90b4f066`) + RELEASED (v6.3.0).**
+Implementer: opencode (sibling branch off `98549075`, NOT stacked on P07 —
+produced 3 tail conflicts vs main, resolved keep-both at the merge). Fresh
+adversarial review: APPROVE-WITH-FIXES, 4 blocking — all fixed on-branch by a
+fix agent (`eb7a6b3a`+`01abdce2`) and verified: **B1** `bundles=[]` silently
+deployed EVERY phase (empty `CIU_SERVICES_PROFILE` → resolve_profiles ALL —
+the 2026-07-16 incident shape; now a tagged [S7.5c] reject + joint per-host
+bundle validation); **B2** the layout-mode flag guard used exact list
+membership, so `--profile=core` (= form) evaded it and `--dir/--thin/
+--bootstrap/--rollback` forwarded to opaque remote failures (now prefix-aware
+reject); **B3** the push loop re-implemented `up --host` and had drifted
+(no docker_optional advisory) — deduplicated into `_push_host()`; **P11-B1**
+a pasted secret VALUE echoed to stderr via the Unknown-directive message from
+EVERY host flow (hosts.py no longer interpolates the upstream message).
+Plus: tracker rows reworded to the evidence ladder, LOG count corrections
+appended, README/CONFIG docs sync, `CIU_SECRET_<NAME>` not-host-scoped
+limitation documented.
+
+## Gate evidence (Assay-backed, hermetic)
+
+1. Branch merge tip `cbd0f03a`: PASS R0+R1 — but `resolved.base` = HEAD^1
+   (first-parent) on a merge-commit HEAD, so that R1 floor covered only the
+   main-side content. Filed as **assay B008** (measured, with the merge-base
+   proof); mitigated by (2).
+2. **Ship gate from a clean detached worktree at the MERGED main tip
+   `90b4f066`: PASS, R0 + R1, base `f882fc24`** — first-parent ≡ merge-base
+   there, so the changed-line floor covered the full C content. Verdict JSON
+   read directly.
+3. First attempt from the main checkout itself: `NO_MEASUREMENT/DIRTY_TREE
+   (exit 3)` — the fail-closed clean-tree rule caught the operator's untracked
+   root wheel. Working as designed; gate from a clean worktree.
