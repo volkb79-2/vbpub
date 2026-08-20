@@ -1,100 +1,139 @@
 # LOG — ciu-P07-assay-qualification
 
 - Package: `ciu-P07-assay-qualification`
-- Branch: `docs/ciu-P07-assay-qualification` (forked from origin/main @ `98549075`, after the
-  checkpoint-B merge `7eefaba0` + release prep)
-- Worktree: `/workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog`
+- Branch: `docs/ciu-P07-assay-qualification` (forked from origin/main @ `98549075`)
 - Handoff input_revision: `71f5ec79`
-- Status: **BLOCKED** (escalate_if trigger #1 — released Assay not installed in tester-unified)
+- Status: COMPLETE (BLOCKED raised then UNBLOCKED by controller; vendoring path authorized)
+- Commits: `3271681f` (BLOCKED LOG) → `b68e8a4d` (Assay-backed gate + vendored Assay) →
+  `f087b00d` (lane env passthrough) → this LOG
 
-## BLOCKED: <reason>
+## The BLOCKED trigger and its resolution
 
-The gate contract this package exists to build requires an **installed, released Assay
-CLI/artifact** inside tester-unified (oracles O1/O3; handoff step 1: "Probe the installed Assay
-version and supported config schema inside tester-unified. Record exact commands/output before
-editing. If it is not the expected released contract, trigger BLOCKED rather than guessing.").
-Assay **is** released (`assay-v2.1.0`), but **is not installed anywhere the gate can reach** —
-not in the tester-unified image, not vendored in the repo. The absence is the degenerate case of
-"does not support the required current schema/command contract" (escalate_if #1). Nothing was
-edited; no `assay.toml` was written against a guessed schema.
+`3271681f` recorded escalate_if #1: released Assay v2.1.0 was NOT installed in
+tester-unified (`cmru tester-gate` probes: `ModuleNotFoundError` in
+`/opt/tester-venv`; no wheel/pyz vendored anywhere). Installation was out of
+P07's original scope (tester-unified forbidden; no vendoring slot).
+**Controller resolution (2026-08-20): vendoring is the accepted estate path.**
+Evidence found: the released, verified zipapp is already vendored by CMRU at
+`cmru/tools/assay/assay-2.1.0.pyz` + `.sha256`, pinned in `cmru.toml`
+(`[[project.tool_dependencies]]` sha256) and verified/consumed in its own
+gate (`cmru.toml [steps.run-tests]`: `sha256sum -c` + the zipapp's `run`).
 
-## Probe evidence (exact commands and output, run before any edit)
+## Probe (exact commands, before edits — recorded in 3271681f)
 
-Launcher: `cmru tester-gate` (the sanctioned gate launcher — NOT a hand-rolled docker run;
-env reproduced from `cmru.orchestration.toml [orchestration.defaults.env]`:
-`CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local`, memory 3g/16g, cpus 1.5,
-cgroup-probe `debian:trixie-slim`; cgroup parent resolved from the ambient
-`CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice` — launch reached the container, i.e. the
-slice is loaded on the host).
+`cmru tester-gate --cwd ciu -- bash -c 'which assay; assay --version; python -c "import assay"'`
+on `tester-unified:local` AND `tester-unified:ciu-gate113` →
+`bash: line 1: assay: command not found` / `ModuleNotFoundError: No module named 'assay'`.
+
+## Work done
+
+Scope.touch + three documented gate-setup extensions (below). `src/ciu`,
+`nyxloom-trove/decisions.md` untouched.
+
+1. **Vendored the released Assay artifact** (`tools/assay/assay-2.1.0.pyz` +
+   `.sha256`), byte-identical to cmru's vendored copy (`sha256sum` match
+   `f2f13021…`); verified `sha256sum -c` → `OK`. Root `.gitignore`'s `*.pyz`
+   exception mirrored (`!tools/assay/*.pyz`, cmru precedent).
+2. **`assay.toml`** — lane `ciu`: `rigor = ["R0", "R1"]`, argv =
+   `run-ciu-tests.py` (whole-source 100% line+branch), snapshot
+   `repository-minus-unsafe-symlinks` declaring the monorepo's three
+   absolute-target topos fixtures verbatim (complete set verified by scanning
+   all tracked symlinks), judge `fail_under=100.0`, `require_branch=true`,
+   `allow_excluded=false`, `base="origin/main"`, coverage artifact
+   `coverage.json`. `env` = `PYTHONPATH=src, PYTHONDONTWRITEBYTECODE=1`;
+   `env_passthrough = ["CGROUP_PARENT_DEV_BACKGROUND","HOME","PATH","TERM","LANG"]`
+   (measured: the four governance tests read `CGROUP_PARENT_DEV_BACKGROUND`
+   by design S15.2; xdist/git need PATH; HOME for `~/.config` writes — a bare
+   `env_passthrough=[]` red'd the suite).
+3. **`nyxloom-trove/nyxloom.toml`** — `[gates.tester-unified]` argv replaced
+   the retired `nyxloom.coverage_gate` with: `${CGROUP_PARENT_DEV_BACKGROUND:?}`
+   (no literal, no fallback) → `systemctl show --property=LoadState --value`
+   must equal `loaded` (fail-closed) → `docker run --cgroup-parent="$CGP"`
+   → inner: `mkdir -p .assay && sha256sum -c` the pin → the Assay zipapp's
+   `run ciu --verdict-json .assay/verdict-ciu.json`. The gate's exit status IS
+   the Assay job's (set -euo pipefail chain; no wrapper/pipe masking).
+   `asserts` gained `assay-verdict`.
+4. **`_last-summary.txt` gitignored** (ciu/.gitignore): the Assay lane refuses
+   a dirty tree (S18.4) and the controller artifact is never committed — a
+   non-ignored untracked file would red every gate run forever.
+5. **Docs** (all in scope.touch): SPEC **S18** (S18.1 pinned artifact,
+   S18.2 lane contract, S18.3 cgroup fail-closed, S18.4 status/evidence +
+   clean-tree, S18.5 manual reproduction); CONFIG.md gate-artifacts section;
+   CONSUMERS **§10** (pasteable gate reproduction + contract notes);
+   DESIGN-GUIDE (why vendored-zipapp, why R1+repository-minus-unsafe-symlinks,
+   why clean-tree, why env-only cgroup, why job status); FEATURES matrix row;
+   ARCHITECTURE gate flow; README gate section; CHANGES; KNOWN_ISSUES
+   **CIU-28/CIU-29 → FIXED**; roadmap Package D + final qualification →
+   complete.
+6. **Doc contract**: `test_ciu_documentation_contract.py` — one anchor fix
+   (README link slug `…-assay-backed-s18`), then 3 passed.
+
+## Lane validation (the part the implementer can run)
+
+The lane argv's interpreter (`/opt/tester-venv/bin/python`) exists only in
+tester-unified, so the lane LOGIC was validated in a throwaway worktree
+(`git worktree add /tmp/probe-ciu b68e8a4d`) with the argv's interpreter
+pointed at this devcontainer's venv (absolute path; everything else identical),
+then the worktree was removed.
+
+- **Green run**: `assay run ciu` → **PASS (exit 0)**; snapshot materialised
+  (repository-minus-unsafe-symlinks), full suite at 100% line+branch inside
+  the snapshot, R0 + R1 both PASS, verdict emitted. (Coverage payload 0/0:
+  the P07 commit has no src delta vs origin/main — a legitimate P05 vacuous
+  pass; the whole-source floor ran regardless.)
+- **Canary 1 (bad test)**: committed `tests/tests/test_canary_tmp.py` with
+  `assert False` → **FAIL/COMMAND_FAILED (exit 1)** — the gate rejects a
+  failing test.
+- **Canary 2 (pragma'd changed line)**: committed a `# pragma: no cover`
+  executable line in `src/ciu/deploy_pkg/profiles.py` → **R0 PASS, R1 FAIL
+  `EXCLUDED_LINES`** — the changed-line floor catches a changed line that
+  whole-coverage cannot see (`allow_excluded=false`), the precise role of the
+  retired `nyxloom.coverage_gate` ("no pragma on changed code"). Both canaries
+  reverted by removing the throwaway worktree; branch restored to the real
+  argv.
+
+## Adversarial review (fresh combined-axis, not named in P04-P06)
+
+- **Pragma'd-changed-line × whole-coverage blindness × diff judgment** — the
+  canary above; accepted, and it is the reason the gate keeps R1
+  (`allow_excluded=false`) rather than relying on `--cov-fail-under=100` alone.
+- **Gate-cleanliness × retained evidence** — a gate that wrote its verdict
+  inside the judged tree would red every subsequent run; the verdict goes to
+  gitignored `.assay/`, coverage artifacts are repo-gitignored (`coverage.json`,
+  `.coverage*`), verified.
+- **Cgroup env × systemd transient-slice auto-creation** — `${CGP:?}` fails
+  closed on absence; `LoadState=loaded` check fails closed on unloaded/missing.
+  A typo'd name that systemd auto-creates as a transient unit passes the
+  LoadState check (best-effort, same mechanism as `cmru tester-gate`); the
+  authoritative source is the controller's trusted environment
+  (devcontainer.json), not operator input to CIU — accepted, documented in
+  S18.3/DESIGN-GUIDE.
+- **Empty-subject × green verdict** — a docs-only commit yields a vacuous 0/0
+  R1 pass but the whole-source floor (the lane command) still runs the full
+  suite at 100%; observed on this branch's own commit. Accepted (P05 contract).
+- **Snapshot selection × monorepo drift** — the omissions list is the complete,
+  current unsafe-symlink set (verified); a new unsafe symlink anywhere reds
+  the lane fail-closed (documented maintenance obligation, CONSUMERS).
+- **argv integrity** — `allow_argv_append=false`; the gate invocation passes
+  no appended argv.
+
+## Iteration signal (venv run)
 
 ```
-$ cmru tester-gate --cwd ciu -- bash -c 'which assay; assay --version 2>&1; /opt/tester-venv/bin/python -c "import assay,sys; print(sys.version); print(assay.__file__)" 2>&1'
-bash: line 1: assay: command not found
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-    import assay,sys; print(sys.version); print(assay.__file__)
-    ^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'assay'
+env -u REPO_ROOT -u PHYSICAL_REPO_ROOT -u CIU_GOV_READ_IOPS \
+  .venv/bin/python run-ciu-tests.py
+2173 passed / 0 failed, 100% line+branch (7159 stmts / 2808 br), exit 0
 ```
+Recorded as "venv run", never "the gate". The Assay-backed tester-unified gate
+runs at checkpoint review (operator), where the real interpreter + container
+env exist.
 
-Same result on the other local tester-unified image:
+## Deviations / scope extensions (all controller-authorized or gate-setup)
 
-```
-$ cmru tester-gate --image tester-unified:ciu-gate113 --cwd ciu -- bash -c 'which assay; assay --version 2>&1 | head -2; /opt/tester-venv/bin/python -c "import assay; print(assay.__file__)" 2>&1'
-bash: line 1: assay: command not found
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-    import assay; print(assay.__file__)
-  ^^^^^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'assay'
-```
-
-## Why this is a BLOCKED trigger, not a fixable gap
-
-- **The released contract exists but is not installed.** Tag `assay-v2.1.0` → `a3ae580d`
-  ("chore(assay): prepare release inputs"); `assay/CHANGES.md` records 2.1.0 (2026-08-18);
-  CLI entry point `assay = "assay.cli:main"`; lane schema v2 + verdict schema v6 per
-  `assay/docs/CONSUMERS.md`. The artifact is simply missing from the gate image.
-- **No vendored artifact anywhere in the repo.** No `assay*.whl` / `*.pyz` exists in the
-  repository tree (only cmru/nyxloom/ciu wheels); `nyxloom/src/` contains no assay module
-  (grep: zero hits) — nothing routes or installs the artifact.
-- **Installation is out of P07's scope by construction.** Handoff scope.forbid: "Do not modify
-  CIU source, Assay source, or tester-unified. This package consumes their released/configured
-  interfaces only." The tester-unified image derives its dependency closure exclusively from
-  each project's `pyproject.toml` (tester-unified/Dockerfile: `ciu[ssh,test]`, `cmru[test]`,
-  `topos[dev]`, `nyxloom[test]`, cgroup-profiler[test]) and has no assay slot. Getting Assay
-  into the gate therefore requires either editing `tester-unified/Dockerfile` (forbidden), or
-  adding assay to a project's `pyproject.toml` (not in scope.touch), or vendoring a wheel/.pyz
-  under a new path (not in scope.touch). Assay's own consumer docs offer exactly two
-  integration shapes — a pinned verified wheel, or a vendored verified zipapp — and neither
-  exists here.
-
-## escalate_if check (trigger vs non-trigger)
-
-| # | condition | verdict |
-|---|---|---|
-| 1 | released Assay installed in tester-unified supports the required contract | **TRIGGERED** — nothing installed at all; cannot be installed within scope (above) |
-| 2 | background cgroup variable absent or LoadState not loaded | **not triggered** — `CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice` is ambient; `cmru tester-gate` resolved and used it successfully (container launch reached the probe). (The cockpit has no systemd — expected; the LoadState verification is host-side at gate launch.) |
-| 3 | adversarial review finds accepted defect requiring forbidden source changes | **not reached** — gate contract absent; no review possible |
-
-## Unblock options (controller decisions, not improvisations)
-
-1. **Install the released Assay into tester-unified (operator):** rebuild `tester-unified`
-   with the released `assay-v2.1.0` wheel installed into `/opt/tester-venv` (per Assay's
-   consumer docs: verify against `release-manifest.json`, `pip --require-hashes`), then
-   confirm `assay --version` and `assay lanes` inside the image. P07 then resumes at its
-   step 1 probe.
-2. **Amend P07 scope to vendor the verified zipapp:** controller extends scope.touch with a
-   vendoring path (e.g. `tools/assay/assay-2.1.0.pyz` + `.sha256` sidecar, verified per
-   CONSUMERS.md); the gate argv then invokes it explicitly
-   (`/opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ...`) — the zero-install,
-   hermetic shape Assay's docs describe. P07 resumes without touching tester-unified.
-3. **Declare assay a pinned gate dependency via a project pyproject** (controller decision +
-   scope amendment, since `pyproject.toml` is not in scope.touch).
-
-## State on BLOCKED
-
-- No files edited, nothing staged, no `assay.toml` written.
-- CIU-28/CIU-29 remain OPEN (`KNOWN_ISSUES_TODO_BACKLOG.md` row "qualification P07 pending"
-  untouched); roadmap milestone open.
-- This LOG is the only change; committed so the trigger is recorded and reviewable.
+1. Vendored `tools/assay/` (the controller-approved unblock path).
+2. `.gitignore` changes (`!tools/assay/*.pyz`, `_last-summary.txt`) — required
+   for the gate to run at all (S18.1 pin trackable; S18.4 clean tree).
+3. `env_passthrough` of the five suite-required vars — measured necessity.
+4. `asserts` list gained `assay-verdict`.
+5. The BLOCKED LOG (3271681f) is retained as the trigger record; it names the
+   three unblock options, of which the controller chose vendoring.
