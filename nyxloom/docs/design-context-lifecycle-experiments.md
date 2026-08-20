@@ -357,3 +357,152 @@ Recurring `read_set∖pack` files across reviewers: prior-round `LOG.md`/`REPORT
 - **Dead weight is the dominant failure mode, not missing content.** 13/17 (76%) and 21/28 (75%) of pack files went untouched by the P110 and P111 code reviewers respectively — an implementer-scoped pack (full edit-set comprehension + consumer files) is mostly irrelevant to a reviewer who is verifying a diff, not building a mental model of the whole subsystem from scratch.
 - **What a reviewer-tailored pack must add, per the recurring `read_set∖pack` files:** (a) the prior round's own gate evidence (`LOG.md`/`REPORT.md`) — every reviewer reads it to check claims against reality; (b) 5–7 standing cross-reference docs (`GUIDE.md`, `decisions.md`, and the architecture/product/design-authority docs) that reviewers consult for context an implementer pack never needed; (c) adjacency/consumer files outside the edit set that reviewers independently rediscover via grep every time (this repeats E-002 addendum 4/5's "consumer dimension" gap, now confirmed from the reviewer side too).
 - **Recommendation:** a reviewer-tailored pack variant should be `{files actually changed in the diff}` + `{prior-round LOG/REPORT}` + `{the standing cross-reference set}`, with the implementer's comprehension-only slices dropped and the consumer/adjacency sweep pre-tabulated into the pack rather than left for the reviewer to rediscover ad hoc — this is the same "sweep must be tabulated, not just executed" rule already codified in dstdns D-128 #10, extended to pack curation itself.
+
+## E-007 — multi-checkpoint schedules (uniform vs DP-optimal), refreshed final numbers (P110/P111/P112, measured 2026-08-20)
+
+**Tool.** `jsonl-metrics.py` gained a `simulate-multi` subcommand (dstdns
+`5ea52d37`): (a) **uniform schedules** — N checkpoints at equal call-count
+spacing, N = 1..12; (b) **per-N optimal placement** via dynamic programming
+(`D_k[j] = brief + min_m [S(j,m) + D_{k-1}[m]]` over precomputed
+segment-replay cost rows, argmin chains recovered for placements); (c) an
+**unrestricted-N optimum**. Cost model unchanged from E-006 (input×1.0,
+cache_read×0.1, cache_creation×1.25, output×5.0); each checkpoint costs one
+brief-sized cache_creation and resets carried context to the brief size, after
+which the real run's per-call context deltas replay. DP output was
+cross-checked two ways: recomputing every recovered placement with an
+independent schedule-cost function (exact match), and uniform-N=1 against the
+old `simulate` at 50% (exact match).
+
+**Method note.** E-006's numbers were computed while several agents were still
+running. All measured agents are now **finished**; a fresh frozen snapshot of
+all nine JSONLs was copied before any measurement at **2026-08-20T20:20:16Z**.
+Three P112 agents join the set, labeled from their `meta.json` descriptions:
+`ab163ba31e6f0b2e6` "P112 adversarial carve review", `ad419503d91b5fe18`
+"Tabulated queues consumer sweep", `ae5a8000da305395e` "Assemble P112
+orientation pack".
+
+### Refreshed final per-agent summary (E-006 table, final numbers)
+
+| transcript | role | calls | wall min | final context | cache-hit ratio | normalized cost | vs E-006 |
+|---|---|---:|---:|---:|---:|---:|---|
+| `ade3ee8341f502776` | P110 implementer (opus) | 504 | 74.2 | 595,315 | 0.9952 | 21,110,074.5 | unchanged |
+| `ae091ba50b2174b26` | P110 code reviewer (+resume) | 173 | 27.0 | 242,727 | 0.9677 | 4,137,711.9 | unchanged |
+| `a7a50a660ded0597c` | P111 carve reviewer (+resume) | 162 | 20.9 | 232,667 | 0.9475 | 3,856,345.4 | unchanged |
+| `a5398dae84bd7dbbd` | P111 implementer (opus) | 329 | 46.1 | 477,084 | 0.9928 | 11,812,360.8 | unchanged |
+| `ae3da96851c90d08c` | P111 code reviewer | 157 | 27.3 | 253,066 | 0.9534 | 4,330,300.0 | **CHANGED** (was 155 calls / 252,662 / 4,260,349.0 — the one in-flight agent; +1.6% cost) |
+| `a6b1163277d943422` | P110 repair successor (sonnet) | 166 | 9.7 | 141,108 | 0.9793 | 2,188,199.7 | unchanged |
+| `ab163ba31e6f0b2e6` | P112 carve reviewer | 104 | 19.0 | 191,196 | 0.9401 | 2,405,535.1 | new |
+| `ad419503d91b5fe18` | P112 consumer-sweep agent | 81 | 5.4 | 90,277 | 0.9292 | 920,278.7 | new |
+| `ae5a8000da305395e` | P112 pack assembler | 36 | 5.9 | 105,582 | 0.8792 | 773,973.0 | new |
+
+Only one E-006 row moved (`ae3da96851c90d08c`, the agent that was mid-resume at
+the E-006 snapshot); its single-checkpoint savings shift by <1 point (44.49 /
+46.37 / 35.08 vs 44.80 / 46.41 / 35.59). Every other E-006 number reproduces
+exactly — E-006's conclusions stand on final data.
+
+### Multi-checkpoint headline (brief = 25k)
+
+`1-ckpt best` = optimal single checkpoint (any placement — slightly better than
+E-006's fixed 25/50/75% grid). `best uniform` / `optimal (N≤12)` = the best row
+of each N-sweep. `unrestricted` = DP optimum with N unconstrained.
+
+| transcript | 1-ckpt best | best uniform (N) | optimal N≤12 (N) | unrestricted (N) | unrestricted placements (% of calls) |
+|---|---:|---:|---:|---:|---|
+| `ade3ee` P110 impl | 46.29% | 77.34% (12) | 79.06% (12) | **79.75% (19)** | 0,2,4,8,12,17,23,29,36,42,46,53,59,65,70,76,81,88,94 |
+| `ae091b` P110 code rev | 44.97% | 61.43% (8) | 65.63% (8) | 65.63% (8) | 1,10,17,27,38,50,66,82 |
+| `a7a50a` P111 carve rev | 45.03% | 57.26% (7) | 62.17% (7) | 62.17% (7) | 1,6,24,44,61,78,92 |
+| `a5398d` P111 impl | 46.53% | 72.40% (9) | 74.65% (12) | **74.68% (14)** | 0,4,8,10,18,24,33,44,50,58,65,73,79,89 |
+| `ae3da9` P111 code rev | 51.26% | 64.13% (7) | 69.07% (7) | 69.07% (7) | 1,10,22,35,42,62,83 |
+| `a6b116` P110 repair | 31.89% | 42.24% (6) | 51.38% (5) | 51.38% (5) | 1,10,31,53,79 |
+| `ab163b` P112 carve rev | 42.52% | 50.46% (5) | 57.12% (4) | 57.12% (4) | 1,18,43,68 |
+| `ad4195` P112 sweep | 21.09% | 23.80% (3) | 31.48% (3) | 31.48% (3) | 1,21,59 |
+| `ae5a80` P112 pack | 35.01% | 19.87% (2) | 38.61% (2) | 38.61% (2) | 3,53 |
+
+### Savings as a function of N (optimal-placement savings %, brief = 25k)
+
+Rows are agents, columns are exact checkpoint counts — read across to see the
+marginal value of each extra checkpoint.
+
+| transcript | N=1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `ade3ee` (504 calls) | 46.3 | 60.9 | 68.5 | 71.5 | 73.8 | 75.5 | 76.5 | 77.2 | 77.9 | 78.4 | 78.7 | 79.1 |
+| `ae091b` (173) | 45.0 | 55.6 | 59.4 | 63.0 | 64.5 | 65.4 | 65.6 | **65.6** | 65.4 | 65.0 | 64.6 | 64.1 |
+| `a7a50a` (162) | 45.0 | 52.8 | 57.4 | 59.7 | 61.0 | 61.8 | **62.2** | 62.1 | 61.9 | 61.5 | 61.0 | 60.4 |
+| `a5398d` (329) | 46.5 | 62.2 | 67.4 | 69.9 | 71.8 | 73.0 | 73.5 | 74.0 | 74.2 | 74.4 | 74.6 | 74.7 |
+| `ae3da9` (157) | 51.3 | 59.4 | 64.2 | 66.9 | 68.4 | 69.0 | **69.1** | 68.8 | 68.6 | 68.2 | 67.8 | 67.3 |
+| `a6b116` (166) | 31.9 | 44.4 | 49.5 | 50.6 | **51.4** | 51.2 | 50.6 | 49.7 | 48.7 | 47.6 | 46.5 | 45.4 |
+| `ab163b` (104) | 42.5 | 51.6 | 55.6 | **57.1** | 56.9 | 56.6 | 56.1 | 55.4 | 54.5 | 53.5 | 52.5 | 51.4 |
+| `ad4195` (81) | 21.1 | 28.7 | **31.5** | 31.0 | 29.7 | 27.2 | 24.5 | 21.7 | 18.7 | 15.6 | 12.6 | 9.4 |
+| `ae5a80` (36) | 35.0 | **38.6** | 36.4 | 33.8 | 30.4 | 26.7 | 23.0 | 19.2 | 15.4 | 11.6 | 7.7 | 3.7 |
+
+The corresponding best-uniform savings trail the optimal by 2–6 points for the
+long runs (e.g. `ade3ee` uniform-10 = 76.5 vs optimal-10 = 78.4) but by up to
+20 points on the shortest run (`ae5a80` uniform-1 = 14.6 vs optimal-1 = 35.0 —
+its whole payoff sits in one early checkpoint right after a 47k orientation
+spike that uniform spacing misses).
+
+### Sensitivity: brief cost 50k and 100k (unrestricted optimum)
+
+| transcript | 25k: N / savings | 50k: N / savings | 100k: N / savings |
+|---|---:|---:|---:|
+| `ade3ee` P110 impl | 19 / 79.75% | 13 / 71.48% | 9 / 56.66% |
+| `ae091b` P110 code rev | 8 / 65.63% | 6 / 50.44% | 3 / 27.51% |
+| `a7a50a` P111 carve rev | 7 / 62.17% | 5 / 46.50% | 2 / 25.28% |
+| `a5398d` P111 impl | 14 / 74.68% | 8 / 65.04% | 5 / 49.06% |
+| `ae3da9` P111 code rev | 7 / 69.07% | 5 / 55.79% | 2 / 34.78% |
+| `a6b116` P110 repair | 5 / 51.38% | 3 / 26.32% | 0 / 0% |
+| `ab163b` P112 carve rev | 4 / 57.12% | 4 / 41.22% | 1 / 19.46% |
+| `ad4195` P112 sweep | 3 / 31.48% | 1 / 6.36% | 0 / 0% |
+| `ae5a80` P112 pack | 2 / 38.61% | 1 / 19.67% | 0 / 0% |
+
+### Caveat — these are upper bounds, and the operator's objection is correct
+
+The 25k-brief model prices a checkpoint as exactly one cache_creation write and
+nothing else. A real successor **re-reads the files the brief references**
+(E-006's own reviewer data shows 15–34-file read-sets; the P112 pack-consumer
+data in E-005 shows even a good pack leaves per-file catch-up reads), pays
+**coordination latency** (the controller must notice, spawn, and seed the
+successor), and a mid-run checkpoint can land **mid-reasoning**, destroying
+in-flight chain-of-thought that the brief cannot carry. All three omissions
+scale with N, so large-N savings are systematically overstated: the numbers
+above are an **upper bound**, and the true optimum sits at smaller N than the
+25k row suggests. The 50k/100k rows are a crude proxy for "brief + catch-up"
+total restart cost: moving the effective restart cost from 25k to 100k drops
+the 504-call agent's optimal N from 19 to 9 and zeroes out every run under
+~170 calls. What the model cannot do at all is say **where** a checkpoint is
+*coherent* — the DP places its first checkpoint at 0–4% of the run purely
+because early context is cheap to abandon, which no operational schedule should
+copy. Placing checkpoints at logical work-item boundaries (end of a file's
+edit-cluster, gate-green moments) requires content analysis of the transcript,
+not usage arithmetic — **E-008 candidate**.
+
+### Conclusions
+
+- **The E-006 conclusions survive contact with final data.** Only the one
+  in-flight agent moved (+2 calls, +1.6% cost, savings shifts <1 point); the
+  snapshot-while-running risk was real but immaterial this time.
+- **Diminishing returns arrive fast, and run length sets the optimum.** Every
+  run under ~110 calls peaks at N ≤ 4; the ~160–175-call runs peak at N = 5–8;
+  only the two long opus implementers (329, 504 calls) keep gaining past N = 10.
+  Optimal N tracks call count at roughly **one checkpoint per 25–40 calls** at
+  25k brief, stretching to one per ~55 calls at 100k.
+- **The marginal checkpoint is worth a lot less than the first.** For the
+  504-call implementer: checkpoint 1 buys 46 points, checkpoint 2 buys 15,
+  checkpoint 3 buys 8, checkpoints 5 through 12 together buy 5.3. The N-table's whole
+  right half is flat for every agent.
+- **Optimal placement beats uniform spacing by a consistent 3–6 points** on
+  long runs (uniform is a fine operational default there) but matters
+  enormously on short runs with an early orientation spike — the pack
+  assembler's optimal-1 (35.0%) beats its uniform-1 (14.6%) by 20 points
+  because the single checkpoint must land right after the spike.
+- **Is ~10 checkpoints for the 74-minute, 504-call implementer supported?**
+  Within the upper-bound model, yes and comfortably: optimal-10 captures 78.4
+  of the 79.8 achievable points (98%), and even uniform-10 gets 76.5% — at 25k
+  brief the model is nearly indifferent between 10 and 19. But under the
+  100k-brief sensitivity (the more honest proxy once catch-up reads are
+  priced), the optimum itself falls to N = 9 at 56.7% — so "about 10" is
+  defensible for this one agent *specifically because it is long*; the same
+  prescription applied to a 160-call reviewer would already be past its
+  optimum. Checkpoint budget should scale with expected run length, roughly
+  one per ~30 minutes of opus implementer work, pending the E-008
+  coherent-boundary analysis for where to put them.
