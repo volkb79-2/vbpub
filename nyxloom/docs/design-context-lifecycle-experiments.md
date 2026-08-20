@@ -217,3 +217,27 @@ across the repo (script-able, model-free) and pack the hit sites. A pack without
 dimension reliably produces a carve that deletes half a dual path. Also measured: reviewer
 orientation ≈35 calls despite the pack — consumer-sweep content would have converted most of
 its 32 Bash calls into pack reads.
+
+### E-002 addendum 4 — implementer telemetry (P110, the pending metric)
+
+Source: `dstdns nyxloom-trove/reports/dstdns-P110-REPORT.md` §"E-002 telemetry" (branch
+`p110-config-plane`, opus implementer, 599,953 subagent tokens / 341 tool calls / 74 min).
+
+- **Orientation calls before first edit: 12** (vs 23 for the pre-pack P10x implementer baseline —
+  ~half). Pack itself cost 2 Read calls (25k-tok/call cap, again).
+- **Pack accuracy: 100%** — "nothing it claimed was wrong"; verbatim content replaced **~9 file
+  reads** for the implementer role too (route inventories, deleted route bodies, QueuesSection,
+  two full test files incl. the 526-line `test_reconfig.py` whose coverage O7 had to inherit).
+- **Gap 1 — consumer dimension, confirmed at scale a second time**: all 13 consumer files beyond
+  the enumerated set were found by the implementer's OWN reverse-dependency grep, not the pack.
+  (Same failure axis as the 10/10 carve blockers.) The reverse-dep sweep MUST become part of
+  read-list derivation, not a per-agent rediscovery.
+- **Gap 2 — NEW: slice-vs-edit mismatch.** Route-body slices suffice for files being DELETED or
+  reviewed, but every file being EDITED needed a full read anyway — the dead wiring lives in the
+  module head (docstring, imports, `set_*_dependencies`). Rule: **pack full files for the edit
+  set; slices only for read-only/deletion context.**
+- 10 beyond-pack reads itemized in the REPORT; largest cluster = the MOVE source + loader import
+  graph (the pack had no loader content — a curation miss, not a model limit).
+
+Verdict: pack value now measured positive for BOTH roles (reviewer ~9 reads, implementer ~9 reads
++ call count halved). The two gaps are curation rules, both mechanical/scriptable.
