@@ -23,7 +23,12 @@ rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "run-ciu-tests.py"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = []
+# The suite genuinely reads these from the ambient environment: the four
+# governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist
+# worker spawn + git/ssh detection need PATH, and HOME is required for tests
+# that write ~/.config / ~/.cache. Stripping them (env_passthrough = []) reds
+# the lane; passing them keeps the run hermetic (everything else is dropped).
+env_passthrough = ["CGROUP_PARENT_DEV_BACKGROUND", "HOME", "PATH", "TERM", "LANG"]
 budget = "20m"
 allow_argv_append = false
 
