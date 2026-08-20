@@ -188,3 +188,17 @@ at load, then RE-BILLED (at cache rates) every turn that fork lives.
   compounds over hundreds of turns.
 Record per experiment: pack tokens, forks served, mean turns/fork → cost/fork; refine the
 dial from measurements.
+
+
+**E-002 first live run (2026-08-20, dstdns P110 carve — controller role).**
+Read-list: haiku discovery (60.8k tok, 41 calls — IGNORED the ≤12-call batching instruction:
+prompt-compliance finding; list itself was good, 21 paths + honest §E2 unresolved). Naive
+full-file pack would be 1.06MB ≈ 265k tok → curation applied (full small files + grep/sed
+slices of 4 giants) → pack 107.7KB = **42k real tokens** (ⅷ NB: bytes÷4 UNDERcounts code —
+measured 2.56 B/tok). Load: **2 Read calls** (harness Read caps at 25k tok/call — "single-call
+load" has a ceiling; still 23→2 roundtrips vs baseline). Controller residual after pack: **1
+batched call** (4 facts the pack's slices missed: AuthSection fields, R6 field existence, UI
+page paths, consul_layer surface) → carve D-122 + lint-clean handoff authored with zero
+further reads. Tooling TODO: pack.sh range support (path:start-end) so curated packs are
+list-driven, not hand-built. E-005 delta first live use: carve reviewer receives pack@6e76813b
++ script-built delta (threshold logic already validated on the P109 window).
