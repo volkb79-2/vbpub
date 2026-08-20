@@ -175,3 +175,48 @@ it never weakens project/service/network uniqueness.
 - **Arbitrary service-name target selection** — rejected: a consumer could
   reach a container never intended as an execution boundary. Declared aliases
   with a closed key set are the only surface (D-007).
+
+## Why the implementation gate is Assay-backed (S18)
+
+**Why a vendored zipapp, not an ambient install.** The gate must prove it ran
+against the *released, immutable* Assay contract. Baking Assay into
+`tester-unified` would make a consumer's evidence depend on whichever image
+happened to be rebuilt, and would force a whole image rebuild to move between
+versions. Vendoring the verified `.pyz` + `.sha256` next to `assay.toml` (the
+cmru estate precedent, `cmru/tools/assay/`) makes the pin explicit, hash-verifiable,
+and moveable in one commit. The zipapp is built from the wheel (never
+`src/`), so its version metadata is trustworthy.
+
+**Why R1 with `repository-minus-unsafe-symlinks`.** The gate's second half
+(the old `nyxloom.coverage_gate` changed-line floor) exists so a changed
+executable line can never ship uncovered — and pragma-excluded lines are
+invisible to `--cov-fail-under=100`, so only a *diff-aware* judgment can
+enforce "no pragma on changed code". Assay's R1 reproduces exactly that
+floor and adds a verifiable verdict. R1+ runs in an isolated snapshot of the
+committed tree; this monorepo tracks exactly three absolute-target
+security-fixture symlinks (topos), which the snapshot substrate refuses, so
+the lane declares them via the documented monorepo shape. That carries a
+maintenance obligation on purpose: a *new* unsafe symlink anywhere reds the
+lane until its owner reviews it — nobody's evidence silently widens to cover
+a fixture nobody looked at.
+
+**Why a clean-tree requirement.** The diff `base..HEAD` is committed-to-
+committed. An uncommitted change under a source root would be invisible to
+it, so "0 changed lines" from a dirty tree would certify a measurement that
+never actually saw the change under test. Refusing a dirty tree
+(`NO_MEASUREMENT`/`DIRTY_TREE`) is the only honest reading; it is why the
+pre-existing untracked `_last-summary.txt` is gitignored rather than left to
+poison every gate run.
+
+**Why the cgroup slice comes only from the environment.** A literal slice in
+the gate config is a shadowing default for a fact that has an authoritative
+source (`$CGROUP_PARENT_DEV_BACKGROUND`, injected by the devcontainer).
+Systemd silently auto-creates a typo'd slice as an unlimited transient
+slice, so the gate both refuses an absent variable (`${VAR:?}`) and verifies
+the named unit is `LoadState=loaded` before launching Docker — fail-closed on
+both axes.
+
+**Why the gate's status is the Assay job's.** The Assay lane's exit code IS
+the gate's exit code — no trailing wrapper, pipe, or `|| true` can turn a
+failed job green. The verdict JSON is written outside the snapshot (gitignored
+`.assay/`), so evidence survives without dirtying the judged tree.

@@ -31,3 +31,13 @@ dist/
 
 # setuptools-scm generated version file (written at build time)
 src/ciu/_version.py
+
+# Vendored Assay gate artifact (S18.1) — the released, hash-pinned zipapp is
+# TRACKED, despite the monorepo root's `*.pyz` ignore (mirror of cmru's
+# `!cmru/tools/assay/*.pyz`).
+!tools/assay/*.pyz
+
+# Controller checkpoint summary — a working-tree artifact, never committed.
+# Gitignored (S18.4): the Assay-backed gate refuses a dirty tree, and an
+# untracked non-ignored file here would otherwise red every gate run.
+_last-summary.txt

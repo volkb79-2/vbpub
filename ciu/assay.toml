@@ -1,0 +1,48 @@
+# CIU's implementation gate claim (P07 — Assay-backed qualification).
+#
+# The lane command is deliberately CIU's existing release-gate runner
+# (run-ciu-tests.py): the full suite under pytest-cov with a 100% line AND
+# branch fail-under, emitting coverage.json. R1 makes Assay JUDGE that
+# coverage: the changed-line floor on base..HEAD (the role the retired
+# nyxloom.coverage_gate used to play), the 100% whole-source floor, and a
+# verifiable verdict artifact. tester-unified supplies the environment; the
+# pinned zipapp (tools/assay/assay-2.1.0.pyz, sha256-verified) is the Assay
+# CLI boundary — Assay source is never imported and no nyxloom
+# evidence-judgment command remains in the gate (see nyxloom.toml).
+#
+# snapshot_selection = "repository-minus-unsafe-symlinks": this monorepo
+# tracks exactly three security-fixture symlinks whose targets are absolute
+# (topos), and they are declared verbatim below (CONSUMERS.md "A monorepo
+# lane"). A NEW unsafe symlink anywhere in the repo reds this lane until its
+# owner declares it here or untracks it — fail-closed, by design.
+schema_version = 2
+
+[lanes.ciu]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "run-ciu-tests.py"]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = []
+budget = "20m"
+allow_argv_append = false
+
+[lanes.ciu.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.ciu.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "origin/main"
+
+[lanes.ciu.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"

@@ -64,10 +64,11 @@ Assay-backed qualification and issue closure remain in Package D/P07.
 
 Carved as P07 after P04-P06. User-facing documentation is not deferred here:
 each Package C handoff updates README, DESIGN-GUIDE, and CONSUMERS in the same
-change. P07 verifies them and qualifies the complete milestone.
+change. P07 verifies them and qualifies the complete milestone. **COMPLETE**
+(2026-08-20): CIU-28/CIU-29 closed, Assay-backed gate (S18) shipped.
 
 1. Add CIU's real `assay.toml` lane(s) and a gate launcher pinned to the
-   released Assay 1.0.0 artifact.
+   released Assay 2.1.0 artifact (vendored zipapp + sha256 pin).
 2. Resolve and verify `$CGROUP_PARENT_DEV_BACKGROUND`; refuse to start a test
    container when it is absent or not a loaded slice.
 3. Run focused regression tests throughout, then the complete
@@ -81,6 +82,8 @@ Perform one adversarial review across requirements, code, structured schemas,
 failure/partial states, namespace translations, tests, and documentation. Add
 combined-axis attacks not anticipated by the implementation tests, repair all
 accepted findings, rerun the full gate, and merge the branch to `main` once.
+**Adversarial review performed in P07 (2026-08-20); merge is the controller's
+checkpoint step.**
 
 ## Later
 

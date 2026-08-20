@@ -157,3 +157,38 @@ identity; `recovery-required` — an interrupted allocation with a closed
 `recovery_status`; `removed` — the terminal removal state. Every JSON document
 carries `schema_version: 1` and a closed `operation`. Unknown shapes fail
 fast.
+
+## 10. The implementation gate (Assay-backed, S18)
+
+CIU's gate is judged by the **released Assay CLI**, pinned and vendored in the
+repository — not installed ambiently. You can reproduce the gate's evidence
+locally (the container part still needs the operator's four-traps recipe):
+
+```bash
+# 1. Verify the pinned Assay artifact (fails the gate if it ever drifts)
+sha256sum -c ciu/tools/assay/assay-2.1.0.pyz.sha256
+
+# 2. Inspect the declared lane (validates config, runs nothing)
+cd ciu && .venv/bin/python tools/assay/assay-2.1.0.pyz lanes --file assay.toml
+
+# 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
+#    line+branch, and judges the changed-line floor on base..HEAD (R1).
+#    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
+cd ciu && mkdir -p .assay && \
+  .venv/bin/python tools/assay/assay-2.1.0.pyz run ciu \
+    --file assay.toml --verdict-json .assay/verdict-ciu.json
+```
+
+Contract notes for a consumer of the gate:
+
+- The lane **refuses a dirty tree** (`NO_MEASUREMENT`/`DIRTY_TREE`): commit or
+  stash uncommitted work (the untracked `_last-summary.txt` is gitignored by
+  design — see DESIGN-GUIDE "clean-tree requirement").
+- The coverage artifact and `.coverage` data file are gitignored repo-wide;
+  the verdict is written under gitignored `.assay/`. Nothing else may be left
+  untracked.
+- The gate's exit status is the Assay job's own; a red lane is a red gate.
+- The container slice comes only from `$CGROUP_PARENT_DEV_BACKGROUND`
+  (verified `LoadState=loaded` before `docker run`, fail-closed) — see
+  vbpub AGENTS.md "Manual tester-unified gate runs — the four traps" for a
+  hand-rolled run.

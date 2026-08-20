@@ -587,3 +587,22 @@ CIU_SSH_TRANSPORT=paramiko    # opt into the paramiko transport
 ```
 
 `import ciu` and all non-SSH verbs work with paramiko absent.
+
+## Implementation gate artifacts [S18]
+
+The gate is configured by two artifacts in the repository (not runtime config —
+documented here because a consumer adopts the gate, not the keys):
+
+- **`assay.toml`** — the lane declaration: the full suite under pytest-cov
+  (100% whole-source line+branch) inside Assay's isolated snapshot, plus an
+  R1 judgment of the changed-line floor on `base..HEAD` from the coverage
+  artifact. See [SPEC S18](SPEC.md#s18--implementation-gate-assay-backed).
+- **`tools/assay/assay-<version>.pyz` + `.sha256`** — the hash-pinned, vendored
+  released Assay CLI. The gate verifies the pin (`sha256sum -c`) before every
+  run. Bump both files together (never one alone).
+- **`.assay/verdict-ciu.json`** (gitignored) — the retained Assay verdict from
+  the last gate run, used as review evidence.
+
+The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_BACKGROUND`
+(no literal, no fallback) and verified `LoadState=loaded` before `docker run`
+(S18.3).
