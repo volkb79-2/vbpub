@@ -48,7 +48,9 @@ verification-shaped, favorable first case for a cheap model).
 | delta: floor files judged useless | 0 (12/12 used) |
 | controller lint: omissions found | 4 (see outcome) |
 | controller carve: facts fetched outside brief | ~6 spot-check reads (lint itself; carve then needed 0 extra) |
-| premium residual orientation: tool calls | _(pending — carve reviewer + implementer)_ |
+| premium carve-reviewer (opus): tokens / calls | 168,169 / 47 |
+| premium reviewer reads saved by brief | **0** (role-structural — see below) |
+| premium implementer residual orientation | _(pending)_ |
 
 **Outcome / prompt refinements.**
 Brief was USABLE for the carve after controller lint. Lint findings (each → a template refinement):
@@ -58,3 +60,22 @@ Brief was USABLE for the carve after controller lint. Lint findings (each → a 
 4. **Self-estimated context off by 10×** (self: ~8k; harness: 78,848). → R5: drop self-estimates from delta.md; harness accounting only.
 5. Delta's own top finding was real: the floor's docker-bake.hcl pointer misdirected (pattern is inline per-Dockerfile). → R2: prompt author verifies floor pointers, or phrases them as search instructions with fallback.
 **Economics**: haiku 78.8k @ haiku price + ~10k controller lint reads vs. controller self-orienting (~80k @ premium). Brief (3.2k) now seeds carve + all premium dispatches.
+
+
+**E-001 addendum — premium-side results (carve reviewer, 2026-08-20).**
+The fresh adversarial carve reviewer (opus, seeded with the brief) reported the brief saved
+ZERO reads: every line number was wrong in every checked case, and independent re-verification
+is the role's essence — it must open every cited file regardless. Its value there was "a
+to-read list", and that list omitted every artifact behind the review's 5 blocking findings.
+- **R6 (role-targeting):** orientation-brief reuse value concentrates in CARVER + IMPLEMENTER;
+  do not count reviewer reads as brief failure, and do not expect reviewer savings — seed
+  reviewers with the brief only as a cheap map, price their full re-read in.
+- **Layered-defense datum:** three layers caught DISJOINT defect sets — haiku brief (seam map,
+  found nothing wrong), controller lint (phantom work item, gate-command drift, missed compose
+  template), adversarial carve review (dead-code renderer with an arity TypeError, tracked
+  legacy artifact whose deletion P108 had deferred to this very package, out-of-scope env
+  readers, inert-Dockerfile-edit gate trap). No single layer subsumes another; the brief's
+  errors did NOT propagate into the dispatched carve because the downstream layers re-verify.
+- **B3 lesson (generalized rule, dstdns D-119 #2):** a package whose oracles need a
+  gate-runner dependency gets it PRE-LANDED on main by the controller — a branch-side
+  Dockerfile edit is inert when the gate builds/reuses images from main.
