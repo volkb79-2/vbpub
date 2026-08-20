@@ -506,3 +506,348 @@ not usage arithmetic — **E-008 candidate**.
   optimum. Checkpoint budget should scale with expected run length, roughly
   one per ~30 minutes of opus implementer work, pending the E-008
   coherent-boundary analysis for where to put them.
+
+## E-008 — coherent checkpoint boundaries + the first-checkpoint threshold (11 transcripts, measured 2026-08-20)
+
+E-007 ended on an explicit open question: its DP places the first checkpoint at
+0–4% of the run *purely because early context is cheap to abandon*, and the
+usage arithmetic "cannot say at all **where** a checkpoint is coherent". E-008
+answers that from transcript CONTENT, and settles the operator's separate
+objection that dstdns `CLAUDE.md`'s **~300k** checkpoint threshold "is probably
+too high".
+
+**Tool.** `jsonl-metrics.py` gained three subcommands (dstdns
+`nyxloom-trove/orientation/jsonl-metrics.py`):
+`boundaries` (content-detected candidate checkpoint points), `simulate-boundary`
+(the E-007 DP **constrained to those boundaries**, next to the unconstrained
+optimum and the uniform schedule, plus rule probes), and `threshold` (where the
+FIRST checkpoint belongs, in context size and in calls, with median/IQR across
+the given transcripts). The five existing subcommands are byte-identical in
+behaviour: `curve` on `ade3ee8341f502776` was diffed before and after the change
+(identical), and `simulate-multi` on `ae5a8000da305395e` still reproduces
+E-007's 35.01 / 38.61 / N=2 / placements [3,53].
+
+**Method note.** Frozen snapshot at **2026-08-20T23:06:14Z**, taken before any
+measurement: the nine E-007 JSONLs (copied from the E-007 snapshot, so every
+E-006/E-007 row still reproduces exactly) plus two newer finished agents. Two
+further agents were rejected on the stated ≥100-call / mtime-stability rule:
+`afb3278ab0ac806c1` (P113 implementer) was **still being appended to** at
+snapshot time (its size grew between two `stat` calls), and two other subagents
+in the same session were in-flight.
+
+```bash
+SNAP=<scratch>/e008-snapshot; mkdir -p $SNAP
+cp <e007-snapshot>/agent-*.jsonl $SNAP/                       # the nine E-007 transcripts
+cp ~/.claude/projects/-workspaces-dstdns/<sess>/subagents/agent-a48350cc76449f600.jsonl \
+   ~/.claude/projects/-workspaces-dstdns/<sess>/subagents/agent-a7ee445e6570bf3a8.jsonl $SNAP/
+date -u +%Y-%m-%dT%H:%M:%SZ > $SNAP/SNAPSHOT-TS
+```
+
+The two new transcripts, by `curve`:
+
+| transcript | role | calls | wall min | final context | cache-hit ratio | normalized cost |
+|---|---|---:|---:|---:|---:|---:|
+| `a48350cc76449f600` | P113 carve reviewer (opus) | 146 | 18.8 | 217,237 | 0.9516 | 3,269,858.5 |
+| `a7ee445e6570bf3a8` | P113 pack assembler (sonnet) | 135 | 9.2 | 139,546 | 0.9772 | 1,740,553.5 |
+
+### Detection rules (what "coherent" is operationalized as)
+
+`python3 jsonl-metrics.py boundaries $SNAP/agent-*.jsonl` — six kinds, by call index:
+
+| kind | rule |
+|---|---|
+| `gate_green` / `gate_red` / `gate_unknown` | a Bash call that RUNS `testing-exec.sh`, `schema-gate.sh` or `pytest`, with the verdict read off its own `tool_result` |
+| `commit` | a Bash `git commit` |
+| `edit_cluster_end` | the last edit of a maximal run of edit ops on one file, ended by an edit op on a different file |
+| `log_report_write` | an edit whose target matches `*LOG.md` / `*REPORT.md` |
+
+Three heuristics had to be repaired before the numbers meant anything, and each
+repair is itself a finding:
+
+1. **Edits mostly do not go through the Edit/Write tools.** The P110
+   implementer made 333 Bash calls and 5 Write calls; the P113 carve reviewer
+   made 89 Bash calls and zero. Detection therefore covers **Bash-mediated
+   writes** (heredoc redirect, `sed -i`, `tee`, `cp`/`mv` destination, a python
+   heredoc calling `write_text`/`open(...,"w")`). Adding them took the P110
+   implementer from 5 detected edit clusters to 91.
+2. **Heredoc bodies must be stripped before matching.** A `python3 - <<'PY'`
+   writing a comment that *mentions* pytest into a test file is not a gate run;
+   2 of the P110 implementer's 18 apparent pytest runs were text, not execution.
+3. **Command splitting must be quote-aware.** Splitting the raw string on `|`
+   cuts through a quoted grep alternation (`"^def \|^@pytest\|..."`), orphaning
+   a fragment whose first token then looks like a program name — which is how a
+   plain grep was counted as a gate run. `simulate-boundary`/`boundaries` use a
+   shlex-based splitter; `readset`/`overlap` keep the old regex split verbatim
+   so E-006's tables stay reproducible.
+
+Gate verdicts also had to fall back to pytest's own failure markers (`^E   `,
+`^FAILED `, `_____ test_x _____`, `Traceback`): 4 of the P110 implementer's
+pytest results reached the transcript as filtered excerpts with **no summary
+line at all**.
+
+### Task A — boundaries per transcript
+
+`gG/gR/gU` = gate green / red / unknown; `edit` = `edit_cluster_end`; `lr` =
+`log_report_write`. "first strong" = first `gate_green` or `commit`.
+
+| transcript | role | calls | total | gG | gR | gU | commit | edit | lr | first strong (call, %run, ctx) | first of any kind |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| `ade3ee` | P110 impl (opus) | 504 | 143 | 11 | 18 | 8 | 10 | 91 | 5 | c118, 23.4%, 243,426 | c85, 16.9%, 218,253 |
+| `a5398d` | P111 impl (opus) | 329 | 76 | 4 | 5 | 7 | 4 | 54 | 2 | c116, 35.3%, 264,857 | c38, 11.6%, 199,892 |
+| `ae091b` | P110 code rev | 173 | 30 | 0 | 0 | 14 | 0 | 16 | 0 | — | c5, 2.9%, 52,033 |
+| `a6b116` | P110 repair (sonnet) | 166 | 28 | 0 | 0 | 6 | 1 | 18 | 3 | c164, 98.8%, 140,730 | c30, 18.1%, 69,231 |
+| `a7a50a` | P111 carve rev | 162 | 2 | 0 | 0 | 0 | 0 | 2 | 0 | — | c88, 54.3%, 137,405 |
+| `ae3da9` | P111 code rev | 157 | 29 | 1 | 2 | 11 | 0 | 15 | 0 | c85, 54.1%, 180,163 | c7, 4.5%, 58,330 |
+| `a48350` | P113 carve rev | 146 | 10 | 0 | 0 | 8 | 0 | 2 | 0 | — | c5, 3.4%, 53,795 |
+| `a7ee44` | P113 pack asm | 135 | 8 | 0 | 0 | 1 | 0 | 7 | 0 | — | c84, 62.2%, 97,896 |
+| `ab163b` | P112 carve rev | 104 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | — | c37, 35.6%, 108,236 |
+| `ad4195` | P112 sweep | 81 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | — | — |
+| `ae5a80` | P112 pack asm | 36 | 2 | 0 | 0 | 1 | 0 | 1 | 0 | — | c17, 47.2%, 66,978 |
+
+Three structural facts fall straight out:
+
+- **Only 4 of 11 runs contain a single `gate_green` or `commit`** — and one of
+  those (`a6b116`) has it at 98.8% of the run. Reviewers never commit, and they
+  fire the gate with `run_in_background`, so the launch call carries the result
+  "Command running in background" and the verdict arrives out of band: 14 of
+  `ae091b`'s 14 gate boundaries and 8 of `a48350`'s 8 are `gate_unknown`. **A
+  checkpoint rule keyed to "gate-green or commit" would never fire for a
+  reviewer.**
+- **Boundary density tracks role, not length.** The two opus implementers carry
+  76–143 boundaries (one every 3–4 calls); reviewers carry 1–30; the pure
+  read-and-tabulate sweep agent (`ad4195`, 81 calls) has **zero** — it never
+  writes a file, runs a gate, or commits, so it offers no content-derived
+  checkpoint at all.
+- **The first coherent boundary is late in context terms.** For the two opus
+  implementers it lands at 199,892 (c38) and 218,253 (c85) carried tokens — the
+  opening 12–17% of an implementer run is orientation and reading, with nothing
+  coherent to cut on. Their first *strong* boundary (gate-green or commit) is
+  later still: 243k (c118) and 265k (c116).
+
+### Task B — the DP constrained to detected boundaries
+
+`python3 jsonl-metrics.py simulate-boundary $SNAP/agent-*.jsonl --brief-tokens 25000 --max-n 10`
+(all six kinds allowed as placements). "bounded" = DP restricted to boundaries,
+"optimal" = E-007's unconstrained DP, "uniform" = E-007's equal-spacing
+schedule; gap = optimal − bounded, in savings points.
+
+| transcript | placements avail. | N=1 bounded / opt / unif | N=3 bounded / opt / unif | N=5 bounded / opt / unif | N=10 bounded / opt / unif |
+|---|---:|---|---|---|---|
+| `ade3ee` | 118 | 46.07 / 46.29 / 44.25 | 67.77 / 68.53 / 64.38 | 71.72 / 73.82 / 71.15 | 74.41 / 78.37 / 76.52 |
+| `a5398d` | 63 | 45.78 / 46.53 / 41.85 | 66.73 / 67.41 / 62.18 | 70.72 / 71.82 / 67.54 | 71.80 / 74.43 / 72.26 |
+| `ae091b` | 18 | 44.40 / 44.97 / 42.89 | 58.54 / 59.41 / 56.84 | 61.92 / 64.53 / 61.29 | 60.93 / 64.99 / 60.77 |
+| `a6b116` | 20 | 31.36 / 31.89 / 28.72 | 41.76 / 49.45 / 39.91 | 42.14 / 51.38 / 42.18 | 36.44 / 47.62 / 39.84 |
+| `a7a50a` | 2 | 41.23 / 45.03 / 42.40 | n/a / 57.44 / 53.47 | n/a / 60.99 / 55.82 | n/a / 61.52 / 56.90 |
+| `ae3da9` | 17 | 50.18 / 51.26 / 46.37 | 61.13 / 64.19 / 58.37 | 63.91 / 68.40 / 62.73 | 61.74 / 68.23 / 63.39 |
+| `a48350` | 8 | 39.66 / 40.90 / 38.63 | 53.01 / 56.91 / 50.86 | 52.81 / 60.21 / 53.65 | n/a / 59.34 / 53.88 |
+| `a7ee44` | 8 | 21.77 / 28.47 / 25.10 | 21.67 / 41.78 / 34.88 | 18.79 / 42.65 / 35.90 | n/a / 37.32 / 32.04 |
+| `ab163b` | 1 | 41.34 / 42.52 / 39.09 | n/a / 55.64 / 48.67 | n/a / 56.90 / 50.46 | n/a / 53.53 / 48.61 |
+| `ad4195` | 0 | n/a / 21.09 / 20.81 | n/a / 31.48 / 23.80 | n/a / 29.65 / 22.49 | n/a / 15.63 / 11.26 |
+| `ae5a80` | 2 | 14.60 / 35.01 / 14.60 | n/a / 36.36 / 19.10 | n/a / 30.35 / 14.57 | n/a / 11.59 / −2.21 |
+
+**Coherence is nearly free where boundaries exist.** For the four
+boundary-rich runs with well-spread boundaries (`ade3ee`, `a5398d`, `ae091b`,
+`ae3da9`) the N=1 gap is **0.22–1.08 points** and the N=3 gap is
+**0.68–3.06**; the boundary-constrained schedule also **beats uniform spacing**
+at N=1, 3 and 5 on all four (by N=10 uniform overtakes it on three of them —
+the boundary set runs out of well-spaced options). The gap becomes material
+only where the transcript offers almost nothing to cut on (`ae5a80`: 20.4
+points at N=1; `a7ee44`: 20.1 at N=3) or where boundaries exist but bunch
+badly (`a6b116`: 20 placements, yet 7.7 points at N=3 and 11.2 at N=10).
+
+**The gap shrinks further at a realistic restart cost.** Same command with
+`--brief-tokens 100000` (E-007's honest proxy for brief + catch-up reads): the
+N=1 gap is 0.02 (`a5398d`), 0.05 (`ade3ee`), 0.20 (`ae3da9`), 0.27 (`ae091b`),
+0.44 (`a7a50a`); at N=3, 0.30 / 0.30 / 1.60 / 1.14 / n/a. A more expensive
+checkpoint wants fewer and later ones — exactly the placements boundaries can
+supply.
+
+**Restricting to "strong" boundaries only is expensive.** Same command with
+`--kinds gate_green,commit,log_report_write`: 7 of 11 transcripts lose every
+placement (6 of them had placements under the all-kinds rule), and where
+placements survive the cost is real (`a5398d` N=3: 56.36
+vs 66.73 all-kinds vs 67.41 unconstrained; `a6b116` N=3: 24.67 vs 41.76).
+**Edit-cluster ends are the load-bearing boundary kind**, not gates and commits.
+
+#### The "first gate-green/commit after X% of run" rule
+
+Printed by the same command (rows: chosen call, kind, context, and its
+single-checkpoint savings at 25k brief). It resolves on only 3 of 11:
+
+| transcript | X=25% | X=33% | X=50% |
+|---|---|---|---|
+| `ade3ee` | c137, 27.2%, 261,557 → **41.68%** | c208, 41.3%, 342,920 → 44.86% | c252, 50.0%, 393,978 → 44.16% |
+| `a5398d` | c116, 35.3%, 264,857 → **43.73%** | c116, 35.3%, 264,857 → 43.73% | c191, 58.1%, 353,260 → 38.34% |
+| `ae3da9` | c85, 54.1%, 180,163 → **44.10%** | c85, 54.1%, 180,163 → 44.10% | c85, 54.1%, 180,163 → 44.10% |
+| `a6b116` | c164, 98.8%, 140,730 → **−0.90%** | same | same |
+| other 7 | no such boundary | — | — |
+
+Where it resolves on a real work boundary it is good (41.7–44.1%, i.e. 86–94%
+of that agent's unconstrained 1-checkpoint optimum). Where the only commit is
+the final one it is **worse than not checkpointing** (`a6b116`, −0.90%). And it
+is silent on 7 of 11 runs. **A percent-of-run rule is unusable as stated** —
+the agent does not know its own run length in advance, and the strong-boundary
+kinds it keys on do not exist for reviewers.
+
+### Task C — where does the FIRST checkpoint belong?
+
+`python3 jsonl-metrics.py threshold $SNAP/agent-*.jsonl --briefs 25000,50000,100000 --max-n 10`
+
+Three independent estimators per transcript:
+
+- **marginal** — the first call whose per-call *carrying* cost
+  (`cache_read × 0.1`) exceeds what the same call would cost after a restart:
+  post-restart carrying (`brief × 0.1`) plus the one-time brief write amortized
+  over the remaining calls (`brief × 1.25 / remaining`).
+- **DP-first** — the first placement of E-007's unrestricted optimum.
+- **bounded-first** — the first placement of the boundary-constrained optimum
+  at that agent's best N.
+
+Medians and IQRs across all 11 (context in tokens; `n` excludes runs where the
+estimator never fires):
+
+| brief | marginal ctx (calls) | DP-first ctx (calls) | bounded-first ctx (calls) |
+|---|---|---|---|
+| 25k | n=11, **49,704** (IQR 45.5k–52.5k), call 3 | n=11, 42,433 (IQR 41.3k–42.6k), call 1 | n=10, 83,564 (IQR 60.5k–130.1k), call 34 |
+| 50k | n=9, 60,464 (IQR 58.3k–64.0k), call 9 | n=11, 42,687 (IQR 42.5k–54.3k), call 1 | n=10, 101,228 (IQR 67.5k–130.1k), call 34 |
+| 100k | n=7, **116,028** (IQR 112.7k–118.4k), call 40 | n=7, 150,458 (IQR 134.4k–156.2k), call 55 | n=10, 130,324 (IQR 114.0k–161.4k), call 68 |
+
+The 25k and 50k rows carry E-007's known model artifact (a checkpoint priced as
+one cache_creation write and nothing else makes restarting at call 1 look
+optimal). **The 100k row is the honest one**, and all three estimators agree
+within a factor of 1.3: the right first checkpoint is at **~115k–150k of
+carried context, around call 40–70**.
+
+By role (`threshold` run over each group; 100k brief):
+
+| group | transcripts | marginal ctx (calls) | DP-first ctx (calls) | bounded-first ctx (calls) |
+|---|---|---|---|---|
+| implementers | `ade3ee`, `a5398d`, `a6b116` | 110,270 (call 20) | 172,848 (call 34) | 199,892 (call 86) |
+| reviewers | `ae091b`, `a7a50a`, `ae3da9`, `ab163b`, `a48350` | 116,452 (call 49) | 134,458 (call 61) | 137,405 (call 68) |
+| support (sweep/pack) | `ad4195`, `ae5a80`, `a7ee44` | — (never fires) | — | 90,262 (call 64) |
+
+By run length (100k brief): long (≥300 calls) marginal 110,270 / call 20,
+bounded-first 209,072 / call 62; mid (135–175) marginal 114,997 / call 51,
+bounded-first 130,324 / call 78; short (≤104) — only `ab163b` fires at all
+(123,955 / call 49), the other two never justify a checkpoint.
+
+**Implementers cross the marginal threshold at half the call count reviewers
+do — call 14–25 vs call 36–65, at the same ~110–116k of context** — because
+their context grows about twice as fast per call. But their first *coherent*
+boundary at that size is much later (call 38 and 85; 200k and 218k), since an
+implementer's opening 12–17% is undivided orientation with nothing to cut on.
+That gap between "when it starts paying" and "when it is safe to cut" is the
+entire practical content of this experiment.
+
+#### Testing the operator's objection directly
+
+`python3 jsonl-metrics.py simulate-boundary $SNAP/agent-*.jsonl --brief-tokens 25000 --max-n 1 --ctx-rules 120000,200000,300000`
+— "first coherent boundary at or above C carried tokens", with the resulting
+single-checkpoint savings, next to that transcript's boundary-constrained
+1-checkpoint optimum (`bnd N=1`):
+
+| transcript | bnd N=1 | C=120k rule | C=200k rule | C=300k rule |
+|---|---:|---|---|---|
+| `ade3ee` | 46.07 | c85, 16.9% → 39.09 | c85 → 39.09 | c180, 35.7% → 44.55 |
+| `a5398d` | 45.78 | c38, 11.6% → 44.04 | c83, 25.2% → 45.78 | c148, 45.0% → 43.69 |
+| `ae3da9` | 50.18 | c60, 38.2% → **50.18** | c125, 79.6% → 14.40 | never reached |
+| `ae091b` | 44.40 | c66, 38.2% → 44.34 | c121, 69.9% → 34.12 | never reached |
+| `a7a50a` | 41.23 | c88, 54.3% → **41.23** | c156, 96.3% → 1.98 | never reached |
+| `a48350` | 39.66 | c66, 45.2% → 39.25 | c137, 93.8% → 3.92 | never reached |
+| `a6b116` | 31.36 | c141, 84.9% → 10.69 | never reached | never reached |
+| `a7ee44` | 21.77 | c121, 89.6% → 6.63 | never reached | never reached |
+| `ab163b` | 41.34 | never reached | never reached | never reached |
+| `ad4195` / `ae5a80` | n/a / 14.60 | never reached | never reached | never reached |
+
+**The operator is right, and by a wide margin. 9 of the 11 measured agents
+never reach 300k carried context at all** — only the two opus implementers do,
+at 36–45% of their runs. The current `CLAUDE.md` threshold therefore fires
+**zero times** on 9 of 11 real agents, including every reviewer, while those
+reviewers were leaving 39–50 points of restart savings on the table.
+
+A **120k** trigger, by contrast, recovers the boundary-constrained
+single-checkpoint optimum essentially exactly on `ae3da9` (50.18 vs 50.18) and
+`a7a50a` (41.23 vs 41.23), within 0.5 points on `ae091b` and `a48350`, within
+1.7 on `a5398d`, and at 85% on `ade3ee`; it correctly declines to fire on the
+three runs too short to benefit. Its two weak results (`a6b116` 10.69,
+`a7ee44` 6.63) are both cases where the *only* boundary above 120k is at 85–90%
+of the run — late, but still positive, unlike the −0.90% the percent-of-run
+rule produces on `a6b116`.
+
+### Recommended threshold rule
+
+> **Arm the checkpoint at ~120k carried context, or after ~60 tool calls,
+> whichever comes first; then checkpoint at the NEXT coherent boundary after
+> the trigger. Repeat roughly every ~40–55 calls (≈50–70k of context growth),
+> always at a coherent boundary, and stop once fewer than ~40 calls of work
+> remain.**
+
+- **~120k, not ~300k.** Median honest first-checkpoint context is 116k
+  (marginal), 130k (boundary-constrained), 150k (DP), IQRs 113k–161k. 300k is
+  above the *final* context of 9 of 11 measured agents.
+- **Arm-then-cut, because the two events are not the same call.** Context
+  crosses ~120k at call 14–25 for implementers and 36–65 for reviewers, but
+  the first coherent boundary at or above that size lands at call 38–85
+  (implementers) and 60–88 (reviewers). The trigger says *start looking*; the
+  boundary says *cut here*. The ~60-call clause is a safety net for an agent
+  whose context grows slowly while it accumulates many cheap calls — in this
+  set it changes nothing, because the nearest boundary after call 60 is the
+  same one the 120k trigger selects.
+- **"Coherent boundary" means, in priority order:** a green gate; a commit; a
+  LOG/REPORT write; the end of an edit cluster (last edit on a file before
+  moving to a different one). **Never on a red gate** — the failure diagnosis
+  in flight is exactly what a brief cannot carry. If none of these is available
+  (`ad4195`-shaped read-and-tabulate agents), do not checkpoint: those runs
+  have no coherent cut and their savings are the smallest in the set anyway.
+- **Cadence.** E-007's per-N tables put the optimum near one checkpoint per
+  25–40 calls at 25k brief and one per ~55 at 100k; the boundary-constrained
+  optimum for the 504-call implementer places its 10 checkpoints ~40–55 calls
+  apart. Under 110 calls, one checkpoint (or none) is the whole optimum.
+- **Expect the first checkpoint to be the one that matters.** E-007: checkpoint
+  1 buys 46 points on the 504-call implementer, checkpoint 2 buys 15,
+  checkpoints 5–12 together buy 5.3.
+
+### Caveats
+
+The three E-007 caveats stand unchanged and still make every savings figure an
+**upper bound**: the model prices a checkpoint as one cache_creation write, so
+it omits (a) the successor's **catch-up reads** of the files the brief
+references, (b) **coordination latency** for noticing, spawning and seeding a
+successor, and (c) the risk of landing **mid-reasoning**. E-008 adds four of
+its own:
+
+1. **"Coherent" here is weaker than it sounds.** An `edit_cluster_end` proves
+   only that the agent is not mid-file — not that it is not mid-diagnosis.
+   Since edit-cluster ends are the load-bearing kind (dropping them costs
+   10 points at N=3), the boundary set's *quality* is doing less work than its
+   *availability*.
+2. **Verdict detection is partial.** Reviewers run gates in the background, so
+   the launch call has no verdict and lands in `gate_unknown` (14/14 for
+   `ae091b`); the real verdict arrives in a later notification this tool does
+   not correlate. `gate_green` counts are therefore floors, not totals.
+3. **The constrained DP inherits the E-007 replay model.** It re-prices the
+   remaining calls with the same per-call context deltas the real run had —
+   i.e. it assumes the successor does the same work at the same rate, which is
+   exactly what catch-up reads violate.
+4. **n=11, one project, one week.** All transcripts come from dstdns P110–P113
+   under the same pipeline (carve → pack → implement → review), so role
+   behaviour is this pipeline's, not a general property of agents. The
+   support-agent group (n=3) is too small to carry its own rule.
+
+### What changes in `CLAUDE.md` (for the controller to apply)
+
+dstdns `CLAUDE.md` § "Long-running agent context discipline" currently states a
+single **~300k** subagent checkpoint threshold and the same figure for the
+interactive session. Measured, that threshold never fires for 9 of 11 real
+agents. The section should be restated around the rule above: **first
+checkpoint at the first coherent boundary at or after ~120k carried context (or
+~60 tool calls, whichever comes first), then every ~40–55 calls, never on a red
+gate, and none with fewer than ~40 calls of work left** — with the note that
+implementers hit 120k around call 20–38 and reviewers around call 60–88, and
+that a run offering no coherent boundary at all (pure read-and-tabulate sweeps)
+should not be checkpointed. The dispatch-prompt checkpoint clause in the
+`dispatch` skill carries the same number and must move with it. The
+"respawn beats resume past ~300k" guidance is a *separate* decision (resume vs
+fresh successor) and is not what this experiment measured — it should be
+restated in terms of remaining-work size, not re-anchored to 120k without its
+own measurement.
