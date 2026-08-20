@@ -1,4 +1,13 @@
-# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 5)
+# ciu implementation brief — worktree-automation + config-wave — 2026-08-19 (rev 6 — LANE COMPLETE)
+
+**Rev 6 (2026-08-20): ALL EIGHT PACKAGES SHIPPED.** Checkpoint P07 merged
+`ac964b60` → **v6.2.0**; checkpoint C (P10+P11) merged `90b4f066` after a
+4-blocking-finding review+fix round → **v6.3.0** (ship gate: Assay PASS R0+R1
+from a clean worktree at the merged tip; assay B008 filed on merge-tip R1 base
+resolution). Backlog rows CIU-28/29/34/35 all FIXED. Review records:
+`nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md` (all four
+checkpoints). Follow-up: **CIU-40** (root `run-gate.sh` + de-vendor the assay
+pyz, estate decision dstdns D-110). This brief is now historical.
 
 **Where you are:** the worktree `/workspaces/vbpub/.worktrees/ciu-worktree-automation-backlog`,
 branch `docs/ciu-worktree-automation-backlog`, base `3639b18c` (= the branch's worktree-identity
