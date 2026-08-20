@@ -78,6 +78,21 @@ file:line anchors, decisions in force); snapshot 0 is a fresh session seeded
 with that brief (+ ack turn), frozen. Every later fork then re-reads 20-30k,
 not 150k — and the brief doubles as a reviewable, versionable artifact on disk.
 
+**Tiered orientation** (operator refinement 2026-08-20, same day): the orientation
+session itself runs on a CHEAP model (haiku/sonnet) — it gets a refined
+orientation prompt (must-read doc list as the floor, freedom to explore beyond
+it, plus what the upcoming task IS so relevance is judged against real work) and
+authors the brief. Premium models (opus/fable) then never spend a single
+tool-call turn on orientation. Caveat, load-bearing: **the prompt cache is
+model-specific** — a snapshot minted by haiku yields zero cache reuse for an
+opus fork. Correct shape: the cheap model's deliverable is the brief FILE;
+snapshot-0 is minted per target tier (one ack turn over the 20-30k brief at that
+tier's price), and forks within a tier are pure reuse. The residual premium cost
+of orientation is therefore one 20-30k input creation — never the ~150k of
+exploration. Risk: a cheap model may miss a load-bearing subtlety; the must-read
+floor + task-aware prompt + a controller lint pass over the brief are the
+mitigations, and V2c measures whether they suffice.
+
 **Loop:** maintain a frozen **snapshot** session (snapshot 0 as above). Each iteration: controller forks the snapshot → agent
 works → at iteration end (or threshold) the agent **self-compacts its own
 iteration**: writes an iteration-summary (what changed since the snapshot, what
@@ -140,6 +155,7 @@ can use (a) once to survive it, then return to the chain at the next boundary.
 | V1 | (a) full cycle on a real worker: threshold → checkpoint → controller compacts with the agent's own prompt → resume → next work item | post-resume work correctly uses pre-compact facts (seams, decisions); no re-derivation turns; usage shows small context |
 | V2 | (a) designed-vs-auto A/B: same transcript, default auto-compact vs agent-authored prompt | blind grading of the two summaries against a checklist of the facts the NEXT item actually needed |
 | V2b | (b) distilled-brief quality: orientation session → brief → fresh seeded snapshot; a probe task run from the snapshot vs from the raw orientation session | equal task performance at ~5-7× less re-read cost; brief omissions surface as measurable re-reads |
+| V2c | tiered orientation: haiku/sonnet-authored brief vs premium-authored brief, same task, premium worker | equal worker performance; brief-lint catches the cheap model's omissions; premium orientation cost collapses to one 20-30k creation |
 | V3 | (b) 3-iteration chain on a real task | per-iteration cache_creation ≈ summary size (warm) or ≈ snapshot size (cold), never ≈ transcript; final work product correct |
 | V4 | (b) parallel forks: implementer + reviewer from the same mid-chain snapshot | both pure-reuse (within TTL); reviewer independence preserved (no leaked implementer conclusions in the snapshot) |
 | V5 | (b) anticipation failure injection: summary deliberately omits a fact the next iteration needs | agent recovers via durable files at bounded cost (re-read, not restart); measures the mitigation |
