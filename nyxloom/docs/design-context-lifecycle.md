@@ -78,6 +78,14 @@ file:line anchors, decisions in force); snapshot 0 is a fresh session seeded
 with that brief (+ ack turn), frozen. Every later fork then re-reads 20-30k,
 not 150k — and the brief doubles as a reviewable, versionable artifact on disk.
 
+> **MEASURED CAVEAT (E-001, 2026-08-20 — see the experiments log):** the first live run
+> measured **~zero premium reads saved** at the brief quality haiku produced unrefined
+> (implementer re-read 24 files; reviewer saved 0 by role). The "premium never pays
+> orientation tool-turns" claim below is therefore UNPROVEN as stated — pending E-002
+> (R1–R5-refined prompt), treat the validated win as: cheap discovery sweep + verified
+> to-read list + open-questions surfacing at cheap-model prices, contained by the
+> layered pipeline.
+
 **Tiered orientation** (operator refinement 2026-08-20, same day): the orientation
 session itself runs on a CHEAP model (haiku/sonnet) — it gets a refined
 orientation prompt (must-read doc list as the floor, freedom to explore beyond
