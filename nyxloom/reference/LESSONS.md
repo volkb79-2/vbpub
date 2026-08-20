@@ -911,7 +911,7 @@ when files + brief suffice, unsafe when a later unit needs an unbriefed detail �
 the brief must always name WHERE the full transcript lives: lossy by default, never
 destructive.
 
-## L24 — Same-orientation fan-out via `--fork-session` from a fact-only frozen orientation: cheap in CONTEXT (no re-orientation), opportunistic in CACHE — hold the system prompt + toolset stable, but budget a fork at ~1.25× the orientation size (measured at scale)
+## L24 — Same-orientation fan-out via `--fork-session` from a fact-only frozen orientation: cheap in CONTEXT (no re-orientation) AND in CACHE — with `--exclude-dynamic-system-prompt-sections` + same model + same effort + stable toolset, a fork is PURE cache reuse (~0 creation, measured; re-validated 2026-08-20: cache_read 24,918 / creation 100). The earlier "opportunistic / budget ~1.25×" headline was a confounded measurement (flag missing, toolset changed) — see the body, which always said so
 
 **This refines L22.** L22 measured two *different* agents with ~0.5% incidental
 context overlap and concluded prefix-sharing barely pays. That holds for *unrelated*
