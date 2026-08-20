@@ -104,6 +104,69 @@ multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires s
 
 ## Known Issues
 
+### FEAT-03 — `cmru versions`: central multi-language version determination with a supply-chain age window — *decided, ready to carve*
+**Status:** contract DECIDED (operator interview 2026-08-20, dstdns session, final round;
+supersedes the same-day *proposed* draft). Not yet implemented.
+**Why:** centrally-determined dependency versions across the estate that (a) defend against
+freshly-published malware releases via a configurable AGE WINDOW ("latest release at least
+N days old", default 14 — defends the fast-detected npm/PyPI/AUR species, NOT long-dwell
+compromises; the reviewed refresh diff is the layer for those); (b) track upstream via
+deliberate refreshes; (c) cover ALL projects including non-ciu ones; (d) allow exact-version
+overrides (both directions: hold back, or adopt an urgent fix newer than the window);
+(e) keep ciu and cmru independent — consumption is via each language's NATIVE artifact, no
+tool-to-tool dependency.
+
+**Config schema — `cmru.orchestration.toml` is the single home** for policy, dev decisions
+(pins/holds with mandatory reason strings), and the LAST RESOLVED STATE (written back by
+refresh, so the central file is self-documenting):
+```toml
+[versions]
+age_window_days = 14              # global default; per-language override allowed
+
+[versions.python]
+# floors and dev decisions; every pin/hold carries a reason
+floors = { fastapi = ">=0.141.0" }          # reason strings alongside, schema TBD at carve
+pins   = { somelib = { version = "==1.2.3", reason = "1.3 breaks X; revisit" } }
+
+[versions.python.resolved]        # WRITTEN BY `cmru versions refresh` — do not hand-edit
+_date = "2026-08-20"
+fastapi = "0.141.1"
+# ...
+
+[versions.npm]    # same shape
+[versions.go]     # same shape
+```
+**Per-project overrides live in the project's own `cmru.toml`** (`[versions.<lang>.pins]`),
+winning over the central decision for that project only.
+
+**Resolution engines (all three languages in the first cut):** python = `uv pip compile
+--exclude-newer <now - window>` (the window is a native uv flag); npm = registry metadata
+with the same window logic; go = module-proxy metadata ditto.
+
+**Replication:** refresh renders the resolved state into each project in that language's
+native form (python: committed `constraints.txt` consumed via `PIP_CONSTRAINT`/`-c` — ciu
+build environments need only that env var, zero cmru knowledge; npm/go: the native
+mechanism, exact form decided at carve). Builds are reproducible between refreshes — the
+DECISION has a commit hash; only the APPLICATION happens at build time.
+
+**Commands:**
+- `cmru versions refresh [--language L] [--project P]` — resolve per policy, honor
+  pins/holds, write resolved state back to `cmru.orchestration.toml`, replicate into
+  projects; the diff is the review surface.
+- `cmru versions check` — read-only report, three columns per dependency: currently USED
+  (from the projects' committed artifacts), PLANNED/available (a fresh resolution preview,
+  nothing written), HELD/pinned (with reasons).
+- Build/release integration: an EXPLICIT flag only (e.g. `cmru release --refresh-versions`)
+  runs a refresh as part of that invocation; the default never resolves implicitly.
+
+**Non-goals (operator-decided):** no release-gate coupling, no staleness bound, no
+scheduled/automatic refresh.
+**Provenance:** dstdns session 2026-08-20; trigger was assay B010 / stale cockpit FastAPI
+vs dstdns root `requirements.txt` floors (`fastapi>=0.141.0`, P105 F4).
+
+
+## Known Issues
+
 ### FEAT-03 — Central Python version determination: dated constraints artifact with a supply-chain age window — *proposed*
 **Status:** proposed (operator design discussion 2026-08-20, dstdns session; detailed design
 below is a starting point, not a decided contract).
