@@ -78,6 +78,10 @@ available from the selected worktree or its configuration.
 **Disposition:** WITHDRAWN on 2026-08-17. Package A removed the implementation
 after re-verification disproved its consumer premise.
 
+**Second reproduction (2026-08-20, dstdns P112 Mode-B):** verbatim recurrence in the very next package — `ciu env generate` inherited main's `DOCKER_NETWORK_INTERNAL` and would have silently produced a Mode-A stack; caught only because the P111 write-up primed the operator's agent to check. Two consecutive packages → priority bump warranted.
+
+**Second reproduction (2026-08-20, dstdns P112 Mode-B):** `core,db` again could not start controller/webapp-server without the two identity-profile `ASK_VAULT` paths; resolved the same way (disposable placeholders in the instance's own Vault, disclosed). Two consecutive packages → priority bump warranted.
+
 ### What was claimed
 
 CIU-23 claimed that dstdns's `scripts/schema-gate.sh` demonstrated the need for
