@@ -162,6 +162,22 @@ then repeat with `--yes` to delete that Release while deliberately retaining its
 isolated `tester-unified` gate. The devcontainer is only the cockpit; a local
 venv result is not a release signal.
 
+### The implementation gate is Assay-backed
+
+The gate runs CIU's suite inside `tester-unified` and is **judged by the
+released Assay CLI** — a hash-pinned, vendored zipapp
+(`tools/assay/assay-2.1.0.pyz` + `.sha256`, verified by `sha256sum -c` before
+every run and invoked explicitly; Assay source is never imported). The lane
+(`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
+line+branch) inside Assay's isolated snapshot, and Assay itself judges the
+changed-line floor on `base..HEAD` plus the coverage artifact (R1). The
+verdict is retained at `.assay/verdict-ciu.json` (gitignored) as review
+evidence. The gate resolves the container slice ONLY from
+`$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback), verifies the named
+slice is `LoadState=loaded` before `docker run` (fail-closed), and its final
+status is the Assay job's own exit status. See [SPEC S18](docs/SPEC.md#s18--implementation-gate-assay-backed) and
+[CONSUMERS §10](docs/CONSUMERS.md#10-the-implementation-gate-assay-backed-s18).
+
 ### Release scheme
 
 The explicit wheel-publish command routes through the shared `cmru` release host
