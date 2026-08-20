@@ -1054,3 +1054,28 @@ intentional, surface it loudly in the verdict (a `base_resolution:
 "first-parent"` field + a WARN) so a reviewer can tell the floor's actual
 scope. **Workaround used:** re-run the gate after merging to main, where
 first-parent and merge-base coincide.
+
+## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
+
+Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
+ciu-P07 vendored the pyz per the cmru precedent:
+
+1. **Docs ask:** assay's own documentation must state `assay.toml`'s role:
+   an **adapter + judgment-policy file for projects that adopt assay** (floors,
+   R-levels, isolation, pointing at the project's own entrypoints) — NOT an
+   estate-wide lane registry. Projects that cannot adopt assay (host/shell
+   tooling like modern-debian-tools-python-debug) declare their gates in a
+   project-root `run-gate.sh` without it; assay is invoked FROM such scripts
+   where it judges. Requiring "assay-judged before release" is release policy
+   per project, not a reason to put assay.toml everywhere.
+2. **Distribution ask:** per-repo vendored `tools/assay/*.pyz` (cmru, ciu) is
+   RETIRED as the estate pattern. The judge is baked into the tester-unified
+   image, built from the monorepo's own assay source via the cmru dependency
+   chain (fresh-clone safe — no GitHub artifact required); adopting repos keep
+   a version pin their gate verifies against the installed judge. De-vendoring
+   carves: ciu CIU-40, cmru equivalent.
+3. **Forward note:** async long lanes (mutation campaigns, fuzzing) will be
+   additional assay lanes with large budgets, triggered by Buildkite agents on
+   remote hosts (and by nyxloom/user/controller alike), all calling the same
+   project `run-gate.sh` — see B007's multi-target canary for the shape of
+   bounded long-running judgment.
