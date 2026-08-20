@@ -137,3 +137,28 @@ env exist.
 4. `asserts` list gained `assay-verdict`.
 5. The BLOCKED LOG (3271681f) is retained as the trigger record; it names the
    three unblock options, of which the controller chose vendoring.
+
+## Controller review fix (checkpoint review, 2026-08-20) — two argv defects, both measured
+
+The committed gate argv had never executed end-to-end (the lane was rightly
+validated with a substitute interpreter; the argv itself was not). Two defects,
+both invisible to that validation and both found by cheap live probes at review:
+
+1. **Missing `-e CGROUP_PARENT_DEV_BACKGROUND`**: the tester-unified image does
+   not bake the var (`docker inspect`: absent) and the argv passed no `-e`, so
+   inside the container `env_passthrough` had nothing to pass through — the four
+   governance tests (S15.2) red by construction. The implementer's passthrough
+   fix worked in validation only because the DEVCONTAINER shell has the var
+   ambient — the exact environment-specific-claim class. Fixed: `-e
+   CGROUP_PARENT_DEV_BACKGROUND="$CGP"`.
+2. **Unconditional LoadState pre-check**: the devcontainer (and any
+   containerized gate context) has no reachable systemd — worse, its
+   `/usr/local/bin/systemctl` is a SHIM that exits 0 and prints an advisory to
+   STDOUT, so `[ "$(systemctl show …)" = loaded ]` can never pass there. The
+   check is now guarded by `[ -d /run/systemd/system ]` (canonical systemd
+   reachability probe): enforced on real hosts, skipped where it cannot work
+   (trusted source there = devcontainer.json, per this LOG's own S18.3 note).
+
+Standing lesson re-confirmed (see checkpoint-B): an argv validated with any
+substituted component proves construction, not acceptance — every NEW gate argv
+gets its live probes at review.

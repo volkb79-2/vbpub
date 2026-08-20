@@ -34,16 +34,22 @@ docs_dir = "docs"
 #
 # Cgroup (estate doctrine): the gate resolves the container slice ONLY from
 # $CGROUP_PARENT_DEV_BACKGROUND (no literal, no fallback — absent is a hard
-# error) and verifies the named systemd slice is LoadState=loaded on the host
-# BEFORE docker run; an unloaded/missing slice fails closed. The assay job's
-# own exit status is the gate's final status (no wrapper/pipe masking).
+# error). The LoadState=loaded pre-check runs ONLY where systemd is actually
+# reachable ([ -d /run/systemd/system ] — measured at checkpoint review: the
+# devcontainer ships a systemctl SHIM that exits 0 with advisory stdout, so an
+# unconditional check can never pass in any containerized gate context; there
+# the trusted source is devcontainer.json per S18.3). The var is ALSO passed
+# INTO the container (-e): the four governance tests read it ambiently (S15.2)
+# and the lane env_passthrough can only pass through what exists — measured at
+# review: the image does not bake it, so without -e the suite reds. The assay
+# job's own exit status is the gate's final status (no wrapper/pipe masking).
 #
 # Manual reproduction of this gate: see vbpub AGENTS.md "Manual tester-unified
 # gate runs — the four traps" (cgroup env passthrough, dual-path mount for
 # worktree gitfiles, safe.directory, detached run form) and the checkpoint-A
 # review record in nyxloom-trove/reports/.
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && CGP=\"${CGROUP_PARENT_DEV_BACKGROUND:?CGROUP_PARENT_DEV_BACKGROUND must name the gate slice (no fallback)}\" && [ \"$(systemctl show --property=LoadState --value \"$CGP\")\" = loaded ] || { echo \"gate slice $CGP is not LoadState=loaded\" >&2; exit 1; } && docker run --rm --cgroup-parent=\"$CGP\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && mkdir -p .assay && sha256sum -c tools/assay/assay-2.1.0.pyz.sha256 && /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'"]
+argv = ["bash", "-c", "set -euo pipefail && CGP=\"${CGROUP_PARENT_DEV_BACKGROUND:?CGROUP_PARENT_DEV_BACKGROUND must name the gate slice (no fallback)}\" && if [ -d /run/systemd/system ]; then [ \"$(systemctl show --property=LoadState --value \"$CGP\")\" = loaded ] || { echo \"gate slice $CGP is not LoadState=loaded\" >&2; exit 1; }; fi && docker run --rm --cgroup-parent=\"$CGP\" -e CGROUP_PARENT_DEV_BACKGROUND=\"$CGP\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && mkdir -p .assay && sha256sum -c tools/assay/assay-2.1.0.pyz.sha256 && /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
 timeout_seconds = 1800
