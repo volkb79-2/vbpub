@@ -202,3 +202,18 @@ page paths, consul_layer surface) → carve D-122 + lint-clean handoff authored 
 further reads. Tooling TODO: pack.sh range support (path:start-end) so curated packs are
 list-driven, not hand-built. E-005 delta first live use: carve reviewer receives pack@6e76813b
 + script-built delta (threshold logic already validated on the P109 window).
+
+
+**E-002 addendum (P110 carve review round, 2026-08-20) — the consumer dimension.**
+Reviewer (opus, 182.3k tok, 35 calls) seeded with pack+delta: pack saved **9 read-sets**, all
+4 spot-verified pack claims accurate — the verbatim-pack thesis holds for reviewers (vs the
+E-001 brief's 0). BUT all **10 blocking carve defects came from OUTSIDE the pack's read-list**:
+React UI consumers, nav partial + 27 rendered pages, three dying test files, the real [queues]
+table's reader-less status, loader-private scope machinery, four L0 files, GUIDE §2's
+environment contract. **Structural rule (D-123 #11): a read-list must carry TWO dimensions —
+what changes AND what consumes it.** Derivation gains a mandatory reverse-dependency sweep:
+for every symbol/route/file being deleted or moved, grep callers/importers/renderers/tests
+across the repo (script-able, model-free) and pack the hit sites. A pack without the consumer
+dimension reliably produces a carve that deletes half a dual path. Also measured: reviewer
+orientation ≈35 calls despite the pack — consumer-sweep content would have converted most of
+its 32 Bash calls into pack reads.
