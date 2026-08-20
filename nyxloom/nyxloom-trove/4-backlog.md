@@ -470,13 +470,21 @@ items:
     (2) a helper watches registered sessions and, on a deposited compact-request or
     threshold crossing, performs the compaction EXTERNALLY on that session so the agent
     can resume with its designed prompt instead of undirected auto-compaction --
-    FIRST VALIDATE the mechanism (does headless `claude --resume <id> -p "/compact
-    <prompt>"` compact-and-persist? unverified); (3) integrate with dispatch: long
+    MECHANISM VALIDATED 2026-08-20: headless `claude -p --resume <sid> "/compact
+    <instructions>"` runs real compaction (compact_result: success, knowledge survives
+    resume, instructions steer the summary; ~90s API call, --model accepted -- whether it
+    picks the summarizer model is still to verify). JSONL anatomy: system/compact_boundary
+    (parentUuid: null = chain reset) + user isCompactSummary line; DIRECT JSONL FORGING
+    FAILED in 3 variants (resume leaf-selection skips synthetic lines) -- drive the CLI,
+    never file surgery. Prior art to study: rocketlabs-ai/infinite-context (session
+    rebuild + compact-compatible smart compact), swyxio/claude-compaction-viewer,
+    badlogic's cross-CLI compaction research gist; (3) integrate with dispatch: long
     tasks continue across compactions without re-billing full transcripts, and
     controller-side fallback stays checkpoint+successor-spawn (works today, no
     service needed). Origin: dstdns operator directive 2026-08-20; complements the
-    validated orientation-freeze/fork reuse (dstdns B1 mechanism, ~1.25x orientation
-    cost per fork, saving = not re-deriving orientation).'
+    validated orientation-freeze/fork reuse (dstdns B1 / LESSONS L24: with
+    --exclude-dynamic-system-prompt-sections + same model/effort/toolset a fork is PURE
+    cache reuse, ~0 creation -- re-validated 2026-08-20).'
   type: feature
   component: dispatch
   context_estimate: medium
