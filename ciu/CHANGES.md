@@ -7,6 +7,25 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.3.0] - 2026-08-20
+<!-- cmru: generated -->
+<!-- cmru: source-end=270180b7b6bbae2c0c7db8d063ae3e7a1a0ff69e -->
+
+### Added
+- feat(ciu): host-scoped local secrets — [deploy.hosts.<h>.secrets] + ciu host-secrets (CIU-35 / S14.3a) (a11c4efd)
+- feat(ciu): deploy layouts [deploy.layouts.<name>] + ciu up --layout / ciu layouts (CIU-34 / S7.5c) (c552ee30)
+
+### Fixed
+- fix(ciu): checkpoint C review — B1-B4 blocking findings + joint-bundle nit (eb7a6b3a)
+
+### Changed
+- record: checkpoint C review — merged 90b4f066, 4 blocking fixed, ship gate PASS from clean worktree; assay B008 filed (270180b7)
+- merge main (P07 assay gate + v6.2.0) into checkpoint C (cbd0f03a)
+- record: P07 checkpoint review — merged ac964b60, released ciu-v6.2.0, three argv defects fixed at review (f882fc24)
+
+### Documentation
+- docs(ciu): checkpoint C review — evidence-ladder wording + count corrections (01abdce2)
+
 ## [Unreleased]
 
 ### Added
