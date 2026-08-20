@@ -9,6 +9,7 @@ items:
   - {id: B005, title: "A whole-module / per-callable coverage judge — an R1 mode that asserts a coverage FLOOR over a declared owned module (or callable span) independent of the base..HEAD diff. Consumers running method-reconciliation programs need whole-method rigor the changed-line judge cannot express; today they bolt it on with --cov-fail-under in the argv, invisible to the verdict. IMPLEMENTED (wave 1, judge.mode = \"whole_target\"): shipped, gated, documented, and proven end to end through the real CLI — a target absent from the artifact refuses NO_MEASUREMENT/TARGET_NOT_MEASURED rather than reporting 100% of zero.", type: feature, component: evaluate, context_estimate: medium}
   - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
   - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking.", type: feature, component: canary, context_estimate: large}
+  - {id: B010, title: "assay run executes the lane argv in the invoking environment with no way to declare WHERE the lane is valid -- in the dstdns devcontainer cockpit `assay run auth` cannot execute at all (the suite imports fastapi.routing.iter_route_contexts, absent from the cockpit's FastAPI 0.135.1 and present only in the app image's pin), so the lane had to be evidenced by re-running its argv manually in the gate container plus a hand-check of the judge criteria against the artifact. Ask: either document the doctrinal answer (assay runs only in the gate environment; run-gate.py/B009 owns getting it there) or add a lane-level environment preflight that refuses with a clear message instead of surfacing the suite's raw ImportError.", type: feature, component: execution, context_estimate: small}
 ---
 
 # assay — backlog
@@ -1083,3 +1084,63 @@ ciu-P07 vendored the pyz per the cmru precedent:
    assay-judged lanes are referenced there by name — `assay.toml` keeps
    owning judgment, `gates.toml` owns orchestration. One parser, argv for
    every consumer.)
+
+## B010 — `assay run` is unusable when the gate environment is not the invoking environment
+
+**Filed 2026-08-20 (dstdns P111 auth-config-cutover implementer, Mode-B wave).**
+Provenance: `dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §6 (disclosed
+caveat) + §9 F6. Reproduced, not speculated — and verified at dstdns `main`
+@ `36cb7183` as well as the P111 branch, so it is a standing environment fact,
+not a branch regression.
+
+### The observation
+
+`python -m assay.cli run auth` in the dstdns devcontainer cockpit fails at
+suite import: the lane's test module (`tests/unit/test_auth.py`) imports
+`fastapi.routing.iter_route_contexts`, which is absent from the cockpit's
+FastAPI 0.135.1 and present in the app image's pin. Nothing auth-specific about
+it: any lane whose suite imports a symbol from the app's pins fails the same
+way in that interpreter. dstdns's own doctrine (AGENTS §6, cockpit-vs-gate)
+predicts this exactly — the gating environment is the `test-runner` container
+(`FROM dstdns-app-base`, dependency closure identical to the app runtime), and
+the devcontainer is a cockpit carrying different pins.
+
+### Why this is an assay concern and not only a dstdns one
+
+`assay run` executes the lane's declared argv in the invoking environment, and
+`assay.toml` has no way to declare WHERE the lane is valid. Consequence
+observed in P111: the coverage lane could not be evidenced by assay's own
+verdict at all — the implementer had to re-run the lane's exact argv inside
+`test-runner` manually and then mechanically check the judge's criteria
+(single target, statements/branches/missing, `allow_excluded`,
+`require_branch`) against the emitted coverage artifact by hand. The wrapper
+exists precisely to own that judgment, and it cannot be run where the
+dependencies are right. This failure mode was at least LOUD (an ImportError);
+the dangerous sibling is quiet — a lane that RUNS under wrong pins and judges
+the wrong behavior with a green verdict.
+
+### Two resolution readings — both presented
+
+1. **Doctrinal/docs (cheap).** Declare explicitly that `assay run` is only
+   meaningful in the project's gate environment, and that getting assay INTO
+   that environment is the run-gate layer's job (ciu CIU-40 / this backlog's
+   B009 forward note: judge baked into the gate image, `run-gate.py` owning
+   the docker/cgroup mechanics). Then the dstdns-side fix is wiring assay
+   through `testing-exec.sh` / baking it into the consumer's gate image — the
+   B009 tester-unified direction generalized to consumer gate images — and
+   assay's documentation states the contract so the next consumer doesn't
+   rediscover it via ImportError.
+2. **Mechanism.** A lane-level environment preflight: an optional declared
+   environment fingerprint (interpreter + selected pinned-package versions, or
+   an arbitrary project-declared probe argv) that `assay run` checks before
+   executing the suite, refusing with "this lane's declared environment does
+   not match the invoking one; run via <declared wrapper>" instead of
+   surfacing the suite's raw traceback. Precedent in-house: the P34 SQL
+   adapter already ships an external-tool preflight (wave 3) — this
+   generalizes the same refuse-early shape to the interpreter environment.
+   Explicitly NOT proposed: assay growing container orchestration; per the
+   estate's D-111 layering that belongs to `run-gate.py`, with assay keeping
+   judgment.
+
+Cross-references: B009 (image-baked distribution + assay.toml's estate role),
+ciu CIU-40 (gate-layering refactor / run-gate mini-project).

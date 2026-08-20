@@ -11,7 +11,15 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-19 — merged from main: dstdns's five configuration/
+Last updated: 2026-08-20 — **CIU-41..43 FILED, OPEN** from dstdns P111's
+Mode-B live pass (findings F2/F3/F4 in
+`dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §9): `ciu env generate`
+silently inherits an ambient `DOCKER_NETWORK_INTERNAL` (CIU-41), no way to
+express cross-profile `ASK_VAULT` producer dependencies (CIU-42), and
+`ciu clean` leaves instance-scoped networks behind while reporting
+`clean complete` (CIU-43).
+
+Previously updated 2026-08-19 — merged from main: dstdns's five configuration/
 landscape capability asks **CIU-34..38 FILED, OPEN** (renumbered from
 CIU-29..33 on main because this branch had already allocated CIU-29; recorded
 vbpub@b4d7c749), four of them carved as `ciu-P08..P11`
@@ -41,6 +49,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
 | CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
 | CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | OPEN |
+| CIU-41 | `ciu env generate` silently inherits an ambient `DOCKER_NETWORK_INTERNAL`, so a fresh-worktree generate joins the MAIN stack's network (masked default; inconsistent with the S2.7 handling of `PHYSICAL_REPO_ROOT` in the same run) | Medium | OPEN — filed 2026-08-20 (dstdns P111 F2) |
+| CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | OPEN — filed 2026-08-20 (dstdns P111 F3); doc-gap and mechanism-gap readings both presented |
+| CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | OPEN — filed 2026-08-20 (dstdns P111 F4; reproduced, consumer-documented in dstdns GUIDE §3.3) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -384,6 +395,217 @@ its verdict. A caller may run a pinned Assay artifact as the child argv.
 
 **SPEC ownership:** S16 machine interface and versioned capability schema; S17
 continues to own provenance semantics.
+
+## CIU-41 — `ciu env generate` silently inherits an ambient `DOCKER_NETWORK_INTERNAL`
+
+**Filed by:** dstdns P111 (auth-config-cutover, Mode-B live pass), 2026-08-20.
+Provenance: `dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §9 F2 and §11
+item 5. Reproduced live, then source-confirmed against `src/ciu/workspace_env.py`
+before filing.
+
+### Observed mechanism and reproduction
+
+In the dstdns devcontainer, `~/.bashrc` sources the MAIN checkout's `ciu.env`,
+so every shell — interactive and agent alike — carries
+`DOCKER_NETWORK_INTERNAL=dstdns-98535c-network`. Running `ciu env generate` in a
+fresh worktree (`/workspaces/dstdns/.worktrees/p111-auth-cutover`):
+
+- derived a correct fresh `INSTANCE_ID` (`e893b0`) from the physical-path hash;
+- but **kept the ambient network name**: the generated `ciu.env` carried the
+  MAIN stack's `dstdns-98535c-network` instead of the derived
+  `p111-auth-cutover-e893b0-network`.
+
+Net effect: an intended Mode-B (own-network) instance silently becomes a Mode-A
+attach — containers running worktree code join the main stack's network. The
+SAME run handles exactly this contamination species correctly for
+`PHYSICAL_REPO_ROOT` (S2.7 refined precedence: a pre-set env value wins only
+when consistent with the mountinfo-derived value, else the derived value is
+used and a stderr warning names the ignored ambient one), so the handling is
+internally inconsistent.
+
+Source mechanism: `_compute_network_name` (`src/ciu/workspace_env.py`, ~line
+563) returns
+`os.environ.get("DOCKER_NETWORK_INTERNAL", network_name)` — the ambient value
+wins unconditionally, with no consistency check and no warning. Parallel bare
+env reads exist at ~761/931/974. This is the **masked default** anti-pattern
+(dstdns AGENTS §4.2a #3): invisible in every interactive shell because the
+ambient value is correct for the main checkout, surfacing only in the one
+context where it matters — a generate for a different workspace — which is
+exactly the non-interactive agent context. It is also the same defect family
+S2.7's docstring records for `PHYSICAL_REPO_ROOT` (the 2026-07 dstdns→nyxloom
+leak); the network name never received the fix.
+
+**Workaround used in the field:**
+`env -u DOCKER_NETWORK_INTERNAL -u INSTANCE_ID -u PHYSICAL_REPO_ROOT -u REPO_ROOT -u REPO_NAME ciu env generate`
+→ correct `p111-auth-cutover-e893b0-network`.
+
+### Why CIU owns it
+
+`env generate` is the identity-computation verb; its output is the record every
+later ciu command trusts (S16's worktree cross-checks compare the record
+AGAINST `ciu.env`, so a contaminated generate poisons the identity at birth and
+the cross-checks then defend the wrong value). A consumer cannot fix this by
+documentation: any consumer whose login shell sources a checkout's `ciu.env` —
+the documented convenience pattern — has the ambient value in every derived
+shell.
+
+### Proposed contract
+
+Extend the S2.7 refined-precedence pattern from `PHYSICAL_REPO_ROOT` to the
+derived identity tuple (`REPO_NAME` / `INSTANCE_ID` /
+`DOCKER_NETWORK_INTERNAL`) during `env generate`: a pre-set value wins ONLY
+when consistent with the value derived for THIS repo root; on mismatch, use the
+derived value and warn on stderr naming the ignored ambient value. (Stricter
+alternative reading: generate's entire job is computing fresh identity, so it
+ignores ambient identity values outright and takes overrides only via explicit
+flags; ambient-env precedence would remain for the read path of
+already-generated workspaces.)
+
+### Oracles
+
+- Generate in a worktree with the main instance's `DOCKER_NETWORK_INTERNAL`
+  exported → generated `ciu.env` carries the derived
+  `<repo>-<instance>-network`, and a warning names the ignored ambient value.
+- Generate with a consistent pre-set value (equal to derived) → silent, output
+  unchanged.
+- Controlled wrong implementation: restoring the bare
+  `os.environ.get(..., derived)` fallback must fail the first oracle.
+
+**SPEC ownership:** S2 (workspace environment), extending S2.7's precedence
+contract to the derived identity values.
+
+## CIU-42 — cross-profile `ASK_VAULT` producers are inexpressible; partial profile selections fail with only the path name
+
+**Filed by:** dstdns P111 (Mode-B live pass), 2026-08-20. Provenance:
+`dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §9 F3 and §11 item 4.
+
+### Observed mechanism and reproduction
+
+A Mode-B instance deployed with `CIU_SERVICES_PROFILE="core,db"` (per dstdns
+GUIDE §3.4b), then incrementally
+`ciu up --dir applications/{controller,webapp-server}`. Both app stacks declare
+`ASK_VAULT` secrets that only the `identity` profile's provisioning (or a hook)
+writes — `authentik/bootstrap_token` (controller) and
+`vault/webapp-server/token` (webapp-server) — and `ASK_VAULT` correctly refuses
+when the path is absent. So a `core,db` selection cannot start the app tier at
+all, and the refusal names the missing *path* but not its *producer*. The
+identity profile is multi-GB (Authentik) and the host had 2.9 GB available, so
+"just deploy identity" was not an option. Resolved in the field by seeding both
+paths in the INSTANCE's own Vault with disposable placeholders — consistent
+with the stacks' own comments ("an identity-less deploy has nothing for this
+check to protect") and touching no shared state.
+
+### Two readings — both presented deliberately
+
+1. **Doc gap.** Partial-profile selections that exclude a producing profile are
+   simply unsupported without manual seeding; then ciu's documentation
+   (CONFIG.md, secrets × profiles interaction) should say so and describe the
+   placeholder-seeding recipe as the sanctioned pattern. (dstdns is folding the
+   recipe into its own GUIDE §3.4b regardless — the consumer-side half of this
+   finding.)
+2. **Mechanism gap.** A stack cannot DECLARE that an `ASK_VAULT:<path>` is
+   produced by another profile's provisioning. With such a declaration (e.g. a
+   `produced_by = "<profile>"` annotation beside the directive, or an S13
+   typed reference), `ciu up` under a partial selection could refuse UPFRONT
+   naming the missing producer — "`authentik/bootstrap_token` is provisioned
+   by profile `identity`, which is not in your selection; deploy it or seed
+   the path" — instead of failing at the individual consuming stack with only
+   the bare path. S13 (`requires`/`provides`) already has the right vocabulary
+   shape.
+
+### Why CIU owns it
+
+`ASK_VAULT`'s refusal contract and profile selection are both ciu's contracts;
+the consumer can document around their interaction but cannot express the
+dependency to the tool.
+
+### Oracles (mechanism reading)
+
+- A partial selection missing a declared producer refuses pre-deploy, naming
+  producer profile + path + the seeding alternative.
+- A selection including the producer profile is unaffected.
+- An undeclared `ASK_VAULT` keeps today's behavior exactly.
+- Controlled wrong implementation: dropping the declaration lookup regresses to
+  the bare-path refusal and must fail the first oracle.
+
+**SPEC ownership:** S4 (`ASK_VAULT` refusal contract) + S13 (declaration) if
+the mechanism reading is chosen; CONFIG.md only if the doc reading is chosen.
+
+## CIU-43 — `ciu clean` leaves instance-scoped networks behind while reporting `clean complete`
+
+**Filed by:** dstdns P111 (Mode-B live pass teardown), 2026-08-20. Provenance:
+`dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §8.3 and §9 F4. Reproduced
+live; source-checked against `src/ciu/deploy.py` before filing. dstdns GUIDE
+§3.3 has carried this consumer-side for a while ("a success message is not
+sufficient"); this filing moves it upstream.
+
+### Observed mechanism and reproduction
+
+After a full Mode-B pass (instance `e893b0`, container/volume prefix
+`p111-auth-cutover-e893b0-`), `ciu clean -y` from the worktree under its own
+`ciu.env` printed `clean complete`. Leftover check by exact instance prefix:
+
+- containers: none. instance-prefixed volumes: none.
+- networks: **two remained** — `p111-auth-cutover-e893b0-network` (the
+  workspace network `env generate`/`up` creates via `ensure_workspace_network`)
+  and `p111-auth-cutover-e893b0-vault_default` (the compose-created default
+  network of the vault stack).
+
+Manual fallback per dstdns GUIDE §3.3: disconnect the named
+`dstdns-devcontainer-vb` endpoint from the first network, then
+`docker network rm` on both fully-resolved names — after which zero objects
+with the prefix remained.
+
+Secondary observation from the same teardown (D-130 amendment in the REPORT):
+the named Vault volumes `p111-auth-cutover-vault-{data,logs}` carry the
+PROJECT prefix (`<branch>-vault-*`), not the instance prefix, and also
+survived — worth checking whether `action_clean`'s project-prefixed volume
+pass covers nested/sibling compose projects' volume naming, though the
+headline of this issue is networks.
+
+### Design-vs-regression — both readings
+
+`action_clean`'s own docstring (`src/ciu/deploy.py`, ~line 1679) says the
+network survival is deliberate: "Network removal is NOT performed (v1 had no
+explicit --clean-networks; the network is left in place)." That is defensible
+for the long-lived MAIN workspace, whose network the devcontainer itself stays
+connected to. It is wrong for ephemeral Mode-B worktree instances: every
+instance creates identity-scoped networks that nothing ever removes, so they
+accumulate one teardown at a time — and `clean complete` overstates what
+happened either way. Note CIU-19 ("instance-scoped cleanup", FIXED, S6.4)
+covered containers and volumes; networks were left outside its scope. And even
+granting the deliberate-keep reading, the compose-created `*_default` network
+is not covered by the stated v1 rationale at all — `docker compose down`
+normally removes the networks it created, so its survival suggests the
+per-stack reset path isn't reaching compose's own network cleanup (plausibly
+because step 1 already force-removed the containers, or because an external
+endpoint — the cockpit — pinned it).
+
+### Proposed contract
+
+A full `ciu clean` removes the identity-scoped networks it (or its compose
+runs) created: disconnect lingering endpoints it can name (or refuse, naming
+them), then remove. If keeping the invoking workspace's own network is desired
+(the devcontainer-residence case), keep it explicitly and SAY so — the success
+message must name anything deliberately left behind, never claim `clean
+complete` over surviving identity-scoped objects. A `--clean-only-networks` /
+`--keep-network` flag pair is one shape; unconditional removal for S16 worktree
+instances plus keep-with-notice for the main workspace is another.
+
+### Oracles
+
+- Mode-B instance `up` → `clean` leaves ZERO Docker objects carrying the
+  instance identity (containers, volumes, networks — including compose
+  `*_default` names).
+- `clean` with the devcontainer still connected to the instance network either
+  disconnect-then-removes or refuses naming the endpoint — never silently
+  keeps.
+- Main-workspace `clean` that deliberately keeps the workspace network names it
+  in output.
+- Controlled wrong implementation: restoring today's no-network-removal path
+  must fail the first oracle.
+
+**SPEC ownership:** S6.4 cleanup semantics.
 
 ## Compact resolved index
 
