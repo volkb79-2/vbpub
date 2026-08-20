@@ -152,6 +152,7 @@ Subsections:
 | `[deploy.phases.phase_N]` | Ordered phase tables (numeric order, `phase_<uint>`) | S7.1 |
 | `[deploy.profiles.<name>]` | Host profiles: which phases/stacks run on this host | S7.4 |
 | `[deploy.profiles.<name>.topology_overrides]` | Deep-merged over `[topology.*]` while profile is active | S7.4 |
+| `[deploy.layouts.<name>]` | Named host→bundles plan + the deployment's environment | S7.5c |
 
 Each `[[deploy.phases.phase_N.services]]` entry identifies a stack with `path`;
 its `name` is display text only. The orchestration health gate discovers exact
@@ -175,6 +176,80 @@ NOT the workspace `INSTANCE_ID` (S2) and NOT landscape-scoped.
 
 `[deploy.groups]` is **rejected** by the v2 validator [S7.5] — see
 [MIGRATION-V2.md §6](MIGRATION-V2.md#6-groups--host-profiles-s74s75).
+
+### `[deploy.layouts.<name>]` — named host→bundles plans [S7.5c]
+
+A **layout** is the durable home of a deployment's environment plus its
+host→bundles plan: *who runs what, in what order, in which environment*
+(dstdns D-105 Q2). A layout only **references** profiles (S7.4) and the host
+inventory ([S14.3](SPEC.md#s143--host-inventory)); it never merges either.
+
+| Key | Required | Spec | Meaning |
+|---|---|---|---|
+| `environment` | Yes | S7.5c | Closed vocabulary: `dev` \| `test` \| `staging` \| `prod`. Exported to every remote command as `CIU_DEPLOY_ENVIRONMENT`. |
+| `description` | No | S7.5c | Free text. |
+| `[deploy.layouts.<name>.hosts.<host>]` | Yes (non-empty) | S7.5c | One sub-table per host, in **declaration order = execution order**; each must declare `bundles = [<profile names>]`. Every bundle must resolve via `[deploy.profiles]`; every host must exist in the hosts inventory. |
+
+**The remote-command environment contract (the consumer's whole reason for the
+ask).** `ciu up --layout <name>` runs the SPEC-J push (S14.2) per host and
+exports, into the single remote command string, exactly:
+
+| Variable | Value | Example |
+|---|---|---|
+| `CIU_SERVICES_PROFILE` | The host's `bundles`, comma-joined | `core,db` |
+| `CIU_LAYOUT` | The layout name | `prod-edge` |
+| `CIU_LAYOUT_HOST` | The current host | `edge-a` |
+| `CIU_DEPLOY_ENVIRONMENT` | The layout's `environment` | `prod` |
+
+Consumers reference them in templates via `{{ env.* }}` / `$VAR` expansion
+(e.g. a Consul KV root `dstdns/{{ env.CIU_LAYOUT_HOST }}/…` or a per-host
+env file the activation contract reads). The exports are confined to the
+remote command — they never leak into the local process. A host failure
+**aborts** the sequence (no continue-on-error in v1), naming the failed host
+and the not-yet-deployed remainder. `--layout` is mutually exclusive with
+`--host` and `--profile` (the layout owns host order and bundles). `ciu
+layouts` lists declared layouts (name, environment, ordered hosts) without
+validating them.
+
+**Worked example 1 — a single dev-local host:**
+
+```toml
+[deploy.layouts.dev-local]
+environment = "dev"
+description = "single-host dev box"
+
+[deploy.layouts.dev-local.hosts.devbox]
+bundles = ["core", "db"]
+```
+
+```bash
+ciu up --layout dev-local
+# → push to devbox with CIU_SERVICES_PROFILE='core,db'
+#   CIU_LAYOUT='dev-local' CIU_LAYOUT_HOST='devbox' CIU_DEPLOY_ENVIRONMENT='dev'
+```
+
+**Worked example 2 — a 3-host prod split** (edge nodes run `core`; the
+backend runs `db` + `worker-io`, whose `topology_overrides` point at the
+edge nodes' external endpoints — S7.4/S7.5a):
+
+```toml
+[deploy.layouts.prod-edge]
+environment = "prod"
+
+[deploy.layouts.prod-edge.hosts.edge-a]
+bundles = ["core"]
+
+[deploy.layouts.prod-edge.hosts.edge-b]
+bundles = ["core"]
+
+[deploy.layouts.prod-edge.hosts.backend]
+bundles = ["db", "worker-io"]
+```
+
+```bash
+ciu layouts          # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
+ciu up --layout prod-edge
+```
 
 ### `[vault]` — Vault location and path registry [S4.16, S4.9]
 
@@ -529,6 +604,7 @@ for these hosts. Extra host keys:
 | `activate` | Activation entrypoint. A **string** (CIU appends the verb) or a **per-verb table** (`bootstrap`/`apply`/`health`/`rollback`). Required for `--thin`. |
 | `push_mode` | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to `tar`+`scp` when rsync is missing on the control host or target. |
 | `bundle_excludes` | List of top-level paths excluded from the pushed bundle (default `[".git"]`); applied identically to the rsync and tar+scp paths. |
+| `secrets` | [S14.3a](#s143a--host-scoped-local-secrets-ciu-35) — host-scoped local secret directives subtable (ASK_EXTERNAL / GEN_LOCAL only). |
 
 ```toml
 [deploy.hosts.web]
@@ -588,6 +664,72 @@ CIU_SSH_TRANSPORT=paramiko    # opt into the paramiko transport
 
 `import ciu` and all non-SSH verbs work with paramiko absent.
 
+### `[deploy.hosts.<name>.secrets]` — host-scoped local secrets [S14.3a]
+
+**The whole point of the ask:** before a host is adopted there is no Vault on
+the target, yet the operator still needs to get ONTO it — an SSH bootstrap key,
+a Tailscale single-use authkey. Host-scoped secrets are the existing S4 secret
+machinery pointed at a `hosts/<host>/` namespace, resolvable **before any Vault
+exists**. Once the host is adopted, the same values are movable to Vault by the
+existing directives.
+
+Only **`ASK_EXTERNAL`** and **`GEN_LOCAL`** are allowed at host scope — any
+other directive (ASK_VAULT, GEN_TO_VAULT, ASK_FILE, GEN_EPHEMERAL) is refused
+with a tagged `[S14.3a]` error, because Vault-dependent and ephemeral kinds are
+meaningless before a host is adopted.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `ASK_EXTERNAL:<env>[,<env>]` | — | Resolve from `$<env>` / `CIU_SECRET_<NAME>`, else reuse the store file, else prompt (TTY + not `-y`), else tagged `[S4.13]` abort. |
+| `GEN_LOCAL:<locator>` | — | Generate a fresh token once, reuse on later runs. The shared grammar requires the `<locator>` payload, but at host scope the store path is the **entry name**, so the locator is inert. |
+
+**Known limitation: `CIU_SECRET_<NAME>` is a process-env override, NOT
+host-scoped.** `ASK_EXTERNAL` resolves `CIU_SECRET_<NAME>` before prompting
+(same as stack-level secrets — see "Six Secret Directives" above), but that
+env var is a single global name in the ciu process's environment; it is not
+namespaced per host. If two hosts both declare an entry named `tailscale_authkey`
+and the operator exports `CIU_SECRET_TAILSCALE_AUTHKEY=...` once, **both**
+hosts' materializations see the same value — there is no way to scope the
+override to one host. This is safe for a value that is genuinely shared
+across hosts, but **unsafe for a single-use key** (e.g. a Tailscale
+authkey meant for exactly one machine): use the interactive prompt or
+`$<env>` (a per-invocation shell variable you control, not exported into a
+long-lived shell) for those, not `CIU_SECRET_<NAME>`.
+
+**Store namespace.** Files land at `<repo>/.ciu/secrets/hosts/<host>/<entry_name>`
+(dirs `0700`, atomic write + flock). The per-stack global-uniqueness rule S4.6
+deliberately does **not** apply across host namespaces: two hosts may declare
+the same entry name without collision. `get_host` validates the subtable but
+**pops** it from the dict transport callers receive — connection facts never
+carry secret directives.
+
+**Explicit-only; values are never printed.** `ciu host-secrets <host>
+[--materialize | --list | --path <name>] [-y]` is the only materialization
+path; nothing happens implicitly inside `ssh` / `up --host`.
+
+**Worked example — the ask, end to end** (a Tailscale single-use authkey + an
+SSH bootstrap key per host, materialized, then consumed by a bootstrap command
+over `ciu ssh`):
+
+```toml
+[deploy.hosts.edge-a]
+ssh_host   = "edge-a.tailnet.ts.net"
+ssh_key    = "/path/to/edge-a-bootstrap-key"   # bootstrap only; move to Vault later
+known_host = "ssh-ed25519 AAAA…"
+
+[deploy.hosts.edge-a.secrets]
+tailscale_authkey = "ASK_EXTERNAL:TS_AUTHKEY"   # single-use; set in the shell
+ssh_bootstrap_key = "GEN_LOCAL:edge-a-bootstrap" # inert locator; entry name is the path
+```
+
+```bash
+export TS_AUTHKEY=tskey-auth-...                # never committed, never printed
+ciu host-secrets edge-a --materialize           # -> store file paths (never values)
+ciu host-secrets edge-a --list                  # names + present/absent
+TS_AUTHKEY_FILE=$(ciu host-secrets edge-a --path tailscale_authkey)
+ciu ssh edge-a -- "sh -c 'tailscale up --auth-key=\"$(cat "$TS_AUTHKEY_FILE")\"; …'"
+```
+
 ## Implementation gate artifacts [S18]
 
 The gate is configured by two artifacts in the repository (not runtime config —
@@ -604,5 +746,6 @@ documented here because a consumer adopts the gate, not the keys):
   the last gate run, used as review evidence.
 
 The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_BACKGROUND`
-(no literal, no fallback) and verified `LoadState=loaded` before `docker run`
-(S18.3).
+(no literal, no fallback) and verified `LoadState=loaded` before `docker run` where systemd is
+reachable (`[ -d /run/systemd/system ]`; containerized contexts skip the
+check — S18.3, P07 review fix).

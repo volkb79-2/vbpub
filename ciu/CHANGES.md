@@ -7,6 +7,29 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- feat(ciu): deploy layouts — `[deploy.layouts.<name>]` names a host→bundles plan + its
+  environment; `ciu up --layout <name>` drives the SPEC-J push per host in declared order
+  with `CIU_SERVICES_PROFILE` / `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT`
+  exported to the remote command; `ciu layouts` lists declarations (CIU-34, dstdns D-105 Q2,
+  SPEC S7.5c)
+- feat(ciu): host-scoped local secrets — `[deploy.hosts.<name>.secrets]` (ASK_EXTERNAL /
+  GEN_LOCAL only) materialized under the project store's `hosts/<host>/` namespace,
+  resolvable before any Vault exists on the target; `ciu host-secrets <host>
+  [--materialize | --list | --path NAME] [-y]`, explicit-only, values never printed
+  (CIU-35, SPEC S14.3a)
+
+### Changed
+- feat(ciu): Assay-backed implementation gate — CIU's gate is now judged by the released,
+  hash-pinned Assay CLI (vendored `tools/assay/assay-2.1.0.pyz` + `.sha256`, `sha256sum -c`
+  verified each run), replacing the retired `nyxloom.coverage_gate`; `assay.toml` declares the
+  full-suite lane (100% whole-source line+branch) with an R1 changed-line floor on
+  `base..HEAD` inside Assay's isolated snapshot; the gate slice resolves only from
+  `$CGROUP_PARENT_DEV_BACKGROUND` (verified `LoadState=loaded`, fail-closed) and the gate's
+  status is the Assay job's own (P07, CIU-28/CIU-29, SPEC S18)
+
 ## [6.2.0] - 2026-08-20
 <!-- cmru: generated -->
 <!-- cmru: source-end=ac964b60f0d8ca4691997378b1c6246827d513cd -->
@@ -25,17 +48,6 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Documentation
 - docs(ciu): P07 qualification LOG — unblock via vendoring, lane validation, canaries, adversarial review (ccaf841f)
-
-## [Unreleased]
-
-### Changed
-- feat(ciu): Assay-backed implementation gate — CIU's gate is now judged by the released,
-  hash-pinned Assay CLI (vendored `tools/assay/assay-2.1.0.pyz` + `.sha256`, `sha256sum -c`
-  verified each run), replacing the retired `nyxloom.coverage_gate`; `assay.toml` declares the
-  full-suite lane (100% whole-source line+branch) with an R1 changed-line floor on
-  `base..HEAD` inside Assay's isolated snapshot; the gate slice resolves only from
-  `$CGROUP_PARENT_DEV_BACKGROUND` (verified `LoadState=loaded`, fail-closed) and the gate's
-  status is the Assay job's own (P07, CIU-28/CIU-29, SPEC S18)
 
 ## [6.1.0] - 2026-08-19
 <!-- cmru: generated -->

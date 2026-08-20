@@ -42,6 +42,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
   AUTHORING
     render                      render ciu.global.toml from Jinja2 template
     profiles                    list available host profiles
+    layouts                     list declared deploy layouts
 
   WORKTREE INSTANCES (S16)
     worktree create LOGICAL [--prefix P --feature F] [--json]
@@ -66,7 +67,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 commit under test, before a live lane runs (S17.2)
 
   STACK ORCHESTRATION
-    up   [--profile NAME | --dir PATH]   start Docker Compose stack
+    up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
     down [--profile NAME]                stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
@@ -86,6 +87,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
   SECRETS
     secrets list   [-d PATH]             list materialised secret names
     secrets reset  [--name N] [-y]       delete secret store files
+    host-secrets <host> [--materialize | --list | --path NAME] [-y]
+                                host-scoped local secrets (S14.3a, explicit-only)
 
   REMOTE (requires hosts file — see .ciu.hosts.toml)
     ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
@@ -168,8 +171,14 @@ ciu render --host NAME [selection flags]
 ciu profiles
   List available host profiles. Takes no options.
 """,
+    "layouts": """\
+ciu layouts
+  List declared deploy layouts ([deploy.layouts.<name>]) with their
+  environment and ordered host list (S7.5c). Takes no options; shows what is
+  DECLARED — `ciu up --layout` is the validating consumer.
+""",
     "up": """\
-ciu up [--profile NAME | --dir PATH] [selection/options]
+ciu up [--profile NAME | --dir PATH | --layout NAME] [selection/options]
 ciu up --host NAME [selection...]                              # render-on-target
 ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
   Render + materialise secrets + start the Docker Compose stack(s).
@@ -182,6 +191,14 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
+
+  Layout mode (S7.5c) — push-deploy a named host→bundles plan:
+  --layout NAME      resolve [deploy.layouts.<name>] and push to each host in
+                     declaration order. Each host's remote command runs with
+                     CIU_SERVICES_PROFILE set to that host's bundles and
+                     CIU_LAYOUT / CIU_LAYOUT_HOST / CIU_DEPLOY_ENVIRONMENT
+                     exported (S7.5c). A host failure aborts the sequence.
+                     Mutually exclusive with --host and --profile.
 
   Single-stack mode (`--dir`) additionally accepts engine options:
   --dir PATH         deploy one stack directory
@@ -282,6 +299,20 @@ ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
   --name N       restrict reset to one secret name
   -y, --yes      assume yes to prompts
 """,
+    "host-secrets": """\
+ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
+  Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
+  entries declared under [deploy.hosts.<host>.secrets], materialized under
+  the project store's hosts/<host>/ namespace — resolvable BEFORE any Vault
+  exists on the target. Explicit-only: values are never printed and nothing
+  materializes implicitly inside ssh/up.
+
+  --materialize   resolve all declared entries (prompt rules identical to
+                  stack ASK_EXTERNAL: TTY + not -y); prints store file paths
+  --list          print entry names + store-file existence (never values)
+  --path NAME     print the store file path for one declared entry
+  -y, --yes       with --materialize, skip interactive prompts (S4.13)
+""",
     "check": """\
 ciu check [--profile NAME] [--live] [--phases N,M] [--define-root PATH]
   Validate the requires/provides dependency graph across the selection (no deploy).
@@ -340,6 +371,58 @@ def _load_remote_config(repo_root: Path) -> dict:
             file=sys.stderr,
         )
         raise SystemExit(2) from exc
+
+
+def _push_host(
+    host_cfg: dict,
+    host_label: str,
+    *,
+    repo_root: Path,
+    config: dict,
+    remaining: list[str],
+    extra_exports: str = "",
+) -> tuple[str, int]:
+    """Push-deploy ONE host: docker_optional advisory, bundle sync, remote up.
+
+    The ONE push implementation (review finding B3) shared by `ciu up --host`
+    and each host in `ciu up --layout` (S7.5c) — the two used to reimplement
+    this loop independently and had already drifted (the layout path lacked
+    the docker_optional advisory). *extra_exports* is a pre-quoted
+    ``export VAR=val; ...`` prefix for the remote command (the layout's
+    CIU_LAYOUT* vars); empty for the plain --host path.
+
+    Returns ``(stage, rc)`` where *stage* is ``"sync"`` if the bundle
+    transfer failed (never reaching the remote) or ``"exec"`` for the
+    remote-command result (rc == 0 on success). Never raises SystemExit —
+    callers own their own error text and exit semantics, which already
+    differ between --host (silent propagation) and --layout (named
+    remainder).
+    """
+    # Advisory (S14.6): a docker-optional host has no docker; the
+    # render-on-target path here needs it. Nudge, but do not block.
+    if host_cfg.get("docker_optional"):
+        print(
+            f"[WARN] Host '{host_label}' is marked docker_optional but you are using "
+            "the docker render-on-target path. Did you mean 'ciu up --host "
+            f"{host_label} --thin'? (S14.6)",
+            file=sys.stderr,
+        )
+    bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+    from .transport_ssh import ssh_exec, ssh_sync
+    rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
+    if rc != 0:
+        return "sync", rc
+    # Pass the whole command as ONE argv element: ssh space-joins remote
+    # args into a single string for the remote login shell to re-parse, so
+    # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+    # shell ssh spawns already interprets the operators natively.
+    remote_cmd = (
+        extra_exports
+        + f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
+        + shlex.join(["ciu", "up", *remaining])
+    )
+    rc = ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
+    return "exec", rc
 
 
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
@@ -898,8 +981,104 @@ def main() -> None:
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--list-profiles"] + rest))
 
+    elif verb == "layouts":
+        # S7.5c — pure listing of DECLARED layouts (no validation, no
+        # inventory requirement); `ciu up --layout` is the validating consumer.
+        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        config = _load_remote_config(repo_root)
+        from .deploy_pkg.layouts import list_layouts
+        rows = list_layouts(config)
+        if not rows:
+            print("(no layouts declared)")
+            raise SystemExit(0)
+        for name, environment, hosts in rows:
+            env_part = f" environment={environment}" if environment else ""
+            hosts_part = ", ".join(hosts) if hosts else "(no hosts)"
+            print(f"{name}:{env_part} hosts=[{hosts_part}]")
+        raise SystemExit(0)
+
     elif verb == "up":
-        if "--host" in rest:
+        if "--layout" in rest:
+            # S7.5c — push-deploy a named host→bundles plan. The layout owns
+            # host order and bundles, so --host/--profile are excluded: a
+            # passthrough --profile would silently override the exported
+            # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--layout", dest="layout", default=None)
+            opts, remaining = p.parse_known_args(rest)
+            # B2 (review): a plain `"--host" in rest` membership check misses
+            # the `--profile=core` equals form (argparse leaves it in
+            # `remaining` untouched since only --layout is registered here),
+            # and did not guard --dir/--thin/--bootstrap/--rollback at all —
+            # all of which forward into the remote `ciu up` argv and either
+            # silently override the layout's exported CIU_SERVICES_PROFILE
+            # (--profile, S7.5 CLI precedence) or die opaquely on the remote
+            # (--dir/--thin/--bootstrap/--rollback have no meaning without a
+            # local --host push). Prefix-aware so both `--flag value` and
+            # `--flag=value` forms are caught.
+            _LAYOUT_FORBIDDEN = (
+                "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
+            )
+            if any(
+                a == flag or a.startswith(flag + "=")
+                for a in remaining
+                for flag in _LAYOUT_FORBIDDEN
+            ):
+                print(
+                    "[S7.5c] --layout is mutually exclusive with --host and "
+                    "--profile (and with --dir/--thin/--bootstrap/--rollback, "
+                    "which only apply to the --host push path) — the layout "
+                    "owns the host order and the bundles.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            config = _load_remote_config(repo_root)
+            from .deploy_pkg.layouts import resolve_layout
+            from .hosts import get_host, load_hosts
+            try:
+                layout = resolve_layout(config, load_hosts(repo_root), opts.layout)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            # Pure orchestration: delegate each host to _push_host (shared
+            # with `up --host` — review finding B3, was reimplemented and had
+            # already drifted), with the layout's exports prepended to the
+            # single remote argv string (one-argv discipline).
+            for index, host in enumerate(layout.hosts):
+                not_deployed = layout.hosts[index + 1:]
+                remainder = ", ".join(not_deployed) or "(none)"
+                try:
+                    host_cfg = get_host(repo_root, host)
+                except ValueError as exc:
+                    print(
+                        f"[ERROR] layout '{layout.name}': {exc}; "
+                        f"not deployed: {remainder}.",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(2)
+                exports = (
+                    f"export CIU_SERVICES_PROFILE={shlex.quote(','.join(layout.bundles[host]))}; "
+                    f"export CIU_LAYOUT={shlex.quote(layout.name)}; "
+                    f"export CIU_LAYOUT_HOST={shlex.quote(host)}; "
+                    f"export CIU_DEPLOY_ENVIRONMENT={shlex.quote(layout.environment)}; "
+                )
+                stage, rc = _push_host(
+                    host_cfg, host,
+                    repo_root=repo_root, config=config, remaining=remaining,
+                    extra_exports=exports,
+                )
+                if rc != 0:
+                    verb_text = "bundle sync failed" if stage == "sync" else "up failed"
+                    print(
+                        f"[ERROR] layout '{layout.name}': {verb_text} on host "
+                        f"'{host}' ({rc}); not deployed: {remainder}.",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(rc)
+            raise SystemExit(0)
+        elif "--host" in rest:
             # Remote push-deploy path
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
@@ -942,30 +1121,15 @@ def main() -> None:
                 print("[ERROR] --bootstrap/--rollback require --thin (the docker-optional activation path).", file=sys.stderr)
                 raise SystemExit(2)
 
-            # Advisory (S14.6): a docker-optional host has no docker; the
-            # render-on-target path below needs it. Nudge, but do not block.
-            if host_cfg.get("docker_optional"):
-                print(
-                    f"[WARN] Host '{opts.host}' is marked docker_optional but you are using "
-                    "the docker render-on-target path. Did you mean 'ciu up --host "
-                    f"{opts.host} --thin'? (S14.6)",
-                    file=sys.stderr,
-                )
-
-            from .transport_ssh import ssh_sync, ssh_exec
-            rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
-            if rc != 0:
-                raise SystemExit(rc)
-            # Build remote ciu command
-            remote_cmd = (
-                f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
-                + shlex.join(["ciu", "up", *remaining])
+            # B3 (review): the ONE push implementation, shared with the
+            # `--layout` loop above — behavior here is unchanged (same
+            # docker_optional advisory, same sync-then-exec, same silent rc
+            # propagation on failure the existing tests pin).
+            _stage, rc = _push_host(
+                host_cfg, opts.host,
+                repo_root=repo_root, config=config, remaining=remaining,
             )
-            # Pass the whole command as ONE argv element: ssh space-joins remote
-            # args into a single string for the remote login shell to re-parse, so
-            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
-            # shell ssh spawns already interprets the operators natively.
-            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+            raise SystemExit(rc)
         elif "--dir" in rest:
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
@@ -1114,6 +1278,78 @@ def main() -> None:
     elif verb == "secrets":
         from .engine import main as engine_main
         raise SystemExit(engine_main(["secrets"] + rest))
+
+    elif verb == "host-secrets":
+        # S14.3a / CIU-35 — host-scoped local secrets. Explicit-only: values
+        # are NEVER printed and materialization never happens implicitly inside
+        # transport verbs.
+        import argparse as _ap
+        p = _ap.ArgumentParser(add_help=False)
+        p.add_argument("host", nargs="?", default=None)
+        p.add_argument("--materialize", action="store_true", default=False)
+        p.add_argument("--list", action="store_true", default=False)
+        p.add_argument("--path", dest="path_name", default=None)
+        p.add_argument("-y", "--yes", action="store_true", default=False)
+        opts, _ = p.parse_known_args(rest)
+        if opts.host is None:
+            print(
+                "ciu host-secrets <host> [--materialize | --list | --path <name>] "
+                "[-y]  (S14.3a)",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        modes = [opts.materialize, opts.list, opts.path_name is not None]
+        if sum(1 for m in modes if m) != 1:
+            print(
+                "[S14.3a] choose exactly one of --materialize, --list, --path <name>.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        from .hosts import get_host_secrets
+        try:
+            specs = get_host_secrets(repo_root, opts.host)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        from .secrets.materialize import host_secret_store
+        if opts.list:
+            if not specs:
+                print("(no host secrets declared)")
+            else:
+                for name in specs:
+                    store = host_secret_store(repo_root, opts.host, name)
+                    print(f"{name}  {'present' if store.exists() else 'absent'}")
+            raise SystemExit(0)
+        if opts.path_name is not None:
+            if opts.path_name not in specs:
+                print(
+                    f"[ERROR] host '{opts.host}' declares no secret '{opts.path_name}'. "
+                    f"Declared: {', '.join(sorted(specs)) or '(none)'}.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            print(host_secret_store(repo_root, opts.host, opts.path_name))
+            raise SystemExit(0)
+        # --materialize
+        from .secrets.materialize import materialize_host_secrets
+        try:
+            results = materialize_host_secrets(
+                repo_root,
+                opts.host,
+                specs,
+                assume_yes=opts.yes,
+                env=os.environ,
+            )
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        if not results:
+            print(f"host '{opts.host}': no secrets declared")
+        else:
+            for name, res in results.items():
+                print(f"{name} -> {res.file}")
+        raise SystemExit(0)
 
     elif verb == "check":
         from .deploy import main as deploy_main

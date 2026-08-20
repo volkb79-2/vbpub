@@ -687,6 +687,27 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   context additionally exposes `instance_index` (1-based int) and
   `instance_id` (`"<service>-<index>"`). Single-instance configfiles (no
   `instances` key, or `instances = 1`) behave identically to before.
+- **S7.5c** *Deploy layouts.* `[deploy.layouts.<name>]` is a named
+  host→bundles plan: `environment` (REQUIRED, one closed value of
+  `dev|test|staging|prod` — the durable home of a deployment's environment,
+  dstdns D-105 Q2), an ordered `[deploy.layouts.<name>.hosts.<host>]` table
+  whose `bundles = [<profile names>]` lists S7.4 profiles, and optional
+  `description`. `ciu up --layout <name>` drives the SPEC-J push (S14.2) to
+  each host **in declaration order**; every host's remote command runs with
+  `CIU_SERVICES_PROFILE` set to that host's bundles (joined by comma) and
+  `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT` exported into
+  the remote command environment (consumers read them via `{{ env.* }}` /
+  `$VAR`). Validation (all before any transport opens, all tagged
+  `[S7.5c]`): unknown layout; missing or non-closed `environment`; unknown
+  bundle (naming layout+host+bundle); unknown host (naming layout+host);
+  an empty or non-table `hosts`. A host failure **aborts** the sequence (no
+  continue-on-error in v1), naming the failed host and the not-yet-deployed
+  remainder. `--layout` is mutually exclusive with `--host` and `--profile`
+  (the layout owns host order and bundles; a passthrough `--profile` would
+  silently override the exported `CIU_SERVICES_PROFILE` under S7.5 CLI
+  precedence). `ciu layouts` lists declared layouts (name, environment,
+  ordered hosts) without validating them — `ciu up --layout` is the
+  validating consumer.
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —
@@ -1119,6 +1140,7 @@ accepted for the user-global file). Keys:
 | `activate` | Yes† | S14.6 activation contract — a string entrypoint (CIU appends the verb) or a per-verb table (`bootstrap`/`apply`/`health`/`rollback`). †Required only for `--thin`. |
 | `push_mode` | No | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to tar+scp when rsync is absent on the control host or target (S14.6). |
 | `bundle_excludes` | No | List of top-level paths excluded from the pushed bundle (default `[".git"]`). Applied identically to the rsync and tar+scp paths. |
+| `secrets` | No | S14.3a — host-scoped local secret directives subtable (ASK_EXTERNAL / GEN_LOCAL only). |
 
 Before any `--host` transport, CIU MUST load the repository's global
 configuration successfully. An unreadable or invalid configuration is an exit-2
@@ -1127,6 +1149,44 @@ may be resolved through that configuration.
 
 `[deploy.hosts.<name>.admin]` subtable overrides `ssh_user` / `ssh_key` for the
 higher-privilege access plane (`ciu ssh <host> --admin`).
+
+### S14.3a — Host-scoped local secrets (CIU-35)
+
+`[deploy.hosts.<name>.secrets]` is a **host-scoped** secret table for material
+that must resolve **before any Vault exists on the target** — the SSH
+bootstrap key, a Tailscale single-use authkey, and similar. It is the existing
+S4 secret machinery pointed at a new namespace, not a new secret system; once
+the host is adopted the same values are movable to Vault by the existing
+directives.
+
+- **Closed set.** Each entry is parsed with the existing `S4.2` directive
+  grammar (`parse_value`, shared verbatim) and ONLY `ASK_EXTERNAL` and
+  `GEN_LOCAL` are accepted at host scope. Any other kind — `ASK_VAULT`,
+  `GEN_TO_VAULT`, `ASK_FILE`, `GEN_EPHEMERAL` — is refused with a tagged
+  `[S14.3a]` error naming host, entry and reason (Vault-dependent and
+  ephemeral kinds are meaningless before a host is adopted). A grammar
+  violation is refused the same way.
+- **Store namespace.** Materialization writes to
+  `<project-store>/hosts/<host>/<entry_name>` (`<repo>/.ciu/secrets/hosts/…`),
+  dirs `0700`, atomic write + flock (S4.9/S4.10/S4.26 reused). The per-stack
+  global-uniqueness rule S4.6 deliberately does NOT apply across host
+  namespaces: two hosts MAY declare the same entry name without collision.
+- **Resolution order** is the existing behaviour, reused: `ASK_EXTERNAL`
+  resolves from `env[locator]` → `CIU_SECRET_<NAME>` → existing store file →
+  interactive prompt (TTY and not `-y`) → tagged `[S4.13]` abort; `GEN_LOCAL`
+  reuses the existing store file or generates a fresh token. The shared
+  grammar still requires `GEN_LOCAL:<locator>`'s payload; at host scope the
+  store path is the entry name, so the locator is documented as **inert**.
+- **Explicit-only, values never printed.** `ciu host-secrets <host>
+  [--materialize | --list | --path <name>] [-y]` is the only materialization
+  path: `--materialize` resolves all declared entries and prints store file
+  paths, `--list` prints entry names + store-file existence, `--path` prints
+  one store path (for feeding a bootstrap command over `ciu ssh`). Values are
+  never printed, and nothing materializes implicitly inside `ssh` / `up
+  --host` — the consumer's own bootstrap script decides when.
+- **Transport isolation.** `get_host` validates the subtable (a malformed
+  table aborts any flow touching the host) but **pops** it before returning:
+  a caller asking for connection facts never receives secret directives.
 
 ### S14.4 — Security requirements
 
