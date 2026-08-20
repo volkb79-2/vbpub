@@ -516,7 +516,7 @@ answers that from transcript CONTENT, and settles the operator's separate
 objection that dstdns `CLAUDE.md`'s **~300k** checkpoint threshold "is probably
 too high".
 
-**Tool.** `jsonl-metrics.py` gained three subcommands (dstdns
+**Tool.** `jsonl-metrics.py` gained three subcommands (dstdns@cde23ad5,
 `nyxloom-trove/orientation/jsonl-metrics.py`):
 `boundaries` (content-detected candidate checkpoint points), `simulate-boundary`
 (the E-007 DP **constrained to those boundaries**, next to the unconstrained
@@ -806,6 +806,47 @@ rule produces on `a6b116`.
 - **Expect the first checkpoint to be the one that matters.** E-007: checkpoint
   1 buys 46 points on the 504-call implementer, checkpoint 2 buys 15,
   checkpoints 5–12 together buy 5.3.
+
+### Conclusions
+
+- **The ~300k checkpoint threshold is measured wrong, not merely conservative.**
+  9 of 11 agents never reach 300k carried context at any point in their run;
+  the rule fires zero times on every reviewer in the set while those reviewers
+  were leaving 39–50 points of restart savings unclaimed. The honest first
+  checkpoint is at **~120k**, where three independent estimators (marginal
+  crossover 116k, boundary-constrained DP 130k, unconstrained DP 150k) agree
+  within a factor of 1.3.
+- **Coherence is close to free — where the transcript offers boundaries.**
+  Constraining E-007's DP to content-detected boundaries costs 0.22–1.08
+  savings points at N=1 and 0.68–3.06 at N=3 on the four boundary-rich runs,
+  and the constrained schedule still beats uniform spacing at N=1/3/5. E-007's
+  open worry — that operationally placeable checkpoints would forfeit most of
+  the theoretical win — is not borne out.
+- **Edit-cluster ends carry the boundary set, not gates and commits.**
+  Restricting placements to gate-green/commit/LOG-REPORT strips every placement
+  from 7 of 11 runs and costs ~10 points at N=3 where placements survive. Only
+  4 of 11 runs contain a single gate-green or commit at all.
+- **Reviewers are structurally boundary-poor, and it is a mechanism artifact.**
+  They never commit, and they launch gates with `run_in_background`, so the
+  launching call carries no verdict — 14/14 and 8/8 of two reviewers' gate
+  boundaries are `gate_unknown`. Any rule keyed to "checkpoint at gate-green"
+  is a rule reviewers can never satisfy; correlating the background result
+  notification back to its launch would recover those boundaries and is the
+  obvious next tool increment.
+- **"When it starts paying" and "when it is safe to cut" are different calls,
+  and the gap is role-dependent.** Implementers cross ~120k at call 14–25 but
+  their first coherent boundary at that size is call 38–85; reviewers cross at
+  call 36–65 with a boundary at 60–88. The rule therefore has to *arm* on a
+  threshold and *cut* on the next boundary, not fire on the threshold itself.
+- **Percent-of-run rules do not survive contact with the data.** "First
+  gate-green/commit after 25% of the run" resolves on 3 of 11 transcripts,
+  produces 86–94% of the achievable single-checkpoint saving where it does, and
+  on `a6b116` selects the run's only commit — at 98.8% — for **−0.90%**
+  savings. An agent cannot know its run length in advance anyway.
+- **Some runs should never be checkpointed.** The 81-call consumer-sweep agent
+  has zero boundaries of any kind (it writes nothing, runs nothing, commits
+  nothing) and the two pack assemblers turn negative at a 100k restart cost.
+  "Do not checkpoint" is a valid output of the rule, not a failure of it.
 
 ### Caveats
 
