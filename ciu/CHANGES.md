@@ -15,6 +15,11 @@ gate runs; the commit subjects remain the traceable source of detail.
   with `CIU_SERVICES_PROFILE` / `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT`
   exported to the remote command; `ciu layouts` lists declarations (CIU-34, dstdns D-105 Q2,
   SPEC S7.5c)
+- feat(ciu): host-scoped local secrets — `[deploy.hosts.<name>.secrets]` (ASK_EXTERNAL /
+  GEN_LOCAL only) materialized under the project store's `hosts/<host>/` namespace,
+  resolvable before any Vault exists on the target; `ciu host-secrets <host>
+  [--materialize | --list | --path NAME] [-y]`, explicit-only, values never printed
+  (CIU-35, SPEC S14.3a)
 
 ## [6.1.0] - 2026-08-19
 <!-- cmru: generated -->

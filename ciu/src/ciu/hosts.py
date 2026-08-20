@@ -13,6 +13,13 @@ import tomllib
 from pathlib import Path
 
 from .config_constants import MACHINE_DIR
+from .secrets.directives import SecretSpec, parse_value
+
+# S14.3a — the only directive kinds legal at host scope (S4.2 six kinds).
+# Vault-dependent (ASK_VAULT, GEN_TO_VAULT), ephemeral (GEN_EPHEMERAL) and
+# in-place-referenced (ASK_FILE) kinds are meaningless before a host is
+# adopted, so they are refused here rather than silently mis-resolved.
+HOST_SCOPE_KINDS = frozenset({"ASK_EXTERNAL", "GEN_LOCAL"})
 
 
 def load_hosts(repo_root: Path) -> dict:
@@ -35,6 +42,32 @@ def load_hosts(repo_root: Path) -> dict:
                 hosts = doc.get("hosts")
             return hosts if isinstance(hosts, dict) else {}
     return {}
+
+
+def _parse_host_secrets(host_name: str, secrets_table: dict) -> dict[str, SecretSpec]:
+    """Parse + validate one host's [deploy.hosts.<host>.secrets] subtable (S14.3a).
+
+    Each entry is parsed with the EXISTING ``directives.parse_value`` (never
+    reimplemented) and only ``HOST_SCOPE_KINDS`` (ASK_EXTERNAL, GEN_LOCAL) are
+    accepted. Any other directive — or any grammar violation — raises a tagged
+    ``[S14.3a]`` error naming host, entry and the reason.
+    """
+    specs: dict[str, SecretSpec] = {}
+    for entry_name, raw_value in secrets_table.items():
+        try:
+            spec = parse_value(entry_name, raw_value, f"deploy.hosts.{host_name}.secrets")
+        except ValueError as exc:
+            raise ValueError(
+                f"[S14.3a] host '{host_name}', entry '{entry_name}': {exc}"
+            ) from None
+        if spec.kind not in HOST_SCOPE_KINDS:
+            raise ValueError(
+                f"[S14.3a] host '{host_name}', entry '{entry_name}': directive "
+                f"'{spec.kind}' is not allowed at host scope; only ASK_EXTERNAL "
+                f"and GEN_LOCAL resolve before a host is adopted"
+            )
+        specs[entry_name] = spec
+    return specs
 
 
 def get_host(repo_root: Path, name: str, *, admin: bool = False) -> dict:
@@ -65,4 +98,35 @@ def get_host(repo_root: Path, name: str, *, admin: bool = False) -> dict:
         # Remove admin sub-table from the base config to avoid confusion
         host_cfg.pop("admin", None)
 
+    # S14.3a — host-scoped secret directives are validated here (so a malformed
+    # table aborts any flow that touches the host) but are POPPED before return:
+    # a caller asking for connection facts never receives secret directives.
+    if "secrets" in host_cfg:
+        _parse_host_secrets(name, host_cfg.pop("secrets"))
+
     return host_cfg
+
+
+def get_host_secrets(repo_root: Path, name: str) -> dict[str, SecretSpec]:
+    """Return the host's parsed, validated secret directives (S14.3a).
+
+    ``{}`` when the host declares no ``[deploy.hosts.<name>.secrets>`` table.
+    Raises ValueError (same contract as ``get_host``) when the hosts file or
+    the host is missing, or a tagged ``[S14.3a]`` error on a bad entry.
+    """
+    hosts = load_hosts(repo_root)
+    if not hosts:
+        raise ValueError(
+            f"[SPEC J] No hosts file found. Create <repo>/.ciu.hosts.toml or "
+            f"~/.ciu/hosts.toml with [deploy.hosts.{name}] entries."
+        )
+    if name not in hosts:
+        available = sorted(hosts.keys())
+        raise ValueError(
+            f"[SPEC J] Host '{name}' not found in the hosts inventory. "
+            f"Available hosts: {available or '(none)'}"
+        )
+    host_data = hosts[name]
+    if not isinstance(host_data, dict) or not isinstance(host_data.get("secrets"), dict):
+        return {}
+    return _parse_host_secrets(name, host_data["secrets"])

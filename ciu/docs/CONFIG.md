@@ -604,6 +604,7 @@ for these hosts. Extra host keys:
 | `activate` | Activation entrypoint. A **string** (CIU appends the verb) or a **per-verb table** (`bootstrap`/`apply`/`health`/`rollback`). Required for `--thin`. |
 | `push_mode` | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to `tar`+`scp` when rsync is missing on the control host or target. |
 | `bundle_excludes` | List of top-level paths excluded from the pushed bundle (default `[".git"]`); applied identically to the rsync and tar+scp paths. |
+| `secrets` | [S14.3a](#s143a--host-scoped-local-secrets-ciu-35) — host-scoped local secret directives subtable (ASK_EXTERNAL / GEN_LOCAL only). |
 
 ```toml
 [deploy.hosts.web]
@@ -662,3 +663,56 @@ CIU_SSH_TRANSPORT=paramiko    # opt into the paramiko transport
 ```
 
 `import ciu` and all non-SSH verbs work with paramiko absent.
+
+### `[deploy.hosts.<name>.secrets]` — host-scoped local secrets [S14.3a]
+
+**The whole point of the ask:** before a host is adopted there is no Vault on
+the target, yet the operator still needs to get ONTO it — an SSH bootstrap key,
+a Tailscale single-use authkey. Host-scoped secrets are the existing S4 secret
+machinery pointed at a `hosts/<host>/` namespace, resolvable **before any Vault
+exists**. Once the host is adopted, the same values are movable to Vault by the
+existing directives.
+
+Only **`ASK_EXTERNAL`** and **`GEN_LOCAL`** are allowed at host scope — any
+other directive (ASK_VAULT, GEN_TO_VAULT, ASK_FILE, GEN_EPHEMERAL) is refused
+with a tagged `[S14.3a]` error, because Vault-dependent and ephemeral kinds are
+meaningless before a host is adopted.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `ASK_EXTERNAL:<env>[,<env>]` | — | Resolve from `$<env>` / `CIU_SECRET_<NAME>`, else reuse the store file, else prompt (TTY + not `-y`), else tagged `[S4.13]` abort. |
+| `GEN_LOCAL:<locator>` | — | Generate a fresh token once, reuse on later runs. The shared grammar requires the `<locator>` payload, but at host scope the store path is the **entry name**, so the locator is inert. |
+
+**Store namespace.** Files land at `<repo>/.ciu/secrets/hosts/<host>/<entry_name>`
+(dirs `0700`, atomic write + flock). The per-stack global-uniqueness rule S4.6
+deliberately does **not** apply across host namespaces: two hosts may declare
+the same entry name without collision. `get_host` validates the subtable but
+**pops** it from the dict transport callers receive — connection facts never
+carry secret directives.
+
+**Explicit-only; values are never printed.** `ciu host-secrets <host>
+[--materialize | --list | --path <name>] [-y]` is the only materialization
+path; nothing happens implicitly inside `ssh` / `up --host`.
+
+**Worked example — the ask, end to end** (a Tailscale single-use authkey + an
+SSH bootstrap key per host, materialized, then consumed by a bootstrap command
+over `ciu ssh`):
+
+```toml
+[deploy.hosts.edge-a]
+ssh_host   = "edge-a.tailnet.ts.net"
+ssh_key    = "/path/to/edge-a-bootstrap-key"   # bootstrap only; move to Vault later
+known_host = "ssh-ed25519 AAAA…"
+
+[deploy.hosts.edge-a.secrets]
+tailscale_authkey = "ASK_EXTERNAL:TS_AUTHKEY"   # single-use; set in the shell
+ssh_bootstrap_key = "GEN_LOCAL:edge-a-bootstrap" # inert locator; entry name is the path
+```
+
+```bash
+export TS_AUTHKEY=tskey-auth-...                # never committed, never printed
+ciu host-secrets edge-a --materialize           # -> store file paths (never values)
+ciu host-secrets edge-a --list                  # names + present/absent
+TS_AUTHKEY_FILE=$(ciu host-secrets edge-a --path tailscale_authkey)
+ciu ssh edge-a -- "sh -c 'tailscale up --auth-key=\"$(cat "$TS_AUTHKEY_FILE")\"; …'"
+```

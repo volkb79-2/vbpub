@@ -87,6 +87,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
   SECRETS
     secrets list   [-d PATH]             list materialised secret names
     secrets reset  [--name N] [-y]       delete secret store files
+    host-secrets <host> [--materialize | --list | --path NAME] [-y]
+                                host-scoped local secrets (S14.3a, explicit-only)
 
   REMOTE (requires hosts file — see .ciu.hosts.toml)
     ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
@@ -296,6 +298,20 @@ ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
                  override repository root (alias: --root-folder)
   --name N       restrict reset to one secret name
   -y, --yes      assume yes to prompts
+""",
+    "host-secrets": """\
+ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
+  Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
+  entries declared under [deploy.hosts.<host>.secrets], materialized under
+  the project store's hosts/<host>/ namespace — resolvable BEFORE any Vault
+  exists on the target. Explicit-only: values are never printed and nothing
+  materializes implicitly inside ssh/up.
+
+  --materialize   resolve all declared entries (prompt rules identical to
+                  stack ASK_EXTERNAL: TTY + not -y); prints store file paths
+  --list          print entry names + store-file existence (never values)
+  --path NAME     print the store file path for one declared entry
+  -y, --yes       with --materialize, skip interactive prompts (S4.13)
 """,
     "check": """\
 ciu check [--profile NAME] [--live] [--phases N,M] [--define-root PATH]
@@ -1212,6 +1228,78 @@ def main() -> None:
     elif verb == "secrets":
         from .engine import main as engine_main
         raise SystemExit(engine_main(["secrets"] + rest))
+
+    elif verb == "host-secrets":
+        # S14.3a / CIU-35 — host-scoped local secrets. Explicit-only: values
+        # are NEVER printed and materialization never happens implicitly inside
+        # transport verbs.
+        import argparse as _ap
+        p = _ap.ArgumentParser(add_help=False)
+        p.add_argument("host", nargs="?", default=None)
+        p.add_argument("--materialize", action="store_true", default=False)
+        p.add_argument("--list", action="store_true", default=False)
+        p.add_argument("--path", dest="path_name", default=None)
+        p.add_argument("-y", "--yes", action="store_true", default=False)
+        opts, _ = p.parse_known_args(rest)
+        if opts.host is None:
+            print(
+                "ciu host-secrets <host> [--materialize | --list | --path <name>] "
+                "[-y]  (S14.3a)",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        modes = [opts.materialize, opts.list, opts.path_name is not None]
+        if sum(1 for m in modes if m) != 1:
+            print(
+                "[S14.3a] choose exactly one of --materialize, --list, --path <name>.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        from .hosts import get_host_secrets
+        try:
+            specs = get_host_secrets(repo_root, opts.host)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        from .secrets.materialize import host_secret_store
+        if opts.list:
+            if not specs:
+                print("(no host secrets declared)")
+            else:
+                for name in specs:
+                    store = host_secret_store(repo_root, opts.host, name)
+                    print(f"{name}  {'present' if store.exists() else 'absent'}")
+            raise SystemExit(0)
+        if opts.path_name is not None:
+            if opts.path_name not in specs:
+                print(
+                    f"[ERROR] host '{opts.host}' declares no secret '{opts.path_name}'. "
+                    f"Declared: {', '.join(sorted(specs)) or '(none)'}.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            print(host_secret_store(repo_root, opts.host, opts.path_name))
+            raise SystemExit(0)
+        # --materialize
+        from .secrets.materialize import materialize_host_secrets
+        try:
+            results = materialize_host_secrets(
+                repo_root,
+                opts.host,
+                specs,
+                assume_yes=opts.yes,
+                env=os.environ,
+            )
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        if not results:
+            print(f"host '{opts.host}': no secrets declared")
+        else:
+            for name, res in results.items():
+                print(f"{name} -> {res.file}")
+        raise SystemExit(0)
 
     elif verb == "check":
         from .deploy import main as deploy_main

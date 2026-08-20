@@ -35,7 +35,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | IMPLEMENTED on feature branch (`71f5ec79`); qualification pending P07 |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | OPEN — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19); qualification P07 pending, closes this row |
 | CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c) |
-| CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | OPEN — carved as ciu-P11-host-scoped-secrets |
+| CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | FIXED — `[deploy.hosts.<h>.secrets]` + `ciu host-secrets` (ciu-P11, S14.3a) |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
 | CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
@@ -132,10 +132,25 @@ lists declarations. Evidence: `Layout`/`resolve_layout`/`list_layouts` in
 transport); gate 100% line+branch; docs: SPEC S7.5c, CONFIG.md
 `[deploy.layouts.<name>]` section, CHANGES.md.
 
-**CIU-35 — host-scoped local secrets.** `ASK_EXTERNAL`/`GEN_LOCAL` entries keyed
-under `[deploy.hosts.<h>.secrets]` (SSH bootstrap key, Tailscale single-use
-authkey), resolvable by `ciu ssh`/`ciu up --host` *before* any Vault exists on the
-target, later movable to Vault by the existing directives.
+**CIU-35 — host-scoped local secrets.** **FIXED** on 2026-08-19 (ciu-P11):
+`[deploy.hosts.<h>.secrets]` now holds `ASK_EXTERNAL`/`GEN_LOCAL` entries
+(SSH bootstrap key, Tailscale single-use authkey) resolvable *before* any
+Vault exists on the target, later movable to Vault by the existing
+directives. Entries are parsed with the existing `directives.parse_value`
+(read-only) and only the two kinds are accepted at host scope — any other
+directive is a tagged `[S14.3a]` error naming host+entry+reason.
+`materialize_host_secrets` persists under the project store's
+`hosts/<host>/<entry_name>` namespace (0700 dirs, atomic write, flock; the
+per-stack global-uniqueness rule S4.6 deliberately does not apply across host
+namespaces). `get_host` validates the subtable but pops it before return —
+transport callers never see directives. `ciu host-secrets <host>
+[--materialize | --list | --path NAME] [-y]` is explicit-only and never
+prints values; nothing materializes implicitly inside `ssh`/`up --host`.
+Evidence: 30 tests in `tests/tests/test_ciu_host_secrets.py` (fake seams,
+tmp_path stores; closed-kind refusal, pop-before-return, store namespace,
+resolution order, no-value-printing, no implicit materialization); gate 100%
+line+branch; docs: SPEC S14.3a, CONFIG.md section + pre-Vault rationale +
+worked example, CHANGES.md.
 
 **CIU-36 — `landscape_id` dimension.** A first-class identity value (beside
 project/instance) exposed to templates and to S16 worktree instances, so a

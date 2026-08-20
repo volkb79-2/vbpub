@@ -14,9 +14,11 @@ Public API
 MaterializedSecret                      : dataclass (spec, value, file)
 stack_store(stack_dir) -> Path          : per-stack store dir (S4.9)
 project_store(repo_root) -> Path        : project store dir (S4.9, GEN_LOCAL)
-materialize(specs, ...) -> dict[str, MaterializedSecret]
-list_secrets(specs, stack_dir, repo_root) -> list[dict]   (S4.25)
-reset_secrets(stack_dir, repo_root, specs, names=None) -> list[Path]  (S4.25)
+  materialize(specs, ...) -> dict[str, MaterializedSecret]
+  list_secrets(specs, stack_dir, repo_root) -> list[dict]   (S4.25)
+  reset_secrets(stack_dir, repo_root, specs, names=None) -> list[Path]  (S4.25)
+  host_secret_store(repo_root, host_name, name) -> Path     (S14.3a store path)
+  materialize_host_secrets(repo_root, host_name, entries, ...)  (S14.3a)
 """
 
 from __future__ import annotations
@@ -345,12 +347,20 @@ def _materialize_one(
     env: Mapping[str, str],
     chown_fn: Callable[[Path, int | None, int | None], None],
     prompt_fn: Callable[[str], str],
+    store_path: Callable[[SecretSpec, Path, Path], Path] = _store_file,
 ) -> MaterializedSecret:
-    """Resolve and persist a single secret. See ``materialize`` for contract."""
+    """Resolve and persist a single secret. See ``materialize`` for contract.
+
+    ``store_path`` is an injectable ``(spec, stack_dir, repo_root) -> Path``
+    seam so the same resolution core (S4.8-S4.16) can persist into a
+    different namespace — host-scoped secrets use
+    ``project_store/repo/hosts/<host>/<name>`` (S14.3a) instead of the
+    per-stack/project defaults.
+    """
     kind = spec.kind
 
     def _persist(value: str) -> MaterializedSecret:
-        target = _store_file(spec, stack_dir, repo_root)
+        target = store_path(spec, stack_dir, repo_root)
         _write_store_file(target, value, spec, env=env, chown_fn=chown_fn)
         return MaterializedSecret(spec=spec, value=value, file=target)
 
@@ -368,7 +378,7 @@ def _materialize_one(
 
     # -- GEN_LOCAL (S4.8/S4.9/S4.11) --------------------------------------
     if kind == "GEN_LOCAL":
-        target = _store_file(spec, stack_dir, repo_root)
+        target = store_path(spec, stack_dir, repo_root)
         if target.exists():
             # The file IS the value (no TOML state).
             return _reuse(target)
@@ -400,7 +410,7 @@ def _materialize_one(
 
     # -- ASK_EXTERNAL (S4.13) ---------------------------------------------
     if kind == "ASK_EXTERNAL":
-        store_target = _store_file(spec, stack_dir, repo_root)
+        store_target = store_path(spec, stack_dir, repo_root)
 
         # 1) env[locator]
         value = env.get(spec.locator)
@@ -527,3 +537,75 @@ def reset_secrets(
                 target.unlink()
                 deleted.append(target)
     return deleted
+
+
+# ---------------------------------------------------------------------------
+# Host-scoped secrets (S14.3a / CIU-35)
+# ---------------------------------------------------------------------------
+
+def host_secret_store(repo_root: Path, host_name: str, name: str) -> Path:
+    """Store path for one host-scoped secret: ``project_store/hosts/<host>/<name>``.
+
+    The ``hosts/<host>/`` namespace is what lets two hosts declare the SAME
+    entry name without collision — the per-stack global-uniqueness rule S4.6
+    deliberately does NOT apply across host namespaces.
+    """
+    return project_store(repo_root) / "hosts" / host_name / name
+
+
+def materialize_host_secrets(
+    repo_root: Path,
+    host_name: str,
+    entries: Mapping[str, SecretSpec],
+    *,
+    assume_yes: bool,
+    env: Mapping[str, str] = os.environ,
+    chown_fn: Callable[[Path, int | None, int | None], None] | None = None,
+    prompt_fn: Callable[[str], str] | None = None,
+) -> dict[str, MaterializedSecret]:
+    """Resolve and materialize host-scoped secrets (S14.3a, CIU-35).
+
+    This is the EXISTING secret machinery pointed at a new namespace — not a
+    new secret system. Resolution uses the exact stack behaviours via
+    ``_materialize_one``: ASK_EXTERNAL resolves from ``env[locator]`` →
+    ``CIU_SECRET_<NAME>`` → existing store file → interactive prompt (TTY and
+    not ``assume_yes``) → tagged [S4.13] abort; GEN_LOCAL reuses the existing
+    store file or generates a fresh token. Values are persisted to
+    ``project_store/hosts/<host_name>/<entry_name>`` (0700 dirs, atomic write,
+    flock — the S4.9/S4.10/S4.26 machinery, reused verbatim).
+
+    Only ASK_EXTERNAL and GEN_LOCAL are legal here (hosts.get_host_secrets
+    enforces the closed set). Two hosts may declare the SAME entry name
+    without collision (S4.6 does not apply across host namespaces).
+
+    Returns ``dict[name, MaterializedSecret]``. Never prints a value.
+    """
+    entries = dict(entries)
+    repo_root = Path(repo_root)
+    chown_fn = chown_fn if chown_fn is not None else _default_chown
+    prompt_fn = prompt_fn if prompt_fn is not None else getpass.getpass
+
+    if not entries:
+        return {}
+
+    def _host_store(spec: SecretSpec, _stack_dir: Path, _repo_root: Path) -> Path:
+        return host_secret_store(repo_root, host_name, spec.name)
+
+    # S4.26 — serialize host-secret writes on the project lock (the host
+    # namespace lives under the project store).
+    project_lock = repo_root / MACHINE_DIR / LOCK_NAME
+    with _flock(project_lock):
+        results: dict[str, MaterializedSecret] = {}
+        for name, spec in entries.items():
+            results[name] = _materialize_one(
+                spec,
+                stack_dir=project_store(repo_root),
+                repo_root=repo_root,
+                vault=None,
+                assume_yes=assume_yes,
+                env=env,
+                chown_fn=chown_fn,
+                prompt_fn=prompt_fn,
+                store_path=_host_store,
+            )
+        return results
