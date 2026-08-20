@@ -241,3 +241,24 @@ Source: `dstdns nyxloom-trove/reports/dstdns-P110-REPORT.md` §"E-002 telemetry"
 
 Verdict: pack value now measured positive for BOTH roles (reviewer ~9 reads, implementer ~9 reads
 + call count halved). The two gaps are curation rules, both mechanical/scriptable.
+
+### E-002 addendum 5 — P111 carve round (pack under adversarial audit)
+
+- **Pack accuracy again 100%** on the carve reviewer's spot-checks (byte-diff of slices, every
+  line ref re-derived). Accuracy has now held across four consumers (carve reviewer x2,
+  implementer, fix-verification).
+- **The consumer-dimension gap survived a deliberate countermeasure**: the P111 carve RAN the
+  reverse-dep sweep (26 files classified) and still missed 2 of 6 live test consumers + the
+  second-order class (callers of `_auth_enabled()` that never name an env var). Reviewer's
+  formulation, now ledger doctrine (dstdns D-128 #10): a sweep counts only when (a)
+  all-tracked-file-types, (b) symbol-level not var-level, (c) its RESULT TABLE is written into
+  the carve. "A grep executed but not tabulated is an assertion, not a measurement."
+- **New pack-curation rule (gate-adjacent artifacts)**: the pack must carry the *gates the
+  package can trip* — coverage-lane configs (assay), oracle-coupled test machinery
+  (completeness-oracle match logic, intent-doc coverage lists) — not just the edit set +
+  consumers. All three were audit findings (D-128 B3/B6/E1).
+- **Slice titling matters**: a slice whose title claims content outside its range (D-129 R5)
+  costs the implementer a wrong assumption; title = what the byte range actually holds.
+- **Process (not pack) lesson worth porting to the design doc**: a handoff repair is unfinished
+  until the machine-read frontmatter and the prose body agree — the D-129 blocker was a repair
+  that landed 100% in the body while reviewers verify against the YAML (dstdns D-129).
