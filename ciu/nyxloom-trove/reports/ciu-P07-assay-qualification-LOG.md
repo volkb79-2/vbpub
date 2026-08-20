@@ -162,3 +162,11 @@ both invisible to that validation and both found by cheap live probes at review:
 Standing lesson re-confirmed (see checkpoint-B): an argv validated with any
 substituted component proves construction, not acceptance — every NEW gate argv
 gets its live probes at review.
+
+**Defect 3 (found by the first live gate run, 2026-08-20):** `sha256sum -c
+tools/assay/assay-2.1.0.pyz.sha256` resolves the pin's bare filename against
+the CWD (`ciu/`), not the pin's directory → `No such file or directory`,
+exit 1. The cmru precedent (`cmru.toml:50`) does `cd tools/assay && sha256sum
+-c assay-2.1.0.pyz.sha256`; the vendoring was copied, the invocation shape was
+not. Fixed to the subshell-cd form. Three argv defects total — all three from
+the same root cause (argv never executed end-to-end pre-review).

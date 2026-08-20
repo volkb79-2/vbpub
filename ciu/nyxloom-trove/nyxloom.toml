@@ -49,7 +49,7 @@ docs_dir = "docs"
 # worktree gitfiles, safe.directory, detached run form) and the checkpoint-A
 # review record in nyxloom-trove/reports/.
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && CGP=\"${CGROUP_PARENT_DEV_BACKGROUND:?CGROUP_PARENT_DEV_BACKGROUND must name the gate slice (no fallback)}\" && if [ -d /run/systemd/system ]; then [ \"$(systemctl show --property=LoadState --value \"$CGP\")\" = loaded ] || { echo \"gate slice $CGP is not LoadState=loaded\" >&2; exit 1; }; fi && docker run --rm --cgroup-parent=\"$CGP\" -e CGROUP_PARENT_DEV_BACKGROUND=\"$CGP\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && mkdir -p .assay && sha256sum -c tools/assay/assay-2.1.0.pyz.sha256 && /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'"]
+argv = ["bash", "-c", "set -euo pipefail && CGP=\"${CGROUP_PARENT_DEV_BACKGROUND:?CGROUP_PARENT_DEV_BACKGROUND must name the gate slice (no fallback)}\" && if [ -d /run/systemd/system ]; then [ \"$(systemctl show --property=LoadState --value \"$CGP\")\" = loaded ] || { echo \"gate slice $CGP is not LoadState=loaded\" >&2; exit 1; }; fi && docker run --rm --cgroup-parent=\"$CGP\" -e CGROUP_PARENT_DEV_BACKGROUND=\"$CGP\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && mkdir -p .assay && (cd tools/assay && sha256sum -c assay-2.1.0.pyz.sha256) && /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
 timeout_seconds = 1800
