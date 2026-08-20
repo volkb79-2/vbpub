@@ -191,3 +191,7 @@ version in `CLAUDE.md`. If V8 proves the mechanisms portable across CLIs, the
 discipline is promoted to each repo's `AGENTS.md`; otherwise it stays in
 `CLAUDE.md` files, and other-CLI agents simply get pattern (b)'s
 successor-spawn-from-files fallback, which needs no CLI support at all.
+
+---
+
+**Measurement log:** run data lives in [design-context-lifecycle-experiments.md](design-context-lifecycle-experiments.md) — one pre-registered E-NNN entry per run.
