@@ -1349,3 +1349,28 @@ calls carrying a `usage` block between the checkpoint (call 111) and the final c
 `jsonl-metrics` counts every assistant message carrying a `usage` block, and some turns can
 span more than one such message — but this is speculation, not a finding, and should not be
 treated as reconciled.
+
+### V1 addendum 2 — mechanism probe result (2026-08-20, controller-run after the probe agent stalled)
+
+Question: can the controller compact+resume an **Agent-tool subagent** headlessly (pattern a)?
+Subject: completed subagent `a48350cc76449f600` (P113 carve reviewer), transcript
+`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl` (240 lines, `isSidechain:true`,
+`sessionId` = the PARENT session's UUID, plus an `agentId` field).
+
+| attempt | command | result |
+|---|---|---|
+| 1 | `claude -p --resume a48350cc76449f600 …` | exit 1 — "not a UUID and does not match any session title" |
+| 2 | copy → `<projects>/<new-uuid>.jsonl` (symlink), resume `<new-uuid>` | exit 1 — "No conversation found with session ID" |
+| 3 | same, with every line's `sessionId` rewritten to `<new-uuid>` via jq | exit 1 — "No conversation found" (re-run by the controller with `timeout -k 5 240 … < /dev/null`; the probe agent's own attempt hung the harness Bash call and never returned — the agent was stopped) |
+
+**Conclusion:** `--resume` resolves sessions through an index the raw JSONL does not populate
+(the `isSidechain`/`agentId` shape, a missing first-line session record, or a sessions index
+elsewhere — not investigated further tonight). Therefore **pattern (a) is NOT available for
+Agent-tool subagents by file transformation**; it IS available for **CLI-child workers** started
+with `claude -p --session-id <uuid>` (V3/V4 above ran 22 such sessions with `--resume` and
+`--fork-session` behaving correctly headlessly). Operational consequence: a worker that should
+checkpoint→compact→resume must be launched as a CLI child (E-001/B1 style), not via the Agent
+tool; Agent-tool subagents keep the successor-brief respawn mechanism (E-007). The P113 reviewer
+(V1 addendum 1) therefore stands as the baseline datum, not a compaction datum.
+Side effect to watch: a symlinked fake session in the projects dir shows up in the operator's
+`/resume` list — removed after the probe.
