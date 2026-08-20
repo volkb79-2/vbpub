@@ -41,13 +41,20 @@ verification-shaped, favorable first case for a cheap model).
 **Measurements (fill after run).**
 | metric | value |
 |---|---|
-| haiku orientation: tool calls | |
-| haiku orientation: total tokens (task accounting) | |
-| brief size (tokens est) | |
-| delta: files read beyond floor | |
-| delta: floor files judged useless | |
-| controller lint: omissions found | |
-| controller carve: facts fetched outside brief | |
-| premium residual orientation: tool calls | |
+| haiku orientation: tool calls | 29 (harness) |
+| haiku orientation: total tokens (task accounting) | 78,848 |
+| brief size (tokens est) | ~3.2k (target was ≤15k) |
+| delta: files read beyond floor | 6 (auth model, pyproject package-data, __init__, dir listing, bake.hcl, full decisions.md) |
+| delta: floor files judged useless | 0 (12/12 used) |
+| controller lint: omissions found | 4 (see outcome) |
+| controller carve: facts fetched outside brief | ~6 spot-check reads (lint itself; carve then needed 0 extra) |
+| premium residual orientation: tool calls | _(pending — carve reviewer + implementer)_ |
 
-**Outcome / prompt refinements.** _(pending)_
+**Outcome / prompt refinements.**
+Brief was USABLE for the carve after controller lint. Lint findings (each → a template refinement):
+1. **Line numbers systematically wrong** (test-runner 88–90 → actual 148–150; render seams 62–102/97 → 78–105/155; meta.py 11–27 → 108–127). Behavior-level claims all verified TRUE. → R1: seams cited as file + symbol + grep-able anchor string; a line number may appear ONLY if pasted from `grep -n` output.
+2. **One scope-level error**: brief prescribed adding `Optional` unwrap logic to `_model_item_type`; reality = that logic already merged in P108 (`_optional_model_type`), the remaining defect is a docstring OVERCLAIM. The prompt's "if reality contradicts the task statement, SAY SO" duty was not honored — the agent rationalized the contradiction. → R3: for EVERY task item, require an explicit `already-done?` check against merged code, reported per-item.
+3. **Gate commands paraphrased wrong** (generic `pytest tests/unit -m unit -q`; canonical mock argv + flock + schema gate omitted). → R4: gate commands must be copied verbatim from the project guide, never paraphrased.
+4. **Self-estimated context off by 10×** (self: ~8k; harness: 78,848). → R5: drop self-estimates from delta.md; harness accounting only.
+5. Delta's own top finding was real: the floor's docker-bake.hcl pointer misdirected (pattern is inline per-Dockerfile). → R2: prompt author verifies floor pointers, or phrases them as search instructions with fallback.
+**Economics**: haiku 78.8k @ haiku price + ~10k controller lint reads vs. controller self-orienting (~80k @ premium). Brief (3.2k) now seeds carve + all premium dispatches.
