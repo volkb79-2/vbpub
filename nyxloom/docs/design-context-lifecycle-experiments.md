@@ -199,8 +199,9 @@ measured 2.56 B/tok). Load: **2 Read calls** (harness Read caps at 25k tok/call 
 load" has a ceiling; still 23→2 roundtrips vs baseline). Controller residual after pack: **1
 batched call** (4 facts the pack's slices missed: AuthSection fields, R6 field existence, UI
 page paths, consul_layer surface) → carve D-122 + lint-clean handoff authored with zero
-further reads. Tooling TODO: pack.sh range support (path:start-end) so curated packs are
-list-driven, not hand-built. E-005 delta first live use: carve reviewer receives pack@6e76813b
+further reads. ~~Tooling TODO: pack.sh range support (path:start-end) so curated packs are
+list-driven, not hand-built.~~ **Delivered** (dstdns@363c7f7a, 2026-08-20): `pack.py` replaces
+`pack.sh` whole (§4.1 — no shim, no dual path); `pack.sh` is deleted from the tree. E-005 delta first live use: carve reviewer receives pack@6e76813b
 + script-built delta (threshold logic already validated on the P109 window).
 
 
@@ -272,6 +273,99 @@ Source: branch REPORT §12 (opus, 479,721 subagent tokens / 210 calls / 46 min; 
 - Second confirmed gap: import-graph cost ("what importing sections.py COSTS") is invisible to content packs — 4 calls.
 - Sweep-tabulation doctrine worked: the implementer's OWN tabulated sweep caught a 4th missed consumer (comment-only), absorbed by directory-scope rather than enumeration — the D-128 B1 defense-in-depth held.
 - GUIDE.md deliberately unpacked (standing doc) — correct call, but O5 unrunnable without it; standing-doc reads are a fixed per-package orientation cost the pack cannot amortize.
+
+### E-002 addendum 7 — P113 telemetry (implementer + two-phase reviewer)
+
+**Tools.** `dstdns nyxloom-trove/orientation/jsonl-metrics.py curve` (per-agent growth) and
+`pack.py score <out-dir> --transcript <jsonl>` (pack fileset vs an agent's real read-set,
+resolved from the pack's own `=== <path> ===` slice headers rather than a hand-written
+read-list — the tool E-006 Task B's correction above says should supersede `overlap`).
+Four frozen subagent transcripts, package `gate-argv-and-stale-tests` (P113): implementer
+`afb3278ab0ac806c1`, code reviewer (two phases, resumed in place) `acf84a863aaed19c8`, carve
+reviewer `a48350cc76449f600`, pack assembler `a7ee445e6570bf3a8`.
+
+**Per-agent curve summary.**
+
+| transcript | role | calls | wall min | final context | cache-hit ratio | normalized cost | growth shape |
+|---|---|---:|---:|---:|---:|---:|---|
+| `afb3278ab0ac806c1` | P113 implementer (opus) | 277 | 20.3 | 262,152 | 0.9898 | 5,516,030.5 | roughly linear (knee call 6, 2.2%, +11,075) |
+| `acf84a863aaed19c8` | P113 code reviewer, two-phase | 131 | 15.7 | 187,638 | 0.9440 | 2,827,420.7 | roughly linear (knee call 3, 2.3%, +12,810) |
+| `a48350cc76449f600` | P113 carve reviewer | 146 | 18.8 | 217,237 | 0.9516 | 3,269,858.5 | roughly linear (knee call 3, 2.1%, +12,565) |
+| `a7ee445e6570bf3a8` | P113 pack assembler | 135 | 9.2 | 139,546 | 0.9772 | 1,740,553.5 | roughly linear (knee call 120, 88.9%, +7,521) |
+
+**Pack coverage (`pack.py score`).** The pack both roles actually received is the hand-built,
+implementer-shaped `nyxloom-trove/orientation/gate-argv-and-stale-tests/` (26-item read-list,
+19 resolved pack files, ~51k tok). The reviewer-shaped pack `pack.py build --role reviewer`
+would have produced (built dry-run against the same handoff + diff range) is scored
+separately for comparison.
+
+| pack | scored against | pack files | read-set | ∩ | ∩/read-set | ∩/pack | dead (unused) | missing (outside pack) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| hand pack (implementer-shaped) | P113 implementer | 19 | 30 | 17 | 56.7% | 89.5% | 2 | 13 |
+| hand pack (implementer-shaped) | P113 code reviewer | 19 | 25 | 6 | 24.0% | 31.6% | 13 | 19 |
+| reviewer-shaped dry-run pack | P113 code reviewer | 22 | 25 | 6 | 24.0% | 27.3% | 16 | 19 |
+
+The implementer's own 2 unused pack files were `workflow_gateway.py` (slice) and `GUIDE.md`
+(slice); its 13 missing (read but never packed) were led by `health_server.py` (×3),
+`.worktrees/…/tests/test_startup_readiness_wiring.py` (×2, worktree-path duplicate of a
+pack file), `test_api_endpoints_coverage.py` (×2), `test_role_matrix_contract.py` (×2) — the
+same "consumer files found by the implementer's own grep, not the pack" pattern as E-002
+addendums 4/5/6.
+
+**Path-normalization artifact (measurement caveat, both packs).** Both `pack.py score`
+tables above undercount real overlap by a few files: the reviewer read `nyxloom.toml`,
+`dstdns-P113-LOG.md`, `dstdns-P113-REPORT.md`, `test_legacy_task_routes_gone.py`, and
+`test_selftest_probes.py` **via their `.worktrees/p113-gate-argv-and-stale-tests/…` paths**,
+which `pack.py score`'s exact-path match reports as "missing" even though the *same file* by
+canonical path sits in that pack's "unused" list — e.g. the reviewer-shaped pack's full
+`dstdns-P113-LOG.md`/`REPORT.md` entries (packed precisely because "every reviewer reads it
+to check claims against reality", E-006 conclusions) were in fact read, just at a path the
+scorer doesn't fold together. Normalizing those 5 duplicates would raise the reviewer-shaped
+pack's ∩ from 6/22 (27.3%) toward ~11/22 (~50%) — `pack.py score` needs a worktree-path
+normalization pass to report this correctly; recorded here as a tooling gap, not fixed in
+this pass.
+
+**Self-reported vs measured (implementer).** Source: `dstdns
+nyxloom-trove/reports/dstdns-P113-REPORT.md` §"E-002 §12 telemetry" (self) vs the curve/score
+above (harness-measured).
+
+| metric | self-reported (REPORT §12) | measured |
+|---|---|---|
+| tool calls this session | ~103 (Bash/Read/Edit/Write/Agent-tool combined; several Bash calls chained) | 277 assistant calls carrying a `usage` block — **2.7×** the self-report |
+| peak context | "stayed well under the ~300k checkpoint threshold" — no number given | final context 262,152 (cache-hit ratio 0.9898) |
+| pack coverage | "essentially all" of the 26-item read-list read from the live tree, + 2 named reads outside it (`test_role_enforcement.py`, `test_role_matrix_contract.py`) + `auth.py`/`api_endpoints.py`/`classification_routes.py` + one empirical fakeredis probe | `pack.py score`: read-set 30 files, ∩=17 (56.7% of read-set), 2 pack files unused, 13 read-but-unpacked |
+
+The self-report's "~103 tool calls" and the harness's 277 assistant calls disagree by
+~2.7×; the self-report was very likely counting distinct *actions* (with chained
+multi-command Bash heredocs collapsed to one) where the harness counts every assistant
+message carrying a `usage` block. Left unreconciled here — flagged as a live instance of
+this doc's own convention that self-reports are approximate.
+
+**Conclusion.** The implementer-shaped pack served the implementer role well (89.5% of the
+pack used, dead weight only 2/19 files) but reproduced E-006's Task B prediction on the
+reviewer role almost exactly: 68.4% dead weight (13/19) here vs 75–76% previously measured —
+same order of magnitude, same failure mode, a 4th confirmation. **The reviewer-shaped pack
+did NOT do meaningfully better on this instance, raw** — 72.7% dead weight (16/22) vs the
+implementer-shaped pack's 68.4% (13/19), i.e. numerically *worse* before normalization. The
+path-normalization correction above narrows this — reviewer-shaped drops to ~50% dead weight
+(11/22) vs implementer-shaped's own normalized ~63% (12/19), so the reviewer-shaped variant
+is the better of the two once the worktree-path artifact is corrected for, but the margin is
+modest and neither is close to the ~25–32% overlap E-006 called out as the reviewer-tailored
+target. Both packs missed the *same* 19-file real
+need: `test_authz_boundary.py`, `test_a36c_route_corpus_run.py`,
+`scripts/testing-exec.sh`, `scripts/schema-gate.sh`, `scripts/coverage_gate.py`,
+`classification_routes.py`, and several contract tests
+(`test_prefix_parity.py`, `test_corpus_api.py`, `test_classification_routes_reflected.py`,
+`test_openapi_contract.py`, `test_coverage_gate.py`, `test_corpus_ownership.py`). This is a
+**new gap class beyond E-002 addendum 5's "gate-adjacent artifacts" rule**: that rule packs
+the gate *declarations* (`[gates.*]`/`[lanes.*]` blocks), but P113 widened a gate's argv and
+deleted tests, so the reviewer needed the gate *scripts themselves*
+(`testing-exec.sh`/`schema-gate.sh`/`coverage_gate.py`) and the security/contract test suites
+that consume the changed surface — neither `pack.py build --role reviewer`'s diff-file rule
+nor its gate-declaration rule reaches those. Net: **E-006's ~75% dead-weight prediction held
+a 4th time**, but the reviewer-shaped variant `pack.py` already implements did not close the
+gap on this package — the missing content was a curation-rule gap (gate scripts + consumer
+test suites), not a role-shaping problem `--role reviewer` already solves.
 
 ## E-006 — context-growth curves, checkpoint simulation, reviewer read-set overlap (P110/P111, measured 2026-08-20)
 
@@ -345,6 +439,35 @@ Pack fileset = `read-list.txt` ∪ files resolved from `grep '^=== ' pack.md` sl
 | P111 code reviewer | 2 | 2 | 3 | 1 |
 
 Recurring `read_set∖pack` files across reviewers: prior-round `LOG.md`/`REPORT.md` (own gate evidence), `nyxloom-trove/GUIDE.md` + `decisions.md` (standing cross-reference), `docs/ARCHITECTURE-OVERVIEW.md` / `docs/product/SCREEN-API-MAP.md` / `docs/PRODUCT-CAPABILITIES-AND-ROADMAP.md` / `docs/DESIGN-AUTHORITY.md` / `docs/CORE-WORKFLOW-STATUS.md` (authority docs), and adjacency/test files never in the edit set (`landscape.py`, `config_endpoints.py`, `test_scope_authority.py`, `test_consul_deploy_control.py`, `scripts/schema-gate.sh`).
+
+> **Correction (2026-08-20, filed during the P113 telemetry pass, dstdns@f7b38def).**
+> `jsonl-metrics.py overlap`'s `parse_readlist` kept the **whole row** of a read-list line as
+> the "path" before dstdns@f7b38def — inflating `pack_fileset` (and therefore the dead-weight
+> counts) for any read-list using the two-space-column `<path>[:a-b]  <kind>  <why>` format
+> `pack.py` introduced (dstdns@363c7f7a). `pack.py score` (which parses `pack.md`'s own
+> `=== <path> ===` slice headers rather than re-parsing a hand-written read-list) is the
+> superseding measure going forward.
+>
+> Re-run against the fixed tool on the two packs Task B actually used — both still present at
+> `dstdns nyxloom-trove/orientation/{config-plane-api,auth-config-cutover}/` against the same
+> three frozen transcripts:
+>
+> | reviewer | pack | pack files | read-set | ∩ | read_set∖pack | pack∖read_set (dead) | ∩/read_set | ∩/pack |
+> |---|---|---:|---:|---:|---:|---:|---:|---:|
+> | P110 code reviewer (`ae091ba`) | config-plane-api | 17 | 26 | 4 | 22 | 13 | 15.4% | 23.5% |
+> | P111 carve reviewer (`a7a50a`) | auth-config-cutover | 28 | 34 | 19 | 15 | 9 | 55.9% | 67.9% |
+> | P111 code reviewer (`ae3da9`) | auth-config-cutover | 28 | 15 | 7 | 8 | 21 | 46.7% | 25.0% |
+>
+> **Identical to the original table above, digit for digit.** Both `config-plane-api/read-list.txt`
+> and `auth-config-cutover/read-list.txt` predate `pack.py` and are plain one-column path lists
+> (no `:a-b` / kind / why columns), so the bug the fix targets never tripped on these two specific
+> read-lists — it only inflates read-lists in the newer two-space-column format (e.g.
+> `gate-argv-and-stale-tests`, scored directly via `pack.py score` in the P113 addendum below,
+> never through `overlap`). **Task B's dead-weight figures (76%/75%/…) stand as originally
+> recorded** — the correction is that the *mechanism* for computing them was fragile, not that
+> these particular numbers were wrong. `pack.py score` remains the recommended tool for every
+> pack built by `pack.py` itself, since it reads the pack's own slice headers rather than a
+> hand/script-maintained read-list.
 
 ### Conclusions
 
@@ -1155,3 +1278,74 @@ Artifacts (throwaway, outside both repos):
 `…/scratchpad/v3-chain/` — `prompts/` (the seven prompt files), `runs/*.json` (raw results),
 `runs/usage.tsv`, `runs/chain.env` (the snapshot chain S0→S3 + W1→W3), `notes/summary-{1,2,3}.md`,
 `notes/orientation-pack.md`, `lib.sh` (the `call` wrapper that enforces the four invariants).
+
+## V1 addendum — first live checkpoint (P113 code reviewer, 2026-08-20)
+
+**Setup.** V1 (design doc §5): "(a) full cycle on a real worker: threshold → checkpoint →
+controller compacts with the agent's own prompt → resume → next work item." First live
+attempt, run mid-review against the P113 code reviewer — an **Agent-tool subagent**
+(`acf84a863aaed19c8`), not a top-level CLI session — at the E-008 ~120k arm point, phase
+boundary = the reviewer's own blind-phase/reconcile-phase split.
+
+**Datum** (`scratchpad/v1-live-attempt-p113-reviewer.md`, quoted in full — it is small):
+> Checkpoint taken at end of blind phase: ~112 assistant turns, last call cache_read=156,694 /
+> cache_creation=2,967 / output=2,820 (>120k arm point; phase boundary = reviewer's coherent
+> boundary per E-008). Agent wrote retention prompt (401 words) + standalone scratch findings
+> file as instructed. `claude -p --resume acf84a863aaed19c8 --model opus --output-format json
+> "/compact <prompt>"` → exit 1 in 1.9s: "--resume requires a valid session ID or session
+> title when used with --print ... not a UUID and does not match any session title." ⇒
+> Agent-tool subagents are NOT directly CLI-resumable; pattern (a) needs either the probe's
+> JSONL→UUID-session transformation or a top-level CLI child (`claude -p --session-id`) as the
+> worker. Fallback executed: SendMessage "PHASE 2" (in-place resume, same mechanism as
+> P110–P112). Measure phase-2 per-call cache_read (expect ~157k+ per call) from the JSONL
+> after completion → the cost the compaction would have removed.
+
+**Measured** (`jsonl-metrics.py simulate`, pinning the checkpoint at the nearest call to the
+datum's numbers — 131 calls total in the frozen transcript):
+
+- `simulate --checkpoints 85` lands on **call 111** (85% of 131 calls), `ckpt_context =
+  159,663`. The datum's `cache_read 156,694 + cache_creation 2,967 = 159,661`, within 2 tokens
+  of the tool's context figure — this pins call 111 as the actual checkpoint call (the tool
+  has no fixed-index checkpoint flag, so the nearest-percentage bucket is the closest
+  available match; the 2-token gap is the call's small `input` component).
+- **Phase 2 = calls 112–131, 20 calls** (not the "9" the dstdns ledger self-reports — see
+  discrepancy note below), holding in a **158k–188k context band** the entire way (curve's
+  final context = 187,638) — an ~18% climb over 20 calls, far flatter than phase 1's climb
+  from 41k→160k over 111 calls. No subcommand exposes a raw per-call `cache_read` column
+  without dumping transcript content (forbidden by this task), so per-call context is used as
+  the closest measurable proxy: at the transcript's overall 0.944 cache-hit ratio, every
+  phase-2 call re-paid roughly **156k–186k tokens of prior context as cache_read**, call after
+  call, for 20 consecutive calls.
+- Modeled compacted-resume at the pinned checkpoint (`simulate --checkpoints 85`, three brief
+  sizes):
+
+  | brief size | actual (real, uncompacted) run cost | modeled restart cost | savings |
+  |---|---:|---:|---:|
+  | 25k | 2,827,420.7 | 2,037,302.1 | 27.94% |
+  | 50k | 2,827,420.7 | 2,118,552.1 | 25.07% |
+  | 100k | 2,827,420.7 | 2,281,052.1 | 19.32% |
+
+  Real phase 2 (as actually run, in-place resume, no compaction) cost **~790k more
+  normalized-cost units** than a modeled compact-and-resume at the same call would have, under
+  the 25k-brief assumption — 27.94% of the whole run's cost, consistent with E-006/E-007's
+  finding that checkpointing pays for itself even this late (85% through a run).
+
+**Mechanism finding, stated plainly (per the task instruction).** Agent-tool subagent ids
+(`acf84a863aaed19c8`) are **not** CLI session UUIDs, so `claude -p --resume <sid> "/compact
+..."` cannot target one directly — the CLI rejected it outright. Pattern (a) as designed
+works only against a real CLI session id. Making it work for a subagent needs **either** the
+mechanism probe's JSONL→UUID-session transformation **or** running the worker as a top-level
+CLI child (`claude -p --session-id ...`) instead of an Agent-tool subagent — **which of the
+two is correct is decided by the separate, pending mechanism probe, not here.** The fallback
+actually executed was the interim SendMessage-based in-place resume (the same mechanism
+P110–P112 used), which is what the measurements above are computed from — this is a
+measurement of the *fallback's* cost, not of pattern (a) succeeding.
+
+**Discrepancy worth recording.** dstdns ledger `D-140` self-reports "phase 2 cost 9 calls on a
+~157k+ cached prefix" (`dstdns@c8b05a5e`); the measured transcript shows **20** assistant
+calls carrying a `usage` block between the checkpoint (call 111) and the final call (131). The
+"9" and the measured "20" do not reconcile from the artifacts available here. A plausible
+(unverified) read: the self-report's "calls" meant higher-level conversational turns, while
+`jsonl-metrics` counts every assistant message carrying a `usage` block, and some turns can
+span more than one such message — but this is speculation, not a finding, and should not be
+treated as reconciled.
