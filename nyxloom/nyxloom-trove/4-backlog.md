@@ -478,7 +478,9 @@ items:
     FAILED in 3 variants (resume leaf-selection skips synthetic lines) -- drive the CLI,
     never file surgery. Prior art to study: rocketlabs-ai/infinite-context (session
     rebuild + compact-compatible smart compact), swyxio/claude-compaction-viewer,
-    badlogic's cross-CLI compaction research gist; (3) integrate with dispatch: long
+    badlogic's cross-CLI compaction research gist. DESIGN DOC:
+    docs/design-context-lifecycle.md (patterns a=checkpoint-compact-resume,
+    b=snapshot-chain; validation plan V1-V9; adoption phases); (3) integrate with dispatch: long
     tasks continue across compactions without re-billing full transcripts, and
     controller-side fallback stays checkpoint+successor-spawn (works today, no
     service needed). Origin: dstdns operator directive 2026-08-20; complements the
