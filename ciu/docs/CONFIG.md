@@ -683,6 +683,19 @@ meaningless before a host is adopted.
 | `ASK_EXTERNAL:<env>[,<env>]` | — | Resolve from `$<env>` / `CIU_SECRET_<NAME>`, else reuse the store file, else prompt (TTY + not `-y`), else tagged `[S4.13]` abort. |
 | `GEN_LOCAL:<locator>` | — | Generate a fresh token once, reuse on later runs. The shared grammar requires the `<locator>` payload, but at host scope the store path is the **entry name**, so the locator is inert. |
 
+**Known limitation: `CIU_SECRET_<NAME>` is a process-env override, NOT
+host-scoped.** `ASK_EXTERNAL` resolves `CIU_SECRET_<NAME>` before prompting
+(same as stack-level secrets — see "Six Secret Directives" above), but that
+env var is a single global name in the ciu process's environment; it is not
+namespaced per host. If two hosts both declare an entry named `tailscale_authkey`
+and the operator exports `CIU_SECRET_TAILSCALE_AUTHKEY=...` once, **both**
+hosts' materializations see the same value — there is no way to scope the
+override to one host. This is safe for a value that is genuinely shared
+across hosts, but **unsafe for a single-use key** (e.g. a Tailscale
+authkey meant for exactly one machine): use the interactive prompt or
+`$<env>` (a per-invocation shell variable you control, not exported into a
+long-lived shell) for those, not `CIU_SECRET_<NAME>`.
+
 **Store namespace.** Files land at `<repo>/.ciu/secrets/hosts/<host>/<entry_name>`
 (dirs `0700`, atomic write + flock). The per-stack global-uniqueness rule S4.6
 deliberately does **not** apply across host namespaces: two hosts may declare

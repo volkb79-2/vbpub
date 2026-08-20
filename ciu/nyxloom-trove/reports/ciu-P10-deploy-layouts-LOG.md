@@ -117,3 +117,34 @@ table and :112 host-entry-not-a-table (two new model tests). Final green:
    O1 ("host inventory passed in (load_hosts result)"); `get_host` is still
    called per host inside the push loop and its refusal aborts before
    transport (tested).
+
+## Correction (checkpoint C review, controller nit d) — never rewrite, append only
+
+Two counting errors in the original entries above, found by the adversarial
+checkpoint review and left uncorrected in place per the LOG/REPORT convention
+(the numbers above are the ORIGINAL claims, wrong or right, as recorded at the
+time):
+
+1. **§4 "13 tests" for `test_ciu_cli_layouts.py` is wrong** — the file as
+   merged in this package's own commit collected **12** tests, not 13 (the
+   "16 tests" figure for `test_ciu_deploy_layouts.py` in the same bullet was
+   already correct). Re-verified by direct collection
+   (`pytest tests/tests/test_ciu_cli_layouts.py --collect-only -q`) against the
+   pre-checkpoint-C tree.
+2. **§"Controlled red during development" says "three times"; §"Iteration-
+   signal result" says "twice" ("The run went red twice before green")** —
+   these two sentences describe the SAME development run and disagree with
+   each other. Neither was corrected retroactively (which one is right is no
+   longer reconstructible from the surviving venv-run transcripts); flagging
+   the inconsistency itself, per the checkpoint review's evidence-discipline
+   finding, is the actionable outcome here — a future package's LOG should
+   state the red-count once, not in two places that can drift.
+
+The checkpoint-C fix session (B1-B4 + nits) added tests on top of this
+package's own baseline: `test_ciu_deploy_layouts.py` is now 18 (16 + 2:
+empty-bundles rejection, joint-bundle-conflict validation),
+`test_ciu_cli_layouts.py` is now 19 (12 + 7: `--profile=core` equals form,
+`--dir`, `--thin`/`--bootstrap`/`--rollback` [3 cases], get_host-failure-on-
+a-later-host, last-host-failure). Both counts are current-tree facts,
+verifiable by `pytest --collect-only -q`, not restatements of the numbers
+above.

@@ -135,6 +135,9 @@ pip install -e .                 # install (see docs/README.md for build/wheel)
 ciu env generate --define-root <repo>           # detect machine facts → ciu.env (S2.8)
 ciu up --dir <repo>/<stack>                      # render + run one stack
 ciu up --profile <host-profile>                  # orchestrate many
+ciu up --layout <name>                           # push a named host→bundles plan (S7.5c)
+ciu layouts                                      # list declared [deploy.layouts.<name>]
+ciu host-secrets <host> --materialize            # pre-Vault local secrets per host (S14.3a)
 ```
 
 `ciu --help` and `ciu <verb> --help` list the public commands and their options.

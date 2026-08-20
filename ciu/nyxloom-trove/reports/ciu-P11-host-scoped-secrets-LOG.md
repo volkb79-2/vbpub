@@ -118,3 +118,18 @@ touched.
 3. Escalate_if #2 not triggered: the worktree-automation branch HAS merged;
    `test_ciu_documentation_contract.py` passes unmodified against the new
    docs shape (checked in the same targeted run).
+
+## Correction (checkpoint C review, controller nit d) — never rewrite, append only
+
+This LOG's own §4 count ("31 tests") was already correct — re-verified by
+direct collection against the pre-checkpoint-C tree. The wrong figure ("30
+tests") lived in `KNOWN_ISSUES_TODO_BACKLOG.md`'s CIU-35 evidence paragraph,
+not here; that tracker doc has been corrected to 31 separately (it is a
+living tracker, not a frozen LOG, so it was edited in place rather than
+appended-to).
+
+The checkpoint-C fix session (P11-B1: `hosts.py`'s `[S14.3a]` error no longer
+interpolates the upstream `directives.parse_value` message, so a pasted
+secret value never reaches stderr) added one test on top of this package's
+own baseline (31 + 1 = 32, current-tree fact, verifiable by
+`pytest tests/tests/test_ciu_host_secrets.py --collect-only -q`).

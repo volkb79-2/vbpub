@@ -124,13 +124,29 @@ the SPEC-J push (S14.2) to each host in declaration order with
 `CIU_SERVICES_PROFILE` set to the host's bundles and
 `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT` exported to the
 remote command; a host failure aborts naming the not-yet-deployed remainder.
-`--layout` is mutually exclusive with `--host`/`--profile`; `ciu layouts`
-lists declarations. Evidence: `Layout`/`resolve_layout`/`list_layouts` in
-`src/ciu/deploy_pkg/layouts.py` (14 model tests in
-`tests/tests/test_ciu_deploy_layouts.py`, 12 CLI tests in
+`--layout` is mutually exclusive with `--host`/`--profile`/`--dir`/`--thin`/
+`--bootstrap`/`--rollback` (prefix-aware, so `--profile=core` is caught too —
+see checkpoint C below); `ciu layouts` lists declarations. Evidence:
+`Layout`/`resolve_layout`/`list_layouts` in `src/ciu/deploy_pkg/layouts.py`
+(18 model tests in `tests/tests/test_ciu_deploy_layouts.py`, 19 CLI tests in
 `tests/tests/test_ciu_cli_layouts.py` — fake ssh seams only, no live
-transport); gate 100% line+branch; docs: SPEC S7.5c, CONFIG.md
-`[deploy.layouts.<name>]` section, CHANGES.md.
+transport); venv run (`.venv/bin/python run-ciu-tests.py`), 100% line+branch
+— the iteration signal, not the ship gate; tester-unified gate run by the
+controller at checkpoint review. Docs: SPEC S7.5c, CONFIG.md
+`[deploy.layouts.<name>]` section, CHANGES.md. **Checkpoint C review
+(2026-08-20)** found and fixed 3 blocking findings against the original
+ciu-P10 merge: an empty `bundles = []` list was accepted and resolved to
+"deploy every phase" on the remote (`resolve_profiles`' empty-list fallback,
+the same shape as the 2026-07-16 dstdns incident) instead of being refused;
+the `--host`/`--profile` mutual-exclusion check missed the `--profile=core`
+equals form and didn't guard `--dir`/`--thin`/`--bootstrap`/`--rollback` at
+all; and the push implementation was duplicated between `--host` and
+`--layout` (already drifted — the layout path lacked the `docker_optional`
+advisory) and is now one shared `_push_host` helper. Pre-checkpoint-C baseline
+was 16 model / 12 CLI tests, not the 14 model tests this row previously
+claimed (the P10 LOG's own count of 13 CLI tests was also off by one — see
+its appended correction note); the 18/19 above are current-tree totals after
+checkpoint C's added tests.
 
 **CIU-35 — host-scoped local secrets.** **FIXED** on 2026-08-19 (ciu-P11):
 `[deploy.hosts.<h>.secrets]` now holds `ASK_EXTERNAL`/`GEN_LOCAL` entries
@@ -146,11 +162,25 @@ namespaces). `get_host` validates the subtable but pops it before return —
 transport callers never see directives. `ciu host-secrets <host>
 [--materialize | --list | --path NAME] [-y]` is explicit-only and never
 prints values; nothing materializes implicitly inside `ssh`/`up --host`.
-Evidence: 30 tests in `tests/tests/test_ciu_host_secrets.py` (fake seams,
+Evidence: 32 tests in `tests/tests/test_ciu_host_secrets.py` (fake seams,
 tmp_path stores; closed-kind refusal, pop-before-return, store namespace,
-resolution order, no-value-printing, no implicit materialization); gate 100%
-line+branch; docs: SPEC S14.3a, CONFIG.md section + pre-Vault rationale +
-worked example, CHANGES.md.
+resolution order, no-value-printing, no implicit materialization); venv run
+(`.venv/bin/python run-ciu-tests.py`), 100% line+branch — the iteration
+signal, not the ship gate; tester-unified gate run by the controller at
+checkpoint review. Docs: SPEC S14.3a, CONFIG.md section + pre-Vault rationale
++ worked example, CHANGES.md. Also documented: the `CIU_SECRET_<NAME>` env
+override is NOT host-scoped — the same exported value lands in every host's
+namespace (known limitation, unsafe for single-use keys). **Checkpoint C
+review (2026-08-20)** found and fixed 1 blocking finding (P11-B1): a pasted
+value instead of a directive (e.g. a Tailscale authkey typo'd into
+`[deploy.hosts.<h>.secrets]`) flowed verbatim into
+`directives.parse_value`'s "[S4.2] Unknown directive '<token>'" message,
+which `hosts.py` re-raised unchanged and the CLI printed to stderr — from
+every `get_host()` caller, not just `ciu host-secrets`. `hosts.py` now raises
+a fixed, non-leaking `[S14.3a]` reason instead of interpolating the upstream
+message. Pre-checkpoint-C baseline was 31 tests, not the 30 this row
+previously claimed (the P11 LOG's own count of 31 was already correct); the
+32 above is the current-tree total after checkpoint C's added test.
 
 **CIU-36 — `landscape_id` dimension.** A first-class identity value (beside
 project/instance) exposed to templates and to S16 worktree instances, so a
