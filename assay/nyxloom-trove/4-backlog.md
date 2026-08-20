@@ -1077,5 +1077,9 @@ ciu-P07 vendored the pyz per the cmru precedent:
 3. **Forward note:** async long lanes (mutation campaigns, fuzzing) will be
    additional assay lanes with large budgets, triggered by Buildkite agents on
    remote hosts (and by nyxloom/user/controller alike), all calling the same
-   project `run-gate.sh` — see B007's multi-target canary for the shape of
-   bounded long-running judgment.
+   project `run-gate.py` — see B007's multi-target canary for the shape of
+   bounded long-running judgment. (D-111 refinement: the entrypoint is a
+   shared `run-gate.py` reading a per-project `gates.toml` it alone parses;
+   assay-judged lanes are referenced there by name — `assay.toml` keeps
+   owning judgment, `gates.toml` owns orchestration. One parser, argv for
+   every consumer.)
