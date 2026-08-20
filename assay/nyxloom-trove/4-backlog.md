@@ -1020,3 +1020,37 @@ needs no schema surface and B004's implementation is blocked on ciu regardless
 of when the code ships. What has changed is that B007 is no longer a solo
 migration nobody is blocked on, and its carve should be written knowing it will
 be asked to carry a passenger.
+
+## B008 — R1 base resolution on a merge-commit HEAD silently narrows the changed-line floor
+
+**Filed 2026-08-20 (dstdns Fable controller, from ciu's first two production gate runs
+of the vendored assay-2.1.0.pyz).** Reproduced, not speculated.
+
+A lane declares `judge.base = "origin/main"`. When HEAD is a **merge commit**
+(operator merged origin/main INTO the feature branch, then ran the gate), the
+verdict's `judgment.resolved.base` came back as **HEAD^1 (the pre-merge branch
+tip)**, not `git merge-base origin/main HEAD`:
+
+- Measured in ciu worktree at merge tip `cbd0f03a` (parents `01abdce2` branch,
+  `f882fc24` = origin/main): `git merge-base origin/main HEAD` → `f882fc24`,
+  but `resolved.base` → `01abdce2`. R1 therefore judged `HEAD^1..HEAD` — i.e.
+  ONLY the content the merge brought in from main (already gated), while the
+  branch's own ~2100 inserted lines fell OUTSIDE the changed-line floor. R1
+  reported PASS with the floor vacuously narrow — a silent-wrong-scope, not an
+  error.
+- Non-merge tips resolve correctly (P07 run at `db861ac2` → base `98549075` =
+  merge-base, as declared).
+
+**Why it matters:** merging the base branch into a feature branch before
+gating is a standard pre-merge validation step; on exactly those runs the
+changed-line floor quietly stops covering the feature. The whole-source
+100% floor (R0) masks it for lanes that have one — for any lane with
+`fail_under < 100`, R1 is the only changed-line protection and it is the run
+where it silently evaporates.
+
+**Ask:** resolve `base` as `git merge-base <declared-base> HEAD` uniformly,
+merge tips included — or, if first-parent semantics on merge tips is
+intentional, surface it loudly in the verdict (a `base_resolution:
+"first-parent"` field + a WARN) so a reviewer can tell the floor's actual
+scope. **Workaround used:** re-run the gate after merging to main, where
+first-parent and merge-base coincide.
