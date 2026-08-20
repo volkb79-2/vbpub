@@ -98,3 +98,66 @@ seams (in which case the tiered-orientation win reduces to: cheap discovery swee
 to-read list + open-questions surfacing, which is still positive ROI at haiku prices but NOT
 the "premium never pays orientation" claim in §3 of the design doc — that claim should be
 softened pending E-002).
+
+---
+
+## E-001 addendum 3 · 2026-08-20 · session-JSONL anatomy of the P109 roles (feeds the E-002 redesign)
+
+Mechanical analysis of the three real role sessions (extractor: parse tool_use/tool_result
+blocks; work-start = first content-writing call, excluding worktree setup):
+
+| metric | implementer | code reviewer | carve reviewer |
+|---|---|---|---|
+| session JSONL | 2,267,717 B / 749 lines | 769,510 B / 191 lines | — |
+| orientation slice (to first write) | 349,972 B (15%), **23 tool calls** | interleaved (diff-driven, no clean boundary) | whole session IS orientation-shaped |
+| orientation tool-result content | 131,899 B | — | — |
+| distinct files read (whole session) | 50 (20 re-read) | 12 (undercount — reads via `git diff`, not cats) | 26 |
+| on-disk union of orientation reads | 135,392 B (~34k tok) | — | — |
+
+**Overlap:** impl∩carve-rev = **24** (near-total — both consume carve-time facts);
+impl∩code-rev = 8; three-role union = **55 files**.
+
+**The two real findings:**
+1. **Content was already near-lossless** — 131.9 KB of tool results vs a 135.4 KB on-disk
+   union: the implementer barely read anything it didn't need. The E-001 brief failed
+   precisely because it tried to compress content that does not compress (implementation
+   needs the actual bytes). Operator call (2026-08-20): STOP condensing; the orientation
+   payload IS the read content.
+2. **The waste is roundtrips, not bytes** — 23 orientation calls ≈ one per file. A cleaned
+   equivalent (prompt + ONE batched read turn carrying the same 135 KB) is ~140 KB of
+   history: ~2.5× smaller than the raw orientation slice in bytes, ~10% smaller in content
+   tokens (framing overhead), but **23→1 API turns** — the latency + per-turn prefix
+   re-read is the real cost, and a single-turn prefix is maximally cache-stable.
+
+## E-002 (REDEFINED after E-001) · orientation pack — model-free build, single-call load
+
+Supersedes the R1–R5 "better brief" plan: no brief at all.
+1. **Read-list derivation (no model):** handoff "Context to read first" + the carve-time
+   union (carve reviewer read-set ≈ 24/26 shared with impl) + prior-session extractor
+   output for similar tasks. The list is data, produced by scripts.
+2. **Pack build (no model):** concatenate the files verbatim with `=== <path> @<rev> ===`
+   headers into `orientation-pack.md`. Zero tokens spent. Regenerate per input_revision —
+   never stale, never lossy.
+3. **Worker dispatch:** "FIRST action: read <pack> in ONE call; then the handoff; then
+   work." Measure: residual orientation reads beyond the pack (target ≤5), orientation
+   roundtrips (target ≤3 vs baseline 23), total session tokens vs the 354k E-001 baseline.
+4. Cheap-model orientation survives ONLY for genuine list-DISCOVERY on unexplored
+   components — and its deliverable is then the LIST (verified paths), never prose.
+
+## E-003 · same-model frozen orientation session (the validated B1 fork mechanism + batching)
+
+For CLI-session lanes: orientation session batch-reads the pack/list in ≤3 calls
+(`claude -p`, same model+effort+toolset as workers, --exclude-dynamic-system-prompt-sections),
+terminates with a bare ack; every role forks it (`--resume <sid> --fork-session`) = pure
+cache reuse over a single-turn, maximally-stable prefix. This composes E-002's batching
+with the already-validated L24 mechanism. Per-model minting still applies.
+
+## E-004 (conditional) · mechanical JSONL rewrite → synthetic clean orientation history
+
+Rewriting a messy exploratory session's JSONL into a synthetic minimal history
+(prompt + batched-read turns, valid uuid/parentUuid chain) is UNVALIDATED and carries a
+known precedent: direct forging of compact-boundary/summary lines FAILED (resume
+leaf-selection skipped synthetic lines, 2026-08-20). A full-chain rewrite is a different
+shape and may work — but E-002/E-003 make it mostly unnecessary by PREVENTING the mess
+(sessions born clean). Only worth validating if we need to salvage large exploratory
+sessions. Park until a concrete need.

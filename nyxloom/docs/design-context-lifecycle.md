@@ -85,6 +85,15 @@ not 150k — and the brief doubles as a reviewable, versionable artifact on disk
 > (R1–R5-refined prompt), treat the validated win as: cheap discovery sweep + verified
 > to-read list + open-questions surfacing at cheap-model prices, contained by the
 > layered pipeline.
+>
+> **PIVOT (E-001 addendum 3, same day):** condensation itself was the wrong move —
+> measured, the implementer's orientation content (131.9 KB read) ≈ the on-disk union
+> (135.4 KB): implementation-grade orientation does not compress. The orientation payload
+> is now the READ CONTENT ITSELF: a model-free `orientation-pack.md` (verbatim
+> concatenation of the read-list, built by script at zero tokens) loaded by the worker in
+> ONE call (E-002), or a same-model batched-read frozen session forked per role (E-003 —
+> the L24 mechanism with a single-turn prefix). Cheap models are used only to DISCOVER
+> read-lists on unexplored components, never to compress or prescribe.
 
 **Tiered orientation** (operator refinement 2026-08-20, same day): the orientation
 session itself runs on a CHEAP model (haiku/sonnet) — it gets a refined
