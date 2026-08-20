@@ -262,3 +262,13 @@ Verdict: pack value now measured positive for BOTH roles (reviewer ~9 reads, imp
 - **Process (not pack) lesson worth porting to the design doc**: a handoff repair is unfinished
   until the machine-read frontmatter and the prose body agree — the D-129 blocker was a repair
   that landed 100% in the body while reviewers verify against the YAML (dstdns D-129).
+
+### E-002 addendum 6 — P111 implementer telemetry
+
+Source: branch REPORT §12 (opus, 479,721 subagent tokens / 210 calls / 46 min; P110 was 599,953/341/74min on a bigger package).
+
+- **29 orientation calls before first edit** (vs P110's 12): 10 pack loads (1 cat overflow + 9 Reads — the 236KB pack exceeded single-cat), 8 handoff+decisions (2 "output too large" while heading-hunting), 11 own measurement (consumer sweep, import-graph, read-site map).
+- **NEW GAP CLASS — "content right, bytes wrong":** the pack showed the sections.py/mains regions accurately, but `Edit` needs byte-exact CURRENT strings, so the implementer re-read every EDIT-target region anyway ("the pack proves what a file CONTAINS, not what editing it COSTS"). Rule: for edit-set files the pack saves comprehension reads but NOT the pre-edit read; only full-file pack entries at the exact input_revision can substitute, and only if the tool can trust line offsets. Slices of edit targets are comprehension-only value.
+- Second confirmed gap: import-graph cost ("what importing sections.py COSTS") is invisible to content packs — 4 calls.
+- Sweep-tabulation doctrine worked: the implementer's OWN tabulated sweep caught a 4th missed consumer (comment-only), absorbed by directory-scope rather than enumeration — the D-128 B1 defense-in-depth held.
+- GUIDE.md deliberately unpacked (standing doc) — correct call, but O5 unrunnable without it; standing-doc reads are a fixed per-package orientation cost the pack cannot amortize.
