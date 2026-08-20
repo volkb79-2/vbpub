@@ -69,8 +69,16 @@ a serialization point (~90 s + tokens); depends on `/compact` CLI behavior
 
 ## 3. Pattern (b) — snapshot chain: fork → work → iteration-summary → re-fork
 
-**Loop:** maintain a frozen **snapshot** session (initially: the fact-only
-orientation at a commit). Each iteration: controller forks the snapshot → agent
+**Snapshot 0 is a DISTILLED brief, not the raw orientation session** (operator
+refinement 2026-08-20): a raw orientation routinely closes at ~150k — most of it
+tool output and search dead-ends with no forward value. So orientation runs as a
+throwaway session whose *deliverable* is a crafted 20-30k **orientation brief**
+(all load-bearing facts from the base commit: architecture seams, contracts,
+file:line anchors, decisions in force); snapshot 0 is a fresh session seeded
+with that brief (+ ack turn), frozen. Every later fork then re-reads 20-30k,
+not 150k — and the brief doubles as a reviewable, versionable artifact on disk.
+
+**Loop:** maintain a frozen **snapshot** session (snapshot 0 as above). Each iteration: controller forks the snapshot → agent
 works → at iteration end (or threshold) the agent **self-compacts its own
 iteration**: writes an iteration-summary (what changed since the snapshot, what
 the *known future work* needs — and deliberately not what it won't) → exits, its
@@ -131,6 +139,7 @@ can use (a) once to survive it, then return to the chain at the next boundary.
 |---|---|---|
 | V1 | (a) full cycle on a real worker: threshold → checkpoint → controller compacts with the agent's own prompt → resume → next work item | post-resume work correctly uses pre-compact facts (seams, decisions); no re-derivation turns; usage shows small context |
 | V2 | (a) designed-vs-auto A/B: same transcript, default auto-compact vs agent-authored prompt | blind grading of the two summaries against a checklist of the facts the NEXT item actually needed |
+| V2b | (b) distilled-brief quality: orientation session → brief → fresh seeded snapshot; a probe task run from the snapshot vs from the raw orientation session | equal task performance at ~5-7× less re-read cost; brief omissions surface as measurable re-reads |
 | V3 | (b) 3-iteration chain on a real task | per-iteration cache_creation ≈ summary size (warm) or ≈ snapshot size (cold), never ≈ transcript; final work product correct |
 | V4 | (b) parallel forks: implementer + reviewer from the same mid-chain snapshot | both pure-reuse (within TTL); reviewer independence preserved (no leaked implementer conclusions in the snapshot) |
 | V5 | (b) anticipation failure injection: summary deliberately omits a fact the next iteration needs | agent recovers via durable files at bounded cost (re-read, not restart); measures the mitigation |
