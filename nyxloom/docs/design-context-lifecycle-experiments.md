@@ -161,3 +161,30 @@ leaf-selection skipped synthetic lines, 2026-08-20). A full-chain rewrite is a d
 shape and may work — but E-002/E-003 make it mostly unnecessary by PREVENTING the mess
 (sessions born clean). Only worth validating if we need to salvage large exploratory
 sessions. Park until a concrete need.
+
+## E-005 · orientation delta-extension (operator-proposed 2026-08-20) — reuse across base movement
+
+A frozen orientation (pack or session) at rev R stays valid as main moves to R′ by APPENDING
+a script-built delta instead of re-orienting:
+- `git diff --name-only R..R′` ∩ read-list → those files' diffs VERBATIM (changed content
+  directly known — no in-model git archaeology);
+- changed files OFF the read-list → names only (awareness);
+- controller re-orients fresh past mechanical thresholds (>20 changed files since R, or
+  >10 commits per orientation — tune from data).
+Economics: for session lanes the frozen prefix stays byte-identical → cache-read pricing
+(~10%) on every warm fork, delta = only new tokens. COLD forks re-create the prefix cache
+once either way — the unconditional wins are prefix stability across N dispatches and zero
+model tokens spent deriving what changed. Validation: run a wave where carve→carve-review→
+impl→code-review all consume ONE pack@R + growing delta; measure delta sizes, threshold
+trips, and any staleness-caused defect (target: zero).
+
+## Sizing rule — breadth ∝ expected forks ÷ expected turns-per-fork (operator, 2026-08-20)
+
+Pack breadth is an economics dial, not a quality one: broad content is paid once per fork
+at load, then RE-BILLED (at cache rates) every turn that fork lives.
+- Many SHORT, diverging tasks off one base (sweeps, per-file fixes, review fan-out) →
+  broader shared pack: amortizes across forks, avoids per-fork custom builds.
+- Few LONG-RUNNING spawns (a full implementer) → narrow, task-cut pack: dead weight
+  compounds over hundreds of turns.
+Record per experiment: pack tokens, forks served, mean turns/fork → cost/fork; refine the
+dial from measurements.
