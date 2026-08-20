@@ -50,7 +50,7 @@ verification-shaped, favorable first case for a cheap model).
 | controller carve: facts fetched outside brief | ~6 spot-check reads (lint itself; carve then needed 0 extra) |
 | premium carve-reviewer (opus): tokens / calls | 168,169 / 47 |
 | premium reviewer reads saved by brief | **0** (role-structural — see below) |
-| premium implementer residual orientation | _(pending)_ |
+| premium implementer (sonnet, 354k tok / 266 calls) residual orientation | **24 files** before first edit; brief spared "effectively nothing" (cautionary value only) |
 
 **Outcome / prompt refinements.**
 Brief was USABLE for the carve after controller lint. Lint findings (each → a template refinement):
@@ -79,3 +79,22 @@ to-read list", and that list omitted every artifact behind the review's 5 blocki
 - **B3 lesson (generalized rule, dstdns D-119 #2):** a package whose oracles need a
   gate-runner dependency gets it PRE-LANDED on main by the controller — a branch-side
   Dockerfile edit is inert when the gate builds/reuses images from main.
+
+
+**E-001 CONCLUSION (2026-08-20, all three roles measured).**
+With a brief of THIS quality (3.2k tokens, ~5× under target density; wrong line numbers
+throughout; two wrong prescriptions), premium context savings were **~zero for every role**:
+reviewer 0 reads saved (role-structural, R6), implementer 0 of 24 residual reads saved (brief
+"too shallow and partly incorrect to write code from"), carver saved only the initial
+discovery sweep (the controller still spot-checked ~6 claims and found the misses that
+mattered). What the experiment DID validate: (a) the layered pipeline fully contained the
+cheap model's errors — nothing wrong shipped; (b) the haiku run itself was cheap (78.8k @
+haiku price) and its delta.md correctly identified a real prompt defect; (c) the implementer
+self-checkpointed cleanly at ~354k. **The open question moves, not closes**: E-002 must test
+whether a brief built under R1–R5 (grep-anchored seams, per-item already-done checks, verbatim
+gate commands, density at target, floor pointers verified) changes the savings — or whether
+brief value is intrinsically capped because implementation-grade work always re-reads its
+seams (in which case the tiered-orientation win reduces to: cheap discovery sweep + a
+to-read list + open-questions surfacing, which is still positive ROI at haiku prices but NOT
+the "premium never pays orientation" claim in §3 of the design doc — that claim should be
+softened pending E-002).
