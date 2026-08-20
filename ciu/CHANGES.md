@@ -21,6 +21,34 @@ gate runs; the commit subjects remain the traceable source of detail.
   [--materialize | --list | --path NAME] [-y]`, explicit-only, values never printed
   (CIU-35, SPEC S14.3a)
 
+### Changed
+- feat(ciu): Assay-backed implementation gate — CIU's gate is now judged by the released,
+  hash-pinned Assay CLI (vendored `tools/assay/assay-2.1.0.pyz` + `.sha256`, `sha256sum -c`
+  verified each run), replacing the retired `nyxloom.coverage_gate`; `assay.toml` declares the
+  full-suite lane (100% whole-source line+branch) with an R1 changed-line floor on
+  `base..HEAD` inside Assay's isolated snapshot; the gate slice resolves only from
+  `$CGROUP_PARENT_DEV_BACKGROUND` (verified `LoadState=loaded`, fail-closed) and the gate's
+  status is the Assay job's own (P07, CIU-28/CIU-29, SPEC S18)
+
+## [6.2.0] - 2026-08-20
+<!-- cmru: generated -->
+<!-- cmru: source-end=ac964b60f0d8ca4691997378b1c6246827d513cd -->
+
+### Added
+- feat(ciu): Assay-backed implementation gate + vendored pinned Assay (P07, CIU-28/29, S18) (b68e8a4d)
+
+### Fixed
+- fix(ciu): P07 gate argv defect 3 — sha256sum -c must run from the pin's directory (cmru precedent shape) (db861ac2)
+- fix(ciu): P07 gate argv — pass CGROUP_PARENT_DEV_BACKGROUND into the container; LoadState check only where systemd is reachable (1a29b9f4)
+- fix(ciu): pass through the suite's ambient env vars in the assay lane (S18.2) (f087b00d)
+
+### Changed
+- ciu-P07: BLOCKED — released Assay v2.1.0 not installed in tester-unified (escalate_if #1) (3271681f)
+- AGENTS: manual tester-unified gate runs — the four traps (estate-wide) + pointer at ciu's gate declaration (98549075)
+
+### Documentation
+- docs(ciu): P07 qualification LOG — unblock via vendoring, lane validation, canaries, adversarial review (ccaf841f)
+
 ## [6.1.0] - 2026-08-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=7eefaba031d9b4aeae6929b2e197caa2d30a1b0e -->

@@ -95,3 +95,44 @@ acceptance probe at review.**
    (P10, P11).
 2. P06's LOG is controller-authored (implementer session ended pre-LOG); its content was
    verified against the diff, not taken from the implementer's summary on trust.
+
+---
+
+# Checkpoint P07 review — ciu-P07-assay-qualification — 2026-08-20 (same reviewer)
+
+**Verdict: APPROVED — MERGED (`ac964b60`) + RELEASED (`ciu-v6.2.0`).**
+Implementer: opencode; unblocked from its own BLOCKED (3271681f) via the
+controller-approved cmru vendoring precedent.
+
+## Evidence
+
+- **Vendored artifact integrity:** sha256 `f2f13021…` identical across the
+  vendored pyz, its pin file, and cmru's qualified copy (measured).
+- **Hermetic gate (the NEW Assay-backed argv, run by the reviewer):** Assay
+  verdict `ciu: PASS` at tip `db861ac2`, R0 PASS (computed, verified_by_assay)
+  + R1 PASS (changed-line floor vs base=main `98549075`, allow_excluded=false,
+  require_branch=true), container exit 0. Verdict JSON read directly
+  (`.assay/verdict-ciu.json`), not inferred from the wrapper.
+- **Release:** `cmru release --project ciu` from the vbpub root, exit 0,
+  GitHub release `ciu-v6.2.0` (wheel + sha256 present, verified via gh).
+  *Evidence blemish (mine):* the transaction console was piped through
+  `tail`, so the release-internal gate lines were not captured and the
+  isolated worktree's logs are cleaned on success. Non-blocking: the
+  authoritative gate evidence is the reviewer's own hermetic run above, on
+  byte-identical content. Lesson: never pipe `cmru release` through tail —
+  capture the full stream.
+
+## Three argv defects found + fixed AT REVIEW (commits 1a29b9f4, db861ac2)
+
+The committed gate argv had never executed end-to-end (the lane was validated
+with a substitute interpreter — correctly recorded as such in the LOG). Live
+probes at review found: (1) missing `-e CGROUP_PARENT_DEV_BACKGROUND` — the
+image does not bake it, `env_passthrough` cannot pass what does not exist, the
+four governance tests red-by-construction; (2) unconditional LoadState check —
+the devcontainer's `systemctl` is a shim exiting 0 with advisory stdout, so
+the check could never pass in any containerized gate context (now guarded by
+`[ -d /run/systemd/system ]`); (3) `sha256sum -c` resolved the pin's bare
+filename against the wrong CWD (cmru's `cd tools/assay &&` shape restored).
+Full detail in the P07 LOG's controller-review addenda. **Fourth consecutive
+checkpoint where the only defects were in never-executed invocations against
+a 100%-green suite.**

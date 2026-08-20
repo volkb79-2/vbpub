@@ -729,3 +729,23 @@ ciu host-secrets edge-a --list                  # names + present/absent
 TS_AUTHKEY_FILE=$(ciu host-secrets edge-a --path tailscale_authkey)
 ciu ssh edge-a -- "sh -c 'tailscale up --auth-key=\"$(cat "$TS_AUTHKEY_FILE")\"; …'"
 ```
+
+## Implementation gate artifacts [S18]
+
+The gate is configured by two artifacts in the repository (not runtime config —
+documented here because a consumer adopts the gate, not the keys):
+
+- **`assay.toml`** — the lane declaration: the full suite under pytest-cov
+  (100% whole-source line+branch) inside Assay's isolated snapshot, plus an
+  R1 judgment of the changed-line floor on `base..HEAD` from the coverage
+  artifact. See [SPEC S18](SPEC.md#s18--implementation-gate-assay-backed).
+- **`tools/assay/assay-<version>.pyz` + `.sha256`** — the hash-pinned, vendored
+  released Assay CLI. The gate verifies the pin (`sha256sum -c`) before every
+  run. Bump both files together (never one alone).
+- **`.assay/verdict-ciu.json`** (gitignored) — the retained Assay verdict from
+  the last gate run, used as review evidence.
+
+The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_BACKGROUND`
+(no literal, no fallback) and verified `LoadState=loaded` before `docker run` where systemd is
+reachable (`[ -d /run/systemd/system ]`; containerized contexts skip the
+check — S18.3, P07 review fix).

@@ -20,20 +20,38 @@ architecture = "docs/ARCHITECTURE.md"
 configuration = "docs/CONFIG.md"
 docs_dir = "docs"
 
-# CIU's implementation gate is intentionally not the interactive cockpit.  The
-# tester-unified image derives its dependency closure from ciu[ssh,test], then
-# executes the bound worktree under pytest-cov + xdist.  `pytest-cov` (rather
-# than `coverage run`) is necessary: xdist workers are separate processes.
-# The second command rejects every changed executable CIU source line that the
-# coverage JSON marks missing; both shell layers fail closed.
+# CIU's implementation gate is intentionally not the interactive cockpit.  It
+# runs inside tester-unified and is judged by the RELEASED Assay CLI — a
+# hash-pinned, vendored zipapp (tools/assay/assay-2.1.0.pyz + .sha256),
+# verified by sha256sum before use and invoked explicitly; Assay source is
+# never imported and no nyxloom evidence-judgment command remains.
+#
+# The lane (assay.toml) runs CIU's full suite under pytest-cov (whole-source
+# 100% line AND branch via run-ciu-tests.py) inside Assay's isolated snapshot,
+# and Assay itself judges the changed-line floor on base..HEAD plus the
+# coverage artifact (R1). The verdict is retained at .assay/verdict-ciu.json
+# in the bound worktree (gitignored) as review evidence.
+#
+# Cgroup (estate doctrine): the gate resolves the container slice ONLY from
+# $CGROUP_PARENT_DEV_BACKGROUND (no literal, no fallback — absent is a hard
+# error). The LoadState=loaded pre-check runs ONLY where systemd is actually
+# reachable ([ -d /run/systemd/system ] — measured at checkpoint review: the
+# devcontainer ships a systemctl SHIM that exits 0 with advisory stdout, so an
+# unconditional check can never pass in any containerized gate context; there
+# the trusted source is devcontainer.json per S18.3). The var is ALSO passed
+# INTO the container (-e): the four governance tests read it ambiently (S15.2)
+# and the lane env_passthrough can only pass through what exists — measured at
+# review: the image does not bake it, so without -e the suite reds. The assay
+# job's own exit status is the gate's final status (no wrapper/pipe masking).
+#
 # Manual reproduction of this gate: see vbpub AGENTS.md "Manual tester-unified
 # gate runs — the four traps" (cgroup env passthrough, dual-path mount for
 # worktree gitfiles, safe.directory, detached run form) and the checkpoint-A
 # review record in nyxloom-trove/reports/.
 [gates.tester-unified]
-argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && export PYTHONPATH=src && /opt/tester-venv/bin/python run-ciu-tests.py && PYTHONPATH=../nyxloom/src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --repo . --base main --coverage-json coverage.json --source src/ciu'"]
+argv = ["bash", "-c", "set -euo pipefail && CGP=\"${CGROUP_PARENT_DEV_BACKGROUND:?CGROUP_PARENT_DEV_BACKGROUND must name the gate slice (no fallback)}\" && if [ -d /run/systemd/system ]; then [ \"$(systemctl show --property=LoadState --value \"$CGP\")\" = loaded ] || { echo \"gate slice $CGP is not LoadState=loaded\" >&2; exit 1; }; fi && docker run --rm --cgroup-parent=\"$CGP\" -e CGROUP_PARENT_DEV_BACKGROUND=\"$CGP\" -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree}/ciu && mkdir -p .assay && (cd tools/assay && sha256sum -c assay-2.1.0.pyz.sha256) && /opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'"]
 phase = "implementation"
-asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
+asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
 timeout_seconds = 1800
 environment = "tester-unified"
 

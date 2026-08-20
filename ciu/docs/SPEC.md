@@ -2687,3 +2687,46 @@ includes it in `docker compose down`'s `-f` args.
 
 `--json` grammar and `S17.4`'s exposure are independent: neither depends on
 the other, and a project may adopt either alone.
+
+## S18 — Implementation gate (Assay-backed)
+
+The implementation gate is the boundary between "green in the devcontainer
+venv" (never a ship signal) and a reviewable verdict. It runs inside
+`tester-unified` and is **judged by the released Assay CLI artifact**, never
+by imported Assay source and never by a nyxloom evidence-judgment command.
+
+- **S18.1** *Pinned, verified artifact.* The gate consumes the Assay CLI from
+  a hash-pinned, vendored zipapp (`tools/assay/assay-<version>.pyz` + a
+  `.sha256` sidecar in the same directory). Before every run the gate MUST
+  verify the pin (`sha256sum -c`); a failed verification fails the gate. The
+  artifact is the released, immutable `assay-v*` build (built from the wheel,
+  not `src/`). tester-unified deliberately does not bake an ambient Assay
+  version.
+- **S18.2** *Lane contract.* `assay.toml` declares the `ciu` lane: the full
+  suite under pytest-cov with a 100% whole-source line AND branch fail-under
+  (`run-ciu-tests.py`) as the lane command, inside Assay's isolated snapshot
+  (`snapshot_selection = "repository-minus-unsafe-symlinks"`, declaring the
+  monorepo's three absolute-target security-fixture symlinks verbatim). The
+  lane also declares R1: Assay judges the changed-line floor on
+  `base..HEAD` (`fail_under = 100.0`, `require_branch = true`,
+  `allow_excluded = false`) from the lane's coverage artifact. A new unsafe
+  symlink anywhere in the repository reds the lane until its owner declares
+  or untracks it (fail-closed).
+- **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice
+  ONLY from `$CGROUP_PARENT_DEV_BACKGROUND` — no literal slice, no fallback;
+  an absent variable is a hard error. Before `docker run` it verifies the
+  named systemd slice is `LoadState=loaded` on the host; an unloaded or
+  missing slice fails the gate. A typo'd slice name that systemd silently
+  auto-creates as a transient slice is an operator error, not a value CIU
+  invents.
+- **S18.4** *Status and evidence.* The gate's exit status IS the Assay job's
+  own exit status (no wrapper/pipe masking: the lane command's failure, or
+  the verify step's failure, propagates as the gate's failure). The verdict
+  is retained at `.assay/verdict-ciu.json` in the bound worktree (gitignored)
+  for review. A lane run against a working tree with untracked, unignored
+  files is refused (`NO_MEASUREMENT`/`DIRTY_TREE`) — the gate diffs committed
+  objects, so the tree must be clean.
+- **S18.5** *Manual reproduction.* Hand-run of the gate follows vbpub
+  AGENTS.md "Manual tester-unified gate runs — the four traps": cgroup env
+  passthrough, dual-path mount for worktree gitfiles, `safe.directory`, and
+  the detached run form.
