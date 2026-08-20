@@ -1019,3 +1019,28 @@ re-orientation and, from a fact-only freeze, the reviewer stays independent — 
 $10–16 per slice all-in; the harness stands, the cost model above is the honest one.
 Open experiment (worth one run): does a *short* real orientation (≤5 turns) reproduce
 the controlled result at scale, i.e. is the discriminator prefix LENGTH?
+
+## L25 — Five defect patterns mutation-testing reliably catches that authors reliably miss (upstreamed from ciu-P02/P03 review rounds, 2026-08)
+
+Recorded from independent-review rounds where a mutation pass caught what the
+implementer's own suite did not; use as a review checklist for any hardening diff:
+
+1. **Weak negative fixtures** — a negative test whose fixture would pass under the
+   mutated (broken) code too; the fixture must encode the *distinguishing* condition.
+2. **Inconsistent error-translation wrapping** — a boundary that wraps `OSError` in
+   one arm and lets it escape in another; the translation must cover the WHOLE risky
+   region, not the line that failed last time.
+3. **Failure-classification steps that themselves need rollback** — classifying a
+   failure can mutate state; the classifier needs the same cleanup guarantees as the
+   action it classifies.
+4. **`delenv(raising=False)` does not guarantee cleanup** — a test that "removes" an
+   env var may still inherit it from an outer scope; assert absence, don't assume it.
+5. **Ambient environment masking a real bug** — a value present in every interactive
+   shell hides a wrong default from every test run in one (ciu-P03: `ciu.env` ambient
+   keys; the masked-default species of L21). Corollary: **bare-returncode git guards
+   fail OPEN** — `git rev-parse` exits 128 for dubious-ownership too, so a guard
+   reading only the return code treats an unrelated failure as "not a repo".
+
+Related, same review family: **coverage gates measure the wrong delta when a package
+branch merges main IN** — rebase package branches onto main instead, or the
+changed-line set the gate sees is the merge's, not the package's.
