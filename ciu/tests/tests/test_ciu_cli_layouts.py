@@ -184,7 +184,9 @@ def test_up_layout_host_missing_from_inventory_exits_2(remote, monkeypatch, caps
 def test_up_layout_get_host_failure_exits_2_before_transport(remote, monkeypatch, capsys):
     """A host entry that fails to LOAD (not just to resolve) still stops before
     any sync/exec — the layout validated against the inventory, then get_host
-    refused the record."""
+    refused the record. B3 nit: the abort must ALSO name the layout and the
+    remainder, same as a sync/exec failure ('(none)' here since devbox is the
+    only host in dev-local)."""
     seen = remote
     import ciu.hosts as hosts
     monkeypatch.setattr(
@@ -194,7 +196,49 @@ def test_up_layout_get_host_failure_exits_2_before_transport(remote, monkeypatch
     )
     assert _run(monkeypatch, ["up", "--layout", "dev-local"]) == 2
     assert seen["sync"] == [] and seen["exec"] == []
-    assert "[SPEC J] Host 'devbox' unreadable" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "layout 'dev-local': [SPEC J] Host 'devbox' unreadable" in err
+    assert "not deployed: (none)" in err
+
+
+def test_up_layout_get_host_failure_on_later_host_names_remainder(remote, monkeypatch, capsys):
+    """Same abort, but the FAILING host is not the first — the remainder must
+    list the hosts still to come, not '(none)'."""
+    seen = remote
+    import ciu.hosts as hosts
+    good = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned", "bundle_dir": "/opt/app"}
+
+    def fake_get_host(root, name, admin=False):
+        seen["hosts"].append((root, name, admin))
+        if name == "edge-b":
+            raise ValueError(f"[SPEC J] Host '{name}' unreadable")
+        return dict(good)
+
+    monkeypatch.setattr(hosts, "get_host", fake_get_host)
+    assert _run(monkeypatch, ["up", "--layout", "three-host"]) == 2
+    assert len(seen["sync"]) == 1  # edge-a pushed fine before edge-b's get_host failed
+    err = capsys.readouterr().err
+    assert "layout 'three-host': [SPEC J] Host 'edge-b' unreadable" in err
+    assert "not deployed: backend" in err
+
+
+def test_up_layout_last_host_failure_reports_no_remainder(remote, monkeypatch, capsys):
+    """When the LAST host in the sequence fails, nothing remains undeployed —
+    the '(none)' arm of `', '.join(not_deployed) or '(none)'` (previously
+    dead: every prior failure test used a non-last host)."""
+    seen = remote
+    import ciu.transport_ssh as transport
+
+    def fake_exec(cfg, argv, **kwargs):
+        seen["exec"].append((cfg, argv))
+        return 9 if len(seen["exec"]) == 3 else 0
+
+    monkeypatch.setattr(transport, "ssh_exec", fake_exec)
+    assert _run(monkeypatch, ["up", "--layout", "three-host"]) == 9
+    assert len(seen["sync"]) == 3 and len(seen["exec"]) == 3  # ran through to the last host
+    err = capsys.readouterr().err
+    assert "layout 'three-host': up failed on host 'backend' (9)" in err
+    assert "not deployed: (none)" in err
 
 
 def test_up_layout_mutually_exclusive_with_host(remote, monkeypatch, capsys):
@@ -207,6 +251,35 @@ def test_up_layout_mutually_exclusive_with_host(remote, monkeypatch, capsys):
 def test_up_layout_mutually_exclusive_with_profile(remote, monkeypatch, capsys):
     seen = remote
     assert _run(monkeypatch, ["up", "--layout", "dev-local", "--profile", "core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
+
+
+def test_up_layout_mutually_exclusive_with_profile_equals_form(remote, monkeypatch, capsys):
+    """B2: the `--profile=core` single-token form previously slipped through
+    (the old check was exact list membership against the literal `--profile`
+    token) straight into the forwarded remote argv, silently overriding the
+    layout's exported CIU_SERVICES_PROFILE."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "dev-local", "--profile=core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
+
+
+def test_up_layout_mutually_exclusive_with_dir(remote, monkeypatch, capsys):
+    """B2: --dir was not guarded at all before this fix."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "dev-local", "--dir", "."]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--thin", "--bootstrap", "--rollback"])
+def test_up_layout_mutually_exclusive_with_host_only_flags(remote, monkeypatch, capsys, flag):
+    """B2: --thin/--bootstrap/--rollback only make sense on the --host push
+    path and previously forwarded into the remote argv, dying opaquely."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "dev-local", flag]) == 2
     assert seen["sync"] == [] and seen["exec"] == []
     assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
 

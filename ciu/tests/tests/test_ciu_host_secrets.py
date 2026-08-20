@@ -112,6 +112,29 @@ def test_get_host_secrets_refuses_grammar_violation(tmp_path):
         get_host_secrets(tmp_path, "web")
 
 
+def test_get_host_secrets_pasted_value_never_reaches_the_error_message(tmp_path):
+    """P11-B1 (review): a pasted value instead of a directive (e.g. a Tailscale
+    authkey) must NOT flow into the raised message. Upstream
+    `directives.parse_value` echoes the unrecognized token verbatim in its
+    '[S4.2] Unknown directive' error; hosts.py must NOT interpolate that
+    message — only a fixed, non-leaking reason."""
+    fake_secret_value = "tskey-auth-kFAKESECRETVALUE1234567890abcdef"
+    _write_hosts(
+        tmp_path,
+        "[deploy.hosts.web]\nssh_host = 'web'\n"
+        f"[deploy.hosts.web.secrets]\nbad = \"{fake_secret_value}\"\n",
+    )
+    with pytest.raises(ValueError) as exc_info:
+        get_host_secrets(tmp_path, "web")
+    message = str(exc_info.value)
+    assert fake_secret_value not in message
+    assert "tskey-auth-k" not in message  # no partial leak either
+    assert message == (
+        "[S14.3a] host 'web', entry 'bad': not a recognized secret directive "
+        "— value not shown"
+    )
+
+
 def test_get_host_pops_secrets_from_transport_dict(tmp_path):
     _write_hosts(tmp_path)
     host_cfg = get_host(tmp_path, "devbox")
@@ -329,7 +352,6 @@ def test_up_host_with_secrets_does_not_materialize(cli_env, monkeypatch, capsys,
         transport, "ssh_sync",
         lambda cfg, local, target, **kw: seen["sync"].append((cfg, local, target)) or 0,
     )
-    import ciu.deploy as deploy_mod
     monkeypatch.setitem(
         sys.modules, "ciu.deploy",
         SimpleNamespace(load_global_config=lambda _root: {}),

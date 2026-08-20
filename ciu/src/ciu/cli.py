@@ -373,6 +373,58 @@ def _load_remote_config(repo_root: Path) -> dict:
         raise SystemExit(2) from exc
 
 
+def _push_host(
+    host_cfg: dict,
+    host_label: str,
+    *,
+    repo_root: Path,
+    config: dict,
+    remaining: list[str],
+    extra_exports: str = "",
+) -> tuple[str, int]:
+    """Push-deploy ONE host: docker_optional advisory, bundle sync, remote up.
+
+    The ONE push implementation (review finding B3) shared by `ciu up --host`
+    and each host in `ciu up --layout` (S7.5c) — the two used to reimplement
+    this loop independently and had already drifted (the layout path lacked
+    the docker_optional advisory). *extra_exports* is a pre-quoted
+    ``export VAR=val; ...`` prefix for the remote command (the layout's
+    CIU_LAYOUT* vars); empty for the plain --host path.
+
+    Returns ``(stage, rc)`` where *stage* is ``"sync"`` if the bundle
+    transfer failed (never reaching the remote) or ``"exec"`` for the
+    remote-command result (rc == 0 on success). Never raises SystemExit —
+    callers own their own error text and exit semantics, which already
+    differ between --host (silent propagation) and --layout (named
+    remainder).
+    """
+    # Advisory (S14.6): a docker-optional host has no docker; the
+    # render-on-target path here needs it. Nudge, but do not block.
+    if host_cfg.get("docker_optional"):
+        print(
+            f"[WARN] Host '{host_label}' is marked docker_optional but you are using "
+            "the docker render-on-target path. Did you mean 'ciu up --host "
+            f"{host_label} --thin'? (S14.6)",
+            file=sys.stderr,
+        )
+    bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+    from .transport_ssh import ssh_exec, ssh_sync
+    rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
+    if rc != 0:
+        return "sync", rc
+    # Pass the whole command as ONE argv element: ssh space-joins remote
+    # args into a single string for the remote login shell to re-parse, so
+    # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+    # shell ssh spawns already interprets the operators natively.
+    remote_cmd = (
+        extra_exports
+        + f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
+        + shlex.join(["ciu", "up", *remaining])
+    )
+    rc = ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
+    return "exec", rc
+
+
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
     """True when `-h`/`--help` should print the verb's own help.
 
@@ -955,10 +1007,29 @@ def main() -> None:
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--layout", dest="layout", default=None)
             opts, remaining = p.parse_known_args(rest)
-            if "--host" in rest or "--profile" in rest:
+            # B2 (review): a plain `"--host" in rest` membership check misses
+            # the `--profile=core` equals form (argparse leaves it in
+            # `remaining` untouched since only --layout is registered here),
+            # and did not guard --dir/--thin/--bootstrap/--rollback at all —
+            # all of which forward into the remote `ciu up` argv and either
+            # silently override the layout's exported CIU_SERVICES_PROFILE
+            # (--profile, S7.5 CLI precedence) or die opaquely on the remote
+            # (--dir/--thin/--bootstrap/--rollback have no meaning without a
+            # local --host push). Prefix-aware so both `--flag value` and
+            # `--flag=value` forms are caught.
+            _LAYOUT_FORBIDDEN = (
+                "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
+            )
+            if any(
+                a == flag or a.startswith(flag + "=")
+                for a in remaining
+                for flag in _LAYOUT_FORBIDDEN
+            ):
                 print(
                     "[S7.5c] --layout is mutually exclusive with --host and "
-                    "--profile (the layout owns the host order and the bundles).",
+                    "--profile (and with --dir/--thin/--bootstrap/--rollback, "
+                    "which only apply to the --host push path) — the layout "
+                    "owns the host order and the bundles.",
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
@@ -966,49 +1037,43 @@ def main() -> None:
             config = _load_remote_config(repo_root)
             from .deploy_pkg.layouts import resolve_layout
             from .hosts import get_host, load_hosts
-            from .transport_ssh import ssh_exec, ssh_sync
             try:
                 layout = resolve_layout(config, load_hosts(repo_root), opts.layout)
             except ValueError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 raise SystemExit(2)
-            # Pure orchestration: delegate each host to the EXISTING up --host
-            # path, with the layout's exports prepended to the single remote
-            # argv string (one-argv discipline, same as the --host branch).
+            # Pure orchestration: delegate each host to _push_host (shared
+            # with `up --host` — review finding B3, was reimplemented and had
+            # already drifted), with the layout's exports prepended to the
+            # single remote argv string (one-argv discipline).
             for index, host in enumerate(layout.hosts):
                 not_deployed = layout.hosts[index + 1:]
+                remainder = ", ".join(not_deployed) or "(none)"
                 try:
                     host_cfg = get_host(repo_root, host)
                 except ValueError as exc:
-                    print(f"[ERROR] {exc}", file=sys.stderr)
+                    print(
+                        f"[ERROR] layout '{layout.name}': {exc}; "
+                        f"not deployed: {remainder}.",
+                        file=sys.stderr,
+                    )
                     raise SystemExit(2)
-                bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
                 exports = (
                     f"export CIU_SERVICES_PROFILE={shlex.quote(','.join(layout.bundles[host]))}; "
                     f"export CIU_LAYOUT={shlex.quote(layout.name)}; "
                     f"export CIU_LAYOUT_HOST={shlex.quote(host)}; "
                     f"export CIU_DEPLOY_ENVIRONMENT={shlex.quote(layout.environment)}; "
                 )
-                rc = ssh_sync(host_cfg, str(repo_root), bundle_dir,
-                              config=config, repo_root=repo_root)
-                if rc != 0:
-                    print(
-                        f"[ERROR] layout '{layout.name}': bundle sync failed on host "
-                        f"'{host}' ({rc}); not deployed: {', '.join(not_deployed) or '(none)'}.",
-                        file=sys.stderr,
-                    )
-                    raise SystemExit(rc)
-                remote_cmd = (
-                    exports
-                    + f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && "
-                    + f"ciu render && {shlex.join(['ciu', 'up', *remaining])}"
+                stage, rc = _push_host(
+                    host_cfg, host,
+                    repo_root=repo_root, config=config, remaining=remaining,
+                    extra_exports=exports,
                 )
-                rc = ssh_exec(host_cfg, [remote_cmd],
-                              config=config, repo_root=repo_root)
                 if rc != 0:
+                    verb_text = "bundle sync failed" if stage == "sync" else "up failed"
                     print(
-                        f"[ERROR] layout '{layout.name}': up failed on host '{host}' "
-                        f"({rc}); not deployed: {', '.join(not_deployed) or '(none)'}.",
+                        f"[ERROR] layout '{layout.name}': {verb_text} on host "
+                        f"'{host}' ({rc}); not deployed: {remainder}.",
                         file=sys.stderr,
                     )
                     raise SystemExit(rc)
@@ -1056,30 +1121,15 @@ def main() -> None:
                 print("[ERROR] --bootstrap/--rollback require --thin (the docker-optional activation path).", file=sys.stderr)
                 raise SystemExit(2)
 
-            # Advisory (S14.6): a docker-optional host has no docker; the
-            # render-on-target path below needs it. Nudge, but do not block.
-            if host_cfg.get("docker_optional"):
-                print(
-                    f"[WARN] Host '{opts.host}' is marked docker_optional but you are using "
-                    "the docker render-on-target path. Did you mean 'ciu up --host "
-                    f"{opts.host} --thin'? (S14.6)",
-                    file=sys.stderr,
-                )
-
-            from .transport_ssh import ssh_sync, ssh_exec
-            rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
-            if rc != 0:
-                raise SystemExit(rc)
-            # Build remote ciu command
-            remote_cmd = (
-                f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
-                + shlex.join(["ciu", "up", *remaining])
+            # B3 (review): the ONE push implementation, shared with the
+            # `--layout` loop above — behavior here is unchanged (same
+            # docker_optional advisory, same sync-then-exec, same silent rc
+            # propagation on failure the existing tests pin).
+            _stage, rc = _push_host(
+                host_cfg, opts.host,
+                repo_root=repo_root, config=config, remaining=remaining,
             )
-            # Pass the whole command as ONE argv element: ssh space-joins remote
-            # args into a single string for the remote login shell to re-parse, so
-            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
-            # shell ssh spawns already interprets the operators natively.
-            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+            raise SystemExit(rc)
         elif "--dir" in rest:
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)

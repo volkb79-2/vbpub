@@ -119,6 +119,16 @@ def resolve_layout(global_cfg: dict, hosts_cfg: dict, name: str) -> Layout:
                 f"[S7.5c] Layout '{name}', host '{host_name}': 'bundles' must be "
                 f"a list of profile names."
             )
+        if not bundles:
+            # An empty bundles list is NOT "deploy nothing": resolve_profiles
+            # treats an empty names list as absent and falls through to its
+            # ambient-env / all-phases default (deploy_pkg/profiles.py:301-305,
+            # the 2026-07-16 dstdns incident). CIU_SERVICES_PROFILE='' would
+            # therefore deploy EVERY phase on this host — refuse it here.
+            raise ValueError(
+                f"[S7.5c] Layout '{name}', host '{host_name}': 'bundles' must "
+                f"not be empty (an empty list resolves to ALL phases, not none)."
+            )
         for bundle in bundles:
             # env={} so validation never trips on ambient CIU_HOST_PROFILE /
             # CIU_SERVICES_PROFILE — the layout's own list is the only input.
@@ -129,6 +139,20 @@ def resolve_layout(global_cfg: dict, hosts_cfg: dict, name: str) -> Layout:
                     f"[S7.5c] Layout '{name}', host '{host_name}': bundle profile "
                     f"'{bundle}' failed to resolve: {exc}"
                 ) from None
+        # Joint validation (controller nit a): resolve the host's FULL bundle
+        # list TOGETHER so a cross-bundle conflict (env_overrides /
+        # topology_overrides) fails at declaration time, not mid-sequence on
+        # the remote after earlier hosts already deployed. Per-bundle errors
+        # above stay precise (which single bundle is unknown); this pass only
+        # ever raises on a COMBINATION conflict since each name individually
+        # already resolved.
+        try:
+            resolve_profiles(global_cfg, list(bundles), env={})
+        except ValueError as exc:
+            raise ValueError(
+                f"[S7.5c] Layout '{name}', host '{host_name}': bundles "
+                f"{list(bundles)!r} conflict when combined: {exc}"
+            ) from None
         ordered_hosts.append(host_name)
         bundles_by_host[host_name] = list(bundles)
 

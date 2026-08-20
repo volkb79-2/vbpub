@@ -181,6 +181,56 @@ def test_resolve_layout_host_entry_not_a_table():
         resolve_layout(cfg, HOSTS, "x")
 
 
+def test_resolve_layout_empty_bundles_list_rejected():
+    """B1 (review): an empty bundles list is NOT 'deploy nothing'. Downstream,
+    `resolve_profiles(cfg, [], env={})` treats an empty *names* list as
+    ABSENT and falls through to its default (all phases) — the exact shape
+    of the 2026-07-16 dstdns incident (profiles.py:301-305). A layout host
+    with `bundles = []` must be refused at resolution, tagged and naming the
+    layout + host, before it ever reaches CIU_SERVICES_PROFILE=''."""
+    cfg = {
+        "deploy": {
+            "profiles": {"core": {"phases": ["phase_1"]}},
+            "layouts": {
+                "x": {"environment": "dev", "hosts": {"devbox": {"bundles": []}}}
+            },
+        }
+    }
+    with pytest.raises(
+        ValueError,
+        match=r"\[S7.5c\] Layout 'x', host 'devbox': 'bundles' must not be empty",
+    ):
+        resolve_layout(cfg, HOSTS, "x")
+
+
+def test_resolve_layout_bundles_joint_conflict_rejected():
+    """Controller nit (a): each bundle name may resolve fine ALONE, but the
+    host's FULL list must also resolve TOGETHER — a cross-bundle conflict
+    (here: two profiles setting the same env_overrides key to different
+    values) must fail at layout resolution, not mid-sequence on the remote
+    after earlier hosts already deployed."""
+    cfg = {
+        "deploy": {
+            "profiles": {
+                "conflict-a": {"env_overrides": {"SHARED_KEY": "value-a"}},
+                "conflict-b": {"env_overrides": {"SHARED_KEY": "value-b"}},
+            },
+            "layouts": {
+                "x": {
+                    "environment": "dev",
+                    "hosts": {"devbox": {"bundles": ["conflict-a", "conflict-b"]}},
+                }
+            },
+        }
+    }
+    with pytest.raises(
+        ValueError,
+        match=r"\[S7.5c\] Layout 'x', host 'devbox': bundles \['conflict-a', 'conflict-b'\] "
+        r"conflict when combined",
+    ):
+        resolve_layout(cfg, HOSTS, "x")
+
+
 def test_resolve_layout_bundles_must_be_list():
     cfg = {
         "deploy": {

@@ -56,9 +56,16 @@ def _parse_host_secrets(host_name: str, secrets_table: dict) -> dict[str, Secret
     for entry_name, raw_value in secrets_table.items():
         try:
             spec = parse_value(entry_name, raw_value, f"deploy.hosts.{host_name}.secrets")
-        except ValueError as exc:
+        except ValueError:
+            # Never interpolate the upstream message: parse_value's grammar
+            # errors echo the raw token back verbatim (e.g. "[S4.2] Unknown
+            # directive '<token>'" where <token> IS the pasted secret value
+            # when an operator writes a value instead of a directive). That
+            # message must never reach stderr — see cli.py's `[ERROR] {exc}`
+            # printers and every get_host() caller (S14.3a / P11-B1).
             raise ValueError(
-                f"[S14.3a] host '{host_name}', entry '{entry_name}': {exc}"
+                f"[S14.3a] host '{host_name}', entry '{entry_name}': not a "
+                f"recognized secret directive — value not shown"
             ) from None
         if spec.kind not in HOST_SCOPE_KINDS:
             raise ValueError(
