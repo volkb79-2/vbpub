@@ -11,7 +11,15 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-21 — **CIU-45 FILED, OPEN** from dstdns P120's O7 live
+Last updated: 2026-08-21 — **CIU-45 WITHDRAWN**, same day it was filed. dstdns's
+own fresh adversarial code review of the P120 package that filed it reproduced
+the actual failure from source and found it was a misdiagnosis: a missing
+`provides` array in one dstdns stack (`infra/vault`), not a ciu limitation —
+the `post_compose`-hook-as-provider pattern this issue claimed was impossible
+already ships in the same repo (`infra/consul-server`). Full disposition below
+under `## CIU-45`; `dstdns/nyxloom-trove/decisions.md` D-170.
+
+Previously, 2026-08-21 — **CIU-45 FILED, OPEN** from dstdns P120's O7 live
 attempt (`dstdns/nyxloom-trove/reports/dstdns-P120-REPORT.md` §O7): `requires`
 provisions rather than verifies, so a path a non-ciu hook provisions
 out-of-band can never pass the static provisioning-graph lint. This is the
@@ -60,7 +68,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | OPEN — filed 2026-08-20 (dstdns P111 F3); doc-gap and mechanism-gap readings both presented |
 | CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | OPEN — filed 2026-08-20 (dstdns P111 F4; reproduced, consumer-documented in dstdns GUIDE §3.3); SECOND reproduction 2026-08-21 on **6.3.0** (dstdns P116 O9, D-154 R5): exit 0 + `clean complete`, four instance-owned objects left incl. the bare-`<branch>-`-prefixed Vault volumes — so the volume pass is affected too, not only networks |
 | CIU-44 | Templates cannot see the SELECTED profile/stack set at render time: `CIU_SERVICES_PROFILE` is unset on the `--profile` argv path (`cli.py:1005-1015`; `workspace_env.py:875-877` leaves it commented out), so a feature flag like reverse-proxy's `enable_pwmcp_mcp` cannot be derived from "is infra/pwmcp deployed" and any render-time precondition is unreachable or always-fails. Ask: expose the resolved deployed-stack set (or profile list) to the Jinja context so a template can fail loudly when it references an undeployed upstream (§4.2a) | Medium | OPEN — filed 2026-08-21 (dstdns P120 carve review B4, D-162 DA-B) |
-| CIU-45 | `requires` PROVISIONS rather than VERIFIES: ciu's provisioning-graph lint refuses to proceed past static preflight unless every `vault:secret/...` entry in a stack's `requires` array has a declarative provider (a `GEN_TO_VAULT` row) — a path provisioned entirely out-of-band by a non-ciu `post_compose` hook (e.g. an AppRole credential minted by the hook itself, never by a `GEN_TO_VAULT` directive) can never satisfy it, so `ciu up` fails at preflight before any container starts, even though the hook would provision the path correctly at runtime. Reproduced live: `[ERROR] Stack 'applications/controller' requires 'vault:secret/vault/controller/role_id' but nobody provides it` (and the matching `secret_id`/`webapp-server` rows), zero containers ever created. Ask: either (a) a way to mark a `requires` entry as verify-only (no declarative provider demanded, ciu trusts the named hook to have written it by boot time), or (b) a way for a `post_compose` hook to register itself as a provider in the graph the way a `GEN_TO_VAULT` row does | Medium | OPEN — filed 2026-08-21 (dstdns P120 O7, `dstdns-P120-REPORT.md` §O7; `escalate_if` #1 predicted this exact failure at carve time) |
+| CIU-45 | ~~`requires` PROVISIONS rather than VERIFIES~~ — **misdiagnosis, see disposition below**. The lint rule is a plain `requires`/`provides` completeness check; a `post_compose` hook registering itself as a provider already ships (`infra/consul-server/ciu.defaults.toml.j2:9-17`). The actual dstdns failure was a missing `provides` array in one unrelated stack, fixed declaratively in-repo | — | **WITHDRAWN 2026-08-21** — see `## CIU-45` below for the full disposition; `dstdns/nyxloom-trove/decisions.md` D-170 |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -619,6 +627,41 @@ instances plus keep-with-notice for the main workspace is another.
   must fail the first oracle.
 
 **SPEC ownership:** S6.4 cleanup semantics.
+
+## CIU-45 — WITHDRAWN: `requires` does not "provision rather than verify"
+
+**Disposition:** WITHDRAWN on 2026-08-21, one day after filing. The finding itself is void — not
+superseded, not already fixed, but based on a misdiagnosis that a second, independent reproduction
+disproved.
+
+**What was claimed:** that ciu's provisioning-graph lint demands a declarative `GEN_TO_VAULT` row
+for every `requires` entry, so a Vault path minted entirely out-of-band by a `post_compose` hook
+(never by a `GEN_TO_VAULT` directive) could never satisfy it — and that no mechanism exists for a
+`post_compose` hook to register itself as a provider in the graph.
+
+**Why it's false:** `ciu/src/ciu/provisioning.py:90-113`'s lint rule is "every `requires` ref
+appears in some stack's `provides` array" — a plain declarative string list in a stack's own
+`ciu.defaults.toml.j2`, unrelated to `GEN_TO_VAULT`/secret-directive machinery. A `post_compose`
+hook registering itself as a provider is not a missing capability; it is the SHIPPED, already-used
+pattern at `infra/consul-server/ciu.defaults.toml.j2:9-17` in the very consumer repo that filed this
+issue — a hook mints per-service Vault tokens and the stack declares `provides = ["vault:secret/
+consul/<svc>/token", ...]` alongside it. dstdns P120's actual failure was that a DIFFERENT stack
+(`infra/vault`) simply never added its own `provides` array for the AppRole credentials its hook
+mints — a six-line, in-repo, declarative omission, not a ciu gap. No runtime provisioning was ever
+attempted in the original reproduction (`docker ps -a` showed zero containers); the static preflight
+lint had already refused before any hook ran, so "provisions rather than verifies" was never
+actually observed, only inferred.
+
+**Reproduction that found this:** dstdns's own fresh adversarial code reviewer, dispatched blind
+against the P120 package that filed this issue, independently re-derived the failure from source
+(`provisioning.py`) rather than trusting the original report, proved the six-line fix restores
+`ciu check` to green on every profile, and named the exact in-repo precedent above. Full account:
+`dstdns/nyxloom-trove/decisions.md` D-170.
+
+**Lesson for future filings:** a "ciu structurally cannot express X" claim needs an actual grep for
+the mechanism named in ciu's own error text before it is trusted, not just confirmation that a
+predicted refusal occurred. The consumer's own repo already had two working examples of the pattern
+this issue claimed was impossible.
 
 ## Compact resolved index
 
