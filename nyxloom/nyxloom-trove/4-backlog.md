@@ -478,7 +478,7 @@ items:
     FAILED in 3 variants (resume leaf-selection skips synthetic lines) -- drive the CLI,
     never file surgery. Prior art to study: rocketlabs-ai/infinite-context (session
     rebuild + compact-compatible smart compact), swyxio/claude-compaction-viewer,
-    badlogic's cross-CLI compaction research gist. DESIGN DOC:
+    badlogic''s cross-CLI compaction research gist. DESIGN DOC:
     docs/design-context-lifecycle.md (patterns a=checkpoint-compact-resume,
     b=snapshot-chain; validation plan V1-V9; adoption phases); (3) integrate with dispatch: long
     tasks continue across compactions without re-billing full transcripts, and
@@ -487,6 +487,11 @@ items:
     validated orientation-freeze/fork reuse (dstdns B1 / LESSONS L24: with
     --exclude-dynamic-system-prompt-sections + same model/effort/toolset a fork is PURE
     cache reuse, ~0 creation -- re-validated 2026-08-20).'
+  type: feature
+  component: dispatch
+  context_estimate: medium
+- id: B47
+  title: 'controller checkpoint-reset (B46 sibling, for the CONTROLLER not the worker): make the interactive pipeline controller self-compact and self-resume instead of stopping at ~350k for a human keystroke -- three candidate architectures (A interactive self-compact via a cron-submitted `/compact <retention>`, A2 tmux send-keys watcher, B headless `claude -p --session-id` under a thin helper loop whose verdict protocol CHECKPOINT|DONE|BLOCKED|WAIT-<secs> replaces /loop, C snapshot-fork chain), the children-do-not-survive-a-process-boundary constraint (Agent-tool subagents die with the process; Stop hooks expose `background_tasks`/`session_crons` as the join gate), experiment list V5.0-V5.9 and a recommendation that this needs a helper LOOP (a third B46 verb `run-loop`, ~150 lines) and not a new service. First probe V5.0 MEASURED 2026-08-21: an external process CAN resume and /compact a session that originated interactive (compact_boundary trigger=manual, 43,388 -> 800 tokens); CLI 2.1.238 has NO `compact_result` field in the -p envelope (read the JSONL); a compact cycle prices at $1.68-1.85 / 133-177s on opus over a ~235k transcript (dstdns P116, 3 chained compacts, no degradation). DESIGN DOC: docs/design-controller-checkpoint-reset.md.'
   type: feature
   component: dispatch
   context_estimate: medium
