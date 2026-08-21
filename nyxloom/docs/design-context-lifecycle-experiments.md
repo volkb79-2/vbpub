@@ -1016,6 +1016,16 @@ fresh successor) and is not what this experiment measured — it should be
 restated in terms of remaining-work size, not re-anchored to 120k without its
 own measurement.
 
+## V5.1 · 2026-08-21 · does a `ScheduleWakeup` prompt slash-expand? — **NO** (controller session, dstdns, live)
+
+**Setup.** The dstdns controller (Fable, interactive, `/loop` dynamic mode) reached a clean boundary — P116 merged at `dstdns@68c2dd03`, gates green from main, no children in flight, memory brief written with the scoring rule — and armed `ScheduleWakeup(delaySeconds=60, prompt="/compact KEEP: (1) state — … DROP: …")` (~2.4k chars of retention text). Context at arm time ~150k.
+
+**Observation.** 63 s later the prompt was delivered as a **plain user-role message whose text begins with the literal `/compact KEEP: …`**. No `compact_boundary` was written, no summary was produced, the session's context was unchanged, and the model was invoked normally on that message. The one slash form that *does* re-enter on a wakeup is `/loop <input>`, because the `loop` skill instructs the model to pass it back and the harness re-loads the skill text for it — i.e. the model interprets it, not the harness. A built-in local command (`/compact`, `/context`) is executed only when typed by the user at the prompt.
+
+**Consequence for `design-controller-checkpoint-reset.md`.** Architecture **A (interactive self-compact, no helper) is dead**: a session cannot compact itself from a scheduled prompt, and `PreCompact` cannot inject the retention text (V5.0). Remaining order: **A2** (an external watcher — tmux `send-keys "/compact <text>"` gated on the session being idle; the retention text is the one the controller already writes to its memory brief) before **B** (headless controller under a helper loop, B46 `run-loop`). The controller keeps its present discipline meanwhile: stop the loop at a clean boundary past ~350k and hand the operator the `/compact` line.
+
+**Cost.** One 60 s wakeup, one ordinary turn, no compaction (~0).
+
 ## V3/V4 · 2026-08-20 · pattern (b) snapshot chain, end-to-end — SYNTHETIC scenario, haiku only
 
 Runs the two adoption-gate rows of `design-context-lifecycle.md` §5: **V3** (3-iteration

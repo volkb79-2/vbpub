@@ -154,7 +154,7 @@ gate for a helper. Everything before V5.8 is under $4 total.
 
 ## 5. Recommendation
 
-1. **Run V5.1 first, in the controller's own next checkpoint — it costs a compaction the
+1. ~~Run V5.1 first~~ **V5.1 RUN 2026-08-21 — result NO** (experiments doc §V5.1): the wakeup prompt arrived as a literal user message; no compaction. Architecture A is eliminated; proceed A2 → B. *(original text follows)* Run V5.1 first, in the controller's own next checkpoint — it costs a compaction the
    controller already wanted.** If a cron-submitted `/compact <retention>` is expanded, adopt **A**:
    the controller stays interactive, keeps its Agent-tool fan-out, keeps the human's window, keeps
    one session id, and the whole "helper service" question collapses to *nothing at all* — plus a
