@@ -1374,3 +1374,36 @@ tool; Agent-tool subagents keep the successor-brief respawn mechanism (E-007). T
 (V1 addendum 1) therefore stands as the baseline datum, not a compaction datum.
 Side effect to watch: a symlinked fake session in the projects dir shows up in the operator's
 `/resume` list — removed after the probe.
+
+### V1 addendum 3 — FIRST LIVE compact+resume DATUM on a CLI-child implementer (dstdns P116, 2026-08-21)
+
+Subject: dstdns P116 `landscape-plane1` implementer, run as `claude -p --session-id 298cee08-… --model opus
+--effort xhigh --dangerously-skip-permissions --output-format json` from the controller session (the
+pattern-(a) path V1 addendum 2 said was required). Protocol in the dispatch prompt: ARM ~120k/~60 calls, CUT
+at a green boundary, write `reports/dstdns-P116-BRIEF.md` (715 words) + a self-authored
+`reports/dstdns-P116-COMPACT.md` (464 words), commit, exit with `CHECKPOINT <hash>`.
+
+Measured (session JSONL `298cee08-…jsonl`, 155 assistant usages):
+- Run 1 (fresh → checkpoint): 82 turns, 17 min, $9.79, 142 assistant usages; cache_read climbed
+  15.9k → **234.6k** at the cut; the cut landed on a green boundary (feature commit `dstdns@27c87252`,
+  1,682 lines, control gate recorded) — the E-008 rule held in practice.
+- Compact step: `claude -p --resume <sid> "/compact <COMPACT.md>"` — **exit 0, 0 turns, 133 s**, compact
+  boundary written into the session file. (Only stderr: the benign "no stdin data in 3s" warning — pass
+  `< /dev/null`.)
+- Run 3 (resume with "continue from the brief" + the controller's D-151 decisions, 1.1k words): first
+  assistant usage **44.2k cache_creation + 15.9k cache_read (~60k)** vs 236.7k on the last pre-compact
+  turn → **~4× context reduction**; the 15.9k cache_read is the fixed prefix (system prompt/tools), the
+  44.2k is summary + resume prompt + first reads, all new creation (as V4(a) predicted — a resume with a
+  distinct prompt re-pays the body).
+- Cost shape: the compact itself is one summarisation call over 235k (not yet priced separately from
+  run 3's envelope — TODO read `total_cost_usd` of run2 when the JSON carries it; the run2 envelope
+  reported usage zeros).
+
+Comparison points: E-007's successor-brief respawn for P110–P112 cost a fresh ~50–130k orientation per
+successor; this compaction resumed at ~60k with ZERO re-orientation tool calls before productive work
+(first tool call after resume was an Edit, not a Read — verify in the run-3 transcript at write-up time).
+Open: (1) does the compacted agent re-derive facts the summary dropped (watch for re-reads of pack
+sections); (2) second checkpoint on the same session — does a chained compact degrade; (3) price the
+compact call. Controller-side procedure that worked: Monitor on the child's pid (a nohup'd CLI child does
+not notify the harness), verdict from `jq 'last'` on the `--output-format json` array, usage from the
+session JSONL, never the transcript.
