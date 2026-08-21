@@ -11,7 +11,14 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-20 — **CIU-41..43 FILED, OPEN** from dstdns P111's
+Last updated: 2026-08-21 — **CIU-45 FILED, OPEN** from dstdns P120's O7 live
+attempt (`dstdns/nyxloom-trove/reports/dstdns-P120-REPORT.md` §O7): `requires`
+provisions rather than verifies, so a path a non-ciu hook provisions
+out-of-band can never pass the static provisioning-graph lint. This is the
+second dstdns config-wave upstream ask filed the same day as CIU-44 (both from
+the same carve-review round, D-162).
+
+Previously, 2026-08-20 — **CIU-41..43 FILED, OPEN** from dstdns P111's
 Mode-B live pass (findings F2/F3/F4 in
 `dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §9): `ciu env generate`
 silently inherits an ambient `DOCKER_NETWORK_INTERNAL` (CIU-41), no way to
@@ -53,6 +60,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | OPEN — filed 2026-08-20 (dstdns P111 F3); doc-gap and mechanism-gap readings both presented |
 | CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | OPEN — filed 2026-08-20 (dstdns P111 F4; reproduced, consumer-documented in dstdns GUIDE §3.3); SECOND reproduction 2026-08-21 on **6.3.0** (dstdns P116 O9, D-154 R5): exit 0 + `clean complete`, four instance-owned objects left incl. the bare-`<branch>-`-prefixed Vault volumes — so the volume pass is affected too, not only networks |
 | CIU-44 | Templates cannot see the SELECTED profile/stack set at render time: `CIU_SERVICES_PROFILE` is unset on the `--profile` argv path (`cli.py:1005-1015`; `workspace_env.py:875-877` leaves it commented out), so a feature flag like reverse-proxy's `enable_pwmcp_mcp` cannot be derived from "is infra/pwmcp deployed" and any render-time precondition is unreachable or always-fails. Ask: expose the resolved deployed-stack set (or profile list) to the Jinja context so a template can fail loudly when it references an undeployed upstream (§4.2a) | Medium | OPEN — filed 2026-08-21 (dstdns P120 carve review B4, D-162 DA-B) |
+| CIU-45 | `requires` PROVISIONS rather than VERIFIES: ciu's provisioning-graph lint refuses to proceed past static preflight unless every `vault:secret/...` entry in a stack's `requires` array has a declarative provider (a `GEN_TO_VAULT` row) — a path provisioned entirely out-of-band by a non-ciu `post_compose` hook (e.g. an AppRole credential minted by the hook itself, never by a `GEN_TO_VAULT` directive) can never satisfy it, so `ciu up` fails at preflight before any container starts, even though the hook would provision the path correctly at runtime. Reproduced live: `[ERROR] Stack 'applications/controller' requires 'vault:secret/vault/controller/role_id' but nobody provides it` (and the matching `secret_id`/`webapp-server` rows), zero containers ever created. Ask: either (a) a way to mark a `requires` entry as verify-only (no declarative provider demanded, ciu trusts the named hook to have written it by boot time), or (b) a way for a `post_compose` hook to register itself as a provider in the graph the way a `GEN_TO_VAULT` row does | Medium | OPEN — filed 2026-08-21 (dstdns P120 O7, `dstdns-P120-REPORT.md` §O7; `escalate_if` #1 predicted this exact failure at carve time) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
