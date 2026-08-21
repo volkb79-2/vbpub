@@ -1540,3 +1540,75 @@ interactive `/compact`; the open question is only whether an *external* trigger 
 watchdog, or a helper script watching the controller's own context size) can drive it instead of
 the operator, which would turn "Checkpoint hand-back" (CLAUDE.md) from an operator-triggered
 manual step into the same loop this addendum ran on a worker. Not designed here — B46 territory.
+
+### V1 addendum 5 — the compact call's cost tracks the checkpoint→resume GAP against the 1h cache TTL, not the mechanism (dstdns P118 + P119, 2026-08-21)
+
+A cross-session hand-over produced an unplanned but clean A/B pair: two CLI-child implementers,
+both checkpointed under the identical V1 protocol, resumed by the same controller turn but with
+very different elapsed time since their `CHECKPOINT` fired.
+
+- **P118 `config-plane-ui`, checkpoint 2 → compact (run4):** the CHECKPOINT was written by the
+  *outgoing* Fable controller at hand-over (~15:30Z per the hand-over memory entry); the
+  successor Sonnet controller did not act on it until ~20:15Z — a **~4h45m gap**, well past the
+  1h cache TTL CLAUDE.md's "Cache-warmth heartbeat" section assumes. Compact call:
+  `cacheCreationInputTokens: 273,805`, `cacheReadInputTokens: 15,903` — a **17:1 create:read**
+  ratio (almost nothing hit cache), cost **$2.14**.
+- **P119 `config-stats-exporter`, checkpoint 1 → compact (run2-compact):** dispatched and
+  checkpointed by *this same controller turn*, ~10–20 minutes before the compact call — well
+  inside the TTL. Compact call: `cacheCreationInputTokens: 7,820`, `cacheReadInputTokens:
+  247,789` — a **32:1 read:create** ratio (the mirror image), cost **$0.54**.
+
+Same protocol, same rough segment size (P118 run5's prior segment was 83 turns/$9.56; P119's was
+92 turns/$11.20 — P119's segment was if anything *larger*), same model (`claude-opus-5` in both
+— note the CLI's `canonicalModel` field, not the `opus` alias, is what actually ran), **~4×
+cost difference driven entirely by cache warmth.** This is a direct, mechanistic confirmation of
+the cache-warmth-heartbeat premise (1h TTL from the last request) rather than an inference from
+timing alone: the compact call's own `cacheCreationInputTokens` **is** the dollar cost of a cold
+cache, isolated from everything else, because a compact call's actual output (a few hundred
+words) is nearly constant regardless of segment size (addendum 4's own compacts: $1.68/$1.85/
+$1.85 across 82–174-turn segments) — so the delta between $2.14 and $0.54 is legible as almost
+pure cache-temperature cost, not work-size cost.
+
+**Correcting a first-pass misread, worth recording as a methodology note.** The first extraction
+pass looked at P118 run5's *aggregate* `modelUsage.cacheCreationInputTokens` across its whole
+83-turn segment (194,864) and read it as "the resume paid 195k to re-establish context" — which
+would have been a bad sign (far above P116's ~59–62k post-resume floor). That number is the
+WRONG metric: it is the sum of *all* new-content cache-writes across 83 turns of genuinely new
+work (new file reads, new edits), not the entry cost. The right metric, matching addendum 4's own
+methodology exactly, is the **first assistant turn's own usage block**: `cache_creation_input_
+tokens: 35,711` + `cache_read_input_tokens: 15,903` = **51,614** — comparable to, and slightly
+*better* than, P116's three-checkpoint floor of 59–62k. So the compaction mechanism's entry cost
+was fine even in the cold-cache case; it was the **compact call itself**, not the subsequent
+resume, that paid the cold-cache tax. (P119's equivalent first-turn number is pending — run3 was
+still in flight at write time; add it here when it lands, same extraction: `d[1]['message']
+['usage']` from the run's own `--output-format json` array, not the aggregate `modelUsage`
+block, which is only useful for whole-run cost accounting.)
+
+**Did anything get evicted that shouldn't have been? No clear evidence, and one positive
+counter-signal.** P118 run5, resuming from a compacted summary of a 167-turn segment, still
+correctly: cited the exact prior decision it needed to not re-litigate (`D-157 DA-1`) when
+explaining a subtle bug it caught (`RequireRole`'s `fallback={<></>}` vs `null` — a truthiness
+inversion that would have silently broken an access-control invariant); ran a novel 90-line
+offline probe against the real router library to settle a question the brief had marked
+UNVERIFIED, rather than either trusting the brief's uncertainty or re-deriving from scratch; and
+produced a well-evidenced, correctly-scoped BLOCKED call (verified independently by the
+controller against the live guard file before acting on it — see D-165) rather than a vague or
+wrong one. None of that is possible from a summary that dropped load-bearing facts. The
+compact-vs-eviction risk V1 addendum 4 already named ("a claim carried across a compaction is a
+claim that has not been re-measured") is real but appears to be handled by *design*, not by
+accident: both COMPACT.md files and both resume prompts explicitly instruct re-verification of
+UNVERIFIED-tagged claims rather than silent carry-forward, and the elevated aggregate
+cache-creation numbers this addendum initially misread are largely the cost of that instructed
+re-reading, not wasted re-derivation of things the summary should have kept.
+
+**Actionable framing for the chained-checkpoint strategy.** The dominant lever this addendum
+surfaces is *controller latency on a CHECKPOINT notification*, not compaction quality — a
+CHECKPOINT that sits unacted-on past the 1h TTL (exactly what happened across the Fable→Sonnet
+controller hand-over) forces its compact call to eat a full cold-cache reconstruction, while one
+acted on promptly costs a fraction of that for identical work. This argues for treating "act on
+a CHECKPOINT notification within the TTL" as a first-class scheduling priority for any autonomous
+or semi-autonomous controller loop (dynamic `/loop` wakeups, a future B46 helper), on par with or
+above dispatching new work — a CHECKPOINT sitting in the queue is not neutral, it is actively
+decaying. The corollary for a planned hand-over (operator swapping controllers, as here): where
+schedulable, hand over at a boundary that is NOT mid-checkpoint, or accept and budget for the
+one-time cold-resume tax the successor's first action will pay.
