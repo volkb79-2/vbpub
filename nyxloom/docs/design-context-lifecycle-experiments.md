@@ -1407,3 +1407,126 @@ sections); (2) second checkpoint on the same session — does a chained compact 
 compact call. Controller-side procedure that worked: Monitor on the child's pid (a nohup'd CLI child does
 not notify the harness), verdict from `jq 'last'` on the `--output-format json` array, usage from the
 session JSONL, never the transcript.
+
+### V1 addendum 4 — three CHAINED headless compactions on the same CLI-child implementer (dstdns P116, 2026-08-21, `dstdns@ff73f6ea`)
+
+Follow-on to addendum 3, same subject and same session (`298cee08-5dd7-43ed-a060-2bd275f3562a`),
+carried to completion. Where addendum 3 covered checkpoint 1 (run 1 → compact → run 3), this
+addendum adds checkpoints 2 and 3 and the final DONE, so the datum is now "does a *chain* of
+headless compactions on one CLI child hold up" rather than "does one compaction work."
+
+**Per-run table** (`--output-format json`, `jq 'last'`; turns/duration/cost are per-run, not
+cumulative — each `claude -p --resume <sid> …` call reports only its own turns):
+
+| run | role | turns | wall | cost | cache_read (cumulative, session-lifetime) | peak context at cut (cache_read+cache_creation of last call) |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | fresh → checkpoint 1 | 82 | 16.9 min | $9.79 | 11.5M | 234,585 + 2,074 = **236,659** |
+| 3 | resume 1 → checkpoint 2 | 134 | 24.2 min | $14.83 | 21.1M | 242,995 + 2,393 = **245,388** |
+| 5 | resume 2 → checkpoint 3 | 94 | 26.6 min | $12.65 | 15.7M | 246,167 + 6,356 = **252,523** |
+| 7 | resume 3 → DONE | 174 | 46.1 min | $22.10 | 32.2M | 296,693 + 1,032 = **297,725** (final) |
+
+(`cache_read` per run is the CLI's own cumulative-session counter, not new tokens paid in that
+run — it grows because the whole prior transcript, chain-compacted or not, is still summed by
+the wrapper's own accounting. The context-growth curve below is the metric that isolates each
+run's own cost.)
+
+Session-wide, measured directly from the JSONL with `jsonl-metrics.py curve` (not the child's
+own §6 telemetry, which was written mid-run-7 at 766 calls — the transcript grew to 795 calls by
+the time the DONE result landed a few turns later):
+
+```
+calls=795  wall_min=126.7  final_context=297,727  cache_hit_ratio=0.987
+totals: cache_read=130,536,022  cache_creation=1,716,957  output=714,226
+growth shape: tail-heavy (knee at call 350 = 44.0% of run, +61,622 tok jump)
+```
+
+**Peak context before each cut, and first-turn cost after each resume**, from the raw
+per-message `usage` blocks around the three `compact_boundary` markers (lines 457, 1189, 1736 of
+2691):
+
+| cut | peak before cut (cache_read + cache_creation, last real call of that segment) | first real call after resume (cache_creation + cache_read) | reduction |
+|---|---:|---:|---:|
+| checkpoint 1 → compact 1 | 234,585 + 2,074 = 236,659 | 44,189 + 15,910 = **60,099** | **3.9×** |
+| checkpoint 2 → compact 2 | 242,995 + 2,393 = 245,388 | 42,203 + 19,417 = **61,620** | **4.0×** |
+| checkpoint 3 → compact 3 | 246,167 + 6,356 = 252,523 | 43,243 + 15,910 = **59,153** | **4.3×** |
+
+The reduction ratio is stable across all three cuts (3.9×–4.3×) and so is the absolute
+post-resume floor (~59–62k every time) — the chain shows no drift or degradation over three
+consecutive compactions. The 15.9–19.4k `cache_read` component is the fixed system-prompt/tools
+prefix; the 42–44k `cache_creation` component is the resume prompt + brief + first reads, all
+paid fresh each time exactly as V4(a) predicted for a distinct-prompt fork/resume.
+
+**The three compact calls** (`claude -p --resume <sid> "/compact <compactN.md>"`, all
+`< /dev/null` per addendum 3's fix — the bare form printed a benign "no stdin data" warning on
+the first call only):
+
+| compact | exit | turns | wall | cost |
+|---|---:|---:|---:|---:|
+| 1 (`run2-compact.json`) | 0 | 0 | 133 s | $1.68 |
+| 2 (`run4-compact.json`) | 0 | 0 | 177 s | $1.85 |
+| 3 (`run6-compact.json`) | 0 | 0 | 148 s | $1.85 |
+
+All three landed in the 130–180 s band the task memo predicted, all `is_error:false`, all
+recorded a `compact_boundary` system line in the JSONL. Compact cost is essentially flat
+(~$1.7–1.9) regardless of the summarised segment's own size (82–174 turns) — consistent with
+compaction cost being dominated by one summarisation call over the pre-cut context rather than
+by the segment's turn count.
+
+**Session total**: 4 work runs + 3 compacts = 484 work turns, **$64.75** ($9.79+$14.83+$12.65+
+$22.10 work, $1.68+$1.85+$1.85 compact), ~127 wall-minutes, ending DONE at `dstdns@ff73f6ea`.
+
+**Comparison to the successor-brief respawn pattern (P117, same day, qualitative only — no
+comparable per-run JSON was captured for P117).** P117's `retired-legacy-move` implementer ran
+as an Agent-tool subagent (pattern (a) unavailable per addendum 2) and checkpointed **once**, at
+406 calls / ~445k tokens, then was **respawned as a fresh successor** seeded with its brief
+(dstdns memory, `dstdns-p106-carve-review-inflight.md` 2026-08-21 ~04:50Z entry) rather than
+compacted in place. P116 never let context exceed ~253k before cutting, chained three
+compactions, and stayed on one session id throughout. Not head-to-head (different packages,
+sizes, and P117 lacks a per-call cost breakdown), but the contrast holds: P117's single late
+checkpoint (445k) is 1.8× P116's highest pre-cut peak (253k); P116 is a cheaper way to get the
+multi-checkpoint benefit E-007 already favors, without the fresh ~50–130k re-orientation a
+successor respawn pays per hop.
+
+**What the summaries lost, and did the retention prompts improve — from the child's own §6
+telemetry** (`nyxloom-trove/reports/dstdns-P116-REPORT.md`, quoted):
+
+> **What the summary lost: nothing load-bearing, once.** Each brief named the seams by
+> `file:line` without quoting them, which is the deliberate trade — the successor pays a
+> handful of targeted re-reads instead of carrying kilobytes of source. Measured cost of resume
+> 3: **6 orientation calls**… before the first productive action.
+>
+> **What it did lose — and this is the honest finding of this section — is skepticism about its
+> own earlier claims.** A summary presents prior conclusions as settled fact. Commit 3's LOG
+> said the O6 residue sweep was EMPTY; that sentence survived compaction 3 into my working
+> belief unchallenged, and it was wrong (§ O6)… **a claim carried across a compaction is a claim
+> that has not been re-measured**, and every oracle sentence in the final commit was re-run
+> against the final tree rather than copied forward.
+
+The three self-authored prompts (`compact1.md` 464 words, `compact2.md` 598 words, `compact3.md`
+567 words) kept the same skeleton every time (identity/worktree/branch/tip, KEEP/DROP, next
+action) and grew modestly as the accumulated LOG/oracle surface grew (compact2 added
+`config_endpoints.py` routes and the config-plane test harness; compact3 added the O9 clause and
+GUIDE §3) — no sign of prompt bloat or degradation across the chain, and the resume-cost table
+above (59–62k, flat) confirms it operationally: a third chained compaction cost no more to
+resume from than the first.
+
+**Operational recipe, unchanged from addendum 3 and reconfirmed three times:** launch with
+`nohup claude -p --session-id <uuid> --model opus --effort xhigh --dangerously-skip-permissions
+--output-format json > run.json 2> run.err &`, monitor the pid (a nohup'd child does not notify
+the harness); require the agent's first output line at checkpoint to be a bare verdict token
+(`CHECKPOINT <hash>` / `DONE <hash>` / `BLOCKED …`), read as a separate step; on `CHECKPOINT`,
+run the compact with the agent's own `reports/*-COMPACT.md` as the `/compact` argument and
+`< /dev/null` piped in (133–177 s, three for three); resume with a short controller prompt
+("continue from the brief" + any new decisions) via the same `--resume <sid>`. Read turn/cost/
+usage from the run's own JSON array's last element, never `TaskOutput` or a raw transcript read.
+
+**Open for V5.** Can the CONTROLLER's own top-level session run this same loop on itself — a
+self-authored compact prompt written at its own checkpoint, executed by an external helper
+process that calls `claude -p --resume <controller-sid> "/compact …"` and then hands control
+back — rather than the controller manually invoking `/compact` and re-typing a resume prompt
+each time? The mechanism this addendum validates (self-authored prompt, headless `/compact`,
+`--resume` back into the same session id) is identical in shape to the controller's own
+interactive `/compact`; the open question is only whether an *external* trigger (a wakeup, a
+watchdog, or a helper script watching the controller's own context size) can drive it instead of
+the operator, which would turn "Checkpoint hand-back" (CLAUDE.md) from an operator-triggered
+manual step into the same loop this addendum ran on a worker. Not designed here — B46 territory.
