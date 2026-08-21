@@ -884,7 +884,7 @@ def test_onboard_greenfield_scaffolds_and_instantiates(tmp_path, capsys):
 
     trove = project_folder / "nyxloom-trove"
     for name in ("1-north-star.md", "2-product-definition.md",
-                 "3-roadmap.md", "4-backlog.md", "onboarding-answers.json",
+                 "3-roadmap.md", "4-backlog-inbox.md", "onboarding-answers.json",
                  "README.md", "nyxloom.toml"):
         assert (trove / name).is_file(), name
 
@@ -925,7 +925,7 @@ def test_onboard_reuses_existing_trove_from_init(tmp_path):
 
     trove = project_folder / "nyxloom-trove"
     assert (trove / "1-north-star.md").is_file()
-    assert (trove / "4-backlog.md").is_file()
+    assert (trove / "4-backlog-inbox.md").is_file()
 
 
 def test_onboard_scan_path_repeatable(tmp_path):

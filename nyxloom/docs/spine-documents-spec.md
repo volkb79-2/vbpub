@@ -21,7 +21,7 @@ edits the frontmatter via table/form and the body via guided chat.
 | `1-north-star.md` | the invariant vision / WHY | no — mostly prose, minimal fm |
 | `2-product-definition.md` | versioned; features + acceptance (the machine-diffed target) | YES |
 | `3-roadmap.md` | ordered milestones → the next product-def version | yes |
-| `4-backlog.md` | features + bugfixes ledger (table-editable items) | yes |
+| `4-backlog-inbox.md` | features + bugfixes ledger (table-editable items) — the quick-idea inbox; renamed from `4-backlog.md` 2026-08-21 when the managed per-entry backlog landed (`docs/backlog-entries-spec.md`) | yes |
 
 `decisions.md` (the `D-NNN` inbox) stays as-is, unnumbered — it's an inbox, not a
 spine level.
@@ -60,7 +60,7 @@ milestones:
     features: [F001, F002]            # each MUST exist in 2-product-definition
     status: planned|active|done
 ```
-**4-backlog.md**
+**4-backlog-inbox.md**
 ```yaml
 kind: backlog
 schema_version: 1
@@ -78,7 +78,7 @@ items:
 - All spine docs live in the trove (managed — nyxloom may write them).
 - `nyxloom.toml` gains keys: `north_star`, `product_definition`; `roadmap` and
   `backlog` are repointed to the numeric-prefixed filenames (`3-roadmap.md`,
-  `4-backlog.md`). `decisions_inbox` unchanged.
+  `4-backlog-inbox.md`). `decisions_inbox` unchanged.
 - `[refs]` stays for read-only PROJECT docs (SPEC/ARCHITECTURE) the machine reads
   but never manages.
 
@@ -89,7 +89,7 @@ produce a clear "violates the standard" signal, never a silent mystery:
 - **S1 (schema):** each spine doc's frontmatter validates against its JSON schema.
 - **S2 (cross-doc consistency):** every `3-roadmap` milestone `features` id exists
   in `2-product-definition.features`; every product-def feature has ≥1
-  `acceptance`; every `4-backlog` item `folds_into` (if set) resolves to a real
+  `acceptance`; every `4-backlog-inbox` item `folds_into` (if set) resolves to a real
   feature/milestone.
 - **S3 (naming/placement/config):** numeric-prefix filenames, trove placement, and
   the `nyxloom.toml` spine keys resolve.
@@ -104,7 +104,7 @@ produce a clear "violates the standard" signal, never a silent mystery:
   cross-doc pool (same treatment as an S1/S4-dirty doc) — its own id space is
   untrustworthy, so nothing else should resolve against it yet. (Motivated by
   nyxloom's own backlog history: concurrent carves independently picked the
-  same next `B<N>`, producing two `B12`s and two `B13`s — see `4-backlog.md`'s
+  same next `B<N>`, producing two `B12`s and two `B13`s — see `4-backlog-inbox.md`'s
   healed items and its in-body note on the renumbering.)
 
 Surfaced in both `nyxloom lint` and `doctor`.

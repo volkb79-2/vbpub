@@ -226,3 +226,40 @@ refactor was executed *after* B21 merged. Implementation note: the dispatch mani
 a **pointer, budgeted against `argv_max` minus the 200-char headroom** the codebase reserves for
 long real paths — so it lands on IMPLEMENTER/CARVER and is skipped for the argv-tight
 FRONTIER_REVIEW. A convenience pointer must never be what strands a dispatch.
+
+## Backlog: per-entry files beat one big tracker file (2026-08-21)
+
+**Decision:** managed issue records live as ONE FILE PER ENTRY under
+`[backlog_entries].dir` (default `nyxloom-trove/backlog/`), YAML-frontmatter
++ markdown body, with a GENERATED `INDEX.md` whose staleness is a lint error
+(BLG3). The quick-idea inbox (spine `4-backlog-inbox.md`, renamed from
+`4-backlog.md`, or plain P28 `backlog.md`) stays exactly as lightweight as it
+was; a `promote` verb moves an idea into a managed entry. Full contract:
+[`backlog-entries-spec.md`](backlog-entries-spec.md).
+
+**Why:** three vbpub tools (ciu, cmru, assay) each ran a single large hand-
+maintained backlog file and all three showed the same measured failure modes:
+follow-up evidence filed under the WRONG entry (ciu's second reproductions for
+CIU-41/42 landed inside withdrawn CIU-23), updates landing in whichever
+surface the filer saw first (a status-table cell while the entry body stayed
+stale), empty headings for high-severity issues, five issues' details nested
+under a withdrawn issue's heading, and status maintained in two places. One
+file forces three jobs — index, record, history — into one surface; per-entry
+files give each issue its own surface and a generated index restores the
+at-a-glance view without hand-maintenance (the estate's "make it a test, not
+an intention" rule applied to the tracker itself).
+
+**Rejected alternatives:** (a) keeping single big files with more discipline —
+rejected because the failure modes are exactly the ones discipline has already
+failed to prevent three times; (b) an external issue tracker — rejected
+because estate tooling, cross-repo pointers (`AGENTS.md` names files-in-repo),
+and agent workflows all depend on git-native markdown; (c) replacing the idea
+inbox too — rejected because nyxloom's B1..B9-class quick ideas fit bullets
+and forcing every stray thought through frontmatter raises capture cost where
+low cost is the point.
+
+**Notable mechanics:** entry ids are `<PREFIX>-<NN>` with a per-project prefix
+(`CIU`, `KI`, …); legacy dash-less padded ids (`B001`) remain valid so a
+migrating project keeps pointer stability. Inbox promotion edits the inbox by
+surgical line-range deletion, never a YAML re-dump (PyYAML round-trips destroy
+comments) — the same byte-preserving discipline as P28's `tick_merged`.

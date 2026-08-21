@@ -1,4 +1,4 @@
-"""Per-handoff processing trace. PACKAGE B26 (nyxloom-trove/4-backlog.md).
+"""Per-handoff processing trace. PACKAGE B26 (the spine inbox, nyxloom-trove/4-backlog-inbox.md).
 
 Reconstructs one task's leg-by-leg processing history (implement / review /
 gate / merge, plus blocks, scope-amendment re-carves, and retries -- visible

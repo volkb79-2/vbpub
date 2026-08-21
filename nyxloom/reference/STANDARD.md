@@ -32,6 +32,7 @@ project home (the tool's own source tree).
     decisions.md     # decisions inbox — product calls (D-<NNN>)
     roadmap.md       # self-dev milestones
     backlog.md       # un-carved ideas
+    backlog/         # OPTIONAL managed per-entry issue records + generated INDEX.md
     GUIDE.md         # OPTIONAL: project-specific agent operating guide (see below)
     archive/         # merged handoffs + reports land here
   docs/              # the project's OWN docs — nyxloom READS these (see [refs])
@@ -102,7 +103,29 @@ validator rules): see `docs/spine-documents-spec.md`. Adopting the spine is
 valid and are still what `exec-nyxloom init` scaffolds. nyxloom's own trove
 has adopted it (see `nyxloom-trove/nyxloom.toml`'s `north_star`/
 `product_definition`/`roadmap`/`backlog` keys and the four docs they point
-at) as the worked example.
+at) as the worked example. (The spine's inbox doc is named
+`4-backlog-inbox.md` since 2026-08-21 — renamed from `4-backlog.md` when the
+managed per-entry backlog landed; existing projects migrate with a `git mv`
+plus the one-line `backlog` config repoint.)
+
+## Managed backlog entries (optional)
+
+A project MAY track filed issues/features as **one file per entry** under a
+managed `backlog/` dir, declared in `nyxloom.toml`:
+
+```toml
+[backlog_entries]
+dir       = "nyxloom-trove/backlog"   # default shown; trove-relative
+id_prefix = "CIU"                     # required; the project's id sequence
+```
+
+Entry files carry schema-validated YAML frontmatter (closed status vocabulary,
+lint rules BLG2) and a human-narrative body; `backlog/INDEX.md` is GENERATED
+and its staleness is itself a lint error (BLG3). The CLI surface is
+`nyxloom backlog new|promote|note|set-status|list|show|index`, and the merge
+flow auto-ticks an entry linked by `carved_handoff` to `merged`. Omitting the
+section keeps every entry rule silent. Full contract:
+`docs/backlog-entries-spec.md`; adoption recipes: `docs/CONSUMERS.md`.
 
 ## Document conventions ("managed" = enforced, not aspirational)
 

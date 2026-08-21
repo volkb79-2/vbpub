@@ -216,7 +216,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               a trove exists (reusing the `init` scaffold
                               above if none does -- never duplicates it),
                               then instantiates any MISSING direction-spine
-                              doc (1-north-star.md .. 4-backlog.md) with
+                              doc (1-north-star.md .. 4-backlog-inbox.md) with
                               minimal-valid frontmatter, wires any MISSING
                               nyxloom.toml spine key, and records the wizard
                               answers to
@@ -905,9 +905,10 @@ def cmd_merge(args) -> int:
 
     # Best-effort: the merge is already durably recorded above, so a backlog
     # that cannot be read/written must warn, not sink the whole command.
-    from . import backlog_items
+    from . import backlog_entries, backlog_items
     try:
         backlog_items.tick_merged(backlog_items.resolve_path(cfg), args.task, commit)
+        backlog_entries.tick_merged_entries(cfg, args.task, commit)
     except (OSError, UnicodeDecodeError) as e:
         print(f"warning: backlog auto-tick skipped: {e}", file=sys.stderr)
 
@@ -1731,6 +1732,162 @@ def cmd_finding_list(args) -> int:
     return 0
 
 
+def _resolve_backlog_project(args):
+    """--project via the registry, else walk up from cwd to the nearest
+    nyxloom-trove/nyxloom.toml or .nyxloom/project.toml. Returns
+    ProjectConfig or (None, message)."""
+    from .config import ProjectConfig, load_registry
+    if getattr(args, "project", None):
+        registry = load_registry()
+        if args.project not in registry:
+            return None, f"unknown project {args.project!r} (not registered)"
+        return ProjectConfig.load(registry[args.project]), ""
+    root = Path.cwd().resolve()
+    while root != root.parent:
+        if ((root / "nyxloom-trove" / "nyxloom.toml").exists()
+                or (root / ".nyxloom" / "project.toml").exists()):
+            return ProjectConfig.load(root), ""
+        root = root.parent
+    return None, ("no project config found between cwd and / "
+                  "(pass --project or run inside the project checkout)")
+
+
+def cmd_backlog_new(args) -> int:
+    """backlog new <title> [typed fields] [--body-from FILE]"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    if cfg.backlog_id_prefix is None:
+        print("error: project has no [backlog_entries] table in nyxloom.toml",
+              file=sys.stderr)
+        return 1
+    body = None
+    if args.body_from:
+        try:
+            body = Path(args.body_from).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"error: --body-from: {e}", file=sys.stderr)
+            return 1
+    path = backlog_entries.create_entry(
+        cfg, args.title,
+        type=args.type, severity=args.severity,
+        priority=args.priority, component=args.component,
+        provenance=args.provenance, filed_by=args.filed_by,
+        spec_owner=args.spec_owner, body=body,
+    )
+    print(path)
+    return 0
+
+
+def cmd_backlog_promote(args) -> int:
+    """backlog promote <inbox-id>"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    try:
+        path = backlog_entries.promote(cfg, args.inbox_id)
+    except KeyError as e:
+        print(f"error: {e.args[0]}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
+
+
+def cmd_backlog_note(args) -> int:
+    """backlog note <id> <text>"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    try:
+        path = backlog_entries.note(cfg, args.entry_id, args.text)
+    except KeyError as e:
+        print(f"error: {e.args[0]}", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
+
+
+def cmd_backlog_set_status(args) -> int:
+    """backlog set-status <id> <status> [--reason R]"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    try:
+        path = backlog_entries.set_status(cfg, args.entry_id, args.status,
+                                          reason=args.reason)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except KeyError as e:
+        print(f"error: {e.args[0]}", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
+
+
+def cmd_backlog_list(args) -> int:
+    """backlog list [--status S] -- the generated INDEX (optionally filtered)"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    index_path = backlog_entries.resolve_dir(cfg) / backlog_entries.INDEX_NAME
+    if not index_path.exists():
+        backlog_entries.write_index(cfg)
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    if args.status:
+        # header = banner, blank, title, blank, column row, separator (0-5)
+        kept = [ln for ln in lines
+                if ln.startswith("|") and not ln.startswith(("| ID", "|---"))
+                and f"| {args.status} " in ln]
+        lines = lines[:6] + kept
+    print("\n".join(lines))
+    return 0
+
+
+def cmd_backlog_show(args) -> int:
+    """backlog show <id>"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    try:
+        e = backlog_entries._find(cfg, args.entry_id)
+    except KeyError as ex:
+        print(f"error: {ex.args[0]}", file=sys.stderr)
+        return 1
+    print(e.path.read_text(encoding="utf-8"), end="")
+    return 0
+
+
+def cmd_backlog_index(args) -> int:
+    """backlog index -- regenerate INDEX.md"""
+    from . import backlog_entries
+    cfg, err = _resolve_backlog_project(args)
+    if cfg is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    if cfg.backlog_id_prefix is None:
+        print("error: project has no [backlog_entries] table in nyxloom.toml",
+              file=sys.stderr)
+        return 1
+    print(backlog_entries.write_index(cfg))
+    return 0
+
+
 def cmd_capability_map_refresh(args) -> int:
     """capability-map refresh [--dry-run]
 
@@ -2136,6 +2293,55 @@ def main(argv: list[str] | None = None) -> int:
     fl.add_argument("--project", default=None, help="default: all registered projects")
     fl.add_argument("--kind", default=None, help="filter by kind")
 
+    # backlog (docs/backlog-entries-spec.md: managed per-entry backlog)
+    backlog_parser = subparsers.add_parser("backlog")
+    backlog_subs = backlog_parser.add_subparsers(dest="backlog_cmd")
+
+    def _add_project_arg(p):
+        p.add_argument("--project", default=None,
+                       help="registered project id (default: discover from cwd)")
+
+    bn = backlog_subs.add_parser("new", help="file a new entry")
+    _add_project_arg(bn)
+    bn.add_argument("title")
+    bn.add_argument("--type", choices=["feature", "bugfix"], default=None)
+    bn.add_argument("--severity", choices=["low", "medium", "high"], default=None)
+    bn.add_argument("--priority", type=int, default=None)
+    bn.add_argument("--component", default=None)
+    bn.add_argument("--provenance", default=None)
+    bn.add_argument("--filed-by", dest="filed_by", default=None)
+    bn.add_argument("--spec-owner", dest="spec_owner", default=None)
+    bn.add_argument("--body-from", dest="body_from", default=None,
+                    help="read the entry body from this file instead of the template")
+
+    bp = backlog_subs.add_parser("promote", help="inbox item -> managed entry")
+    _add_project_arg(bp)
+    bp.add_argument("inbox_id", metavar="inbox-id")
+
+    bnote = backlog_subs.add_parser("note", help="append a dated update to an entry")
+    _add_project_arg(bnote)
+    bnote.add_argument("entry_id", metavar="id")
+    bnote.add_argument("text")
+
+    bs = backlog_subs.add_parser("set-status", help="typed status transition")
+    _add_project_arg(bs)
+    bs.add_argument("entry_id", metavar="id")
+    bs.add_argument("status",
+                    choices=["open", "carved", "fixed", "withdrawn", "obsolete"])
+    bs.add_argument("--reason", default=None,
+                    help="required for fixed|withdrawn|obsolete")
+
+    bl = backlog_subs.add_parser("list", help="print the generated INDEX.md")
+    _add_project_arg(bl)
+    bl.add_argument("--status", default=None, help="filter rows by status")
+
+    bsh = backlog_subs.add_parser("show", help="print one entry file")
+    _add_project_arg(bsh)
+    bsh.add_argument("entry_id", metavar="id")
+
+    bix = backlog_subs.add_parser("index", help="regenerate INDEX.md")
+    _add_project_arg(bix)
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -2229,6 +2435,21 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 parser.print_help(sys.stderr)
                 return 2
+        elif args.cmd == "backlog":
+            handlers = {
+                "new": cmd_backlog_new,
+                "promote": cmd_backlog_promote,
+                "note": cmd_backlog_note,
+                "set-status": cmd_backlog_set_status,
+                "list": cmd_backlog_list,
+                "show": cmd_backlog_show,
+                "index": cmd_backlog_index,
+            }
+            handler = handlers.get(getattr(args, "backlog_cmd", None))
+            if handler is None:
+                backlog_parser.print_help(sys.stderr)
+                return 2
+            return handler(args)
         elif args.cmd == "version":
             return cmd_version(args)
         elif args.cmd == "init":

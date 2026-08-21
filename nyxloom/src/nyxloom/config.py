@@ -300,11 +300,22 @@ class ProjectConfig:
     # unprefixed-filename convention (backlog_items.DEFAULT_RELPATH, the
     # daemon's carve-context notes) keep their own hardcoded fallback; this
     # field only carries an EXPLICIT repoint (e.g. nyxloom's own
-    # nyxloom-trove/nyxloom.toml points these at 3-roadmap.md/4-backlog.md).
+    # nyxloom-trove/nyxloom.toml points these at 3-roadmap.md/
+                            # 4-backlog-inbox.md -- renamed from 4-backlog.md, docs/backlog-entries-spec.md).
     north_star: str | None = None
     product_definition: str | None = None
     roadmap: str | None = None
     backlog: str | None = None
+    # Managed per-entry backlog (docs/backlog-entries-spec.md). Both None
+    # when the nyxloom.toml has no [backlog_entries] table = the project
+    # does not use entries; every BLG2/BLG3 lint rule and CLI verb then
+    # stays silent/refuses rather than inventing a location (the estate
+    # defaults rule: a default is legitimate only when correct in the
+    # absence of information -- here the ABSENCE of the section IS the
+    # information "feature unused", so there is no shadow path to a
+    # hardcoded dir).
+    backlog_entries_dir: str | None = None
+    backlog_id_prefix: str | None = None
     # D-060 stages-as-data (docs/spec-flow-stages.md): the composed, validated
     # per-project pipeline as an ordered list of stage-kind names. Defaults to
     # the current hardcoded flow (DEFAULT_PIPELINE) so a project with no
@@ -454,6 +465,8 @@ class ProjectConfig:
             product_definition=data["project"].get("product_definition"),
             roadmap=data["project"].get("roadmap"),
             backlog=data["project"].get("backlog"),
+            backlog_entries_dir=data.get("backlog_entries", {}).get("dir"),
+            backlog_id_prefix=data.get("backlog_entries", {}).get("id_prefix"),
             pipeline=pipeline,
             stage_overrides=stage_overrides,
             logging_level=logging_level if isinstance(logging_level, str) else None,

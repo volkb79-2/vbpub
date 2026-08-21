@@ -125,7 +125,7 @@ def _doc_paths(project_root: Path) -> dict[str, Path]:
         "north_star": trove_dir / "1-north-star.md",
         "product_definition": trove_dir / "2-product-definition.md",
         "roadmap": trove_dir / "3-roadmap.md",
-        "backlog": trove_dir / "4-backlog.md",
+        "backlog": trove_dir / "4-backlog-inbox.md",
     }
 
 
