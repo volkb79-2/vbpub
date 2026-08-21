@@ -224,7 +224,7 @@ class CarveEffector:
 
         CR-01 (DR-04) 2026-08-03: resolution order is now the ADOPTED
         direction-spine config key (`cfg.backlog`/`cfg.roadmap`, e.g.
-        nyxloom-trove/4-backlog.md / 3-roadmap.md) FIRST, then the plain
+        spine inbox (4-backlog-inbox.md) / 3-roadmap.md) FIRST, then the plain
         trove convention, then the legacy docs/ path -- a project that
         adopted the spine (like nyxloom itself) must never fall through to
         a stale legacy doc just because the plain `nyxloom-trove/roadmap.md`

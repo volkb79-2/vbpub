@@ -24,14 +24,15 @@ DAEMON_SRC = (REPO_ROOT / "src" / "nyxloom" / "daemon.py").read_text()
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
 TYPES_SRC = (REPO_ROOT / "src" / "nyxloom" / "types.py").read_text()
 # PACKAGE F1 (2026-07-17): nyxloom's own backlog.md was git-mv'd to the
-# numeric-prefixed 4-backlog.md (docs/spine-documents-spec.md), AND the backlog
-# is now authored by spine_writer as schema-validated FRONTMATTER items
-# (`- id: <B-id>`), not body bullets (`- **B-id**`). The guard reads the
-# machine-trusted frontmatter surface -- the same surface `nyxloom lint`
-# validates -- so a regenerated backlog can't silently drop a reserved role's
-# tracking item. The literal 'nyxloom-trove/backlog.md' string is a frozen
-# comment TAG inside types.py's RESERVED_ROLES block, not a resolved path.
-BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "4-backlog.md").read_text()
+# numeric-prefixed spine inbox (4-backlog.md then; 4-backlog-inbox.md since
+# 2026-08-21, docs/backlog-entries-spec.md), AND the inbox is now authored by
+# spine_writer as schema-validated FRONTMATTER items (`- id: <B-id>`), not
+# body bullets (`- **B-id**`). The guard reads the machine-trusted
+# frontmatter surface -- the same surface `nyxloom lint` validates -- so a
+# regenerated inbox can't silently drop a reserved role's tracking item. The
+# literal 'nyxloom-trove/backlog.md' string is a frozen comment TAG inside
+# types.py's RESERVED_ROLES block, not a resolved path.
+BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "4-backlog-inbox.md").read_text()
 # A backlog item id `X` is present iff the frontmatter has a `- id: X` entry.
 _BACKLOG_ID_RE = r"^\s*-\s+id:\s*{}\b"
 

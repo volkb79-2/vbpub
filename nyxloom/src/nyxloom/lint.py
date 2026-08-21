@@ -145,7 +145,7 @@ from pathlib import Path
 
 import jsonschema
 
-from . import backlog_items, doc_lifecycle, frontmatter, paths
+from . import backlog_entries, backlog_items, doc_lifecycle, frontmatter, paths
 from .config import ProjectConfig
 from .log import get_logger
 from .types import LintFinding, utc_now
@@ -242,6 +242,11 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     backlog_path = backlog_items.resolve_path(cfg)
     if backlog_path.exists():
         results[str(backlog_path.relative_to(cfg.root))] = lint_backlog(cfg)
+    # Managed per-entry backlog (docs/backlog-entries-spec.md): BLG2 per
+    # entry file + BLG3 index freshness. Silent when the project has not
+    # adopted [backlog_entries] (resolve_dir None or dir absent).
+    for rel_path, entry_findings in lint_backlog_entries(cfg).items():
+        results.setdefault(rel_path, []).extend(entry_findings)
     for rel_path, spine_findings in lint_spine(cfg).items():
         results.setdefault(rel_path, []).extend(spine_findings)
     for rel_path, archive_findings in doc_lifecycle.lint_archive(cfg).items():
@@ -442,6 +447,20 @@ def lint_backlog(cfg: ProjectConfig) -> list[LintFinding]:
         return []
     items = backlog_items.parse(backlog_path)
     return backlog_items.validate(items, path=str(backlog_path))
+
+
+# ----- managed backlog entries (docs/backlog-entries-spec.md) -----
+
+def lint_backlog_entries(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
+    """Rule namespaces BLG2 (entry validity) + BLG3 (INDEX.md freshness),
+    keyed per file like every other lint surface. Silent unless the project
+    declared [backlog_entries] AND the dir exists."""
+    results: dict[str, list[LintFinding]] = {}
+    for finding in backlog_entries.validate_dir(cfg):
+        results.setdefault(finding.path, []).append(finding)
+    for finding in backlog_entries.index_findings(cfg):
+        results.setdefault(finding.path, []).append(finding)
+    return results
 
 
 # ----- direction spine (PACKAGE F1, docs/spine-documents-spec.md) -----

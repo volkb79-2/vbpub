@@ -611,7 +611,7 @@ class TestRepoOwnSpine:
         assert cfg.north_star == "nyxloom-trove/1-north-star.md"
         assert cfg.product_definition == "nyxloom-trove/2-product-definition.md"
         assert cfg.roadmap == "nyxloom-trove/3-roadmap.md"
-        assert cfg.backlog == "nyxloom-trove/4-backlog.md"
+        assert cfg.backlog == "nyxloom-trove/4-backlog-inbox.md"
 
     def test_repo_own_spine_lints_clean(self):
         cfg = config.ProjectConfig.load(REPO_ROOT)
@@ -621,5 +621,5 @@ class TestRepoOwnSpine:
 
     def test_repo_own_spine_docs_exist_on_disk(self):
         for name in ("1-north-star.md", "2-product-definition.md",
-                     "3-roadmap.md", "4-backlog.md"):
+                     "3-roadmap.md", "4-backlog-inbox.md"):
             assert (REPO_ROOT / "nyxloom-trove" / name).is_file(), name
