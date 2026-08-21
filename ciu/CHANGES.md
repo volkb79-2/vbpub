@@ -28,6 +28,18 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## [Unreleased]
 
+### Fixed
+- fix(ciu): `ciu env generate` no longer inherits an ambient `DOCKER_NETWORK_INTERNAL`
+  (or `REPO_NAME`/`INSTANCE_ID`): the S2.7 refined-precedence pattern extends to the
+  whole derived identity tuple — an ambient value wins only when consistent with the
+  value derived for this repo root; on mismatch the derived value is written and a
+  stderr warning names the ignored ambient value plus the `ciu worktree add
+  --shared-infra` remedy (S16.1). Bootstrap steps following a generate in the same run
+  act on the just-written file's identity parsed by exact path, so a contaminated
+  login shell can no longer point a fresh worktree's network (or the S16 cross-checks)
+  at another checkout's stack; a consistent pre-set value stays silent (CIU-41,
+  dstdns P111 F2, SPEC S2.7)
+
 ### Added
 - feat(ciu): deploy layouts — `[deploy.layouts.<name>]` names a host→bundles plan + its
   environment; `ciu up --layout <name>` drives the SPEC-J push per host in declared order

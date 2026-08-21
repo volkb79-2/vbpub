@@ -88,10 +88,13 @@ def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
     assert events == [("generate", None), ("network", "generated-net"), ("tls", None)]
 
 
-def test_bootstrap_env_init_preserves_explicit_caller_network(
+def test_bootstrap_env_init_generated_identity_beats_inconsistent_caller_network(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Generated defaults never override an operator-selected network."""
+    """CIU-41 / S2.7: after a generate in the same run, the FILE's derived
+    identity outranks an inconsistent ambient value for the network step —
+    the pre-2026-08 behavior (ambient 'caller-net' silently winning over the
+    just-written record) is the masked default CIU-41 withdrew."""
     env_path = tmp_path / "ciu.env"
     env_path.write_text('DOCKER_NETWORK_INTERNAL="generated-net"\n', encoding="utf-8")
     events: list[str] = []
@@ -101,7 +104,26 @@ def test_bootstrap_env_init_preserves_explicit_caller_network(
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 
     assert workspace_env.bootstrap_env_init(tmp_path) == env_path
-    assert events == ["caller-net"]
+    assert events == ["generated-net"]
+
+
+def test_bootstrap_env_init_consistent_caller_network_stays_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pre-set network EQUAL to the generated one is a no-op, no warning."""
+    env_path = tmp_path / "ciu.env"
+    env_path.write_text('DOCKER_NETWORK_INTERNAL="same-net"\n', encoding="utf-8")
+    events: list[str] = []
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "same-net")
+    monkeypatch.delenv("REPO_NAME", raising=False)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+    monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
+
+    assert workspace_env.bootstrap_env_init(tmp_path) == env_path
+    assert events == ["same-net"]
+    assert capsys.readouterr().err == ""
 
 
 def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(

@@ -137,6 +137,24 @@ requirements are marked *(withdrawn)*.
   | `ENV_TYPE` | `devcontainer` \| `native` \| `github-actions` (v1's `bare-metal` and post-create's `local` unify as `native`) |
   | `PUBLIC_IP`/`PUBLIC_FQDN`/`PUBLIC_TLS_*` | config → ipify → reverse DNS → `localhost` fallback (S2.3 gates whether required) |
 
+  **Refined precedence for the derived identity tuple (CIU-41).** The
+  blanket "a pre-set environment value always wins" rule does NOT apply to
+  the derived identity values (`REPO_NAME`, `INSTANCE_ID`,
+  `DOCKER_NETWORK_INTERNAL`) during **generation** — the same refined
+  precedence already applied to `PHYSICAL_REPO_ROOT`. A shell that sourced a
+  DIFFERENT checkout's `ciu.env` carries that checkout's network name; a
+  generate run in this workspace must never adopt it (the 2026-07
+  `PHYSICAL_REPO_ROOT` leak family, dstdns P111 F2 live reproduction).
+  Contract: during generation each identity value is derived from THIS
+  physical root alone; an ambient value is adopted only when it EQUALS the
+  derived one; on mismatch the derived value is written and a stderr warning
+  names the ignored ambient value and the S16.1 remedy. Within the same run,
+  bootstrap steps that follow a generation (network creation, devcontainer
+  attach, S16 cross-checks) act on the just-written file's identity, parsed
+  by exact path — never re-derived from ambient state or re-found via an
+  ambient `REPO_ROOT`. Read-path precedence of already-generated workspaces
+  (ambient wins when consistent) is unchanged.
+
 - **S2.8** `ciu env generate` is the **single bootstrap entry point** and
   MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
