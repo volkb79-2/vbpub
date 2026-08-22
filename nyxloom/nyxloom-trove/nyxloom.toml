@@ -31,15 +31,17 @@ roadmap            = "nyxloom-trove/3-roadmap.md"             # self-dev milesto
 backlog            = "nyxloom-trove/4-backlog-inbox.md"        # un-carved idea INBOX (managed entries live in backlog/, docs/backlog-entries-spec.md)
 archive_dir     = "nyxloom-trove/archive"             # merged handoffs+reports land here
 archive_keep_visible = 10                             # dashboard shows last N completed; rest behind an Archive button
-
-# Managed per-entry backlog (docs/backlog-entries-spec.md): filed issues/
-# features as one file per entry; INDEX.md is generated, lint-enforced.
-[backlog_entries]
-id_prefix = "NL"                                       # issue sequence (entries live in nyxloom-trove/backlog/)
-
 agent_logs      = "nyxloom-trove/agent-logs"          # per-attempt transcripts (spec/receipt/attempt.log); gitignored by default, committable for traceability
 
 worktree_root = "../.worktrees"                       # vbpub is the git repo; nyxloom is a subdir
+
+# Managed per-entry backlog (docs/backlog-entries-spec.md): filed issues/
+# features as one file per entry; INDEX.md is generated, lint-enforced.
+# NOTE: this must stay BELOW every bare top-level key — a TOML table swallows
+# all subsequent bare keys (the 2026-08-22 merge silently reordered it above
+# agent_logs/worktree_root and the dogfood gate red'd with CFG1).
+[backlog_entries]
+id_prefix = "NL"                                       # issue sequence (entries live in nyxloom-trove/backlog/)
 
 # The daemon's SOURCE OF TRUTH (event log, statefiles, registry, routes, leases,
 # pidfile) does NOT live in a project doc — it lives in the persistent
