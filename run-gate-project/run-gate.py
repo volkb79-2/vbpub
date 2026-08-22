@@ -470,7 +470,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv = [docker, "exec", "--workdir", str(repo)]
     # Env passthrough allowlist: MOCK_MODE, RUN_LIVE_TESTS are dstdns's two
     # standard test-mode toggles. More can be added per-environment later.
-    for key in ("MOCK_MODE", "RUN_LIVE_TESTS"):
+    for key in ("MOCK_MODE", "RUN_LIVE_TESTS", CGROUP_ENV_VAR):
         value = os.environ.get(key)
         if value:
             argv += ["-e", f"{key}={value}"]

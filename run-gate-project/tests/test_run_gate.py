@@ -1060,3 +1060,26 @@ def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     proc = run_tool(proj, "suite")
     assert proc.returncode == 1
     assert "empty element" in proc.stderr
+
+
+def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
+    """Reviewer's cgroup-placement probe: exec-mode must forward
+    CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested
+    docker run calls inherit the bounded slice."""
+    repo = make_repo(tmp_path)
+    proj = make_project(repo, EXEC_LANE)
+    (repo / "ciu.global.toml").write_text(
+        "[deploy]\nproject_name = 'p'\nenvironment_tag = 'd'\n")
+    commit_all(repo, "ciu")
+    log = fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setenv(CGROUP_VAR, "bounded.slice")
+    shim = shim_dir_of(monkeypatch) / "docker"
+    body = shim.read_text()
+    body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "p-d-runner" ;;')
+    shim.write_text(body)
+    proc = run_tool(proj, "suite", "--worktree", str(repo))
+    assert proc.returncode == 0, proc.stderr
+    calls = docker_execs(log)
+    assert calls, "no docker exec call recorded"
+    call = calls[0]
+    assert f"{CGROUP_VAR}=bounded.slice" in call
