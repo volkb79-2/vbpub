@@ -499,8 +499,34 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 |---|---|---|
 | `expose_env = "<NAME>"` | Injects secret value into compose process env under `<NAME>` | S4.19 |
 | `consumed_by = "hook"` | Marks a secret read by a hook via `ctx.secret_file()` so S4.20 does not warn | S4.20 |
+| `produced_by = "<profile>"` | **ASK_VAULT only.** Declares the profile whose deployment provisions the Vault path; a partial selection excluding it refuses upfront naming producer + path + remedies | S13.6 |
 | `mode = "0444"` | Override file mode (default `0440`) | S4.10 |
 | `uid = <int>` | Override file owner UID | S4.10 |
+
+**Cross-profile producers (`produced_by`, S13.6).** When one profile's
+provisioning writes the Vault path another stack reads — an authentik hook
+minting its bootstrap token, a vault stack minting per-service tokens — the
+consuming stack declares it, so a partial selection fails BEFORE any deploy
+instead of at materialization with only the bare path:
+
+```toml
+[deploy.profiles.identity]
+phases = ["phase_3"]
+
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token",
+                    produced_by = "identity" }
+```
+
+```console
+$ CIU_SERVICES_PROFILE=core,db ciu up
+[ERROR] Provisioning producers missing from the selection (S13.6):
+  stack 'applications/controller': ASK_VAULT secret 'bootstrap_token' reads Vault path 'authentik/bootstrap_token', which is provisioned by profile 'identity' — not in your selection (core,db). Deploy the producer profile (ciu up --profile core,db,identity) or seed the path out-of-band before deploying.
+```
+
+The value must name a profile defined in `[deploy.profiles]` — a typo fails
+as a configuration error even when nothing else would check it. Undeclared
+`ASK_VAULT` directives behave exactly as before.
 
 ---
 

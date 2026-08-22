@@ -354,7 +354,9 @@ requirements are marked *(withdrawn)*.
 - **S4.4** A secrets-table value MUST be either a directive string or an
   inline table `{ directive = "...", ... }` with OPTIONAL keys:
   `expose_env = "<ENV_NAME>"` (S4.16), `mode = "0444"`, `uid = <int>`
-  (S4.10). Any other value, or an unparseable directive, = abort.
+  (S4.10), `consumed_by = "hook"` (S4.20), `produced_by = "<profile>"`
+  (ASK_VAULT only; S13.6). Any other value, or an unparseable directive,
+  = abort.
 - **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL)\b`
   found **outside** a secrets table MUST abort (catches misplaced
   directives, e.g. dstdns's `[controller.consul].token`). No other heuristic
@@ -1202,6 +1204,47 @@ both checks are bypassed entirely.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+
+### S13.6 — Cross-profile producer declaration (`produced_by`, CIU-42)
+
+A stack's `ASK_VAULT` directive may declare, beside the directive (S4.4
+inline table), the profile whose deployment PROVISIONS the value at its Vault
+path:
+
+```toml
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token",
+                    produced_by = "identity" }
+```
+
+The declaration turns an opaque late failure into an upfront refusal. Without
+it, a partial selection that excludes the producing profile sails through
+every preflight and fails at the consuming stack's materialization with only
+the bare path name (`[S4.2] ... absent`) — twice reproduced live in dstdns
+P111/P112 (`core,db` selections needing identity-profile paths, resolved in
+the field by seeding placeholders). With it:
+
+- **Grammar:** `produced_by` is valid ONLY on `ASK_VAULT` — a producer
+  declaration says the path is provisioned by another profile's deployment,
+  which only an ASK_VAULT read can depend on (`GEN_TO_VAULT` self-produces;
+  local/ephemeral kinds have no cross-profile producer). Value: a non-empty
+  string; anything else is a `[S13.6]` grammar abort. A bare-string
+  directive has no producer and behaves exactly as before.
+- **Preflight:** `producer_preflight` runs beside `vault_preflight` on every
+  deploy-needing invocation. When the selection names profiles and a declared
+  producer is not among them, it refuses `[S13.6]` naming EVERY unmet tuple:
+  stack, secret name, Vault path, producer profile, the current selection,
+  and both remedies — deploy the producer profile (`ciu up --profile
+  <selection>,<producer>`) or seed the path out-of-band. The default
+  selection (all phases) never refuses: everything's provisioning runs.
+- **Typo protection:** a `produced_by` naming an undefined profile is a
+  configuration error EVEN under the default selection — a typo'd declaration
+  must fail loudly, never silently protect nothing.
+- **Scope:** shipped stacks have no CIU secrets surface (S8.6) and are
+  skipped; undeclared ASK_VAULT directives keep today's behavior exactly.
+- **Controlled wrong implementation:** dropping the declaration lookup makes
+  the preflight pass where it must refuse — the refusal demonstrably comes
+  from the declaration, not from the path.
 
 ## S14 — Remote SSH transport (`ciu ssh` / `--host`)
 

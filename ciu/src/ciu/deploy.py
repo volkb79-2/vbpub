@@ -460,6 +460,72 @@ def vault_preflight(
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")
 
 
+def producer_preflight(
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+) -> None:
+    """S13.6 / CIU-42 — refuse a partial selection that excludes a declared producer.
+
+    A stack's ASK_VAULT directive may declare ``produced_by = "<profile>"``:
+    the value at its Vault path is provisioned by THAT profile's deployment
+    (e.g. an authentik hook writing its bootstrap token), not by this stack.
+    When the invocation selects named profiles and a declared producer is not
+    among them, the consuming stack can only fail later at materialization
+    with the bare path name ([S4.2]) — so this preflight refuses UPFRONT,
+    naming the producer profile, the path, and both remedies (deploy the
+    producer profile, or seed the path out-of-band).
+
+    The default selection (no named profile = all phases) deploys every
+    stack's provisioning, so there is nothing to refuse. An unknown producer
+    profile name is a configuration error even under the default selection:
+    a typo'd declaration must fail loudly, never silently protect nothing.
+    """
+    config = profile.config
+    profiles_table = config.get("deploy", {}).get("profiles", {})
+    selected_names = {
+        n.strip() for n in (profile.name or "").split(",") if n.strip()
+    }
+    named_selection = bool(selected_names)
+
+    refusals: list[str] = []
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered:
+            continue
+        # Shipped stacks have no CIU secrets surface (S8.6).
+        if phases_pkg.service_shipped(entry.get("service", {})):
+            continue
+        stack_cfg = rendered[rel]
+        root_key = config_model.validate_stack_shape(stack_cfg)
+        merged = config_model.deep_merge(config, stack_cfg)
+        for spec in secret_directives.discover(root_key, merged):
+            if spec.kind != "ASK_VAULT" or not spec.produced_by:
+                continue
+            if spec.produced_by not in profiles_table:
+                raise ValueError(
+                    f"[S13.6] ASK_VAULT secret '{spec.name}' in stack '{rel}' "
+                    f"declares produced_by = {spec.produced_by!r}, which is "
+                    f"not a defined profile in [deploy.profiles]. Defined "
+                    f"profiles: {', '.join(sorted(profiles_table)) or '(none)'}."
+                )
+            if named_selection and spec.produced_by not in selected_names:
+                refusals.append(
+                    f"  stack '{rel}': ASK_VAULT secret '{spec.name}' reads "
+                    f"Vault path '{spec.locator}', which is provisioned by "
+                    f"profile '{spec.produced_by}' — not in your selection "
+                    f"({profile.name}). Deploy the producer profile "
+                    f"(ciu up --profile {profile.name},{spec.produced_by}) or "
+                    "seed the path out-of-band before deploying."
+                )
+
+    if refusals:
+        raise ValueError(
+            "[ERROR] Provisioning producers missing from the selection "
+            "(S13.6):\n" + "\n".join(refusals)
+        )
+
+
 # ===========================================================================
 # Provisioning preflight (requires/provides graph + live probe)
 # ===========================================================================
@@ -2549,6 +2615,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
         vault_preflight(repo_root, profile, selection, rendered)
+        producer_preflight(profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
@@ -2577,6 +2644,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
         vault_preflight(repo_root, profile, selection, rendered)
+        producer_preflight(profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),

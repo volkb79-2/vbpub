@@ -55,6 +55,12 @@ _REQUIRES_LOCATOR: frozenset[str] = frozenset(
 # S4.2 — only ASK_VAULT supports the #field selector
 _VAULT_FIELD_DIRECTIVES: frozenset[str] = frozenset({"ASK_VAULT"})
 
+# S13.6 — only ASK_VAULT may declare a cross-profile producer: the value at
+# the Vault path is provisioned by ANOTHER profile's deployment (e.g. an
+# authentik hook writing its bootstrap token). GEN_TO_VAULT self-produces;
+# local/ephemeral kinds have no cross-profile producer at all.
+_PRODUCER_DIRECTIVES: frozenset[str] = frozenset({"ASK_VAULT"})
+
 # S4.4 — allowed inline-table keys (beyond 'directive')
 _ALLOWED_INLINE_KEYS: frozenset[str] = frozenset({
     "directive",
@@ -62,6 +68,7 @@ _ALLOWED_INLINE_KEYS: frozenset[str] = frozenset({
     "mode",
     "uid",
     "consumed_by",
+    "produced_by",
 })
 
 # S4.7 / S12 — reserved extension keys (reject with a targeted message)
@@ -93,6 +100,10 @@ class SecretSpec:
     expose_env  : optional ENV_NAME to inject into compose process env (S4.19).
     consumed_by : optional non-compose consumer marker; currently only "hook"
                   (S4.20).
+    produced_by : optional producer-profile name for ASK_VAULT (S13.6): the
+                  Vault path is provisioned by that profile's deployment, so
+                  a partial selection excluding it refuses upfront instead of
+                  failing at this stack with only the bare path.
     mode        : secret-file mode string, default "0440" (S4.10).
     uid         : optional owner UID override (S4.10).
     table_path  : dotted path of the secrets table this spec came from (S4.7).
@@ -104,6 +115,7 @@ class SecretSpec:
     field: str | None = dc_field(default=None)
     expose_env: str | None = dc_field(default=None)
     consumed_by: str | None = dc_field(default=None)
+    produced_by: str | None = dc_field(default=None)
     mode: str = dc_field(default="0440")
     uid: int | None = dc_field(default=None)
     table_path: str = dc_field(default="")
@@ -250,6 +262,21 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
                 f"[S4.20] 'consumed_by' for {ctx} must be 'hook' when set, "
                 f"got {consumed_by!r}"
             )
+    produced_by: str | None = options.get("produced_by", None)
+    if produced_by is not None:
+        if verb not in _PRODUCER_DIRECTIVES:
+            raise ValueError(
+                f"[S13.6] 'produced_by' is only valid for ASK_VAULT, "
+                f"not '{verb}' for {ctx}: a producer declaration says the "
+                "Vault path is provisioned by another profile's deployment, "
+                "which only an ASK_VAULT read can depend on"
+            )
+        if not isinstance(produced_by, str) or not produced_by.strip():
+            raise ValueError(
+                f"[S13.6] 'produced_by' for {ctx} must be a non-empty "
+                f"profile name, got {produced_by!r}"
+            )
+        produced_by = produced_by.strip()
     mode: str = options.get("mode", "0440")
     uid_raw = options.get("uid", None)
     uid: int | None = None
@@ -268,6 +295,7 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
         field=vault_field,
         expose_env=expose_env,
         consumed_by=consumed_by,
+        produced_by=produced_by,
         mode=mode,
         uid=uid,
         table_path=table_path,

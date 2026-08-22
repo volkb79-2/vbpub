@@ -9,6 +9,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## [Unreleased]
 
+### Added
+- feat(ciu): cross-profile ASK_VAULT producer declaration `produced_by` — a
+  partial profile selection excluding the producing profile now refuses
+  upfront naming producer + path + both remedies, instead of failing at the
+  consuming stack with only the bare path (CIU-42, SPEC S13.6); unknown
+  producer profile names are configuration errors
+
 ### Changed
 - **BREAKING (ciu)**: compose project naming cutover (CIU-46, SPEC S8.7/S6.4a)
   — there is no compose invocation without an explicit `-p` anymore. A
