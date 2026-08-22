@@ -7,6 +7,38 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.4.0] - 2026-08-22
+<!-- cmru: generated -->
+<!-- cmru: source-end=2fc8e50334d1c3a696e2f53657a70ba0c06990be -->
+
+### Added
+- feat(ciu): deployment-selection facts in render + hook context — ciu.selected_profiles / ciu.deployed_stacks (CIU-44, SPEC S3.12) (9ee5fcf8)
+- feat(ciu): clean removes identity-scoped networks + label-pass volumes, invariant extended (CIU-43, SPEC S6.4a) (e7703b85)
+
+### Fixed
+- fix(ciu): clean's success line names only verified-present keeps — never claims a keep of an absent network (46ecfcd6)
+- fix(ciu): adversarial-review repairs — [ciu] table merge not overwrite (B1), clean threads selection facts (B2), daemon-indeterminate fails closed + label-based network enumeration (B3/N1) (840a0e98)
+- fix(ciu): env generate ignores inconsistent ambient identity — S2.7 refined precedence extended to the derived tuple (CIU-41, dstdns P111 F2) (a0eb24b0)
+
+### Changed
+- withdraw(CIU-45): retract same-day filing — misdiagnosis, not a ciu gap (70513217)
+- backlog(ciu): file CIU-45 -- requires provisions rather than verifies, blocks a non-ciu hook's out-of-band Vault paths at static preflight (570b40ad)
+- ciu(CIU-44): templates cannot see the selected profile set at render time (dstdns P120 D-162) (88a242b3)
+- ciu(CIU-43): second reproduction on 6.3.0 — volumes leak too (dstdns@P116 O9, D-154 R5) (ba6bc451)
+- ciu(CIU-41,CIU-42): second verbatim reproduction in dstdns P112 — priority bump noted (821c1249)
+- backlog(ciu,assay): CIU-41..43 + assay B010 — four upstream findings from dstdns P111's Mode-B live pass (7f64090c)
+- run-gate-project: README (design authority) + CONSUMERS (adoption guide) + HANDOFF-P01 (build + ciu first adoption) — estate D-110/D-111+amendment (647364ab)
+- backlog: CIU-40 + assay B009 refined per D-111 (run-gate.py + gates.toml, one parser, orchestration/judgment split) (910d8b8e)
+- brief rev 6: ciu config-wave lane COMPLETE — v6.2.0 + v6.3.0 shipped, CIU-40 follow-up (38532ebf)
+- backlog: assay B009 (assay.toml role docs + image-baked distribution) + ciu CIU-40 (run-gate.sh + de-vendor) per estate D-110 (e9bd9b27)
+
+### Documentation
+- docs(ciu): docs-contract fixes — jinja fences for template examples, renumbered CONSUMERS sections + resolved gate anchor (e0117119)
+
+### Testing
+- test(ciu): shipped-stack clean mocks the S6.4a network seams — tester-unified has no docker socket, fail-closed enumeration correctly reddened it (2fc8e503)
+- test(ciu): cover every S6.4a fail-closed path — gate found 99.69% (shipped-stack clean mocked docker leaks, daemon-dies ordinals, dedupe/keep arcs) (3cd6058b)
+
 ## [6.3.0] - 2026-08-20
 <!-- cmru: generated -->
 <!-- cmru: source-end=270180b7b6bbae2c0c7db8d063ae3e7a1a0ff69e -->
