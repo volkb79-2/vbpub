@@ -1,6 +1,6 @@
 # run-gate SPEC — normative implementation contract
 
-**Status:** NORMATIVE for the P01 build. Distilled from `README.md` (design
+**Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -16,7 +16,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   directory of the project dir. Optional. Defines shared environment facts
   ONLY (lanes are rejected there).
 - **environment** — a named container/host execution fact set: `image`
-  (required), `cgroup_slice` (optional). `host` is a built-in name (never
+  (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
+  or `"exec"`, default `"ephemeral"`). `host` is a built-in name (never
   definable) meaning "no container".
 - **judged worktree** — the git toplevel containing the project dir, unless
   `--worktree` overrides (the daemon case).
@@ -82,6 +83,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 ## 5. Execution contract
 
+- `R-14a` **Exec mode (`mode = "exec"`)** runs inside a PERSISTENT,
+  externally-managed container via `docker exec`. run-gate refuses to start
+  the container itself — that belongs to the project's deployment authority
+  (e.g. CIU). The container name is resolved from a declared `container_name`
+  on the environment, or derived from the repo's `ciu.global.toml` [deploy]
+  table (`project_name + environment_tag`, falling back to
+  `network_name stripped of "-network"`). Missing config → hard error naming
+  what to fix. If the resolved container is not running → hard error naming
+  the lifecycle command to start it; no silent fallback.
+
+- `R-14b` **Extra mounts:** `$RUN_GATE_EXTRA_MOUNTS` is an optional colon-
+  separated list of `host=container` pairs appended as `-v` flags to ephemeral
+  container lanes only. Malformed entries fail fast. This exists so projects
+  that need Docker-in-Docker can pass `/var/run/docker.sock=/var/run/docker.sock`
+  without hardcoding infrastructure in the TOML config.
+
 - `R-14` **Clean tree:** unless `clean_tree = false` or `--allow-dirty`, the
   judged worktree must have zero `git status --porcelain` entries; refusal
   names the count, first entry, and the flag escape.
@@ -108,6 +125,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-19` **Host lanes** exec the substituted argv directly with cwd = project
   dir (no docker, no safe.directory — that trap is container-specific); exit
   passthrough identical.
+
+- `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
+  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config --global
+  safe.directory '*'`. This avoids writing to `~/.gitconfig`, which may be
+  read-only or shared across containers.
 - `R-20` `budget` is parsed, validated, and PRINTED as advisory; the tool
   does not enforce it (consumers may).
 

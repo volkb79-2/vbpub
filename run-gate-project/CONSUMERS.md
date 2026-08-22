@@ -115,13 +115,26 @@ coverage gate until NL-1 migrates it to assay). ciu's adoption will move its
 current `nyxloom.toml [gates.tester-unified]` argv INTO the tool and shrink
 the gate entry to the two-token form.
 
-**Python app estate with its own runner (dstdns):** dstdns's gate is
-`./scripts/testing-exec.sh` into its `test-runner` container with schema-gate
-pre-step and flock serialization. Adoption = copy the script, declare
-`kind="command"` lanes wrapping the EXISTING testing-exec path (flock included
-as orchestration), keep `assay.toml` lanes for the whole-target coverage work
-as they land (B1-style). Timed per D-111: at dstdns's next gate change, not as
-a standalone package.
+**Python app estate with its own runner (dstdns):** dstdns uses `mode = "exec"`
+against its CIU-managed persistent `test-runner`. run-gate owns invocation
+uniformly (clean-tree, budget, worktree substitution); CIU owns build/deploy/
+lifecycle. The old `testing-exec.sh` shim is retired — run-gate execs directly.
+Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
+lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
+coverage work as they land (B1-style).
+
+```toml
+[environments.test-runner]
+image = "dstdns/test-runner:latest"
+mode = "exec"
+
+[lanes.test-runner]
+kind = "command"
+environment = "test-runner"
+argv = ["bash", "-c", "cd {worktree} && MOCK_MODE=true pytest tests/unit -q"]
+clean_tree = false
+budget = "30m"
+```
 
 **Image-building / host-tooling projects (modern-debian-tools-python-debug,
 tester-unified, tester-unified-go):** mostly not Python-coverage material —

@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 1
+__revision__ = 2
 
 import argparse
 import os
@@ -30,6 +30,7 @@ CONFIG_NAME = "run-gate.toml"
 SCHEMA_VERSION = 1
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
 HOST_ENV = "host"
+EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 
 
 class GateError(Exception):
@@ -65,13 +66,23 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 def _validate_environment(name: str, table: dict, where: str) -> None:
     if name == HOST_ENV:
         fail(f"{where}: '{HOST_ENV}' is a built-in environment and cannot be redefined")
-    _check_keys(table, {"image", "cgroup_slice"}, f"{where} [environments.{name}]")
+    _check_keys(table, {"image", "cgroup_slice", "mode", "container_name"},
+                f"{where} [environments.{name}]")
     image = table.get("image")
     if not isinstance(image, str) or not image.strip():
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
     slice_ = table.get("cgroup_slice")
     if slice_ is not None and (not isinstance(slice_, str) or not slice_.strip()):
         fail(f"{where} [environments.{name}]: 'cgroup_slice' must be a non-empty string")
+
+    mode = table.get("mode", "ephemeral")
+    if mode not in ("ephemeral", "exec"):
+        fail(f"{where} [environments.{name}]: 'mode' must be \"ephemeral\" or "
+             f"\"exec\" (got {mode!r})")
+    container_name = table.get("container_name")
+    if container_name is not None and (not isinstance(container_name, str)
+                                       or not container_name.strip()):
+        fail(f"{where} [environments.{name}]: 'container_name' must be a non-empty string")
 
 
 def _validate_budget(value: object, where: str) -> None:
@@ -177,6 +188,10 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
             f"[environments.{name}] in central {central_path}"
     fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not defined "
          f"in {project_path} nor in a central repo-root {CONFIG_NAME}")
+
+
+def lane_environment_name(lane: dict) -> str:
+    return str(lane["environment"])
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +338,9 @@ def build_assay_inner(lane: dict, project_dir: Path) -> str:
 
 def build_command_inner(lane: dict, worktree: Path) -> str:
     return " && ".join(["set -euo pipefail",
-                        shlex.join(["git", "config", "--global", "safe.directory", "*"]),
+                        "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
+                        shlex.join(["git", "config", "--global",
+                                    "safe.directory", "*"]),
                         shlex.join(substitute_worktree(lane["argv"], worktree))])
 
 
@@ -334,6 +351,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         fail("docker not found on PATH — container lanes need it")
     phys = physical_path(repo)
     mounts = ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]  # dual: worktree gitfiles
+    for mount_spec in [item for item in os.environ.get(EXTRA_MOUNT_ENV_VAR, "").split(":") if item]:
+        if "=" not in mount_spec or mount_spec.count("=") != 1:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: expected 'host=container'")
+        source, target = mount_spec.split("=", 1)
+        if not source or not target:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
+        mounts += ["-v", f"{source}:{target}"]
     slice_name, slice_src = resolve_slice(env, env_source)
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
@@ -371,6 +395,81 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if code is None:
         fail("could not read the container's exit status (docker wait failed) — "
              "refusing to guess")
+    return code
+
+
+def resolve_container_name(env_name: str, env: dict, repo: Path,
+                           env_source: str) -> tuple[str, str]:
+    """Resolve the persistent container name for an exec-mode environment.
+
+    Priority: declared `container_name` > CIU convention `{prefix}-{env_name}`.
+    The CIU prefix is read from the rendered ciu.global.toml [deploy] table
+    (project_name + environment_tag), falling back to DOCKER_NETWORK_INTERNAL.
+    No silent default — missing config is a hard error naming what to fix.
+    """
+    if env.get("container_name"):
+        return env["container_name"], f"declared container_name ({env_source})"
+    global_toml = repo / "ciu.global.toml"
+    if not global_toml.is_file():
+        fail(f"exec-mode environment '{env_name}' needs either a declared "
+             f"container_name or a rendered {global_toml} with [deploy] "
+             f"(run 'ciu render' first)")
+    try:
+        with open(global_toml, "rb") as fh:
+            deploy = tomllib.load(fh).get("deploy", {})
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"{global_toml}: invalid TOML: {exc}")
+    project = deploy.get("project_name") or ""
+    tag = deploy.get("environment_tag") or ""
+    if project and tag:
+        return f"{project}-{tag}-{env_name}", \
+            f"ciu.global.toml deploy.project_name+environment_tag ({global_toml})"
+    network = deploy.get("network_name") or ""
+    if network and network.endswith("-network"):
+        prefix = network[:-len("-network")]
+        return f"{prefix}-{env_name}", \
+            f"ciu.global.toml deploy.network_name stripped of '-network' ({global_toml})"
+    fail(f"cannot derive container name from {global_toml}: need "
+         f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
+         f"or declare container_name on the environment")
+
+
+def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
+                  worktree: Path, env: dict, env_source: str, env_name: str) -> int:
+    """Exec into a PERSISTENT runner (started externally by CIU).
+
+    Fail-fast: refuses to start the runner itself — that is CIU's job.
+    This keeps run-gate as pure gate orchestration without duplicating
+    lifecycle management that belongs to the deployment authority.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        fail("docker not found on PATH — exec-mode lanes need it")
+    name, name_src = resolve_container_name(env_name, env, repo, env_source)
+    running = subprocess.run(
+        [docker, "ps", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    names = set(running.stdout.strip().splitlines())
+    if name not in names:
+        fail(f"persistent runner '{name}' ({name_src}) is not running — "
+             f"start it via 'ciu up --dir tools/test-runner' or the project's "
+             f"runner lifecycle command before invoking this lane; run-gate "
+             f"refuses to guess or auto-start deployment-managed containers")
+    inner = build_command_inner(lane, worktree)
+    argv = [docker, "exec", "--workdir", str(repo)]
+    # Env passthrough allowlist: MOCK_MODE, RUN_LIVE_TESTS are dstdns's two
+    # standard test-mode toggles. More can be added per-environment later.
+    for key in ("MOCK_MODE", "RUN_LIVE_TESTS"):
+        value = os.environ.get(key)
+        if value:
+            argv += ["-e", f"{key}={value}"]
+    argv += [name, "bash", "-c", inner]
+    print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
+          f"container {name}", flush=True)
+    if lane.get("budget"):
+        print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
+    code = subprocess.run(argv).returncode
     return code
 
 
@@ -465,6 +564,9 @@ def main(argv: list[str] | None = None) -> int:
             check_clean_tree(worktree)
         if not env:  # built-in 'host'
             code = run_host_lane(lane, args.lane, project_dir, worktree)
+        elif env.get("mode") == "exec":
+            code = run_exec_lane(lane, args.lane, project_dir, repo, worktree,
+                                 env, env_source, lane_environment_name(lane))
         else:
             code = run_container_lane(lane, args.lane, project_dir, repo, worktree,
                                       env, env_source)

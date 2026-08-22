@@ -359,7 +359,7 @@ class TestNoSilentDefaults:
             argv = ["bash", "-c", "echo hi"]
             clean_tree = false
         """)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -439,7 +439,7 @@ class TestArgvConstruction:
     def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -481,7 +481,7 @@ class TestArgvConstruction:
             version = "2.1.0"
             sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
         """)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "ciu")
@@ -520,7 +520,7 @@ class TestArgvConstruction:
     def test_docker_run_failure_cleans_up_and_fails_loud(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text().replace('run) echo "fake-container-id" ;;',
                                         'run) echo "docker: bad flag" >&2; exit 125 ;;')
@@ -547,7 +547,7 @@ class TestArgvConstruction:
             memory = "4g"
             clean_tree = false
         """)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "big")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -561,7 +561,7 @@ class TestArgvConstruction:
     def _in_process_lane(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
         return proj, log
 
@@ -667,7 +667,7 @@ class TestCleanTree:
             argv = ["bash", "-c", "echo gate-ran"]
             clean_tree = true
         """)
-        fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         (repo / "dirt.txt").write_text("x\n")
         proc = run_tool(proj, "suite")
         assert proc.returncode == 1
@@ -687,7 +687,7 @@ class TestCleanTree:
             argv = ["bash", "-c", "echo gate-ran"]
             clean_tree = true
         """)
-        fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         (repo / "dirt.txt").write_text("x\n")
@@ -751,7 +751,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -773,7 +773,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = fake_docker(tmp_path, monkeypatch)
+        log = log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -799,7 +799,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -830,7 +830,7 @@ def test_budget_advisory_printed_not_enforced(tmp_path, monkeypatch, capsys):
         argv = ["bash", "-c", "true"]
         clean_tree = false
     """)
-    fake_docker(tmp_path, monkeypatch)
+    log = fake_docker(tmp_path, monkeypatch)
     monkeypatch.setattr(run_gate, "physical_path",
                         lambda p, **k: Path("/phys"))
     # in-process main() discovers the project from sys.argv[0] — pin it
@@ -849,3 +849,130 @@ def test_no_stdlib_violations():
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
                "time", "tomllib", "pathlib"}
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
+
+
+# ---------------------------------------------------------------------------
+# Rev 2 — exec mode, extra mounts, safe.directory scope
+# ---------------------------------------------------------------------------
+
+EXEC_LANE = """\
+    schema_version = 1
+
+    [environments.runner]
+    image = "runner:latest"
+    mode = "exec"
+
+    [lanes.suite]
+    kind = "command"
+    environment = "runner"
+    argv = ["echo", "hello"]
+    clean_tree = false
+"""
+
+
+class TestExecMode:
+    def _setup_repo(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n"
+        )
+        commit_all(repo, "ciu config")
+        return repo, proj
+
+    def test_exec_mode_resolves_container_from_ciu_global(self, tmp_path, monkeypatch):
+        repo, proj = self._setup_repo(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        calls = log.read_text().splitlines()
+        exec_calls = [c.split("\x1f") for c in calls if c.startswith("exec")]
+        assert len(exec_calls) == 1
+        call = exec_calls[0]
+        idx = lambda flag: call.index(flag)
+        assert str(repo) in call
+        assert "bash" in call
+
+    def test_exec_mode_fails_when_runner_not_running(self, tmp_path, monkeypatch):
+        repo, proj = self._setup_repo(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 1
+        assert "not running" in proc.stderr
+        assert "ciu up" in proc.stderr
+
+    def test_exec_mode_fails_without_ciu_config_or_declared_name(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 1
+        assert "container_name" in proc.stderr
+        assert "ciu.global.toml" in proc.stderr
+
+    def test_exec_mode_declared_name_wins(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"', 'mode = "exec"\ncontainer_name = "custom-name"')
+        proj = make_project(repo, cfg)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "custom-name" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        calls = log.read_text().splitlines()
+        exec_calls = [c.split("\x1f") for c in calls if c.startswith("exec")]
+        assert "custom-name" in exec_calls[0]
+
+
+class TestExtraMounts:
+    def _simple_ephemeral(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.t]
+            image = "t:latest"
+            [lanes.s]
+            kind = "command"
+            environment = "t"
+            argv = ["true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        return repo, proj
+
+    def test_extra_mounts_appended_to_ephemeral_lanes(self, tmp_path, monkeypatch):
+        repo, proj = self._simple_ephemeral(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS",
+                          "/var/run/docker.sock=/var/run/docker.sock")
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys/host"))
+        proc = run_tool(proj, "s")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        mounts = sorted(run_call[i + 1] for i, p in enumerate(run_call) if p == "-v")
+        assert "/var/run/docker.sock:/var/run/docker.sock" in mounts
+
+    def test_extra_mounts_malformed_entry_rejected(self, tmp_path, monkeypatch):
+        repo, proj = self._simple_ephemeral(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "no-equals-sign")
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys/host"))
+        proc = run_tool(proj, "s")
+        assert proc.returncode == 1
+        assert "host=container" in proc.stderr
+
+
+def test_safe_directory_uses_git_config_global_env():
+    inner = run_gate.build_command_inner(
+        {"argv": ["echo"]}, Path("/wt"))
+    assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
