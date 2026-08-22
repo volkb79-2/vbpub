@@ -378,10 +378,15 @@ db_pass = { directive = "ASK_VAULT:demo/db_password", mode = "0444", uid = 999 }
 
 # expose_env: opt-in escape hatch for images with no *_FILE support [S4.19]
 legacy_pass = { directive = "ASK_VAULT:demo/legacy", expose_env = "LEGACY_PASS" }
+
+# produced_by: ASK_VAULT only — names the profile whose deployment
+# provisions the Vault path, so a partial selection refuses upfront [S13.6]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
 ```
 
 `expose_env` is per-secret, opt-in, and discouraged — CIU logs a notice for
-each exposed secret. It is invalid on `ASK_FILE`.
+each exposed secret. It is invalid on `ASK_FILE`. `produced_by` is valid on
+`ASK_VAULT` only; `consumed_by = "hook"` marks a hook-read secret (S4.20).
 
 Secret names follow `[a-z][a-z0-9_]*` and must be unique across all `secrets`
 tables of one stack [S4.6].

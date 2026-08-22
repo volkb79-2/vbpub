@@ -24,7 +24,11 @@ BREAKING, one-time migration in CONSUMERS §11), and **CIU-47 FIXED**
 (S2.7 refined precedence extended to `PUBLIC_FQDN`). **CIU-25 partially
 addressed**: `ciu worktree branches` ships the grounded GIT-layer survey +
 prune (S16.8, `worktree.branches.v1`); the Docker-resource detector/reap
-contract remains OPEN below.
+contract remains OPEN below. An independent three-reviewer adversarial pass
+over the whole wave then landed hardening commits (`2a6176d4`..`040df76e`):
+the branch-prune half-prune blocker, produced_by deployed-stack semantics,
+Docker-canonical provenance comparison, shipped-mode root resolution, and
+docs/example repairs — all gate-green at `040df76e`.
 
 Previously, 2026-08-22 — released as **ciu-v6.4.0** (tag + wheel published;
 CHANGES §[6.4.0]): CIU-41, CIU-43, CIU-44 and their adversarial-review repairs

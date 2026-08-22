@@ -53,6 +53,9 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree branches [--base REF] [-y] [--json]
+                                survey local branches; -y prunes exactly the
+                                fully-merged, clean ones (S16.8)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -118,6 +121,7 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree branches [--base REF] [-y] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
@@ -125,10 +129,12 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   adopt is the only operation that owns an unmanaged existing checkout.
   `inspect` reports the persisted record plus freshly read Git facts; `list
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
-  stdout (S16.4). `up` starts the selected ready instance under its OWN
-  ciu.env; `exec` runs exact argv (no shell) in that root and never starts
-  anything implicitly (S16.6). `exec --target ALIAS` runs inside the ONE
-  already-running declared container (S16.7).
+  stdout (S16.4). `branches` surveys local branches against a base and `-y`
+  prunes exactly the fully-merged, clean ones — never age-based, never the
+  mainline or the primary checkout's branch (S16.8). `up` starts the selected
+  ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
+  that root and never starts anything implicitly (S16.6). `exec --target
+  ALIAS` runs inside the ONE already-running declared container (S16.7).
 """,
     "capabilities": """\
 ciu capabilities [--json]

@@ -29,6 +29,22 @@ gate runs; the commit subjects remain the traceable source of detail.
   consuming stack with only the bare path (CIU-42, SPEC S13.6); unknown
   producer profile names are configuration errors
 
+### Fixed
+- fix(ciu): adversarial-review hardening across the wave — branch-hygiene
+  destructive pass cannot half-prune (local-branch base requirement,
+  HEAD/origin-HEAD containment guard for `-y`, upstream pre-check before
+  checkout removal, removed/failed surfaced with non-zero exit on partial);
+  produced_by judges producer presence by DEPLOYED STACKS (alias profiles
+  satisfy, `--phases` narrowing still refuses) and reports all violations
+  together; provenance compares Docker-canonical references (spelling can no
+  longer hide vendor drift or break pins), malformed `[deploy.provenance]`
+  refuses; shipped mode resolves the config-less repo_root from THIS
+  checkout's env-root marker instead of ambient REPO_ROOT; reset's orphan
+  sweep is always instance-scoped; untagged clean's unverifiable container
+  enumeration fails the clean; stack dirnames that do not round-trip
+  normalization refuse config-less naming; docs: parsable TOML examples +
+  CONSUMERS §5c/§5d + closed-vocabulary guard extensions
+
 ### Changed
 - **BREAKING (ciu)**: compose project naming cutover (CIU-46, SPEC S8.7/S6.4a)
   — there is no compose invocation without an explicit `-p` anymore. A

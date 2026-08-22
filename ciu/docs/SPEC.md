@@ -1105,7 +1105,10 @@ naming · S7.2 enabled flags + `shipped` bool (S8.6) ·
 S7.5 `[deploy.groups]` rejection · S7.6 vault ordering · S2.2/S2.3 env keys ·
 S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
 `ciu.global.toml.j2`) · S15.2 governance shape (`enabled` bool,
-`exempt_services` list-of-strings). Each failure reports the spec ID it
+`exempt_services` list-of-strings) · S13.6 `produced_by` grammar
+(ASK_VAULT-only inline key, non-empty string) and its producer preflight ·
+S8.7 compose-naming refusals (missing/key-less `ciu.env`, non-round-tripping
+stack dirname for config-less naming). Each failure reports the spec ID it
 enforces.
 
 ## S12 — Extension points (reserved, not implemented)
