@@ -768,6 +768,12 @@ class TestVaultBackedFlows:
         FakeVaultKV2.reset()
         monkeypatch.setattr(engine, "VaultKV2", FakeVaultKV2)
         monkeypatch.setenv("VAULT_TOKEN", "test-token")
+        # S15.18: pin the KSM override OFF so the overlay pass never attempts
+        # the live-docker shim build (the gate container has no docker socket).
+        # This test's subject is the S4.12 store refresh, not KSM injection —
+        # it used to pass only when a sibling worker leaked a disabling
+        # CIU_KSM into it (adversarial-review flake hunt, 2026-08-22).
+        monkeypatch.setenv("CIU_KSM", "off")
 
         run_engine(stack, monkeypatch)
         store = stack / ".ciu" / "secrets" / "redis_password"
