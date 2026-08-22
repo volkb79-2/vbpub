@@ -79,15 +79,22 @@ def test_non_slice_name_is_refused_before_docker(tmp_path: Path):
 
 
 def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
+    """The trove gate is a thin pointer at the run-gate SSOT lane (D-110/D-111);
+    the lane invokes the driver, and the driver still derives and verifies the
+    cgroup tier itself — no literal slice anywhere in the chain."""
     document = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))
     argv = document["gates"]["tester-unified"]["argv"]
+    gate_cfg = tomllib.loads(
+        (PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8")
+    )
+    lane = gate_cfg["lanes"]["tester-unified"]
     driver = GATE_DRIVER.read_text(encoding="utf-8")
 
-    assert argv == [
-        "bash",
-        "{worktree}/assay/tools/tester-unified-gate.sh",
-        "{worktree}",
-    ]
+    pointer = argv[-1]
+    assert "run-gate.py" in pointer and "tester-unified" in pointer
+    assert lane["environment"] == "host"
+    assert lane["argv"][0] == "bash"
+    assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
     assert '--cgroup-parent="$cgroup_parent"' in driver
     assert "nyxloom-gates.slice" not in driver
