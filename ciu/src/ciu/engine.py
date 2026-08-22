@@ -1665,9 +1665,11 @@ def run_shipped(
             resolved_env_root = resolve_env_root(
                 working_dir, None, GLOBAL_CONFIG_DEFAULTS
             )
+            # resolve_env_root falls back to start_dir when NOTHING is found;
+            # only an actually-present marker makes this the checkout's root.
             marker_found = (
                 resolved_env_root / GLOBAL_CONFIG_DEFAULTS
-            ).is_file() and resolved_env_root != working_dir.resolve()
+            ).is_file()
             env_repo_root = os.environ.get("REPO_ROOT")
             if marker_found:
                 if (

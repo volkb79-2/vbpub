@@ -111,10 +111,20 @@ def test_every_toml_example_parses_with_the_shipped_loader():
             config_model.parse_toml_string(block, str(doc))
 
 
-@pytest.mark.parametrize(
-    "doc", sorted((Path(__file__).resolve().parents[2] / "ciu" / "docs").glob("*.md"))
-)
+WAVE_KEY_DOCS = [
+    d
+    for d in sorted((Path(__file__).resolve().parents[2] / "docs").glob("*.md"))
+    if any(
+        "produced_by" in b or "vendor_images" in b
+        for b in TOML_FENCE_RE.findall(d.read_text(encoding="utf-8"))
+    )
+]
+
+
+@pytest.mark.parametrize("doc", WAVE_KEY_DOCS)
 def test_wave_config_examples_parse_wherever_they_appear(doc):
+    if not _toml_blocks(doc):
+        pytest.skip("no wave-key toml fences in this document")
     """A-270 corollary added by the CIU-42/39 review: a config example that a
     consumer must TYPE parses with the shipped loader WHEREVER it appears —
     including SPEC/CONFIG, whose other toml fences may legitimately be

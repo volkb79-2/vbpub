@@ -507,3 +507,87 @@ def test_cli_prune_surfaces_removed_failed_and_exits_nonzero_on_partial(
     assert code == 1  # partial prune is NOT a silent success
     assert "removed: fix/m-b" in out
     assert "FAILED: fix/m-a" in out
+
+
+def test_yes_base_equal_to_linked_head_is_refused(repo):
+    """A LINKED checkout's HEAD is NOT a safety anchor: git's branch -d judges
+    against the repo HEAD (primary) and upstreams, so pruning against a
+    linked-only head could still half-prune. The guard refuses; surveying
+    stays allowed."""
+    _branch(repo, "integration")
+    assert _git(["checkout", "main"], repo).returncode == 0  # free the branch
+    wt_path = repo.parent / "wt-int"
+    assert _git(["worktree", "add", str(wt_path), "integration"], repo).returncode == 0
+    _branch(repo, "fix/x", file="x.txt")  # distinct file: no add/add conflict
+    assert _git(["checkout", "main"], repo).returncode == 0
+    # merge fix/x into integration FROM the linked worktree (it owns that
+    # branch), so fix/x is prunable against base=integration whose tip IS
+    # the linked worktree's HEAD — exercising the sanity guard's equality path.
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/x"], wt_path).returncode == 0
+
+    with pytest.raises(worktree.WorktreeError, match="not contained in any"):
+        worktree.prune_branches(repo, base="integration", yes=True)
+    assert _git(["rev-parse", "--verify", "fix/x"], repo).returncode == 0
+
+
+def test_upstream_containing_tip_prunes_normally(repo, tmp_path):
+    """The upstream PRE-CHECK happy path: upstream contains the tip → no
+    failed entry from the pre-check; removal proceeds."""
+    bare = tmp_path / "origin.git"
+    assert _git(["init", "--bare", "-b", "main", str(bare)], repo).returncode == 0
+    assert _git(["remote", "add", "origin", str(bare)], repo).returncode == 0
+    _branch(repo, "fix/synced")
+    assert _git(["push", "-u", "origin", "fix/synced"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/synced"], repo).returncode == 0
+
+    doc = worktree.prune_branches(repo, yes=True)
+    assert doc["status"] == "pruned"
+    assert "fix/synced" in doc["removed"]
+    assert doc["failed"] == []
+
+
+def test_yes_base_ancestor_of_primary_head_is_accepted(repo):
+    """The sanity guard's ANCESTOR path: an older base fully contained in the
+    primary HEAD is a legal prune anchor."""
+    _branch(repo, "develop", file="d.txt")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "develop"], repo).returncode == 0
+    # The candidate must be merged into THE BASE (develop), not merely into
+    # main, to be prunable against this anchor.
+    _branch(repo, "fix/old-base")
+    assert _git(["checkout", "develop"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m2", "fix/old-base"], repo).returncode == 0
+    # keep main AHEAD of develop: the ancestor arm of the sanity guard needs
+    # base ⊆ primary HEAD.
+    assert _git(["checkout", "main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m3", "develop"], repo).returncode == 0
+
+    doc = worktree.prune_branches(repo, base="develop", yes=True)
+    assert doc["status"] == "pruned"
+    assert "fix/old-base" in doc["removed"]
+
+
+def test_yes_safety_includes_origin_head_target(repo, tmp_path):
+    """origin/HEAD's target joins the safety set: pruning against it passes
+    even though no local HEAD equals it."""
+    bare = tmp_path / "origin.git"
+    assert _git(["init", "--bare", "-b", "main", str(bare)], repo).returncode == 0
+    assert _git(["remote", "add", "origin", str(bare)], repo).returncode == 0
+    _branch(repo, "hub-main", file="h.txt")
+    assert _git(["push", "-u", "origin", "hub-main"], repo).returncode == 0
+    assert _git(
+        ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/hub-main"],
+        repo,
+    ).returncode == 0
+    # hub-main contains nothing new... give it its own commit so it differs:
+    _branch(repo, "fix/on-hub")
+    assert _git(["checkout", "hub-main"], repo).returncode == 0
+    (repo / "h2.txt").write_text("hub\n", encoding="utf-8")
+    assert _git(["add", "h2.txt"], repo).returncode == 0
+    assert _git(["commit", "-m", "hub work"], repo).returncode == 0
+    assert _git(["push", "origin", "hub-main"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+
+    # survey against hub-main must NOT refuse: hub-main IS origin/HEAD's target
+    worktree.prune_branches(repo, base="hub-main", yes=True)

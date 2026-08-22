@@ -341,3 +341,44 @@ def test_unknown_profile_and_missing_producer_reported_together():
     message = str(excinfo.value)
     assert "'identiy'" in message and "not a defined profile" in message
     assert "provisioned by profile 'identity'" in message
+
+
+def test_producer_stack_paths_tolerates_malformed_shapes():
+    """Non-list/non-string stacks, non-string phase keys, and malformed
+    service entries contribute nothing instead of crashing the preflight."""
+    cfg = {
+        "deploy": {
+            "profiles": {"p": {}},
+            "phases": {
+                "phase_1": "not-a-table",
+                "phase_2": {"services": [{"path": "apps/ok"}, "junk", {"nope": 1}]},
+            },
+        }
+    }
+    pdata = {
+        "stacks": ["infra/a", "", 42],
+        "phases": ["phase_1", "phase_2", 7],
+    }
+    paths = deploy._producer_profile_stack_paths(cfg, pdata)
+    assert paths == {"infra/a", "apps/ok"}
+
+
+def test_producer_stacks_in_selection_silently_satisfy_missing_profile_name():
+    """Producer profile NOT named in the selection but one of its declared
+    stacks IS selected → satisfied (the intersection `continue` path)."""
+    cfg = _profile_config()
+    cfg["deploy"]["profiles"]["identity"] = {"stacks": ["infra/vault"]}
+    profile = profiles_pkg.Profile(name="core,db", config=cfg)
+    rendered = {
+        "infra/vault": {"vault_stack": {}},
+        **_rendered(produced_by="identity"),
+    }
+    selection = [{"path": "infra/vault"}, {"path": "apps/controller"}]
+    deploy.producer_preflight(profile, selection, rendered)
+
+
+def test_producer_stack_paths_missing_keys_contribute_nothing():
+    paths = deploy._producer_profile_stack_paths(
+        {"deploy": {"phases": {}}}, {"stacks": "nope", "phases": 7}
+    )
+    assert paths == set()

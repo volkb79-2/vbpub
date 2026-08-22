@@ -169,3 +169,102 @@ def test_generate_env_failure_has_environment_exit_code_and_skips_stack_executio
 
     assert engine.main(["--generate-env", "-d", str(tmp_path)]) == 3
     assert "bad environment" in capsys.readouterr().out
+
+
+def test_shipped_prefers_checkout_own_env_root_over_ambient_repo_root(
+    tmp_path, monkeypatch, capsys
+):
+    """CIU-46 review fix: a shell carrying ANOTHER checkout's REPO_ROOT must
+    not make a config-less shipped stack name its compose project with that
+    checkout's identity record. The walk-up finds THIS stack's env root, an
+    INFO line names the winner."""
+    nested = tmp_path / "main-checkout" / ".worktrees" / "wt2"
+    stack = nested / "vendor" / "vault"
+    stack.mkdir(parents=True)
+    (stack / "docker-compose.yml").write_text("services: {}\n")
+    # The linked worktree is its OWN checkout: nearest marker + own record.
+    (nested / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    (nested / "ciu.env").write_text(
+        'export REPO_NAME="wt2repo"\nexport INSTANCE_ID="beef42"\n',
+        encoding="utf-8",
+    )
+    # The MAIN checkout carries a different identity that must NOT be used.
+    (tmp_path / "main-checkout" / "ciu.global.defaults.toml.j2").write_text(
+        "[ciu]\n", encoding="utf-8"
+    )
+    (tmp_path / "main-checkout" / "ciu.env").write_text(
+        'export REPO_NAME="mainrepo"\nexport INSTANCE_ID="98535c"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path / "main-checkout"))  # the contamination
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "net")
+    monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **kwargs: None)
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *args: {"ciu": {}})
+    monkeypatch.setattr(engine, "configure_logging", lambda *args: None)
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda **kwargs: None)
+    monkeypatch.setattr(engine, "_dood_preflight", lambda *args: None)
+    monkeypatch.setattr(engine, "to_physical_path", lambda path, **kwargs: path)
+    monkeypatch.setattr(
+        engine, "compose_project_name", lambda *a: (_ for _ in ()).throw(ValueError("no deploy"))
+    )
+    monkeypatch.setattr(engine, "guard_legacy_compose_project", lambda *a: None)
+
+    seen = {}
+
+    def _compose(file_args, **kwargs):
+        seen["project"] = kwargs.get("project")
+        return {"status": "success", "stdout": ""}
+
+    monkeypatch.setattr(engine, "execute_docker_compose_with_logs", _compose)
+
+    result = engine.run_shipped(stack, define_root=None)
+
+    assert result["status"] == "success"
+    assert seen["project"] == "wt2repo-beef42-vault"
+    out = capsys.readouterr().out
+    assert "ambient REPO_ROOT points at" in out
+    assert "using the checkout's own record" in out
+    import os
+
+    assert os.environ["REPO_ROOT"] == str(nested.resolve())
+    assert "98535c" not in seen["project"]
+
+
+def test_shipped_marker_found_with_matching_ambient_is_silent(tmp_path, monkeypatch, capsys):
+    """Marker found and ambient REPO_ROOT already agrees → no INFO line, same
+    identity project (the guard's quiet equality arc)."""
+    nested = tmp_path / "checkout"
+    stack = nested / "vendor" / "vault"
+    stack.mkdir(parents=True)
+    (stack / "docker-compose.yml").write_text("services: {}\n")
+    (nested / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    (nested / "ciu.env").write_text(
+        'export REPO_NAME="wt2repo"\nexport INSTANCE_ID="beef42"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("REPO_ROOT", str(nested))
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "net")
+    monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **kwargs: None)
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *args: {"ciu": {}})
+    monkeypatch.setattr(engine, "configure_logging", lambda *args: None)
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda **kwargs: None)
+    monkeypatch.setattr(engine, "_dood_preflight", lambda *args: None)
+    monkeypatch.setattr(engine, "to_physical_path", lambda path, **kwargs: path)
+    monkeypatch.setattr(
+        engine, "compose_project_name", lambda *a: (_ for _ in ()).throw(ValueError("no deploy"))
+    )
+    monkeypatch.setattr(engine, "guard_legacy_compose_project", lambda *a: None)
+    seen = {}
+
+    def _compose(file_args, **kwargs):
+        seen["project"] = kwargs.get("project")
+        return {"status": "success", "stdout": ""}
+
+    monkeypatch.setattr(engine, "execute_docker_compose_with_logs", _compose)
+
+    assert engine.run_shipped(stack).get("status") == "success"
+    assert seen["project"] == "wt2repo-beef42-vault"
+    assert "ambient REPO_ROOT points at" not in capsys.readouterr().out

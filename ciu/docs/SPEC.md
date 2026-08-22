@@ -957,9 +957,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   instance's `up` ADOPTS the first instance's containers (same project +
   service, changed `container_name`) and removes them (2026-07-16 dstdns
   multi-stack incident). The scoping pair is the same one that already scopes
-  container names (S7.7/S7.8). **There is no compose invocation without an
-  explicit `-p` anywhere in CIU (CIU-46 cutover):** when the config does not
-  define the naming pair, shipped mode and the reset/down path derive the
+  container names (S7.7/S8.7). **There is no compose invocation without an
+  explicit `-p` anywhere in CIU (CIU-46 cutover):** shipped mode derives the
+  identity project whenever the config lacks the naming pair; the reset/down
+  path requires `deploy.project_name` outright (it names label scopes too)
+  and derives the identity project only in the partial-pair case
+  (`environment_tag` absent). The derivation:
   WORKSPACE-IDENTITY project `{REPO_NAME}-{INSTANCE_ID}-{stack_basename}`
   from THIS checkout's own `ciu.env`, parsed by EXACT path (S2.7 authority —
   never ambient shell state). The withdrawn pre-CIU-46 behavior let docker
