@@ -1754,6 +1754,60 @@ def _network_endpoints(network: str) -> Optional[list[dict]]:
     return endpoints
 
 
+def _network_exists(network: str) -> bool:
+    """STATE-based network existence via an exact-name ``network ls`` filter.
+
+    Unlike ``inspect`` (whose non-zero exit is ambiguous between "absent" and
+    "daemon unreachable"), ``ls --filter name=^<net>$`` exits 0 with empty
+    output for an absent network while the daemon is up. A non-zero exit here
+    is therefore ALWAYS a daemon/binary failure and raises — callers must
+    treat that as INDETERMINATE (fail closed), never as "gone" (review B3).
+    """
+    result = procutil.docker(
+        ["network", "ls", "--filter", f"name=^{network}$",
+         "--format", "{{.Name}}"],
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"[S6.4a] docker network ls failed for {network!r} "
+            f"(daemon failure?): {(result.stderr or '').strip()}"
+        )
+    return any(
+        line.strip() == network for line in (result.stdout or "").splitlines()
+    )
+
+
+def _list_stack_project_networks(stack_projects: list[str]) -> list[str]:
+    """Networks compose created for the given S8.7 projects (label filter).
+
+    Exact per-project enumeration — covers ``<project>_default`` AND stacks
+    declaring custom-named compose networks; never a broad glob (review N1).
+    Raises on daemon failure (fail closed).
+    """
+    found: list[str] = []
+    for project in stack_projects:
+        result = procutil.docker(
+            [
+                "network", "ls",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--format", "{{.Name}}",
+            ],
+            capture=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"[S6.4a] docker network ls failed for compose project "
+                f"{project!r}: {(result.stderr or '').strip()}"
+            )
+        found.extend(
+            v.strip() for v in (result.stdout or "").splitlines() if v.strip()
+        )
+    return sorted(set(found))
+
+
 def _remove_identity_networks(
     networks: list[str],
 ) -> tuple[list[str], list[tuple[str, str]]]:
@@ -1768,12 +1822,15 @@ def _remove_identity_networks(
     blocked: list[tuple[str, str]] = []
     for network in networks:
         try:
+            if not _network_exists(network):
+                continue  # already gone (state-verified)
             endpoints = _network_endpoints(network)
         except ValueError as exc:
             blocked.append((network, str(exc)))
             continue
         if endpoints is None:
-            continue  # already gone
+            # existed moments ago, gone now — a concurrent teardown won; fine.
+            continue
         failed_disconnect = False
         for endpoint in endpoints:
             name = endpoint["name"]
@@ -1785,10 +1842,15 @@ def _remove_identity_networks(
         if failed_disconnect:
             continue
         rm = procutil.docker(["network", "rm", network], check=False)
-        # Re-inspect from Docker STATE: a zero exit can race a concurrent
-        # connect, and a non-zero exit may still mean "gone" — the next
-        # inspect decides, never the command's diagnostic text.
-        if _network_endpoints(network) is not None:
+        # Re-check from Docker STATE: a zero exit can race a concurrent
+        # connect, and a non-zero rm exit may still mean "gone". An ls FAILURE
+        # here is indeterminate — blocked, never folded into success (B3).
+        try:
+            still_there = _network_exists(network)
+        except ValueError as exc:
+            blocked.append((network, f"could not verify removal: {exc}"))
+            continue
+        if still_there:
             detail = (rm.stderr or "").strip().splitlines()[-1] if (rm.stderr or "").strip() else "removal refused"
             blocked.append((network, detail))
             continue
@@ -1844,7 +1906,13 @@ def action_clean(
             warn(f"docker rm failed: {result.stderr}")
 
     # Step 2: per-stack reset (down -v + vol-*/rendered), COMPOSE_PROFILES='*'.
-    rendered = render_selected_stacks(repo_root, profile, selection)  # clean: no ciu.* facts needed by resets
+    # The re-render MUST carry the selection facts (S3.12): a consumer template
+    # referencing ciu.deployed_stacks renders during clean exactly as during
+    # up — omitting the context would crash mid-teardown (review B2).
+    rendered = render_selected_stacks(
+        repo_root, profile, selection,
+        ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+    )
     saved_profiles = os.environ.get("COMPOSE_PROFILES")
     os.environ["COMPOSE_PROFILES"] = "*"
     try:
@@ -1882,7 +1950,16 @@ def action_clean(
     # volumes like <project>-vault-data carry the bare project prefix and no
     # instance tag, so the name pass never saw them).
     stack_projects = _stack_compose_projects(repo_root, config, selection)
-    survivors = _remove_project_volumes(config, stack_projects=stack_projects)
+    volumes_unverified = False
+    try:
+        survivors = _remove_project_volumes(config, stack_projects=stack_projects)
+    except (ValueError, FileNotFoundError) as exc:
+        # Indeterminate volume state fails the clean (review B3): never fold
+        # "could not enumerate" into "nothing to remove".
+        error(f"volume enumeration failed (S6.4a): {exc}")
+        volumes_unverified = True
+        rc = 1
+        survivors = []
 
     # Step 4 (S6.4a / CIU-43): remove identity-scoped networks. The workspace
     # identity network comes from THIS workspace's own ciu.env; the per-stack
@@ -1897,19 +1974,25 @@ def action_clean(
     target_networks: list[str] = []
     if identity_network and identity_network not in keep_networks:
         target_networks.append(identity_network)
-    for project in stack_projects:
-        default_net = f"{project}_default"
-        if default_net not in target_networks:
-            target_networks.append(default_net)
+    try:
+        # Exact per-project enumeration (S6.4a): compose-labeled networks of
+        # the selected stacks — <project>_default AND custom-named ones. A
+        # daemon failure here is indeterminate and fails the clean (B3).
+        for net in _list_stack_project_networks(stack_projects):
+            if net not in target_networks and net not in keep_networks:
+                target_networks.append(net)
+    except ValueError as exc:
+        error(str(exc))
+        rc = 1
     removed_nets, blocked_nets = _remove_identity_networks(target_networks)
     if removed_nets:
         info(f"Removed {len(removed_nets)} network(s): {', '.join(removed_nets)}")
     for net, reason in keep_networks.items():
         try:
-            if _network_endpoints(net) is not None:
+            if _network_exists(net):
                 info(f"kept: {net} ({reason})")
-        except ValueError:
-            warn(f"kept-network check skipped for {net!r} (docker inspect unparsable)")
+        except ValueError as exc:
+            warn(f"kept-network check failed for {net!r}: {exc}")
 
     # Step 5: enforce the post-clean invariant — zero project containers, zero
     # project volumes, and zero UNKEPT identity-scoped networks remain. A
@@ -1936,22 +2019,31 @@ def action_clean(
             "still referenced by a container that was not torn down"
         )
         rc = 1
+    if volumes_unverified:
+        error(
+            "post-clean invariant unverifiable (S6.4): project volumes could "
+            "not be enumerated — clean cannot certify a complete teardown"
+        )
+        rc = 1
 
     # Network invariant from Docker STATE (never from command diagnostics):
-    # every targeted network must be gone; a kept one must still exist only if
-    # it was declared as a deliberate main-workspace keep.
-    for net in target_networks + list(keep_networks):
+    # every targeted network must be gone. An UNVERIFIABLE network is a
+    # violation too — indeterminate never folds into "gone" (review B3).
+    for net in dict.fromkeys([*target_networks, *keep_networks]):
         try:
-            still_there = _network_endpoints(net) is not None
+            still_there = _network_exists(net)
         except ValueError as exc:
-            warn(f"post-clean network check skipped ({exc})")
-            continue
-        if net in keep_networks:
-            continue
-        if still_there:
-            reason = next((r for n, r in blocked_nets if n == net), "survived removal")
-            error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
+            error(
+                f"post-clean invariant unverifiable (S6.4a): network {net!r} "
+                f"could not be checked — {exc}"
+            )
             rc = 1
+            continue
+        if net in keep_networks or not still_there:
+            continue
+        reason = next((r for n, r in blocked_nets if n == net), "survived removal")
+        error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
+        rc = 1
 
     if rc == 0:
         if keep_networks:
@@ -2006,7 +2098,12 @@ def _list_stack_project_volumes(stack_projects: list[str]) -> list[str]:
             check=False,
         )
         if result.returncode != 0:
-            continue
+            # Indeterminate is NOT empty (review B3): the caller fails the
+            # clean rather than reporting success over unverified volumes.
+            raise ValueError(
+                f"[S6.4a] docker volume ls failed for compose project "
+                f"{project!r}: {(result.stderr or '').strip()}"
+            )
         found.extend(v.strip() for v in (result.stdout or "").splitlines() if v.strip())
     return sorted(set(found))
 
@@ -2026,6 +2123,8 @@ def _remove_project_volumes(
     """
     vols = _list_project_volumes(config)
     if stack_projects:
+        # A label-pass failure is indeterminate (B3): surface it so clean
+        # fails closed instead of reporting success over unverified volumes.
         labeled = _list_stack_project_volumes(stack_projects)
         vols = sorted(set(vols) | set(labeled))
     if not vols:

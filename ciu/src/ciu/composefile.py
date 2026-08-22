@@ -250,7 +250,12 @@ def render_compose(
     raw = template_path.read_text(encoding="utf-8")
     context = {**guarded_config, "env": dict(os.environ)}
     if ciu_context is not None:
-        context["ciu"] = dict(ciu_context)
+        # S3.12: MERGE into the config's own [ciu] table (never replace it —
+        # workspace switches like auto_connect_network live there); the two
+        # fact keys are reserved for CIU.
+        merged_ciu = dict(context.get("ciu") or {})
+        merged_ciu.update(ciu_context)
+        context["ciu"] = merged_ciu
     try:
         return render_jinja2_text(raw, context)
     except SecretLeakError:
@@ -684,7 +689,9 @@ def render_configfiles(
                     "instance_id": instance_id,
                 }
                 if ciu_context is not None:
-                    context["ciu"] = dict(ciu_context)
+                    merged_ciu = dict(context.get("ciu") or {})
+                    merged_ciu.update(ciu_context)
+                    context["ciu"] = merged_ciu
                 rendered_text = render_jinja2_text(raw, context)
 
                 # For multi-instance: use <service>-<idx> and <cfgname>-<idx>

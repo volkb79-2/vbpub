@@ -200,7 +200,7 @@ def test_clean_rm_success_proceeds_to_stack_reset(monkeypatch, tmp_path: Path) -
     reset: list[Path] = []
     matching = iter([["ciu-test-api"], []])
     monkeypatch.setattr(deploy, "_matching_containers", lambda *_args, **_kwargs: next(matching))
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {"applications/api": {}})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {"applications/api": {}})
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *_args, **_kw: [])
     monkeypatch.setattr(deploy.engine, "reset_service", lambda _config, stack_dir, **_kwargs: reset.append(stack_dir))
     monkeypatch.setattr(

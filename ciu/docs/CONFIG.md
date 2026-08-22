@@ -102,7 +102,10 @@ key-level; scalars and lists **replace** (no list concatenation).
 **Template context: `ciu.*` — deployment-selection facts [S3.12, CIU-44]**
 
 Every deployment render (`ciu up`, `ciu dev`, `--render-toml`,
-preflight/check/graph) exposes two read-only variables to all templates:
+preflight/check/graph, and the re-renders inside `ciu clean`) exposes two
+read-only variables to all templates. They MERGE into the config's own
+`[ciu]` table — your existing `[ciu]` workspace switches stay visible; only
+the two keys below are reserved:
 
 | Variable | Type | Meaning |
 |---|---|---|
@@ -111,7 +114,7 @@ preflight/check/graph) exposes two read-only variables to all templates:
 
 ```jinja
 # in any stack's ciu.defaults.toml.j2 — derive a feature flag from the
-// selected set instead of hardcoding it:
+# selected set instead of hardcoding it:
 [<root>.<service>.features]
 enable_pwmcp_mcp = {{ 'infra/pwmcp' in ciu.deployed_stacks }}
 

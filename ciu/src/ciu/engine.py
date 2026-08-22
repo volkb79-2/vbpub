@@ -1273,7 +1273,7 @@ def main_execution(
                 from .workspace_env import parse_workspace_env as _parse_env
 
                 _hook_identity = _parse_env(_env_path)
-        except WorkspaceEnvError:
+        except (WorkspaceEnvError, OSError):
             _hook_identity = {}
 
         ctx = hooks_runner.HookContext(

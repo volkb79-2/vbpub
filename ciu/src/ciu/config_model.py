@@ -330,14 +330,20 @@ def _make_render_context(
     environment. ``None`` (the default) preserves the existing behaviour.
 
     *ciu_context* (S3.12 / CIU-44): deployment-selection facts
-    (``selected_profiles``, ``deployed_stacks``) exposed to templates as the
-    ``ciu`` mapping. When ``None`` the key is OMITTED — a template referencing
-    ``ciu.*`` outside a deployment render fails loudly (Jinja UndefinedError)
-    rather than silently seeing an empty selection.
+    (``selected_profiles``, ``deployed_stacks``) exposed to templates. They are
+    MERGED INTO the config's own ``[ciu]`` table (workspace switches such as
+    ``auto_connect_network`` already live there), never replacing it — the two
+    fact keys are reserved for CIU. When *ciu_context* is ``None`` the config's
+    ``ciu`` table passes through untouched; outside deployment renders the two
+    reserved keys are simply absent, so a template referencing them fails
+    loudly (Jinja UndefinedError) rather than silently seeing an empty
+    selection.
     """
     context = {**config, "env": dict(os.environ if environ is None else environ)}
     if ciu_context is not None:
-        context["ciu"] = dict(ciu_context)
+        merged_ciu = dict(context.get("ciu") or {})
+        merged_ciu.update(ciu_context)
+        context["ciu"] = merged_ciu
     return context
 
 

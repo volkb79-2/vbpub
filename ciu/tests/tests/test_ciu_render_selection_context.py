@@ -260,3 +260,50 @@ def test_hookcontext_identity_fields_default_none():
     assert ctx.deployed_stacks is None
     assert ctx.instance_id is None
     assert ctx.network is None
+
+# ---------------------------------------------------------------------------
+# Review repairs — B1: the config's own [ciu] table survives in template scope
+# ---------------------------------------------------------------------------
+
+
+def test_ciu_facts_merge_into_config_ciu_table_never_replace(tmp_path):
+    """Review B1: [ciu] holds workspace switches (auto_connect_network, …);
+    the selection facts MERGE in — both are visible, neither clobbers the
+    other, in every render surface that carries the facts."""
+    (tmp_path / "ciu.defaults.toml.j2").write_text(
+        "attach = {{ 'true' if ciu.auto_connect_network else 'false' }}\n"
+        'profiles = "{{ ciu.selected_profiles | join(\',\') }}"\n',
+        encoding="utf-8",
+    )
+    global_config = {"ciu": {"auto_connect_network": False, "require_fqdn": False}}
+
+    rendered = config_model.render_stack(
+        tmp_path,
+        global_config=global_config,
+        preserve_state=False,
+        ciu_context=_CTX,
+    )
+
+    assert rendered["attach"] is False  # config's own [ciu] table intact
+    assert rendered["profiles"] == "core,apps"  # facts merged alongside
+
+
+def test_compose_render_also_merges_ciu_table(tmp_path):
+    template = tmp_path / "ciu.compose.yml.j2"
+    template.write_text(
+        "services:\n"
+        "  app:\n"
+        "    image: busybox\n"
+        "    environment:\n"
+        "      ATTACH: \"{{ ciu.auto_connect_network }}\"\n"
+        "      PROFILES: \"{{ ciu.selected_profiles | join(',') }}\"\n",
+        encoding="utf-8",
+    )
+    guarded = {"ciu": {"auto_connect_network": True}}
+
+    rendered = composefile.render_compose(
+        template, guarded, ciu_context={"selected_profiles": ["core"], "deployed_stacks": ["x"]}
+    )
+
+    assert 'ATTACH: "True"' in rendered
+    assert 'PROFILES: "core"' in rendered

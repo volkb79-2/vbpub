@@ -49,18 +49,37 @@ def _profile():
 class FakeDocker:
     """Stateful docker stand-in for the network/volume passes (STATE-faithful)."""
 
-    def __init__(self, networks=None, volumes=None):
+    def __init__(self, networks=None, volumes=None, network_labels=None):
         # networks: {name: [endpoint, ...]}; volumes: {name: compose-project}
         self.networks = dict(networks or {})
         self.volumes = dict(volumes or {})
+        # compose-project label per network (defaults to the <project>_default
+        # convention when unset); networks absent here carry no compose label.
+        self.network_labels = dict(network_labels or {})
         self.calls: list[list[str]] = []
         self.fail_disconnect_for: set[str] = set()
+        self.daemon_down_for: set[str] = set()  # argv[0] ops to fail wholesale
 
     def __call__(self, args, **kw):
         self.calls.append(args)
         op = args[0]
+        if op in self.daemon_down_for and "ls" in args[:2]:
+            return _proc(1, "", "Cannot connect to the Docker daemon")
 
         if op == "network":
+            if args[1] == "ls":
+                named = sorted(self.networks)
+                for i, a in enumerate(args):
+                    if a == "--filter" and args[i + 1].startswith("name=^"):
+                        want = args[i + 1][len("name=^"):-1]  # ^<net>$ exact
+                        named = [n for n in named if n == want]
+                    elif a == "--filter" and args[i + 1].startswith("label=com.docker.compose.project="):
+                        project = args[i + 1].split("=", 2)[2]
+                        named = [
+                            n for n in named
+                            if self.network_labels.get(n) == project
+                        ]
+                return _proc(0, "\n".join(named), "")
             sub, name = args[1], args[2]
             if sub == "inspect":
                 if name not in self.networks:
@@ -151,6 +170,7 @@ def test_instance_clean_removes_all_identity_scoped_networks(monkeypatch, tmp_pa
             "proj-abc123-network": [devcontainer_ep],
             "proj-env-vault_default": [],
         },
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
     )
 
     rc = _run_clean(monkeypatch, repo_root, fake)
@@ -172,6 +192,7 @@ def test_main_workspace_keeps_its_network_and_names_it(monkeypatch, tmp_path, ca
             "proj-abc123-network": [],
             "proj-env-vault_default": [],
         },
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
     )
 
     rc = _run_clean(monkeypatch, repo_root, fake)
@@ -193,6 +214,7 @@ def test_failed_disconnect_names_endpoint_and_fails_clean(monkeypatch, tmp_path,
             "proj-abc123-network": [{"id": "cid-x", "name": "pinned-endpoint"}],
             "proj-env-vault_default": [],
         },
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
     )
     fake.fail_disconnect_for.add("pinned-endpoint")
 
@@ -209,7 +231,10 @@ def test_failed_disconnect_names_endpoint_and_fails_clean(monkeypatch, tmp_path,
 def test_controlled_wrong_noop_removal_fails_invariant(monkeypatch, tmp_path):
     """Restoring v1's no-network-removal path must fail the invariant (rc=1)."""
     repo_root = _instance_repo(tmp_path)
-    fake = FakeDocker(networks={"proj-abc123-network": [], "proj-env-vault_default": []})
+    fake = FakeDocker(
+        networks={"proj-abc123-network": [], "proj-env-vault_default": []},
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
+    )
     monkeypatch.setattr(deploy.procutil, "docker", fake)
     sel = [{"path": "apps/vault"}]
     monkeypatch.setattr(
@@ -281,3 +306,69 @@ def test_already_gone_network_is_silently_fine(monkeypatch, tmp_path):
     rc = _run_clean(monkeypatch, repo_root, fake)
 
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Review repairs — B2 (clean threads the selection facts), B3 (daemon failure
+# fails closed), N1 (custom-named compose networks)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_renders_stack_templates_with_selection_context(monkeypatch, tmp_path):
+    """Review B2: a stack template referencing ciu.* renders during clean too —
+    omitting the facts would crash teardown for adopters of the documented
+    CONSUMERS §10 pattern."""
+    repo_root = _instance_repo(tmp_path)
+    fake = FakeDocker(networks={})
+    monkeypatch.setattr(deploy.procutil, "docker", fake)
+    sel = [{"path": "apps/vault"}]
+    received: list[dict | None] = []
+
+    def render(root, profile_arg, selection_arg, ciu_context=None):
+        received.append(ciu_context)
+        return {entry["path"]: {} for entry in selection_arg}
+
+    monkeypatch.setattr(deploy, "render_selected_stacks", render)
+    monkeypatch.setattr(deploy.engine, "reset_service", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+
+    rc = deploy.action_clean(repo_root, _profile(), sel, ignore_errors=True)
+
+    assert rc == 0
+    assert received[-1] == {
+        "selected_profiles": [],
+        "deployed_stacks": ["apps/vault"],
+    }
+
+
+def test_daemon_failure_during_network_verification_fails_clean(
+    monkeypatch, tmp_path, capsys
+):
+    """Review B3: an unverifiable network is a violation, never 'gone'."""
+    repo_root = _instance_repo(tmp_path)
+    fake = FakeDocker(networks={"proj-env-vault_default": []})
+    fake.network_labels["proj-env-vault_default"] = "proj-env-vault"
+    # daemon dies for network ls AFTER enumeration would have happened:
+    fake.daemon_down_for.add("network")
+
+    rc = _run_clean(monkeypatch, repo_root, fake)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "unverifiable" in out or "failed" in out
+    assert "clean completed with errors" in out
+
+
+def test_custom_named_compose_network_removed_via_label_pass(monkeypatch, tmp_path):
+    """Review N1: stacks declaring custom-named compose networks are still
+    enumerated exactly (compose project label), never left to a name guess."""
+    repo_root = _instance_repo(tmp_path)
+    fake = FakeDocker(
+        networks={"vault-tier-net": []},
+        network_labels={"vault-tier-net": "proj-env-vault"},
+    )
+
+    rc = _run_clean(monkeypatch, repo_root, fake)
+
+    assert rc == 0
+    assert fake.networks == {}

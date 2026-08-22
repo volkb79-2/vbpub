@@ -176,7 +176,8 @@ host = "{{ vault.internal_host }}"
 {% endif %}
 ```
 
-Semantics worth knowing before you adopt:
+Semantics worth knowing before you adopt (the facts merge into your config's
+own `[ciu]` table — existing switches like `auto_connect_network` stay visible):
 
 - `ciu.selected_profiles` is the ordered named profiles of THIS invocation
   (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
