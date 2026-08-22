@@ -50,8 +50,9 @@ commands = [
   # nearest ancestor cmru-v* tag, KI-18), and the cause-sensitive coverage
   # canary — lives in cmru/run-gate.toml. This step owns no test logic; it
   # runs the `gate` conjunction, whose sub-lanes launch their own gated
-  # tester-unified containers via run-gate.
-  { label = "cmru: run-gate gate conjunction", argv = ["bash", "-c", "cd cmru && exec ./run-gate.py gate"], cwd = "." },
+  # tester-unified containers via run-gate. Steps execute with project_root
+  # as cwd, so no `cd` is needed here.
+  { label = "cmru: run-gate gate conjunction", argv = ["./run-gate.py", "gate"], cwd = "." },
 ]
 
 # Initial standalone build (before cmru is installed):
