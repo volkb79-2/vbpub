@@ -2662,8 +2662,9 @@ allowlist** of shipped machine contracts (`schema_version: 1`,
 `capabilities`: sorted identifiers). Consumers allowlist these identifiers
 instead of inferring features from SemVer. An identifier is added only when
 its code path ships in the same release. Shipped identifiers:
-`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
-`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
+`worktree.branches.v1`, `worktree.identity.v1`, `worktree.inspect.v1`,
+`worktree.lifecycle-json.v1`, `worktree.up.v1`, `worktree.exec-local.v1`,
+and `worktree.exec-target.v1`.
 
 ### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
 
@@ -2725,6 +2726,52 @@ project/service/network uniqueness.
 
 Execution is `docker exec -w WORKDIR CONTAINER -- ARGV...` (no shell), and the
 exact exit code is returned.
+
+### S16.8 — Worktree branch hygiene (`ciu worktree branches`, CIU-25 git half)
+
+CIU-25's grounded-staleness demand, delivered for the GIT layer: a crashed
+dispatcher or forgotten teardown most often leaves a fully-merged branch and
+its checkout behind, and nothing grounded said so. `ciu worktree branches
+[--base REF] [-y] [--json]` surveys every LOCAL branch against *base*
+(default `main` — the same policy default `worktree add --base` ships; an
+unknown ref refuses `[S16.8]` naming the remedy) and classifies each into a
+CLOSED six-value category:
+
+- **`base`** — the branch measured against; never touched.
+- **`mainline`** — the repository's DEFAULT branch: origin/HEAD's target,
+  or — only when that ref is unresolvable — literally `main`/`master`
+  (documented policy fallback). Never pruned, even when the survey runs
+  against another base and the mainline happens to be fully merged there:
+  "clean up merged branches" can never mean deleting a mainline.
+- **`current`** — the PRIMARY checkout's branch: somebody's working context,
+  even when merged.
+- **`prunable`** — Git PROVES nothing would be lost: zero commits not in
+  base (`rev-list --count base...branch`), and either no checkout or a CLEAN,
+  non-primary one. Only this category is ever removed.
+- **`merged-dirty`** — merged, but its checkout carries uncommitted changes;
+  listed with attributes so a human rules on the dirt first.
+- **`unmerged`** — has work not in base; keep.
+
+Every branch reports its attributes: `checkout` path, `ahead`/`behind`
+(commit counts vs base), `changed_files` (diff vs the merge-base),
+`last_commit_at`/`last_commit_subject`, `dirty`, and its ciu instance linkage
+(`logical_name` + lifecycle `state` when a managed record's checkout sits
+there). No age heuristic, no process-lifetime inference, no basename
+similarity — the estate rule: removal only on proof, survey otherwise.
+
+Without `-y` there are NO side effects: the survey carries an explicit hint
+naming how many branches `-y` would remove. With `-y`, exactly the
+`prunable` category is removed — per branch, `git worktree remove` FIRST
+(Git re-verifies cleanliness itself) then `git branch -d` (Git re-verifies
+mergedness — belt to our braces); a refusal moves that branch to `failed`
+WITH Git's reason and the prune continues. The document is versioned
+(`schema_version: 1`, operation `branches` / `branches-prune`, status
+`survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
+id `worktree.branches.v1`.
+
+The Docker-resource half of CIU-25 (containers/volumes of a crashed
+instance) remains OPEN: it needs the ownership/lease contract described in
+the backlog entry and is deliberately not approximated here.
 
 ## S17 — Image provenance
 

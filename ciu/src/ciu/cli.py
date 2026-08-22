@@ -833,6 +833,14 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    p_branches = sub.add_parser("branches", add_help=False)
+    p_branches.add_argument("--base", default="main", metavar="REF")
+    p_branches.add_argument(
+        "-y", "--yes", action="store_true", default=False,
+        help="remove the fully merged, clean branches (default: survey only)",
+    )
+    p_branches.add_argument("--json", action="store_true", default=False)
+
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
 
@@ -842,7 +850,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up,
+        p_up, p_branches,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -938,6 +946,44 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "up":
             return wt_mod.up_instance(repo_root, opts.logical_name)
+
+        if opts.action == "branches":
+            doc = wt_mod.prune_branches(
+                repo_root, base=opts.base, yes=opts.yes
+            ) if opts.yes else wt_mod.branch_hygiene(repo_root, base=opts.base)
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                counts = doc["counts"]
+                print(
+                    f"branch hygiene vs '{doc['base']}' — "
+                    f"{counts['prunable']} prunable, "
+                    f"{counts['merged-dirty']} merged-dirty, "
+                    f"{counts['unmerged']} unmerged, "
+                    f"{counts['current']} current, {counts['base']} base"
+                )
+                for category in wt_mod.BRANCH_CATEGORIES:
+                    rows = [b for b in doc["branches"] if b["category"] == category]
+                    if not rows:
+                        continue
+                    print(f"\n{category}:")
+                    for b in rows:
+                        where = f" @ {b['checkout']}" if b["checkout"] else ""
+                        dirt = " dirty" if b["dirty"] else ""
+                        ciu = (
+                            f"  ciu:{b['ciu_instance']['logical_name']}"
+                            f"({b['ciu_instance']['state']})"
+                            if b["ciu_instance"] else ""
+                        )
+                        print(
+                            f"  {b['name']}{where}  ahead {b['ahead']} "
+                            f"behind {b['behind']} changed "
+                            f"{b['changed_files']} file(s)  last "
+                            f"{b['last_commit_at'][:10]}{dirt}{ciu}"
+                        )
+                if doc.get("hint"):
+                    print(f"\n{doc['hint']}")
+            return 0
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).

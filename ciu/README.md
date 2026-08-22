@@ -5,7 +5,7 @@ host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
 - identity and evidence: `ciu version`, `ciu provenance [--json]`
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec` (`add` remains shorthand)
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|branches` (`add` remains shorthand) — `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates)
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)

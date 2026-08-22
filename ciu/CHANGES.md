@@ -10,6 +10,12 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu worktree branches` — grounded branch hygiene (CIU-25 git
+  half, SPEC S16.8): closed six-category survey (base/mainline/current/
+  prunable/merged-dirty/unmerged) with ahead/behind/changed-files/age/instance
+  attributes; `-y` removes exactly the fully-merged-clean category via
+  worktree-remove + `branch -d` (Git re-verifies both). Capability id
+  `worktree.branches.v1`. The Docker-resource reap half of CIU-25 remains open
 - feat(ciu): declared vendor baseline for `ciu provenance` —
   `[deploy.provenance] vendor_images`; a running reference equal to a
   declaration is `vendor-pinned`, same-name/different-reference is vendor

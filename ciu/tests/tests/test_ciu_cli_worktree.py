@@ -320,6 +320,7 @@ class TestCapabilitiesDispatch:
         doc = json.loads(capsys.readouterr().out)
         assert doc["schema_version"] == 1
         assert doc["capabilities"] == [
+            "worktree.branches.v1",
             "worktree.exec-local.v1",
             "worktree.exec-target.v1",
             "worktree.identity.v1",

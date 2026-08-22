@@ -80,6 +80,45 @@ $ ciu worktree rm pkg-under-test --json
 git removal raises with exit 2 and **no** success document; the error names
 the retained resources.
 
+## 5b. Clean up forgotten branches — grounded, never age-based (S16.8)
+
+After weeks of parallel worktree waves the repo accumulates merged branches
+and their checkouts. `ciu worktree branches` proves what is safe instead of
+guessing:
+
+```console
+$ ciu worktree branches
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 current, 1 base
+
+prunable:
+  fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
+
+unmerged:
+  feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
+```
+
+Survey only — nothing is removed. `-y` removes exactly the `prunable`
+category (Git re-verifies cleanliness and mergedness on every step; a refusal
+is reported per branch, never force-deleted). The categories are closed:
+`base`, `mainline` (the origin/HEAD default branch — never prunable even
+when measured against another ref), `current` (the primary checkout's
+branch), `prunable`, `merged-dirty` (merged but its checkout has uncommitted
+work — decide by hand), and `unmerged`. Every branch carries `ahead`/
+`behind`, `changed_files` vs the merge-base, last-commit date, and its ciu
+instance linkage, so a human can rule on the rest. No age heuristic exists
+anywhere in this command: a branch one minute old that is fully merged is
+prunable, a branch six months old that is not is not.
+
+Automation allowlists the capability id `worktree.branches.v1`
+(`ciu capabilities --json`) instead of inferring the feature from SemVer;
+the `--json` document is versioned (`schema_version: 1`, operations
+`branches`/`branches-prune`, statuses `survey`/`pruned`/`partial`).
+
+```bash
+ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
+```
+
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console

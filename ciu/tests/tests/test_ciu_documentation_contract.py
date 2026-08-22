@@ -37,6 +37,7 @@ LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 CLOSED_PUBLIC_VALUES = {
     # capability identifiers
     "worktree.identity.v1",
+    "worktree.branches.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
     "worktree.up.v1",
