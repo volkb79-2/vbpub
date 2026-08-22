@@ -983,6 +983,16 @@ def _worktree(rest: list[str]) -> int:
                         )
                 # survey/prune documents always carry the hint
                 print(f"\n{doc['hint']}")
+                if doc["operation"] == "branches-prune":
+                    # The prune's outcome is the headline, not the re-survey:
+                    # removed/failed are named explicitly and a partial prune
+                    # exits non-zero (review: silent partial success).
+                    for name in doc.get("removed", []):
+                        print(f"removed: {name}")
+                    for f in doc.get("failed", []):
+                        print(f"FAILED: {f['branch']} — {f['reason']}")
+                    if doc["status"] == "partial":
+                        return 1
             return 0
 
         # Every action above returned; the only remaining action is "list"

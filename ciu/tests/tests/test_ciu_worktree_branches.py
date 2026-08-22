@@ -126,6 +126,10 @@ def test_primary_branch_is_current_and_mainline_never_prunable(repo):
     assert cats["main"] in ("mainline", "current")
     assert worktree._default_branch(repo) is None  # no origin → policy fallback
 
+    # Here base==primary HEAD (develop), so the destructive pass is legal;
+    # the base-vs-HEAD refusal itself is covered by
+    # test_yes_refuses_when_base_not_contained_in_any_head. Nothing prunable
+    # exists (main is mainline-protected, develop is the base).
     pruned = worktree.prune_branches(repo, base="develop", yes=True)
     assert "main" not in pruned["removed"]
     assert _git(["rev-parse", "--verify", "main"], repo).returncode == 0
@@ -165,7 +169,7 @@ def test_linked_worktree_on_clean_merged_branch_is_prunable_with_checkout(repo):
 
 
 def test_unknown_base_ref_refuses_loudly(repo):
-    with pytest.raises(worktree.WorktreeError, match="does not name a known ref"):
+    with pytest.raises(worktree.WorktreeError, match="LOCAL BRANCH"):
         worktree.branch_hygiene(repo, base="trunk")
 
 
@@ -386,7 +390,7 @@ def test_cli_branches_unknown_base_refuses_exit_2(repo, monkeypatch, capsys):
 
     monkeypatch.chdir(repo)
     assert cli._worktree(["branches", "--base", "trunk", "--define-root", str(repo)]) == 2
-    assert "does not name a known ref" in capsys.readouterr().err
+    assert "LOCAL BRANCH" in capsys.readouterr().err
 
 
 def test_prune_without_yes_is_pure_survey(repo):
@@ -398,3 +402,108 @@ def test_prune_without_yes_is_pure_survey(repo):
     assert doc["operation"] == "branches"
     assert any(b["name"] == "fix/merged-y" for b in doc["branches"])
     assert _git(["rev-parse", "--verify", "fix/merged-y"], repo).returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — destructive pass safety (local-branch base, HEAD-agreement
+# guard, upstream pre-check, honest failure surfacing)
+# ---------------------------------------------------------------------------
+
+
+def test_base_must_be_a_local_branch(repo):
+    """A SHA or remote-tracking ref is refused: the prune reasons about branch
+    NAMES, and a SHA anchor once let the anchor branch itself classify
+    prunable (review finding 8)."""
+    sha = _git(["rev-parse", "main"], repo).stdout.strip()
+    with pytest.raises(worktree.WorktreeError, match="LOCAL BRANCH"):
+        worktree.branch_hygiene(repo, base=sha)
+    with pytest.raises(worktree.WorktreeError, match="LOCAL BRANCH"):
+        worktree.prune_branches(repo, base=sha, yes=True)
+
+
+def test_feature_main_is_never_the_base(repo):
+    """An exact-name-only base match: 'feature/main' has its own work and must
+    stay visible to the actionable categories (review finding 9)."""
+    _branch(repo, "feature/main")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    doc = worktree.branch_hygiene(repo)
+    cats = {b["name"]: b["category"] for b in doc["branches"]}
+    assert cats["feature/main"] == "unmerged"
+    assert cats["main"] == "base"
+
+
+def test_yes_refuses_when_base_not_contained_in_any_head(repo):
+    """The reproduced review BLOCKER: base=develop while primary HEAD is main.
+    A branch merged into develop would previously lose its checkout while git
+    refused the deletion — half-pruned state, silent success. Now -y refuses
+    UPFRONT and nothing is touched."""
+    _branch(repo, "feature/wip")
+    # develop must CONTAIN work main lacks, else it is trivially contained.
+    assert _git(["checkout", "-b", "develop", "main"], repo).returncode == 0
+    (repo / "dev.txt").write_text("dev\n", encoding="utf-8")
+    assert _git(["add", "dev.txt"], repo).returncode == 0
+    assert _git(["commit", "-m", "dev work"], repo).returncode == 0
+    _branch(repo, "fix/on-develop", file="d.txt")
+    # merge into develop (NOT main): primary HEAD stays main
+    assert _git(["checkout", "develop"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/on-develop"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+    wt_path = repo.parent / "wt-dev"
+    assert _git(["worktree", "add", str(wt_path), "fix/on-develop"], repo).returncode == 0
+
+    with pytest.raises(worktree.WorktreeError, match="not contained in any"):
+        worktree.prune_branches(repo, base="develop", yes=True)
+
+    # nothing was touched
+    assert wt_path.exists()
+    assert _git(["rev-parse", "--verify", "fix/on-develop"], repo).returncode == 0
+
+
+def test_upstream_blocked_candidate_reported_without_destruction(repo, tmp_path):
+    """A branch tracking an upstream that lacks its tip would be refused by
+    `branch -d` AFTER its checkout was already gone — the pre-check reports it
+    as failed while everything is still intact."""
+    # bare "origin" + pushed branch
+    bare = tmp_path / "origin.git"
+    assert _git(["init", "--bare", "-b", "main", str(bare)], repo).returncode == 0
+    assert _git(["remote", "add", "origin", str(bare)], repo).returncode == 0
+    _branch(repo, "fix/tracked")
+    assert _git(["push", "-u", "origin", "fix/tracked"], repo).returncode == 0
+    # advance LOCAL past its upstream, then merge into main (primary HEAD)
+    (repo / "f.txt").write_text("second\n", encoding="utf-8")
+    assert _git(["commit", "-am", "second"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/tracked"], repo).returncode == 0
+
+    doc = worktree.prune_branches(repo, yes=True)
+
+    assert [f["branch"] for f in doc["failed"]] == ["fix/tracked"]
+    assert "upstream" in doc["failed"][0]["reason"]
+    assert doc["status"] == "partial"
+    assert _git(["rev-parse", "--verify", "fix/tracked"], repo).returncode == 0
+
+
+def test_cli_prune_surfaces_removed_failed_and_exits_nonzero_on_partial(
+    repo, monkeypatch, capsys
+):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    from ciu import cli
+
+    _branch(repo, "fix/m-a")
+    _merge_into_main(repo, "fix/m-a")
+    _branch(repo, "fix/m-b")
+    _merge_into_main(repo, "fix/m-b")  # primary back on main
+    real_git = worktree._git
+
+    def failing(args, cwd):
+        if args[:2] == ["branch", "-d"] and "fix/m-a" in args:
+            return subprocess.CompletedProcess(args, 1, "", "error: not fully merged")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", failing)
+    code = cli._worktree(["branches", "-y", "--define-root", str(repo)])
+    out = capsys.readouterr().out
+
+    assert code == 1  # partial prune is NOT a silent success
+    assert "removed: fix/m-b" in out
+    assert "FAILED: fix/m-a" in out

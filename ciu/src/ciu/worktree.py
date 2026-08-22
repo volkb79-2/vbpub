@@ -866,16 +866,68 @@ def _default_branch(repo_root: Path) -> str | None:
     return None
 
 
-def _resolve_base_ref(repo_root: Path, base: str) -> str:
-    """Verify *base* names a known ref; refuse loudly with the remedy otherwise."""
-    res = _git(["rev-parse", "--verify", "--quiet", base], repo_root)
+def _resolve_base_branch(repo_root: Path, base: str) -> str:
+    """Verify *base* names a LOCAL BRANCH; refuse loudly otherwise.
+
+    A local branch is required — not a SHA, not a remote-tracking ref —
+    because classification and the destructive prune reason about branch
+    NAMES against this anchor. Accepting `--base <SHA>` let the branch whose
+    tip WAS that SHA classify as prunable and get deleted: the survey's own
+    anchor removed by its own prune (review finding).
+    """
+    res = _git(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{base}"], repo_root
+    )
     if res.returncode != 0:
         raise WorktreeError(
-            f"[S16.8] --base {base!r} does not name a known ref in {repo_root}. "
-            "Pass the branch your work merges target, e.g. "
-            "`ciu worktree branches --base main`."
+            f"[S16.8] --base {base!r} does not name a LOCAL BRANCH in {repo_root} "
+            "(SHAs and remote-tracking refs are refused — the prune reasons "
+            "about branch names). Pass e.g. `ciu worktree branches --base main`."
         )
     return base
+
+
+def _is_ancestor(repo_root: Path, ancestor_ref: str, descendant_ref: str) -> bool:
+    res = _git(
+        ["merge-base", "--is-ancestor", ancestor_ref, descendant_ref], repo_root
+    )
+    return res.returncode == 0
+
+
+def _prune_base_sanity(repo_root: Path, base: str) -> None:
+    """Refuse `-y` when the base is not contained in any checkout's HEAD.
+
+    Git's `branch -d` judges mergedness against HEAD/upstream, NOT against an
+    arbitrary --base. Pruning a base no checkout contains could remove linked
+    checkouts while `branch -d` then refuses every branch — half-pruned state
+    reported as success (the reproduced review BLOCKER). The survey answers
+    any base; the DESTRUCTIVE pass demands one git itself agrees with.
+    """
+    base_sha = _git(["rev-parse", "--verify", f"refs/heads/{base}"], repo_root)
+    assert base_sha.returncode == 0  # _resolve_base_branch already ran
+    base_tip = base_sha.stdout.strip()
+
+    safeties: list[str] = []
+    for wt in list_worktrees(repo_root):
+        if wt.is_primary and wt.branch != "(detached)":
+            safeties.append(wt.branch)
+    default = _default_branch(repo_root)
+    if default:
+        safeties.append(default)
+
+    for head in dict.fromkeys(safeties):
+        head_sha = _git(["rev-parse", "--verify", f"refs/heads/{head}"], repo_root)
+        if head_sha.returncode == 0 and base_tip == head_sha.stdout.strip():
+            return  # the base IS a working HEAD
+        if _is_ancestor(repo_root, base_tip, head):
+            return
+    raise WorktreeError(
+        f"[S16.8] --base {base!r} is not contained in any checkout's HEAD or "
+        "origin/HEAD. Pruning against it could remove checkouts while Git then "
+        "refuses the branch deletions (its mergedness rule uses HEAD/upstream, "
+        "not --base) — leaving half-removed state. Survey only, or pass the "
+        "branch your work actually merges target (e.g. the mainline)."
+    )
 
 
 def _branch_facts(repo_root: Path, base: str) -> list[dict[str, Any]]:
@@ -927,7 +979,7 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
     instance linkage) are surfaced so a human can rule on the rest.
     """
     repo_root = Path(repo_root).resolve()
-    _resolve_base_ref(repo_root, base)
+    _resolve_base_branch(repo_root, base)
     facts = _branch_facts(repo_root, base)
     worktrees = list_worktrees(repo_root)
     checkout_map: dict[str, list[Path]] = {}
@@ -958,7 +1010,10 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
             if record is not None else None
         )
 
-        if name == base or name.endswith("/" + base):
+        if name == base:
+            # exact name only: "feature/main" is a real branch with its own
+            # work, never the anchor (review finding — endswith misfiled it
+            # into base, hiding it from every actionable category)
             category = "base"
         elif name == default_branch or (
             default_branch is None and name in _MAINLINE_FALLBACKS
@@ -1022,12 +1077,39 @@ def prune_branches(
         # side-effect-free by construction.
         return survey
 
+    # BLOCKER fix (review): the destructive pass demands a base git itself
+    # agrees with, BEFORE anything is touched.
+    _prune_base_sanity(repo_root, base)
+
     repo_root = Path(repo_root).resolve()
     removed: list[str] = []
     failed: list[dict[str, str]] = []
     for branch in prunables:
         name = branch["name"]
         failure = ""
+        # Read-only pre-check mirroring git's own deletion rule: a branch
+        # tracking an upstream that does not contain it will be refused by
+        # `branch -d` AFTER we already removed its checkout — check FIRST,
+        # while everything is still intact (review blocker's other half).
+        up = _git(
+            ["rev-parse", "--verify", "--quiet", f"{name}@{{upstream}}"],
+            repo_root,
+        )
+        if up.returncode == 0:
+            upstream = up.stdout.strip()
+            tip = _git(["rev-parse", "--verify", f"refs/heads/{name}"], repo_root)
+            if tip.returncode == 0 and not _is_ancestor(
+                repo_root, tip.stdout.strip(), upstream
+            ):
+                failed.append({
+                    "branch": name,
+                    "reason": (
+                        "tracks an upstream that does not contain it — git "
+                        "branch -d would refuse after the checkout was gone; "
+                        "reconcile the upstream first"
+                    ),
+                })
+                continue
         if branch["checkout"]:
             res = _git(["worktree", "remove", branch["checkout"]], repo_root)
             if res.returncode != 0:

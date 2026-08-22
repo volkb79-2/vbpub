@@ -2733,9 +2733,12 @@ CIU-25's grounded-staleness demand, delivered for the GIT layer: a crashed
 dispatcher or forgotten teardown most often leaves a fully-merged branch and
 its checkout behind, and nothing grounded said so. `ciu worktree branches
 [--base REF] [-y] [--json]` surveys every LOCAL branch against *base*
-(default `main` — the same policy default `worktree add --base` ships; an
-unknown ref refuses `[S16.8]` naming the remedy) and classifies each into a
-CLOSED six-value category:
+(default `main` — the same policy default `worktree add --base` ships).
+*base* MUST name a LOCAL BRANCH — a SHA or remote-tracking ref refuses
+`[S16.8]`: classification and the destructive prune reason about branch
+NAMES, and a SHA anchor once let the anchor branch itself classify prunable
+(adversarial-review finding). Classification is a CLOSED six-value
+vocabulary:
 
 - **`base`** — the branch measured against; never touched.
 - **`mainline`** — the repository's DEFAULT branch: origin/HEAD's target,
@@ -2760,13 +2763,22 @@ there). No age heuristic, no process-lifetime inference, no basename
 similarity — the estate rule: removal only on proof, survey otherwise.
 
 Without `-y` there are NO side effects: the survey carries an explicit hint
-naming how many branches `-y` would remove. With `-y`, exactly the
-`prunable` category is removed — per branch, `git worktree remove` FIRST
-(Git re-verifies cleanliness itself) then `git branch -d` (Git re-verifies
-mergedness — belt to our braces); a refusal moves that branch to `failed`
-WITH Git's reason and the prune continues; the document is then RE-SURVEYED
-so its counts and branches report the post-prune truth, never the stale
-pre-prune snapshot. The document is versioned
+naming how many branches `-y` would remove. The destructive pass is gated
+TWICE against the reviewed half-prune failure (destroy a checkout, then have
+Git refuse the deletion — divergent mergedness definitions): (1) **base
+sanity** — `-y` refuses `[S16.8]` unless the base tip IS, or is an ancestor
+of, the primary checkout's HEAD or the origin/HEAD target (surveying any
+base stays allowed; pruning demands one Git agrees with); (2) **per-candidate
+upstream pre-check** — a branch tracking an upstream that does not contain
+it is moved to `failed` BEFORE its checkout is touched, with the reason.
+Then exactly the remaining `prunable` category is removed — per branch,
+`git worktree remove` FIRST (Git re-verifies cleanliness itself) then
+`git branch -d` (Git re-verifies mergedness); any residual refusal moves
+that branch to `failed` WITH Git's reason and the prune continues. The
+document is then RE-SURVEYED so its counts and branches report the
+post-prune truth, never the stale pre-prune snapshot. The human output names
+every `removed:` and `FAILED:` branch and exits non-zero on a `partial`
+prune — a partial success is never silent. The document is versioned
 (`schema_version: 1`, operation `branches` / `branches-prune`, status
 `survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
 id `worktree.branches.v1`.

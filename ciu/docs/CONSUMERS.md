@@ -98,8 +98,13 @@ unmerged:
 ```
 
 Survey only — nothing is removed. `-y` removes exactly the `prunable`
-category (Git re-verifies cleanliness and mergedness on every step; a refusal
-is reported per branch, never force-deleted). The categories are closed:
+category, gated twice so it can never half-prune: the base must be contained
+in a checkout's HEAD (or origin/HEAD) or `-y` refuses before touching
+anything, and a branch tracking an upstream that lacks its tip is reported
+`FAILED` before its checkout is touched. Every outcome is printed
+(`removed:` / `FAILED: <branch> — <reason>` lines) and a partial prune exits
+non-zero — never a silent success. Git re-verifies cleanliness and mergedness
+on every step; nothing is ever force-deleted. The categories are closed:
 `base`, `mainline` (the origin/HEAD default branch — never prunable even
 when measured against another ref), `current` (the primary checkout's
 branch), `prunable`, `merged-dirty` (merged but its checkout has uncommitted
