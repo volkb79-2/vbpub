@@ -21,6 +21,10 @@ CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+#
+# Optional last-resort tier when no devcontainer injected the
+# ambient var; verified against the host systemd before launch.
+CMRU_TESTER_CGROUP_PARENT_FALLBACK = "dev-background.slice"
 
 [orchestration.project.example-wheel]
 config = "example-wheel/cmru.toml"

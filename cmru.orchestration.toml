@@ -37,6 +37,15 @@ CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
+# cgroup-parent last-resort tier (S15-adjacent, estate no-silent-fallbacks rule):
+# tester-gate resolves --cgroup-parent > CMRU_TESTER_CGROUP_PARENT >
+# CGROUP_PARENT_DEV_BACKGROUND (ambient, devcontainer hosts) > THIS literal.
+# It exists for bare-host runs where no devcontainer injected the ambient var;
+# whatever resolves is verified against the HOST systemd before launch
+# (LoadState=loaded AND non-empty FragmentPath), so a typo or a fail-open
+# transient slice refuses the gate instead of sailing through ungoverned.
+CMRU_TESTER_CGROUP_PARENT_FALLBACK = "dev-background.slice"
+
 [orchestration.project.ciu]
 config = "ciu/cmru.toml"
 depends_on = []

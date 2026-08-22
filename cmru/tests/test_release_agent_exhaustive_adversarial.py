@@ -256,6 +256,35 @@ def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):
     with pytest.raises(SystemExit, match="cgroup_parent"):
         tester_gate.resolve_cgroup_parent(None)
     assert tester_gate.resolve_cgroup_parent("slice-explicit") == "slice-explicit"
+
+
+def test_tester_gate_cgroup_fallback_tier(monkeypatch, capsys):
+    """CMRU_TESTER_CGROUP_PARENT_FALLBACK is the LAST tier: used only when no
+    per-project override and no ambient devcontainer var exist, and whatever
+    resolves is still verified against the host systemd by check_slice_unit
+    (operator-declared default, never a code-level hardcoded one)."""
+    for name in (
+        "CMRU_TESTER_CGROUP_PARENT",
+        "CGROUP_PARENT_DEV_BACKGROUND",
+        "CMRU_TESTER_CGROUP_PARENT_FALLBACK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent(None)
+
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT_FALLBACK", "fallback.slice")
+    # ambient outranks the declared fallback when present
+    assert tester_gate.resolve_cgroup_parent(None) == "ambient.slice"
+
+    monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
+    assert tester_gate.resolve_cgroup_parent(None) == "fallback.slice"
+    err = capsys.readouterr().err
+    assert "declared fallback" in err and "verified against the host systemd" in err
+
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "project-override.slice")
+    assert tester_gate.resolve_cgroup_parent(None) == "project-override.slice"
+
     with pytest.raises(SystemExit, match="memory limit"):
         tester_gate.resolve_memory(None)
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")

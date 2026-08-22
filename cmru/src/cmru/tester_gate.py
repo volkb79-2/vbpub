@@ -249,16 +249,44 @@ def resolve_cgroup_parent(explicit: str | None) -> str:
 
     Order: ``--cgroup-parent`` (explicit) > ``CMRU_TESTER_CGROUP_PARENT``
     (per-project override, e.g. cmru.toml env) > ``CGROUP_PARENT_DEV_BACKGROUND``
-    (ambient, injected by devcontainer.json's ``containerEnv`` — see AGENTS.md).
+    (ambient, injected by devcontainer.json's ``containerEnv`` — see AGENTS.md)
+    > ``CMRU_TESTER_CGROUP_PARENT_FALLBACK`` (an operator-DECLARED literal
+    default, normally set once in ``cmru.orchestration.toml [env]`` for hosts
+    that run gates outside a devcontainer and therefore have no ambient var).
+
+    The fallback tier is not a code-level hardcoded default: it exists only
+    when the operator declares it, and whatever value resolves — fallback
+    included — is verified against the HOST systemd by :func:`check_slice_unit`
+    before any container launches (a typo'd or fail-open transient slice is
+    refused there). On a devcontainer host the ambient var wins by precedence,
+    so the fallback never fires; on a bare host it supplies the estate's tier
+    explicitly instead of refusing.
     """
     if explicit:
         return explicit
-    resolved = os.environ.get("CMRU_TESTER_CGROUP_PARENT") or os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
+    resolved = os.environ.get("CMRU_TESTER_CGROUP_PARENT") or os.environ.get(
+        "CGROUP_PARENT_DEV_BACKGROUND"
+    )
+    if not resolved:
+        declared_fallback = (
+            os.environ.get("CMRU_TESTER_CGROUP_PARENT_FALLBACK") or ""
+        ).strip()
+        if declared_fallback:
+            print(
+                f"[INFO] tester-gate: no --cgroup-parent, "
+                f"CMRU_TESTER_CGROUP_PARENT, or CGROUP_PARENT_DEV_BACKGROUND — "
+                f"using the declared fallback {declared_fallback!r} (verified "
+                "against the host systemd below)",
+                file=sys.stderr,
+            )
+            return declared_fallback
     if not resolved:
         raise SystemExit(
             "tester-gate: no cgroup_parent resolvable — pass --cgroup-parent explicitly, "
-            "or set CMRU_TESTER_CGROUP_PARENT (per-project override) or "
-            "CGROUP_PARENT_DEV_BACKGROUND (ambient, from devcontainer.json) in the environment. "
+            "or set CMRU_TESTER_CGROUP_PARENT (per-project override), "
+            "CGROUP_PARENT_DEV_BACKGROUND (ambient, from devcontainer.json), or "
+            "CMRU_TESTER_CGROUP_PARENT_FALLBACK (declared literal default, e.g. in "
+            "cmru.orchestration.toml [env]). "
             "Refusing to launch an ungoverned container next to production."
         )
     return resolved

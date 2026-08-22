@@ -167,6 +167,7 @@ def test_runner_build_date_requires_a_commit_when_metadata_requested(tmp_path, m
 )
 def test_tester_gate_refuses_unconfigured_resource(resolver, env, expected, monkeypatch):
     for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND",
+                 "CMRU_TESTER_CGROUP_PARENT_FALLBACK",
                  "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
                  "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
         monkeypatch.delenv(name, raising=False)
