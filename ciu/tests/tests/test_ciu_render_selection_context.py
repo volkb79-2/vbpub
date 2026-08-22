@@ -156,6 +156,10 @@ def _build_repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(
         engine, "ensure_workspace_network", lambda *a, **k: None
     )
+    # Step 8 (hostdirs) does real os.chown with an S6.5 docker fallback —
+    # neither belongs to this fixture's subject (selection-fact threading);
+    # left live it made the test sensitive to daemon/privilege context.
+    monkeypatch.setattr(engine, "create_hostdirs", lambda *a, **k: None)
 
     from ciu.workspace_env import bootstrap_workspace_env, REQUIRED_KEYS_CORE
 
