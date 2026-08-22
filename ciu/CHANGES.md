@@ -7,6 +7,14 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [6.4.1] - 2026-08-22
+<!-- cmru: generated -->
+<!-- cmru: source-end=91959b3abf7d63ad062ddbc2815310bb38335e2e -->
+
+### Changed
+- run-gate: estate-wide adoption as SSOT test definition (CIU-40 adoption half) (4c6eb2b6)
+- backlog(ciu): reconcile after v6.4.0 — table sorted by ID, P112 reproductions relocated out of CIU-23's withdrawal, CIU-39 stub filled, CIU-46 (legacy-project shipped clean leak) + CIU-47 (PUBLIC_FQDN ambient adoption) filed (251711ed)
+
 ## [6.4.0] - 2026-08-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fc8e50334d1c3a696e2f53657a70ba0c06990be -->
