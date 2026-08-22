@@ -152,11 +152,17 @@ adjudicated-provenance integration (B004). Two shapes were on the table:
 2. **Declared references** — adopted. The declaration says exactly what the
    operator knows: "this exact reference is expected to be third-party."
    Reference equality is checkable from evidence provenance already collects
-   (`docker ps`'s image string), so the feature has zero new docker surface.
-   Drift (same image name, different reference) is a mismatch because the
-   declaration vouches for one artifact; undeclared unlabelled images stay
-   `unlabelled` and contribute nothing, so the escape hatch cannot mask a
-   forgotten bake of an own image — only auditable config could.
+   (`docker ps`'s image string), so the feature has zero new docker surface —
+   compared on Docker-canonical references (registry-host case, implicit
+   docker.io/library defaults) so spelling differences cannot defeat pin or
+   drift detection. Drift (same canonical name, different reference) is a
+   mismatch because the declaration vouches for one artifact; undeclared
+   unlabelled images stay `unlabelled` in the document and contribute
+   nothing, so a forgotten bake of an own image is never HIDDEN — but be
+   precise about the verdict: a pin converts a tree that would have warned
+   `not-verified-no-evidence` into a green `verified-match` once no container
+   disagrees, exactly as an own-image `match` always has. Only auditable
+   config (falsely declaring an own image as vendor) escapes entirely.
 
 A declared image is never judged by the commit label even when it carries
 one: an upstream revision belongs to the upstream build. The vocabulary

@@ -321,11 +321,14 @@ class TestVendorPinnedVerdicts:
         )
 
     def test_image_reference_name_extraction(self):
-        f = deploy._image_reference_name
+        f = deploy._image_reference_name  # CANONICAL names (review fix)
         assert f("hashicorp/vault:1.15") == "hashicorp/vault"
-        assert f("vault@sha256:abc") == "vault"
+        assert f("vault@sha256:abc") == "docker.io/library/vault"
+        assert f("nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/nginx:2") == "docker.io/library/nginx"
+        assert f("GHCR.io/X/Y:1") == "ghcr.io/X/Y"  # host lowercased, ns kept
         assert f("localhost:5000/img:tag") == "localhost:5000/img"
-        assert f("bare-name") == "bare-name"
+        assert f("bare-name") == "docker.io/library/bare-name"
 
 
 # ---------------------------------------------------------------------------
@@ -683,3 +686,97 @@ def test_ok_line_without_pins_is_byte_identical_to_pre_ciu39(
     assert cli._provenance([]) == 0
     out = capsys.readouterr().out
     assert out == "provenance OK — running containers match rev1\n"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — canonical reference comparison; malformed-table refusal
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalReferenceComparison:
+    def test_name_canonicalizes_docker_hub_defaults_and_host_case(self):
+        f = deploy._image_reference_name
+        assert f("nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/library/nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/nginx:2") == "docker.io/library/nginx"
+        assert f("GHCR.io/X/Y:1") == "ghcr.io/X/Y"
+        assert f("localhost:5000/img:tag") == "localhost:5000/img"
+
+    def test_full_reference_normalization_keeps_tag_verbatim(self):
+        f = deploy._normalized_image_reference
+        assert f("NGINX:1.25") == "docker.io/library/NGINX:1.25"  # tag case kept? no—see below
+        # tags are case-SENSITIVE and survive verbatim; the NAME canonicalizes
+        assert f("nginx:1.25").endswith(":1.25")
+        assert f("vault@sha256:abc") == "docker.io/library/vault@sha256:abc"
+
+    def test_registry_prefix_spelling_cannot_hide_drift(self, monkeypatch):
+        """Review major (probe A): declared docker.io/library/nginx:1, running
+        nginx:2 — Docker treats these as the same name, so this is DRIFT
+        (mismatch), never a benign unlabelled."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("web-1", "nginx:2", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["docker.io/library/nginx:1"]
+        )
+        assert result.overall == "mismatch"
+        assert result.containers[0].status == "mismatch"
+
+    def test_registry_prefix_spelling_recognizes_correct_pin(self, monkeypatch):
+        """Review major (probe B): the same spelling mismatch must not break
+        PIN recognition either."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("web-1", "nginx:1", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["docker.io/library/nginx:1"]
+        )
+        assert result.containers[0].status == "vendor-pinned"
+        assert result.overall == "verified-match"
+
+    def test_uppercase_registry_host_pin_is_recognized(self, monkeypatch):
+        """Only the REGISTRY HOST is case-insensitive (Docker rule); the
+        namespace stays case-sensitive — so host-case spelling differences
+        cannot break a pin, but a genuinely different namespace is drift."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("app-1", "ghcr.io/x/app:2.0", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["GHCR.io/x/app:2.0"]
+        )
+        assert result.containers[0].status == "vendor-pinned"
+
+        # a different NAMESPACE is a genuinely different repository (Docker
+        # namespaces are case-sensitive) — the declaration does not vouch for
+        # it, so it is an ordinary undeclared image: unlabelled, not drift.
+        other_ns = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["GHCR.io/X/app:2.0"]
+        )
+        assert other_ns.containers[0].status == "unlabelled"
+
+
+def test_malformed_provenance_table_refuses_exit_2(monkeypatch, tmp_path, capsys):
+    """Review minor: [deploy.provenance] set to a non-table TOML value used to
+    crash with a traceback — it refuses with the same loudness as a malformed
+    vendor_images list."""
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+
+    def fail_verify(prefix, **_kw):
+        raise AssertionError("must not reach the verdict builder")
+
+    monkeypatch.setattr(
+        deploy,
+        "load_global_config",
+        lambda repo_root: {"deploy": {"project_name": "d", "environment_tag": "v",
+                                      "provenance": "oops"}},
+    )
+    monkeypatch.setattr(deploy, "verify_running_provenance", fail_verify)
+    assert cli._provenance(["--json"]) == 2
+    err = capsys.readouterr().err
+    assert "[deploy.provenance]" in err and "table" in err

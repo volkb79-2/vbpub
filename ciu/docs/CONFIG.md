@@ -304,9 +304,10 @@ vendor_images = [
 ```
 
 A running container whose image EQUALS a declared entry is `vendor-pinned`
-(judged by reference, never by this repo's commit); the same image NAME at a
-different reference is vendor drift → `mismatch`; undeclared unlabelled
-images stay `unlabelled`. With zero mismatches and at least one
+(judged on Docker-canonical references — registry-host case-insensitive,
+implicit `docker.io/library/` defaults — never by this repo's commit); the
+same image NAME at a different reference is vendor drift → `mismatch`;
+undeclared unlabelled images stay `unlabelled` in the document. With zero mismatches and at least one
 match-or-pin, the verdict is `verified-match`. Provenance documents are
 emitted at `schema_version: 2` (CIU-39 widened the closed vocabularies);
 strict consumers refuse unknown members.

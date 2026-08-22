@@ -205,3 +205,33 @@ def test_bootstrap_after_generate_adopts_file_fqdn_over_ambient(
     )
 
     assert os.environ.get("PUBLIC_FQDN") == "box.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — config-value type guard; require_fqdn × ambient interaction
+# ---------------------------------------------------------------------------
+
+
+def test_non_string_config_value_is_no_entry(monkeypatch, tmp_path, capsys):
+    """public_fqdn = 1234 in the rendered config is not an FQDN — treating it
+    as absence beats adopting a non-string verbatim or warning against a
+    legitimate operator override with it."""
+    ciu_global = tmp_path / workspace_env.GLOBAL_CONFIG_RENDERED
+    ciu_global.write_text("[infrastructure]\npublic_fqdn = 1234\n", encoding="utf-8")
+
+    values = workspace_env._detect_public_fqdn(tmp_path, require_fqdn=False)
+
+    assert values["PUBLIC_FQDN"] in ("", "localhost")  # fell through to fallback
+
+
+def test_require_fqdn_with_consistent_ambient_is_silent_ok(
+    monkeypatch, tmp_path, capsys
+):
+    """S2.3 × S2.7: an explicit pre-set value SATISFIES require_fqdn without a
+    warning when detection cannot contradict it (offline host)."""
+    monkeypatch.setenv("PUBLIC_FQDN", "operator-set.example.com")
+
+    values = workspace_env._detect_public_fqdn(tmp_path, require_fqdn=True)
+
+    assert values["PUBLIC_FQDN"] == "operator-set.example.com"
+    assert capsys.readouterr().err == ""

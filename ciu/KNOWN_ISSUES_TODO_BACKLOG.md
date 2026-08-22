@@ -312,10 +312,12 @@ REFERENCES (not a digest pin file — DESIGN-GUIDE records why), and a schema
 bump to `schema_version: 2` with the seven CIU-20 fixtures kept frozen as the
 historical v1 grammar record and nine new v2 fixtures carrying the
 assertions. `[deploy.provenance] vendor_images`; reference equality →
-`vendor-pinned`; same image NAME at another reference → vendor drift
-(`mismatch`); undeclared unlabelled stays `unlabelled` and contributes
-nothing, so the escape hatch cannot mask a forgotten bake. Malformed
-declarations refuse exit 2 — a silently ignored declaration would certify
+`vendor-pinned`; same canonical image NAME at another reference → vendor drift
+(`mismatch`; references compared on Docker-canonical spellings); undeclared
+unlabelled stays `unlabelled` in the document and contributes nothing — a
+forgotten bake stays VISIBLE per container, while the overall flips from
+no-evidence-WARN to green exactly as an own-image match always made it.
+Malformed declarations refuse exit 2 — a silently ignored declaration would certify
 exactly the deployment it was written to vouch for. `verified-match` is now
 reachable for all-vendor deployments; B004's remaining blocker is assay-side
 (`PROVENANCE_UNVERIFIED`, A-276).

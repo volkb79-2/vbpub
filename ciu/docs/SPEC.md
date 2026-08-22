@@ -160,12 +160,17 @@ requirements are marked *(withdrawn)*.
   checkout's `ciu.env` carries that checkout's `PUBLIC_FQDN`, and generate
   adopted it bare — making it the fresh worktree's recorded public name.
   Contract: during generation `PUBLIC_FQDN` is derived from THIS workspace's
-  own inputs first (rendered `ciu.global.toml` `infrastructure.public_fqdn`,
+  own inputs first (rendered `ciu.global.toml` `infrastructure.public_fqdn`
+  — absent or UNREADABLE counts as no entry; a non-string value likewise —
   else reverse DNS of the detected public IP); an ambient `PUBLIC_FQDN` is
   adopted only when it EQUALS the derived one, or when the detection path
-  yielded NO independently sourced value to compare against (no config entry
-  and reverse DNS produced nothing — an offline host; there, the pre-set
-  value remains the legitimate manual override, adopted silently). On a real
+  yielded NO independently sourced value to compare against (no usable
+  config entry and reverse DNS produced nothing — an offline host; there,
+  the pre-set value remains the legitimate manual override, adopted
+  silently). Residual, documented and out of CIU-47's scope: the derivation's
+  IP input itself keeps the plain pre-set-wins read, so a stale ambient
+  `PUBLIC_IP` from another checkout's record feeds the reverse-DNS
+  derivation on the same host. On a real
   mismatch the derived value is written and a stderr warning names the
   ignored ambient value. Post-generation bootstrap steps act on the
   just-written file's value (`PUBLIC_FQDN` is in
@@ -2914,19 +2919,29 @@ vendor_images = [
   container whose image EQUALS a declared entry is `vendor-pinned` — judged
   by reference, NEVER by this repo's commit (an upstream revision label
   belongs to the upstream build; the label, if any, is still reported
-  verbatim in the document). Digest pinning is deliberately NOT this
+  verbatim in the document). Equality is compared on CANONICAL references
+  (Docker's own normalization: registry-host case-insensitivity, the
+  implicit `docker.io`/`library/` defaults) so `nginx:1` and
+  `docker.io/library/nginx:1` are the same pin; tags/digests stay
+  case-sensitive verbatim. Digest pinning is deliberately NOT this
   feature: it adds a pin-file maintenance surface no consumer has today; the
   declaration says "this exact reference is expected to be third-party", and
   says no more.
-- **Drift is a mismatch.** A container whose image NAME matches a declared
-  entry at any OTHER reference (`vault:1.15` declared, `vault:1.16` running)
-  is `mismatch` — the declaration vouches for one artifact; a different one
-  is running. Prose names the declaration ("not the declared vendor
-  reference"), never a commit comparison that cannot apply.
-- **The escape hatch is honest.** Undeclared unlabelled images stay
-  `unlabelled` and contribute nothing — declaring vendor images cannot mask
-  a forgotten bake of an OWN image; only falsely declaring one's own image
-  as vendor escapes, which is auditable config. Malformed `vendor_images`
+- **Drift is a mismatch.** A container whose canonical image NAME matches a
+  declared entry at any OTHER reference (`vault:1.15` declared,
+  `vault:1.16` running) is `mismatch` — the declaration vouches for one
+  artifact; a different one is running. Prose names the declaration ("not
+  the declared vendor reference"), never a commit comparison that cannot
+  apply.
+- **The escape hatch is visible, not green.** Undeclared unlabelled images
+  stay `unlabelled` in the document and contribute nothing to the verdict —
+  declaring vendor images cannot HIDE a forgotten bake of an OWN image (it
+  remains listed, per container, as `unlabelled`). What a pin DOES change is
+  the overall: a tree that was `not-verified-no-evidence` (WARN) becomes
+  `verified-match` once at least one container agrees with an expectation
+  and none disagree — the same semantics an own-image `match` always had.
+  Only falsely declaring one's own image as vendor escapes entirely, which
+  is auditable config. Malformed `[deploy.provenance]` or `vendor_images`
   (not a list of non-empty strings) refuses exit 2: a silently ignored
   declaration would certify exactly the deployment it was written to vouch
   for.

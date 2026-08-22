@@ -601,7 +601,15 @@ def _provenance(rest: list[str]) -> int:
     # CIU-39: the declared vendor baseline ([deploy.provenance] vendor_images).
     # Malformed declarations refuse loudly — a silently ignored declaration
     # would certify exactly the deployment it was written to vouch for.
-    raw_vendor = deploy_cfg.get("provenance", {}).get("vendor_images", [])
+    provenance_cfg = deploy_cfg.get("provenance")
+    if provenance_cfg is not None and not isinstance(provenance_cfg, dict):
+        print(
+            "ciu provenance: [deploy.provenance] must be a TOML table "
+            "holding vendor_images (e.g. vendor_images = [\"hashicorp/vault:1.15\"]).",
+            file=sys.stderr,
+        )
+        return 2
+    raw_vendor = (provenance_cfg or {}).get("vendor_images", [])
     if not isinstance(raw_vendor, list) or any(
         not isinstance(v, str) or not v.strip() for v in raw_vendor
     ):

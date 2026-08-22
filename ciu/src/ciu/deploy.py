@@ -742,18 +742,52 @@ class ProvenanceResult:
 
 
 def _image_reference_name(ref: str) -> str:
-    """The NAME portion of an image reference (no tag, no digest).
+    """The CANONICAL NAME portion of an image reference (no tag, no digest).
 
     ``hashicorp/vault:1.15`` → ``hashicorp/vault``; ``vault@sha256:...`` →
-    ``vault``. Registry ports (``localhost:5000/img:tag``) are handled by
-    splitting off the tag only when the colon sits in the LAST path segment.
+    ``vault`` (canonicalized to ``docker.io/library/vault``); registry ports
+    (``localhost:5000/img:tag``) are handled by splitting off the tag only
+    when the colon sits in the LAST path segment. Canonicalization mirrors
+    Docker's own defaults so declaration and running spellings agree even
+    when written differently (adversarial review: ``docker.io/library/nginx``
+    vs ``nginx``, uppercase registry hosts).
     """
     without_digest = ref.split("@", 1)[0]
     last = without_digest.rsplit("/", 1)[-1]
     if ":" in last:
         tag_len = len(last.rsplit(":", 1)[1])
-        return without_digest[: len(without_digest) - tag_len - 1]
-    return without_digest
+        name = without_digest[: len(without_digest) - tag_len - 1]
+    else:
+        name = without_digest
+
+    first, sep, rest = name.partition("/")
+    if sep and ("." in first or ":" in first or first == "localhost"):
+        # explicit registry host — case-insensitive by Docker's rules; the
+        # implicit library/ namespace applies on Docker Hub alone
+        if first.lower() == "docker.io" and "/" not in rest:
+            return "docker.io/library/" + rest
+        return f"{first.lower()}/{rest}"
+    # no registry host → Docker Hub defaults
+    if "/" not in name:
+        return f"docker.io/library/{name}"
+    return name
+
+
+def _normalized_image_reference(ref: str) -> str:
+    """Full-reference normalization for EXACT pin comparison: the name part
+    canonicalizes as above; the tag/digest survive verbatim (tags are
+    case-sensitive)."""
+    without_digest, digest_sep, digest = ref.partition("@")
+    last = without_digest.rsplit("/", 1)[-1]
+    if ":" in last:
+        tag_with_colon = without_digest[len(without_digest) - len(last.rsplit(":", 1)[1]) - 1:]
+        name = without_digest[: -len(tag_with_colon)]
+    else:
+        name, tag_with_colon = without_digest, ""
+    result = _image_reference_name(ref) + tag_with_colon
+    if digest_sep:
+        result += f"@{digest}"
+    return result
 
 
 def verify_running_provenance(
@@ -842,21 +876,23 @@ def verify_running_provenance(
             overall="not-verified-no-evidence",
         )
 
-    declared = set(vendor_images or [])
-    declared_by_name = {_image_reference_name(v): v for v in declared}
+    declared = {_normalized_image_reference(v) for v in (vendor_images or [])}
+    declared_by_name = {_image_reference_name(v) for v in declared}
     containers: list[ContainerProvenance] = []
     has_match = False
     has_mismatch = False
     has_vendor_pinned = False
     for name, image in raw:
         actual = _image_revision_label(image) or None
-        # A DECLARED vendor image is judged by REFERENCE EQUALITY ONLY: its
-        # OCI revision label belongs to the upstream build, so comparing it
-        # against OUR commit would flag every correctly-pinned vendor artifact
-        # as mismatch. The label (if any) is still reported verbatim. Same
-        # image NAME at a different reference = the declaration's artifact was
-        # swapped → drift, a mismatch.
-        if image in declared:
+        # A DECLARED vendor image is judged by CANONICAL REFERENCE EQUALITY
+        # ONLY (Docker's own normalization: registry-host case, the implicit
+        # docker.io/library/ defaults): its OCI revision label belongs to the
+        # upstream build, so comparing it against OUR commit would flag every
+        # correctly-pinned vendor artifact as mismatch. The label (if any) is
+        # still reported verbatim. Same image NAME at a different reference =
+        # the declaration's artifact was swapped → drift, a mismatch.
+        normalized_image = _normalized_image_reference(image)
+        if normalized_image in declared:
             status = "vendor-pinned"
             has_vendor_pinned = True
         elif _image_reference_name(image) in declared_by_name:
