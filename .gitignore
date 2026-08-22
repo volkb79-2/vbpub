@@ -266,6 +266,7 @@ scripts/*.key
 # Claude Code local config
 .claude/
 /claude/
+CLAUDE.md
 
 # other AI CLI agents
 /.reasonix/
