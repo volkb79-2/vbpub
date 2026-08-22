@@ -137,6 +137,14 @@ def _build_repo(tmp_path: Path, monkeypatch) -> Path:
     shutil.copy2(TEST_REPO / GLOBAL_DEFAULTS, repo_root / GLOBAL_DEFAULTS)
     monkeypatch.setenv("REPO_ROOT", str(repo_root))
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo_root))
+    # Scrub the rest of the identity family: under xdist a worker may carry
+    # generated identity from an earlier test's bootstrap; this fixture's
+    # generate must see none of it (CIU-47 refined precedence would then
+    # warn/ignore per key — silence beats noise here).
+    for key in (
+        "REPO_NAME", "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL", "PUBLIC_FQDN"
+    ):
+        monkeypatch.delenv(key, raising=False)
     # The post-generate + engine-step-4 network steps are live-Docker side
     # effects, irrelevant to selection-fact threading — keep hermetic from
     # the daemon (patch BOTH import sites).
