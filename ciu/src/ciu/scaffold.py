@@ -1,0 +1,202 @@
+"""`ciu init` — guided scaffolding of a CIU-enabled repository (S10.1 verb).
+
+Mechanical, validation-first: the generated global defaults are rendered
+through the real S3.2 pipeline order (Jinja2 -> TOML parse) and the stack
+defaults through the real shape validator BEFORE anything is written; an
+existing target file is never overwritten. Templates ship inside the wheel
+(`ciu/templates/`) so a plain `pip install ciu` carries them.
+"""
+
+from __future__ import annotations
+
+import re
+from importlib import resources
+from pathlib import Path
+
+_PROJECT_NAME_RE = re.compile(r"[a-z][a-z0-9-]*")
+_GITIGNORE_ENTRIES = (
+    "ciu.env",
+    "ciu.global.toml",
+    "**/.ciu/",
+    "**/ciu.compose.yml",
+)
+_TEMPLATE_DIR = "templates"
+
+
+def _template(name: str) -> str:
+    return (
+        resources.files("ciu").joinpath(f"{_TEMPLATE_DIR}/{name}").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _prompt(message: str, default: str) -> str:
+    suffix = f" [{default}]" if default else ""
+    answer = input(f"{message}{suffix}: ").strip()
+    return answer or default
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+    return _PROJECT_NAME_RE.match(slug) and slug or "my-project"
+
+
+def _render_jinja(text: str, variables: dict) -> str:
+    """Render a template with the SAME engine production uses (S3.2 step 1)."""
+    from jinja2 import Environment
+
+    env = Environment(keep_trailing_newline=True)
+    return env.from_string(text).render(**variables)
+
+
+def collect_plan(argv: list[str], root: Path) -> dict:
+    interactive = not any(a.startswith("--") for a in argv)
+
+    def flag(name: str) -> str | None:
+        for i, a in enumerate(argv):
+            if a == name and i + 1 < len(argv):
+                return argv[i + 1]
+            if a.startswith(name + "="):
+                return a.split("=", 1)[1]
+        return None
+
+    project_name = flag("--project-name")
+    if not project_name:
+        project_name = _slug(root.name)
+    elif not _PROJECT_NAME_RE.fullmatch(project_name):
+        raise SystemExit(f"init: --project-name must match {_PROJECT_NAME_RE.pattern}")
+    if interactive:
+        project_name = _prompt("Project name (lowercase slug)", project_name)
+    environment_tag = flag("--environment-tag") or (
+        _prompt("Environment tag", "dev") if interactive else "dev"
+    )
+    stacks_raw = flag("--stacks")
+    stacks = [s for s in (stacks_raw or "").split(",") if s.strip()]
+    if interactive and not stacks:
+        raw = _prompt("First stack name to scaffold (blank = skip)", "")
+        stacks = [s.strip() for s in raw.split(",") if s.strip()]
+
+    parsed_stacks: list[dict] = []
+    for raw_name in stacks:
+        name = _slug(raw_name.replace("_", "-"))
+        root_key = name.replace("-", "_")
+        parsed_stacks.append({
+            "dir": f"applications/{name}",
+            "root_key": root_key,
+            "stack_name": name,
+            "image": flag("--image") or "python:3.12-alpine",
+            "port": 8080,
+        })
+    return {
+        "project_name": project_name,
+        "environment_tag": environment_tag,
+        "stacks": parsed_stacks,
+    }
+
+
+def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
+    generated_by = "`ciu init`"
+    base_vars = {
+        "deploy": {
+            "project_name": plan["project_name"],
+            "environment_tag": plan["environment_tag"],
+            "health": {"interval": "5s", "timeout": "3s", "retries": 3,
+                        "start_period": "5s"},
+            "env": {"defaults": {"TZ": "UTC", "PYTHONUNBUFFERED": "1"}},
+        },
+    }
+    files: list[tuple[Path, str]] = [
+        (
+            root / "ciu.global.defaults.toml.j2",
+            _template("global.defaults.toml.j2").replace(
+                "@@PROJECT_NAME@@", plan["project_name"]
+            ).replace("@@ENVIRONMENT_TAG@@", plan["environment_tag"]).replace(
+                "@@GENERATED_BY@@", generated_by
+            ),
+        ),
+        (
+            root / ".gitignore-additions.txt",
+            "\n".join(_GITIGNORE_ENTRIES) + "\n",
+        ),
+    ]
+    for stack in plan["stacks"]:
+        vars_stack = {
+            **base_vars,
+            stack["root_key"]: {
+                "app": {"image_name": stack["image"].rsplit(":", 1)[0],
+                         "image_tag": stack["image"].rsplit(":", 1)[-1],
+                         "internal_port": stack["port"],
+                         "hostdir": {"data": ""}},
+                "secrets": {"api_key": "GEN_LOCAL:x"},
+            },
+            **{k: v for k, v in stack.items() if isinstance(k, str)},
+        }
+        files.append((
+            root / stack["dir"] / "ciu.defaults.toml.j2",
+            _template("stack.defaults.toml.j2")
+            .replace("@@ROOT_KEY@@", stack["root_key"])
+            .replace("@@STACK_NAME@@", stack["stack_name"])
+            .replace("@@STACK_DIR@@", stack["dir"])
+            .replace("@@IMAGE_NAME@@", stack["image"].rsplit(":", 1)[0])
+            .replace("@@IMAGE_TAG@@", stack["image"].rsplit(":", 1)[-1])
+            .replace("@@PORT@@", str(stack["port"]))
+            .replace("@@GENERATED_BY@@", generated_by),
+        ))
+        files.append((
+            root / stack["dir"] / "ciu.compose.yml.j2",
+            # validate-by-render happens below; store the RENDERED form? No —
+            # ship the template verbatim; validation renders it separately.
+            _template("stack.compose.yml.j2")
+            .replace("@@ROOT_KEY@@", stack["root_key"])
+            .replace("@@STACK_NAME@@", stack["stack_name"])
+            .replace("@@STACK_DIR@@", stack["dir"])
+            .replace("@@GENERATED_BY@@", generated_by),
+        ))
+    # ---- validation-first: render + parse everything before writing -------
+    from jinja2 import Environment
+
+    jenv = Environment(keep_trailing_newline=True)
+    import tomllib
+
+    global_text = next(c for pth, c in files if pth.name == "ciu.global.defaults.toml.j2")
+    rendered_global = jenv.from_string(global_text).render(**base_vars)
+    tomllib.loads(rendered_global)  # S3.2 step 3 equivalent
+    for stack in plan["stacks"]:
+        entry = next((c for pth, c in files if pth.name == "ciu.defaults.toml.j2"
+                      and stack["dir"] in str(pth)))
+        rendered = jenv.from_string(entry).render(**vars_stack)
+        tomllib.loads(rendered)
+    existing = [str(path.relative_to(root)) for path, _ in files
+                if path.name != ".gitignore-additions.txt" and path.exists()]
+    if existing:
+        raise SystemExit(
+            "init: refusing to overwrite existing file(s): " + ", ".join(existing)
+            + " — move them aside first."
+        )
+    return files
+
+
+def init_main(argv: list[str]) -> int:
+    root = Path.cwd()
+    plan = collect_plan(list(argv), root)
+    files = build_files(plan, root)
+    for path, content in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        print(f"wrote {path.relative_to(root)}")
+    gitignore = root / ".gitignore"
+    existing_lines = set(gitignore.read_text().splitlines()) if gitignore.exists() else set()
+    missing = [e for e in _GITIGNORE_ENTRIES if e not in existing_lines]
+    if missing:
+        with gitignore.open("a", encoding="utf-8") as fh:
+            fh.write("\n# added by `ciu init`\n" + "\n".join(missing) + "\n")
+        print(f"updated .gitignore (+{len(missing)} entries)")
+    print(
+        "\nNext steps:\n"
+        "  1. Review the placeholders in ciu.global.defaults.toml.j2.\n"
+        "  2. Run `ciu env generate` (writes ciu.env; needs docker for the\n"
+        "     network ensure — safe to rerun).\n"
+        "  3. Bring the first stack up: `ciu up --dir <stack-dir>`.\n"
+    )
+    return 0

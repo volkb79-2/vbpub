@@ -41,7 +41,7 @@ where = ["src"]
 # installs ciu.ksm but not the .c it compiles, and `ciu ksm build` fails at
 # runtime rather than at package time.
 [tool.setuptools.package-data]
-ciu = ["data/*.c"]
+ciu = ["data/*.c", "templates/*"]
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
 # Release = annotated tag `ciu-vX.Y.Z`; untagged commit = `X.Y.(Z+1).devN+g<sha>`.

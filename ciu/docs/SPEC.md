@@ -1030,9 +1030,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 ## S10 — CLI surface (delta to v1)
 
 - **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
-  `version`, `env`, `render`, `profiles`, `up`, `down`, `clean`, `health`,
-  `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`, `graph`, `ssh`,
-  `iops-baseline`, `worktree`, and `provenance`. `ciu version` is the sole
+  `version`, `init`, `env`, `render`, `profiles`, `up`, `down`, `clean`,
+  `health`, `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`, `graph`,
+  `ssh`, `iops-baseline`, `worktree`, and `provenance`. `ciu version` is the sole
   public version query; the former top-level `ciu --version` option is
   withdrawn. Single-stack execution is `ciu up --dir PATH`; this public form forwards the
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
@@ -1051,7 +1051,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   argparse surface. Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
   `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
   `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9), `ksm`
-  (S15.17), `worktree` (S16), and `provenance` (S17).
+  (S15.17), `worktree` (S16), `provenance` (S17), and `init` (S19).
   The global modifier `--host <name>`
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
   (with `--host`) selects the docker-optional push→activate path on `up` and
@@ -3048,3 +3048,18 @@ by imported Assay source and never by a nyxloom evidence-judgment command.
   AGENTS.md "Manual tester-unified gate runs — the four traps": cgroup env
   passthrough, dual-path mount for worktree gitfiles, `safe.directory`, and
   the detached run form.
+
+## S19 — Repository scaffolding (`ciu init`)
+
+`ciu init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]`
+generates a minimal CIU-enabled repository layout: a validated
+`ciu.global.defaults.toml.j2` (project identity, network from
+`$DOCKER_NETWORK_INTERNAL`, health timings), gitignore entries (`ciu.env`,
+`ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`), and optional stack
+skeletons under `applications/<name>/` (defaults + compose template with one
+GEN_LOCAL secret). Templates ship INSIDE the wheel (`ciu/templates/`) so a
+plain `pip install ciu` carries them. Validation-first: the global template
+is rendered through the real Jinja step and TOML-parsed BEFORE anything is
+written; an existing target file is never overwritten — the run refuses
+naming every existing target. It does NOT run `ciu env generate` (side
+effects stay with the operator); the printed next steps say to.

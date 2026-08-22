@@ -10,6 +10,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu init` repository scaffolding (S19) — validated
+  ciu.global.defaults.toml.j2 + gitignore entries + optional stack skeletons;
+  templates ship in the wheel (`ciu/templates/*`); never overwrites
+
+
+
+### Added
 - feat(ciu): `ciu worktree branches` — grounded branch hygiene (CIU-25 git half, SPEC S16.8): closed six-category survey (base/mainline/current/prunable/merged-dirty/unmerged) with ahead/behind/changed-files/age/instance attributes; `-y` removes exactly the fully-merged-clean category via worktree-remove + `branch -d` (Git re-verifies both). Capability id `worktree.branches.v1`. The Docker-resource reap half of CIU-25 remains open
 - feat(ciu): declared vendor baseline for `ciu provenance` — `[deploy.provenance] vendor_images`; a running reference equal to a declaration is `vendor-pinned`, same-name/different-reference is vendor drift (`mismatch`), and `verified-match` is reachable for all-vendor deployments (CIU-39, SPEC S17.5). **Provenance documents are now emitted at `schema_version: 2`** (widened closed vocabularies); strict consumers refuse unknown members, fail-closed
 - feat(ciu): cross-profile ASK_VAULT producer declaration `produced_by` — a partial profile selection excluding the producing profile now refuses upfront naming producer + path + both remedies, instead of failing at the consuming stack with only the bare path (CIU-42, SPEC S13.6); unknown producer profile names are configuration errors

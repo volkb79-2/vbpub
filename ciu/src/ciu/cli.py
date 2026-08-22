@@ -32,6 +32,12 @@ Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
             · 3 environment/bootstrap error
 
+  SCAFFOLDING
+    init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]
+                                guided repo scaffolding: writes a validated
+                                ciu.global.defaults.toml.j2, gitignore entries,
+                                and optional stack skeletons (never overwrites)
+
   ENVIRONMENT
     env                         show ciu.env key=value pairs (read-only)
     env generate [--define-root PATH]
@@ -1350,6 +1356,11 @@ def main() -> None:
 
     elif verb == "provenance":
         raise SystemExit(_provenance(rest))
+
+    elif verb == "init":
+        from .scaffold import init_main
+
+        raise SystemExit(init_main(rest))
 
     elif verb == "bake":
         from .engine import bake_revision_args
