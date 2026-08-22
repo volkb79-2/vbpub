@@ -18,6 +18,9 @@ def _config() -> dict:
 def test_reset_reports_failed_orphan_removal_without_aborting(monkeypatch, tmp_path: Path, capsys):
     """One orphan failure is visible but does not prevent reset cleanup completion."""
 
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
+    )
     results = iter([
         SimpleNamespace(returncode=0, stdout="", stderr=""),  # compose down
         SimpleNamespace(returncode=0, stdout="stale-api\n", stderr=""),  # ps
@@ -25,7 +28,7 @@ def test_reset_reports_failed_orphan_removal_without_aborting(monkeypatch, tmp_p
     ])
     monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: next(results))
 
-    engine.reset_service(_config(), tmp_path, assume_yes=True)
+    engine.reset_service(_config(), tmp_path, assume_yes=True, repo_root=tmp_path)
 
     output = capsys.readouterr().out
     assert "Found 1 orphaned containers" in output
@@ -36,6 +39,9 @@ def test_reset_reports_failed_orphan_removal_without_aborting(monkeypatch, tmp_p
 def test_reset_warns_but_completes_when_docker_unavailable_for_orphan_scan(monkeypatch, tmp_path: Path, capsys):
     """The final best-effort orphan scan must not turn a completed reset into a crash."""
 
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
+    )
     calls = 0
 
     def run_cmd(*_args, **_kwargs):
@@ -47,7 +53,7 @@ def test_reset_warns_but_completes_when_docker_unavailable_for_orphan_scan(monke
 
     monkeypatch.setattr(engine.procutil, "run_cmd", run_cmd)
 
-    engine.reset_service(_config(), tmp_path, assume_yes=True)
+    engine.reset_service(_config(), tmp_path, assume_yes=True, repo_root=tmp_path)
 
     output = capsys.readouterr().out
     assert "docker unavailable): docker" in output

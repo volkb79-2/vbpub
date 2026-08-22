@@ -9,7 +9,22 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (ciu)**: compose project naming cutover (CIU-46, SPEC S8.7/S6.4a)
+  — there is no compose invocation without an explicit `-p` anymore. A
+  shipped stack or reset/down without `deploy.project_name`/`environment_tag`
+  uses the workspace-identity project `{REPO_NAME}-{INSTANCE_ID}-{stack}`
+  derived from THIS checkout's `ciu.env` (exact-path parsed); the withdrawn
+  basename fallback collided across checkouts and escaped clean's teardown
+  enumeration. One-time migration for pre-existing deployments:
+  `docker compose -p <old-basename> down -v --remove-orphans` +
+  `docker network rm <old-basename>_default` (docs/CONSUMERS.md §11)
+
 ### Fixed
+- fix(ciu): clean removes a tagless shipped stack's containers, `*_default`
+  network, and label-prefixed volumes via the workspace-identity project
+  name; missing/identity-less ciu.env refuses the enumeration instead of
+  silently skipping (CIU-46, SPEC S6.4a item 7)
 - fix(ciu): env generate ignores an inconsistent ambient PUBLIC_FQDN — S2.7
   refined precedence extended to the host-derived sibling (CIU-47): derived
   from this workspace's own inputs (config → reverse DNS), ambient adopted

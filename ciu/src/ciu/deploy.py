@@ -1711,12 +1711,33 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
 
     Covers shipped stacks too: their compose runs create ``*_default``
     networks and label their volumes with the same project name.
+
+    CIU-46 cutover: when ``deploy.project_name``/``environment_tag`` are
+    absent, shipped mode still deploys — under the WORKSPACE-IDENTITY compose
+    project derived from THIS checkout's ciu.env (S8.7; the basename fallback
+    is withdrawn). Returning ``[]`` here (the pre-CIU-46 behavior) made every
+    S6.4a enumeration pass skip those stacks entirely, so their
+    ``*_default`` networks and label-prefixed volumes survived a reported-
+    clean teardown. Tags absent → each existing selected stack contributes
+    its identity-derived name, computed by the SAME
+    ``engine.identity_compose_project_name`` up passed as ``-p`` (a missing
+    or key-less ciu.env raises — a teardown that cannot be named refuses,
+    never skips); tags present keeps the S8.7 scoped names, unchanged.
     """
     projects: list[str] = []
     deploy_cfg = config.get("deploy", {})
     if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        seen: set[str] = set()
+        for entry in selection:
+            stack_dir = (repo_root / entry["path"]).resolve()
+            if not stack_dir.is_dir():
+                continue
+            project = engine.identity_compose_project_name(repo_root, stack_dir)
+            if project not in seen:
+                seen.add(project)
+                projects.append(project)
         return projects
-    seen: set[str] = set()
+    seen = set()
     for entry in selection:
         stack_dir = (repo_root / entry["path"]).resolve()
         if not stack_dir.is_dir():
@@ -1726,6 +1747,40 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
             seen.add(project)
             projects.append(project)
     return projects
+
+
+def _stack_project_containers(stack_projects: list[str]) -> list[str]:
+    """Containers of the given S8.7 projects via the compose project label.
+
+    CIU-46: the S7.8 name-prefix pass (``^{project}-{env_tag}-``) cannot see
+    a tags-absent shipped stack's containers — compose names them after the
+    workspace-identity project, not the instance prefix. The compose
+    project label is an exact per-project enumeration, all states (an exited
+    one-shot init must be removed or it pins the project's volumes, CIU-3).
+
+    Raises ValueError on daemon failure — indeterminate never folds into
+    "nothing to remove" (review B3).
+    """
+    found: list[str] = []
+    for project in stack_projects:
+        result = procutil.docker(
+            [
+                "ps", "-a",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--format", "{{.Names}}",
+            ],
+            capture=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"[S6.4a] docker ps failed for compose project {project!r}: "
+                f"{(result.stderr or '').strip()}"
+            )
+        found.extend(
+            n.strip() for n in (result.stdout or "").splitlines() if n.strip()
+        )
+    return sorted(set(found))
 
 
 def _network_endpoints(network: str) -> Optional[list[dict]]:
@@ -1869,13 +1924,18 @@ def action_clean(
 
     Lean reimplementation of v1 cleanup (S6.4 semantics, COMPOSE_PROFILES='*'
     for down-with-profiles instead of v1's hardcoded 'full,pgadmin'):
-      1. stop + remove project containers (anchored, S7.8);
+      1. stop + remove project containers — the anchored S7.8 name-prefix pass
+         when the deploy tags are set; when absent, the compose-label pass per
+         selected stack's legacy project (CIU-46: a tags-absent shipped stack
+         runs under the workspace-identity project, invisible to the
+         name prefix);
       2. per-stack engine.reset_service (down -v via overlay + vol-*/rendered
          cleanup, B14 stack-dir scoped);
       3. remove project volumes — the ``{project}-{env}-*`` name pass (S6.4)
          plus a compose-label pass per selected stack's compose project
          (CIU-43: catches named volumes like ``<project>-vault-data`` that
-         carry the bare project prefix, second reproduction on 6.3.0);
+         carry the bare project prefix, second reproduction on 6.3.0; CIU-46:
+         the project list includes legacy names when the tags are absent);
       4. remove identity-scoped networks (S6.4a, CIU-43): the workspace
          identity network (from THIS workspace's own ciu.env) and each
          selected stack's ``<compose-project>_default``. Lingering endpoints
@@ -1895,10 +1955,31 @@ def action_clean(
     config = profile.config
     rc = 0
 
-    # Step 1: stop + remove project containers (anchored). all_states=True so an
-    # exited one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise
-    # it pins the project's named volumes through teardown (CIU-3, S6.4).
-    containers = _matching_containers(config, all_states=True)
+    # CIU-46: resolve the selected stacks' compose projects ONCE — S8.7 scoped
+    # names when the deploy tags are set, workspace-identity names derived
+    # from THIS checkout's ciu.env when absent (a tagless shipped stack runs
+    # under the identity project; clean must enumerate what up actually
+    # named). Drives the container, volume, and network passes below.
+    deploy_cfg = config.get("deploy", {})
+    tagged = bool(deploy_cfg.get("project_name")) and bool(deploy_cfg.get("environment_tag"))
+    stack_projects = _stack_compose_projects(repo_root, config, selection)
+
+    # Step 1: stop + remove project containers. all_states=True so an exited
+    # one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise it
+    # pins the project's named volumes through teardown (CIU-3, S6.4).
+    # Tagged: the anchored S7.8 name-prefix pass (unchanged). Tags absent:
+    # that prefix cannot match an identity-named shipped stack's containers,
+    # so enumerate by the compose project label instead (CIU-46); a daemon
+    # failure here fails the clean but does not abort the remaining passes.
+    if tagged:
+        containers = _matching_containers(config, all_states=True)
+    else:
+        try:
+            containers = _stack_project_containers(stack_projects)
+        except ValueError as exc:
+            error(f"container enumeration failed (S6.4a): {exc}")
+            rc = 1
+            containers = []
     if containers:
         info(f"Removing {len(containers)} container(s): {', '.join(containers)}")
         result = procutil.docker(["rm", "-f", *containers], check=False)
@@ -1948,8 +2029,8 @@ def action_clean(
     # Step 3: remove project volumes — the {project}-{env}-* name pass (S6.4)
     # plus the compose-label pass per selected stack's project (CIU-43: named
     # volumes like <project>-vault-data carry the bare project prefix and no
-    # instance tag, so the name pass never saw them).
-    stack_projects = _stack_compose_projects(repo_root, config, selection)
+    # instance tag, so the name pass never saw them; CIU-46: stack_projects
+    # also carries the identity-derived names when the deploy tags are absent).
     volumes_unverified = False
     try:
         survivors = _remove_project_volumes(config, stack_projects=stack_projects)
@@ -2004,7 +2085,13 @@ def action_clean(
     # if docker became unavailable mid-clean so the action still returns its
     # own typed result instead of escaping as an exception.
     try:
-        remaining_containers = _matching_containers(config, all_states=True)
+        if tagged:
+            remaining_containers = _matching_containers(config, all_states=True)
+        else:
+            # CIU-46: a tags-absent selection's containers carry the
+            # workspace-identity project, not the S7.8 name prefix —
+            # enumerate by label.
+            remaining_containers = _stack_project_containers(stack_projects)
     except ValueError as exc:
         warn(f"post-clean container check skipped (docker unavailable): {exc}")
         remaining_containers = []

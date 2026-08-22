@@ -59,7 +59,11 @@ can still `docker compose up` the committed file; the CIU path is additive.
 `ciu.env`, ensuring/attaching the workspace network, and running the DooD
 reachability preflight first — so even the "plain" path gains consistent
 machine-identity env interpolation and network wiring that bare `docker compose`
-lacks (see [docs/CIU.md](docs/CIU.md)).
+lacks (see [docs/CIU.md](docs/CIU.md)). A shipped stack deployed without
+`deploy.project_name`/`environment_tag` runs under the **workspace-identity
+compose project** (`REPO_NAME-INSTANCE_ID-stack`, derived from this
+checkout's `ciu.env`) — unique per checkout, and the exact name `ciu clean`
+enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a).
 
 ## Why CIU over a plain `docker-compose.yml`
 

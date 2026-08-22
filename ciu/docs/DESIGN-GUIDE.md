@@ -105,6 +105,35 @@ disconnect-or-refuse-named (never silently kept), and the post-clean
 invariant re-reads Docker STATE rather than trusting command exit codes or
 diagnostic text.
 
+## Why there is no compose project without `-p` (CIU-46 cutover)
+
+The pre-CIU-46 fallback let a config-less shipped stack run under docker's
+directory-derived project name. That name is a silent-invention default in
+the exact sense this estate forbids: it substitutes "what the cwd happens to
+be called" for identity, it is IDENTICAL for every checkout of a repo (so a
+second worktree's `up` adopts the first one's containers), and it was a value
+CIU itself never learned — clean's S6.4a enumeration could not see it, which
+is how shipped stacks' `*_default` networks and label-prefixed volumes
+survived a printed `clean complete`. Three shapes were considered:
+
+1. **Enumerate what docker derived** — clean predicts the basename name.
+   Rejected: prediction is not knowledge; any divergence between compose's
+   normalization and ours silently recreates the leak.
+2. **Keep the basename fallback, computed and passed as `-p`** — up/clean
+   agree by construction, but the cross-checkout collision class survives.
+3. **Derive the name from workspace identity** (`REPO_NAME-INSTANCE_ID-stack`
+   from THIS checkout's `ciu.env`, exact-path parsed) — adopted. Unique per
+   checkout AND per stack; up and clean call the same function; a checkout
+   that cannot produce the name refuses loudly instead of inventing one.
+
+The basename fallback is withdrawn outright rather than deprecated: the
+estate rule is derive-read-fail, never invent, and "whatever this directory
+is called" is invention. Cost: deployments created before the cutover keep
+their old-named objects until migrated once by hand (CONSUMERS.md §11); the
+S8.7 migration guard still catches the collision on the next tagged `up`.
+The S16.1 shared-infra join refusal fell out as dead code — it existed
+because the fallback's name was unknowable, and now nothing is.
+
 ## Why one envelope and one closed vocabulary for every document
 
 `create`/`ensure`/`adopt`/`add`, `inspect`, `list`, and `remove` all speak the

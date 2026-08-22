@@ -29,6 +29,9 @@ def test_dood_preflight_without_repository_context_is_a_noop(monkeypatch, tmp_pa
 def test_reset_treats_whitespace_only_orphan_listing_as_empty(monkeypatch, tmp_path: Path, capsys):
     """Docker output with no actual names must not trigger a meaningless remove call."""
 
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
+    )
     results = iter([
         SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=0, stdout=" \n\t\n", stderr=""),
@@ -39,6 +42,7 @@ def test_reset_treats_whitespace_only_orphan_listing_as_empty(monkeypatch, tmp_p
         {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}},
         tmp_path,
         assume_yes=True,
+        repo_root=tmp_path,
     )
 
     assert "No orphaned containers found" in capsys.readouterr().out

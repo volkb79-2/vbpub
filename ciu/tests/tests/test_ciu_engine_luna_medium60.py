@@ -15,7 +15,10 @@ def _config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
-def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys):
+def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys, monkeypatch):
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
+    )
     stack_dir = tmp_path / "stack"
     stack_dir.mkdir()
     volume = stack_dir / "vol-data"
@@ -28,8 +31,9 @@ def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys)
             return SimpleNamespace(returncode=1, stdout="", stderr="stale project")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    monkeypatch.setattr(engine, "to_physical_path", lambda pth, **k: pth)
     with patch.object(engine.procutil, "run_cmd", side_effect=run_cmd):
-        reset_service(_config(), stack_dir, assume_yes=True)
+        reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
 
     output = capsys.readouterr().out
     assert "docker compose down failed" in output
@@ -46,6 +50,9 @@ def test_reset_with_secrets_reports_materialized_stores_and_removes_fallback(tmp
     (fallback_store / "stale").write_text("secret")
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    (repo_root / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
+    )
     stores = [
         repo_root / ".ciu" / "secrets" / "project-token",
         stack_dir / ".ciu" / "secrets" / "stack-token",

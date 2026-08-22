@@ -9,8 +9,11 @@ from ciu.deploy_pkg.profiles import Profile
 
 
 def test_clean_fails_when_postcondition_finds_project_container(monkeypatch, tmp_path: Path, capsys):
-    """A clean cannot claim success while a project container remains pinned."""
+    """A clean cannot claim success while a project container remains pinned.
 
+    Tagged selection: the S7.8 name-prefix pass is the container surface under
+    test (a tags-absent selection enumerates by compose project label instead
+    — CIU-46 — and is covered in test_ciu_clean_identity_project.py)."""
     calls = 0
 
     def matching(_config, *, all_states=False):
@@ -23,7 +26,8 @@ def test_clean_fails_when_postcondition_finds_project_container(monkeypatch, tmp
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config=None, **_kw: [])
 
-    assert deploy.action_clean(tmp_path, Profile(config={"deploy": {}}), [], ignore_errors=True) == 1
+    config = {"deploy": {"project_name": "project", "environment_tag": "prod"}}
+    assert deploy.action_clean(tmp_path, Profile(config=config), [], ignore_errors=True) == 1
     output = capsys.readouterr().out
     assert "post-clean invariant violated (S6.4)" in output
     assert "project-prod-vault-init" in output

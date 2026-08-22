@@ -41,6 +41,10 @@ def test_reset_stops_before_deleting_artifacts_when_docker_is_unavailable(tmp_pa
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("docker")),
     )
 
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+        encoding="utf-8",
+    )
     with pytest.raises(RuntimeError, match="docker not available for reset"):
         engine.reset_service(config, tmp_path, repo_root=tmp_path)
 

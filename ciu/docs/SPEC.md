@@ -677,6 +677,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      stack's S8.7 compose project, catching named volumes that carry the bare
      project prefix without the instance tag (e.g. ``<project>-vault-data``);
      the label filter is exact per project, never a broad glob.
+   7. **Config-less stack coverage (CIU-46, normative).** When
+     `deploy.project_name`/`environment_tag` are absent, a shipped stack
+     still runs — under the workspace-identity compose project (S8.7). Clean
+     MUST enumerate exactly what up named: each existing selected stack
+     contributes its `engine.identity_compose_project_name` to every
+     compose-label pass (containers via `ps -a --filter
+     label=com.docker.compose.project=<project>`, volumes and networks as
+     above). Returning no projects for such a selection (the pre-CIU-46
+     behavior) silently skipped the stack's `*_default` network and
+     label-prefixed volumes over a printed `clean complete`. A missing or
+     key-less `ciu.env` REFUSES the enumeration — never a silent empty set.
+     Tagged selections keep the S8.7 scoped names, unchanged. Container
+     enumeration failure on this path is INDETERMINATE and fails the clean —
+     it is never folded into "nothing to remove".
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container
@@ -933,9 +947,23 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   instance's `up` ADOPTS the first instance's containers (same project +
   service, changed `container_name`) and removes them (2026-07-16 dstdns
   multi-stack incident). The scoping pair is the same one that already scopes
-  container names (S7.7/S7.8). Shipped mode and the reset/down path fall
-  back to the legacy cwd-derived project (with a warning) when the config
-  does not define the pair; the native `up` path REQUIRES it. **Migration guard:** before `up`, CIU MUST detect containers of
+  container names (S7.7/S7.8). **There is no compose invocation without an
+  explicit `-p` anywhere in CIU (CIU-46 cutover):** when the config does not
+  define the naming pair, shipped mode and the reset/down path derive the
+  WORKSPACE-IDENTITY project `{REPO_NAME}-{INSTANCE_ID}-{stack_basename}`
+  from THIS checkout's own `ciu.env`, parsed by EXACT path (S2.7 authority —
+  never ambient shell state). The withdrawn pre-CIU-46 behavior let docker
+  derive the cwd BASENAME: identical for every checkout/worktree of a repo,
+  so it both collided across instances (the 2026-07-16 dstdns multi-stack
+  incident class) and was unenumerable by clean, whose S6.4a passes then
+  skipped the stack over a printed `clean complete`. The identity name is
+  computed by `engine.identity_compose_project_name` — the SAME function
+  clean calls — so up and clean name a project identically by construction;
+  it normalizes exactly like docker compose's own rule (lowercase,
+  `[a-z0-9_-]`) and refuses (`[S8.7]`, exit 2) when `ciu.env` is missing or
+  lacks the identity keys: a deployment that cannot be NAMED must not start,
+  and a teardown that cannot be named must refuse, never skip. The native
+  `up` path REQUIRES the naming pair outright. **Migration guard:** before `up`, CIU MUST detect containers of
   THIS instance (name-prefix `{project}-{env_tag}-`) still carrying the
   legacy dir-derived project label and abort with one-time migration
   instructions; `CIU_ADOPT_LEGACY_PROJECT=1` instead removes them (bind-
@@ -2409,18 +2437,18 @@ above — liveness, target discovery, the concurrent-connect state check, and
 rollback — is proven against a scripted fake at the `procutil.docker`
 boundary.
 
-**`--shipped` (S8.5/S8.7) with no derivable compose project is a deliberate
-additional refusal.** When `deploy.project_name`/`environment_tag` are unset,
-`run_shipped`'s pre-existing legacy fallback lets Compose derive its own
-project from the cwd basename — a value CIU itself never learns, so it
-cannot scope the `com.docker.compose.project=<...>` label filters this join
-depends on. A shared-infra join declared on such a stack therefore fails
-loud with `[S16.1]` rather than silently skipping a declared join or joining
-against an unscoped/incorrect filter: CIU refuses because it cannot know
-which value Compose actually chose, not because a wrong value would corrupt
-anything (an unmatched filter just finds zero containers and fails the
-existing "no running container" check harmlessly). The ordinary no-intent
-legacy fallback is completely unaffected.
+**`--shipped` (S8.5/S8.7) shared-infra joins on a config-less stack (CIU-46
+amendment).** The join once refused with `[S16.1]` when the deploy tags were
+unset, on the grounds that Compose's privately derived project name was a
+value CIU itself never learns. CIU-46 withdraws that premise along with the
+basename fallback: a config-less shipped stack's project is now COMPUTED
+(`engine.identity_compose_project_name`, from THIS checkout's `ciu.env`) and
+passed as `-p`, so CIU knows exactly what up named and the join scopes its
+`com.docker.compose.project=<...>` filters to that same value. A checkout
+that cannot produce the identity name refuses earlier (`[S8.7]`), so no
+unscoped case remains. The `[S16.1]` cannot-derive refusal is withdrawn as
+unreachable; an unmatched filter still just finds zero containers and fails
+the existing "no running container" check harmlessly.
 
 ### S16.3 — Worktree instance concurrency budget (CIU-24)
 

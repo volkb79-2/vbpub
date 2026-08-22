@@ -213,6 +213,32 @@ cannot be disconnected is NAMED and the clean exits 1 — it is never silently
 kept. The main workspace keeps its own workspace network (your devcontainer
 lives on it) and says so twice: a `kept:` line and the final success line.
 
+**Shipped stacks without deploy tags (CIU-46).** A stack deployed via
+`ciu up --dir <stack> --shipped` on a checkout whose config sets neither
+`deploy.project_name` nor `deploy.environment_tag` runs under the
+workspace-identity compose project `REPO_NAME-INSTANCE_ID-<stack>` (from
+this checkout's `ciu.env`) — and `ciu clean` derives the SAME name from the
+same record, so its containers, `*_default` network, and named volumes are
+removed like any other stack's:
+
+```console
+$ ciu up --dir vendor/vault --shipped
+[INFO] [S8.7] deploy.project_name/environment_tag not set — shipped stack uses the workspace-identity compose project 'myapp-abc123-vault'
+$ ciu clean -y
+[INFO] Removing 2 container(s): myapp-abc123-vault-vault-1, myapp-abc123-vault-vault-init
+[SUCCESS] clean complete
+```
+
+This is a breaking change against pre-6.5.0 behavior: the withdrawn fallback
+let docker derive the project from the directory basename — identical for
+every checkout of your repo (cross-checkout collisions) and invisible to
+`ciu clean`. One-time migration for deployments created before this change:
+tear the old-named objects down manually once
+(`docker compose -p <old-basename> down -v --remove-orphans`, then
+`docker network rm <old-basename>_default`), or re-up under a tagged config.
+`ciu.env` with `REPO_NAME`/`INSTANCE_ID` must exist for a config-less
+shipped `up` or `clean` to name the project — `ciu env generate` writes it.
+
 ## 12. The implementation gate (Assay-backed, S18)
 
 CIU's gate is judged by the **released Assay CLI**, pinned and vendored in the
