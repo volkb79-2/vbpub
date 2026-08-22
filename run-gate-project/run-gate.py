@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 2
+__revision__ = 3
 
 import argparse
 import os
@@ -66,7 +66,8 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 def _validate_environment(name: str, table: dict, where: str) -> None:
     if name == HOST_ENV:
         fail(f"{where}: '{HOST_ENV}' is a built-in environment and cannot be redefined")
-    _check_keys(table, {"image", "cgroup_slice", "mode", "container_name"},
+    _check_keys(table, {"image", "cgroup_slice", "mode", "container_name",
+                        "forward_env"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     if not isinstance(image, str) or not image.strip():
@@ -83,6 +84,15 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
     if container_name is not None and (not isinstance(container_name, str)
                                        or not container_name.strip()):
         fail(f"{where} [environments.{name}]: 'container_name' must be a non-empty string")
+    forward_env = table.get("forward_env", [])
+    if not isinstance(forward_env, list) or any(
+            isinstance(item, bool) or not isinstance(item, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item)
+            for item in forward_env):
+        fail(f"{where} [environments.{name}]: 'forward_env' must be a list of "
+             f"environment-variable names")
+    if len(set(forward_env)) != len(forward_env):
+        fail(f"{where} [environments.{name}]: 'forward_env' contains duplicates")
 
 
 def _validate_budget(value: object, where: str) -> None:
@@ -375,6 +385,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}",
             *mounts]
+    for key in env.get("forward_env", []):
+        value = os.environ.get(key)
+        if value is not None:
+            argv += ["-e", f"{key}={value}"]
     if lane.get("memory"):
         argv += ["--memory", lane["memory"]]
     argv += [env["image"], "bash", "-c", inner]
@@ -468,9 +482,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree)
     argv = [docker, "exec", "--workdir", str(repo)]
-    # Env passthrough allowlist: MOCK_MODE, RUN_LIVE_TESTS are dstdns's two
-    # standard test-mode toggles. More can be added per-environment later.
-    for key in ("MOCK_MODE", "RUN_LIVE_TESTS", CGROUP_ENV_VAR):
+    # Infrastructure variables are implicit; project data inputs must be
+    # declared on the environment so every consumer gets the same contract.
+    for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
         value = os.environ.get(key)
         if value:
             argv += ["-e", f"{key}={value}"]

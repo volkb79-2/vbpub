@@ -17,8 +17,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   ONLY (lanes are rejected there).
 - **environment** — a named container/host execution fact set: `image`
   (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
-  or `"exec"`, default `"ephemeral"`). `host` is a built-in name (never
-  definable) meaning "no container".
+  or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
+  environment-variable names). `host` is a built-in name (never definable)
+  meaning "no container".
 - **judged worktree** — the git toplevel containing the project dir, unless
   `--worktree` overrides (the daemon case).
 - **repo root** — the checkout owning the shared `.git` (for a linked
@@ -47,7 +48,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `lanes`. Unknown top-level key → error naming key + file. A central config
   containing `[lanes.*]` → error.
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
-  `cgroup_slice` (optional non-empty string). Redefining `host` → error.
+  `cgroup_slice` (optional non-empty string), `forward_env` (optional,
+  unique list of valid environment-variable names; values are forwarded to
+  container lanes only when set). Redefining `host` → error.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`

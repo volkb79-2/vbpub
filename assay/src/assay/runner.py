@@ -69,6 +69,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import fnmatch
 import math
 import os
 import shutil
@@ -1527,6 +1528,44 @@ def _mutation_targets_from_diff(
     )
 
 
+def _mutation_targets_whole(
+    *,
+    prepared: "isolation.SnapshotRepository",
+    snapshot_repo_top: Path,
+    project_prefix: PurePosixPath,
+    deadline: "LaneDeadline",
+    adapter: LanguageAdapter,
+    source_root_paths: Sequence[Path],
+    targets: Sequence[str],
+) -> tuple[mutation.MutationTarget, ...]:
+    """Build whole-file R2 targets from the lane's declared target list."""
+    resolved: list[mutation.MutationTarget] = []
+    seen: set[str] = set()
+    for raw_target in targets:
+        path = (project_prefix / raw_target).as_posix()
+        if path in seen:
+            continue
+        seen.add(path)
+        abs_path = (snapshot_repo_top / path).resolve()
+        if not any(abs_path.is_relative_to(root) for root in source_root_paths):
+            raise AssayError(
+                f"mutation target {raw_target!r} is outside judge.source_roots "
+                f"{[str(root) for root in source_root_paths]}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        if any(part in adapter.excluded_dir_names for part in PurePosixPath(path).parts[:-1]):
+            continue
+        if not any(fnmatch.fnmatch(path, pattern) for pattern in adapter.source_globs):
+            continue
+        if adapter.is_test_path(path):
+            continue
+        text = _read_prepared_source_text(prepared, path, deadline=deadline)
+        lines = frozenset(range(1, text.count("\n") + 2))
+        resolved.append(mutation.MutationTarget(path=path, text=text, lines=lines))
+    return tuple(resolved)
+
+
 @dataclass(frozen=True, kw_only=True)
 class _PreparedOutcome:
     """The raw materials :func:`_run_higher_rigor_lane` needs to build the
@@ -1576,6 +1615,7 @@ def _run_prepared_lane(
     deadline: LaneDeadline,
     prepared: "isolation.SnapshotRepository",
     project_root: Path,
+    project_prefix: PurePosixPath,
     adapter: LanguageAdapter | None,
     process_runner: ProcessRunner,
     clock: Clock,
@@ -1759,7 +1799,11 @@ def _run_prepared_lane(
             ended = iso_utc(clock())
 
         if r2_declared and result.outcome is Outcome.PASS and r2_early_claim is None:
-            if added is None:
+            whole_file_r2 = (
+                lane.judge.mode == "whole_target"
+                and lane.judge.targets is not None
+            )
+            if added is None and not whole_file_r2:
                 try:
                     resolved = measurability.check_base_is_head(
                         baseline_snapshot.root, resolved_base, remaining=deadline.remaining
@@ -1781,7 +1825,31 @@ def _run_prepared_lane(
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
                     )
-            if added is not None:
+            if whole_file_r2:
+                relocated_lane_r2 = _relocate_source_roots(
+                    lane,
+                    project_root=project_root,
+                    scratch_project_root=baseline_snapshot.project_root,
+                )
+                try:
+                    targets = _mutation_targets_whole(
+                        prepared=prepared,
+                        snapshot_repo_top=baseline_snapshot.root,
+                        project_prefix=project_prefix,
+                        deadline=deadline,
+                        adapter=adapter,
+                        source_root_paths=relocated_lane_r2.judge.source_root_paths,
+                        targets=lane.judge.targets or (),
+                    )
+                except AssayError as exc:
+                    r2_early_claim = Claim(
+                        rigor="R2",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    )
+            elif added is not None:
                 relocated_lane_r2 = _relocate_source_roots(
                     lane,
                     project_root=project_root,
@@ -2160,6 +2228,7 @@ def _run_higher_rigor_lane(
                         deadline=deadline,
                         prepared=prepared,
                         project_root=project_root,
+                        project_prefix=project_prefix,
                         adapter=adapter,
                         process_runner=process_runner,
                         clock=clock,

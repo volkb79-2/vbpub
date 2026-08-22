@@ -1069,13 +1069,13 @@ def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     proj = make_project(repo, EXEC_LANE)
     (repo / "ciu.global.toml").write_text(
-        "[deploy]\nproject_name = 'p'\nenvironment_tag = 'd'\n")
+        "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
     commit_all(repo, "ciu")
     log = fake_docker(tmp_path, monkeypatch)
     monkeypatch.setenv(CGROUP_VAR, "bounded.slice")
     shim = shim_dir_of(monkeypatch) / "docker"
     body = shim.read_text()
-    body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "p-d-runner" ;;')
+    body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
     shim.write_text(body)
     proc = run_tool(proj, "suite", "--worktree", str(repo))
     assert proc.returncode == 0, proc.stderr
@@ -1083,3 +1083,41 @@ def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     assert calls, "no docker exec call recorded"
     call = calls[0]
     assert f"{CGROUP_VAR}=bounded.slice" in call
+
+
+def test_exec_lane_forwards_declared_environment_values(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    config = EXEC_LANE.replace(
+        '[environments.runner]\n    image = "runner:latest"\n    mode = "exec"',
+        '[environments.runner]\n    image = "runner:latest"\n    mode = "exec"\n'
+        '    forward_env = ["SCHEMA_GATE_DSN", "MOCK_MODE"]',
+    )
+    proj = make_project(repo, config)
+    (repo / "ciu.global.toml").write_text(
+        "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+    commit_all(repo, "ciu")
+    log = fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setenv("SCHEMA_GATE_DSN", "postgresql://example/db")
+    monkeypatch.setenv("MOCK_MODE", "true")
+    shim = shim_dir_of(monkeypatch) / "docker"
+    body = shim.read_text()
+    body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+    shim.write_text(body)
+    proc = run_tool(proj, "suite", "--worktree", str(repo))
+    assert proc.returncode == 0, proc.stderr
+    call = docker_execs(log)[0]
+    assert "SCHEMA_GATE_DSN=postgresql://example/db" in call
+    assert "MOCK_MODE=true" in call
+
+
+def test_environment_rejects_invalid_forward_env_name(tmp_path):
+    repo = make_repo(tmp_path)
+    config = SIMPLE_LANE.replace(
+        '[environments.tester-unified]\n    image = "tester-unified:local"',
+        '[environments.tester-unified]\n    image = "tester-unified:local"\n'
+        '    forward_env = ["not-a-name"]',
+    )
+    proj = make_project(repo, config)
+    proc = run_tool(proj, "--list")
+    assert proc.returncode == 1
+    assert "'forward_env' must be a list" in proc.stderr

@@ -1084,6 +1084,9 @@ def _load_judge(
     table: Any, rigor: Iterable[str], where: str, project_root: Path
 ) -> JudgeConfig | None:
     rigor = tuple(rigor)
+    declared_language = (
+        table.get("language") if isinstance(table, dict) else None
+    )
     required = list(_required_judge_fields(rigor))
 
     if table is None:
@@ -1118,7 +1121,7 @@ def _load_judge(
     # like its two siblings.
     r1_declared = "R1" in rigor
     mode_declared = "mode" in table
-    if mode_declared and not r1_declared:
+    if mode_declared and not r1_declared and declared_language != "sql":
         raise LaneConfigError(
             f"{where}: declares 'judge.mode' but rigor {list(rigor)} does "
             f"not include R1; mode selects the R1 judging strategy"
@@ -1145,7 +1148,7 @@ def _load_judge(
         )
 
     targets_declared = "targets" in table
-    if targets_declared and effective_mode != "whole_target":
+    if targets_declared and effective_mode != "whole_target" and declared_language != "sql":
         raise LaneConfigError(
             f"{where}: declares 'judge.targets' but judge.mode is not "
             f"'whole_target' -- a target list under changed-line mode does "
@@ -1153,13 +1156,16 @@ def _load_judge(
             f"believe a floor is enforced when it is not"
         )
 
-    if r1_declared and effective_mode == "whole_target":
+    if (r1_declared or declared_language == "sql") and effective_mode == "whole_target":
         # A-260/§5: `base` resolves nothing for a whole-target lane with no
         # R2, so it moves OUT of `required` here -- the generic surplus
         # check below then refuses it as inert config if the lane still
         # declares it (A6 addendum, extending A-062's own argument).
         # `targets` moves IN: required and non-empty precisely in this mode.
-        if "base" in required and "R2" not in rigor:
+        # A SQL R2 lane has no diff to measure, but its baseline command still
+        # needs the declared base as provenance of what it judged; keep `base`
+        # required there.
+        if "base" in required and "R2" not in rigor and declared_language != "sql":
             required.remove("base")
         # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
         # (only this mode-specific branch ever requires it), so it can
@@ -1205,7 +1211,7 @@ def _load_judge(
     surplus = sorted(
         set(table)
         - set(required)
-        - {"attestation_dir", "evidence", "mode", "require_branch"}
+        - {"attestation_dir", "evidence", "mode", "require_branch", "targets"}
     )
     if surplus:
         raise LaneConfigError(

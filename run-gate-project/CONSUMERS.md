@@ -66,6 +66,11 @@ Environment facts resolution order (no silent fallbacks anywhere):
 (hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
 LoadState pre-check only where systemd is reachable.
 
+Container lanes forward only the implicit cgroup infrastructure variable plus
+the environment's explicit `forward_env = ["SCHEMA_GATE_DSN"]` allowlist. A
+declared but unset value remains absent rather than becoming a default; the
+lane's own required-input policy must fail loudly when absence matters.
+
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
 run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, pin verify,
