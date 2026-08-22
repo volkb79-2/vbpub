@@ -450,16 +450,17 @@ def test_handoff_globs_are_narrowed_to_assays_own_handoffs():
 
 def test_the_cgroup_helper_wiring_is_present_in_the_restructured_gate_script():
     # The other half of O4's negative ("bypassing the cgroup helper"),
-    # checked directly against THIS package's own restructured argv --
-    # tests/test_cgroup_parent.py's own
-    # test_nyxloom_gate_uses_verified_value_without_a_literal_slice already
-    # covers this from the pre-existing suite; restated here so it is also
-    # visible from inside the module that did the restructuring.
-    argv = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"][
-        "tester-unified"
-    ]["argv"]
+    # checked against the gate chain since run-gate adoption (D-110/D-111):
+    # the trove gate is a thin pointer, the SSOT lane in run-gate.toml
+    # invokes THIS package's restructured driver, and the driver itself
+    # carries every verified-cgroup marker.
+    lane = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))[
+        "lanes"
+    ]["tester-unified"]
     driver = GATE_DRIVER.read_text(encoding="utf-8")
-    assert argv[1] == "{worktree}/assay/tools/tester-unified-gate.sh"
+    assert lane["environment"] == "host"
+    assert lane["argv"][0] == "bash"
+    assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
     assert '--cgroup-parent="$cgroup_parent"' in driver
     assert "dev-background.slice" not in driver
