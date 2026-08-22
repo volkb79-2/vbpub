@@ -242,54 +242,83 @@ def check_slice_unit(slice_name: str, probe_image: str) -> tuple[bool | None, st
     )
 
 
-def resolve_cgroup_parent(explicit: str | None) -> str:
-    """Resolve the gate container's cgroup-parent, per the estate's
-    no-hardcoded-fallbacks rule: an unresolvable value is an error, never a
-    silent "launch with no --cgroup-parent" degrade.
+def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
+    """Whether the DOCKER HOST's cgroup hierarchy supports per-device blkio
+    throttling — required before passing any ``--device-*-bps/iops`` flag.
 
-    Order: ``--cgroup-parent`` (explicit) > ``CMRU_TESTER_CGROUP_PARENT``
-    (per-project override, e.g. cmru.toml env) > ``CGROUP_PARENT_DEV_BACKGROUND``
-    (ambient, injected by devcontainer.json's ``containerEnv`` — see AGENTS.md)
-    > ``CMRU_TESTER_CGROUP_PARENT_FALLBACK`` (an operator-DECLARED literal
-    default, normally set once in ``cmru.orchestration.toml [env]`` for hosts
-    that run gates outside a devcontainer and therefore have no ambient var).
+    Same reachability constraints as :func:`check_slice_unit` (a cockpit has
+    no host view; the privileged nsenter probe is the honest channel).
+    Supported means: cgroup v2 hierarchy (``stat -fc %T /sys/fs/cgroup`` ==
+    ``cgroup2fs``) with the ``io`` controller present in the root's
+    ``cgroup.controllers``. Docker translates the device flags onto that
+    controller; on a v1 host, or v2 without ``io`` delegated to the root,
+    container creation would fail anyway — this surfaces it as a named
+    refusal instead.
 
-    The fallback tier is not a code-level hardcoded default: it exists only
-    when the operator declares it, and whatever value resolves — fallback
-    included — is verified against the HOST systemd by :func:`check_slice_unit`
-    before any container launches (a typo'd or fail-open transient slice is
-    refused there). On a devcontainer host the ambient var wins by precedence,
-    so the fallback never fires; on a bare host it supplies the estate's tier
-    explicitly instead of refusing.
+    Returns ``(supported | None, note)``: ``None`` = no docker here at all
+    (caller warns and lets the launch fail on its own terms); ``False`` =
+    probed and unsupported (refuse); ``True`` = go.
     """
-    if explicit:
-        return explicit
-    resolved = os.environ.get("CMRU_TESTER_CGROUP_PARENT") or os.environ.get(
-        "CGROUP_PARENT_DEV_BACKGROUND"
-    )
-    if not resolved:
-        declared_fallback = (
-            os.environ.get("CMRU_TESTER_CGROUP_PARENT_FALLBACK") or ""
-        ).strip()
-        if declared_fallback:
-            print(
-                f"[INFO] tester-gate: no --cgroup-parent, "
-                f"CMRU_TESTER_CGROUP_PARENT, or CGROUP_PARENT_DEV_BACKGROUND — "
-                f"using the declared fallback {declared_fallback!r} (verified "
-                "against the host systemd below)",
-                file=sys.stderr,
-            )
-            return declared_fallback
-    if not resolved:
-        raise SystemExit(
-            "tester-gate: no cgroup_parent resolvable — pass --cgroup-parent explicitly, "
-            "or set CMRU_TESTER_CGROUP_PARENT (per-project override), "
-            "CGROUP_PARENT_DEV_BACKGROUND (ambient, from devcontainer.json), or "
-            "CMRU_TESTER_CGROUP_PARENT_FALLBACK (declared literal default, e.g. in "
-            "cmru.orchestration.toml [env]). "
-            "Refusing to launch an ungoverned container next to production."
+    if shutil.which("docker") is None:
+        return None, (
+            "no docker on this host — skipping the IO-controller preflight"
         )
-    return resolved
+    try:
+        result = subprocess.run(
+            [
+                "docker", "run", "--rm", "--privileged", "--pid=host", probe_image,
+                "sh", "-c",
+                "stat -fc %T /sys/fs/cgroup; cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null",
+            ],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"could not probe the Docker host's IO support ({exc})"
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    fstype = lines[0].strip() if lines else ""
+    controllers = lines[1].split() if len(lines) > 1 else []
+    if fstype == "cgroup2fs" and "io" in controllers:
+        return True, "cgroup v2 with the io controller — per-device caps available"
+    if fstype == "cgroup2fs":
+        return False, (
+            "cgroup v2 but the io controller is not delegated to the root "
+            f"(controllers: {' '.join(controllers) or '(none)'}) — per-device "
+            "blkio caps would fail at container create"
+        )
+    if fstype.startswith("cgroup"):
+        return False, (
+            f"cgroup {fstype} hierarchy — per-device blkio caps need cgroup v2 "
+            "with the io controller"
+        )
+    return False, (
+        f"could not determine the Docker host's cgroup hierarchy "
+        f"(probe stderr: {result.stderr.strip()[:300] or 'empty'})"
+    )
+
+
+def resolve_cgroup_parent(explicit: str | None) -> str | None:
+    """Resolve the gate container's ``--cgroup-parent`` from DECLARED config
+    only — no ambient reads, no hardcoded default (estate rule).
+
+    Order: ``--cgroup-parent`` (explicit CLI) > ``CMRU_TESTER_CGROUP_PARENT``
+    (normally declared once in ``cmru.orchestration.toml [env]``, where the
+    value may be a ``${NAME:-default}`` environment reference so a devcontainer
+    host and a bare host can share one file). An EMPTY or unset value means
+    "no governance tier" ON PURPOSE: the launch proceeds without
+    ``--cgroup-parent`` and says so on stderr — per-container memory/CPU/IO
+    caps still apply. Per-project override works through the ordinary env
+    merge (a project's own cmru.toml [env] may declare a different slice or
+    an empty string).
+
+    Whatever non-empty value resolves is verified against the HOST systemd by
+    :func:`check_slice_unit` before any container launches.
+    """
+    if explicit is not None and explicit.strip():
+        return explicit.strip()
+    configured = (os.environ.get("CMRU_TESTER_CGROUP_PARENT") or "").strip()
+    if configured:
+        return configured
+    return None
 
 
 def resolve_memory(explicit: str | None) -> str:
@@ -532,9 +561,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--cgroup-parent", default=None,
-        help="Defaults to $CMRU_TESTER_CGROUP_PARENT, then $CGROUP_PARENT_DEV_BACKGROUND "
-             "(ambient, from devcontainer.json) — see AGENTS.md. No implicit fallback: "
-             "unresolvable is a hard error, never an ungoverned launch.",
+        help="Overrides $CMRU_TESTER_CGROUP_PARENT (normally declared once in "
+             "cmru.orchestration.toml [env], where the value may be a "
+             "${NAME:-default} environment reference). Empty/unset means NO "
+             "governance tier on purpose: the launch proceeds unscoped and "
+             "says so. Whatever non-empty value resolves is verified against "
+             "the host systemd before launch.",
+    )
+    parser.add_argument(
+        "--forward-cgroup-parent-var", default=None,
+        help="Value forwarded INTO the container as $CGROUP_PARENT_DEV_BACKGROUND "
+             "(ciu's own governance resolver reads it there); normally declared as "
+             "$CMRU_TESTER_CGROUP_FORWARD_VAR in cmru.orchestration.toml [env] via "
+             'a "${NAME:-default}" reference. Empty means nothing is forwarded.',
     )
     parser.add_argument(
         "--memory", default=os.environ.get("CMRU_TESTER_MEMORY"),
@@ -566,10 +605,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             "$CMRU_TESTER_DIND_IMAGE"
         ),
     )
-    parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""))
-    parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""))
-    parser.add_argument("--device-read-bps", default=os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", ""))
-    parser.add_argument("--device-write-bps", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", ""))
+    parser.add_argument("--device-read-iops", default=os.environ.get("CMRU_TESTER_DEVICE_READ_IOPS", ""),
+                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
+    parser.add_argument("--device-write-iops", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_IOPS", ""),
+                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
+    parser.add_argument("--device-read-bps", default=os.environ.get("CMRU_TESTER_DEVICE_READ_BPS", ""),
+                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
+    parser.add_argument("--device-write-bps", default=os.environ.get("CMRU_TESTER_DEVICE_WRITE_BPS", ""),
+                    help="per-container blkio cap, Docker path:rate syntax (e.g. /dev/vda:1000); empty = tier aggregate only; requires the host io controller (preflight-checked)")
     parser.add_argument(
         "--enable-docker", action="store_true",
         help="Give this gate step an isolated, nested Docker daemon (docker:dind "
@@ -597,20 +640,49 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     cgroup_parent = resolve_cgroup_parent(args.cgroup_parent)
     probe_image = resolve_cgroup_probe_image(args.cgroup_probe_image)
-    exists, note = check_slice_unit(cgroup_parent, probe_image)
-    if exists is False:
-        raise SystemExit(f"tester-gate: refusing to launch — {note}")
-    if exists is None:
-        print(f"[WARN] tester-gate: {note}", file=sys.stderr)
+    if cgroup_parent:
+        exists, note = check_slice_unit(cgroup_parent, probe_image)
+        if exists is False:
+            raise SystemExit(f"tester-gate: refusing to launch — {note}")
+        if exists is None:
+            print(f"[WARN] tester-gate: {note}", file=sys.stderr)
+    else:
+        # Declared "no governance tier" (empty/unset CMRU_TESTER_CGROUP_PARENT):
+        # per-container memory/CPU/IO caps below still apply; the SLICE tier
+        # does not. Announced, never silent.
+        print(
+            "[INFO] tester-gate: no cgroup-parent declared — launching without "
+            "a governance slice (per-container caps still apply)",
+            file=sys.stderr,
+        )
+
+    device_caps = [
+        args.device_read_iops, args.device_write_iops,
+        args.device_read_bps, args.device_write_bps,
+    ]
+    if any(dc.strip() for dc in device_caps):
+        io_ok, io_note = _probe_io_support(probe_image)
+        if io_ok is False:
+            raise SystemExit(
+                "tester-gate: refusing to launch — device IO caps requested but "
+                f"unavailable on this host: {io_note}"
+            )
+        if io_ok is None:
+            print(f"[WARN] tester-gate: {io_note}", file=sys.stderr)
 
     memory = resolve_memory(args.memory)
     memory_swap = resolve_memory_swap(args.memory_swap)
     cpus = resolve_cpus(args.cpus)
 
+    forward_var = (
+        getattr(args, "forward_cgroup_parent_var", None)
+        if getattr(args, "forward_cgroup_parent_var", None) is not None
+        else os.environ.get("CMRU_TESTER_CGROUP_FORWARD_VAR", "")
+    )
     build_kwargs = dict(
         image=image,
-        cgroup_parent=cgroup_parent,
-        cgroup_parent_dev_background=os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", ""),
+        cgroup_parent=cgroup_parent or "",
+        cgroup_parent_dev_background=(forward_var or "").strip(),
         memory=memory,
         memory_swap=memory_swap,
         cpus=cpus,

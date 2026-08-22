@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Changed
+- feat(cmru): tester-gate cgroup-parent is DECLARED-CONFIG — resolves only
+  `CMRU_TESTER_CGROUP_PARENT` (empty/unset = no slice tier, announced
+  unscoped launch); no ambient `CGROUP_PARENT_DEV_BACKGROUND` read, no code
+  fallback. `cmru.orchestration.toml [env]` gains load-time `${NAME:-default}`
+  expansion so the devcontainer var can be referenced declaratively
+  (`${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}`), plus
+  `CMRU_TESTER_CGROUP_FORWARD_VAR` for the in-container forward and
+  documented per-container IO-cap keys (`CMRU_TESTER_DEVICE_*`, with a host
+  cgroup-v2-io-controller preflight that refuses when unsupported). Supersedes
+  today's earlier FALLBACK-tier commit
+
+
+
 ## [4.1.1] - 2026-08-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=a1f7288b68e2281b9e0d58dcb7681ac7b98d2324 -->

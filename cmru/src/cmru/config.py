@@ -459,6 +459,37 @@ def _read_toml(path: Path, expected_name: str) -> dict:
     return raw
 
 
+_ENV_REFERENCE_RE = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::-([^{}]*))?\}$")
+
+
+def _expand_env_reference(value: str, where: str, key: str) -> str:
+    """Expand a single ``${NAME}`` / ``${NAME:-default}`` reference (the WHOLE
+    value — references inside larger strings are left literal).
+
+    Declared-config ergonomics for values that are host-shaped (a cgroup
+    slice a devcontainer names via an ambient var, an image tag pinned per
+    host): the TOML file stays the single source of WHAT is configured and
+    may REFERENCE the environment, but resolution happens once, at load
+    time, loudly — an unset ``${NAME}`` with no ``:-default`` is a load
+    error naming the key, never a silent empty. The expanded result is what
+    every runner manifest records.
+    """
+    match = _ENV_REFERENCE_RE.fullmatch(value)
+    if match is None:
+        return value
+    name, default = match.group(1), match.group(2)
+    actual = os.environ.get(name)
+    if actual is not None:
+        return actual
+    if default is not None:
+        return default
+    _error(
+        f"{where}.{key}: ${{{name}}} is not set in the environment and the "
+        'reference has no :-default. Set it, export it before invoking cmru, '
+        f"or write ${{{name}:-<default>}} to declare one."
+    )
+
+
 def _scalar_env(raw: object, where: str) -> dict[str, str]:
     if raw is None:
         return {}
@@ -468,7 +499,7 @@ def _scalar_env(raw: object, where: str) -> dict[str, str]:
     for key, value in raw.items():
         if not isinstance(key, str) or not key or not isinstance(value, (str, int, float, bool)):
             _error(f"{where} must contain string keys and scalar values")
-        result[key] = str(value)
+        result[key] = _expand_env_reference(str(value), where, key)
     return result
 
 

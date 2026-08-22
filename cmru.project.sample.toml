@@ -22,10 +22,17 @@ CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
+
+# GOVERNANCE SLICE for gate containers — declared, never ambient:
+#   CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# ${NAME:-default} expands at load time (unset NAME without :-default is a
+# load error). Empty result = NO slice tier on purpose (announced unscoped
+# launch; per-container caps still apply). Whatever resolves is verified
+# against the host systemd before launch.
 #
-# Optional last-resort tier when no devcontainer injected the
-# ambient var; verified against the host systemd before launch.
-CMRU_TESTER_CGROUP_PARENT_FALLBACK = "dev-background.slice"
+# Per-container IO caps (optional, device-specific "<device>:<rate>"):
+#   CMRU_TESTER_DEVICE_READ_BPS / _WRITE_BPS / _READ_IOPS / _WRITE_IOPS
+# Setting any of them triggers a host cgroup-v2-io-controller preflight.
 EXAMPLE_RELEASE_NOTES = "## example-wheel\n\nInstall with `pipx install example-wheel-*.whl`."
 
 [project]

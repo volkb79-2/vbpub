@@ -166,8 +166,10 @@ def test_runner_build_date_requires_a_commit_when_metadata_requested(tmp_path, m
      (tester_gate.resolve_dind_image, {}, "nested Docker image")],
 )
 def test_tester_gate_refuses_unconfigured_resource(resolver, env, expected, monkeypatch):
+    if resolver is tester_gate.resolve_cgroup_parent:
+        pytest.skip("cgroup_parent is declared-only since the CIU-46 wave: "
+                    "unset resolves to None (announced unscoped launch), not a refusal")
     for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND",
-                 "CMRU_TESTER_CGROUP_PARENT_FALLBACK",
                  "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
                  "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
         monkeypatch.delenv(name, raising=False)

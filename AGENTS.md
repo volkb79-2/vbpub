@@ -80,16 +80,21 @@ slice name:
   applied via `runArgs`; you don't need to pass this yourself).
 - `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a test/gate/build
   container you spawn (`docker run --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND
-  ...`). `cmru`'s `tester-gate` (`cmru/src/cmru/tester_gate.py`) and `ciu`'s
-  governance mechanism (`ciu/src/ciu/governance.py`) both already resolve this
-  automatically — an explicit `CMRU_TESTER_CGROUP_PARENT` (cmru) or
-  `[<root>.governance].cgroup_parent` (ciu) still overrides it when a project
-  genuinely needs something else.
+  ...`). `ciu`'s governance mechanism (`ciu/src/ciu/governance.py`) resolves
+  this automatically. **cmru's `tester-gate` is DECLARED-CONFIG instead**
+  (2026-08-22): it reads only `CMRU_TESTER_CGROUP_PARENT`, normally set once
+  in `cmru.orchestration.toml [env]` via a `${CGROUP_PARENT_DEV_BACKGROUND:-
+  dev-background.slice}` reference — cmru expands `${NAME:-default}` at load
+  time; an EMPTY result means "no slice tier" on purpose (unscoped launch,
+  announced; per-container memory/CPU/IO caps still apply). Per-project
+  override through the project's own cmru.toml [env]. Whatever non-empty
+  value resolves is verified against the HOST systemd (LoadState=loaded AND
+  FragmentPath) before launch.
 
 **No hardcoded fallbacks.** If neither variable nor an explicit override is
-set, that is a configuration error — refuse to launch (or let the tool's own
-preflight refuse), never fall through to Docker's unconfined default next to
-production. A typo'd or nonexistent slice name fails **open** (systemd
+set where a resolver REQUIRES one, that is a configuration error — refuse to
+launch (or let the tool's own preflight refuse), never fall through to
+Docker's unconfined default next to production. A typo'd or nonexistent slice name fails **open** (systemd
 silently auto-creates an unlimited transient slice), so any code that accepts
 a slice name should verify it's actually a loaded unit first
 (`systemctl show <slice> --property=LoadState`) rather than trust it blindly.

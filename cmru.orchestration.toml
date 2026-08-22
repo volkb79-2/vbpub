@@ -30,21 +30,76 @@ execution_mode = "project-first"
 # value only where it has a genuinely different requirement (for example,
 # modern-debian-tools-python-debug's Docker-in-Docker image).
 [orchestration.defaults.env]
+# ---------------------------------------------------------------------------
+# Values here are inherited by EVERY project's steps; a project's own
+# cmru.toml [env] may OVERRIDE any of them for a genuine per-project need
+# (precedence: step env > project env > these defaults).
+#
+# ${NAME} / ${NAME:-default} references are expanded by cmru at LOAD time:
+#   ${NAME}            -> the env var's value; UNSET is a load error naming
+#                         the key (fail loudly, never silently empty)
+#   ${NAME:-fallback}  -> the env var's value, or `fallback` when unset
+# The expanded result is what every runner manifest records.
+# ---------------------------------------------------------------------------
+
+# Images (built in this repo; see each project's build step).
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+
+# RAM / swap for each gate container (docker --memory / --memory-swap):
+#   CMRU_TESTER_MEMORY       = hard cap on the container's USER-SPACE MEMORY
+#                              (RSS + page cache charged to the cgroup — not
+#                              only anon RAM). Hitting it => OOM-kill.
+#   CMRU_TESTER_MEMORY_SWAP  = the COMBINED ram+swap total (Docker semantics,
+#                              not swap alone). Swap headroom is therefore
+#                              MEMORY_SWAP minus MEMORY (= 13g here).
+# These are flat PER-CONTAINER bounds, independent of how many gates run in
+# parallel and on top of whatever the slice tier caps in aggregate.
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
+
+# CPU ceiling per gate container (docker --cpus), same per-container rule.
 CMRU_TESTER_CPUS = "1.5"
+
+# Minimal image for the HOST-systemd preflight probes below (needs nsenter;
+# deliberately NOT tester-unified). tester-gate runs it --privileged
+# --pid=host and nsenters PID 1 to ask the real host systemd/kernel:
+#   - slice check: LoadState=loaded AND non-empty FragmentPath (systemd
+#     auto-vivifies any .slice name; only FragmentPath distinguishes a real
+#     unit from Docker's fail-open transient), and
+#   - IO check: cgroup v2 with the io controller delegated (required before
+#     any --device-* cap is passed).
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
-# cgroup-parent last-resort tier (S15-adjacent, estate no-silent-fallbacks rule):
-# tester-gate resolves --cgroup-parent > CMRU_TESTER_CGROUP_PARENT >
-# CGROUP_PARENT_DEV_BACKGROUND (ambient, devcontainer hosts) > THIS literal.
-# It exists for bare-host runs where no devcontainer injected the ambient var;
-# whatever resolves is verified against the HOST systemd before launch
-# (LoadState=loaded AND non-empty FragmentPath), so a typo or a fail-open
-# transient slice refuses the gate instead of sailing through ungoverned.
-CMRU_TESTER_CGROUP_PARENT_FALLBACK = "dev-background.slice"
+# GOVERNANCE SLICE for gate containers. Declared, never ambient: the value
+# may reference the devcontainer-injected var, and resolves ONCE at load.
+#   devcontainer host -> CGROUP_PARENT_DEV_BACKGROUND (e.g.
+#                        dev-background.slice, injected by devcontainer.json)
+#   bare host         -> the :-default below (the tier host-setup installs)
+# Empty result means NO slice tier ON PURPOSE: gates launch unscoped (with an
+# announcement) while per-container caps above still apply. A project may
+# override per-project (its own cmru.toml [env]), including to "".
+# Whatever non-empty value resolves is verified against the host systemd
+# before launch — a typo'd or fail-open transient slice REFUSES the gate.
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+
+# Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
+# ciu's own in-container governance resolver (Docker never passes host env
+# through on its own). Same reference, same resolution rules.
+CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+
+# ---------------------------------------------------------------------------
+# Per-container IO caps (docker --device-read/write-bps / -iops). OPTIONAL —
+# commented out by default because the values are DEVICE-SPECIFIC: each entry
+# is Docker's "<device>:<rate>" syntax against the HOST's real disk (lsblk).
+# When any of these is set, tester-gate first probes the host for cgroup v2 +
+# the io controller and REFUSES if absent; empty = rely on the slice tier's
+# own aggregate IO ceiling.
+# ---------------------------------------------------------------------------
+# CMRU_TESTER_DEVICE_READ_BPS  = "/dev/vda:50mb"
+# CMRU_TESTER_DEVICE_WRITE_BPS = "/dev/vda:30mb"
+# CMRU_TESTER_DEVICE_READ_IOPS = "/dev/vda:1000"
+# CMRU_TESTER_DEVICE_WRITE_IOPS = "/dev/vda:600"
 
 [orchestration.project.ciu]
 config = "ciu/cmru.toml"

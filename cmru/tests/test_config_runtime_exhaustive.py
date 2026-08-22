@@ -168,3 +168,29 @@ def test_cli_http_and_json_boundaries_preserve_error_and_empty_body(monkeypatch)
         def __exit__(self, *_): return False
     monkeypatch.setattr(cli, "urlopen", lambda *_args, **_kwargs: Response())
     assert cli.load_json("https://example.invalid", "") == ([], {})
+
+
+
+def test_scalar_env_expands_reference_forms(monkeypatch):
+    from cmru.config import _scalar_env
+
+    monkeypatch.setenv("HOST_SLICE", "dev-background.slice")
+    env = _scalar_env({
+        "A": "${HOST_SLICE}",
+        "B": "${MISSING_VAR:-fallback-text}",
+        "C": "literal-stays-${NOT_A_REF}",  # not a whole-value ref: literal
+    }, "t")
+    assert env == {"A": "dev-background.slice", "B": "fallback-text",
+                   "C": "literal-stays-${NOT_A_REF}"}
+
+
+def test_scalar_env_unset_reference_without_default_errors(monkeypatch, capsys):
+    from cmru import config as config_mod
+
+    monkeypatch.delenv("MISSING_VAR", raising=False)
+    with pytest.raises(SystemExit):
+        config_mod._scalar_env({"X": "${MISSING_VAR}"}, "t")
+    # the load error names the key AND both remedies (estate error-message rule)
+    err = capsys.readouterr().out
+    assert "MISSING_VAR" in err
+    assert ":-default" in err

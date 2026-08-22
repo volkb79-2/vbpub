@@ -251,45 +251,53 @@ def test_controller_cli_reports_missing_plan_without_constructing_backend(tmp_pa
 
 
 def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):
-    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND", "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS", "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
+    for name in ("CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS", "CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_DIND_IMAGE"):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(SystemExit, match="cgroup_parent"):
-        tester_gate.resolve_cgroup_parent(None)
-    assert tester_gate.resolve_cgroup_parent("slice-explicit") == "slice-explicit"
-
-
-def test_tester_gate_cgroup_fallback_tier(monkeypatch, capsys):
-    """CMRU_TESTER_CGROUP_PARENT_FALLBACK is the LAST tier: used only when no
-    per-project override and no ambient devcontainer var exist, and whatever
-    resolves is still verified against the host systemd by check_slice_unit
-    (operator-declared default, never a code-level hardcoded one)."""
-    for name in (
-        "CMRU_TESTER_CGROUP_PARENT",
-        "CGROUP_PARENT_DEV_BACKGROUND",
-        "CMRU_TESTER_CGROUP_PARENT_FALLBACK",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    with pytest.raises(SystemExit, match="cgroup_parent"):
-        tester_gate.resolve_cgroup_parent(None)
-
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT_FALLBACK", "fallback.slice")
-    # ambient outranks the declared fallback when present
-    assert tester_gate.resolve_cgroup_parent(None) == "ambient.slice"
-
-    monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
-    assert tester_gate.resolve_cgroup_parent(None) == "fallback.slice"
-    err = capsys.readouterr().err
-    assert "declared fallback" in err and "verified against the host systemd" in err
-
-    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "project-override.slice")
-    assert tester_gate.resolve_cgroup_parent(None) == "project-override.slice"
-
     with pytest.raises(SystemExit, match="memory limit"):
         tester_gate.resolve_memory(None)
-    monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")
-    assert tester_gate.resolve_memory(None) == "1G"
+    assert tester_gate.resolve_memory("1G") == "1G"
     with pytest.raises(SystemExit, match="CPU limit"):
         tester_gate.resolve_cpus(None)
     monkeypatch.setenv("CMRU_TESTER_CPUS", "2")
     assert tester_gate.resolve_cpus(None) == "2"
+
+
+def test_tester_gate_cgroup_parent_declared_only(monkeypatch):
+    """No ambient reads, no hardcoded default: the resolver returns the
+    DECLARED value only — unset/empty means None (launch unscoped, announced
+    by main), and whatever resolves is slice-probed before launch."""
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND"):
+        monkeypatch.delenv(name, raising=False)
+    # Ambient var deliberately set to prove it is NO LONGER read.
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
+    assert tester_gate.resolve_cgroup_parent(None) is None
+    assert tester_gate.resolve_cgroup_parent("") is None
+
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "declared.slice")
+    assert tester_gate.resolve_cgroup_parent(None) == "declared.slice"
+    assert tester_gate.resolve_cgroup_parent("cli-wins.slice") == "cli-wins.slice"
+
+
+
+
+def _fake_io_probe(stdout: str):
+    return lambda *a, **kw: SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+
+def test_tester_gate_io_probe_verdicts(monkeypatch):
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
+    cases = {
+        "cgroup2fs\ncpu memory io pids\n": (True, "io controller"),
+        "cgroup2fs\ncpu memory pids\n": (False, "io controller is not delegated"),
+        "cgroup1fs\n\n": (False, "need cgroup v2"),
+        "garbage\n": (False, "could not determine"),
+    }
+    for stdout, (want_ok, want_note) in cases.items():
+        monkeypatch.setattr(tester_gate.subprocess, "run", _fake_io_probe(stdout))
+        ok, note = tester_gate._probe_io_support("debian:test")
+        assert ok is want_ok, (stdout, ok, note)
+        assert want_note in note
+
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: None)
+    ok, note = tester_gate._probe_io_support("debian:test")
+    assert ok is None and "skipping" in note
