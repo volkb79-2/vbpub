@@ -1,0 +1,22 @@
+# =============================================================================
+# assay project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# The self-hosting driver (tools/tester-unified-gate.sh) owns its own
+# container mechanics: exact-OID private clone, hash-pinned offline build
+# closure, two-venv install, detached run with verified cgroup placement.
+# run-gate owns uniform invocation only; putting that driver INSIDE an
+# ephemeral container would be wrong (it launches its own). Host lane.
+# Judgment policy stays in assay.toml [lanes.tester-unified] (R0-only,
+# permanently — A-046/A-133). See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.tester-unified]
+kind = "command"
+environment = "host"
+argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
+# clean_tree=false WITH reason: the driver builds from an exact-OID clone of
+# HEAD, so caller scratch cannot enter the judged build — a dirty worktree is
+# not evidence contamination on this path. (The doctrine default returns with
+# any future in-container assay lane.)
+clean_tree = false
+budget = "60m"

@@ -1,0 +1,20 @@
+# =============================================================================
+# ciu project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.toml (nearest
+# ancestor); judgment policy lives in assay.toml [lanes.ciu] (R0+R1: the full
+# run-ciu-tests.py suite, 100% line AND branch floor). This file is the SSOT
+# for how ciu's gate runs; consumers point at `./run-gate.py ciu`.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.ciu]
+kind = "assay"
+assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
+environment = "tester-unified"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+budget = "30m"
+
+[lanes.ciu.pins.assay]
+version = "2.1.0"
+sha256 = "tools/assay/assay-2.1.0.pyz.sha256"

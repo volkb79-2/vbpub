@@ -1,0 +1,15 @@
+# =============================================================================
+# modern-debian-tools-python-debug gate lanes — parsed ONLY by run-gate.py
+# (one parser, D-110). Image-build tooling: no unit suite exists, so the lane
+# is a syntax smoke over every tracked Python file. The image builds
+# themselves belong to the cmru image-bake dependency chain (D-110.2), not a
+# per-commit gate. Host lane.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.smoke]
+kind = "command"
+environment = "host"
+argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && echo 'smoke: OK'"]
+budget = "2m"

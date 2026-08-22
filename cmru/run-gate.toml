@@ -1,0 +1,53 @@
+# =============================================================================
+# cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.toml; judgment
+# policy lives in assay.toml [lanes.cmru] (R0 — see that file for why higher
+# rigor is not yet declared here). The release-gate conjunction is lane
+# `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.assay]
+kind = "assay"
+assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
+environment = "tester-unified"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+budget = "20m"
+
+[lanes.assay.pins.assay]
+version = "2.1.0"
+sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+
+[lanes.coverage]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+budget = "20m"
+
+# Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
+# origin/main (KI-18): at release time the tree IS origin/main, so a base of
+# origin/main leaves zero candidates and the campaign fails
+# --require-candidates. git describe returns the nearest ancestor cmru-v* tag,
+# so every source line changed since the last release gets mutated.
+[lanes.mutation]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-2.1.0.pyz --repo-root {worktree} --project-root . --base $(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+budget = "4h"
+
+[lanes.canary]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+budget = "20m"
+
+# The implementation/release gate: every consumer (cmru release steps, agents,
+# humans) runs THIS lane; none duplicates the sub-lane sequence. Host lane:
+# each sub-lane launches its own gated tester-unified container via run-gate.
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = ["bash", "-c", "./run-gate.py assay && ./run-gate.py coverage && ./run-gate.py mutation && ./run-gate.py canary"]
+clean_tree = false   # sub-lanes each enforce their own clean-tree check
+budget = "5h"

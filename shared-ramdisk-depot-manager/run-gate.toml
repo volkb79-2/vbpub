@@ -1,0 +1,34 @@
+# =============================================================================
+# shared-ramdisk-depot-manager project gate lanes — parsed ONLY by run-gate.py
+# (one parser, D-110). tools/gate.sh owns its own container mechanics (its
+# srdm-gate image, cgroup verification via tools/cgroup-parent.sh, detached
+# run + separate verdict read); run-gate owns uniform invocation only — same
+# split as assay's self-hosting driver. Host lanes.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.unit]
+kind = "command"
+environment = "host"
+# Meaningful on a dirty tree BY DESIGN (gate.sh's own contract), hence
+# clean_tree=false with that written reason.
+argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "unit"]
+clean_tree = false
+budget = "20m"
+
+# Changed-line coverage against $SRDM_COVERAGE_BASE (default main) — needs a
+# committed tree; gate.sh exits 3 (NO MEASUREMENT) rather than report a
+# vacuous percentage when the diff cannot see the work.
+[lanes.coverage]
+kind = "command"
+environment = "host"
+argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "coverage"]
+budget = "20m"
+
+[lanes.e2e]
+kind = "command"
+environment = "host"
+argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "e2e"]
+clean_tree = false
+budget = "60m"

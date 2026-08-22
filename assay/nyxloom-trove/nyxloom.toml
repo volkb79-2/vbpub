@@ -185,7 +185,10 @@ series       = "nyxloom-trove/handoffs/README.md"
 # self-hosted lane and independent witness already do.
 
 [gates.tester-unified]
-argv = ["bash", "{worktree}/assay/tools/tester-unified-gate.sh", "{worktree}"]
+# SSOT pointer (D-110/D-111): the lane lives in assay/run-gate.toml (host lane
+# invoking tools/tester-unified-gate.sh, which owns its own container
+# mechanics — exact-OID clone, pinned build closure, detached run).
+argv = ["bash", "-c", "cd {worktree}/assay && exec ./run-gate.py --worktree {worktree} tester-unified"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 3600

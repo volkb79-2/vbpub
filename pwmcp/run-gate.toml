@@ -1,0 +1,14 @@
+# =============================================================================
+# pwmcp project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.toml. The tests
+# are self-contained (importlib loads build-push.py by path), so the lane is
+# a plain pytest run in tester-unified.
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.tests]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/pwmcp && exec /opt/tester-venv/bin/python -m pytest tests -q"]
+budget = "10m"

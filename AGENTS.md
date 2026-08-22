@@ -98,8 +98,11 @@ a slice name should verify it's actually a loaded unit first
 
 **For any project with a root `run-gate.py`, the manual recipe below is
 SUPERSEDED: run `./run-gate.py <lane>` — the mechanics are tested code
-(`run-gate-project/SPEC.md`), not doctrine prose.** (First adopter: nyxloom,
-P01 2026-08-22.)
+(`run-gate-project/SPEC.md`), not doctrine prose.** Adopted estate-wide
+2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
+shared-ramdisk-depot-manager, plesk-mailbox-create,
+modern-debian-tools-python-debug); projects without an executable test
+surface declare no lane by decision, recorded in the adoption commit.
 
 Gates are normally launched by nyxloomd or `cmru tester-gate`, which handle all
 of this. A HAND-ROLLED `docker run` of `tester-unified:local` (e.g. a controller

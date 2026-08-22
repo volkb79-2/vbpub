@@ -62,10 +62,14 @@ docs_dir          = "docs"
 # exported so subprocesses resolve the bound worktree, not the image-baked /src.
 # See tools/coverage_gate.py for the evaluator contract.
 [gates.topos-suite]
-# Gate containers do not inherit the cockpit's cgroup.  Place this CPU/I/O-heavy
-# xdist run in the host-managed low-priority gate slice, whose IOPS budget is
-# deliberately below the production game-server tier.
-argv = ["bash", "-c", "set -euo pipefail && docker run --rm --cgroup-parent=nyxloom-gates.slice -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && cd {worktree} && export PYTHONPATH=topos/src:topos && /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto --cov=topos/src/topos --cov-branch --cov-report=json:/tmp/topos-coverage.json && /opt/tester-venv/bin/python topos/tools/coverage_gate.py --repo . --base main --coverage-json /tmp/topos-coverage.json --source topos/src/topos'"]
+# SSOT pointer (D-110/D-111): the lane lives in topos/run-gate.toml with the
+# exact pre-adoption mechanics, minus the hardcoded `nyxloom-gates.slice`
+# literal — run-gate resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND
+# (SPEC A3) and dual-mounts the repo. Gate containers do not inherit the
+# cockpit's cgroup; the ambient var names the host-managed low-priority gate
+# tier whose IOPS budget is deliberately below the production game-server
+# tier.
+argv = ["bash", "-c", "cd {worktree}/topos && exec ./run-gate.py --worktree {worktree} topos-suite"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
 timeout_seconds = 1800
@@ -76,7 +80,8 @@ environment = "tester-unified"
 # all exit nonzero. No .py files changed exits zero (xargs -r skips the command
 # when input is empty). The gate layer that runs this is `review` only.
 [gates.py-compile]
-argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
+# SSOT pointer: lane `py-compile` in topos/run-gate.toml (same P96 mechanics).
+argv = ["bash", "-c", "cd {worktree}/topos && exec ./run-gate.py --worktree {worktree} py-compile"]
 phase = "review"
 timeout_seconds = 120
 environment = "local"

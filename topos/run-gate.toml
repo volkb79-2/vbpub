@@ -1,0 +1,22 @@
+# =============================================================================
+# topos project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.toml. The
+# topos-suite argv is the pre-adoption nyxloom gate mechanics VERBATIM (only
+# re-homed) — including its hardcoded-slice removal: the central environment
+# resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND instead of the old
+# `--cgroup-parent=nyxloom-gates.slice` literal. See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.topos-suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree} && export PYTHONPATH=topos/src:topos && /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto --cov=topos/src/topos --cov-branch --cov-report=json:/tmp/topos-coverage.json && /opt/tester-venv/bin/python topos/tools/coverage_gate.py --repo . --base main --coverage-json /tmp/topos-coverage.json --source topos/src/topos"]
+budget = "30m"
+
+[lanes.py-compile]
+kind = "command"
+environment = "host"
+# P96: fail-closed NUL-delimited argv over changed .py files; no changes → OK.
+argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
+budget = "2m"
