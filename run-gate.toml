@@ -1,0 +1,20 @@
+# =============================================================================
+# run-gate CENTRAL environment facts — vbpub monorepo root.
+# Parsed ONLY by run-gate.py (one parser, D-110). Project configs live next to
+# each project's run-gate.py symlink/copy; they inherit THESE tables unless
+# they shadow a name. Lanes are FORBIDDEN here (central = environment facts
+# only — run-gate rejects [lanes.*] in this file).
+# See run-gate-project/SPEC.md (normative) and README.md (design authority).
+# =============================================================================
+schema_version = 1
+
+[environments.tester-unified]
+image = "tester-unified:local"
+# cgroup_slice deliberately NOT declared: dev gates resolve the slice from
+# $CGROUP_PARENT_DEV_BACKGROUND at run time (controller A3, 2026-08-22 —
+# nyxloom-gates.slice was prod-instance intent, not dev-gate policy).
+# Declare cgroup_slice here only for a GENUINE per-environment policy need;
+# it is verified LoadState=loaded wherever systemd is reachable.
+
+# [environments.test-runner] belongs to dstdns's own root config when that
+# repo adopts run-gate (timed per dstdns D-111) — not declared speculatively.

@@ -1,0 +1,23 @@
+# =============================================================================
+# nyxloom project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# Shared environment facts come from the CENTRAL vbpub-root run-gate.toml
+# (nearest ancestor); judgment policy stays in the gate command itself until
+# NL-1 migrates it to assay. See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.tester-unified]
+kind = "command"
+environment = "tester-unified"   # central [environments.tester-unified]
+# Judgment (D-064-L2 changed-line coverage floor) — unchanged mechanics from
+# the pre-run-gate argv. pytest-cov (NOT `coverage run`) is load-bearing:
+# coverage run traces only the parent, measuring ~nothing of xdist workers,
+# which would false-FAIL every package at the coverage_gate step. -n auto is
+# the measured optimum on this 8-core host (~2m28s vs 4m56s serial).
+argv = ["bash", "-c", "cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:/tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom"]
+# Behavior-preserving adoption: nyxloomd runs gates in fresh attempt
+# worktrees, but manual runs may carry untracked scratch. The doctrine
+# default (clean_tree = true) lands together with NL-1's assay migration,
+# where assay's own DIRTY_TREE rule takes over.
+clean_tree = false
+budget = "30m"                   # advisory; consumers may enforce

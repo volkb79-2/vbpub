@@ -96,6 +96,11 @@ a slice name should verify it's actually a loaded unit first
 
 ## Manual tester-unified gate runs — the four traps (estate-wide)
 
+**For any project with a root `run-gate.py`, the manual recipe below is
+SUPERSEDED: run `./run-gate.py <lane>` — the mechanics are tested code
+(`run-gate-project/SPEC.md`), not doctrine prose.** (First adopter: nyxloom,
+P01 2026-08-22.)
+
 Gates are normally launched by nyxloomd or `cmru tester-gate`, which handle all
 of this. A HAND-ROLLED `docker run` of `tester-unified:local` (e.g. a controller
 reproducing a trove gate at review) needs ALL four, or it fails in misleading
