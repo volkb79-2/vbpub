@@ -921,6 +921,7 @@ class TestStructuredControlDocuments:
         assert doc["schema_version"] == 1
         assert doc["capabilities"] == sorted(worktree.WORKTREE_CAPABILITIES)
         assert doc["capabilities"] == [
+            "worktree.branches.v1",
             "worktree.exec-local.v1",
             "worktree.exec-target.v1",
             "worktree.identity.v1",
@@ -931,6 +932,7 @@ class TestStructuredControlDocuments:
 
     def test_capabilities_advertise_exactly_the_shipped_contracts(self):
         assert set(worktree.WORKTREE_CAPABILITIES) == {
+            "worktree.branches.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
             "worktree.lifecycle-json.v1",

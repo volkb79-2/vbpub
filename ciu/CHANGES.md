@@ -7,6 +7,21 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- feat(ciu): `ciu worktree branches` — grounded branch hygiene (CIU-25 git half, SPEC S16.8): closed six-category survey (base/mainline/current/prunable/merged-dirty/unmerged) with ahead/behind/changed-files/age/instance attributes; `-y` removes exactly the fully-merged-clean category via worktree-remove + `branch -d` (Git re-verifies both). Capability id `worktree.branches.v1`. The Docker-resource reap half of CIU-25 remains open
+- feat(ciu): declared vendor baseline for `ciu provenance` — `[deploy.provenance] vendor_images`; a running reference equal to a declaration is `vendor-pinned`, same-name/different-reference is vendor drift (`mismatch`), and `verified-match` is reachable for all-vendor deployments (CIU-39, SPEC S17.5). **Provenance documents are now emitted at `schema_version: 2`** (widened closed vocabularies); strict consumers refuse unknown members, fail-closed
+- feat(ciu): cross-profile ASK_VAULT producer declaration `produced_by` — a partial profile selection excluding the producing profile now refuses upfront naming producer + path + both remedies, instead of failing at the consuming stack with only the bare path (CIU-42, SPEC S13.6); unknown producer profile names are configuration errors
+
+### Changed
+- **BREAKING (ciu)**: compose project naming cutover (CIU-46, SPEC S8.7/S6.4a) — there is no compose invocation without an explicit `-p` anymore. A shipped stack or reset/down without `deploy.project_name`/`environment_tag` uses the workspace-identity project `{REPO_NAME}-{INSTANCE_ID}-{stack}` derived from THIS checkout's `ciu.env` (exact-path parsed); the withdrawn basename fallback collided across checkouts and escaped clean's teardown enumeration. One-time migration for pre-existing deployments: `docker compose -p <old-basename> down -v --remove-orphans` + `docker network rm <old-basename>_default` (docs/CONSUMERS.md §11)
+
+### Fixed
+- fix(ciu): adversarial-review hardening across the wave — branch-hygiene destructive pass cannot half-prune (local-branch base requirement, HEAD/origin-HEAD containment guard for `-y`, upstream pre-check before checkout removal, removed/failed surfaced with non-zero exit on partial); produced_by judges producer presence by DEPLOYED STACKS (alias profiles satisfy, `--phases` narrowing still refuses) and reports all violations together; provenance compares Docker-canonical references (spelling can no longer hide vendor drift or break pins), malformed `[deploy.provenance]` refuses; shipped mode resolves the config-less repo_root from THIS checkout's env-root marker instead of ambient REPO_ROOT; reset's orphan sweep is always instance-scoped; untagged clean's unverifiable container enumeration fails the clean; stack dirnames that do not round-trip normalization refuse config-less naming; docs: parsable TOML examples + CONSUMERS §5c/§5d + closed-vocabulary guard extensions
+- fix(ciu): clean removes a tagless shipped stack's containers, `*_default` network, and label-prefixed volumes via the workspace-identity project name; missing/identity-less ciu.env refuses the enumeration instead of silently skipping (CIU-46, SPEC S6.4a item 7)
+- fix(ciu): env generate ignores an inconsistent ambient PUBLIC_FQDN — S2.7 refined precedence extended to the host-derived sibling (CIU-47): derived from this workspace's own inputs (config → reverse DNS), ambient adopted only when consistent or when detection yields no sourced value; mismatch warns and writes the derived value; post-generate steps act on the written record
+
 ## [6.4.1] - 2026-08-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=91959b3abf7d63ad062ddbc2815310bb38335e2e -->
@@ -14,6 +29,8 @@ gate runs; the commit subjects remain the traceable source of detail.
 ### Changed
 - run-gate: estate-wide adoption as SSOT test definition (CIU-40 adoption half) (4c6eb2b6)
 - backlog(ciu): reconcile after v6.4.0 — table sorted by ID, P112 reproductions relocated out of CIU-23's withdrawal, CIU-39 stub filled, CIU-46 (legacy-project shipped clean leak) + CIU-47 (PUBLIC_FQDN ambient adoption) filed (251711ed)
+
+>>>>>>> feat/ciu-backlog-wave-39-42-46-47
 
 ## [6.4.0] - 2026-08-22
 <!-- cmru: generated -->
@@ -65,66 +82,6 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ### Documentation
 - docs(ciu): checkpoint C review — evidence-ladder wording + count corrections (01abdce2)
-
-## [Unreleased]
-
-### Added
-- feat(ciu): deployment-selection facts for templates and hooks — every
-  deployment render (`ciu up`, `ciu dev`, `--render-toml`, preflight/check/graph)
-  exposes `ciu.selected_profiles` (ordered named profiles; empty = default) and
-  `ciu.deployed_stacks` (the FULL stack set this invocation deploys) as a Jinja
-  context mapping, computed once per invocation and threaded unchanged to every
-  render AND to hooks (`ctx.selected_profiles` / `ctx.deployed_stacks`, plus
-  `ctx.instance_id` / `ctx.network` from this workspace's own ciu.env by exact
-  path). Outside deployment renders the key is omitted so stray references fail
-  loudly (UndefinedError); nothing is persisted into ciu.env or exported to the
-  compose env. A template can now derive "is upstream X deployed" (e.g.
-  reverse-proxy's enable_pwmcp_mcp) instead of hardcoding it (CIU-44, dstdns
-  P120 D-162 DA-B, SPEC S3.12 + S9.3)
-
-### Fixed
-- fix(ciu): `ciu clean` now removes identity-scoped networks — the workspace network
-  (read from this workspace's own ciu.env) and each selected stack's compose
-  `<project>_default` — instead of printing `clean complete` over survivors. Lingering
-  endpoints are disconnected first; one that cannot be disconnected is named and fails
-  the clean. Instance-vs-main split: an S16 worktree instance tears down all of its
-  networks unconditionally; the main workspace keeps its own workspace network (devcontainer
-  residence) but names the keep in its output and final success line. The post-clean
-  invariant now covers networks (decided from Docker state, never command text), and the
-  volume pass gained an exact per-project compose-label enumeration that catches
-  bare-project-prefix named volumes (`<project>-vault-data`), the second live reproduction
-  on 6.3.0 (CIU-43, dstdns P111 F4 + P116 O9, SPEC S6.4a)
-- fix(ciu): `ciu env generate` no longer inherits an ambient `DOCKER_NETWORK_INTERNAL`
-  (or `REPO_NAME`/`INSTANCE_ID`): the S2.7 refined-precedence pattern extends to the
-  whole derived identity tuple — an ambient value wins only when consistent with the
-  value derived for this repo root; on mismatch the derived value is written and a
-  stderr warning names the ignored ambient value plus the `ciu worktree add
-  --shared-infra` remedy (S16.1). Bootstrap steps following a generate in the same run
-  act on the just-written file's identity parsed by exact path, so a contaminated
-  login shell can no longer point a fresh worktree's network (or the S16 cross-checks)
-  at another checkout's stack; a consistent pre-set value stays silent (CIU-41,
-  dstdns P111 F2, SPEC S2.7)
-
-### Added
-- feat(ciu): deploy layouts — `[deploy.layouts.<name>]` names a host→bundles plan + its
-  environment; `ciu up --layout <name>` drives the SPEC-J push per host in declared order
-  with `CIU_SERVICES_PROFILE` / `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT`
-  exported to the remote command; `ciu layouts` lists declarations (CIU-34, dstdns D-105 Q2,
-  SPEC S7.5c)
-- feat(ciu): host-scoped local secrets — `[deploy.hosts.<name>.secrets]` (ASK_EXTERNAL /
-  GEN_LOCAL only) materialized under the project store's `hosts/<host>/` namespace,
-  resolvable before any Vault exists on the target; `ciu host-secrets <host>
-  [--materialize | --list | --path NAME] [-y]`, explicit-only, values never printed
-  (CIU-35, SPEC S14.3a)
-
-### Changed
-- feat(ciu): Assay-backed implementation gate — CIU's gate is now judged by the released,
-  hash-pinned Assay CLI (vendored `tools/assay/assay-2.1.0.pyz` + `.sha256`, `sha256sum -c`
-  verified each run), replacing the retired `nyxloom.coverage_gate`; `assay.toml` declares the
-  full-suite lane (100% whole-source line+branch) with an R1 changed-line floor on
-  `base..HEAD` inside Assay's isolated snapshot; the gate slice resolves only from
-  `$CGROUP_PARENT_DEV_BACKGROUND` (verified `LoadState=loaded`, fail-closed) and the gate's
-  status is the Assay job's own (P07, CIU-28/CIU-29, SPEC S18)
 
 ## [6.2.0] - 2026-08-20
 <!-- cmru: generated -->

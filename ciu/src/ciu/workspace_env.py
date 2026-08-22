@@ -42,7 +42,15 @@ ENV_FILE_NAME = WORKSPACE_ENV
 # run, these keys from the freshly written ciu.env outrank any inherited
 # ambient value: the record was computed for THIS repo root moments ago and
 # is by construction fresher than shell state sourced from another checkout.
-GENERATED_IDENTITY_KEYS = ("REPO_NAME", "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL")
+# PUBLIC_FQDN joins with CIU-47: generate derives it from THIS workspace's
+# own inputs, so the written record outranks an inherited ambient value here
+# too (read-path precedence of already-generated workspaces is unchanged).
+GENERATED_IDENTITY_KEYS = (
+    "REPO_NAME",
+    "INSTANCE_ID",
+    "DOCKER_NETWORK_INTERNAL",
+    "PUBLIC_FQDN",
+)
 
 # S2.2 — required keys always present in ciu.env
 REQUIRED_KEYS_CORE: tuple[str, ...] = (
@@ -275,21 +283,50 @@ def _detect_env_type() -> Dict[str, str]:
 
 
 def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
-    public_fqdn = os.environ.get("PUBLIC_FQDN", "")
+    """Detect PUBLIC_FQDN/PUBLIC_IP with S2.7 refined precedence (CIU-47).
+
+    ``env generate`` is the identity-computation verb: PUBLIC_FQDN is derived
+    from THIS workspace's own inputs — the rendered global config's
+    ``infrastructure.public_fqdn`` first, else reverse DNS of the detected
+    public IP — and an ambient ``PUBLIC_FQDN`` (a shell that sourced another
+    checkout's ``ciu.env`` carries that checkout's value) is adopted only
+    when CONSISTENT with what this workspace derives. On a real mismatch the
+    derived value wins and a stderr warning names the ignored ambient value
+    — the same refined precedence S2.7 applies to ``PHYSICAL_REPO_ROOT`` and
+    the identity tuple (CIU-41).
+
+    One deliberate exception, mirroring the mountinfo precedent: when the
+    detection path yields NO independently sourced value (no config entry,
+    and reverse DNS produced nothing — e.g. an offline host), there is no
+    basis to override an explicit pre-set value, so the ambient FQDN is kept
+    silently. It remains the legitimate manual-override mechanism there.
+    The bare ``os.environ.get("PUBLIC_FQDN", ...)`` fallback this replaces
+    adopted the ambient value unconditionally, with no consistency check —
+    a main checkout's sourced ``ciu.env`` leaked its FQDN into a fresh
+    worktree's generated record (CIU-47).
+
+    ``PUBLIC_IP`` and the TLS paths keep the plain S2.7 pre-set-wins reads;
+    they are not part of the filed CIU-47 scope.
+    """
+    ambient_fqdn = os.environ.get("PUBLIC_FQDN") or ""
     public_ip = os.environ.get("PUBLIC_IP", "")
 
-    if not public_fqdn:
-        ciu_global = repo_root / GLOBAL_CONFIG_RENDERED
-        if ciu_global.exists():
-            try:
-                import tomllib
+    # -- Derive from THIS workspace's own inputs first (CIU-47) ------------
+    # `derived` is None until a value with a real source behind it exists.
+    derived: Optional[str] = None
 
-                with ciu_global.open("rb") as f:
-                    config = tomllib.load(f)
-                public_fqdn = config.get("infrastructure", {}).get("public_fqdn", "")
-            except (tomllib.TOMLDecodeError, OSError, KeyError, AttributeError) as exc:
-                _log_warn(f"Could not parse {ciu_global}: {exc}")
-                public_fqdn = ""
+    ciu_global = repo_root / GLOBAL_CONFIG_RENDERED
+    if ciu_global.exists():
+        try:
+            import tomllib
+
+            with ciu_global.open("rb") as f:
+                config = tomllib.load(f)
+            configured = config.get("infrastructure", {}).get("public_fqdn", "")
+            if isinstance(configured, str) and configured:
+                derived = configured
+        except (tomllib.TOMLDecodeError, OSError, KeyError, AttributeError, TypeError) as exc:
+            _log_warn(f"Could not parse {ciu_global}: {exc}")
 
     if not public_ip:
         try:
@@ -298,11 +335,31 @@ def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
         except (urllib.error.URLError, TimeoutError):
             public_ip = ""
 
-    if not public_fqdn and public_ip:
+    if derived is None and public_ip:
         try:
-            public_fqdn = socket.gethostbyaddr(public_ip)[0]
+            derived = socket.gethostbyaddr(public_ip)[0]
         except (socket.herror, socket.gaierror):
-            public_fqdn = ""
+            derived = None
+
+    # -- Reconcile with the ambient value (S2.7 refined precedence) --------
+    if ambient_fqdn:
+        if derived is not None and derived != ambient_fqdn:
+            print(
+                f"ciu: ignoring pre-set PUBLIC_FQDN={ambient_fqdn!r} during "
+                f"env generate — inconsistent with the value derived for "
+                f"this workspace ({derived!r}). The derived value is written "
+                "to ciu.env (the pre-set env is likely stale/cross-workspace "
+                "shell state, e.g. inherited from another checkout's sourced "
+                "ciu.env).",
+                file=sys.stderr,
+            )
+            public_fqdn = derived
+        else:
+            # Consistent, or no independently derived value to compare
+            # against — the pre-set value stands (manual override).
+            public_fqdn = ambient_fqdn
+    else:
+        public_fqdn = derived or ""
 
     if not public_fqdn:
         if require_fqdn:

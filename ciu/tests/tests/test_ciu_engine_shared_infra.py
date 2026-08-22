@@ -111,6 +111,8 @@ ref_projects = ["idp-dev-idp"]
 def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("REPO_NAME", "dstdns")
+    monkeypatch.setenv("INSTANCE_ID", "abc123")
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "shinfra-net")
     monkeypatch.setenv("CONTAINER_UID", str(os.getuid()))
     monkeypatch.setenv("CONTAINER_GID", str(os.getgid()))
@@ -123,7 +125,8 @@ def _write_ciu_env(tmp_path: Path) -> None:
     body = "\n".join(
         f'export {key}="{os.environ[key]}"'
         for key in (
-            "REPO_ROOT", "PHYSICAL_REPO_ROOT", "DOCKER_NETWORK_INTERNAL",
+            "REPO_ROOT", "PHYSICAL_REPO_ROOT", "REPO_NAME", "INSTANCE_ID",
+            "DOCKER_NETWORK_INTERNAL",
             "CONTAINER_UID", "CONTAINER_GID", "DOCKER_GID",
         )
     ) + "\n"
@@ -360,11 +363,16 @@ class TestRunShippedSharedInfraWiring:
             engine.run_shipped(stack, define_root=tmp_path)
         assert spy.calls == []
 
-    def test_unresolvable_compose_project_with_intent_refuses(self, tmp_path, monkeypatch):
-        """S8.5 legacy fallback: no deploy.project_name/environment_tag means
-        `compose_project_name` cannot derive a project, so there is nothing
-        to scope the shared-infra join to -- this must refuse rather than
-        silently skip a declared join or pass a bogus project value."""
+    def test_identity_named_project_with_intent_joins_under_that_name(
+        self, tmp_path, monkeypatch
+    ):
+        """S8.5/CIU-46 cutover: no deploy.project_name/environment_tag means
+        `compose_project_name` cannot derive the scoped project, so the
+        shipped stack runs under the WORKSPACE-IDENTITY project derived from
+        its ciu.env — and a declared shared-infra join scopes its filters to
+        exactly that name. (The withdrawn [S16.1] refusal existed because the
+        basename fallback's name was a value CIU itself never learned; the
+        identity name is computed here, so there is nothing left to refuse.)"""
         stack = _write_shipped_repo(
             tmp_path, monkeypatch, with_intent=True, global_defaults=GLOBAL_DEFAULTS_NO_PROJECT,
         )
@@ -373,9 +381,13 @@ class TestRunShippedSharedInfraWiring:
         spy = SpyConnect()
         monkeypatch.setattr(engine.worktree, "connect_shared_infra_after_up", spy)
 
-        with pytest.raises(engine.ComposeError, match=r"\[S16\.1\].*cannot be derived"):
-            engine.run_shipped(stack, define_root=tmp_path)
-        assert spy.calls == []
+        result = engine.run_shipped(stack, define_root=tmp_path)
+
+        assert result["status"] == "success"
+        assert len(spy.calls) == 1
+        repo_root, compose_project, intent = spy.calls[0]
+        assert compose_project == "dstdns-abc123-legacy"
+        assert repo_root == tmp_path.resolve()
 
     def test_unresolvable_compose_project_without_intent_is_unaffected(self, tmp_path, monkeypatch):
         """The pre-existing S8.7 legacy-fallback path (no shared-infra

@@ -80,6 +80,95 @@ $ ciu worktree rm pkg-under-test --json
 git removal raises with exit 2 and **no** success document; the error names
 the retained resources.
 
+## 5b. Clean up forgotten branches — grounded, never age-based (S16.8)
+
+After weeks of parallel worktree waves the repo accumulates merged branches
+and their checkouts. `ciu worktree branches` proves what is safe instead of
+guessing:
+
+```console
+$ ciu worktree branches
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 current, 1 base
+
+prunable:
+  fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
+
+unmerged:
+  feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
+```
+
+Survey only — nothing is removed. `-y` removes exactly the `prunable`
+category, gated twice so it can never half-prune: the base must be contained
+in a checkout's HEAD (or origin/HEAD) or `-y` refuses before touching
+anything, and a branch tracking an upstream that lacks its tip is reported
+`FAILED` before its checkout is touched. Every outcome is printed
+(`removed:` / `FAILED: <branch> — <reason>` lines) and a partial prune exits
+non-zero — never a silent success. Git re-verifies cleanliness and mergedness
+on every step; nothing is ever force-deleted. The categories are closed:
+`base`, `mainline` (the origin/HEAD default branch — never prunable even
+when measured against another ref), `current` (the primary checkout's
+branch), `prunable`, `merged-dirty` (merged but its checkout has uncommitted
+work — decide by hand), and `unmerged`. Every branch carries `ahead`/
+`behind`, `changed_files` vs the merge-base, last-commit date, and its ciu
+instance linkage, so a human can rule on the rest. No age heuristic exists
+anywhere in this command: a branch one minute old that is fully merged is
+prunable, a branch six months old that is not is not.
+
+Automation allowlists the capability id `worktree.branches.v1`
+(`ciu capabilities --json`) instead of inferring the feature from SemVer;
+the `--json` document is versioned (`schema_version: 1`, operations
+`branches`/`branches-prune`, statuses `survey`/`pruned`/`partial`).
+
+```bash
+ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
+```
+
+
+## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
+
+When ONE profile's provisioning writes the Vault path another stack reads,
+declare it beside the directive so a partial selection refuses UPFRONT
+naming the producer instead of failing at materialization with only the
+bare path:
+
+```toml
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
+```
+
+```console
+$ CIU_SERVICES_PROFILE=core,db ciu up
+[ERROR] Provisioning producers missing from the selection (S13.6):
+  stack 'applications/controller': ASK_VAULT secret 'bootstrap_token' reads Vault path 'authentik/bootstrap_token', which is provisioned by profile 'identity' — none of its stacks are in your selection (core,db). Deploy the producer profile or its stacks, or seed the path out-of-band before deploying.
+```
+
+Producer presence is judged by DEPLOYED STACKS (the producer profile's
+`stacks` list plus its phases' services), not the label — an alias profile
+deploying the same stacks satisfies it. The value must name a profile in
+`[deploy.profiles]`; a typo is a configuration error even when nothing else
+would check it.
+
+## 5d. Tell provenance which images are vendor artifacts (`[deploy.provenance]`, S17.5)
+
+Vendor images (vault, authentik, consul…) carry no ciu bake, so
+`ciu provenance` could never reach `verified-match` on deployments built
+from them. Declare the exact references you expect to be third-party:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+]
+```
+
+A running container whose image equals a declared entry (compared on
+Docker-canonical spellings) reports status `match`→commit or
+`vendor-pinned`; the same image name at another reference is drift →
+`mismatch`; anything undeclared and unlabelled stays `unlabelled`, visible
+in every document. Provenance documents are emitted at `schema_version: 2`
+— strict consumers refuse unknown members rather than guess.
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console
@@ -212,6 +301,32 @@ devcontainer joined the instance network) is disconnected first; one that
 cannot be disconnected is NAMED and the clean exits 1 — it is never silently
 kept. The main workspace keeps its own workspace network (your devcontainer
 lives on it) and says so twice: a `kept:` line and the final success line.
+
+**Shipped stacks without deploy tags (CIU-46).** A stack deployed via
+`ciu up --dir <stack> --shipped` on a checkout whose config sets neither
+`deploy.project_name` nor `deploy.environment_tag` runs under the
+workspace-identity compose project `REPO_NAME-INSTANCE_ID-<stack>` (from
+this checkout's `ciu.env`) — and `ciu clean` derives the SAME name from the
+same record, so its containers, `*_default` network, and named volumes are
+removed like any other stack's:
+
+```console
+$ ciu up --dir vendor/vault --shipped
+[INFO] [S8.7] deploy.project_name/environment_tag not set — shipped stack uses the workspace-identity compose project 'myapp-abc123-vault'
+$ ciu clean -y
+[INFO] Removing 2 container(s): myapp-abc123-vault-vault-1, myapp-abc123-vault-vault-init
+[SUCCESS] clean complete
+```
+
+This is a breaking change against pre-6.5.0 behavior: the withdrawn fallback
+let docker derive the project from the directory basename — identical for
+every checkout of your repo (cross-checkout collisions) and invisible to
+`ciu clean`. One-time migration for deployments created before this change:
+tear the old-named objects down manually once
+(`docker compose -p <old-basename> down -v --remove-orphans`, then
+`docker network rm <old-basename>_default`), or re-up under a tagged config.
+`ciu.env` with `REPO_NAME`/`INSTANCE_ID` must exist for a config-less
+shipped `up` or `clean` to name the project — `ciu env generate` writes it.
 
 ## 12. The implementation gate (Assay-backed, S18)
 

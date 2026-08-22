@@ -53,6 +53,9 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree branches [--base REF] [-y] [--json]
+                                survey local branches; -y prunes exactly the
+                                fully-merged, clean ones (S16.8)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -118,6 +121,7 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree branches [--base REF] [-y] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
@@ -125,10 +129,12 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   adopt is the only operation that owns an unmanaged existing checkout.
   `inspect` reports the persisted record plus freshly read Git facts; `list
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
-  stdout (S16.4). `up` starts the selected ready instance under its OWN
-  ciu.env; `exec` runs exact argv (no shell) in that root and never starts
-  anything implicitly (S16.6). `exec --target ALIAS` runs inside the ONE
-  already-running declared container (S16.7).
+  stdout (S16.4). `branches` surveys local branches against a base and `-y`
+  prunes exactly the fully-merged, clean ones — never age-based, never the
+  mainline or the primary checkout's branch (S16.8). `up` starts the selected
+  ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
+  that root and never starts anything implicitly (S16.6). `exec --target
+  ALIAS` runs inside the ONE already-running declared container (S16.7).
 """,
     "capabilities": """\
 ciu capabilities [--json]
@@ -587,7 +593,7 @@ def _provenance(rest: list[str]) -> int:
         # here, BEFORE verify_running_provenance is ever called — there is no
         # project_prefix to scope a check with.
         result = ProvenanceResult(
-            schema_version=1, instance=None, commit_under_test=None,
+            schema_version=2, instance=None, commit_under_test=None,
             tree_state=None, containers=None, overall="refused-no-identity",
         )
         if opts.json_output:
@@ -598,7 +604,30 @@ def _provenance(rest: list[str]) -> int:
                   file=sys.stderr)
         return 2
 
-    result = verify_running_provenance(f"{project}-{env_tag}")
+    # CIU-39: the declared vendor baseline ([deploy.provenance] vendor_images).
+    # Malformed declarations refuse loudly — a silently ignored declaration
+    # would certify exactly the deployment it was written to vouch for.
+    provenance_cfg = deploy_cfg.get("provenance")
+    if provenance_cfg is not None and not isinstance(provenance_cfg, dict):
+        print(
+            "ciu provenance: [deploy.provenance] must be a TOML table "
+            "holding vendor_images (e.g. vendor_images = [\"hashicorp/vault:1.15\"]).",
+            file=sys.stderr,
+        )
+        return 2
+    raw_vendor = (provenance_cfg or {}).get("vendor_images", [])
+    if not isinstance(raw_vendor, list) or any(
+        not isinstance(v, str) or not v.strip() for v in raw_vendor
+    ):
+        print(
+            "ciu provenance: [deploy.provenance] vendor_images must be a list "
+            "of non-empty image references (e.g. \"hashicorp/vault:1.15\").",
+            file=sys.stderr,
+        )
+        return 2
+    vendor_images = [v.strip() for v in raw_vendor]
+
+    result = verify_running_provenance(f"{project}-{env_tag}", vendor_images=vendor_images)
 
     if opts.json_output:
         print(_json.dumps(result.to_dict(), indent=2))
@@ -607,18 +636,31 @@ def _provenance(rest: list[str]) -> int:
         return 0
 
     if result.overall == "mismatch":
+        from .deploy import _image_reference_name
+
         mismatches = [c for c in (result.containers or []) if c.status == "mismatch"]
-        detail = "\n".join(
-            f"  {c.name} ({c.image}): running {c.labelled_revision}, "
-            f"testing {result.commit_under_test}"
-            for c in mismatches
-        )
+        declared_names = {_image_reference_name(v) for v in vendor_images}
+        detail_lines = []
+        for c in mismatches:
+            if _image_reference_name(c.image) in declared_names:
+                # Vendor drift: the declaration's artifact was swapped — the
+                # evidence is reference-vs-declaration, not commit-vs-label.
+                detail_lines.append(
+                    f"  {c.name} ({c.image}): not the declared vendor reference"
+                )
+            else:
+                detail_lines.append(
+                    f"  {c.name} ({c.image}): running {c.labelled_revision}, "
+                    f"testing {result.commit_under_test}"
+                )
+        detail = "\n".join(detail_lines)
         message = (
-            f"[S17] {len(mismatches)} running container(s) were built from a "
-            f"different commit than the one under test:\n{detail}\n"
+            f"[S17] {len(mismatches)} running container(s) disagree with their "
+            f"expectation:\n{detail}\n"
             "Rebuild and redeploy (`ciu bake` + `ciu up`) so the result describes "
-            "the code under test, or pass --ignore-mismatch to run anyway (the "
-            "result then describes the OLD artifact, whatever it says)."
+            "the code under test, correct the declaration for drifted vendor "
+            "images, or pass --ignore-mismatch to run anyway (the result then "
+            "describes whatever is actually running)."
         )
         if not opts.ignore_mismatch:
             print(message, file=sys.stderr)
@@ -660,8 +702,19 @@ def _provenance(rest: list[str]) -> int:
 
     # Reached for "verified-match", and for "mismatch" + --ignore-mismatch
     # (the fall-through above). Every other case returned earlier, so this
-    # never claims "OK" for a run that could not check anything.
-    print(f"provenance OK — running containers match {result.commit_under_test}")
+    # never claims "OK" for a run that could not check anything. With declared
+    # vendor pins (CIU-39) the OK names what was actually verified: the commit
+    # under test and/or the declared vendor references.
+    vendor_pinned = [
+        c for c in (result.containers or []) if c.status == "vendor-pinned"
+    ]
+    if vendor_pinned:
+        print(
+            f"provenance OK — running containers match {result.commit_under_test} "
+            f"or their declared vendor references ({len(vendor_pinned)} pinned)"
+        )
+    else:
+        print(f"provenance OK — running containers match {result.commit_under_test}")
     return 0
 
 
@@ -794,6 +847,14 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    p_branches = sub.add_parser("branches", add_help=False)
+    p_branches.add_argument("--base", default="main", metavar="REF")
+    p_branches.add_argument(
+        "-y", "--yes", action="store_true", default=False,
+        help="remove the fully merged, clean branches (default: survey only)",
+    )
+    p_branches.add_argument("--json", action="store_true", default=False)
+
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
 
@@ -803,7 +864,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up,
+        p_up, p_branches,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -899,6 +960,54 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "up":
             return wt_mod.up_instance(repo_root, opts.logical_name)
+
+        if opts.action == "branches":
+            doc = wt_mod.prune_branches(
+                repo_root, base=opts.base, yes=opts.yes
+            ) if opts.yes else wt_mod.branch_hygiene(repo_root, base=opts.base)
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                counts = doc["counts"]
+                print(
+                    f"branch hygiene vs '{doc['base']}' — "
+                    f"{counts['prunable']} prunable, "
+                    f"{counts['merged-dirty']} merged-dirty, "
+                    f"{counts['unmerged']} unmerged, "
+                    f"{counts['current']} current, {counts['base']} base"
+                )
+                for category in wt_mod.BRANCH_CATEGORIES:
+                    rows = [b for b in doc["branches"] if b["category"] == category]
+                    if not rows:
+                        continue
+                    print(f"\n{category}:")
+                    for b in rows:
+                        where = f" @ {b['checkout']}" if b["checkout"] else ""
+                        dirt = " dirty" if b["dirty"] else ""
+                        ciu = (
+                            f"  ciu:{b['ciu_instance']['logical_name']}"
+                            f"({b['ciu_instance']['state']})"
+                            if b["ciu_instance"] else ""
+                        )
+                        print(
+                            f"  {b['name']}{where}  ahead {b['ahead']} "
+                            f"behind {b['behind']} changed "
+                            f"{b['changed_files']} file(s)  last "
+                            f"{b['last_commit_at'][:10]}{dirt}{ciu}"
+                        )
+                # survey/prune documents always carry the hint
+                print(f"\n{doc['hint']}")
+                if doc["operation"] == "branches-prune":
+                    # The prune's outcome is the headline, not the re-survey:
+                    # removed/failed are named explicitly and a partial prune
+                    # exits non-zero (review: silent partial success).
+                    for name in doc.get("removed", []):
+                        print(f"removed: {name}")
+                    for f in doc.get("failed", []):
+                        print(f"FAILED: {f['branch']} — {f['reason']}")
+                    if doc["status"] == "partial":
+                        return 1
+            return 0
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).

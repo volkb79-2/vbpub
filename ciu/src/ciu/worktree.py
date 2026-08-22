@@ -693,6 +693,7 @@ WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 # release; `worktree.up.v1`/`worktree.exec-local.v1` ship in P05;
 # `worktree.exec-target.v1` ships in P06.
 WORKTREE_CAPABILITIES = (
+    "worktree.branches.v1",
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
@@ -828,6 +829,311 @@ def capabilities_document() -> dict[str, Any]:
         "schema_version": CAPABILITIES_SCHEMA_VERSION,
         "capabilities": sorted(WORKTREE_CAPABILITIES),
     }
+
+
+# ---------------------------------------------------------------------------
+# S16.8 — worktree BRANCH hygiene (CIU-25, git half): survey + prune
+# ---------------------------------------------------------------------------
+
+BRANCHES_SCHEMA_VERSION = 1
+
+# Closed category vocabulary. Every local branch collapses into exactly one:
+#   base          — the branch the survey is measured against (never touched)
+#   mainline      — the repository's DEFAULT branch (origin/HEAD's target;
+#                   policy fallback: literally "main"/"master" when origin/HEAD
+#                   is unresolvable) — never pruned even when the survey runs
+#                   against another base: "clean up merged branches" can never
+#                   mean deleting a mainline
+#   current       — the PRIMARY checkout's branch: somebody's working context,
+#                   even when merged
+#   prunable      — fully merged into base AND (no checkout, or a clean,
+#                   non-primary checkout) → safe to remove
+#   merged-dirty  — merged but its checkout carries uncommitted changes;
+#                   decide by hand what to do with the dirt first
+#   unmerged      — has commits not in base → keep; attributes inform the decision
+BRANCH_CATEGORIES = (
+    "base", "mainline", "current", "prunable", "merged-dirty", "unmerged",
+)
+
+_MAINLINE_FALLBACKS = ("main", "master")
+
+
+def _default_branch(repo_root: Path) -> str | None:
+    """The repo's default branch: origin/HEAD's target, else None."""
+    res = _git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], repo_root)
+    if res.returncode == 0:
+        return res.stdout.strip().removeprefix("origin/")
+    return None
+
+
+def _resolve_base_branch(repo_root: Path, base: str) -> str:
+    """Verify *base* names a LOCAL BRANCH; refuse loudly otherwise.
+
+    A local branch is required — not a SHA, not a remote-tracking ref —
+    because classification and the destructive prune reason about branch
+    NAMES against this anchor. Accepting `--base <SHA>` let the branch whose
+    tip WAS that SHA classify as prunable and get deleted: the survey's own
+    anchor removed by its own prune (review finding).
+    """
+    res = _git(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{base}"], repo_root
+    )
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.8] --base {base!r} does not name a LOCAL BRANCH in {repo_root} "
+            "(SHAs and remote-tracking refs are refused — the prune reasons "
+            "about branch names). Pass e.g. `ciu worktree branches --base main`."
+        )
+    return base
+
+
+def _is_ancestor(repo_root: Path, ancestor_ref: str, descendant_ref: str) -> bool:
+    res = _git(
+        ["merge-base", "--is-ancestor", ancestor_ref, descendant_ref], repo_root
+    )
+    return res.returncode == 0
+
+
+def _prune_base_sanity(repo_root: Path, base: str) -> None:
+    """Refuse `-y` when the base is not contained in any checkout's HEAD.
+
+    Git's `branch -d` judges mergedness against HEAD/upstream, NOT against an
+    arbitrary --base. Pruning a base no checkout contains could remove linked
+    checkouts while `branch -d` then refuses every branch — half-pruned state
+    reported as success (the reproduced review BLOCKER). The survey answers
+    any base; the DESTRUCTIVE pass demands one git itself agrees with.
+    """
+    base_sha = _git(["rev-parse", "--verify", f"refs/heads/{base}"], repo_root)
+    assert base_sha.returncode == 0  # _resolve_base_branch already ran
+    base_tip = base_sha.stdout.strip()
+
+    safeties: list[str] = []
+    for wt in list_worktrees(repo_root):
+        if wt.is_primary and wt.branch != "(detached)":
+            safeties.append(wt.branch)
+    default = _default_branch(repo_root)
+    if default:
+        safeties.append(default)
+
+    for head in dict.fromkeys(safeties):
+        head_sha = _git(["rev-parse", "--verify", f"refs/heads/{head}"], repo_root)
+        if head_sha.returncode == 0 and base_tip == head_sha.stdout.strip():
+            return  # the base IS a working HEAD
+        if _is_ancestor(repo_root, base_tip, head):
+            return
+    raise WorktreeError(
+        f"[S16.8] --base {base!r} is not contained in any checkout's HEAD or "
+        "origin/HEAD. Pruning against it could remove checkouts while Git then "
+        "refuses the branch deletions (its mergedness rule uses HEAD/upstream, "
+        "not --base) — leaving half-removed state. Survey only, or pass the "
+        "branch your work actually merges target (e.g. the mainline)."
+    )
+
+
+def _branch_facts(repo_root: Path, base: str) -> list[dict[str, Any]]:
+    """Per-local-branch facts, batched through for-each-ref/rev-list."""
+    fmt = "%(refname:short)%00%(objectname:short)%00%(committerdate:iso-strict)%00%(contents:subject)"
+    res = _git(["for-each-ref", "refs/heads", "--format", fmt], repo_root)
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.8] git for-each-ref failed: {(res.stderr or res.stdout).strip()}"
+        )
+    facts: list[dict[str, Any]] = []
+    for line in res.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, sha, date, subject = (line.split("\x00", 3) + ["", "", "", ""])[:4]
+        # ahead/behind in ONE call: left = base-only commits (behind),
+        # right = branch-only commits (ahead).
+        lr = _git(["rev-list", "--count", "--left-right", f"{base}...{name}"], repo_root)
+        ahead = behind = -1
+        if lr.returncode == 0 and "\t" in lr.stdout:
+            behind_s, ahead_s = lr.stdout.split()
+            behind, ahead = int(behind_s), int(ahead_s)
+        diff = _git(["diff", "--name-only", f"{base}...{name}"], repo_root)
+        changed_files = (
+            len([ln for ln in diff.stdout.splitlines() if ln.strip()])
+            if diff.returncode == 0 else -1
+        )
+        facts.append({
+            "name": name,
+            "head": sha,
+            "last_commit_at": date,
+            "last_commit_subject": subject,
+            "ahead": ahead,
+            "behind": behind,
+            "changed_files": changed_files,
+            # merged = zero branch-only commits
+            "merged": ahead == 0,
+        })
+    return facts
+
+
+def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
+    """Build the ``ciu worktree branches`` document (S16.8 / CIU-25).
+
+    A GROUNDED staleness survey — never age-based, never process-based: a
+    branch is prunable only when Git itself proves nothing would be lost
+    (zero commits not in *base*) AND any checkout of it is clean. Attributes
+    (#changed files vs the merge-base, ahead/behind, last-commit age, ciu
+    instance linkage) are surfaced so a human can rule on the rest.
+    """
+    repo_root = Path(repo_root).resolve()
+    _resolve_base_branch(repo_root, base)
+    facts = _branch_facts(repo_root, base)
+    worktrees = list_worktrees(repo_root)
+    checkout_map: dict[str, list[Path]] = {}
+    primary_paths: set[Path] = set()
+    for wt in worktrees:
+        checkout_map.setdefault(wt.branch, []).append(wt.path)
+        if wt.is_primary:
+            primary_paths.add(wt.path)
+    records = {
+        r.git_worktree_path.resolve(): r for r in list_instance_records(repo_root)
+    }
+    default_branch = _default_branch(repo_root)
+
+    branches: list[dict[str, Any]] = []
+    for fact in facts:
+        name = fact["name"]
+        checkouts = sorted(str(p) for p in checkout_map.get(name, []))
+        checkout: str | None = checkouts[0] if checkouts else None
+        dirty = False
+        if checkout:
+            st = _git(["status", "--porcelain"], Path(checkout))
+            dirty = st.returncode != 0 or bool(st.stdout.strip())
+        record = (
+            records.get(Path(checkout).resolve()) if checkout else None
+        )
+        ciu_instance = (
+            {"logical_name": record.logical_name, "state": record.state}
+            if record is not None else None
+        )
+
+        if name == base:
+            # exact name only: "feature/main" is a real branch with its own
+            # work, never the anchor (review finding — endswith misfiled it
+            # into base, hiding it from every actionable category)
+            category = "base"
+        elif name == default_branch or (
+            default_branch is None and name in _MAINLINE_FALLBACKS
+        ):
+            # Never prune a mainline, even when the survey runs against
+            # another base and the mainline happens to be fully merged.
+            category = "mainline"
+        elif checkout and Path(checkout) in primary_paths:
+            # The primary checkout's branch is somebody's working context —
+            # even when merged, removing it would yank the primary workspace.
+            category = "current"
+        elif fact["merged"]:
+            if checkout and dirty:
+                category = "merged-dirty"
+            else:
+                category = "prunable"
+        else:
+            category = "unmerged"
+
+        branches.append({
+            **fact,
+            "category": category,
+            "checkout": checkout,
+            "dirty": dirty,
+            "ciu_instance": ciu_instance,
+        })
+
+    branches.sort(key=lambda b: (b["category"], b["name"]))
+    counts = {c: sum(1 for b in branches if b["category"] == c) for c in BRANCH_CATEGORIES}
+    prunable_n = counts["prunable"]
+    return {
+        "schema_version": BRANCHES_SCHEMA_VERSION,
+        "operation": "branches",
+        "status": "survey",
+        "base": base,
+        "counts": counts,
+        "hint": (
+            f"{prunable_n} branch(es) are fully merged and safe to remove; "
+            "re-run with -y/--yes to prune them."
+        ) if prunable_n else "nothing prunable.",
+        "branches": branches,
+    }
+
+
+def prune_branches(
+    repo_root: Path, *, base: str = "main", yes: bool = False
+) -> dict[str, Any]:
+    """Remove exactly the ``prunable`` category (S16.8 / CIU-25).
+
+    Removal order per branch: ``git worktree remove`` first (Git re-verifies
+    cleanliness and refuses dirt — belt to our braces), then ``git branch -d``
+    (Git re-verifies mergedness). A refusal anywhere moves that branch to
+    *failed* WITH the reason and the prune continues; the overall status is
+    ``pruned`` only when every prunable branch was removed. Without *yes* no
+    side effect happens: the caller gets the survey with an explicit hint.
+    """
+    survey = branch_hygiene(repo_root, base=base)
+    prunables = [b for b in survey["branches"] if b["category"] == "prunable"]
+    if not yes:
+        # branch_hygiene's hint already says what -y would do; a survey is
+        # side-effect-free by construction.
+        return survey
+
+    # BLOCKER fix (review): the destructive pass demands a base git itself
+    # agrees with, BEFORE anything is touched.
+    _prune_base_sanity(repo_root, base)
+
+    repo_root = Path(repo_root).resolve()
+    removed: list[str] = []
+    failed: list[dict[str, str]] = []
+    for branch in prunables:
+        name = branch["name"]
+        failure = ""
+        # Read-only pre-check mirroring git's own deletion rule: a branch
+        # tracking an upstream that does not contain it will be refused by
+        # `branch -d` AFTER we already removed its checkout — check FIRST,
+        # while everything is still intact (review blocker's other half).
+        up = _git(
+            ["rev-parse", "--verify", "--quiet", f"{name}@{{upstream}}"],
+            repo_root,
+        )
+        if up.returncode == 0:
+            upstream = up.stdout.strip()
+            tip = _git(["rev-parse", "--verify", f"refs/heads/{name}"], repo_root)
+            if tip.returncode == 0 and not _is_ancestor(
+                repo_root, tip.stdout.strip(), upstream
+            ):
+                failed.append({
+                    "branch": name,
+                    "reason": (
+                        "tracks an upstream that does not contain it — git "
+                        "branch -d would refuse after the checkout was gone; "
+                        "reconcile the upstream first"
+                    ),
+                })
+                continue
+        if branch["checkout"]:
+            res = _git(["worktree", "remove", branch["checkout"]], repo_root)
+            if res.returncode != 0:
+                failure = (res.stderr or res.stdout).strip()
+        if not failure:
+            res = _git(["branch", "-d", name], repo_root)
+            if res.returncode != 0:
+                failure = (res.stderr or res.stdout).strip()
+        if failure:
+            failed.append({"branch": name, "reason": failure})
+        else:
+            removed.append(name)
+
+    # Re-survey AFTER the removals so the returned document reports the
+    # post-prune truth (counts/branches), not the stale pre-prune snapshot.
+    fresh = branch_hygiene(repo_root, base=base)
+    survey["branches"] = fresh["branches"]
+    survey["counts"] = fresh["counts"]
+    survey["hint"] = fresh["hint"]
+    survey["operation"] = "branches-prune"
+    survey["status"] = "pruned" if not failed else "partial"
+    survey["removed"] = removed
+    survey["failed"] = failed
+    return survey
 
 
 # ---------------------------------------------------------------------------

@@ -105,6 +105,71 @@ disconnect-or-refuse-named (never silently kept), and the post-clean
 invariant re-reads Docker STATE rather than trusting command exit codes or
 diagnostic text.
 
+## Why there is no compose project without `-p` (CIU-46 cutover)
+
+The pre-CIU-46 fallback let a config-less shipped stack run under docker's
+directory-derived project name. That name is a silent-invention default in
+the exact sense this estate forbids: it substitutes "what the cwd happens to
+be called" for identity, it is IDENTICAL for every checkout of a repo (so a
+second worktree's `up` adopts the first one's containers), and it was a value
+CIU itself never learned — clean's S6.4a enumeration could not see it, which
+is how shipped stacks' `*_default` networks and label-prefixed volumes
+survived a printed `clean complete`. Three shapes were considered:
+
+1. **Enumerate what docker derived** — clean predicts the basename name.
+   Rejected: prediction is not knowledge; any divergence between compose's
+   normalization and ours silently recreates the leak.
+2. **Keep the basename fallback, computed and passed as `-p`** — up/clean
+   agree by construction, but the cross-checkout collision class survives.
+3. **Derive the name from workspace identity** (`REPO_NAME-INSTANCE_ID-stack`
+   from THIS checkout's `ciu.env`, exact-path parsed) — adopted. Unique per
+   checkout AND per stack; up and clean call the same function; a checkout
+   that cannot produce the name refuses loudly instead of inventing one.
+
+The basename fallback is withdrawn outright rather than deprecated: the
+estate rule is derive-read-fail, never invent, and "whatever this directory
+is called" is invention. Cost: deployments created before the cutover keep
+their old-named objects until migrated once by hand (CONSUMERS.md §11); the
+S8.7 migration guard still catches the collision on the next tagged `up`.
+The S16.1 shared-infra join refusal fell out as dead code — it existed
+because the fallback's name was unknowable, and now nothing is.
+
+## Why provenance declares vendor images by reference, not digest (CIU-39)
+
+`ciu provenance` compared every running image's OCI revision label against
+the commit under test — a check that can never pass for an image ciu never
+built. Vendor artifacts (vault, authentik, consul) carry no ciu bake, sat at
+`unlabelled`, and pinned all-vendor deployments at `not-verified-no-evidence`
+forever; `verified-match` was unreachable live, which blocked assay's
+adjudicated-provenance integration (B004). Two shapes were on the table:
+
+1. **Digest pin file** (`image@sha256:...`, verified against RepoDigests) —
+   the stronger guarantee, rejected for now: it creates a pin-file
+   maintenance surface no consumer has (dstdns pins tags in its service
+   registry, not digests), adds `docker inspect` surface, and its failure
+   mode (stale pin after a routine upstream bump) would train operators to
+   ignore red provenance — a gate that cries wolf protects nothing.
+2. **Declared references** — adopted. The declaration says exactly what the
+   operator knows: "this exact reference is expected to be third-party."
+   Reference equality is checkable from evidence provenance already collects
+   (`docker ps`'s image string), so the feature has zero new docker surface —
+   compared on Docker-canonical references (registry-host case, implicit
+   docker.io/library defaults) so spelling differences cannot defeat pin or
+   drift detection. Drift (same canonical name, different reference) is a
+   mismatch because the declaration vouches for one artifact; undeclared
+   unlabelled images stay `unlabelled` in the document and contribute
+   nothing, so a forgotten bake of an own image is never HIDDEN — but be
+   precise about the verdict: a pin converts a tree that would have warned
+   `not-verified-no-evidence` into a green `verified-match` once no container
+   disagrees, exactly as an own-image `match` always has. Only auditable
+   config (falsely declaring an own image as vendor) escapes entirely.
+
+A declared image is never judged by the commit label even when it carries
+one: an upstream revision belongs to the upstream build. The vocabulary
+widening bumps every document to `schema_version: 2`; the seven CIU-20-era
+fixtures stay frozen as the schema-1 historical record, and strict consumers
+refuse unknown members — fail-closed in both directions.
+
 ## Why one envelope and one closed vocabulary for every document
 
 `create`/`ensure`/`adopt`/`add`, `inspect`, `list`, and `remove` all speak the

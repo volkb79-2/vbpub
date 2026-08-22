@@ -30,7 +30,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Complete teardown** | `clean`/`--reset` removes containers (any state) + project volumes + `vol-*` + rendered outputs; enforces a **post-clean invariant** (zero project containers AND volumes), erroring on survivors. | S6.4 |
 | **Phased orchestration** | Stacks run in numeric phase order; health-gated (`starting` ≠ healthy); per-service `enabled` bool or `[deploy.control]` flag name. | S7.1–S7.7 |
 | **Host profiles** | `--profile` selects phases/stacks and applies `topology_overrides` for cross-host addressing. Distinct from compose profiles. | S7.4, S7.5a |
-| **Dual shipping** | Maintainer may commit a hand-written `docker-compose.yml`; `ciu` never overwrites it. `up --shipped` runs it *through* CIU (env/network/preflight). | S8.5, S8.6 |
+| **Dual shipping** | Maintainer may commit a hand-written `docker-compose.yml`; `ciu` never overwrites it. `up --shipped` runs it *through* CIU (env/network/preflight); without deploy tags it names the compose project from the workspace identity (`REPO_NAME-INSTANCE_ID-stack`), so clean enumerates exactly what up created. | S8.5, S8.6, S8.7 |
 | **Hooks** | `pre_secrets` / `pre_compose` / `post_compose` with a context object: `ctx.secret_file()`, structured `apply_to_config`/`persist:"state"` returns. | S9.1–S9.4 |
 | **Hook readiness helpers** | `ctx.wait_healthy(service)` / `ctx.wait_tcp(host, port)` so a `post_compose` hook waits for a service instead of racing `compose up`. | S9.3 |
 | **Fail-fast validation** | Static catalog (S11) + typed exit codes; vault-backed stack aborts if no token resolves. | S10.3, S11, S7.6 |
@@ -46,7 +46,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
 | **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own `ciu.env`, and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
-| **Image provenance evidence** | `ciu provenance --json` verifies running labelled images against the commit under test and emits a stable verdict for an evidence consumer; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
+| **Image provenance evidence** | `ciu provenance --json` verifies running images against the commit under test AND against a declared vendor baseline (`[deploy.provenance] vendor_images` → `vendor-pinned`, vendor drift → `mismatch`), making `verified-match` reachable on all-vendor deployments; documents are emitted at `schema_version: 2`; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 | **Assay-backed implementation gate** | The release gate runs the full suite (100% line+branch) inside `tester-unified` and is judged by the released, hash-pinned Assay CLI (vendored zipapp, `sha256sum`-verified each run): Assay judges the changed-line floor on `base..HEAD` (R1) from the coverage artifact and emits a retained verdict; the gate slice comes only from `$CGROUP_PARENT_DEV_BACKGROUND` (verified loaded, fail-closed); the gate's status is the Assay job's own. | S18 |
 
 ---
@@ -77,9 +77,9 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
-| `ciu provenance` | Verify running-image revision against the commit under test | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
+| `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
 index and `ciu <verb> --help` for the verb's accepted options. The help output

@@ -40,6 +40,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -78,6 +79,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
+    parse_workspace_env,
     resolve_env_root,
     validate_required_certs,
 )
@@ -729,20 +731,25 @@ def reset_service(
     # without it an exited *-init sidecar lingers and pins the project's named
     # volumes through teardown (CIU-3, S6.4).
     print("[INFO]   Step 1/4: Stopping containers and removing volumes...", flush=True)
-    # S8.7: down under the scoped project (matches what `up` created). Falls
-    # back to the legacy dir-derived project when the config lacks the naming
-    # pair (reset's minimal-config contract). Legacy containers are still
-    # caught by Step 4's project-independent component-label cleanup.
+    # S8.7: down under the scoped project (matches what `up` created). CIU-46
+    # cutover: when the config lacks the naming pair, derive the
+    # workspace-identity project from THIS checkout's ciu.env — the same name
+    # a config-less `up` passed. There is no -p-less compose invocation left
+    # in CIU; the withdrawn basename fallback could never be enumerated by
+    # clean and collided across checkouts.
+    # S8.7 / CIU-46 cutover: ONE compose project name drives the down `-p`
+    # AND step 4's orphan-sweep scope — they can never disagree.
     try:
-        down_project_args = ["-p", compose_project_name(config, stack_dir)]
+        compose_project = compose_project_name(config, stack_dir)
     except ValueError:
-        down_project_args = []
-        print(
-            "[WARN] [S8.7] deploy.project_name/environment_tag not set — "
-            "compose down uses the legacy directory-derived project",
-            flush=True,
-        )
-    down_cmd = ["docker", "compose", *down_project_args, "-f", CIU_COMPOSE_OUTPUT]
+        if repo_root is None:
+            raise ValueError(
+                "[S8.7] deploy.project_name/environment_tag not set and no "
+                "repo_root was provided to derive the workspace-identity "
+                "compose project; set both tags or pass repo_root."
+            )
+        compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
+    down_cmd = ["docker", "compose", "-p", compose_project, "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     down_cmd += ["down", "-v", "--remove-orphans"]
@@ -815,28 +822,13 @@ def reset_service(
     # value used for `down -p` a few lines above — so this scopes the sweep to
     # exactly the containers this reset already owns.
     print("[INFO]   Step 4/4: Cleaning orphaned containers...", flush=True)
+    label_filter = f"label={label_prefix}.component={service_name}"
+    # Always scoped to the SAME compose project the down above used (CIU-19's
+    # lesson: a component-only sweep reaches into every instance on the host).
+    extra_filters = [
+        "--filter", f"label=com.docker.compose.project={compose_project}",
+    ]
     try:
-        label_filter = f"label={label_prefix}.component={service_name}"
-        extra_filters: list[str] = []
-        try:
-            extra_filters = [
-                "--filter",
-                "label=com.docker.compose.project="
-                f"{compose_project_name(config, stack_dir)}",
-            ]
-        except ValueError:
-            # No S8.7 naming pair — reset's minimal-config/legacy contract. The
-            # component-only sweep is what catches legacy containers created
-            # before project scoping existed, so it is KEPT here deliberately.
-            # It is also host-wide, hence the warning: with nothing to scope by,
-            # "every container with this component label" is the only handle we
-            # have, and the operator should know that is what ran.
-            print(
-                "[WARN] [S6.4] deploy.project_name/environment_tag not set — "
-                "orphan sweep matches this component label across EVERY "
-                "instance on the host, not just this one",
-                flush=True,
-            )
         result = procutil.run_cmd(
             ["docker", "ps", "-a", "--filter", label_filter, *extra_filters,
              "--format", "{{.Names}}"],
@@ -925,6 +917,68 @@ def compose_project_name(config: dict, stack_dir: Path) -> str:
     return f"{project}-{env_tag}-{Path(stack_dir).name}"
 
 
+def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
+    """Workspace-identity compose project for config-less deployments (CIU-46).
+
+    ``{REPO_NAME}-{INSTANCE_ID}-{stack_basename}``, derived from THIS
+    workspace's own ``ciu.env`` parsed by EXACT path (the S2.7 authority —
+    never the ambient process environment, which a shell that sourced another
+    checkout's record would contaminate). Unique per workspace AND per stack,
+    so config-less shipped stacks can neither collide across checkouts (the
+    withdrawn basename "legacy" fallback's hazard) nor escape clean's S6.4a
+    enumeration: up and clean call this same function, so they name a
+    project identically by construction.
+
+    Raises ValueError naming the record when ``ciu.env`` is missing or lacks
+    the identity keys — a deployment that cannot be NAMED must not start,
+    and a teardown that cannot be named must refuse rather than skip
+    (defaults-are-hazards: no invented basename stands in for identity).
+    The composed name is normalized exactly like docker compose's own
+    project-name rule (lowercase, ``[a-z0-9_-]`` only) and must still start
+    with an alphanumeric, else ValueError.
+    """
+    env_path = Path(repo_root) / "ciu.env"
+    if not env_path.is_file():
+        raise ValueError(
+            "[S8.7] no ciu.env at {root} — run `ciu env generate` first; "
+            "the workspace-identity compose project is derived from its "
+            "REPO_NAME/INSTANCE_ID".format(root=env_path)
+        )
+    values = parse_workspace_env(env_path)
+    repo_name = values.get("REPO_NAME", "")
+    instance_id = values.get("INSTANCE_ID", "")
+    if not repo_name or not instance_id:
+        raise ValueError(
+            "[S8.7] ciu.env at {root} lacks REPO_NAME/INSTANCE_ID — regenerate "
+            "it with `ciu env generate`; the workspace-identity compose "
+            "project is derived from them".format(root=env_path)
+        )
+    name = re.sub(
+        r"[^a-z0-9_-]",
+        "",
+        f"{repo_name}-{instance_id}-{Path(stack_dir).name}".lower(),
+    )
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        raise ValueError(
+            f"[S8.7] workspace-identity compose project normalizes to "
+            f"{name!r}, which docker compose would refuse; rename the stack "
+            "directory or set deploy.project_name/environment_tag."
+        )
+    basename = Path(stack_dir).name
+    if basename != re.sub(r"[^a-z0-9_-]", "", basename.lower()):
+        # Round-trip guard (adversarial review): sibling stacks 'Vault' and
+        # 'vault' (or 'my.repo' and 'myrepo') would normalize onto the SAME
+        # project within one workspace — the second up silently adopts the
+        # first one's containers. Refuse instead of colliding.
+        raise ValueError(
+            f"[S8.7] config-less compose naming requires the stack directory "
+            f"name to be already normalized ({basename!r} normalizes to "
+            f"{re.sub(r'[^a-z0-9_-]', '', basename.lower())!r}); rename the "
+            "directory or set deploy.project_name/environment_tag."
+        )
+    return name
+
+
 def legacy_project_containers(stack_dir: Path, expected_project: str) -> list[str]:
     """Containers of THIS instance still under the legacy compose project (S8.7).
 
@@ -989,19 +1043,21 @@ def guard_legacy_compose_project(stack_dir: Path, expected_project: str) -> None
 
 def execute_docker_compose_with_logs(
     file_args: list[str], *, cwd: Path, env: Optional[dict] = None,
-    project: Optional[str] = None,
+    project: str,
 ) -> dict:
-    """Run ``docker compose <file_args> up -d`` with live log streaming.
+    """Run ``docker compose -p <project> <file_args> up -d`` with live streaming.
 
-    *project* (S8.7) is passed as ``-p`` so compose reconciliation is
-    instance-scoped; ``None`` preserves the legacy cwd-derived project.
+    *project* (S8.7) is REQUIRED and passed as ``-p`` so compose
+    reconciliation is always instance-scoped and always enumerable by clean
+    (CIU-46 cutover): CIU never runs compose without an explicit project —
+    the withdrawn optional-None form let docker derive the cwd basename,
+    which collided across checkouts and escaped every teardown pass.
 
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
     print("[INFO] Executing docker compose up...", flush=True)
-    project_args = ["-p", project] if project else []
-    cmd = ["docker", "compose", *project_args, *file_args, "up", "-d"]
+    cmd = ["docker", "compose", "-p", project, *file_args, "up", "-d"]
 
     proc = None
     try:
@@ -1598,12 +1654,44 @@ def run_shipped(
         if define_root:
             repo_root = Path(define_root).resolve()
         else:
+            # CIU-46 (review): prefer THIS checkout's own env root — found by
+            # walking UP from the stack dir to its global-defaults marker —
+            # over an ambient `REPO_ROOT`, which a shell that sourced ANOTHER
+            # checkout's ciu.env carries. A linked worktree nested under its
+            # main checkout would otherwise name its compose project with the
+            # MAIN instance's identity record and silently adopt main's
+            # containers. The walk-up lands on exactly the env root
+            # bootstrap_workspace_env loaded, so naming and environment agree.
+            resolved_env_root = resolve_env_root(
+                working_dir, None, GLOBAL_CONFIG_DEFAULTS
+            )
+            # resolve_env_root falls back to start_dir when NOTHING is found;
+            # only an actually-present marker makes this the checkout's root.
+            marker_found = (
+                resolved_env_root / GLOBAL_CONFIG_DEFAULTS
+            ).is_file()
             env_repo_root = os.environ.get("REPO_ROOT")
-            if not env_repo_root:
+            if marker_found:
+                if (
+                    env_repo_root
+                    and Path(env_repo_root).resolve() != resolved_env_root.resolve()
+                ):
+                    print(
+                        "[INFO] [S8.7] ambient REPO_ROOT points at "
+                        f"{Path(env_repo_root).resolve()} but this stack's "
+                        f"checkout resolves to {resolved_env_root} — using the "
+                        "checkout's own record for compose project identity.",
+                        flush=True,
+                    )
+                repo_root = resolved_env_root.resolve()
+                os.environ["REPO_ROOT"] = str(repo_root)
+            elif env_repo_root:
+                # No local marker to trust; keep the bootstrapped environment.
+                repo_root = Path(env_repo_root).resolve()
+            else:
                 raise WorkspaceEnvError(
                     "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
                 )
-            repo_root = Path(env_repo_root).resolve()
 
         # ---- Global chain only (no stack config in shipped mode) ----
         print("[SHIPPED 2/4] Rendering global configuration...", flush=True)
@@ -1637,16 +1725,24 @@ def run_shipped(
         try:
             shipped_project: Optional[str] = compose_project_name(global_config, working_dir)
         except ValueError:
-            # Shipped mode does not require a full deploy config (S8.5); fall
-            # back to the legacy cwd-derived project rather than failing.
-            shipped_project = None
+            # CIU-46 cutover: there is NO basename fallback. A config-less
+            # shipped stack names its compose project from THIS workspace's
+            # own ciu.env identity — unique per workspace AND per stack, and
+            # the exact name clean's S6.4a enumeration derives from the same
+            # record. (The withdrawn legacy fallback let docker derive the
+            # cwd basename: identical for every checkout of the repo, so it
+            # both collided across instances and escaped every teardown pass.)
+            shipped_project = identity_compose_project_name(repo_root, working_dir)
             print(
-                "[WARN] [S8.7] deploy.project_name/environment_tag not set — "
-                "shipped stack uses the legacy directory-derived compose project",
+                "[INFO] [S8.7] deploy.project_name/environment_tag not set — "
+                f"shipped stack uses the workspace-identity compose project "
+                f"'{shipped_project}'",
                 flush=True,
             )
-        if shipped_project is not None:
-            guard_legacy_compose_project(working_dir, shipped_project)
+        # CIU-46 cutover: shipped_project is ALWAYS a known name now (the
+        # S8.7 scoped project or the computed identity project) — the guard
+        # runs unconditionally.
+        guard_legacy_compose_project(working_dir, shipped_project)
         # Same S16.3 boundary as the native path: only a genuine Compose start
         # reads the primary-worktree policy.  ``--dry-run`` returned above.
         worktree_cap = worktree.resolve_worktree_cap(repo_root)
@@ -1680,13 +1776,13 @@ def run_shipped(
             try:
                 shared_infra_intent = worktree.parse_shared_infra_config(global_config)
                 if shared_infra_intent is not None:
-                    if shipped_project is None:
-                        raise ComposeError(
-                            "[S16.1] this worktree declares a shared-infra join, but "
-                            "deploy.project_name/environment_tag are not set, so the "
-                            "shipped stack's own compose project cannot be derived to "
-                            "scope the join. Set both, or drop the shared-infra join."
-                        )
+                    # CIU-46: shipped_project is ALWAYS a known name now (the
+                    # S8.7 scoped project, or the workspace-identity project) —
+                    # the former "cannot derive the project to scope the join"
+                    # refusal is unreachable and withdrawn. The join's label
+                    # filters scope to exactly what up named, legacy case
+                    # included; an empty normalized basename already refused
+                    # earlier, so there is no unscoped case left.
                     print("[SHIPPED 3/4] Joining declared shared-infra services...", flush=True)
                     worktree.connect_shared_infra_after_up(
                         repo_root, shipped_project, shared_infra_intent

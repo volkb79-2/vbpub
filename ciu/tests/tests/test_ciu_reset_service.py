@@ -27,6 +27,25 @@ def _base_config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
+@pytest.fixture(autouse=True)
+def _identity_record(tmp_path):
+    """CIU-46 cutover: reset's config-less down path derives its compose
+    project from THIS checkout's ciu.env (REPO_NAME/INSTANCE_ID). The shared
+    fixture omits environment_tag, so most tests here exercise that path;
+    the record lives at tmp_path (the repo_root every call below passes)."""
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+        encoding="utf-8",
+    )
+
+
+def _reset(config, stack_dir, *, repo_root=None, **kw):
+    """reset_service with the explicit repo_root the cutover requires."""
+    return reset_service(
+        config, stack_dir, repo_root=repo_root if repo_root is not None else stack_dir, **kw
+    )
+
+
 def _ok(returncode=0, stdout="", stderr=""):
     m = MagicMock()
     m.returncode = returncode
@@ -39,7 +58,7 @@ class TestResetServiceDockerComposeDown:
     def test_runs_docker_compose_down(self, tmp_path):
         config = _base_config()
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
             calls = [str(c) for c in mock_run.call_args_list]
             assert any("compose" in c and "down" in c for c in calls)
 
@@ -47,7 +66,7 @@ class TestResetServiceDockerComposeDown:
         """CIU-3 / S6.4: down tears down orphans (exited init/sidecars) too."""
         config = _base_config()
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
             first_cmd = mock_run.call_args_list[0].args[0]
             assert "down" in first_cmd and "-v" in first_cmd
             assert "--remove-orphans" in first_cmd
@@ -58,7 +77,7 @@ class TestResetServiceDockerComposeDown:
         overlay.parent.mkdir(parents=True)
         overlay.write_text("secrets: {}\n")
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
             first_cmd = mock_run.call_args_list[0].args[0]
             assert ".ciu/ciu.compose.overlay.yml" in first_cmd
 
@@ -79,8 +98,12 @@ class TestResetServiceVolumeDirectories:
         (elsewhere / "vol-decoy").mkdir()
 
         config = _base_config()
+        # CIU-46 requires an explicit repo_root for the config-less down; this
+        # test's subject is the NATIVE rmtree path, so pin the physical-path
+        # translation off (the DooD routing has its own test class).
+        monkeypatch.setattr(engine, "to_physical_path", lambda p, **k: p)
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()):
-            reset_service(config, stack, assume_yes=True)
+            _reset(config, stack, repo_root=tmp_path, assume_yes=True)
 
         assert not (stack / "vol-postgres-data").exists()
         assert not (stack / "vol-redis-data").exists()
@@ -89,7 +112,7 @@ class TestResetServiceVolumeDirectories:
 
 
 class TestResetServicePrivilegeFallback:
-    def test_permission_denied_falls_back_to_helper_container(self, tmp_path):
+    def test_permission_denied_falls_back_to_helper_container(self, tmp_path, monkeypatch):
         """S6.4/S6.5: an image-UID-owned vol-* the operator cannot rmtree is wiped
         via the root helper container instead of aborting the reset."""
         stack = tmp_path / "stack"
@@ -113,14 +136,17 @@ class TestResetServicePrivilegeFallback:
              patch.object(engine.shutil, "rmtree", side_effect=fake_rmtree), \
              patch.object(engine, "privileged_rmtree") as mock_helper:
             # MUST NOT raise: the wipe completes via the helper (S6.4).
-            reset_service(config, stack, assume_yes=True)
+            # Pin the physical-path translation off: this test exercises the
+            # NATIVE PermissionError fallback, not DooD routing (its own class).
+            monkeypatch.setattr(engine, "to_physical_path", lambda p, **k: p)
+            _reset(config, stack, repo_root=tmp_path, assume_yes=True)
 
         assert mock_helper.call_count == 2  # both vol dirs routed to root helper
         targets = {Path(c.args[0]).name for c in mock_helper.call_args_list}
         assert targets == {"vol-postgres-data", "vol-redis-data"}
         assert not rendered.exists()  # Step 3 (no permission issue) still ran
 
-    def test_writable_vol_dirs_skip_the_helper(self, tmp_path):
+    def test_writable_vol_dirs_skip_the_helper(self, tmp_path, monkeypatch):
         """No PermissionError → direct rmtree, helper container never invoked."""
         stack = tmp_path / "stack"
         stack.mkdir()
@@ -129,7 +155,10 @@ class TestResetServicePrivilegeFallback:
         config = _base_config()
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()), \
              patch.object(engine, "privileged_rmtree") as mock_helper:
-            reset_service(config, stack, assume_yes=True)
+            # Pin the physical-path translation off: this test exercises the
+            # NATIVE direct-rmtree path, not DooD routing (its own class).
+            monkeypatch.setattr(engine, "to_physical_path", lambda p, **k: p)
+            _reset(config, stack, repo_root=tmp_path, assume_yes=True)
 
         assert mock_helper.call_count == 0
         assert not (stack / "vol-data").exists()
@@ -244,7 +273,7 @@ class TestResetServiceConfigFiles:
         (rendered / "svc").mkdir()
 
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()):
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
 
         assert not (tmp_path / "ciu.compose.yml").exists()
         assert not (tmp_path / "ciu.toml").exists()
@@ -260,7 +289,7 @@ class TestResetServiceSecrets:
         (secrets_dir / "redis_password").write_text("x")
 
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()):
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
 
         assert (secrets_dir / "redis_password").exists()  # kept (S4.25)
 
@@ -271,7 +300,7 @@ class TestResetServiceSecrets:
         (secrets_dir / "redis_password").write_text("x")
 
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()):
-            reset_service(config, tmp_path, assume_yes=True, remove_secrets=True)
+            _reset(config, tmp_path, assume_yes=True, remove_secrets=True)
 
         assert not secrets_dir.exists()  # removed (S4.25 --secrets)
 
@@ -286,7 +315,7 @@ class TestResetServiceOrphanedContainers:
             return _ok()
 
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
 
         ps_calls = [c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0]]
         assert ps_calls, "expected a docker ps call"
@@ -317,7 +346,7 @@ class TestResetServiceOrphanedContainers:
             return _ok()
 
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
 
         ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
         expected = engine.compose_project_name(config, tmp_path)
@@ -326,12 +355,12 @@ class TestResetServiceOrphanedContainers:
             f"got {ps}"
         )
 
-    def test_orphan_sweep_warns_when_it_cannot_scope(self, tmp_path, capsys):
-        """Without the S8.7 naming pair there is nothing to scope BY, and the
-        host-wide component sweep is deliberately kept (it is what catches
-        legacy pre-scoping containers). It must say so out loud rather than
-        quietly reaching across instances."""
-        config = _base_config()  # no environment_tag -> nothing to scope by
+    def test_orphan_sweep_scopes_to_identity_project_when_pair_absent(self, tmp_path):
+        """CIU-46 review fix: the tags-absent orphan sweep scopes to the SAME
+        workspace-identity project the down used — never host-wide. The old
+        component-only sweep reached into every instance on the host (the
+        exact CIU-19 incident class)."""
+        config = _base_config()  # no environment_tag
 
         def run(cmd, **kw):
             if "ps" in cmd:
@@ -339,12 +368,11 @@ class TestResetServiceOrphanedContainers:
             return _ok()
 
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
 
-        out = capsys.readouterr().out
-        assert "across EVERY instance" in out
         ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
-        assert not any("com.docker.compose.project=" in a for a in ps)
+        expected = engine.identity_compose_project_name(tmp_path, tmp_path)
+        assert f"label=com.docker.compose.project={expected}" in ps
 
 
 class TestResetServiceValidation:
@@ -355,4 +383,22 @@ class TestResetServiceValidation:
     def test_requires_label_prefix(self, tmp_path):
         config = {"deploy": {"project_name": "test"}}
         with pytest.raises(ValueError, match="deploy.labels.prefix"):
-            reset_service(config, tmp_path, assume_yes=True)
+            _reset(config, tmp_path, assume_yes=True)
+
+
+class TestResetServiceIdentityNaming:
+    def test_tags_absent_without_repo_root_refuses(self, tmp_path):
+        """CIU-46 cutover: the config-less down path derives its project from
+        the workspace record; without a repo_root there is NOTHING to derive
+        from — refuse loudly instead of running an unenumerable -p-less down
+        (the withdrawn fallback's exact defect)."""
+        with pytest.raises(ValueError, match="no.*repo_root.*provided"):
+            reset_service(_base_config(), tmp_path, assume_yes=True)
+
+    def test_tags_absent_down_scoped_to_identity_project(self, tmp_path):
+        cfg = _base_config()
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
+            _reset(cfg, tmp_path, assume_yes=True)
+        first_cmd = mock_run.call_args_list[0].args[0]
+        expected = engine.identity_compose_project_name(tmp_path, tmp_path)
+        assert first_cmd[:4] == ["docker", "compose", "-p", expected]

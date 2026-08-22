@@ -187,6 +187,7 @@ Subsections:
 | `[deploy.profiles.<name>]` | Host profiles: which phases/stacks run on this host | S7.4 |
 | `[deploy.profiles.<name>.topology_overrides]` | Deep-merged over `[topology.*]` while profile is active | S7.4 |
 | `[deploy.layouts.<name>]` | Named host→bundles plan + the deployment's environment | S7.5c |
+| `[deploy.provenance]` | Declared vendor image baseline for `ciu provenance` | S17.5 |
 
 Each `[[deploy.phases.phase_N.services]]` entry identifies a stack with `path`;
 its `name` is display text only. The orchestration health gate discovers exact
@@ -284,6 +285,32 @@ bundles = ["db", "worker-io"]
 ciu layouts          # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
 ciu up --layout prod-edge
 ```
+
+### `[deploy.provenance]` — declared vendor image baseline [S17.5]
+
+`ciu provenance` compares running images' `org.opencontainers.image.revision`
+labels against the commit under test — which vendor images (vault, authentik,
+consul…) can never match: they carry no ciu bake, so an all-vendor deployment
+was pinned at `not-verified-no-evidence` forever. Declare the exact
+references expected to be third-party artifacts:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+  "hashicorp/consul:1.18",
+]
+```
+
+A running container whose image EQUALS a declared entry is `vendor-pinned`
+(judged on Docker-canonical references — registry-host case-insensitive,
+implicit `docker.io/library/` defaults — never by this repo's commit); the
+same image NAME at a different reference is vendor drift → `mismatch`;
+undeclared unlabelled images stay `unlabelled` in the document. With zero mismatches and at least one
+match-or-pin, the verdict is `verified-match`. Provenance documents are
+emitted at `schema_version: 2` (CIU-39 widened the closed vocabularies);
+strict consumers refuse unknown members.
 
 ### `[vault]` — Vault location and path registry [S4.16, S4.9]
 
@@ -499,8 +526,33 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 |---|---|---|
 | `expose_env = "<NAME>"` | Injects secret value into compose process env under `<NAME>` | S4.19 |
 | `consumed_by = "hook"` | Marks a secret read by a hook via `ctx.secret_file()` so S4.20 does not warn | S4.20 |
+| `produced_by = "<profile>"` | **ASK_VAULT only.** Declares the profile whose deployment provisions the Vault path; a partial selection excluding it refuses upfront naming producer + path + remedies | S13.6 |
 | `mode = "0444"` | Override file mode (default `0440`) | S4.10 |
 | `uid = <int>` | Override file owner UID | S4.10 |
+
+**Cross-profile producers (`produced_by`, S13.6).** When one profile's
+provisioning writes the Vault path another stack reads — an authentik hook
+minting its bootstrap token, a vault stack minting per-service tokens — the
+consuming stack declares it, so a partial selection fails BEFORE any deploy
+instead of at materialization with only the bare path:
+
+```toml
+[deploy.profiles.identity]
+phases = ["phase_3"]
+
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
+```
+
+```console
+$ CIU_SERVICES_PROFILE=core,db ciu up
+[ERROR] Provisioning producers missing from the selection (S13.6):
+  stack 'applications/controller': ASK_VAULT secret 'bootstrap_token' reads Vault path 'authentik/bootstrap_token', which is provisioned by profile 'identity' — not in your selection (core,db). Deploy the producer profile (ciu up --profile core,db,identity) or seed the path out-of-band before deploying.
+```
+
+The value must name a profile defined in `[deploy.profiles]` — a typo fails
+as a configuration error even when nothing else would check it. Undeclared
+`ASK_VAULT` directives behave exactly as before.
 
 ---
 
@@ -516,7 +568,7 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | `DOCKER_GID` | Yes | `stat /var/run/docker-host.sock` or `.sock`; else `getent group docker` |
 | `ENV_TYPE` | No | `devcontainer` \| `native` \| `github-actions` |
 | `PUBLIC_IP` | Conditional (S2.3) | ipify → reverse DNS → `localhost` |
-| `PUBLIC_FQDN` | Conditional (S2.3) | config → detected IP → `localhost` |
+| `PUBLIC_FQDN` | Conditional (S2.3) | config (`infrastructure.public_fqdn`) → reverse DNS of detected IP → detected IP/`localhost`; a pre-set value wins only when consistent with the derived one, or when detection yields nothing to compare against [S2.7, CIU-47] |
 | `PUBLIC_TLS_CRT_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 `CIU_SERVICES_PROFILE` remains an ambient compatibility input for direct CIU
@@ -528,16 +580,30 @@ generated `ciu.env`.
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].
 
-**`PHYSICAL_REPO_ROOT` is the one exception to "pre-set always wins" in this
-table (2026-07-16):** a devcontainer's login shell can `source` one repo's
-`ciu.env` (e.g. via a `REPO_ROOT`-triggered `.bashrc` hook for the primary
-workspace) and leave a stale `PHYSICAL_REPO_ROOT` set when later operating on
-an unrelated, nested repo — corrupting that repo's derived `REPO_NAME` /
-`INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL`. So a pre-set `PHYSICAL_REPO_ROOT`
-wins only when it agrees with this process's own mountinfo-derived physical
-root for `REPO_ROOT`, or when mountinfo has no entry to check against;
-otherwise the mountinfo-derived value wins and CIU warns on stderr. Every
-other key in this table keeps the simple "pre-set env always wins" rule.
+**Pre-set-wins exceptions in this table:** a devcontainer's login shell can
+`source` one repo's `ciu.env` (e.g. via a `REPO_ROOT`-triggered `.bashrc`
+hook for the primary workspace) and leave stale values set when later
+operating on an unrelated checkout or nested repo. Three keys therefore use
+refined precedence instead of "pre-set always wins":
+
+- **`PHYSICAL_REPO_ROOT`** (2026-07-16): a pre-set value wins only when it
+  agrees with this process's own mountinfo-derived physical root for
+  `REPO_ROOT`, or when mountinfo has no entry to check against; otherwise
+  the mountinfo-derived value wins and CIU warns on stderr.
+- **`REPO_NAME` / `INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL`** (CIU-41):
+  during generation these are derived from THIS physical root alone; an
+  ambient value is adopted only when equal, else the derived value is
+  written and a warning names the ignored one (with the `--shared-infra`
+  remedy for the network).
+- **`PUBLIC_FQDN`** (CIU-47): during generation the value is derived from
+  THIS workspace's own inputs (config entry, else reverse DNS of the
+  detected IP); an ambient value is adopted only when equal, or when
+  detection produced no sourced value to compare against (offline host —
+  the pre-set value stays the legitimate manual override); on a real
+  mismatch the derived value wins and a warning names the ignored one.
+
+Every other key in this table keeps the simple "pre-set env always wins"
+rule.
 
 ### Shared-infra join example [S16.1]
 

@@ -60,6 +60,10 @@ def test_reset_ignores_non_directory_vol_entry(tmp_path: Path, monkeypatch: pyte
     marker = tmp_path / "vol-not-a-directory"
     marker.write_text("preserve", encoding="utf-8")
     config = {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}}
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: _ok())
     monkeypatch.setattr(
         engine,
@@ -67,7 +71,7 @@ def test_reset_ignores_non_directory_vol_entry(tmp_path: Path, monkeypatch: pyte
         lambda *_args, **_kwargs: pytest.fail("a non-directory vol entry must not be removed"),
     )
 
-    engine.reset_service(config, tmp_path, assume_yes=True)
+    engine.reset_service(config, tmp_path, assume_yes=True, repo_root=tmp_path)
 
     assert marker.read_text(encoding="utf-8") == "preserve"
 
@@ -76,6 +80,12 @@ def test_reset_with_specs_cleans_orphans_without_fallback_secret_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ciu.env").write_text(
+        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+        encoding="utf-8",
+    )
     events: list[str] = []
 
     def run_cmd(command, **_kwargs):
@@ -121,7 +131,7 @@ def test_compose_keyboard_interrupt_without_process_returns_interrupted(
 
     monkeypatch.setattr(engine.subprocess, "Popen", start_process)
 
-    result = engine.execute_docker_compose_with_logs([], cwd=Path("/unused"))
+    result = engine.execute_docker_compose_with_logs([], cwd=Path("/unused"), project="test-project")
 
     assert result["status"] == "interrupted"
     assert result["message"] == "User interrupted execution"

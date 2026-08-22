@@ -133,10 +133,7 @@ class TestComposeUpProjectArg:
         assert cmd[:4] == ["docker", "compose", "-p", "dstdns-98535c-consul-server"]
         assert cmd[-2:] == ["up", "-d"]
 
-    def test_none_project_preserves_legacy_argv(self, monkeypatch, tmp_path):
-        cmd = self._run(monkeypatch, tmp_path, None)
-        assert cmd[:2] == ["docker", "compose"]
-        assert "-p" not in cmd
+
 
 
 class TestResetDownProjectScoping:
@@ -161,8 +158,21 @@ class TestResetDownProjectScoping:
         down = compose_calls[0]
         assert down[2:4] == ["-p", "dstdns-98535c-consul-server"]
 
-    def test_down_legacy_when_pair_absent(self, tmp_path, monkeypatch):
+    def test_down_identity_scoped_when_pair_absent(self, tmp_path, monkeypatch):
+        """CIU-46 cutover: with the naming pair absent, reset's down derives
+        the workspace-identity project from THIS checkout's ciu.env — the same
+        name a config-less `up` passed. There is no -p-less compose call."""
+        (tmp_path / "ciu.env").write_text(
+            'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+            encoding="utf-8",
+        )
         cfg = {"deploy": {"project_name": "dstdns", "labels": {"prefix": "ciu"}}}
-        compose_calls = self._reset(tmp_path, monkeypatch, cfg)
+        stack = tmp_path / "consul-server"
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            engine.procutil, "run_cmd", _fake_run_cmd(stdout="", capture=calls)
+        )
+        engine.reset_service(cfg, stack, repo_root=tmp_path)
+        compose_calls = [c for c in calls if c[:2] == ["docker", "compose"]]
         assert compose_calls, "expected a docker compose down call"
-        assert "-p" not in compose_calls[0]
+        assert compose_calls[0][2:4] == ["-p", "dstdns-abc123-consul-server"]

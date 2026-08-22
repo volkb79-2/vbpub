@@ -460,6 +460,114 @@ def vault_preflight(
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")
 
 
+def _producer_profile_stack_paths(config: dict, pdata: dict) -> set[str]:
+    """Every stack path a profile deploys: its `stacks` list plus the services
+    of its phases (S13.6 — producer presence is about DEPLOYED STACKS, not
+    the profile label: an alias profile deploying the same stacks satisfies
+    the producer just as well)."""
+    paths: set[str] = set()
+    stacks = pdata.get("stacks", [])
+    if isinstance(stacks, list):
+        for s in stacks:
+            if isinstance(s, str) and s:
+                paths.add(s)
+    phases = pdata.get("phases", [])
+    if isinstance(phases, list):
+        phase_table = config.get("deploy", {}).get("phases", {})
+        for pk in phases:
+            if not isinstance(pk, str):
+                continue
+            phase = phase_table.get(pk, {})
+            services = phase.get("services", []) if isinstance(phase, dict) else []
+            for svc in services or []:
+                if isinstance(svc, dict) and svc.get("path"):
+                    paths.add(svc["path"])
+    return paths
+
+
+def producer_preflight(
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+) -> None:
+    """S13.4 / CIU-42 — refuse a partial selection that excludes a declared producer.
+
+    A stack's ASK_VAULT directive may declare ``produced_by = "<profile>"``:
+    the value at its Vault path is provisioned by THAT profile's deployment
+    (e.g. an authentik hook writing its bootstrap token), not by this stack.
+    When the invocation selects named profiles and a declared producer is not
+    among them, the consuming stack can only fail later at materialization
+    with the bare path name ([S4.2]) — so this preflight refuses UPFRONT,
+    naming the producer profile, the path, and both remedies (deploy the
+    producer profile, or seed the path out-of-band).
+
+    Producer PRESENCE is judged by deployed stacks, not the profile label
+    (adversarial review): the producer passes when any stack it deploys (its
+    `stacks` list or its phases' services) is in the selection — so an alias
+    profile deploying the same stacks satisfies it, and a `--phases` filter
+    that narrowed the producer's stacks out still refuses.
+
+    The default selection (no named profile = all phases) deploys every
+    stack's provisioning, so there is nothing to refuse. An unknown producer
+    profile name is a configuration error even under the default selection:
+    a typo'd declaration must fail loudly, never silently protect nothing.
+    ALL violations are reported together — one run names everything.
+    """
+    config = profile.config
+    profiles_table = config.get("deploy", {}).get("profiles", {})
+    selected_names = {
+        n.strip() for n in (profile.name or "").split(",") if n.strip()
+    }
+    named_selection = bool(selected_names)
+    selection_paths = {entry["path"] for entry in selection}
+
+    refusals: list[str] = []
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered:
+            continue
+        # Shipped stacks have no CIU secrets surface (S8.6).
+        if phases_pkg.service_shipped(entry.get("service", {})):
+            continue
+        stack_cfg = rendered[rel]
+        root_key = config_model.validate_stack_shape(stack_cfg)
+        merged = config_model.deep_merge(config, stack_cfg)
+        for spec in secret_directives.discover(root_key, merged):
+            if spec.kind != "ASK_VAULT" or not spec.produced_by:
+                continue
+            producer = spec.produced_by
+            pdata = profiles_table.get(producer)
+            if not isinstance(pdata, dict):
+                refusals.append(
+                    f"  stack '{rel}': ASK_VAULT secret '{spec.name}' declares "
+                    f"produced_by = {producer!r}, which is not a defined "
+                    f"profile in [deploy.profiles]. Defined profiles: "
+                    f"{', '.join(sorted(profiles_table)) or '(none)'}."
+                )
+                continue
+            if named_selection and producer not in selected_names:
+                producer_paths = _producer_profile_stack_paths(config, pdata)
+                if producer_paths & selection_paths:
+                    # A stack this producer deploys IS in the selection —
+                    # the provisioning will run; the profile label differs.
+                    continue
+                refusals.append(
+                    f"  stack '{rel}': ASK_VAULT secret '{spec.name}' reads "
+                    f"Vault path '{spec.locator}', which is provisioned by "
+                    f"profile '{producer}' — none of its stacks "
+                    f"({', '.join(sorted(producer_paths)) or '(none)'}) are "
+                    f"in your selection ({profile.name}). Deploy the producer "
+                    f"profile or its stacks, or seed the path out-of-band "
+                    "before deploying."
+                )
+
+    if refusals:
+        raise ValueError(
+            "[ERROR] Provisioning producers missing from the selection "
+            "(S13.6):\n" + "\n".join(refusals)
+        )
+
+
 # ===========================================================================
 # Provisioning preflight (requires/provides graph + live probe)
 # ===========================================================================
@@ -579,12 +687,20 @@ def registry_preflight(config: dict) -> None:
 
 @dataclass(frozen=True)
 class ContainerProvenance:
-    """One running container's provenance verdict (S17.3, CIU-20)."""
+    """One running container's provenance verdict (S17.3, CIU-20).
+
+    ``status`` closed vocabulary (schema 2, CIU-39): ``match`` (baked
+    revision equals the commit under test), ``mismatch`` (differs — including
+    a DECLARED vendor image running at a different reference, i.e. vendor
+    drift), ``unlabelled`` (no revision label and not declared), or
+    ``vendor-pinned`` (the running image reference equals a declared
+    ``[deploy.provenance] vendor_images`` entry).
+    """
 
     name: str
     image: str
     labelled_revision: Optional[str]  # None (JSON null) when unknown, never ""
-    status: str  # "match" | "mismatch" | "unlabelled"
+    status: str  # "match" | "mismatch" | "unlabelled" | "vendor-pinned"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -625,7 +741,58 @@ class ProvenanceResult:
         }
 
 
-def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
+def _image_reference_name(ref: str) -> str:
+    """The CANONICAL NAME portion of an image reference (no tag, no digest).
+
+    ``hashicorp/vault:1.15`` → ``hashicorp/vault``; ``vault@sha256:...`` →
+    ``vault`` (canonicalized to ``docker.io/library/vault``); registry ports
+    (``localhost:5000/img:tag``) are handled by splitting off the tag only
+    when the colon sits in the LAST path segment. Canonicalization mirrors
+    Docker's own defaults so declaration and running spellings agree even
+    when written differently (adversarial review: ``docker.io/library/nginx``
+    vs ``nginx``, uppercase registry hosts).
+    """
+    without_digest = ref.split("@", 1)[0]
+    last = without_digest.rsplit("/", 1)[-1]
+    if ":" in last:
+        tag_len = len(last.rsplit(":", 1)[1])
+        name = without_digest[: len(without_digest) - tag_len - 1]
+    else:
+        name = without_digest
+
+    first, sep, rest = name.partition("/")
+    if sep and ("." in first or ":" in first or first == "localhost"):
+        # explicit registry host — case-insensitive by Docker's rules; the
+        # implicit library/ namespace applies on Docker Hub alone
+        if first.lower() == "docker.io" and "/" not in rest:
+            return "docker.io/library/" + rest
+        return f"{first.lower()}/{rest}"
+    # no registry host → Docker Hub defaults
+    if "/" not in name:
+        return f"docker.io/library/{name}"
+    return name
+
+
+def _normalized_image_reference(ref: str) -> str:
+    """Full-reference normalization for EXACT pin comparison: the name part
+    canonicalizes as above; the tag/digest survive verbatim (tags are
+    case-sensitive)."""
+    without_digest, digest_sep, digest = ref.partition("@")
+    last = without_digest.rsplit("/", 1)[-1]
+    if ":" in last:
+        tag_with_colon = without_digest[len(without_digest) - len(last.rsplit(":", 1)[1]) - 1:]
+        name = without_digest[: -len(tag_with_colon)]
+    else:
+        name, tag_with_colon = without_digest, ""
+    result = _image_reference_name(ref) + tag_with_colon
+    if digest_sep:
+        result += f"@{digest}"
+    return result
+
+
+def verify_running_provenance(
+    project_prefix: str, *, vendor_images: Optional[list[str]] = None
+) -> ProvenanceResult:
     """S17.2/S17.3 — build the machine-readable provenance verdict (CIU-20).
 
     **This is a TEST-time check, not a deploy-time one, and the distinction is
@@ -654,6 +821,21 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
     same verdict serves both the human CLI and ``--json`` machine consumers
     without ever mixing prose onto the JSON stream.
 
+    *vendor_images* (CIU-39) is the consumer's declared vendor baseline: the
+    exact image references expected to be third-party artifacts (e.g.
+    ``hashicorp/vault:1.15``). A running container whose image EQUALS a
+    declared entry is ``vendor-pinned`` — expected to be unlabelled, judged
+    by reference equality, never by this repo's commit. A container whose
+    image NAME matches a declared entry at any OTHER reference is vendor
+    drift → ``mismatch`` (the declaration vouches for one artifact; a
+    different one is running). Undeclared unlabelled images stay
+    ``unlabelled``. This makes ``verified-match`` reachable for deployments
+    whose containers are all pinned vendor artifacts (previously pinned at
+    ``not-verified-no-evidence`` forever) — and it cannot mask a forgotten
+    bake: an unlabelled image nobody declared stays ``unlabelled``, so only
+    an operator falsely declaring their own image as vendor escapes, which is
+    auditable config.
+
     ``overall`` is one of six closed values, decided in order: an unresolved
     identity is handled entirely by the CLI before this function is even
     called (``refused-no-identity`` never originates here); a non-checkout
@@ -661,40 +843,62 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
     tree is ``not-verified-dirty``; enumeration that could not run at all
     (no docker, or ``docker ps`` failed) is ``not-verified-no-evidence`` with
     ``containers: null``; a successful enumeration with at least one
-    ``mismatch`` is ``mismatch``; one with at least one ``match`` and no
-    ``mismatch`` is ``verified-match`` — a green verdict is NEVER emitted from
-    zero checked containers; anything else (empty, or all ``unlabelled``) is
-    ``not-verified-no-evidence`` with the (possibly empty) container list.
+    ``mismatch`` (commit drift OR vendor drift) is ``mismatch``; one with at
+    least one ``match`` or ``vendor-pinned`` and no ``mismatch`` is
+    ``verified-match`` — every checked container agrees with an expectation,
+    the commit under test or a declared vendor reference; anything else
+    (empty, or all undeclared-unlabelled) is ``not-verified-no-evidence``
+    with the (possibly empty) container list.
+
+    Documents are emitted at schema_version 2 (CIU-39 widened the closed
+    vocabularies; strict consumers refuse unknown members, fail-closed).
     """
     commit = engine.get_git_hash()
 
     if commit == "dev":
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="not-a-checkout", containers=None,
             overall="not-verified-unknown",
         )
 
     if commit.endswith("-dirty"):
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="dirty", containers=None, overall="not-verified-dirty",
         )
 
     raw = _running_containers(project_prefix)
     if raw is None:
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="clean", containers=None,
             overall="not-verified-no-evidence",
         )
 
+    declared = {_normalized_image_reference(v) for v in (vendor_images or [])}
+    declared_by_name = {_image_reference_name(v) for v in declared}
     containers: list[ContainerProvenance] = []
     has_match = False
     has_mismatch = False
+    has_vendor_pinned = False
     for name, image in raw:
         actual = _image_revision_label(image) or None
-        if actual is None:
+        # A DECLARED vendor image is judged by CANONICAL REFERENCE EQUALITY
+        # ONLY (Docker's own normalization: registry-host case, the implicit
+        # docker.io/library/ defaults): its OCI revision label belongs to the
+        # upstream build, so comparing it against OUR commit would flag every
+        # correctly-pinned vendor artifact as mismatch. The label (if any) is
+        # still reported verbatim. Same image NAME at a different reference =
+        # the declaration's artifact was swapped → drift, a mismatch.
+        normalized_image = _normalized_image_reference(image)
+        if normalized_image in declared:
+            status = "vendor-pinned"
+            has_vendor_pinned = True
+        elif _image_reference_name(image) in declared_by_name:
+            status = "mismatch"
+            has_mismatch = True
+        elif actual is None:
             status = "unlabelled"
         elif actual == commit:
             status = "match"
@@ -707,13 +911,13 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
 
     if has_mismatch:
         overall = "mismatch"
-    elif has_match:
+    elif has_match or has_vendor_pinned:
         overall = "verified-match"
     else:
         overall = "not-verified-no-evidence"
 
     return ProvenanceResult(
-        schema_version=1, instance=project_prefix, commit_under_test=commit,
+        schema_version=2, instance=project_prefix, commit_under_test=commit,
         tree_state="clean", containers=containers, overall=overall,
     )
 
@@ -1711,12 +1915,33 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
 
     Covers shipped stacks too: their compose runs create ``*_default``
     networks and label their volumes with the same project name.
+
+    CIU-46 cutover: when ``deploy.project_name``/``environment_tag`` are
+    absent, shipped mode still deploys — under the WORKSPACE-IDENTITY compose
+    project derived from THIS checkout's ciu.env (S8.7; the basename fallback
+    is withdrawn). Returning ``[]`` here (the pre-CIU-46 behavior) made every
+    S6.4a enumeration pass skip those stacks entirely, so their
+    ``*_default`` networks and label-prefixed volumes survived a reported-
+    clean teardown. Tags absent → each existing selected stack contributes
+    its identity-derived name, computed by the SAME
+    ``engine.identity_compose_project_name`` up passed as ``-p`` (a missing
+    or key-less ciu.env raises — a teardown that cannot be named refuses,
+    never skips); tags present keeps the S8.7 scoped names, unchanged.
     """
     projects: list[str] = []
     deploy_cfg = config.get("deploy", {})
     if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        seen: set[str] = set()
+        for entry in selection:
+            stack_dir = (repo_root / entry["path"]).resolve()
+            if not stack_dir.is_dir():
+                continue
+            project = engine.identity_compose_project_name(repo_root, stack_dir)
+            if project not in seen:
+                seen.add(project)
+                projects.append(project)
         return projects
-    seen: set[str] = set()
+    seen = set()
     for entry in selection:
         stack_dir = (repo_root / entry["path"]).resolve()
         if not stack_dir.is_dir():
@@ -1726,6 +1951,40 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
             seen.add(project)
             projects.append(project)
     return projects
+
+
+def _stack_project_containers(stack_projects: list[str]) -> list[str]:
+    """Containers of the given S8.7 projects via the compose project label.
+
+    CIU-46: the S7.8 name-prefix pass (``^{project}-{env_tag}-``) cannot see
+    a tags-absent shipped stack's containers — compose names them after the
+    workspace-identity project, not the instance prefix. The compose
+    project label is an exact per-project enumeration, all states (an exited
+    one-shot init must be removed or it pins the project's volumes, CIU-3).
+
+    Raises ValueError on daemon failure — indeterminate never folds into
+    "nothing to remove" (review B3).
+    """
+    found: list[str] = []
+    for project in stack_projects:
+        result = procutil.docker(
+            [
+                "ps", "-a",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--format", "{{.Names}}",
+            ],
+            capture=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"[S6.4a] docker ps failed for compose project {project!r}: "
+                f"{(result.stderr or '').strip()}"
+            )
+        found.extend(
+            n.strip() for n in (result.stdout or "").splitlines() if n.strip()
+        )
+    return sorted(set(found))
 
 
 def _network_endpoints(network: str) -> Optional[list[dict]]:
@@ -1869,13 +2128,18 @@ def action_clean(
 
     Lean reimplementation of v1 cleanup (S6.4 semantics, COMPOSE_PROFILES='*'
     for down-with-profiles instead of v1's hardcoded 'full,pgadmin'):
-      1. stop + remove project containers (anchored, S7.8);
+      1. stop + remove project containers — the anchored S7.8 name-prefix pass
+         when the deploy tags are set; when absent, the compose-label pass per
+         selected stack's legacy project (CIU-46: a tags-absent shipped stack
+         runs under the workspace-identity project, invisible to the
+         name prefix);
       2. per-stack engine.reset_service (down -v via overlay + vol-*/rendered
          cleanup, B14 stack-dir scoped);
       3. remove project volumes — the ``{project}-{env}-*`` name pass (S6.4)
          plus a compose-label pass per selected stack's compose project
          (CIU-43: catches named volumes like ``<project>-vault-data`` that
-         carry the bare project prefix, second reproduction on 6.3.0);
+         carry the bare project prefix, second reproduction on 6.3.0; CIU-46:
+         the project list includes legacy names when the tags are absent);
       4. remove identity-scoped networks (S6.4a, CIU-43): the workspace
          identity network (from THIS workspace's own ciu.env) and each
          selected stack's ``<compose-project>_default``. Lingering endpoints
@@ -1895,10 +2159,31 @@ def action_clean(
     config = profile.config
     rc = 0
 
-    # Step 1: stop + remove project containers (anchored). all_states=True so an
-    # exited one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise
-    # it pins the project's named volumes through teardown (CIU-3, S6.4).
-    containers = _matching_containers(config, all_states=True)
+    # CIU-46: resolve the selected stacks' compose projects ONCE — S8.7 scoped
+    # names when the deploy tags are set, workspace-identity names derived
+    # from THIS checkout's ciu.env when absent (a tagless shipped stack runs
+    # under the identity project; clean must enumerate what up actually
+    # named). Drives the container, volume, and network passes below.
+    deploy_cfg = config.get("deploy", {})
+    tagged = bool(deploy_cfg.get("project_name")) and bool(deploy_cfg.get("environment_tag"))
+    stack_projects = _stack_compose_projects(repo_root, config, selection)
+
+    # Step 1: stop + remove project containers. all_states=True so an exited
+    # one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise it
+    # pins the project's named volumes through teardown (CIU-3, S6.4).
+    # Tagged: the anchored S7.8 name-prefix pass (unchanged). Tags absent:
+    # that prefix cannot match an identity-named shipped stack's containers,
+    # so enumerate by the compose project label instead (CIU-46); a daemon
+    # failure here fails the clean but does not abort the remaining passes.
+    if tagged:
+        containers = _matching_containers(config, all_states=True)
+    else:
+        try:
+            containers = _stack_project_containers(stack_projects)
+        except ValueError as exc:
+            error(f"container enumeration failed (S6.4a): {exc}")
+            rc = 1
+            containers = []
     if containers:
         info(f"Removing {len(containers)} container(s): {', '.join(containers)}")
         result = procutil.docker(["rm", "-f", *containers], check=False)
@@ -1948,8 +2233,8 @@ def action_clean(
     # Step 3: remove project volumes — the {project}-{env}-* name pass (S6.4)
     # plus the compose-label pass per selected stack's project (CIU-43: named
     # volumes like <project>-vault-data carry the bare project prefix and no
-    # instance tag, so the name pass never saw them).
-    stack_projects = _stack_compose_projects(repo_root, config, selection)
+    # instance tag, so the name pass never saw them; CIU-46: stack_projects
+    # also carries the identity-derived names when the deploy tags are absent).
     volumes_unverified = False
     try:
         survivors = _remove_project_volumes(config, stack_projects=stack_projects)
@@ -2003,11 +2288,33 @@ def action_clean(
     # silent-stale-state failures CIU-3 and CIU-43 closed. Degrade gracefully
     # if docker became unavailable mid-clean so the action still returns its
     # own typed result instead of escaping as an exception.
+    untagged_unverifiable = False
     try:
-        remaining_containers = _matching_containers(config, all_states=True)
+        if tagged:
+            remaining_containers = _matching_containers(config, all_states=True)
+        else:
+            # CIU-46: a tags-absent selection's containers carry the
+            # workspace-identity project, not the S7.8 name prefix —
+            # enumerate by label.
+            remaining_containers = _stack_project_containers(stack_projects)
     except ValueError as exc:
-        warn(f"post-clean container check skipped (docker unavailable): {exc}")
-        remaining_containers = []
+        if tagged:
+            # Tagged path keeps its pre-CIU-46 degradation: docker gone
+            # mid-clean degrades to warn (documented S6.4 behavior).
+            warn(f"post-clean container check skipped (docker unavailable): {exc}")
+            remaining_containers = []
+        else:
+            # Review fix (B3 symmetry): the tags-absent enumeration is this
+            # wave's own proof-of-removal pass; an UNVERIFIABLE set fails the
+            # clean like unverifiable volumes/networks — indeterminacy never
+            # folds into 'clean complete'.
+            error(
+                f"post-clean invariant unverifiable (S6.4): project containers "
+                f"could not be enumerated — {exc}"
+            )
+            rc = 1
+            untagged_unverifiable = True
+            remaining_containers = []
     if remaining_containers:
         error(
             f"post-clean invariant violated (S6.4): {len(remaining_containers)} "
@@ -2462,6 +2769,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
         vault_preflight(repo_root, profile, selection, rendered)
+        producer_preflight(profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
@@ -2490,6 +2798,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
         vault_preflight(repo_root, profile, selection, rendered)
+        producer_preflight(profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),

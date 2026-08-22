@@ -143,6 +143,12 @@ def build_repo(tmp_path: Path, monkeypatch) -> Path:
     # S2.7: pre-set the repo-root pair so generation + reload carry the tmp paths.
     monkeypatch.setenv("REPO_ROOT", str(repo_root))
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo_root))
+    # S15.18: pin the ambient KSM override OFF so governance-enabled demo
+    # flows never attempt the live-docker shim build in generate_overlay —
+    # this suite's subject is not KSM, and the gate container has no daemon.
+    # Before this pin the tests passed only when a sibling xdist worker
+    # happened to leak a disabling override into them (flake hunt, 2026-08-22).
+    monkeypatch.setenv("CIU_KSM", "off")
 
     from ciu.workspace_env import bootstrap_workspace_env, REQUIRED_KEYS_CORE
 
@@ -768,7 +774,6 @@ class TestVaultBackedFlows:
         FakeVaultKV2.reset()
         monkeypatch.setattr(engine, "VaultKV2", FakeVaultKV2)
         monkeypatch.setenv("VAULT_TOKEN", "test-token")
-
         run_engine(stack, monkeypatch)
         store = stack / ".ciu" / "secrets" / "redis_password"
         assert store.read_text() != "rotated-out-of-band"

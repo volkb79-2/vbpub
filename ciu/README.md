@@ -5,7 +5,9 @@ host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
 - identity and evidence: `ciu version`, `ciu provenance [--json]`
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec` (`add` remains shorthand)
+- **Cross-profile secret producers are declarable** (`produced_by`, S13.6): an ASK_VAULT directive names the profile whose deployment provisions its Vault path, so a partial selection refuses upfront naming producer + path + remedies instead of failing mid-deploy with only the path.
+- **Honest provenance for mixed fleets** (`[deploy.provenance] vendor_images`, S17.5): declare third-party image references; running pins report `vendor-pinned`, drifted pins report `mismatch`, and `verified-match` becomes reachable on all-vendor deployments (provenance JSON at schema_version 2).
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|branches` (`add` remains shorthand) — `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates)
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
@@ -59,7 +61,11 @@ can still `docker compose up` the committed file; the CIU path is additive.
 `ciu.env`, ensuring/attaching the workspace network, and running the DooD
 reachability preflight first — so even the "plain" path gains consistent
 machine-identity env interpolation and network wiring that bare `docker compose`
-lacks (see [docs/CIU.md](docs/CIU.md)).
+lacks (see [docs/CIU.md](docs/CIU.md)). A shipped stack deployed without
+`deploy.project_name`/`environment_tag` runs under the **workspace-identity
+compose project** (`REPO_NAME-INSTANCE_ID-stack`, derived from this
+checkout's `ciu.env`) — unique per checkout, and the exact name `ciu clean`
+enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a).
 
 ## Why CIU over a plain `docker-compose.yml`
 

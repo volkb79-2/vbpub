@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "instance": "dstdns-dev",
+  "commit_under_test": "1b369e23",
+  "tree_state": "clean",
+  "containers": [
+    {
+      "name": "dstdns-dev-authentik-1",
+      "image": "ghcr.io/goauthentik/server:2024.2.2",
+      "labelled_revision": null,
+      "status": "vendor-pinned"
+    },
+    {
+      "name": "dstdns-dev-consul-1",
+      "image": "hashicorp/consul:1.18",
+      "labelled_revision": null,
+      "status": "vendor-pinned"
+    },
+    {
+      "name": "dstdns-dev-vault-1",
+      "image": "hashicorp/vault:1.15",
+      "labelled_revision": null,
+      "status": "vendor-pinned"
+    }
+  ],
+  "overall": "verified-match"
+}

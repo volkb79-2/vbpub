@@ -203,10 +203,16 @@ class TestResetKeepsShipped:
         config = {"deploy": {"project_name": "p", "labels": {"prefix": "dstdns"}}}
         (tmp_path / CIU_COMPOSE_OUTPUT).write_text("services: {}\n")
         (tmp_path / SHIPPED_COMPOSE).write_text(SHIPPED_COMPOSE_BODY)
+        # CIU-46 cutover: the config-less naming pair needs the workspace
+        # identity record for the down project.
+        (tmp_path / "ciu.env").write_text(
+            'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
+            encoding="utf-8",
+        )
 
         ok = MagicMock(returncode=0, stdout="", stderr="")
         with patch.object(engine.procutil, "run_cmd", return_value=ok):
-            engine.reset_service(config, tmp_path, assume_yes=True)
+            engine.reset_service(config, tmp_path, assume_yes=True, repo_root=tmp_path)
 
         assert not (tmp_path / CIU_COMPOSE_OUTPUT).exists()  # CIU output removed
         assert (tmp_path / SHIPPED_COMPOSE).exists()         # shipped file kept (S8.5)

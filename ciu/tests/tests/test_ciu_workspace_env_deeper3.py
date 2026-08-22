@@ -150,18 +150,22 @@ def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
 def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CIU-41 overwrite scope is EXACTLY the derived identity tuple: any other
-    key already present in os.environ keeps its ambient value."""
+    """CIU-41 overwrite scope is the derived identity tuple PLUS PUBLIC_FQDN
+    (CIU-47 — generate derives it from this workspace's own inputs, so the
+    just-written record outranks stale ambient state). Any OTHER key already
+    present in os.environ keeps its ambient value."""
     env_path = tmp_path / "ciu.env"
     env_path.write_text(
         'export DOCKER_NETWORK_INTERNAL="fresh-net"\n'
-        'export PUBLIC_FQDN="file-value.example"\n',
+        'export PUBLIC_FQDN="file-value.example"\n'
+        'export ENV_TYPE="devcontainer"\n',
         encoding="utf-8",
     )
     events: list[str] = []
     monkeypatch.delenv("REPO_NAME", raising=False)
     monkeypatch.delenv("INSTANCE_ID", raising=False)
     monkeypatch.setenv("PUBLIC_FQDN", "ambient-value.example")
+    monkeypatch.setenv("ENV_TYPE", "native")
     monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
     monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
@@ -170,5 +174,6 @@ def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
     workspace_env.bootstrap_env_init(tmp_path)
 
     import os
-    assert os.environ["PUBLIC_FQDN"] == "ambient-value.example"
+    assert os.environ["PUBLIC_FQDN"] == "file-value.example"
     assert os.environ["DOCKER_NETWORK_INTERNAL"] == "fresh-net"
+    assert os.environ["ENV_TYPE"] == "native"

@@ -34,7 +34,12 @@ FIXTURE_DIR = (
 
 
 def _fixture(name: str) -> dict:
-    with (FIXTURE_DIR / name).open(encoding="utf-8") as fh:
+    """Load a FROZEN grammar fixture. CIU-39 widened the closed vocabularies
+    (vendor-pinned, vendor drift) and bumped schema_version to 2; the seven
+    P01 fixtures stay untouched as the historical v1 record, and every
+    assertion now reads the v2 set (same seven shapes, new vocabulary)."""
+    v2_name = f"provenance-v2-{name.split('provenance-', 1)[1]}"
+    with (FIXTURE_DIR / v2_name).open(encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -148,7 +153,7 @@ class TestProvenanceResultGrammar:
         """Built by cli._provenance BEFORE verify_running_provenance is ever
         called (no project_prefix exists yet to scope a check with)."""
         result = deploy.ProvenanceResult(
-            schema_version=1, instance=None, commit_under_test=None,
+            schema_version=2, instance=None, commit_under_test=None,
             tree_state=None, containers=None, overall="refused-no-identity",
         )
         assert result.to_dict() == _fixture("provenance-refused-no-identity.json")
@@ -191,6 +196,139 @@ class TestProvenanceResultGrammar:
         result = deploy.verify_running_provenance(INSTANCE)
         assert result.overall != "verified-match"
         assert result.overall == "not-verified-no-evidence"
+
+
+# ---------------------------------------------------------------------------
+# CIU-39 — declared vendor baseline: vendor-pinned, drift, verified-match reachability
+# ---------------------------------------------------------------------------
+
+
+class TestVendorPinnedVerdicts:
+    VENDOR = ["hashicorp/vault:1.15", "ghcr.io/goauthentik/server:2024.2.2", "hashicorp/consul:1.18"]
+
+    def test_all_vendor_deployment_reaches_verified_match(self, monkeypatch):
+        """The CIU-39 headline oracle: a deployment whose containers are ALL
+        pinned vendor artifacts leaves not-verified-no-evidence forever no
+        more — the verdict is green, and the document says which containers
+        were vendor-pinned."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [
+                ("dstdns-dev-vault-1", "hashicorp/vault:1.15", "dstdns-dev"),
+                ("dstdns-dev-authentik-1", "ghcr.io/goauthentik/server:2024.2.2", "dstdns-dev"),
+                ("dstdns-dev-consul-1", "hashicorp/consul:1.18", "dstdns-dev"),
+            ],
+            {},  # vendor images carry no revision label
+        )))
+        result = deploy.verify_running_provenance(INSTANCE, vendor_images=self.VENDOR)
+        assert result.to_dict() == _fixture("provenance-verified-match-all-vendor.json")
+        assert result.overall == "verified-match"
+
+    def test_vendor_drift_is_mismatch(self, monkeypatch):
+        """The declaration vouches for ONE artifact; same image name at any
+        other reference is drift — a mismatch, not a silent unlabelled."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("dstdns-dev-vault-1", "hashicorp/vault:1.16", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["hashicorp/vault:1.15"]
+        )
+        assert result.to_dict() == _fixture("provenance-mismatch-vendor-drift.json")
+
+    def test_declared_image_with_label_is_never_commit_compared(self, monkeypatch):
+        """A declared image carrying a revision label (upstream-stamped) must
+        NOT be judged against OUR commit — reference equality wins, and the
+        label is still reported verbatim in the document."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("dstdns-dev-vault-1", "hashicorp/vault:1.15", "dstdns-dev")],
+            {"hashicorp/vault:1.15": "upstream-build-999"},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["hashicorp/vault:1.15"]
+        )
+        assert result.overall == "verified-match"
+        assert result.containers[0].status == "vendor-pinned"
+        assert result.containers[0].labelled_revision == "upstream-build-999"
+
+    def test_mixed_match_and_vendor_pinned_is_verified_match(self, monkeypatch):
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [
+                ("dstdns-dev-controller-1", "dstdns/controller:1b369e23", "dstdns-dev"),
+                ("dstdns-dev-vault-1", "hashicorp/vault:1.15", "dstdns-dev"),
+            ],
+            {"dstdns/controller:1b369e23": "1b369e23"},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["hashicorp/vault:1.15"]
+        )
+        assert result.overall == "verified-match"
+        assert {c.status for c in result.containers} == {"match", "vendor-pinned"}
+
+    def test_undeclared_unlabelled_stays_unlabelled_even_with_declarations(
+        self, monkeypatch
+    ):
+        """The escape hatch cannot fake a verdict: an unlabelled image nobody
+        declared is still exactly 'unlabelled' — never silently vendor-pinned.
+        (Overall stays green here because S17.2's shipped semantics are 'only
+        labelled/expected images are checked': an unlabelled container never
+        BLOCKS green, it just contributes nothing — same as postgres:16 next
+        to a matching own image pre-CIU-39.)"""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [
+                ("dstdns-dev-vault-1", "hashicorp/vault:1.15", "dstdns-dev"),
+                ("dstdns-dev-controller-1", "dstdns/controller:forgotten", "dstdns-dev"),
+            ],
+            {},  # controller image unbaked: no label
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["hashicorp/vault:1.15"]
+        )
+        statuses = {c.name: c.status for c in result.containers}
+        assert statuses == {
+            "dstdns-dev-vault-1": "vendor-pinned",
+            "dstdns-dev-controller-1": "unlabelled",
+        }
+        assert result.overall == "verified-match"
+
+    def test_forgotten_bake_with_no_declarations_stays_no_evidence(self, monkeypatch):
+        """The mask-check: an unbaked OWN image with an EMPTY declaration list
+        can never go green — restoring the bare unlabelled-skip without the
+        declaration requirement keeps today's fail-closed posture."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("dstdns-dev-controller-1", "dstdns/controller:forgotten", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(INSTANCE)
+        assert result.overall == "not-verified-no-evidence"
+
+    def test_no_declarations_reproduces_pre_ciu39_verdict_exactly(self, monkeypatch):
+        """Nothing declared → byte-identical semantics to the pre-CIU-39
+        verdict (the v2 all-unlabelled fixture)."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "1b369e23")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("dstdns-dev-db-1", "postgres:16", "dstdns-dev")],
+            {"postgres:16": ""},
+        )))
+        result = deploy.verify_running_provenance(INSTANCE)
+        assert result.to_dict() == _fixture(
+            "provenance-not-verified-no-evidence-unlabelled.json"
+        )
+
+    def test_image_reference_name_extraction(self):
+        f = deploy._image_reference_name  # CANONICAL names (review fix)
+        assert f("hashicorp/vault:1.15") == "hashicorp/vault"
+        assert f("vault@sha256:abc") == "docker.io/library/vault"
+        assert f("nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/nginx:2") == "docker.io/library/nginx"
+        assert f("GHCR.io/X/Y:1") == "ghcr.io/X/Y"  # host lowercased, ns kept
+        assert f("localhost:5000/img:tag") == "localhost:5000/img"
+        assert f("bare-name") == "docker.io/library/bare-name"
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +381,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "rev1", "clean", [], "not-verified-no-evidence",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "rev1", "clean", [], "not-verified-no-evidence",
             ),
         )
         code = cli._provenance(["--json"])
@@ -258,8 +396,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "rev1", "clean",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "rev1", "clean",
                 [deploy.ContainerProvenance("svc", "img:rev1", "rev1", "match")],
                 "verified-match",
             ),
@@ -311,8 +449,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345", "clean",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345", "clean",
                 [deploy.ContainerProvenance("svc", "img:abc12345", "abc12345", "match")],
                 "verified-match",
             ),
@@ -328,8 +466,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345", "clean",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345", "clean",
                 [deploy.ContainerProvenance("svc", "img:deadbeef", "deadbeef", "mismatch")],
                 "mismatch",
             ),
@@ -353,8 +491,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345", "clean",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345", "clean",
                 [deploy.ContainerProvenance("svc", "img:deadbeef", "deadbeef", "mismatch")],
                 "mismatch",
             ),
@@ -372,8 +510,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345", "clean",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345", "clean",
                 [deploy.ContainerProvenance("svc", "img:deadbeef", "deadbeef", "mismatch")],
                 "mismatch",
             ),
@@ -387,8 +525,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345-dirty", "dirty", None, "not-verified-dirty",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345-dirty", "dirty", None, "not-verified-dirty",
             ),
         )
         code = cli._provenance([])
@@ -401,8 +539,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "dev", "not-a-checkout", None, "not-verified-unknown",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "dev", "not-a-checkout", None, "not-verified-unknown",
             ),
         )
         code = cli._provenance([])
@@ -416,8 +554,8 @@ class TestCliProvenanceDispatch:
         monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
         monkeypatch.setattr(
             deploy, "verify_running_provenance",
-            lambda prefix: deploy.ProvenanceResult(
-                1, prefix, "abc12345", "clean", None, "not-verified-no-evidence",
+            lambda prefix, **_kw: deploy.ProvenanceResult(
+                2, prefix, "abc12345", "clean", None, "not-verified-no-evidence",
             ),
         )
         code = cli._provenance([])
@@ -425,3 +563,220 @@ class TestCliProvenanceDispatch:
         out = capsys.readouterr().out
         assert "[WARN]" in out
         assert "provenance OK" not in out
+
+
+# ---------------------------------------------------------------------------
+# CIU-39 — CLI surface: declaration plumbing, malformed-config refusal, prose
+# ---------------------------------------------------------------------------
+
+
+def _vendor_cfg(vendor_images):
+    cfg = {
+        "deploy": {
+            "project_name": "dstdns",
+            "environment_tag": "dev",
+            "provenance": {"vendor_images": vendor_images},
+        }
+    }
+    return cfg
+
+
+def test_vendor_images_passed_through_to_verdict_builder(monkeypatch, tmp_path):
+    """CIU-39: the CLI reads [deploy.provenance] vendor_images and hands the
+    list to verify_running_provenance verbatim (whitespace-stripped)."""
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+    seen = {}
+
+    def fake_verify(prefix, *, vendor_images=None):
+        seen["prefix"] = prefix
+        seen["vendor_images"] = vendor_images
+        return deploy.ProvenanceResult(2, prefix, "rev1", "clean", [], "verified-match")
+
+    monkeypatch.setattr(
+        deploy, "load_global_config",
+        lambda repo_root: _vendor_cfg(["hashicorp/vault:1.15 ", " ghcr.io/goauthentik/server:2024.2.2"]),
+    )
+    monkeypatch.setattr(deploy, "verify_running_provenance", fake_verify)
+
+    assert cli._provenance([]) == 0
+    assert seen["prefix"] == "dstdns-dev"
+    assert seen["vendor_images"] == [
+        "hashicorp/vault:1.15",
+        "ghcr.io/goauthentik/server:2024.2.2",
+    ]
+
+
+def test_malformed_vendor_images_refuse_exit_2(monkeypatch, tmp_path, capsys):
+    """A silently ignored declaration would certify exactly the deployment it
+    was written to vouch for — malformed config refuses loudly."""
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+
+    def fail_verify(prefix, **_kw):
+        raise AssertionError("must not reach the verdict builder")
+
+    monkeypatch.setattr(
+        deploy, "load_global_config", lambda repo_root: _vendor_cfg("hashicorp/vault")
+    )
+    monkeypatch.setattr(deploy, "verify_running_provenance", fail_verify)
+
+    assert cli._provenance(["--json"]) == 2
+    err = capsys.readouterr().err
+    assert "vendor_images" in err and "list" in err
+
+
+def test_drift_mismatch_prose_names_the_declaration_not_the_commit(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+    monkeypatch.setattr(
+        deploy, "load_global_config", lambda repo_root: _vendor_cfg(["hashicorp/vault:1.15"])
+    )
+    monkeypatch.setattr(
+        deploy, "verify_running_provenance",
+        lambda prefix, **_kw: deploy.ProvenanceResult(
+            2, prefix, "1b369e23", "clean",
+            [deploy.ContainerProvenance("dstdns-dev-vault-1", "hashicorp/vault:1.16", None, "mismatch")],
+            "mismatch",
+        ),
+    )
+    assert cli._provenance([]) == 2
+    err = capsys.readouterr().err
+    assert "not the declared vendor reference" in err
+    assert "hashicorp/vault:1.16" in err
+
+
+def test_ok_line_names_pinned_count_when_vendors_declared(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+    monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
+    monkeypatch.setattr(
+        deploy, "verify_running_provenance",
+        lambda prefix, **_kw: deploy.ProvenanceResult(
+            2, prefix, "rev1", "clean",
+            [
+                deploy.ContainerProvenance("svc-a", "img:rev1", "rev1", "match"),
+                deploy.ContainerProvenance("svc-b", "hashicorp/vault:1.15", None, "vendor-pinned"),
+            ],
+            "verified-match",
+        ),
+    )
+    assert cli._provenance([]) == 0
+    out = capsys.readouterr().out
+    assert out == (
+        "provenance OK — running containers match rev1 or their declared "
+        "vendor references (1 pinned)\n"
+    )
+
+
+def test_ok_line_without_pins_is_byte_identical_to_pre_ciu39(
+    monkeypatch, tmp_path, capsys
+):
+    """No vendor-pinned containers → the pre-CIU-39 OK line, byte-identical."""
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+    monkeypatch.setattr(deploy, "load_global_config", lambda repo_root: _config())
+    monkeypatch.setattr(
+        deploy, "verify_running_provenance",
+        lambda prefix, **_kw: deploy.ProvenanceResult(
+            2, prefix, "rev1", "clean",
+            [deploy.ContainerProvenance("svc-a", "img:rev1", "rev1", "match")],
+            "verified-match",
+        ),
+    )
+    assert cli._provenance([]) == 0
+    out = capsys.readouterr().out
+    assert out == "provenance OK — running containers match rev1\n"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — canonical reference comparison; malformed-table refusal
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalReferenceComparison:
+    def test_name_canonicalizes_docker_hub_defaults_and_host_case(self):
+        f = deploy._image_reference_name
+        assert f("nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/library/nginx:1") == "docker.io/library/nginx"
+        assert f("docker.io/nginx:2") == "docker.io/library/nginx"
+        assert f("GHCR.io/X/Y:1") == "ghcr.io/X/Y"
+        assert f("localhost:5000/img:tag") == "localhost:5000/img"
+
+    def test_full_reference_normalization_keeps_tag_verbatim(self):
+        f = deploy._normalized_image_reference
+        assert f("NGINX:1.25") == "docker.io/library/NGINX:1.25"  # tag case kept? no—see below
+        # tags are case-SENSITIVE and survive verbatim; the NAME canonicalizes
+        assert f("nginx:1.25").endswith(":1.25")
+        assert f("vault@sha256:abc") == "docker.io/library/vault@sha256:abc"
+
+    def test_registry_prefix_spelling_cannot_hide_drift(self, monkeypatch):
+        """Review major (probe A): declared docker.io/library/nginx:1, running
+        nginx:2 — Docker treats these as the same name, so this is DRIFT
+        (mismatch), never a benign unlabelled."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("web-1", "nginx:2", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["docker.io/library/nginx:1"]
+        )
+        assert result.overall == "mismatch"
+        assert result.containers[0].status == "mismatch"
+
+    def test_registry_prefix_spelling_recognizes_correct_pin(self, monkeypatch):
+        """Review major (probe B): the same spelling mismatch must not break
+        PIN recognition either."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("web-1", "nginx:1", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["docker.io/library/nginx:1"]
+        )
+        assert result.containers[0].status == "vendor-pinned"
+        assert result.overall == "verified-match"
+
+    def test_uppercase_registry_host_pin_is_recognized(self, monkeypatch):
+        """Only the REGISTRY HOST is case-insensitive (Docker rule); the
+        namespace stays case-sensitive — so host-case spelling differences
+        cannot break a pin, but a genuinely different namespace is drift."""
+        monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "rev1")
+        monkeypatch.setattr(deploy.procutil, "docker", _docker_ps((
+            [("app-1", "ghcr.io/x/app:2.0", "dstdns-dev")],
+            {},
+        )))
+        result = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["GHCR.io/x/app:2.0"]
+        )
+        assert result.containers[0].status == "vendor-pinned"
+
+        # a different NAMESPACE is a genuinely different repository (Docker
+        # namespaces are case-sensitive) — the declaration does not vouch for
+        # it, so it is an ordinary undeclared image: unlabelled, not drift.
+        other_ns = deploy.verify_running_provenance(
+            INSTANCE, vendor_images=["GHCR.io/X/app:2.0"]
+        )
+        assert other_ns.containers[0].status == "unlabelled"
+
+
+def test_malformed_provenance_table_refuses_exit_2(monkeypatch, tmp_path, capsys):
+    """Review minor: [deploy.provenance] set to a non-table TOML value used to
+    crash with a traceback — it refuses with the same loudness as a malformed
+    vendor_images list."""
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+
+    def fail_verify(prefix, **_kw):
+        raise AssertionError("must not reach the verdict builder")
+
+    monkeypatch.setattr(
+        deploy,
+        "load_global_config",
+        lambda repo_root: {"deploy": {"project_name": "d", "environment_tag": "v",
+                                      "provenance": "oops"}},
+    )
+    monkeypatch.setattr(deploy, "verify_running_provenance", fail_verify)
+    assert cli._provenance(["--json"]) == 2
+    err = capsys.readouterr().err
+    assert "[deploy.provenance]" in err and "table" in err

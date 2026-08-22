@@ -155,6 +155,29 @@ requirements are marked *(withdrawn)*.
   ambient `REPO_ROOT`. Read-path precedence of already-generated workspaces
   (ambient wins when consistent) is unchanged.
 
+  **Refined precedence for `PUBLIC_FQDN` (CIU-47).** The same masked-default
+  family, host-derived rather than path-derived: a shell that sourced a main
+  checkout's `ciu.env` carries that checkout's `PUBLIC_FQDN`, and generate
+  adopted it bare — making it the fresh worktree's recorded public name.
+  Contract: during generation `PUBLIC_FQDN` is derived from THIS workspace's
+  own inputs first (rendered `ciu.global.toml` `infrastructure.public_fqdn`
+  — absent or UNREADABLE counts as no entry; a non-string value likewise —
+  else reverse DNS of the detected public IP); an ambient `PUBLIC_FQDN` is
+  adopted only when it EQUALS the derived one, or when the detection path
+  yielded NO independently sourced value to compare against (no usable
+  config entry and reverse DNS produced nothing — an offline host; there,
+  the pre-set value remains the legitimate manual override, adopted
+  silently). Residual, documented and out of CIU-47's scope: the derivation's
+  IP input itself keeps the plain pre-set-wins read, so a stale ambient
+  `PUBLIC_IP` from another checkout's record feeds the reverse-DNS
+  derivation on the same host. On a real
+  mismatch the derived value is written and a stderr warning names the
+  ignored ambient value. Post-generation bootstrap steps act on the
+  just-written file's value (`PUBLIC_FQDN` is in
+  `GENERATED_IDENTITY_KEYS`); read-path precedence of already-generated
+  workspaces is unchanged. `PUBLIC_IP` and `PUBLIC_TLS_*` keep the plain
+  pre-set-wins read (out of CIU-47's filed scope).
+
 - **S2.8** `ciu env generate` is the **single bootstrap entry point** and
   MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
@@ -336,7 +359,9 @@ requirements are marked *(withdrawn)*.
 - **S4.4** A secrets-table value MUST be either a directive string or an
   inline table `{ directive = "...", ... }` with OPTIONAL keys:
   `expose_env = "<ENV_NAME>"` (S4.16), `mode = "0444"`, `uid = <int>`
-  (S4.10). Any other value, or an unparseable directive, = abort.
+  (S4.10), `consumed_by = "hook"` (S4.20), `produced_by = "<profile>"`
+  (ASK_VAULT only; S13.6). Any other value, or an unparseable directive,
+  = abort.
 - **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL)\b`
   found **outside** a secrets table MUST abort (catches misplaced
   directives, e.g. dstdns's `[controller.consul].token`). No other heuristic
@@ -659,6 +684,23 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      stack's S8.7 compose project, catching named volumes that carry the bare
      project prefix without the instance tag (e.g. ``<project>-vault-data``);
      the label filter is exact per project, never a broad glob.
+   7. **Config-less stack coverage (CIU-46, normative).** When
+     `deploy.project_name`/`environment_tag` are absent, a shipped stack
+     still runs — under the workspace-identity compose project (S8.7). Clean
+     MUST enumerate exactly what up named: each existing selected stack
+     contributes its `engine.identity_compose_project_name` to every
+     compose-label pass (containers via `ps -a --filter
+     label=com.docker.compose.project=<project>`, volumes and networks as
+     above). Returning no projects for such a selection (the pre-CIU-46
+     behavior) silently skipped the stack's `*_default` network and
+     label-prefixed volumes over a printed `clean complete`. A missing or
+     key-less `ciu.env` REFUSES the enumeration (exit 2, before ANY teardown)
+     — never a silent empty set. Tagged selections keep the S8.7 scoped
+     names, unchanged. Container enumeration failure on this path is
+     INDETERMINATE and fails the clean (`invariant unverifiable`, symmetric
+     with volumes/networks) — it is never folded into "nothing to remove";
+     the TAGGED post-clean check keeps its pre-CIU-46 docker-gone-mid-clean
+     degradation to a warning, documented S6.4 behavior.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container
@@ -915,9 +957,26 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   instance's `up` ADOPTS the first instance's containers (same project +
   service, changed `container_name`) and removes them (2026-07-16 dstdns
   multi-stack incident). The scoping pair is the same one that already scopes
-  container names (S7.7/S7.8). Shipped mode and the reset/down path fall
-  back to the legacy cwd-derived project (with a warning) when the config
-  does not define the pair; the native `up` path REQUIRES it. **Migration guard:** before `up`, CIU MUST detect containers of
+  container names (S7.7/S8.7). **There is no compose invocation without an
+  explicit `-p` anywhere in CIU (CIU-46 cutover):** shipped mode derives the
+  identity project whenever the config lacks the naming pair; the reset/down
+  path requires `deploy.project_name` outright (it names label scopes too)
+  and derives the identity project only in the partial-pair case
+  (`environment_tag` absent). The derivation:
+  WORKSPACE-IDENTITY project `{REPO_NAME}-{INSTANCE_ID}-{stack_basename}`
+  from THIS checkout's own `ciu.env`, parsed by EXACT path (S2.7 authority —
+  never ambient shell state). The withdrawn pre-CIU-46 behavior let docker
+  derive the cwd BASENAME: identical for every checkout/worktree of a repo,
+  so it both collided across instances (the 2026-07-16 dstdns multi-stack
+  incident class) and was unenumerable by clean, whose S6.4a passes then
+  skipped the stack over a printed `clean complete`. The identity name is
+  computed by `engine.identity_compose_project_name` — the SAME function
+  clean calls — so up and clean name a project identically by construction;
+  it normalizes exactly like docker compose's own rule (lowercase,
+  `[a-z0-9_-]`) and refuses (`[S8.7]`, exit 2) when `ciu.env` is missing or
+  lacks the identity keys: a deployment that cannot be NAMED must not start,
+  and a teardown that cannot be named must refuse, never skip. The native
+  `up` path REQUIRES the naming pair outright. **Migration guard:** before `up`, CIU MUST detect containers of
   THIS instance (name-prefix `{project}-{env_tag}-`) still carrying the
   legacy dir-derived project label and abort with one-time migration
   instructions; `CIU_ADOPT_LEGACY_PROJECT=1` instead removes them (bind-
@@ -1046,7 +1105,10 @@ naming · S7.2 enabled flags + `shipped` bool (S8.6) ·
 S7.5 `[deploy.groups]` rejection · S7.6 vault ordering · S2.2/S2.3 env keys ·
 S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
 `ciu.global.toml.j2`) · S15.2 governance shape (`enabled` bool,
-`exempt_services` list-of-strings). Each failure reports the spec ID it
+`exempt_services` list-of-strings) · S13.6 `produced_by` grammar
+(ASK_VAULT-only inline key, non-empty string) and its producer preflight ·
+S8.7 compose-naming refusals (missing/key-less `ciu.env`, non-round-tripping
+stack dirname for config-less naming). Each failure reports the spec ID it
 enforces.
 
 ## S12 — Extension points (reserved, not implemented)
@@ -1156,6 +1218,56 @@ both checks are bypassed entirely.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+
+### S13.6 — Cross-profile producer declaration (`produced_by`, CIU-42)
+
+A stack's `ASK_VAULT` directive may declare, beside the directive (S4.4
+inline table), the profile whose deployment PROVISIONS the value at its Vault
+path:
+
+```toml
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
+```
+
+The declaration turns an opaque late failure into an upfront refusal. Without
+it, a partial selection that excludes the producing profile sails through
+every preflight and fails at the consuming stack's materialization with only
+the bare path name (`[S4.2] ... absent`) — twice reproduced live in dstdns
+P111/P112 (`core,db` selections needing identity-profile paths, resolved in
+the field by seeding placeholders). With it:
+
+- **Grammar:** `produced_by` is valid ONLY on `ASK_VAULT` — a producer
+  declaration says the path is provisioned by another profile's deployment,
+  which only an ASK_VAULT read can depend on (`GEN_TO_VAULT` self-produces;
+  local/ephemeral kinds have no cross-profile producer). Value: a non-empty
+  string; anything else is a `[S13.6]` grammar abort. A bare-string
+  directive has no producer and behaves exactly as before.
+- **Preflight:** `producer_preflight` runs beside `vault_preflight` on the
+  orchestration deploy path (`ciu up` with phases/profiles — the same surface
+  vault_preflight covers; a single-stack `ciu up --dir` dispatch runs neither,
+  a pre-existing scope limit stated here rather than hidden). Producer
+  PRESENCE is judged by DEPLOYED STACKS, not the profile label: the producer
+  passes when any stack it deploys — its `stacks` list or its phases'
+  services — is in the selection. An alias profile deploying the same stacks
+  therefore satisfies it, and a `--phases` filter that narrowed the
+  producer's stacks out still refuses. When no declared producer's stacks are
+  selected, it refuses `[S13.6]` naming EVERY unmet tuple: stack, secret
+  name, Vault path, producer profile, its stack set, the current selection,
+  and both remedies — deploy the producer profile or its stacks, or seed the
+  path out-of-band. The default selection (all phases) never refuses:
+  everything's provisioning runs.
+- **Typo protection:** a `produced_by` naming an undefined profile is a
+  configuration error EVEN under the default selection — a typo'd declaration
+  must fail loudly, never silently protect nothing. The check walks the
+  SELECTED stacks' renders; declarations in non-selected stacks validate when
+  those stacks deploy.
+- **Scope:** shipped stacks have no CIU secrets surface (S8.6) and are
+  skipped; undeclared ASK_VAULT directives keep today's behavior exactly; all
+  violations in one run are reported TOGETHER — never one per run.
+- **Controlled wrong implementation:** dropping the declaration lookup makes
+  the preflight pass where it must refuse — the refusal demonstrably comes
+  from the declaration, not from the path.
 
 ## S14 — Remote SSH transport (`ciu ssh` / `--host`)
 
@@ -2391,18 +2503,18 @@ above — liveness, target discovery, the concurrent-connect state check, and
 rollback — is proven against a scripted fake at the `procutil.docker`
 boundary.
 
-**`--shipped` (S8.5/S8.7) with no derivable compose project is a deliberate
-additional refusal.** When `deploy.project_name`/`environment_tag` are unset,
-`run_shipped`'s pre-existing legacy fallback lets Compose derive its own
-project from the cwd basename — a value CIU itself never learns, so it
-cannot scope the `com.docker.compose.project=<...>` label filters this join
-depends on. A shared-infra join declared on such a stack therefore fails
-loud with `[S16.1]` rather than silently skipping a declared join or joining
-against an unscoped/incorrect filter: CIU refuses because it cannot know
-which value Compose actually chose, not because a wrong value would corrupt
-anything (an unmatched filter just finds zero containers and fails the
-existing "no running container" check harmlessly). The ordinary no-intent
-legacy fallback is completely unaffected.
+**`--shipped` (S8.5/S8.7) shared-infra joins on a config-less stack (CIU-46
+amendment).** The join once refused with `[S16.1]` when the deploy tags were
+unset, on the grounds that Compose's privately derived project name was a
+value CIU itself never learns. CIU-46 withdraws that premise along with the
+basename fallback: a config-less shipped stack's project is now COMPUTED
+(`engine.identity_compose_project_name`, from THIS checkout's `ciu.env`) and
+passed as `-p`, so CIU knows exactly what up named and the join scopes its
+`com.docker.compose.project=<...>` filters to that same value. A checkout
+that cannot produce the identity name refuses earlier (`[S8.7]`), so no
+unscoped case remains. The `[S16.1]` cannot-derive refusal is withdrawn as
+unreachable; an unmatched filter still just finds zero containers and fails
+the existing "no running container" check harmlessly.
 
 ### S16.3 — Worktree instance concurrency budget (CIU-24)
 
@@ -2573,8 +2685,9 @@ allowlist** of shipped machine contracts (`schema_version: 1`,
 `capabilities`: sorted identifiers). Consumers allowlist these identifiers
 instead of inferring features from SemVer. An identifier is added only when
 its code path ships in the same release. Shipped identifiers:
-`worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
-`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
+`worktree.branches.v1`, `worktree.identity.v1`, `worktree.inspect.v1`,
+`worktree.lifecycle-json.v1`, `worktree.up.v1`, `worktree.exec-local.v1`,
+and `worktree.exec-target.v1`.
 
 ### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
 
@@ -2637,6 +2750,66 @@ project/service/network uniqueness.
 Execution is `docker exec -w WORKDIR CONTAINER -- ARGV...` (no shell), and the
 exact exit code is returned.
 
+### S16.8 — Worktree branch hygiene (`ciu worktree branches`, CIU-25 git half)
+
+CIU-25's grounded-staleness demand, delivered for the GIT layer: a crashed
+dispatcher or forgotten teardown most often leaves a fully-merged branch and
+its checkout behind, and nothing grounded said so. `ciu worktree branches
+[--base REF] [-y] [--json]` surveys every LOCAL branch against *base*
+(default `main` — the same policy default `worktree add --base` ships).
+*base* MUST name a LOCAL BRANCH — a SHA or remote-tracking ref refuses
+`[S16.8]`: classification and the destructive prune reason about branch
+NAMES, and a SHA anchor once let the anchor branch itself classify prunable
+(adversarial-review finding). Classification is a CLOSED six-value
+vocabulary:
+
+- **`base`** — the branch measured against; never touched.
+- **`mainline`** — the repository's DEFAULT branch: origin/HEAD's target,
+  or — only when that ref is unresolvable — literally `main`/`master`
+  (documented policy fallback). Never pruned, even when the survey runs
+  against another base and the mainline happens to be fully merged there:
+  "clean up merged branches" can never mean deleting a mainline.
+- **`current`** — the PRIMARY checkout's branch: somebody's working context,
+  even when merged.
+- **`prunable`** — Git PROVES nothing would be lost: zero commits not in
+  base (`rev-list --count base...branch`), and either no checkout or a CLEAN,
+  non-primary one. Only this category is ever removed.
+- **`merged-dirty`** — merged, but its checkout carries uncommitted changes;
+  listed with attributes so a human rules on the dirt first.
+- **`unmerged`** — has work not in base; keep.
+
+Every branch reports its attributes: `checkout` path, `ahead`/`behind`
+(commit counts vs base), `changed_files` (diff vs the merge-base),
+`last_commit_at`/`last_commit_subject`, `dirty`, and its ciu instance linkage
+(`logical_name` + lifecycle `state` when a managed record's checkout sits
+there). No age heuristic, no process-lifetime inference, no basename
+similarity — the estate rule: removal only on proof, survey otherwise.
+
+Without `-y` there are NO side effects: the survey carries an explicit hint
+naming how many branches `-y` would remove. The destructive pass is gated
+TWICE against the reviewed half-prune failure (destroy a checkout, then have
+Git refuse the deletion — divergent mergedness definitions): (1) **base
+sanity** — `-y` refuses `[S16.8]` unless the base tip IS, or is an ancestor
+of, the primary checkout's HEAD or the origin/HEAD target (surveying any
+base stays allowed; pruning demands one Git agrees with); (2) **per-candidate
+upstream pre-check** — a branch tracking an upstream that does not contain
+it is moved to `failed` BEFORE its checkout is touched, with the reason.
+Then exactly the remaining `prunable` category is removed — per branch,
+`git worktree remove` FIRST (Git re-verifies cleanliness itself) then
+`git branch -d` (Git re-verifies mergedness); any residual refusal moves
+that branch to `failed` WITH Git's reason and the prune continues. The
+document is then RE-SURVEYED so its counts and branches report the
+post-prune truth, never the stale pre-prune snapshot. The human output names
+every `removed:` and `FAILED:` branch and exits non-zero on a `partial`
+prune — a partial success is never silent. The document is versioned
+(`schema_version: 1`, operation `branches` / `branches-prune`, status
+`survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
+id `worktree.branches.v1`.
+
+The Docker-resource half of CIU-25 (containers/volumes of a crashed
+instance) remains OPEN: it needs the ownership/lease contract described in
+the backlog entry and is deliberately not approximated here.
+
 ## S17 — Image provenance
 
 ### S17.1 — Stamping
@@ -2680,7 +2853,11 @@ Scope is self-selecting, and the non-refusals are as normative as the refusal:
   list of "ours".
 - An **unlabelled** image is skipped silently: it is external or pre-S17, and
   absence is not evidence of mismatch. (`docker --format` renders a missing key
-  as the literal `<no value>`; that is treated as absent.)
+  as the literal `<no value>`; that is treated as absent.) CIU-39 adds one
+  refinement: a consumer MAY declare vendor images (`[deploy.provenance]
+  vendor_images`, S17.5) — a running reference EQUAL to a declaration is
+  `vendor-pinned`, making `verified-match` reachable for all-vendor
+  deployments instead of permanently `not-verified-no-evidence`.
 - An **absent** image is not a mismatch — that is compose's failure to report.
 - A **dirty** working tree WARNS and does not refuse. Uncommitted changes are in
   no artifact anywhere, so nothing can match; refusing would fire on every
@@ -2698,8 +2875,9 @@ same bypass meaning as CIU's sibling preflights.
 
 `deploy.verify_running_provenance` ALWAYS builds and returns a
 `ProvenanceResult` — never bare `None`, never raising internally. Its fields,
-in wire order: `schema_version` (constant `1`), `instance`,
-`commit_under_test`, `tree_state`, `containers`, `overall`.
+in wire order: `schema_version` (constant `2` as of CIU-39; the seven
+CIU-20-era documents were schema `1` and remain the historical record),
+`instance`, `commit_under_test`, `tree_state`, `containers`, `overall`.
 
 - `commit_under_test` is `get_git_hash()`'s return value VERBATIM (the
   `-dirty` suffix, if any, lives ONLY here).
@@ -2711,7 +2889,8 @@ in wire order: `schema_version` (constant `1`), `instance`,
   succeeded); JSON `null` in every case where no container-level verdict was
   formed (identity refused, dirty tree, non-checkout, or enumeration could
   not run). `labelled_revision` is JSON `null` when unknown, NEVER `""`.
-  `status` is one of `match` / `mismatch` / `unlabelled`.
+  `status` is one of `match` / `mismatch` / `unlabelled` / `vendor-pinned`
+  (CIU-39).
 - `overall` is one of SIX closed values, decided in this order: (1) identity
   (`project`/`env_tag`) unresolved → `refused-no-identity` (every other field
   null), emitted by `cli._provenance` BEFORE `verify_running_provenance` is
@@ -2721,11 +2900,62 @@ in wire order: `schema_version` (constant `1`), `instance`,
   null); (4) enumeration could NOT run (`docker ps` raised or returned
   non-zero) → `not-verified-no-evidence` (`containers` null); (5) enumeration
   ran, ≥1 container `mismatch` → `mismatch` (`containers` the sorted list);
-  (6) enumeration ran, ≥1 `match` and ZERO `mismatch` → `verified-match`
-  (`containers` the list) — a green verdict is NEVER emitted from zero checked
-  containers; (7) enumeration ran but produced NEITHER a match NOR a mismatch
-  (empty, or all `unlabelled`) → `not-verified-no-evidence` (`containers` the
-  possibly-empty list).
+  (6) enumeration ran, ≥1 `match` or `vendor-pinned` and ZERO `mismatch` →
+  `verified-match` (`containers` the list) — a green verdict is NEVER emitted
+  from zero checked containers; (7) enumeration ran but produced NEITHER a
+  match/vendor-pin NOR a mismatch (empty, or all undeclared-unlabelled) →
+  `not-verified-no-evidence` (`containers` the possibly-empty list).
+
+### S17.5 — Declared vendor baseline (`[deploy.provenance]`, CIU-39)
+
+An image ciu never built has no `org.opencontainers.image.revision` label, is
+`unlabelled`, and never contributes `match` — so a deployment whose
+containers are all vendor artifacts (dstdns runs vault, authentik, consul
+this way) could never leave `not-verified-no-evidence`, and `verified-match`
+was unreachable live. The contract:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+  "hashicorp/consul:1.18",
+]
+```
+
+- **Reference equality is the whole verdict for a declared image.** A running
+  container whose image EQUALS a declared entry is `vendor-pinned` — judged
+  by reference, NEVER by this repo's commit (an upstream revision label
+  belongs to the upstream build; the label, if any, is still reported
+  verbatim in the document). Equality is compared on CANONICAL references
+  (Docker's own normalization: registry-host case-insensitivity, the
+  implicit `docker.io`/`library/` defaults) so `nginx:1` and
+  `docker.io/library/nginx:1` are the same pin; tags/digests stay
+  case-sensitive verbatim. Digest pinning is deliberately NOT this
+  feature: it adds a pin-file maintenance surface no consumer has today; the
+  declaration says "this exact reference is expected to be third-party", and
+  says no more.
+- **Drift is a mismatch.** A container whose canonical image NAME matches a
+  declared entry at any OTHER reference (`vault:1.15` declared,
+  `vault:1.16` running) is `mismatch` — the declaration vouches for one
+  artifact; a different one is running. Prose names the declaration ("not
+  the declared vendor reference"), never a commit comparison that cannot
+  apply.
+- **The escape hatch is visible, not green.** Undeclared unlabelled images
+  stay `unlabelled` in the document and contribute nothing to the verdict —
+  declaring vendor images cannot HIDE a forgotten bake of an OWN image (it
+  remains listed, per container, as `unlabelled`). What a pin DOES change is
+  the overall: a tree that was `not-verified-no-evidence` (WARN) becomes
+  `verified-match` once at least one container agrees with an expectation
+  and none disagree — the same semantics an own-image `match` always had.
+  Only falsely declaring one's own image as vendor escapes entirely, which
+  is auditable config. Malformed `[deploy.provenance]` or `vendor_images`
+  (not a list of non-empty strings) refuses exit 2: a silently ignored
+  declaration would certify exactly the deployment it was written to vouch
+  for.
+- **Schema bump.** The widened closed vocabularies make every verdict
+  `schema_version: 2`. Strict consumers refuse unknown members (fail-closed);
+  the seven schema-1 fixtures remain frozen as the historical grammar record.
 
 The `null` (enumeration did not/could not run) vs `[]` (enumeration ran,
 found nothing informative) distinction is load-bearing: collapsing both to
