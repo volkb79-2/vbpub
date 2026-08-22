@@ -1,0 +1,788 @@
+"""Unit suite for run-gate.py — construction pinned against a FAKE docker.
+
+Construction is NOT acceptance: these pins prove argv SHAPE only (the P06/P07
+lesson); live acceptance is oracle O4, run against real docker separately.
+Every argv assertion compares the LIST, never a joined string.
+"""
+
+import os
+import stat
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+RUN_GATE_DIR = Path(__file__).resolve().parent.parent
+_TOOL = RUN_GATE_DIR / "run-gate.py"  # hyphenated filename: load via importlib
+
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("run_gate", _TOOL)
+run_gate = importlib.util.module_from_spec(_spec)
+sys.modules["run_gate"] = run_gate
+_spec.loader.exec_module(run_gate)
+
+CGROUP_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+
+
+# ---------------------------------------------------------------------------
+# helpers / fixtures
+# ---------------------------------------------------------------------------
+
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True,
+                   capture_output=True, text=True)
+
+
+def make_repo(tmp_path: Path) -> Path:
+    """A real git repo with one commit; returns repo root."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.invalid")
+    git(repo, "config", "user.name", "t")
+    (repo / "README.md").write_text("x\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+def commit_all(repo: Path, msg: str) -> None:
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", msg)
+
+
+def make_project(repo: Path, config: str, name: str = "proj") -> Path:
+    """Project subdir with a committed run-gate.toml; returns project dir."""
+    proj = repo / name
+    proj.mkdir()
+    (proj / "run-gate.toml").write_text(textwrap.dedent(config))
+    commit_all(repo, f"lane config {name}")
+    return proj
+
+
+def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
+    """PATH-shim docker that RECORDS every invocation losslessly (args joined
+    with \\037 = \\x1f — plain `echo "$@"` destroys quoting; \\xHH is NOT
+    portable printf, octal is)."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir(exist_ok=True)
+    log = tmp_path / "docker-calls.log"
+    log.write_text("")
+    shim = shim_dir / "docker"
+    shim.write_text(textwrap.dedent(f"""\
+        #!/bin/sh
+        printf '%s\\037' "$@" >> "{log}"
+        printf '\\n' >> "{log}"
+        case "$1" in
+          run) echo "fake-container-id" ;;
+          logs) echo "FAKE-LOGS-LINE" ;;
+          wait) printf '%s\\n' "{wait_code}" ;;
+          rm) : ;;
+        esac
+        exit 0
+    """))
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
+    return log
+
+
+def docker_runs(log: Path) -> list[list[str]]:
+    out = []
+    for line in log.read_text().splitlines():
+        parts = line.split("\x1f")
+        if parts and parts[0] == "run":
+            out.append([p for p in parts if p != ""])
+    return out
+
+
+def shim_dir_of(monkeypatch) -> Path:
+    return Path(os.environ["PATH"].split(":")[0])
+
+
+@pytest.fixture(autouse=True)
+def ambient_cgroup(monkeypatch):
+    """Tests declare slices explicitly or set the var themselves."""
+    monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+
+
+SIMPLE_LANE = """\
+    schema_version = 1
+
+    [environments.tester-unified]
+    image = "tester-unified:local"
+
+    [lanes.suite]
+    kind = "command"
+    environment = "tester-unified"
+    argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+    clean_tree = false
+"""
+
+
+def run_tool(proj: Path, *args, cwd=None):
+    return subprocess.run([sys.executable, str(_TOOL), *args],
+                          cwd=cwd or proj, capture_output=True, text=True)
+
+
+# ---------------------------------------------------------------------------
+# O1 — UX surface (R-01..R-05)
+# ---------------------------------------------------------------------------
+
+class TestUxSurface:
+    def test_help_prints_revision_and_lanes(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "--help")
+        assert proc.returncode == 0
+        assert f"rev {run_gate.__revision__}" in proc.stdout
+        assert "suite" in proc.stdout and "environment=tester-unified" in proc.stdout
+
+    def test_no_args_prints_usage(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj)
+        assert proc.returncode == 0
+        assert "usage:" in proc.stdout
+
+    def test_no_config_is_one_line_not_traceback(self, tmp_path):
+        proc = run_tool(tmp_path, "--help")  # empty dir: no config anywhere
+        assert proc.returncode == 1
+        assert proc.stderr.count("\n") == 1
+        assert "Traceback" not in proc.stderr
+
+    def test_list_machine_readable_sorted(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE + """
+            [lanes.alpha]
+            kind = "command"
+            environment = "host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 0
+        assert proc.stdout.splitlines() == [
+            "alpha\tcommand\thost",
+            "suite\tcommand\ttester-unified",
+        ]
+
+    def test_unknown_lane_names_known_lanes_and_config(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "nope")
+        assert proc.returncode == 1
+        assert "unknown lane 'nope'" in proc.stderr
+        assert "suite" in proc.stderr
+        assert str(proj / "run-gate.toml") in proc.stderr
+
+    def test_symlink_parent_is_the_project_not_the_target(self, tmp_path):
+        """R-01/§1: invoked-symlink's PARENT resolves the config (regression:
+        .resolve() used to follow the link to run-gate-project itself)."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        link = proj / "run-gate.py"
+        link.symlink_to(RUN_GATE_DIR / "run-gate.py")
+        proc = subprocess.run([sys.executable, str(link), "--list"],
+                              cwd=tmp_path, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.startswith("suite\t")
+
+
+# ---------------------------------------------------------------------------
+# O2 — config validation: every error names key + file
+# ---------------------------------------------------------------------------
+
+BAD_CONFIGS = {
+    "schema_version": 'schema_version = 2\n',
+    "unknown_top_key": "schema_version = 1\nwat = 1\n",
+    "unknown_lane_key": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+        argv = ["true"]
+        floorg = 1
+    """,
+    "unknown_kind": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "makefile"
+        environment = "host"
+    """,
+    "command_missing_argv": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+    """,
+    "assay_missing_assay_lane": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "assay"
+        environment = "host"
+        assay_command = ["assay"]
+    """,
+    "assay_missing_assay_command": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "assay"
+        environment = "host"
+        assay_lane = "x"
+    """,
+    "pin_missing_sha256": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "assay"
+        environment = "host"
+        assay_lane = "x"
+        assay_command = ["assay"]
+        [lanes.a.pins.assay]
+        version = "2.1.0"
+    """,
+    "pin_version_not_string": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "assay"
+        environment = "host"
+        assay_lane = "x"
+        assay_command = ["assay"]
+        [lanes.a.pins.assay]
+        sha256 = "x/y.sha256"
+        version = 21
+    """,
+    "bad_budget": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+        argv = ["true"]
+        budget = "20 minutes"
+    """,
+    "bad_memory": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+        argv = ["true"]
+        memory = "lots"
+    """,
+    "clean_tree_not_bool": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+        argv = ["true"]
+        clean_tree = "yes"
+    """,
+    "host_redefined": """\
+        schema_version = 1
+        [environments.host]
+        image = "nope"
+
+        [lanes.a]
+        kind = "command"
+        environment = "host"
+        argv = ["true"]
+    """,
+}
+
+
+class TestConfigValidation:
+    @pytest.mark.parametrize("case", sorted(BAD_CONFIGS))
+    def test_each_error_names_key_and_file(self, tmp_path, case):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, BAD_CONFIGS[case])
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert str(proj / "run-gate.toml") in str(exc.value), \
+            f"{case}: error must name the file"
+
+    def test_unknown_environment_names_both_sources(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.a]
+            kind = "command"
+            environment = "missing-env"
+            argv = ["true"]
+        """)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(cfg["lanes"]["a"], "a", cfg, central,
+                                         cfg_path, cpath)
+        assert "missing-env" in str(exc.value)
+
+    def test_central_file_rejects_lanes(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(
+            "schema_version = 1\n[lanes.bad]\nkind = 'command'\n"
+            "environment = 'host'\nargv = ['true']\n")
+        proj = make_project(repo, SIMPLE_LANE)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "central" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# §4.2a / R-10..R-12 — environment facts: DERIVE / READ / FAIL
+# ---------------------------------------------------------------------------
+
+class TestNoSilentDefaults:
+    def test_missing_cgroup_env_var_fails_naming_it(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        env, src = run_gate.resolve_environment(cfg["lanes"]["suite"], "suite",
+                                                cfg, central, cfg_path, cpath)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_slice(env, src)
+        assert CGROUP_VAR in str(exc.value)
+        assert "cgroup_slice" in str(exc.value)  # names the legitimate alternative
+
+    def test_declared_slice_beats_missing_env_var(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice = "declared.slice"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo hi"]
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        assert run_call[run_call.index("--cgroup-parent") + 1] == "declared.slice"
+
+    def test_loadstate_checked_only_where_systemd_reachable(self, tmp_path, monkeypatch):
+        """systemd reachable + probe says not-loaded -> loud failure."""
+        real_run = subprocess.run
+
+        def spy(cmd, **kw):
+            if cmd and cmd[0] == "systemctl":
+                return subprocess.CompletedProcess(cmd, 0, stdout="inactive\n",
+                                                   stderr="")
+            return real_run(cmd, **kw)
+
+        monkeypatch.setattr(run_gate.os.path, "isdir", lambda p: True)
+        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.verify_slice_loaded("dev-background.slice")
+        assert "not LoadState=loaded" in str(exc.value)
+
+    def test_loadstate_probe_output_must_be_loaded(self, tmp_path, monkeypatch):
+        real_run = subprocess.run
+
+        def spy(cmd, **kw):
+            if cmd and cmd[0] == "systemctl":
+                return subprocess.CompletedProcess(cmd, 0,
+                                                   stdout="LoadState=loaded\n",
+                                                   stderr="")
+            return real_run(cmd, **kw)
+
+        monkeypatch.setattr(run_gate.os.path, "isdir", lambda p: True)
+        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.verify_slice_loaded("s.slice")  # --value prints bare state;
+        assert "not LoadState=loaded" in str(exc.value)  # labeled form != loaded
+
+    def test_loadstate_skipped_without_systemd(self, tmp_path, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError("systemctl must not be invoked without systemd")
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        run_gate.verify_slice_loaded("any.slice")  # this container: no systemd
+
+
+MOUNTINFO = "\n".join([
+    "30 29 0:28 / / rw,nosuid - overlay overlay rw",
+    "99 30 253:0 /home/vb/volkb79-2/vbpub /workspaces/vbpub rw - ext4 /dev/vda rw",
+    "98 30 253:0 /home/vb/volkb79-2/vbpub\\040(sp) /mnt/weird rw - ext4 /dev/vda rw",
+])
+
+
+class TestPhysicalPath:
+    def test_maps_through_longest_bind_mount(self):
+        got = run_gate.physical_path(Path("/workspaces/vbpub/.worktrees/w1"),
+                                     MOUNTINFO, container=True)
+        assert got == Path("/home/vb/volkb79-2/vbpub/.worktrees/w1")
+
+    def test_octal_escapes_decoded(self):
+        got = run_gate.physical_path(Path("/mnt/weird/sub"), MOUNTINFO,
+                                     container=True)
+        assert got == Path("/home/vb/volkb79-2/vbpub (sp)/sub")
+
+    def test_root_overlay_never_used_as_mapping(self):
+        with pytest.raises(run_gate.GateError):
+            run_gate.physical_path(Path("/etc/passwd"), MOUNTINFO, container=True)
+
+    def test_outside_container_identity(self):
+        p = Path("/some/where")
+        assert run_gate.physical_path(p, "", container=False) == p
+
+
+# ---------------------------------------------------------------------------
+# O3 — argv CONSTRUCTION pinned against the fake docker (LISTS, not strings)
+# ---------------------------------------------------------------------------
+
+class TestArgvConstruction:
+    def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        idx = lambda flag: run_call.index(flag)  # noqa: E731
+        assert run_call[0:3] == ["run", "-d", "--name"]
+        assert run_call[idx("--name") + 1].startswith("run-gate-repo-suite-")
+        assert run_call[idx("--cgroup-parent") + 1] == "dev-background.slice"
+        assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-background.slice"
+        # REAL derivation (subprocess can't see module monkeypatches): /tmp is
+        # bind-mounted here, so physical_path must resolve it via mountinfo.
+        phys = str(run_gate.physical_path(repo))
+        mounts = sorted(run_call[i + 1] for i, p in enumerate(run_call) if p == "-v")
+        assert mounts == [f"{phys}:{phys}", f"{phys}:{repo}"]  # dual mount
+        assert "--rm" not in run_call
+        assert run_call[-4:-2] == ["tester-unified:local", "bash"]
+        inner = run_call[-1]
+        assert inner.startswith("set -euo pipefail && ")
+        assert "git config --global safe.directory '*'" in inner
+        assert "cd /wt/tree/proj && echo gate-ran" in inner  # {worktree} substituted
+        # transparency: the docker argv is printed, never buried
+        assert "docker argv:" in proc.stdout
+
+    def test_assay_lane_inner_shape_and_verdict_line(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.ciu]
+            kind = "assay"
+            assay_lane = "ciu"
+            environment = "tester-unified"
+            assay_command = ["/opt/tester-venv/bin/python",
+                             "tools/assay/assay-2.1.0.pyz"]
+
+            [lanes.ciu.pins.assay]
+            version = "2.1.0"
+            sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "ciu")
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[0][-1]
+        # pin verified FROM the pin's own directory, bare filename (P07 trap)
+        assert f"(cd {proj}/tools/assay && sha256sum -c assay-2.1.0.pyz.sha256)" \
+            in inner
+        assert f"cd {proj}" in inner          # assay runs from the PROJECT dir
+        assert "mkdir -p .assay" in inner
+        assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
+        assert "/opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu" \
+            in inner
+        assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
+
+    def test_exit_status_passthrough_no_masking(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code=7)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7
+        assert "exit 7" in proc.stdout
+
+    def test_wait_garbage_refuses_to_guess(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code="garbage")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 1
+        assert "refusing to guess" in proc.stderr
+
+    def test_docker_run_failure_cleans_up_and_fails_loud(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text().replace('run) echo "fake-container-id" ;;',
+                                        'run) echo "docker: bad flag" >&2; exit 125 ;;')
+        shim.write_text(body)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 1
+        assert "docker run failed" in proc.stderr
+        rm_calls = [l.split() for l in log.read_text().splitlines()
+                    if l.split()[:1] == ["rm"]]
+        assert rm_calls  # cleanup attempted despite the failed start
+
+    def test_memory_flag_passed(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.e]
+            image = "img:1"
+            [lanes.big]
+            kind = "command"
+            environment = "e"
+            argv = ["bash", "-c", "true"]
+            memory = "4g"
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        proc = run_tool(proj, "big")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        assert run_call[run_call.index("--memory") + 1] == "4g"
+
+
+# ---------------------------------------------------------------------------
+# R-13/R-14 — tree resolution + clean tree
+# ---------------------------------------------------------------------------
+
+class TestTreeResolution:
+    def test_plain_repo_toplevel_is_repo(self, tmp_path):
+        repo = make_repo(tmp_path)
+        got_repo, wt = run_gate.resolve_repo_and_worktree(repo, None)
+        assert got_repo == repo and wt == repo
+
+    def test_linked_worktree_resolves_common_owner(self, tmp_path):
+        repo = make_repo(tmp_path)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        got_repo, got_wt = run_gate.resolve_repo_and_worktree(wt, None)
+        assert got_repo == repo   # mounts must cover the MAIN checkout
+        assert got_wt == wt       # judged tree = the worktree itself
+
+    def test_worktree_override_honored(self, tmp_path):
+        repo = make_repo(tmp_path)
+        _, wt = run_gate.resolve_repo_and_worktree(repo, "/elsewhere/tree")
+        assert wt == Path("/elsewhere/tree")
+
+
+class TestCleanTree:
+    def test_dirty_tree_refused_with_count_and_escape(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / "dirt.txt").write_text("uncommitted\n")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.check_clean_tree(repo)
+        assert "dirty" in str(exc.value) and "--allow-dirty" in str(exc.value)
+
+    def test_clean_tree_passes_silently(self, tmp_path):
+        repo = make_repo(tmp_path)
+        run_gate.check_clean_tree(repo)
+
+    def test_dirty_worktree_blocks_lane_without_flag(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo gate-ran"]
+            clean_tree = true
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        (repo / "dirt.txt").write_text("x\n")
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 1
+        assert "dirty" in proc.stderr
+        log = Path(tmp_path / "docker-calls.log")
+        assert "gate-ran" not in log.read_text()
+
+    def test_allow_dirty_bypasses_check(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo gate-ran"]
+            clean_tree = true
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        (repo / "dirt.txt").write_text("x\n")
+        proc = run_tool(proj, "suite", "--allow-dirty")
+        assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# host lanes + central defaults inheritance
+# ---------------------------------------------------------------------------
+
+class TestHostLane:
+    def test_host_lane_runs_argv_directly_exit_passthrough(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "exit 5"]
+            clean_tree = false
+        """)
+        proc = run_tool(proj, "smoke")
+        assert proc.returncode == 5
+        assert "built-in 'host'" in proc.stdout
+
+    def test_host_lane_substitutes_worktree(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.echo]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "test -n '{worktree}' && test -d '{worktree}'"]
+            clean_tree = false
+        """)
+        proc = run_tool(proj, "echo")
+        assert proc.returncode == 0, proc.stderr
+
+
+class TestCentralDefaults:
+    CENTRAL = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+    """
+
+    def _central(self, repo: Path):
+        (repo / "run-gate.toml").write_text(self.CENTRAL)
+        commit_all(repo, "central env facts")
+
+    def test_ancestor_provides_environment(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        self._central(repo)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "tester-unified:local" in docker_runs(log)[0]
+        assert "central" in proc.stdout  # source named transparently
+
+    def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        self._central(repo)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "project-override:2"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "project-override:2" in docker_runs(log)[0]
+
+    def test_nearest_ancestor_wins(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(self.CENTRAL)
+        nested = repo / "group"
+        nested.mkdir()
+        (nested / "run-gate.toml").write_text("""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "nearest:9"
+        """)
+        commit_all(repo, "two-level centrals")
+        proj = make_project(nested, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "nearest:9" in docker_runs(Path(tmp_path / "docker-calls.log"))[0]
+
+
+# ---------------------------------------------------------------------------
+# misc units
+# ---------------------------------------------------------------------------
+
+def test_substitute_worktree_replaces_all():
+    got = run_gate.substitute_worktree(["cd {worktree}/a", "--base {worktree}"],
+                                       Path("/wt"))
+    assert got == ["cd /wt/a", "--base /wt"]
+
+
+def test_budget_advisory_printed_not_enforced(tmp_path, monkeypatch, capsys):
+    repo = make_repo(tmp_path)
+    proj = make_project(repo, """\
+        schema_version = 1
+        [environments.tester-unified]
+        image = "tester-unified:local"
+        [lanes.suite]
+        kind = "command"
+        environment = "tester-unified"
+        budget = "20m"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+    """)
+    fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setattr(run_gate, "physical_path",
+                        lambda p, **k: Path("/phys"))
+    # in-process main() discovers the project from sys.argv[0] — pin it
+    monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+    code = run_gate.main(["suite"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "budget 20m (advisory)" in out
+
+
+def test_no_stdlib_violations():
+    """Anti-goal: non-stdlib imports. Parse the import table."""
+    src = _TOOL.read_text()
+    imports = [l.split()[1].split(".")[0] for l in src.splitlines()
+               if l.startswith("import ") or l.startswith("from ")]
+    allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
+               "time", "tomllib", "pathlib"}
+    assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
