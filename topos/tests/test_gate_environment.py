@@ -6,8 +6,10 @@ tests behind a module-level ``importorskip``, while the gate only knew about
 tie the three places that must agree — the declared extras, the ``[dev]`` extra
 that builds the gate env, and the conftest gate — so they cannot drift apart.
 
-P96 additions: py-compile gate argv behavioural tests parsed from nyxloom.toml,
-worktree import path validation, gate-tool importability.
+P96 additions: py-compile gate argv behavioural tests, worktree import path
+validation, gate-tool importability. The py-compile argv is parsed from
+run-gate.toml ([lanes.py-compile]) — the SSOT since run-gate adoption
+(D-110/D-111); nyxloom.toml [gates.py-compile] is only a thin pointer at it.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pathlib import Path
 from conftest import _REQUIRED_TEST_EXTRAS
 
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
-TROVE_TOML = Path(__file__).resolve().parents[1] / "nyxloom-trove" / "nyxloom.toml"
+GATE_TOML = Path(__file__).resolve().parents[1] / "run-gate.toml"
 
 
 def _optional_dependencies() -> dict[str, list[str]]:
@@ -69,10 +71,10 @@ def test_pytest_cov_and_xdist_are_importable() -> None:
 # --------------------------------------------------------------------------- #
 
 def _pycompile_argv() -> list[str]:
-    """Parse the actual py-compile argv from nyxloom.toml."""
-    with TROVE_TOML.open("rb") as fh:
+    """Parse the actual py-compile argv from run-gate.toml (the SSOT)."""
+    with GATE_TOML.open("rb") as fh:
         cfg = tomllib.load(fh)
-    raw = cfg["gates"]["py-compile"]["argv"]
+    raw = cfg["lanes"]["py-compile"]["argv"]
     assert isinstance(raw, list), f"py-compile argv is not a list: {type(raw)}"
     return [str(s) for s in raw]
 
