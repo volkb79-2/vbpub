@@ -31,7 +31,7 @@ def test_deploy_rejects_invalid_rendered_stack_before_compose_dispatch(
     monkeypatch.setattr(
         deploy,
         "render_selected_stacks",
-        lambda *_args: {"applications/api": {"state": {}}},
+        lambda *_args, **_kw: {"applications/api": {"state": {}}},
     )
     monkeypatch.setattr(deploy, "vault_preflight", lambda *_args: None)
     monkeypatch.setattr(deploy, "registry_preflight", lambda *_args: None)

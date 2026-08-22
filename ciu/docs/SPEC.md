@@ -277,6 +277,32 @@ requirements are marked *(withdrawn)*.
   value is distinct from the configfile render context's `instance_id`
   (S7.5b) — a per-service replica index, not the workspace `INSTANCE_ID`
   (S2) and not landscape-scoped.
+- **S3.12** Deployment-selection facts are exposed to templates and hooks as
+  the **`ciu`** mapping (CIU-44): `ciu.selected_profiles` — the ordered named
+  profiles this invocation resolved (empty list = the default all-phases
+  profile; never a fabricated name) — and `ciu.deployed_stacks` — the FULL
+  stack set this invocation deploys (declaration order, deduped), not merely
+  the stack currently being rendered, so a template in any stack can derive
+  "is upstream X deployed". Contract:
+  1. Availability: every deployment render — `ciu up`/`--deploy` (per-stack
+     engine pipeline), the preflight/`--render-toml`/`--check`/`--graph`
+     renders, and `ciu dev` (which selects exactly its one target stack).
+     Outside these renders the `ciu` key is OMITTED: a template referencing
+     `ciu.*` elsewhere fails loudly (Jinja UndefinedError) rather than
+     silently seeing an empty selection.
+  2. The mapping is computed ONCE per invocation from the resolved profile +
+     selection and threaded unchanged to every render and hook — templates
+     and hooks can never disagree.
+  3. Hooks receive the same facts on the HookContext (S9.3) as
+     `selected_profiles` / `deployed_stacks` tuples, plus this workspace's
+     identity from its own `ciu.env` parsed by exact path (S2.7 authority):
+     `instance_id` and `network` (None when absent). Hooks MUST NOT read
+     identity from ambient environment state.
+  4. Nothing is persisted: no `ciu.*` value is written to `ciu.env` (S2.7
+     machine-identity layer stays generated facts only) and none is exported
+     into the compose process env — the render context and the hook context
+     are the only surfaces. A stale selection can therefore never masquerade
+     as a fresh one.
 
 ## S4 — Secrets
 
@@ -913,6 +939,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
     successful connect, `False` on timeout.
   Both are wired by the engine; a hook MUST NOT hand-roll a poll loop where a
   helper suffices.
+  The context also carries the deployment-selection facts and workspace
+  identity (S3.12 / CIU-44): `ctx.selected_profiles` / `ctx.deployed_stacks`
+  (tuples; `None` outside a deployment render) and `ctx.instance_id` /
+  `ctx.network` (from this workspace's own `ciu.env` by exact path, or
+  `None`). Hooks read identity/selection from these fields — never from
+  ambient environment state (S9.4 forbids env mutation; ambient reads are the
+  CIU-41 contamination vector).
 - **S9.4** Return contract — structured form **only**:
   `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later

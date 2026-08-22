@@ -1098,6 +1098,7 @@ def main_execution(
     update_cert_permission: bool = False,
     auto_connect_network: Optional[bool] = None,
     compose_profiles: Optional[list[str]] = None,
+    ciu_context: Optional[dict] = None,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
 
@@ -1106,6 +1107,12 @@ def main_execution(
     composefile.compose_process_env). The deploy orchestrator passes
     ``service.profiles + profile.compose_profiles`` here so the right compose
     services are activated; ``None`` means no profiles (single-stack ``ciu``).
+
+    *ciu_context* (S3.12 / CIU-44): the deployment-selection facts
+    (``selected_profiles`` / ``deployed_stacks``, see
+    ``profiles.render_ciu_context``) exposed to templates as ``ciu.*`` and to
+    hooks on the HookContext. ``None`` omits them — template references fail
+    loudly rather than seeing an empty selection.
     """
     working_dir = Path(working_dir).resolve()
     result: dict = {"status": "success", "dry_run": dry_run}
@@ -1154,7 +1161,13 @@ def main_execution(
 
         # ---- Step 2: render global chain (S3.3) ----
         print("[STEP 2/17] Rendering global configuration...", flush=True)
-        global_config = config_model.render_global_chain(working_dir, repo_root)
+        global_config = (
+            config_model.render_global_chain(
+                working_dir, repo_root, ciu_context=ciu_context
+            )
+            if ciu_context is not None
+            else config_model.render_global_chain(working_dir, repo_root)
+        )
 
         log_level = global_config.get("deploy", {}).get("log_level", "INFO")
         configure_logging(log_level)
@@ -1165,7 +1178,16 @@ def main_execution(
 
         # ---- Step 3: render stack (S3.1/S3.4) ----
         print("[STEP 3/17] Rendering stack configuration...", flush=True)
-        stack_config = config_model.render_stack(working_dir, global_config, preserve_state=True)
+        stack_config = (
+            config_model.render_stack(
+                working_dir,
+                global_config,
+                preserve_state=True,
+                ciu_context=ciu_context,
+            )
+            if ciu_context is not None
+            else config_model.render_stack(working_dir, global_config, preserve_state=True)
+        )
 
         if render_toml:
             print("[SUCCESS] Rendered CIU TOML files (ciu.global.toml, ciu.toml)", flush=True)
@@ -1241,8 +1263,31 @@ def main_execution(
                     return secret_materialize.stack_store(working_dir) / s.name
             raise KeyError(name)
 
+        # S3.12 / CIU-44: identity + selection facts on the hook context, so
+        # ciu-conforming hooks read them from ctx instead of re-parsing the
+        # identity record or trusting ambient environment state.
+        _hook_identity: dict = {}
+        try:
+            _env_path = repo_root / "ciu.env"
+            if _env_path.is_file():
+                from .workspace_env import parse_workspace_env as _parse_env
+
+                _hook_identity = _parse_env(_env_path)
+        except WorkspaceEnvError:
+            _hook_identity = {}
+
         ctx = hooks_runner.HookContext(
             point="", stack_dir=working_dir, repo_root=repo_root, secret_file=_secret_file,
+            selected_profiles=(
+                tuple(ciu_context.get("selected_profiles") or [])
+                if ciu_context else None
+            ),
+            deployed_stacks=(
+                tuple(ciu_context.get("deployed_stacks") or [])
+                if ciu_context else None
+            ),
+            instance_id=_hook_identity.get("INSTANCE_ID"),
+            network=_hook_identity.get("DOCKER_NETWORK_INTERNAL"),
         )
 
         # S9.3 / CIU-4: readiness helpers on the hook context so service-touching
@@ -1360,7 +1405,15 @@ def main_execution(
                 "(declare it in a secrets table, and do not run with --skip-secrets)."
             )
 
-        configfile_mounts = composefile.render_configfiles(working_dir, root_key, merged, _secret_value)
+        configfile_mounts = (
+            composefile.render_configfiles(
+                working_dir, root_key, merged, _secret_value, ciu_context=ciu_context
+            )
+            if ciu_context is not None
+            else composefile.render_configfiles(
+                working_dir, root_key, merged, _secret_value
+            )
+        )
 
         # ---- Step 13: render compose template (S4.21) ----
         print("[STEP 13/17] Rendering compose template...", flush=True)
@@ -1372,7 +1425,12 @@ def main_execution(
 
         compose_template = working_dir / compose_file
         if compose_template.suffix == ".j2":
-            rendered_compose = composefile.render_compose(compose_template, guarded)
+            if ciu_context is not None:
+                rendered_compose = composefile.render_compose(
+                    compose_template, guarded, ciu_context=ciu_context
+                )
+            else:
+                rendered_compose = composefile.render_compose(compose_template, guarded)
             output_path = working_dir / CIU_COMPOSE_OUTPUT
             # S8.4: atomic write via tmp sibling + os.replace (no partial writes).
             tmp_path = output_path.with_suffix(".yml.tmp")

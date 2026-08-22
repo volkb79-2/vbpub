@@ -223,7 +223,7 @@ def test_check_reuses_rendered_selection_from_prior_deploy(monkeypatch, tmp_path
     monkeypatch.setattr(deploy, "load_global_config", lambda _root: profile.config)
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _cfg, _names: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda *_args: selection)
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: trace.append("render") or rendered)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: trace.append("render") or rendered)
     for name in ("vault_preflight", "provisioning_preflight", "registry_preflight", "governance_slice_preflight", "ensure_workspace_network"):
         monkeypatch.setattr(deploy, name, lambda *args, **kwargs: None)
     monkeypatch.setattr(deploy, "action_deploy", lambda *args, **kwargs: trace.append(("deploy", kwargs["rendered"])) or 0)

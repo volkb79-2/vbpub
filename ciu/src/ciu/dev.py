@@ -331,9 +331,18 @@ def run_dev(
         # so `--profile` is honored and network/host facts match (S7.4 / Seam 4).
         # With no name and no CIU_SERVICES_PROFILE the default profile leaves the
         # config unchanged; a bad name raises ValueError (caught below → exit 2).
-        global_config = _profiles.resolve_profiles(global_config, [profile_name] if profile_name else None).config
+        resolved_profile = _profiles.resolve_profiles(
+            global_config, [profile_name] if profile_name else None
+        )
+        global_config = resolved_profile.config
+        # S3.12 / CIU-44: `ciu dev` selects exactly this one stack — declared
+        # as such, so template guards see an honest selection.
+        ciu_ctx = _profiles.render_ciu_context(resolved_profile, [{"path": stack}])
         stack_config = config_model.render_stack(
-            stack_dir, global_config=global_config, preserve_state=True
+            stack_dir,
+            global_config=global_config,
+            preserve_state=True,
+            ciu_context=ciu_ctx,
         )
         root_key = config_model.validate_stack_shape(stack_config)
         profile = parse_dev_profile(stack_config, root_key)

@@ -54,6 +54,57 @@ reported as a refusal (`[S16] could not read git status`), never collapsed into
 "clean". And `(detached)` is its own boolean, never folded into "attached" or
 "unknown".
 
+## Why `env generate` never trusts ambient identity values (CIU-41)
+
+`ciu.env` is the machine-identity record every later ciu command trusts, so
+its generation must be immune to the shell that happens to run it. The
+documented convenience pattern — a login shell sourcing a checkout's
+`ciu.env` — means an agent's non-interactive shell carries ANOTHER checkout's
+`DOCKER_NETWORK_INTERNAL`; the pre-2026-08 generator adopted that ambient
+value unconditionally, so a fresh worktree's generate silently pointed the
+new instance at the main stack's network (a Mode-B instance becoming Mode-A
+with no error anywhere — the masked-default anti-pattern: invisible in every
+context where you'd notice, surfacing only in exactly the fresh-worktree run).
+
+The fix extends the S2.7 refined precedence already proven for
+`PHYSICAL_REPO_ROOT`: derive from this physical root alone; adopt an ambient
+value only when consistent; on mismatch warn naming the ignored value and the
+S16.1 remedy. The strict alternative ("ignore ambient outright") was rejected
+because consistency-checking keeps deliberate pinning working while still
+failing safe, and because the warning text is the teaching moment for
+`worktree add --shared-infra` — which is the *supported* mechanism for
+reusing another instance's infra (per-service selective join with validation),
+not whole-instance network inheritance.
+
+## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
+
+A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is
+deployed" is a fact about the SELECTION, not about the machine — so it
+belongs in the render context, computed once per invocation and threaded
+unchanged to every template and hook (S3.12). The two rejected alternatives
+both fail the same way: writing `CIU_SERVICES_PROFILE` into `ciu.env`
+conflicts with S2.7's "generated facts only" rule AND creates a stale-file
+authority (generate writes X, operator runs `up --profile Y`, template sees
+X); exporting an environment variable re-creates the ambient-inheritance
+vector CIU-41 just closed. Outside deployment renders the key is omitted so
+references fail loudly — an empty-list default would be a silent wrong answer
+wearing a fallback's reputation.
+
+## Why `clean` removes networks and names what it keeps (CIU-43)
+
+v1's "network removal NOT performed" posture leaked one identity-scoped
+network per ephemeral teardown while printing `clean complete` — twice
+reproduced live on released versions. The instance-vs-main split follows from
+what each checkout IS: an S16 worktree instance is ephemeral by contract, so
+unconditional removal of everything carrying its identity is the correct
+default and no flag should be needed to ask for it; the main workspace's
+network hosts the devcontainer itself, so removal would cut the operator's
+own cockpit off — hence keep-with-notice, where the output names the kept
+object in plain words AND in the final success line. Endpoints are
+disconnect-or-refuse-named (never silently kept), and the post-clean
+invariant re-reads Docker STATE rather than trusting command exit codes or
+diagnostic text.
+
 ## Why one envelope and one closed vocabulary for every document
 
 `create`/`ensure`/`adopt`/`add`, `inspect`, `list`, and `remove` all speak the

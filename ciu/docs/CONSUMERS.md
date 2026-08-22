@@ -158,7 +158,61 @@ identity; `recovery-required` — an interrupted allocation with a closed
 carries `schema_version: 1` and a closed `operation`. Unknown shapes fail
 fast.
 
-## 10. The implementation gate (Assay-backed, S18)
+## 10. Derive feature flags from the selected profile set (S3.12, CIU-44)
+
+A stack that integrates with an optional upstream no longer hardcodes the
+coupling — it reads the selection. Paste into any stack's
+`ciu.defaults.toml.j2`:
+
+```toml
+[myapp.my_service.features]
+# on exactly when this invocation deploys infra/pwmcp (any profile name that
+# selects it — the template sees the resolved STACK set, not the flag spelling):
+enable_pwmcp_mcp = {{ 'infra/pwmcp' in ciu.deployed_stacks }}
+
+[myapp.my_service.upstream]
+{% if 'infra/vault' in ciu.deployed_stacks %}
+host = "{{ vault.internal_host }}"
+{% endif %}
+```
+
+Semantics worth knowing before you adopt:
+
+- `ciu.selected_profiles` is the ordered named profiles of THIS invocation
+  (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
+  will deploy — visible from EVERY selected stack's render, not just its own.
+- `ciu dev` declares exactly its one target stack.
+- Outside a deployment render (`ciu.*` used where no selection exists) the
+  render FAILS with a Jinja `UndefinedError` naming `ciu` — you will never
+  silently ship an empty-selection default.
+- Hooks see the identical snapshot as `ctx.selected_profiles` /
+  `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
+  workspace's own `ciu.env` — read identity from ctx, never from ambient env
+  (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
+
+## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
+
+```console
+$ ciu clean -y                      # in a managed worktree instance
+[INFO] Removed 2 network(s): myapp-abc123-network, myapp-dev-vault_default
+[SUCCESS] clean complete
+$ docker network ls | grep myapp-abc123   # → nothing; zero identity objects remain
+
+$ ciu clean -y                      # in the MAIN workspace (no instance record)
+[INFO] kept: myapp-abc123-network (workspace network of the main workspace (devcontainer residence))
+[SUCCESS] clean complete (kept: myapp-abc123-network)
+```
+
+Contract: an S16 instance's clean leaves zero identity-scoped objects —
+containers, volumes (including bare-project-prefix names like
+`myapp-vault-data`, caught via the exact per-project compose-label pass),
+networks including compose `*_default`. A lingering endpoint (your
+devcontainer joined the instance network) is disconnected first; one that
+cannot be disconnected is NAMED and the clean exits 1 — it is never silently
+kept. The main workspace keeps its own workspace network (your devcontainer
+lives on it) and says so twice: a `kept:` line and the final success line.
+
+## 12. The implementation gate (Assay-backed, S18)
 
 CIU's gate is judged by the **released Assay CLI**, pinned and vendored in the
 repository — not installed ambiently. You can reproduce the gate's evidence

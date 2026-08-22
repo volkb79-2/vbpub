@@ -28,7 +28,7 @@ def test_render_validation_failure_is_red_before_subsequent_clean_action(
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, _names: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda _profile, _phases: [])
 
-    def fail_render(*_args: object) -> dict:
+    def fail_render(*_args: object, **_kw: object) -> dict:
         raise ValueError("[S3.2] invalid unresolved template value")
 
     monkeypatch.setattr(deploy, "render_selected_stacks", fail_render)

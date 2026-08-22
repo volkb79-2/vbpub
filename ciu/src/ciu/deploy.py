@@ -329,6 +329,7 @@ def render_selected_stacks(
     repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
+    ciu_context: Optional[dict] = None,
 ) -> dict[str, dict]:
     """Render ciu.toml for every selected stack ONCE (S3.4, preserve_state).
 
@@ -348,7 +349,10 @@ def render_selected_stacks(
             continue
         stack_dir = (repo_root / rel).resolve()
         rendered[rel] = config_model.render_stack(
-            stack_dir, global_config=profile.config, preserve_state=True
+            stack_dir,
+            global_config=profile.config,
+            preserve_state=True,
+            ciu_context=ciu_context,
         )
     return rendered
 
@@ -1147,7 +1151,10 @@ def action_render_toml(repo_root: Path, profile: profiles_pkg.Profile, selection
     info("RENDER-TOML: rendering global + selected stack configs")
     info("=" * 60)
     info(f"Rendered global config: {repo_root / GLOBAL_CONFIG_RENDERED}")
-    rendered = render_selected_stacks(repo_root, profile, selection)
+    rendered = render_selected_stacks(
+        repo_root, profile, selection,
+        ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+    )
     if not rendered:
         warn("No stacks selected to render")
         return 0
@@ -1190,6 +1197,9 @@ def action_deploy(
         return 0
 
     env = profile_env(profile)
+    # S3.12 / CIU-44: one selection-facts snapshot for every render/hook of
+    # this deploy — the FULL selected set, not per-stack slices.
+    ciu_ctx = profiles_pkg.render_ciu_context(profile, selection)
     health_cfg = profile.config.get("deploy", {}).get("health", {})
     timeout_s = _seconds(health_cfg.get("timeout", "30s"))
 
@@ -1254,6 +1264,7 @@ def action_deploy(
                 dry_run=dry_run,
                 update_cert_permission=update_cert_permission,
                 shipped=shipped,
+                ciu_context=ciu_ctx,
             )
             if ok:
                 deployed.append(entry["path"])
@@ -1311,6 +1322,7 @@ def _run_stack(
     dry_run: bool,
     update_cert_permission: bool,
     shipped: bool = False,
+    ciu_context: Optional[dict] = None,
 ) -> bool:
     """Run engine.main_execution for one stack in-process. Returns success bool.
 
@@ -1346,6 +1358,7 @@ def _run_stack(
                 yes=True,
                 update_cert_permission=update_cert_permission,
                 compose_profiles=compose_profiles or None,
+                ciu_context=ciu_context,
             )
     except engine.ComposeError as exc:
         error(str(exc))
@@ -1831,7 +1844,7 @@ def action_clean(
             warn(f"docker rm failed: {result.stderr}")
 
     # Step 2: per-stack reset (down -v + vol-*/rendered), COMPOSE_PROFILES='*'.
-    rendered = render_selected_stacks(repo_root, profile, selection)
+    rendered = render_selected_stacks(repo_root, profile, selection)  # clean: no ciu.* facts needed by resets
     saved_profiles = os.environ.get("COMPOSE_PROFILES")
     os.environ["COMPOSE_PROFILES"] = "*"
     try:
@@ -2341,7 +2354,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     # try/except in main() catches and maps them.
     rendered: Optional[dict[str, dict]] = None
     if deploy_needs_preflight and not args.dry_run:
-        rendered = render_selected_stacks(repo_root, profile, selection)
+        rendered = render_selected_stacks(
+            repo_root, profile, selection,
+            ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+        )
         vault_preflight(repo_root, profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
@@ -2366,7 +2382,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         # Dry-run still validates misplaced directives + vault ordering (no token
         # I/O is forced because the engine won't start anything), matching S8.3
         # "everything else runs" intent.
-        rendered = render_selected_stacks(repo_root, profile, selection)
+        rendered = render_selected_stacks(
+            repo_root, profile, selection,
+            ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+        )
         vault_preflight(repo_root, profile, selection, rendered)
         provisioning_preflight(
             repo_root, profile, selection, rendered,
@@ -2399,14 +2418,20 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             )
         elif action == "check":
             if rendered is None:
-                rendered = render_selected_stacks(repo_root, profile, selection)
+                rendered = render_selected_stacks(
+                    repo_root, profile, selection,
+                    ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+                )
             ac = action_check(
                 repo_root, profile, selection, rendered,
                 live=getattr(args, 'live', False),
             )
         elif action == "graph":
             if rendered is None:
-                rendered = render_selected_stacks(repo_root, profile, selection)
+                rendered = render_selected_stacks(
+                    repo_root, profile, selection,
+                    ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+                )
             ac = action_graph(
                 repo_root, profile, selection, rendered,
                 fmt=getattr(args, 'graph_format', 'mermaid'),

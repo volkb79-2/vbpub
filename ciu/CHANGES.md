@@ -28,6 +28,20 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## [Unreleased]
 
+### Added
+- feat(ciu): deployment-selection facts for templates and hooks — every
+  deployment render (`ciu up`, `ciu dev`, `--render-toml`, preflight/check/graph)
+  exposes `ciu.selected_profiles` (ordered named profiles; empty = default) and
+  `ciu.deployed_stacks` (the FULL stack set this invocation deploys) as a Jinja
+  context mapping, computed once per invocation and threaded unchanged to every
+  render AND to hooks (`ctx.selected_profiles` / `ctx.deployed_stacks`, plus
+  `ctx.instance_id` / `ctx.network` from this workspace's own ciu.env by exact
+  path). Outside deployment renders the key is omitted so stray references fail
+  loudly (UndefinedError); nothing is persisted into ciu.env or exported to the
+  compose env. A template can now derive "is upstream X deployed" (e.g.
+  reverse-proxy's enable_pwmcp_mcp) instead of hardcoding it (CIU-44, dstdns
+  P120 D-162 DA-B, SPEC S3.12 + S9.3)
+
 ### Fixed
 - fix(ciu): `ciu clean` now removes identity-scoped networks — the workspace network
   (read from this workspace's own ciu.env) and each selected stack's compose

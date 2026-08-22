@@ -27,7 +27,7 @@ def test_run_graph_lazily_renders_then_forwards_requested_format(monkeypatch, tm
     monkeypatch.setattr(deploy, "build_selection", lambda *_args: selection)
     monkeypatch.setattr(deploy, "build_action_sequence", lambda _raw: ["graph"])
     rendered = {"apps/api": {"api": {}}}
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: rendered)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: rendered)
     received: list[tuple[object, str]] = []
     monkeypatch.setattr(
         deploy,

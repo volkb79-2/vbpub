@@ -53,7 +53,7 @@ def test_public_cli_reuses_one_render_for_ordered_check_and_graph(monkeypatch, t
     rendered = {"applications/api": {"api": {"provides": ["pg:app"]}}}
     trace: list[tuple[str, object]] = []
 
-    def fake_render(root, active_profile, active_selection):
+    def fake_render(root, active_profile, active_selection, ciu_context=None):
         assert root == tmp_path
         assert active_profile is profile
         assert active_selection is selection
@@ -84,7 +84,7 @@ def test_public_cli_stops_after_failed_action_without_ignore_errors(monkeypatch,
     selection = [{"path": "applications/api", "service": {}}]
     _patch_public_run_basics(monkeypatch, tmp_path, profile, selection)
     trace: list[str] = []
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {"applications/api": {}})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {"applications/api": {}})
     monkeypatch.setattr(deploy, "action_check", lambda *_args, **_kw: trace.append("check") or 2)
     monkeypatch.setattr(
         deploy,
@@ -102,7 +102,7 @@ def test_public_cli_ignore_errors_continues_but_preserves_nonzero_verdict(monkey
     selection = [{"path": "applications/api", "service": {}}]
     _patch_public_run_basics(monkeypatch, tmp_path, profile, selection)
     trace: list[str] = []
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {"applications/api": {}})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {"applications/api": {}})
     monkeypatch.setattr(deploy, "action_check", lambda *_args, **_kw: trace.append("check") or 1)
     monkeypatch.setattr(deploy, "action_graph", lambda *_args, **_kw: trace.append("graph") or 0)
 
@@ -123,7 +123,7 @@ def test_public_cli_runs_every_deploy_preflight_before_starting_stack(monkeypatc
     rendered = {"applications/api": {"api": {}}}
     trace: list[str] = []
 
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: trace.append("render") or rendered)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: trace.append("render") or rendered)
     monkeypatch.setattr(deploy, "vault_preflight", lambda *_args: trace.append("vault"))
     monkeypatch.setattr(deploy, "provisioning_preflight", lambda *_args, **_kw: trace.append("provisioning"))
     monkeypatch.setattr(deploy, "registry_preflight", lambda *_args: trace.append("registry"))

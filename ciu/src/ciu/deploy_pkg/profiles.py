@@ -355,3 +355,28 @@ def resolve_profile(
     """
     names: list[str] | None = [name] if name else None
     return resolve_profiles(global_cfg, names, env=env)
+
+
+# ---------------------------------------------------------------------------
+# S3.12 / CIU-44 — deployment-selection facts for templates and hooks
+# ---------------------------------------------------------------------------
+
+def render_ciu_context(profile: Profile, selection: list[dict]) -> dict:
+    """The deployment-selection facts exposed to templates (``ciu.*``) and hooks.
+
+    - ``selected_profiles``: the ordered named profiles this invocation
+      resolved (empty list = the default all-phases profile).
+    - ``deployed_stacks``: the selection's stack paths, declaration order,
+      deduped — the full set THIS invocation deploys, not merely the stack
+      currently being rendered, so a template can derive "is upstream X
+      deployed" regardless of which stack's render it appears in.
+    """
+    names = [
+        n.strip() for n in (profile.name or "").split(",") if n.strip()
+    ]
+    stacks: list[str] = []
+    for entry in selection:
+        path = entry.get("path")
+        if path and path not in stacks:
+            stacks.append(path)
+    return {"selected_profiles": names, "deployed_stacks": stacks}

@@ -672,7 +672,7 @@ def test_main_runs_vault_preflight_before_any_deploy_action(monkeypatch, tmp_pat
     monkeypatch.setattr(deploy, "load_global_config", lambda _root: profile.config)
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, _names: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda _profile, _phases: selection)
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
 
     def fail_vault(*_args):
         events.append("vault")
