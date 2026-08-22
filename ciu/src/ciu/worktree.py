@@ -1041,11 +1041,16 @@ def prune_branches(
         else:
             removed.append(name)
 
+    # Re-survey AFTER the removals so the returned document reports the
+    # post-prune truth (counts/branches), not the stale pre-prune snapshot.
+    fresh = branch_hygiene(repo_root, base=base)
+    survey["branches"] = fresh["branches"]
+    survey["counts"] = fresh["counts"]
+    survey["hint"] = fresh["hint"]
     survey["operation"] = "branches-prune"
     survey["status"] = "pruned" if not failed else "partial"
     survey["removed"] = removed
     survey["failed"] = failed
-    survey.pop("hint", None)
     return survey
 
 

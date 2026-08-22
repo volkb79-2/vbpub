@@ -11,7 +11,22 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-22 — released as **ciu-v6.4.0** (tag + wheel published;
+Last updated: 2026-08-22 — backlog wave on
+`feat/ciu-backlog-wave-39-42-46-47` shipped four fixes and CIU-25's git
+half: **CIU-39 FIXED** (declared vendor baseline `[deploy.provenance]
+vendor_images`; provenance documents now `schema_version: 2`; `verified-
+match` reachable live — unblocks assay B004), **CIU-42 FIXED** (mechanism
+reading adopted: `produced_by` ASK_VAULT producer declaration, S13.6
+upfront refusal), **CIU-46 FIXED** (cutover per operator decision: the
+basename fallback is WITHDRAWN — config-less shipped/reset deployments use
+the workspace-identity compose project `{REPO_NAME}-{INSTANCE_ID}-{stack}`;
+BREAKING, one-time migration in CONSUMERS §11), and **CIU-47 FIXED**
+(S2.7 refined precedence extended to `PUBLIC_FQDN`). **CIU-25 partially
+addressed**: `ciu worktree branches` ships the grounded GIT-layer survey +
+prune (S16.8, `worktree.branches.v1`); the Docker-resource detector/reap
+contract remains OPEN below.
+
+Previously, 2026-08-22 — released as **ciu-v6.4.0** (tag + wheel published;
 CHANGES §[6.4.0]): CIU-41, CIU-43, CIU-44 and their adversarial-review repairs
 went through the tester-unified gate and shipped. Backlog reconciliation the
 same day: status table re-sorted by ID; two dstdns-P112 second-reproduction
@@ -71,7 +86,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
-| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | OPEN — later milestone |
+| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22); Docker-resource detector/reap remains OPEN (see detail) |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
@@ -80,15 +95,15 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
 | CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
-| CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | OPEN |
-| CIU-40 | Gate-layering refactor (estate D-110 + D-111): **`run-gate.py`** built as a vbpub mini-project (argparse, usage() with lane list + in-file revision, own tests for the docker/cgroup/pin-verify/clean-tree mechanics), reading a per-project **`run-gate.toml`** it alone parses (orchestration only; assay lanes reference `assay.toml` by name — judgment stays there); vbpub projects symlink it, external repos copy (revision = drift detector); nyxloom.toml [gates] becomes a thin argv pointer; overarching+project AGENTS.md name it the canonical entry IN the same carve; DE-VENDOR `tools/assay/*.pyz` once assay is baked into tester-unified from in-repo source (keep only the version pin) | Medium | OPEN — decided 2026-08-20 (dstdns D-110/D-111+amendment); **handoff READY: `run-gate-project/HANDOFF-P01-build-and-adopt-ciu.md`** (build tool + ciu adoption; de-vendor stays pending the assay image-bake) |
+| CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | FIXED — `[deploy.provenance] vendor_images` declared baseline; running reference equal to a declaration is `vendor-pinned`, same-name/different-reference is vendor drift (`mismatch`); verdicts at `schema_version: 2`; digest pinning deliberately not built (S17.5, DESIGN-GUIDE; 2026-08-22). Unblocks assay B004's verified half |
+| CIU-40 | Gate-layering refactor (estate D-110 + D-111): **`run-gate.py`** built as a vbpub mini-project (argparse, usage() with lane list + in-file revision, own tests for the docker/cgroup/pin-verify/clean-tree mechanics), reading a per-project **`run-gate.toml`** it alone parses (orchestration only; assay lanes reference `assay.toml` by name — judgment stays there); vbpub projects symlink it, external repos copy (revision = drift detector); nyxloom.toml [gates] becomes a thin argv pointer; overarching+project AGENTS.md name it the canonical entry IN the same carve; DE-VENDOR `tools/assay/*.pyz` once assay is baked into tester-unified from in-repo source (keep only the version pin) | Medium | FIXED — estate-wide adoption landed on vbpub main (`4c6eb2b6`, 2026-08-22); ciu's lane is now `./run-gate.py ciu`; de-vendor stays pending the assay image-bake |
 | CIU-41 | `ciu env generate` silently inherits an ambient `DOCKER_NETWORK_INTERNAL`, so a fresh-worktree generate joins the MAIN stack's network (masked default; inconsistent with the S2.7 handling of `PHYSICAL_REPO_ROOT` in the same run) | Medium | FIXED — S2.7 refined precedence extended to the derived identity tuple (`REPO_NAME`/`INSTANCE_ID`/`DOCKER_NETWORK_INTERNAL`): ambient adopted only when consistent; mismatch → derived value + stderr warning naming the S16.1 `--shared-infra` remedy; post-generate bootstrap steps parse the just-written file by exact path (2026-08-21). Follow-up candidate (same contamination family, out of filed scope): PUBLIC_FQDN ambient adoption at generate time
-| CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | OPEN — filed 2026-08-20 (dstdns P111 F3); doc-gap and mechanism-gap readings both presented |
-| CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | FIXED — S6.4a: clean removes the identity network (read from this workspace's own ciu.env) + each selected stack's `<compose-project>_default`, disconnecting lingering endpoints first (unremovable endpoint named, clean fails); instance-vs-main split (S16 record ⇒ unconditional, main keeps its workspace network but names the keep); post-clean invariant extended to networks from Docker STATE; volume pass gains an exact compose-label enumeration catching bare-project-prefix volumes (the 6.3.0 second reproduction's `<project>-vault-*` leak). Controlled-wrong oracle: no-op network removal fails the invariant (2026-08-21). Known residual: shipped stacks run under run_shipped's legacy-project fallback when project/env tags are absent, which escapes the compose-label enumeration — needs the same gate or label pass if a shipped stack ever hits it
+| CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | FIXED — mechanism reading adopted: ASK_VAULT-only inline key `produced_by = "<profile>"`; a partial selection excluding the producer refuses upfront naming every unmet tuple (stack, secret, path, producer, selection, both remedies); unknown profile names are configuration errors; undeclared secrets keep today's behavior (S13.6, 2026-08-22) |
+| CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | FIXED — S6.4a: clean removes the identity network (read from this workspace's own ciu.env) + each selected stack's `<compose-project>_default`, disconnecting lingering endpoints first (unremovable endpoint named, clean fails); instance-vs-main split (S16 record ⇒ unconditional, main keeps its workspace network but names the keep); post-clean invariant extended to networks from Docker STATE; volume pass gains an exact compose-label enumeration catching bare-project-prefix volumes (the 6.3.0 second reproduction's `<project>-vault-*` leak). Controlled-wrong oracle: no-op network removal fails the invariant (2026-08-21). Known residual: shipped stacks run under run_shipped's legacy-project fallback when project/env tags are absent, which escapes the compose-label enumeration — needs the same gate or label pass if a shipped stack ever hits it (RESOLVED by CIU-46's cutover, 2026-08-22)
 | CIU-44 | Templates cannot see the SELECTED profile/stack set at render time: `CIU_SERVICES_PROFILE` is unset on the `--profile` argv path (`cli.py:1005-1015`; `workspace_env.py:875-877` leaves it commented out), so a feature flag like reverse-proxy's `enable_pwmcp_mcp` cannot be derived from "is infra/pwmcp deployed" and any render-time precondition is unreachable or always-fails. Ask: expose the resolved deployed-stack set (or profile list) to the Jinja context so a template can fail loudly when it references an undeployed upstream (§4.2a) | Medium | FIXED — S3.12: `ciu.selected_profiles` + `ciu.deployed_stacks` in every deployment render's Jinja context (up/dev/render-toml/preflight/check/graph), computed once per invocation and threaded unchanged to hooks (`ctx.selected_profiles`/`ctx.deployed_stacks` + `ctx.instance_id`/`ctx.network` from the workspace's own ciu.env); omitted elsewhere so references fail loudly; nothing persisted into ciu.env or exported to compose env (2026-08-21) |
 | CIU-45 | ~~`requires` PROVISIONS rather than VERIFIES~~ — **misdiagnosis, see disposition below**. The lint rule is a plain `requires`/`provides` completeness check; a `post_compose` hook registering itself as a provider already ships (`infra/consul-server/ciu.defaults.toml.j2:9-17`). The actual dstdns failure was a missing `provides` array in one unrelated stack, fixed declaratively in-repo | — | **WITHDRAWN 2026-08-21** — see `## CIU-45` below for the full disposition; `dstdns/nyxloom-trove/decisions.md` D-170 |
-| CIU-46 | Shipped stacks run under the legacy directory-derived compose project when `deploy.project_name`/`environment_tag` are absent (`engine.py run_shipped`), and clean's S6.4a enumeration then sees no projects at all — legacy-project networks/volumes survive a reported-clean teardown | Low | OPEN — residual recorded during the CIU-43 fix (2026-08-21); latent until a shipped stack without tags is cleaned |
-| CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | OPEN — follow-up candidate named out-of-scope at the CIU-41 fix (2026-08-21) |
+| CIU-46 | Shipped stacks run under the legacy directory-derived compose project when `deploy.project_name`/`environment_tag` are absent (`engine.py run_shipped`), and clean's S6.4a enumeration then sees no projects at all — legacy-project networks/volumes survive a reported-clean teardown | Low | FIXED — **cutover, BREAKING**: the basename fallback is WITHDRAWN; config-less shipped/reset deployments derive the workspace-identity project `{REPO_NAME}-{INSTANCE_ID}-{stack}` from THIS checkout's ciu.env (`engine.identity_compose_project_name`, exact-path parsed), and clean enumerates the SAME names via the compose-label passes; missing/identity-less ciu.env refuses instead of silently skipping; no `-p`-less compose invocation remains anywhere in ciu; the S16.1 cannot-derive join refusal fell out as unreachable and is withdrawn. One-time migration for pre-existing deployments: CONSUMERS §11 (S6.4a item 7 + S8.7, 2026-08-22) |
+| CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | FIXED — S2.7 refined precedence extended to PUBLIC_FQDN: derived from THIS workspace's own inputs first (config entry → reverse DNS of the detected IP); ambient adopted only when equal or when detection yields no sourced value (offline host keeps the operator override silently); on mismatch the derived value is written and a warning names the ignored one; PUBLIC_FQDN joins GENERATED_IDENTITY_KEYS so post-generate steps act on the written record. PUBLIC_IP/PUBLIC_TLS_* stay plain pre-set-wins (out of scope). Controlled wrong: restoring the bare fallback fails oracle 1 (2026-08-22) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -287,9 +302,36 @@ from `unlabelled` — per [How issues get here](#how-issues-get-here).
 
 **SPEC ownership:** S17 (provenance semantics).
 
+### CIU-39 disposition — FIXED 2026-08-22
+
+The live reproduction was never captured against a running all-vendor
+deployment (no docker daemon in the carving environment); the contract was
+decided from source + the assay B004 requirements instead, and the
+controlled-wrong oracles pin the semantics. Operator decisions: declared
+REFERENCES (not a digest pin file — DESIGN-GUIDE records why), and a schema
+bump to `schema_version: 2` with the seven CIU-20 fixtures kept frozen as the
+historical v1 grammar record and nine new v2 fixtures carrying the
+assertions. `[deploy.provenance] vendor_images`; reference equality →
+`vendor-pinned`; same image NAME at another reference → vendor drift
+(`mismatch`); undeclared unlabelled stays `unlabelled` and contributes
+nothing, so the escape hatch cannot mask a forgotten bake. Malformed
+declarations refuse exit 2 — a silently ignored declaration would certify
+exactly the deployment it was written to vouch for. `verified-match` is now
+reachable for all-vendor deployments; B004's remaining blocker is assay-side
+(`PROVENANCE_UNVERIFIED`, A-276).
+
 ## CIU-25 — stale worktree/stack detection and reap
 
-**Status:** OPEN, deliberately outside the current milestone.
+**Status:** PARTIAL (2026-08-22) — the GIT half shipped as
+`ciu worktree branches` (SPEC S16.8, capability `worktree.branches.v1`):
+a closed six-category survey (base/mainline/current/prunable/merged-dirty/
+unmerged) with per-branch attributes (#changed files vs the merge-base,
+ahead/behind, last-commit age, dirty, ciu-instance linkage), and `-y`
+removing EXACTLY the Git-provable prunable category (worktree remove +
+`branch -d`, both re-verified by Git itself). No age heuristic, no process
+inference — the constraints below are honored by construction. The
+Docker-resource half (containers/volumes of a crashed instance) remains
+OPEN with the same ownership/lease precondition.
 
 `worktree rm` cleans before removing a checkout when it runs, but a crashed
 dispatcher or forgotten teardown can leave containers and volumes running.

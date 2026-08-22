@@ -250,3 +250,14 @@ def test_controlled_wrong_declaration_lookup_regresses_to_pass(monkeypatch):
     # The regression passes the preflight — which is exactly the defect: the
     # stack then fails at materialization with only "[S4.2] ... absent".
     deploy.producer_preflight(profile, _SELECTION, _rendered(produced_by="identity"))
+
+
+def test_selection_entry_missing_from_rendered_is_skipped():
+    """A selection entry whose render is absent contributes nothing — no
+    crash, no refusal (mirrors vault_preflight's tolerance)."""
+    profile = profiles_pkg.Profile(name="core,db", config=_profile_config())
+    deploy.producer_preflight(
+        profile,
+        [{"path": "apps/ghost", "phase_num": 1}],
+        rendered={},  # nothing rendered for it
+    )

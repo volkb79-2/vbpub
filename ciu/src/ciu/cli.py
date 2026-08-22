@@ -981,8 +981,8 @@ def _worktree(rest: list[str]) -> int:
                             f"{b['changed_files']} file(s)  last "
                             f"{b['last_commit_at'][:10]}{dirt}{ciu}"
                         )
-                if doc.get("hint"):
-                    print(f"\n{doc['hint']}")
+                # survey/prune documents always carry the hint
+                print(f"\n{doc['hint']}")
             return 0
 
         # Every action above returned; the only remaining action is "list"

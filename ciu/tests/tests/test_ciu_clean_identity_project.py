@@ -311,3 +311,15 @@ def test_run_shipped_refuses_when_ciu_env_cannot_name_project(tmp_path, monkeypa
 
     with pytest.raises(ValueError, match="no ciu.env"):
         engine.run_shipped(stack, define_root=tmp_path)
+
+
+def test_untagged_selection_dedupes_same_basename_stacks(tmp_path):
+    """Two selected stacks with the SAME directory basename (different parents)
+    share one legacy identity project name — deduped, once."""
+    repo = _identity_repo(tmp_path)
+    (repo / "apps" / "a" / "vault").mkdir(parents=True)
+    (repo / "apps" / "b" / "vault").mkdir(parents=True)
+    sel = [{"path": "apps/a/vault"}, {"path": "apps/b/vault"}]
+    assert deploy._stack_compose_projects(repo, {"deploy": {}}, sel) == [
+        f"{IDENTITY_PREFIX}-vault"
+    ]

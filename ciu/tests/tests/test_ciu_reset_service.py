@@ -385,3 +385,21 @@ class TestResetServiceValidation:
         config = {"deploy": {"project_name": "test"}}
         with pytest.raises(ValueError, match="deploy.labels.prefix"):
             _reset(config, tmp_path, assume_yes=True)
+
+
+class TestResetServiceIdentityNaming:
+    def test_tags_absent_without_repo_root_refuses(self, tmp_path):
+        """CIU-46 cutover: the config-less down path derives its project from
+        the workspace record; without a repo_root there is NOTHING to derive
+        from — refuse loudly instead of running an unenumerable -p-less down
+        (the withdrawn fallback's exact defect)."""
+        with pytest.raises(ValueError, match="no.*repo_root.*provided"):
+            reset_service(_base_config(), tmp_path, assume_yes=True)
+
+    def test_tags_absent_down_scoped_to_identity_project(self, tmp_path):
+        cfg = _base_config()
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
+            _reset(cfg, tmp_path, assume_yes=True)
+        first_cmd = mock_run.call_args_list[0].args[0]
+        expected = engine.identity_compose_project_name(tmp_path, tmp_path)
+        assert first_cmd[:4] == ["docker", "compose", "-p", expected]

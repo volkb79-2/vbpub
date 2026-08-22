@@ -2764,7 +2764,9 @@ naming how many branches `-y` would remove. With `-y`, exactly the
 `prunable` category is removed — per branch, `git worktree remove` FIRST
 (Git re-verifies cleanliness itself) then `git branch -d` (Git re-verifies
 mergedness — belt to our braces); a refusal moves that branch to `failed`
-WITH Git's reason and the prune continues. The document is versioned
+WITH Git's reason and the prune continues; the document is then RE-SURVEYED
+so its counts and branches report the post-prune truth, never the stale
+pre-prune snapshot. The document is versioned
 (`schema_version: 1`, operation `branches` / `branches-prune`, status
 `survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
 id `worktree.branches.v1`.

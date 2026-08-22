@@ -1708,8 +1708,10 @@ def run_shipped(
                 f"'{shipped_project}'",
                 flush=True,
             )
-        if shipped_project is not None:
-            guard_legacy_compose_project(working_dir, shipped_project)
+        # CIU-46 cutover: shipped_project is ALWAYS a known name now (the
+        # S8.7 scoped project or the computed identity project) — the guard
+        # runs unconditionally.
+        guard_legacy_compose_project(working_dir, shipped_project)
         # Same S16.3 boundary as the native path: only a genuine Compose start
         # reads the primary-worktree policy.  ``--dry-run`` returned above.
         worktree_cap = worktree.resolve_worktree_cap(repo_root)

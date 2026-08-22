@@ -218,3 +218,183 @@ def test_ciu_instance_linkage_surfaces_in_survey(repo, tmp_path, monkeypatch):
     doc = worktree.branch_hygiene(repo)
     entry = next(b for b in doc["branches"] if b["name"] == "feat/managed")
     assert entry["ciu_instance"] == {"logical_name": "managed", "state": "ready"}
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed git paths and prune failure reporting (coverage of S16.8 edges)
+# ---------------------------------------------------------------------------
+
+
+def test_for_each_ref_failure_refuses(repo, monkeypatch):
+    real_git = worktree._git
+
+    def boom(args, cwd):
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(args, 1, "", "fatal: bad object")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", boom)
+    with pytest.raises(worktree.WorktreeError, match="for-each-ref failed"):
+        worktree.branch_hygiene(repo)
+
+
+def test_unreadable_rev_list_or_diff_degrades_to_sentinel_minus_one(repo, monkeypatch):
+    _branch(repo, "feature/x")
+    real_git = worktree._git
+
+    def selective(args, cwd):
+        if args[0] in ("rev-list", "diff"):
+            return subprocess.CompletedProcess(args, 1, "", "error")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", selective)
+    doc = worktree.branch_hygiene(repo)
+    entry = next(b for b in doc["branches"] if b["name"] == "feature/x")
+    assert entry["ahead"] == -1 and entry["behind"] == -1
+    assert entry["changed_files"] == -1
+    assert entry["merged"] is False  # -1 is never read as "merged"
+
+
+def test_for_each_ref_blank_lines_and_short_rows_are_tolerated(repo, monkeypatch):
+    real_git = worktree._git
+
+    def with_noise(args, cwd):
+        res = real_git(args, cwd)
+        if args[0] == "for-each-ref":
+            # a blank line and a truncated (3-field) row must not crash
+            res.stdout = "\n" + res.stdout + "\ntruncated\x00row\x00here\n"
+        return res
+
+    monkeypatch.setattr(worktree, "_git", with_noise)
+    doc = worktree.branch_hygiene(repo)
+    assert any(b["name"] == "main" for b in doc["branches"])
+
+
+def test_prune_reports_per_branch_failure_and_continues(repo, monkeypatch):
+    """A refusal on one prunable branch moves THAT branch to `failed` with the
+    reason and the prune continues — status becomes `partial`, never `pruned`
+    while a survivor remains."""
+    _branch(repo, "fix/merged-1")
+    _merge_into_main(repo, "fix/merged-1")
+    _branch(repo, "fix/merged-2")
+    _merge_into_main(repo, "fix/merged-2")  # leaves primary on main
+    real_git = worktree._git
+
+    def failing_branch_d(args, cwd):
+        if args[:2] == ["branch", "-d"] and "fix/merged-1" in args:
+            return subprocess.CompletedProcess(args, 1, "", "error: branch not fully merged")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", failing_branch_d)
+    doc = worktree.prune_branches(repo, yes=True)
+
+    assert doc["status"] == "partial"
+    assert doc["failed"] == [
+        {"branch": "fix/merged-1", "reason": "error: branch not fully merged"}
+    ]
+    assert "fix/merged-2" in doc["removed"]
+    assert _git(["rev-parse", "--verify", "fix/merged-1"], repo).returncode == 0
+
+
+def test_prune_failed_worktree_removal_skips_branch_delete(repo, monkeypatch):
+    """When `git worktree remove` refuses, the branch delete is not attempted —
+    the failure names the worktree step's reason."""
+    _branch(repo, "fix/linked")
+    assert _git(["checkout", "main"], repo).returncode == 0  # free the branch
+    wt_path = repo.parent / "wt-linked"
+    assert _git(["worktree", "add", str(wt_path), "fix/linked"], repo).returncode == 0
+    (wt_path / "committed.txt").write_text("clean\n", encoding="utf-8")
+    _git(["add", "."], cwd=wt_path)
+    _git(["commit", "-m", "clean work"], cwd=wt_path)
+    _merge_into_main(repo, "fix/linked")  # primary back on main; linked checkout stays clean
+    real_git = worktree._git
+    seen: list[list[str]] = []
+
+    def failing_remove(args, cwd):
+        seen.append(args)
+        if args[:2] == ["worktree", "remove"]:
+            return subprocess.CompletedProcess(args, 1, "", "fatal: contains modified files")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", failing_remove)
+    doc = worktree.prune_branches(repo, yes=True)
+
+    assert doc["status"] == "partial"
+    assert doc["failed"] == [
+        {"branch": "fix/linked", "reason": "fatal: contains modified files"}
+    ]
+    assert not any(args[:2] == ["branch", "-d"] for args in seen)
+
+
+# ---------------------------------------------------------------------------
+# CLI dispatch (`ciu worktree branches`) — human, JSON, and -y paths
+# ---------------------------------------------------------------------------
+
+
+def test_cli_branches_survey_human_output(repo, monkeypatch, capsys):
+    monkeypatch.delenv("REPO_ROOT", raising=False)  # ambient shell state must not redirect
+    from ciu import cli
+
+    monkeypatch.chdir(repo)
+    _branch(repo, "fix/merged-cli")
+    _merge_into_main(repo, "fix/merged-cli")
+
+    assert cli._worktree(["branches", "--define-root", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "branch hygiene vs 'main'" in out
+    assert "1 prunable" in out
+    assert "prunable:" in out
+    assert "fix/merged-cli" in out
+    assert "re-run with -y/--yes" in out
+
+
+def test_cli_branches_json_dispatch(repo, monkeypatch, capsys):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    import json as _json
+
+    from ciu import cli
+
+    monkeypatch.chdir(repo)
+    _branch(repo, "fix/merged-cli")
+    _merge_into_main(repo, "fix/merged-cli")
+
+    assert cli._worktree(["branches", "--json", "--define-root", str(repo)]) == 0
+    doc = _json.loads(capsys.readouterr().out)
+    assert doc["schema_version"] == 1
+    assert doc["operation"] == "branches"
+    assert doc["status"] == "survey"
+    assert {b["name"] for b in doc["branches"]} >= {"main", "fix/merged-cli"}
+
+
+def test_cli_branches_yes_prunes_and_reports(repo, monkeypatch, capsys):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    from ciu import cli
+
+    monkeypatch.chdir(repo)
+    _branch(repo, "fix/merged-cli")
+    _merge_into_main(repo, "fix/merged-cli")
+
+    assert cli._worktree(["branches", "-y", "--define-root", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "0 prunable" in out  # already removed
+    assert _git(["rev-parse", "--verify", "fix/merged-cli"], repo).returncode != 0
+
+
+def test_cli_branches_unknown_base_refuses_exit_2(repo, monkeypatch, capsys):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    from ciu import cli
+
+    monkeypatch.chdir(repo)
+    assert cli._worktree(["branches", "--base", "trunk", "--define-root", str(repo)]) == 2
+    assert "does not name a known ref" in capsys.readouterr().err
+
+
+def test_prune_without_yes_is_pure_survey(repo):
+    _branch(repo, "fix/merged-y")
+    _merge_into_main(repo, "fix/merged-y")
+
+    doc = worktree.prune_branches(repo, yes=False)
+    assert doc["status"] == "survey"
+    assert doc["operation"] == "branches"
+    assert any(b["name"] == "fix/merged-y" for b in doc["branches"])
+    assert _git(["rev-parse", "--verify", "fix/merged-y"], repo).returncode == 0
