@@ -137,7 +137,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns
 floors/R-levels/verdict meaning); no non-stdlib imports; no silent defaults
-for environment facts; release policy stays with the consumer (cmru/nyxloom).
+for environment facts; no test definitions in consumer configs — the SSOT
+is `run-gate.toml`; release policy stays with the consumer (cmru/nyxloom).
 
 ## 7. Distribution (unchanged from README/CONSUMERS)
 

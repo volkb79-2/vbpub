@@ -17,10 +17,14 @@ lane declarations look like per project type. Companion to `README.md`
    parsed by run-gate.py ONLY; no other tool may read this file). Shared
    environment facts do NOT belong here if a repo-root central config
    already defines them (see below).
-3. **Point consumers at argv** — e.g. nyxloom's `[gates.<name>]`:
+3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && ./run-gate.py --worktree {worktree} <lane>"]`.
-   Nothing else in the argv; keep `asserts`/`timeout_seconds` as the
-   daemon's own policy.
+   The consumer adds NO test logic of its own — no suite argv, no lane
+   sequencing, no coverage flags. All test definitions live in
+   `run-gate.toml` (the SSOT); if multiple sub-lanes must run together,
+   declare a conjunction lane in `run-gate.toml` (see below) and point the
+   consumer at it. Keep `asserts`/`timeout_seconds` as the daemon's own
+   policy.
 4. **AGENTS.md**: add one line naming `./run-gate.py` as the canonical test
    entrypoint (do this IN the adoption commit — docs never lead the tool).
 
@@ -105,6 +109,60 @@ argv = ["pytest", "tests/", "-q"]
 clean_tree = true
 ```
 
+### Gate-conjunction lanes — when one consumer must run several sub-lanes
+
+Some consumers (nyxloom's daemon) can express only ONE implementation-phase
+gate per project. Rather than duplicating a compound command in every
+consumer config, declare the conjunction IN `run-gate.toml` so every caller
+(daemon, agent, human, CI) gets the identical sequence from the SSOT:
+
+```toml
+[lanes.gate]
+kind = "command"
+environment = "test-runner"
+# The implementation-gate conjunction: schema + mock + assay judgment.
+# Every consumer runs THIS lane; none duplicates its internals.
+argv = [
+    "bash", "-c",
+    '''RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock ./run-gate.py schema && ./run-gate.py test-runner && ./run-gate.py assay''',
+]
+clean_tree = false
+budget = "75m"
+```
+
+The consumer then points at `./run-gate.py <lane>` exactly as for any other
+lane — the conjunction is invisible above this boundary.
+
+### Consumer examples
+
+**nyxloom `[gates.<name>]` — thin pointer only:**
+
+```toml
+[gates.test-runner]
+argv = ["bash", "-lc", '''cd /workspaces/dstdns &&
+    CGROUP_PARENT_DEV_BACKGROUND="${CGROUP_PARENT_DEV_BACKGROUND:?...}" &&
+    ./run-gate.py gate --worktree {worktree}''']
+phase = "implementation"
+timeout_seconds = 4500
+environment = "test-runner"
+asserts = ["tests-pass", "canary-verified"]
+```
+
+**CI pipeline (Buildkite/future) — same pattern:**
+
+```yaml
+commands:
+  - ./run-gate.py gate
+```
+
+**Human invocation — identical entrypoint:**
+
+```bash
+./run-gate.py --list        # discover lanes
+./run-gate.py gate          # full implementation gate
+./run-gate.py schema        # schema-only iteration
+```
+
 ## Per-project-type recipes
 
 **Python service repo with assay (ciu, cmru, assay itself):** the
@@ -122,6 +180,8 @@ lifecycle. The old `testing-exec.sh` shim is retired — run-gate execs directly
 Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
 lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
 coverage work as they land (B1-style).
+The implementation gate is declared as a `gate` conjunction lane (see above);
+nyxloom consumes it via `./run-gate.py gate --worktree {worktree}`.
 
 ```toml
 [environments.test-runner]
@@ -165,9 +225,11 @@ noticing — that boundary is the point.
 - **assay:** see the split table above. assay's own docs document
   `assay.toml`'s role (assay backlog B009); run-gate never re-implements
   judgment, and never bypasses assay's clean-tree/verdict rules.
-- **nyxloom:** gates become thin argv pointers; the daemon keeps scheduling,
-  timeouts, and asserts. The four-trap manual recipe in vbpub AGENTS.md is
-  superseded for adopted projects (the section gains a pointer here).
+- **nyxloom:** gates become thin argv pointers to named `run-gate.toml`
+  lanes; all test definitions (suite argv, sequencing, conjunctions) live in
+  the SSOT. The daemon keeps scheduling, timeouts, and asserts. The four-trap
+  manual recipe in vbpub AGENTS.md is superseded for adopted projects (the
+  section gains a pointer here).
 - **cmru:** release gates call the same lanes; cmru's dependency checking is
   what makes the fresh-clone story work for the image-baked assay judge
   (build order: assay wheel → tester-unified image → gates run).
