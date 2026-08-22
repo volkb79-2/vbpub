@@ -4,6 +4,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.1.1] - 2026-08-22
+<!-- cmru: generated -->
+<!-- cmru: source-end=a1f7288b68e2281b9e0d58dcb7681ac7b98d2324 -->
+
+### Changed
+- run-gate(cmru): mutation lane skips with notice when the source diff vs the verified-ancestor release tag is empty — a src-unchanged release is ungatable otherwise (d9d9f541)
+- run-gate: estate-wide adoption as SSOT test definition (CIU-40 adoption half) (4c6eb2b6)
+- cmru(FEAT-03): DECIDED contract — cmru versions {refresh,check}, cmru.orchestration.toml schema (window+pins+resolved state), python+npm+go, per-project cmru.toml overrides, explicit-flag-only build integration (8819ce67)
+- cmru(FEAT-03): proposed — central version determination as a dated constraints artifact (uv --exclude-newer age window, explicit refresh, cmru-distributed, ciu-independent) (fbead753)
+
 ## [4.1.0] - 2026-08-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=0b920f806b4aedcc12014ebb028b917858450de0 -->
