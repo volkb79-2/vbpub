@@ -84,6 +84,24 @@ class HookContext:
     extra: dict = field(default_factory=dict)
     """Arbitrary extra data the engine may inject (extensible)."""
 
+    selected_profiles: tuple[str, ...] | None = None
+    """S3.12 / CIU-44: the ordered named profiles this invocation resolved
+    (empty tuple = the default all-phases profile); None outside a
+    deployment render."""
+
+    deployed_stacks: tuple[str, ...] | None = None
+    """S3.12 / CIU-44: the full stack set THIS invocation deploys
+    (declaration order, deduped); None outside a deployment render."""
+
+    instance_id: str | None = None
+    """S3.12 / CIU-44: this workspace's INSTANCE_ID from its own ciu.env
+    (exact path), when present — hooks no longer need to re-parse the
+    identity record or trust ambient state."""
+
+    network: str | None = None
+    """S3.12 / CIU-44: this workspace's DOCKER_NETWORK_INTERNAL from its own
+    ciu.env (exact path), when present."""
+
 
 # ---------------------------------------------------------------------------
 # S9.1 — load_hook

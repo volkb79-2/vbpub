@@ -46,7 +46,7 @@ def test_run_dispatches_non_deploy_actions_and_caches_render_for_check_then_grap
     renders: list[tuple[Path, Profile, list[dict]]] = []
     calls: list[tuple[str, object]] = []
 
-    def render(root, resolved_profile, resolved_selection):
+    def render(root, resolved_profile, resolved_selection, ciu_context=None):
         renders.append((root, resolved_profile, resolved_selection))
         return {"apps/api": {"api": {}}}
 
@@ -74,7 +74,7 @@ def test_run_expands_comma_profiles_and_defaults_to_deploy_when_no_action(monkey
     received_profiles: list[list[str] | None] = []
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, names: received_profiles.append(names) or profile)
     monkeypatch.setattr(deploy, "build_action_sequence", lambda _raw: [])
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
     monkeypatch.setattr(deploy, "vault_preflight", lambda *_args: None)
     monkeypatch.setattr(deploy, "provisioning_preflight", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(deploy, "registry_preflight", lambda *_args: None)

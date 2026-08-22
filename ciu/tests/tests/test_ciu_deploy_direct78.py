@@ -20,8 +20,8 @@ def test_clean_fails_when_postcondition_finds_project_container(monkeypatch, tmp
         return [] if calls == 1 else ["project-prod-vault-init"]
 
     monkeypatch.setattr(deploy, "_matching_containers", matching)
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config: [])
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config=None, **_kw: [])
 
     assert deploy.action_clean(tmp_path, Profile(config={"deploy": {}}), [], ignore_errors=True) == 1
     output = capsys.readouterr().out

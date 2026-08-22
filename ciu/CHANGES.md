@@ -29,6 +29,43 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): deployment-selection facts for templates and hooks — every
+  deployment render (`ciu up`, `ciu dev`, `--render-toml`, preflight/check/graph)
+  exposes `ciu.selected_profiles` (ordered named profiles; empty = default) and
+  `ciu.deployed_stacks` (the FULL stack set this invocation deploys) as a Jinja
+  context mapping, computed once per invocation and threaded unchanged to every
+  render AND to hooks (`ctx.selected_profiles` / `ctx.deployed_stacks`, plus
+  `ctx.instance_id` / `ctx.network` from this workspace's own ciu.env by exact
+  path). Outside deployment renders the key is omitted so stray references fail
+  loudly (UndefinedError); nothing is persisted into ciu.env or exported to the
+  compose env. A template can now derive "is upstream X deployed" (e.g.
+  reverse-proxy's enable_pwmcp_mcp) instead of hardcoding it (CIU-44, dstdns
+  P120 D-162 DA-B, SPEC S3.12 + S9.3)
+
+### Fixed
+- fix(ciu): `ciu clean` now removes identity-scoped networks — the workspace network
+  (read from this workspace's own ciu.env) and each selected stack's compose
+  `<project>_default` — instead of printing `clean complete` over survivors. Lingering
+  endpoints are disconnected first; one that cannot be disconnected is named and fails
+  the clean. Instance-vs-main split: an S16 worktree instance tears down all of its
+  networks unconditionally; the main workspace keeps its own workspace network (devcontainer
+  residence) but names the keep in its output and final success line. The post-clean
+  invariant now covers networks (decided from Docker state, never command text), and the
+  volume pass gained an exact per-project compose-label enumeration that catches
+  bare-project-prefix named volumes (`<project>-vault-data`), the second live reproduction
+  on 6.3.0 (CIU-43, dstdns P111 F4 + P116 O9, SPEC S6.4a)
+- fix(ciu): `ciu env generate` no longer inherits an ambient `DOCKER_NETWORK_INTERNAL`
+  (or `REPO_NAME`/`INSTANCE_ID`): the S2.7 refined-precedence pattern extends to the
+  whole derived identity tuple — an ambient value wins only when consistent with the
+  value derived for this repo root; on mismatch the derived value is written and a
+  stderr warning names the ignored ambient value plus the `ciu worktree add
+  --shared-infra` remedy (S16.1). Bootstrap steps following a generate in the same run
+  act on the just-written file's identity parsed by exact path, so a contaminated
+  login shell can no longer point a fresh worktree's network (or the S16 cross-checks)
+  at another checkout's stack; a consistent pre-set value stays silent (CIU-41,
+  dstdns P111 F2, SPEC S2.7)
+
+### Added
 - feat(ciu): deploy layouts — `[deploy.layouts.<name>]` names a host→bundles plan + its
   environment; `ciu up --layout <name>` drives the SPEC-J push per host in declared order
   with `CIU_SERVICES_PROFILE` / `CIU_LAYOUT` / `CIU_LAYOUT_HOST` / `CIU_DEPLOY_ENVIRONMENT`

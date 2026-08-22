@@ -45,7 +45,7 @@ def test_render_selected_stacks_deduplicates_ciu_paths_and_skips_shipped(
         lambda service: bool(service.get("shipped")),
     )
 
-    def render_stack(stack_dir, *, global_config, preserve_state):
+    def render_stack(stack_dir, *, global_config, preserve_state, ciu_context=None):
         assert global_config is profile.config
         assert preserve_state is True
         return {"stack": stack_dir.name, "rendered": True}

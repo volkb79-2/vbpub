@@ -38,6 +38,12 @@ STANDALONE_ROOT_PATTERN = re.compile(
 
 ENV_FILE_NAME = WORKSPACE_ENV
 
+# The derived identity tuple (S2.7 / CIU-41). After a generate in the same
+# run, these keys from the freshly written ciu.env outrank any inherited
+# ambient value: the record was computed for THIS repo root moments ago and
+# is by construction fresher than shell state sourced from another checkout.
+GENERATED_IDENTITY_KEYS = ("REPO_NAME", "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL")
+
 # S2.2 — required keys always present in ciu.env
 REQUIRED_KEYS_CORE: tuple[str, ...] = (
     "REPO_ROOT",
@@ -554,14 +560,76 @@ def _detect_host_mdt_tmp() -> str:
 
 
 def _compute_network_name(physical_root: Path) -> Dict[str, str]:
+    """Derive the identity tuple for THIS physical root (S2.7, CIU-41).
+
+    Every value is derived from *physical_root* alone. Ambient environment
+    values are NEVER adopted: ``env generate`` is the identity-computation
+    verb, and its output (ciu.env) is the record every later ciu command
+    trusts — an inherited ``DOCKER_NETWORK_INTERNAL`` from a shell that
+    sourced a DIFFERENT checkout's ciu.env would silently point this
+    workspace at that checkout's network (the masked-default defect behind
+    dstdns P111 F2). The same refined precedence S2.7 applies to
+    PHYSICAL_REPO_ROOT is mirrored here for the whole tuple: a pre-set value
+    wins only when CONSISTENT with the derived one; on mismatch the derived
+    value is used and a warning names the ignored ambient value.
+    """
     repo_name = physical_root.name.lower()
     instance_id = hashlib.sha256(str(physical_root).encode("utf-8")).hexdigest()[:6]
     network_name = f"{repo_name}-{instance_id}-network"
-    return {
+    derived = {
         "REPO_NAME": repo_name,
         "INSTANCE_ID": instance_id,
-        "DOCKER_NETWORK_INTERNAL": os.environ.get("DOCKER_NETWORK_INTERNAL", network_name),
+        "DOCKER_NETWORK_INTERNAL": network_name,
     }
+    _warn_inconsistent_ambient("REPO_NAME", repo_name)
+    _warn_inconsistent_ambient("INSTANCE_ID", instance_id)
+    _warn_inconsistent_ambient(
+        "DOCKER_NETWORK_INTERNAL",
+        network_name,
+        remedy=(
+            "To reuse another instance's running infra, use "
+            "`ciu worktree add --shared-infra` (SPEC S16.1) instead of "
+            "inheriting its network name."
+        ),
+    )
+    return derived
+
+
+def _warn_inconsistent_ambient(key: str, derived: str, *, remedy: str = "") -> None:
+    """Warn when an ambient identity value disagrees with the derived one.
+
+    A consistent pre-set value is silent (it changes nothing); a mismatched
+    one is reported and IGNORED — never adopted (CIU-41 / S2.7 refined
+    precedence extended to the derived identity tuple).
+    """
+    ambient = os.environ.get(key)
+    if not ambient or ambient == derived:
+        return
+    message = (
+        f"ciu: ignoring pre-set {key}={ambient!r} during env generate — "
+        f"inconsistent with the value derived for this repo root ({derived!r}). "
+        "The derived value is written to ciu.env (the pre-set env is likely "
+        "stale/cross-workspace shell state, e.g. inherited from another "
+        "checkout's sourced ciu.env)."
+    )
+    if remedy:
+        message += f" {remedy}"
+    print(message, file=sys.stderr)
+
+
+def adopt_file_identity(values: Dict[str, str]) -> None:
+    """Overwrite the ambient identity tuple from a just-generated ciu.env.
+
+    Used by the bootstrap paths after a generation in the same run: the file
+    was computed for THIS repo root moments ago and outranks inherited shell
+    state (CIU-41). No warning here — in every real flow the mismatch was
+    already reported by ``_compute_network_name`` when the file was
+    generated; this is the enforcement half of that decision.
+    """
+    for key in GENERATED_IDENTITY_KEYS:
+        value = values.get(key)
+        if value is not None:
+            os.environ[key] = value
 
 
 def _docker_available() -> bool:
@@ -920,10 +988,14 @@ def bootstrap_env_init(repo_root: Path) -> Path:
     """
     env_path = generate_ciu_env(repo_root)
 
-    # Reload generated values into os.environ so the steps below see them
+    # Reload generated values into os.environ so the steps below see them.
+    # The derived identity tuple always overwrites (CIU-41 — see
+    # adopt_file_identity): otherwise the network step below would act on a
+    # stale ambient DOCKER_NETWORK_INTERNAL even though ciu.env names this
+    # workspace's own network.
     generated_values = parse_workspace_env(env_path)
     for key, value in generated_values.items():
-        if key not in os.environ:
+        if key not in os.environ or key in GENERATED_IDENTITY_KEYS:
             os.environ[key] = value
 
     # Step 2+3: network + devcontainer attach (devcontainer attach is a no-op
@@ -966,9 +1038,14 @@ def bootstrap_workspace_env(
         for key, value in values.items():
             os.environ[key] = value
     else:
-        load_workspace_env(env_root)
+        values = load_workspace_env(env_root)
 
     if generated:
+        # CIU-41: the just-generated record outranks inherited ambient state
+        # for the derived identity tuple (see adopt_file_identity). Parse
+        # env_path by EXACT path — find_workspace_env would honor an ambient
+        # REPO_ROOT and could re-read another checkout's ciu.env here.
+        adopt_file_identity(parse_workspace_env(env_path))
         # Run post-generate bootstrap steps (network + TLS probe).
         # These degrade to warn/no-op on native host per S1.9.
         network_name = os.environ.get("DOCKER_NETWORK_INTERNAL", "")

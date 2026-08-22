@@ -672,7 +672,7 @@ def test_main_runs_vault_preflight_before_any_deploy_action(monkeypatch, tmp_pat
     monkeypatch.setattr(deploy, "load_global_config", lambda _root: profile.config)
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, _names: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda _profile, _phases: selection)
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
 
     def fail_vault(*_args):
         events.append("vault")
@@ -1416,7 +1416,7 @@ def test_action_clean_invariant_fails_on_surviving_volume(monkeypatch, tmp_path)
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
     # A volume survives removal.
     monkeypatch.setattr(deploy, "_remove_project_volumes",
-                        lambda cfg: ["proj-env-vault-data"])
+                        lambda cfg=None, **_kw: ["proj-env-vault-data"])
 
     rc = deploy.action_clean(tmp_path, profile, [], ignore_errors=True)
     assert rc == 1
@@ -1428,7 +1428,7 @@ def test_action_clean_invariant_passes_when_clean(monkeypatch, tmp_path):
     profile.config = config
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg=None, **_kw: [])
     rc = deploy.action_clean(tmp_path, profile, [], ignore_errors=True)
     assert rc == 0
 
@@ -1447,7 +1447,7 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
         (tmp_path / name).write_text(body, encoding="utf-8")
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg=None, **_kw: [])
 
     assert deploy.action_clean(tmp_path, profile, [], ignore_errors=True) == 0
     for name, body in durable.items():

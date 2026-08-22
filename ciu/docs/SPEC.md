@@ -137,6 +137,24 @@ requirements are marked *(withdrawn)*.
   | `ENV_TYPE` | `devcontainer` \| `native` \| `github-actions` (v1's `bare-metal` and post-create's `local` unify as `native`) |
   | `PUBLIC_IP`/`PUBLIC_FQDN`/`PUBLIC_TLS_*` | config → ipify → reverse DNS → `localhost` fallback (S2.3 gates whether required) |
 
+  **Refined precedence for the derived identity tuple (CIU-41).** The
+  blanket "a pre-set environment value always wins" rule does NOT apply to
+  the derived identity values (`REPO_NAME`, `INSTANCE_ID`,
+  `DOCKER_NETWORK_INTERNAL`) during **generation** — the same refined
+  precedence already applied to `PHYSICAL_REPO_ROOT`. A shell that sourced a
+  DIFFERENT checkout's `ciu.env` carries that checkout's network name; a
+  generate run in this workspace must never adopt it (the 2026-07
+  `PHYSICAL_REPO_ROOT` leak family, dstdns P111 F2 live reproduction).
+  Contract: during generation each identity value is derived from THIS
+  physical root alone; an ambient value is adopted only when it EQUALS the
+  derived one; on mismatch the derived value is written and a stderr warning
+  names the ignored ambient value and the S16.1 remedy. Within the same run,
+  bootstrap steps that follow a generation (network creation, devcontainer
+  attach, S16 cross-checks) act on the just-written file's identity, parsed
+  by exact path — never re-derived from ambient state or re-found via an
+  ambient `REPO_ROOT`. Read-path precedence of already-generated workspaces
+  (ambient wins when consistent) is unchanged.
+
 - **S2.8** `ciu env generate` is the **single bootstrap entry point** and
   MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
@@ -259,6 +277,36 @@ requirements are marked *(withdrawn)*.
   value is distinct from the configfile render context's `instance_id`
   (S7.5b) — a per-service replica index, not the workspace `INSTANCE_ID`
   (S2) and not landscape-scoped.
+- **S3.12** Deployment-selection facts are exposed to templates and hooks as
+  the **`ciu`** mapping (CIU-44): `ciu.selected_profiles` — the ordered named
+  profiles this invocation resolved (empty list = the default all-phases
+  profile; never a fabricated name) — and `ciu.deployed_stacks` — the FULL
+  stack set this invocation deploys (declaration order, deduped), not merely
+  the stack currently being rendered, so a template in any stack can derive
+  "is upstream X deployed". Contract:
+  1. Availability: every deployment render — `ciu up`/`--deploy` (per-stack
+     engine pipeline), the preflight/`--render-toml`/`--check`/`--graph`
+     renders, `ciu dev` (which selects exactly its one target stack), and the
+     per-stack re-renders inside `ciu clean`. Outside these renders the two
+     fact keys are absent from the context: a template referencing them
+     elsewhere fails loudly (Jinja UndefinedError) rather than silently
+     seeing an empty selection.
+  2. The facts MERGE into the config's own `[ciu]` table (workspace switches
+     such as `auto_connect_network` live there) — never replace it; the keys
+     `ciu.selected_profiles` / `ciu.deployed_stacks` are RESERVED for this
+     purpose. They are computed ONCE per invocation from the resolved profile +
+     selection and threaded unchanged to every render and hook — templates
+     and hooks can never disagree.
+  3. Hooks receive the same facts on the HookContext (S9.3) as
+     `selected_profiles` / `deployed_stacks` tuples, plus this workspace's
+     identity from its own `ciu.env` parsed by exact path (S2.7 authority):
+     `instance_id` and `network` (None when absent). Hooks MUST NOT read
+     identity from ambient environment state.
+  4. Nothing is persisted: no `ciu.*` value is written to `ciu.env` (S2.7
+     machine-identity layer stays generated facts only) and none is exported
+     into the compose process env — the render context and the hook context
+     are the only surfaces. A stale selection can therefore never masquerade
+     as a fresh one.
 
 ## S4 — Secrets
 
@@ -578,6 +626,39 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      named volumes remain. A surviving volume is an **error**, not a warning
      (it almost always means a container still references it); `clean` exits
      non-zero and names the survivors and the likely cause.
+
+  **Identity-scoped network removal (S6.4a, CIU-43, normative).** `clean`
+  also removes the workspace identity network and each selected stack's
+  compose ``<project>_default`` network; v1's "network removal is NOT
+  performed" posture is withdrawn — it leaked one identity-scoped network per
+  teardown while printing `clean complete` (two live dstdns reproductions,
+  P111 F4 / P116 O9). Semantics:
+  1. The workspace identity network name is read from THIS workspace's own
+     `ciu.env` by exact path (S2.7 authority), never from ambient state; the
+     selected stacks' compose-created networks are enumerated EXACTLY by the
+     compose project label (covering `<project>_default` AND custom-named
+     compose networks) — never inferred from a naming convention.
+  2. Lingering endpoints are disconnected before removal; an endpoint that
+     cannot be disconnected is NAMED and fails the clean — a network is never
+     silently kept.
+  3. Existence is decided from Docker STATE via an exact-name
+     `network ls` filter whose non-zero exit ALWAYS means daemon failure:
+     an UNVERIFIABLE network or volume set fails the clean (`invariant
+     unverifiable`) — indeterminacy never folds into "gone".
+  4. **Instance-vs-main split:** a checkout carrying an S16 worktree-instance
+     lifecycle record is ephemeral — ALL of its identity-scoped networks are
+     removed unconditionally. The MAIN workspace deliberately keeps its own
+     workspace network (the devcontainer stays attached to it), but the keep
+     is named in the output and in the final success line; stack
+     ``*_default`` networks are removed for both classes.
+  5. The S6.4 post-clean invariant extends to networks: every targeted
+     network must be gone (Docker STATE re-inspection decides, never command
+     diagnostic text); any survivor that was not a declared keep exits
+     non-zero.
+  6. The project volume pass gains a compose-label enumeration per selected
+     stack's S8.7 compose project, catching named volumes that carry the bare
+     project prefix without the instance tag (e.g. ``<project>-vault-data``);
+     the label filter is exact per project, never a broad glob.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container
@@ -869,6 +950,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
     successful connect, `False` on timeout.
   Both are wired by the engine; a hook MUST NOT hand-roll a poll loop where a
   helper suffices.
+  The context also carries the deployment-selection facts and workspace
+  identity (S3.12 / CIU-44): `ctx.selected_profiles` / `ctx.deployed_stacks`
+  (tuples; `None` outside a deployment render) and `ctx.instance_id` /
+  `ctx.network` (from this workspace's own `ciu.env` by exact path, or
+  `None`). Hooks read identity/selection from these fields — never from
+  ambient environment state (S9.4 forbids env mutation; ambient reads are the
+  CIU-41 contamination vector).
 - **S9.4** Return contract — structured form **only**:
   `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later

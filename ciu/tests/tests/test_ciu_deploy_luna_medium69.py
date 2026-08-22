@@ -33,7 +33,7 @@ def test_health_summary_without_pending_omits_pending_guidance(capsys):
 def test_render_toml_empty_selection_reports_no_work(monkeypatch, capsys, tmp_path: Path):
     """An empty rendering is a successful no-op, not a false success count."""
 
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *args: {})
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *args, **_kw: {})
 
     assert deploy.action_render_toml(tmp_path, Profile(), []) == 0
 
@@ -48,7 +48,7 @@ def test_render_toml_reports_each_rendered_stack_deterministically(monkeypatch, 
     monkeypatch.setattr(
         deploy,
         "render_selected_stacks",
-        lambda *args: {"zeta/api": {"api": {}}, "alpha/db": {"db": {}}},
+        lambda *args, **_kw: {"zeta/api": {"api": {}}, "alpha/db": {"db": {}}},
     )
 
     assert deploy.action_render_toml(tmp_path, Profile(), []) == 0

@@ -65,7 +65,7 @@ lacks (see [docs/CIU.md](docs/CIU.md)).
 
 1. **Real secrets, never in the file.** Six directives (Vault read, generate-to-Vault, generate-local, ask-external, ask-file, ephemeral; S4.2) resolve secrets, write them as `0440` files, and mount them at `/run/secrets/<name>`. Three layers guarantee values never reach the YAML or logs: stringify-guards (S4.21), a post-render plaintext scan (S4.22), and redacted `--print-context` (S4.23).
 2. **Secure-by-default first run.** `GEN_LOCAL`/`GEN_TO_VAULT` mint a strong random secret on first run and reuse it forever — the file *is* the state, idempotent (S4.11). Clone, run, get unique credentials; no default-password footgun.
-3. **One template adapts to every host.** Compose and app-config files are Jinja2-rendered against layered TOML + machine facts (UID/GID, docker group, network name, physical paths, FQDN/TLS). Admins tune TOML overrides (S3.3), not the maintainer's compose.
+3. **One template adapts to every host.** Compose and app-config files are Jinja2-rendered against layered TOML + machine facts (UID/GID, docker group, network name, physical paths, FQDN/TLS) **and the deployment selection** (`ciu.selected_profiles` / `ciu.deployed_stacks`, S3.12) so a stack can derive "is upstream X deployed" instead of hardcoding it. Admins tune TOML overrides (S3.3), not the maintainer's compose.
 4. **DooD / path correctness for free.** CIU computes physical bind paths so a stack runs identically in a devcontainer, native host, and CI (S1.9). A hand-written `./vol-data` mount silently breaks under docker-outside-of-docker.
 5. **Hostdir provisioning & ownership.** Pre-creates volume dirs with correct owner/mode, can seed initial content, and fixes ownership via a helper container even when the operator isn't root (S6.3/S6.5/S6.6) — no chown-init-container boilerplate. Fixed-UID images (postgres 999) just work.
 6. **Multi-stack / multi-host orchestration.** `ciu up` runs stacks in numeric phase order, gates on health (`starting` ≠ healthy, S7.7), and supports host profiles with `topology_overrides` for cross-host addressing (S7.4/S7.5a).
@@ -74,7 +74,7 @@ lacks (see [docs/CIU.md](docs/CIU.md)).
    any CIU invocation for `HH:MM:SS [INFO]`/`[WARN]`/`[ERROR]` output. Severity is coloured
    on an interactive terminal only; redirected logs stay plain text.
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
-9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection.
+9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
 
 ## When *not* to use `ciu`
 
@@ -179,7 +179,7 @@ evidence. The gate resolves the container slice ONLY from
 `$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback), verifies the named
 slice is `LoadState=loaded` before `docker run` (fail-closed), and its final
 status is the Assay job's own exit status. See [SPEC S18](docs/SPEC.md#s18--implementation-gate-assay-backed) and
-[CONSUMERS §10](docs/CONSUMERS.md#10-the-implementation-gate-assay-backed-s18).
+[CONSUMERS §10](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18).
 
 ### Release scheme
 

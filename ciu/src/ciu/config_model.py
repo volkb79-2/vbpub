@@ -316,7 +316,10 @@ def render_toml_template(
 
 
 def _make_render_context(
-    config: dict, *, environ: Mapping[str, str] | None = None
+    config: dict,
+    *,
+    environ: Mapping[str, str] | None = None,
+    ciu_context: Mapping[str, object] | None = None,
 ) -> dict:
     """Build the Jinja2 context: merged config + 'env' = the process environment.
 
@@ -325,8 +328,23 @@ def _make_render_context(
     be threaded to :func:`render_toml_template` so a candidate worktree's
     template never mixes its own ``ciu.env`` with the caller's ambient
     environment. ``None`` (the default) preserves the existing behaviour.
+
+    *ciu_context* (S3.12 / CIU-44): deployment-selection facts
+    (``selected_profiles``, ``deployed_stacks``) exposed to templates. They are
+    MERGED INTO the config's own ``[ciu]`` table (workspace switches such as
+    ``auto_connect_network`` already live there), never replacing it — the two
+    fact keys are reserved for CIU. When *ciu_context* is ``None`` the config's
+    ``ciu`` table passes through untouched; outside deployment renders the two
+    reserved keys are simply absent, so a template referencing them fails
+    loudly (Jinja UndefinedError) rather than silently seeing an empty
+    selection.
     """
-    return {**config, "env": dict(os.environ if environ is None else environ)}
+    context = {**config, "env": dict(os.environ if environ is None else environ)}
+    if ciu_context is not None:
+        merged_ciu = dict(context.get("ciu") or {})
+        merged_ciu.update(ciu_context)
+        context["ciu"] = merged_ciu
+    return context
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +414,7 @@ def render_global_chain(
     *,
     write_rendered: bool = True,
     environ: Mapping[str, str] | None = None,
+    ciu_context: Mapping[str, object] | None = None,
 ) -> dict:
     """Render and merge global config from *repo_root* down to *working_dir*.
 
@@ -450,7 +469,10 @@ def render_global_chain(
 
         if defaults_path.exists():
             defaults_config = render_toml_template(
-                defaults_path, _make_render_context(merged, environ=environ),
+                defaults_path,
+                _make_render_context(
+                    merged, environ=environ, ciu_context=ciu_context
+                ),
                 environ=environ,
             )
             merged = deep_merge(merged, defaults_config)
@@ -459,7 +481,10 @@ def render_global_chain(
             raw_override = overrides_path.read_text(encoding="utf-8")
             scan_override_for_secrets(raw_override, str(overrides_path))
             overrides_config = render_toml_template(
-                overrides_path, _make_render_context(merged, environ=environ),
+                overrides_path,
+                _make_render_context(
+                    merged, environ=environ, ciu_context=ciu_context
+                ),
                 environ=environ,
             )
             merged = deep_merge(merged, overrides_config)
@@ -535,6 +560,7 @@ def render_stack(
     working_dir: Path,
     global_config: dict,
     preserve_state: bool = True,
+    ciu_context: Mapping[str, object] | None = None,
 ) -> dict:
     """Render stack templates into ciu.toml and return the merged stack config.
 
@@ -569,7 +595,7 @@ def render_stack(
         )
 
     defaults_config = render_toml_template(
-        defaults_path, _make_render_context(global_config)
+        defaults_path, _make_render_context(global_config, ciu_context=ciu_context)
     )
     merged_stack: dict = defaults_config
 
@@ -579,7 +605,7 @@ def render_stack(
         raw_override = overrides_path.read_text(encoding="utf-8")
         scan_override_for_secrets(raw_override, str(overrides_path))
         overrides_context = _make_render_context(
-            deep_merge(global_config, defaults_config)
+            deep_merge(global_config, defaults_config), ciu_context=ciu_context
         )
         overrides_config = render_toml_template(overrides_path, overrides_context)
         merged_stack = deep_merge(merged_stack, overrides_config)

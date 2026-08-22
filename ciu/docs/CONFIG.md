@@ -95,9 +95,43 @@ stack defaults → stack overrides. Deep merge is
 key-level; scalars and lists **replace** (no list concatenation).
 
 **Render pipeline** per template [S3.2]:
-1. Jinja2 render (context = config so far + `env` = process environment)
+1. Jinja2 render (context = config so far + `env` = process environment + `ciu` selection facts when this is a deployment render [S3.12])
 2. `$VAR` / `${VAR}` expansion (missing or empty → abort naming the variable)
 3. TOML parse (syntax error → abort with file and position)
+
+**Template context: `ciu.*` — deployment-selection facts [S3.12, CIU-44]**
+
+Every deployment render (`ciu up`, `ciu dev`, `--render-toml`,
+preflight/check/graph, and the re-renders inside `ciu clean`) exposes two
+read-only variables to all templates. They MERGE into the config's own
+`[ciu]` table — your existing `[ciu]` workspace switches stay visible; only
+the two keys below are reserved:
+
+| Variable | Type | Meaning |
+|---|---|---|
+| `ciu.selected_profiles` | list of str | Ordered named profiles resolved for THIS invocation; empty = the default all-phases profile |
+| `ciu.deployed_stacks` | list of str | The FULL stack set this invocation deploys (declaration order) — not just the stack being rendered |
+
+```jinja
+# in any stack's ciu.defaults.toml.j2 — derive a feature flag from the
+# selected set instead of hardcoding it:
+[<root>.<service>.features]
+enable_pwmcp_mcp = {{ 'infra/pwmcp' in ciu.deployed_stacks }}
+
+# a reference to an undeployed upstream gates loudly: outside a deployment
+# render the membership test itself raises (UndefinedError); inside one the
+# branch simply stays off until upstream is selected
+{% if 'infra/vault' in ciu.deployed_stacks %}
+[<root>.<service>.upstream]
+host = "{{ vault.internal_host }}"
+{% endif %}
+```
+
+Outside deployment renders the `ciu` key is absent, so a stray `ciu.*`
+reference fails immediately (Jinja UndefinedError) — never silently empty.
+Hooks receive the same facts as `ctx.selected_profiles` /
+`ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3). Nothing
+is written to `ciu.env` and nothing is exported to the compose env.
 
 ---
 

@@ -226,12 +226,20 @@ def redact_config(config: dict, specs: Iterable[SecretSpec]) -> dict:
 # render_compose (S4.21)
 # ---------------------------------------------------------------------------
 
-def render_compose(template_path: Path | str, guarded_config: dict) -> str:
+def render_compose(
+    template_path: Path | str,
+    guarded_config: dict,
+    ciu_context: dict | None = None,
+) -> str:
     """Render the compose template with the *guarded* config.
 
     S4.21 — context is ``{**guarded_config, 'env': dict(os.environ)}``. A
     template that materializes a guard (``{{ app.secrets.pw }}``) raises
     :class:`SecretLeakError` via the guard's ``__str__``.
+
+    *ciu_context* (S3.12 / CIU-44): when given, the deployment-selection facts
+    are exposed to the template as ``ciu``; omitted otherwise, so ``ciu.*``
+    references outside a deployment render fail loudly.
 
     Jinja2 ``TemplateError``s surface wrapped with the source filename for
     diagnostics; ``SecretLeakError`` propagates unchanged.
@@ -241,6 +249,13 @@ def render_compose(template_path: Path | str, guarded_config: dict) -> str:
     template_path = Path(template_path)
     raw = template_path.read_text(encoding="utf-8")
     context = {**guarded_config, "env": dict(os.environ)}
+    if ciu_context is not None:
+        # S3.12: MERGE into the config's own [ciu] table (never replace it —
+        # workspace switches like auto_connect_network live there); the two
+        # fact keys are reserved for CIU.
+        merged_ciu = dict(context.get("ciu") or {})
+        merged_ciu.update(ciu_context)
+        context["ciu"] = merged_ciu
     try:
         return render_jinja2_text(raw, context)
     except SecretLeakError:
@@ -508,6 +523,7 @@ def render_configfiles(
     root_key: str,
     config: dict,
     secret_value_fn,
+    ciu_context: dict | None = None,
 ) -> list[ConfigFileMount]:
     """Discover and render ``configfile`` sections under each service (S5).
 
@@ -672,6 +688,10 @@ def render_configfiles(
                     "instance_index": idx,
                     "instance_id": instance_id,
                 }
+                if ciu_context is not None:
+                    merged_ciu = dict(context.get("ciu") or {})
+                    merged_ciu.update(ciu_context)
+                    context["ciu"] = merged_ciu
                 rendered_text = render_jinja2_text(raw, context)
 
                 # For multi-instance: use <service>-<idx> and <cfgname>-<idx>

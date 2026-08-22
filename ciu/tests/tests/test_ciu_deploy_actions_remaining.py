@@ -104,8 +104,8 @@ def test_clean_restores_callers_compose_profiles_after_stack_reset_failure(monke
     seen_profiles: list[str | None] = []
 
     monkeypatch.setattr(deploy, "_matching_containers", lambda *_args, **_kw: [])
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {"applications/api": {}})
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *_args: [])
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {"applications/api": {}})
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *_args, **_kw: [])
 
     def fake_reset(*_args, **_kwargs):
         seen_profiles.append(os.environ.get("COMPOSE_PROFILES"))
@@ -132,9 +132,9 @@ def test_clean_stops_at_first_reset_failure_without_ignore_errors(monkeypatch, t
     monkeypatch.setattr(
         deploy,
         "render_selected_stacks",
-        lambda *_args: {"applications/first": {}, "applications/later": {}},
+        lambda *_args, **_kw: {"applications/first": {}, "applications/later": {}},
     )
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *_args: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *_args, **_kw: [])
 
     def fake_reset(_config, stack_dir, **_kwargs):
         reset_paths.append(stack_dir)

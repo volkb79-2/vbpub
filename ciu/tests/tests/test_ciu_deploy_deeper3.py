@@ -52,7 +52,7 @@ def test_public_dry_run_keeps_static_preflights_but_skips_live_host_effects(monk
     rendered = {"applications/api": {"api": {}}}
     trace: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: trace.append(("render", None)) or rendered)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: trace.append(("render", None)) or rendered)
     monkeypatch.setattr(deploy, "vault_preflight", lambda *_args: trace.append(("vault", None)))
 
     def provisioning(*_args, **kwargs):
