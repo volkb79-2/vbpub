@@ -596,6 +596,32 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      named volumes remain. A surviving volume is an **error**, not a warning
      (it almost always means a container still references it); `clean` exits
      non-zero and names the survivors and the likely cause.
+
+  **Identity-scoped network removal (S6.4a, CIU-43, normative).** `clean`
+  also removes the workspace identity network and each selected stack's
+  compose ``<project>_default`` network; v1's "network removal is NOT
+  performed" posture is withdrawn — it leaked one identity-scoped network per
+  teardown while printing `clean complete` (two live dstdns reproductions,
+  P111 F4 / P116 O9). Semantics:
+  1. The workspace identity network name is read from THIS workspace's own
+     `ciu.env` by exact path (S2.7 authority), never from ambient state.
+  2. Lingering endpoints are disconnected before removal; an endpoint that
+     cannot be disconnected is NAMED and fails the clean — a network is never
+     silently kept.
+  3. **Instance-vs-main split:** a checkout carrying an S16 worktree-instance
+     lifecycle record is ephemeral — ALL of its identity-scoped networks are
+     removed unconditionally. The MAIN workspace deliberately keeps its own
+     workspace network (the devcontainer stays attached to it), but the keep
+     is named in the output and in the final success line; stack
+     ``*_default`` networks are removed for both classes.
+  4. The S6.4 post-clean invariant extends to networks: every targeted
+     network must be gone (Docker STATE re-inspection decides, never command
+     diagnostic text); any survivor that was not a declared keep exits
+     non-zero.
+  5. The project volume pass gains a compose-label enumeration per selected
+     stack's S8.7 compose project, catching named volumes that carry the bare
+     project prefix without the instance tag (e.g. ``<project>-vault-data``);
+     the label filter is exact per project, never a broad glob.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container

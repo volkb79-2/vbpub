@@ -36,7 +36,7 @@ def test_clean_warns_on_failed_container_remove_skips_missing_stack_and_degrades
         lambda cmd, **_kwargs: (docker_calls.append(cmd) or SimpleNamespace(returncode=1, stderr="busy")),
     )
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args: {})
-    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config=None, **_kw: [])
     monkeypatch.setattr(
         deploy.engine,
         "reset_service",

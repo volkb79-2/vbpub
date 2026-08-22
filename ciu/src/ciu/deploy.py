@@ -40,6 +40,7 @@ env_overrides flow into the env dict handed to stacks), no ``eval``.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -52,6 +53,7 @@ from . import engine
 from . import governance as governance_mod
 from . import procutil
 from . import warn_policy
+from . import worktree as worktree_pkg
 from .cli_utils import get_cli_version
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
@@ -75,6 +77,7 @@ from .workspace_env import (
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
+    parse_workspace_env,
     resolve_env_root,
 )
 
@@ -1661,6 +1664,125 @@ def action_stop(config: dict) -> int:
     return 0
 
 
+def _workspace_identity_network(repo_root: Path) -> str:
+    """Read ``DOCKER_NETWORK_INTERNAL`` from THIS workspace's own ciu.env.
+
+    The generated record (S2.7) is the authority for the workspace's network
+    name — never the ambient process environment, which a shell that sourced
+    a different checkout's ciu.env may carry (CIU-41). Empty when no
+    ciu.env/record exists or it names no network.
+    """
+    env_path = repo_root / "ciu.env"
+    if not env_path.is_file():
+        return ""
+    try:
+        values = parse_workspace_env(env_path)
+    except WorkspaceEnvError:
+        return ""
+    return values.get("DOCKER_NETWORK_INTERNAL", "")
+
+
+def _is_worktree_instance(repo_root: Path) -> bool:
+    """True when THIS checkout carries an S16 worktree-instance lifecycle record.
+
+    The record is the instance/main discriminator for cleanup semantics
+    (S6.4a): an instance is ephemeral and must tear down completely; the main
+    workspace may deliberately keep its own network (devcontainer residence)
+    but must then SAY so.
+    """
+    return (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file()
+
+
+def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]) -> list[str]:
+    """Compose project names (S8.7) of the selected stacks that exist on disk.
+
+    Covers shipped stacks too: their compose runs create ``*_default``
+    networks and label their volumes with the same project name.
+    """
+    projects: list[str] = []
+    deploy_cfg = config.get("deploy", {})
+    if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        return projects
+    seen: set[str] = set()
+    for entry in selection:
+        stack_dir = (repo_root / entry["path"]).resolve()
+        if not stack_dir.is_dir():
+            continue
+        project = engine.compose_project_name(config, stack_dir)
+        if project not in seen:
+            seen.add(project)
+            projects.append(project)
+    return projects
+
+
+def _network_endpoints(network: str) -> Optional[list[dict]]:
+    """Endpoint containers attached to *network*; None when it does not exist.
+
+    A failed inspect must NOT read as "no endpoints" (absence-for-emptiness):
+    the None return lets callers distinguish a gone network from an
+    unresolvable one.
+    """
+    inspect = procutil.docker(["network", "inspect", network], capture=True, check=False)
+    if inspect.returncode != 0:
+        return None
+    try:
+        data = json.loads(inspect.stdout)
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"[S6.4a] docker network inspect {network!r} returned unparsable output; "
+            "cannot determine attached endpoints"
+        )
+    if not isinstance(data, list) or not data:
+        return []
+    containers = data[0].get("Containers") or {}
+    endpoints = []
+    for container_id, info in containers.items():
+        endpoints.append({"id": container_id, "name": info.get("Name", container_id)})
+    return endpoints
+
+
+def _remove_identity_networks(
+    networks: list[str],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Disconnect lingering endpoints then remove each named network.
+
+    Returns ``(removed, blocked)`` where *blocked* pairs each surviving
+    network with the reason (a disconnect failure names the endpoint).
+    Networks already absent are silently fine. Removal never silently keeps:
+    anything not removed comes back as *blocked* and fails clean (S6.4a).
+    """
+    removed: list[str] = []
+    blocked: list[tuple[str, str]] = []
+    for network in networks:
+        try:
+            endpoints = _network_endpoints(network)
+        except ValueError as exc:
+            blocked.append((network, str(exc)))
+            continue
+        if endpoints is None:
+            continue  # already gone
+        failed_disconnect = False
+        for endpoint in endpoints:
+            name = endpoint["name"]
+            res = procutil.docker(["network", "disconnect", network, name], check=False)
+            if res.returncode != 0:
+                warn(f"docker network disconnect failed for {name!r}: {res.stderr}")
+                blocked.append((network, f"endpoint {name!r} could not be disconnected"))
+                failed_disconnect = True
+        if failed_disconnect:
+            continue
+        rm = procutil.docker(["network", "rm", network], check=False)
+        # Re-inspect from Docker STATE: a zero exit can race a concurrent
+        # connect, and a non-zero exit may still mean "gone" — the next
+        # inspect decides, never the command's diagnostic text.
+        if _network_endpoints(network) is not None:
+            detail = (rm.stderr or "").strip().splitlines()[-1] if (rm.stderr or "").strip() else "removal refused"
+            blocked.append((network, detail))
+            continue
+        removed.append(network)
+    return removed, blocked
+
+
 def action_clean(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -1668,16 +1790,29 @@ def action_clean(
     *,
     ignore_errors: bool,
 ) -> int:
-    """--clean: stop+remove containers, remove project-prefixed volumes, reset stacks.
+    """--clean: stop+remove containers, remove project volumes + networks, reset.
 
     Lean reimplementation of v1 cleanup (S6.4 semantics, COMPOSE_PROFILES='*'
     for down-with-profiles instead of v1's hardcoded 'full,pgadmin'):
       1. stop + remove project containers (anchored, S7.8);
       2. per-stack engine.reset_service (down -v via overlay + vol-*/rendered
          cleanup, B14 stack-dir scoped);
-      3. remove project-prefixed named volumes in a single ls pass + one rm batch.
-    Network removal is NOT performed (v1 had no explicit --clean-networks; the
-    network is left in place).
+      3. remove project volumes — the ``{project}-{env}-*`` name pass (S6.4)
+         plus a compose-label pass per selected stack's compose project
+         (CIU-43: catches named volumes like ``<project>-vault-data`` that
+         carry the bare project prefix, second reproduction on 6.3.0);
+      4. remove identity-scoped networks (S6.4a, CIU-43): the workspace
+         identity network (from THIS workspace's own ciu.env) and each
+         selected stack's ``<compose-project>_default``. Lingering endpoints
+         are disconnected first; an endpoint that cannot be disconnected is
+         named and fails the clean — never silently kept.
+         Instance-vs-main split: an S16 worktree instance (lifecycle record
+         present) removes ALL of its identity-scoped networks unconditionally;
+         the MAIN workspace deliberately keeps its own workspace network (the
+         devcontainer stays attached to it) but names the keep in its output.
+    The post-clean invariant covers containers, volumes AND networks: any
+    survivor that was not a declared keep makes clean exit 1, so a false
+    "clean complete" over surviving identity-scoped objects is impossible.
     """
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
@@ -1729,15 +1864,47 @@ def action_clean(
         else:
             os.environ["COMPOSE_PROFILES"] = saved_profiles
 
-    # Step 3: remove project-prefixed named volumes (single ls + one rm batch).
-    survivors = _remove_project_volumes(config)
+    # Step 3: remove project volumes — the {project}-{env}-* name pass (S6.4)
+    # plus the compose-label pass per selected stack's project (CIU-43: named
+    # volumes like <project>-vault-data carry the bare project prefix and no
+    # instance tag, so the name pass never saw them).
+    stack_projects = _stack_compose_projects(repo_root, config, selection)
+    survivors = _remove_project_volumes(config, stack_projects=stack_projects)
 
-    # Step 4: enforce the S6.4 post-clean invariant — zero project containers AND
-    # zero project volumes remain. A surviving volume is an ERROR (not a warning):
-    # it almost always means a container still references it, exactly the failure
-    # that silently left stale Vault/Postgres state behind before (CIU-3).
-    # Degrade gracefully if docker became unavailable mid-clean so the action
-    # still returns its own typed result instead of escaping as an exception.
+    # Step 4 (S6.4a / CIU-43): remove identity-scoped networks. The workspace
+    # identity network comes from THIS workspace's own ciu.env; the per-stack
+    # ``<compose-project>_default`` networks come from the S8.7 project names.
+    is_instance = _is_worktree_instance(repo_root)
+    identity_network = _workspace_identity_network(repo_root)
+    keep_networks: dict[str, str] = {}
+    if identity_network and not is_instance:
+        keep_networks[identity_network] = (
+            "workspace network of the main workspace (devcontainer residence)"
+        )
+    target_networks: list[str] = []
+    if identity_network and identity_network not in keep_networks:
+        target_networks.append(identity_network)
+    for project in stack_projects:
+        default_net = f"{project}_default"
+        if default_net not in target_networks:
+            target_networks.append(default_net)
+    removed_nets, blocked_nets = _remove_identity_networks(target_networks)
+    if removed_nets:
+        info(f"Removed {len(removed_nets)} network(s): {', '.join(removed_nets)}")
+    for net, reason in keep_networks.items():
+        try:
+            if _network_endpoints(net) is not None:
+                info(f"kept: {net} ({reason})")
+        except ValueError:
+            warn(f"kept-network check skipped for {net!r} (docker inspect unparsable)")
+
+    # Step 5: enforce the post-clean invariant — zero project containers, zero
+    # project volumes, and zero UNKEPT identity-scoped networks remain. A
+    # survivor is an ERROR (not a warning): it almost always means a container
+    # still references it or an endpoint refused to disconnect, exactly the
+    # silent-stale-state failures CIU-3 and CIU-43 closed. Degrade gracefully
+    # if docker became unavailable mid-clean so the action still returns its
+    # own typed result instead of escaping as an exception.
     try:
         remaining_containers = _matching_containers(config, all_states=True)
     except ValueError as exc:
@@ -1757,8 +1924,28 @@ def action_clean(
         )
         rc = 1
 
+    # Network invariant from Docker STATE (never from command diagnostics):
+    # every targeted network must be gone; a kept one must still exist only if
+    # it was declared as a deliberate main-workspace keep.
+    for net in target_networks + list(keep_networks):
+        try:
+            still_there = _network_endpoints(net) is not None
+        except ValueError as exc:
+            warn(f"post-clean network check skipped ({exc})")
+            continue
+        if net in keep_networks:
+            continue
+        if still_there:
+            reason = next((r for n, r in blocked_nets if n == net), "survived removal")
+            error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
+            rc = 1
+
     if rc == 0:
-        success("clean complete")
+        if keep_networks:
+            kept = ", ".join(sorted(keep_networks))
+            success(f"clean complete (kept: {kept})")
+        else:
+            success("clean complete")
     else:
         error("clean completed with errors")
     return rc
@@ -1786,15 +1973,48 @@ def _list_project_volumes(config: dict) -> list[str]:
     ]
 
 
-def _remove_project_volumes(config: dict) -> list[str]:
-    """Remove docker volumes named ``{project}-{env}-*`` (single ls + rm batch).
+def _list_stack_project_volumes(stack_projects: list[str]) -> list[str]:
+    """Volumes compose created for the given S8.7 projects (label filter).
+
+    CIU-43: a stack's named volumes (e.g. ``<project>-vault-data``) carry the
+    bare project prefix without the instance tag, so the ``{project}-{env}-*``
+    name pass never matched them. Compose labels every volume it creates with
+    ``com.docker.compose.project``, which is an exact per-project enumeration —
+    no broad glob that could eat an unrelated project's volumes.
+    """
+    found: list[str] = []
+    for project in stack_projects:
+        result = procutil.docker(
+            [
+                "volume", "ls",
+                "--filter", f"label=com.docker.compose.project={project}",
+                "--format", "{{.Name}}",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            continue
+        found.extend(v.strip() for v in (result.stdout or "").splitlines() if v.strip())
+    return sorted(set(found))
+
+
+def _remove_project_volumes(
+    config: dict, *, stack_projects: Optional[list[str]] = None
+) -> list[str]:
+    """Remove project volumes (name pass + optional compose-label pass).
 
     Returns the list of volumes that **survived** removal (empty = fully clean).
     ``docker volume rm`` only warns on failure here; the caller re-checks and
     treats survivors as a hard error so a "volume is in use" no longer passes
     silently and leaves stale state behind (CIU-3, S6.4 post-clean invariant).
+    *stack_projects* (CIU-43) adds the per-stack compose-label enumeration that
+    catches bare-project-prefix named volumes; ``None`` preserves the old
+    name-pass-only behavior for callers without selection context.
     """
     vols = _list_project_volumes(config)
+    if stack_projects:
+        labeled = _list_stack_project_volumes(stack_projects)
+        vols = sorted(set(vols) | set(labeled))
     if not vols:
         return []
     info(f"Removing {len(vols)} project volume(s): {', '.join(vols)}")
@@ -1803,7 +2023,11 @@ def _remove_project_volumes(config: dict) -> list[str]:
         warn(f"docker volume rm reported errors: {rm.stderr}")
     # Re-list: rm may have partially failed (a volume pinned by a surviving
     # container). Survivors are reported as an error by action_clean.
-    return _list_project_volumes(config)
+    remaining = _list_project_volumes(config)
+    if stack_projects:
+        remaining_labeled = _list_stack_project_volumes(stack_projects)
+        remaining = sorted(set(remaining) | set(remaining_labeled))
+    return remaining
 
 
 def action_build(repo_root: Path, selection: list[dict], *, use_cache: bool) -> int:

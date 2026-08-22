@@ -29,6 +29,17 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Fixed
+- fix(ciu): `ciu clean` now removes identity-scoped networks — the workspace network
+  (read from this workspace's own ciu.env) and each selected stack's compose
+  `<project>_default` — instead of printing `clean complete` over survivors. Lingering
+  endpoints are disconnected first; one that cannot be disconnected is named and fails
+  the clean. Instance-vs-main split: an S16 worktree instance tears down all of its
+  networks unconditionally; the main workspace keeps its own workspace network (devcontainer
+  residence) but names the keep in its output and final success line. The post-clean
+  invariant now covers networks (decided from Docker state, never command text), and the
+  volume pass gained an exact per-project compose-label enumeration that catches
+  bare-project-prefix named volumes (`<project>-vault-data`), the second live reproduction
+  on 6.3.0 (CIU-43, dstdns P111 F4 + P116 O9, SPEC S6.4a)
 - fix(ciu): `ciu env generate` no longer inherits an ambient `DOCKER_NETWORK_INTERNAL`
   (or `REPO_NAME`/`INSTANCE_ID`): the S2.7 refined-precedence pattern extends to the
   whole derived identity tuple — an ambient value wins only when consistent with the
