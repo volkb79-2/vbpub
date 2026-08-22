@@ -541,8 +541,7 @@ instead of at materialization with only the bare path:
 phases = ["phase_3"]
 
 [controller.secrets]
-bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token",
-                    produced_by = "identity" }
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
 ```
 
 ```console

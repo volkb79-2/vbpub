@@ -56,6 +56,23 @@ CLOSED_PUBLIC_VALUES = {
     "stack",
     "service",
     "workdir",
+    # provenance closed vocabularies (S17.3/S17.5, CIU-39)
+    "vendor-pinned",
+    "vendor_images",
+    "match",
+    "mismatch",
+    "unlabelled",
+    # branch-hygiene categories + document statuses (S16.8, CIU-25)
+    "prunable",
+    "merged-dirty",
+    "mainline",
+    "unmerged",
+    "current",
+    "branches-prune",
+    "survey",
+    "partial",
+    # cross-profile producer declaration (S13.6, CIU-42)
+    "produced_by",
     # lifecycle states
     "allocating",
     "ready",
@@ -91,6 +108,19 @@ def _toml_blocks(path: Path) -> list[str]:
 def test_every_toml_example_parses_with_the_shipped_loader():
     for doc in DOCS:
         for block in _toml_blocks(doc):
+            config_model.parse_toml_string(block, str(doc))
+
+
+@pytest.mark.parametrize(
+    "doc", sorted((Path(__file__).resolve().parents[2] / "ciu" / "docs").glob("*.md"))
+)
+def test_wave_config_examples_parse_wherever_they_appear(doc):
+    """A-270 corollary added by the CIU-42/39 review: a config example that a
+    consumer must TYPE parses with the shipped loader WHEREVER it appears —
+    including SPEC/CONFIG, whose other toml fences may legitimately be
+    template placeholders."""
+    for block in _toml_blocks(doc):
+        if "produced_by" in block or "vendor_images" in block:
             config_model.parse_toml_string(block, str(doc))
 
 

@@ -124,6 +124,51 @@ ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
 ```
 
 
+## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
+
+When ONE profile's provisioning writes the Vault path another stack reads,
+declare it beside the directive so a partial selection refuses UPFRONT
+naming the producer instead of failing at materialization with only the
+bare path:
+
+```toml
+[controller.secrets]
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
+```
+
+```console
+$ CIU_SERVICES_PROFILE=core,db ciu up
+[ERROR] Provisioning producers missing from the selection (S13.6):
+  stack 'applications/controller': ASK_VAULT secret 'bootstrap_token' reads Vault path 'authentik/bootstrap_token', which is provisioned by profile 'identity' — none of its stacks are in your selection (core,db). Deploy the producer profile or its stacks, or seed the path out-of-band before deploying.
+```
+
+Producer presence is judged by DEPLOYED STACKS (the producer profile's
+`stacks` list plus its phases' services), not the label — an alias profile
+deploying the same stacks satisfies it. The value must name a profile in
+`[deploy.profiles]`; a typo is a configuration error even when nothing else
+would check it.
+
+## 5d. Tell provenance which images are vendor artifacts (`[deploy.provenance]`, S17.5)
+
+Vendor images (vault, authentik, consul…) carry no ciu bake, so
+`ciu provenance` could never reach `verified-match` on deployments built
+from them. Declare the exact references you expect to be third-party:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+]
+```
+
+A running container whose image equals a declared entry (compared on
+Docker-canonical spellings) reports status `match`→commit or
+`vendor-pinned`; the same image name at another reference is drift →
+`mismatch`; anything undeclared and unlabelled stays `unlabelled`, visible
+in every document. Provenance documents are emitted at `schema_version: 2`
+— strict consumers refuse unknown members rather than guess.
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console

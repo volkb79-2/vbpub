@@ -1221,8 +1221,7 @@ path:
 
 ```toml
 [controller.secrets]
-bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token",
-                    produced_by = "identity" }
+bootstrap_token = { directive = "ASK_VAULT:authentik/bootstrap_token", produced_by = "identity" }
 ```
 
 The declaration turns an opaque late failure into an upfront refusal. Without

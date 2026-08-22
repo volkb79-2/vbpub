@@ -1775,7 +1775,7 @@ def run_shipped(
                 shared_infra_intent = worktree.parse_shared_infra_config(global_config)
                 if shared_infra_intent is not None:
                     # CIU-46: shipped_project is ALWAYS a known name now (the
-                    # S8.7 scoped project, or the computed legacy fallback) —
+                    # S8.7 scoped project, or the workspace-identity project) —
                     # the former "cannot derive the project to scope the join"
                     # refusal is unreachable and withdrawn. The join's label
                     # filters scope to exactly what up named, legacy case
