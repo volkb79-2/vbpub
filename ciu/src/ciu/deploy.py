@@ -645,12 +645,20 @@ def registry_preflight(config: dict) -> None:
 
 @dataclass(frozen=True)
 class ContainerProvenance:
-    """One running container's provenance verdict (S17.3, CIU-20)."""
+    """One running container's provenance verdict (S17.3, CIU-20).
+
+    ``status`` closed vocabulary (schema 2, CIU-39): ``match`` (baked
+    revision equals the commit under test), ``mismatch`` (differs — including
+    a DECLARED vendor image running at a different reference, i.e. vendor
+    drift), ``unlabelled`` (no revision label and not declared), or
+    ``vendor-pinned`` (the running image reference equals a declared
+    ``[deploy.provenance] vendor_images`` entry).
+    """
 
     name: str
     image: str
     labelled_revision: Optional[str]  # None (JSON null) when unknown, never ""
-    status: str  # "match" | "mismatch" | "unlabelled"
+    status: str  # "match" | "mismatch" | "unlabelled" | "vendor-pinned"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -691,7 +699,24 @@ class ProvenanceResult:
         }
 
 
-def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
+def _image_reference_name(ref: str) -> str:
+    """The NAME portion of an image reference (no tag, no digest).
+
+    ``hashicorp/vault:1.15`` → ``hashicorp/vault``; ``vault@sha256:...`` →
+    ``vault``. Registry ports (``localhost:5000/img:tag``) are handled by
+    splitting off the tag only when the colon sits in the LAST path segment.
+    """
+    without_digest = ref.split("@", 1)[0]
+    last = without_digest.rsplit("/", 1)[-1]
+    if ":" in last:
+        tag_len = len(last.rsplit(":", 1)[1])
+        return without_digest[: len(without_digest) - tag_len - 1]
+    return without_digest
+
+
+def verify_running_provenance(
+    project_prefix: str, *, vendor_images: Optional[list[str]] = None
+) -> ProvenanceResult:
     """S17.2/S17.3 — build the machine-readable provenance verdict (CIU-20).
 
     **This is a TEST-time check, not a deploy-time one, and the distinction is
@@ -720,6 +745,21 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
     same verdict serves both the human CLI and ``--json`` machine consumers
     without ever mixing prose onto the JSON stream.
 
+    *vendor_images* (CIU-39) is the consumer's declared vendor baseline: the
+    exact image references expected to be third-party artifacts (e.g.
+    ``hashicorp/vault:1.15``). A running container whose image EQUALS a
+    declared entry is ``vendor-pinned`` — expected to be unlabelled, judged
+    by reference equality, never by this repo's commit. A container whose
+    image NAME matches a declared entry at any OTHER reference is vendor
+    drift → ``mismatch`` (the declaration vouches for one artifact; a
+    different one is running). Undeclared unlabelled images stay
+    ``unlabelled``. This makes ``verified-match`` reachable for deployments
+    whose containers are all pinned vendor artifacts (previously pinned at
+    ``not-verified-no-evidence`` forever) — and it cannot mask a forgotten
+    bake: an unlabelled image nobody declared stays ``unlabelled``, so only
+    an operator falsely declaring their own image as vendor escapes, which is
+    auditable config.
+
     ``overall`` is one of six closed values, decided in order: an unresolved
     identity is handled entirely by the CLI before this function is even
     called (``refused-no-identity`` never originates here); a non-checkout
@@ -727,40 +767,60 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
     tree is ``not-verified-dirty``; enumeration that could not run at all
     (no docker, or ``docker ps`` failed) is ``not-verified-no-evidence`` with
     ``containers: null``; a successful enumeration with at least one
-    ``mismatch`` is ``mismatch``; one with at least one ``match`` and no
-    ``mismatch`` is ``verified-match`` — a green verdict is NEVER emitted from
-    zero checked containers; anything else (empty, or all ``unlabelled``) is
-    ``not-verified-no-evidence`` with the (possibly empty) container list.
+    ``mismatch`` (commit drift OR vendor drift) is ``mismatch``; one with at
+    least one ``match`` or ``vendor-pinned`` and no ``mismatch`` is
+    ``verified-match`` — every checked container agrees with an expectation,
+    the commit under test or a declared vendor reference; anything else
+    (empty, or all undeclared-unlabelled) is ``not-verified-no-evidence``
+    with the (possibly empty) container list.
+
+    Documents are emitted at schema_version 2 (CIU-39 widened the closed
+    vocabularies; strict consumers refuse unknown members, fail-closed).
     """
     commit = engine.get_git_hash()
 
     if commit == "dev":
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="not-a-checkout", containers=None,
             overall="not-verified-unknown",
         )
 
     if commit.endswith("-dirty"):
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="dirty", containers=None, overall="not-verified-dirty",
         )
 
     raw = _running_containers(project_prefix)
     if raw is None:
         return ProvenanceResult(
-            schema_version=1, instance=project_prefix, commit_under_test=commit,
+            schema_version=2, instance=project_prefix, commit_under_test=commit,
             tree_state="clean", containers=None,
             overall="not-verified-no-evidence",
         )
 
+    declared = set(vendor_images or [])
+    declared_by_name = {_image_reference_name(v): v for v in declared}
     containers: list[ContainerProvenance] = []
     has_match = False
     has_mismatch = False
+    has_vendor_pinned = False
     for name, image in raw:
         actual = _image_revision_label(image) or None
-        if actual is None:
+        # A DECLARED vendor image is judged by REFERENCE EQUALITY ONLY: its
+        # OCI revision label belongs to the upstream build, so comparing it
+        # against OUR commit would flag every correctly-pinned vendor artifact
+        # as mismatch. The label (if any) is still reported verbatim. Same
+        # image NAME at a different reference = the declaration's artifact was
+        # swapped → drift, a mismatch.
+        if image in declared:
+            status = "vendor-pinned"
+            has_vendor_pinned = True
+        elif _image_reference_name(image) in declared_by_name:
+            status = "mismatch"
+            has_mismatch = True
+        elif actual is None:
             status = "unlabelled"
         elif actual == commit:
             status = "match"
@@ -773,13 +833,13 @@ def verify_running_provenance(project_prefix: str) -> ProvenanceResult:
 
     if has_mismatch:
         overall = "mismatch"
-    elif has_match:
+    elif has_match or has_vendor_pinned:
         overall = "verified-match"
     else:
         overall = "not-verified-no-evidence"
 
     return ProvenanceResult(
-        schema_version=1, instance=project_prefix, commit_under_test=commit,
+        schema_version=2, instance=project_prefix, commit_under_test=commit,
         tree_state="clean", containers=containers, overall=overall,
     )
 

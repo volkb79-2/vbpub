@@ -2769,7 +2769,11 @@ Scope is self-selecting, and the non-refusals are as normative as the refusal:
   list of "ours".
 - An **unlabelled** image is skipped silently: it is external or pre-S17, and
   absence is not evidence of mismatch. (`docker --format` renders a missing key
-  as the literal `<no value>`; that is treated as absent.)
+  as the literal `<no value>`; that is treated as absent.) CIU-39 adds one
+  refinement: a consumer MAY declare vendor images (`[deploy.provenance]
+  vendor_images`, S17.5) — a running reference EQUAL to a declaration is
+  `vendor-pinned`, making `verified-match` reachable for all-vendor
+  deployments instead of permanently `not-verified-no-evidence`.
 - An **absent** image is not a mismatch — that is compose's failure to report.
 - A **dirty** working tree WARNS and does not refuse. Uncommitted changes are in
   no artifact anywhere, so nothing can match; refusing would fire on every
@@ -2787,8 +2791,9 @@ same bypass meaning as CIU's sibling preflights.
 
 `deploy.verify_running_provenance` ALWAYS builds and returns a
 `ProvenanceResult` — never bare `None`, never raising internally. Its fields,
-in wire order: `schema_version` (constant `1`), `instance`,
-`commit_under_test`, `tree_state`, `containers`, `overall`.
+in wire order: `schema_version` (constant `2` as of CIU-39; the seven
+CIU-20-era documents were schema `1` and remain the historical record),
+`instance`, `commit_under_test`, `tree_state`, `containers`, `overall`.
 
 - `commit_under_test` is `get_git_hash()`'s return value VERBATIM (the
   `-dirty` suffix, if any, lives ONLY here).
@@ -2800,7 +2805,8 @@ in wire order: `schema_version` (constant `1`), `instance`,
   succeeded); JSON `null` in every case where no container-level verdict was
   formed (identity refused, dirty tree, non-checkout, or enumeration could
   not run). `labelled_revision` is JSON `null` when unknown, NEVER `""`.
-  `status` is one of `match` / `mismatch` / `unlabelled`.
+  `status` is one of `match` / `mismatch` / `unlabelled` / `vendor-pinned`
+  (CIU-39).
 - `overall` is one of SIX closed values, decided in this order: (1) identity
   (`project`/`env_tag`) unresolved → `refused-no-identity` (every other field
   null), emitted by `cli._provenance` BEFORE `verify_running_provenance` is
@@ -2810,11 +2816,52 @@ in wire order: `schema_version` (constant `1`), `instance`,
   null); (4) enumeration could NOT run (`docker ps` raised or returned
   non-zero) → `not-verified-no-evidence` (`containers` null); (5) enumeration
   ran, ≥1 container `mismatch` → `mismatch` (`containers` the sorted list);
-  (6) enumeration ran, ≥1 `match` and ZERO `mismatch` → `verified-match`
-  (`containers` the list) — a green verdict is NEVER emitted from zero checked
-  containers; (7) enumeration ran but produced NEITHER a match NOR a mismatch
-  (empty, or all `unlabelled`) → `not-verified-no-evidence` (`containers` the
-  possibly-empty list).
+  (6) enumeration ran, ≥1 `match` or `vendor-pinned` and ZERO `mismatch` →
+  `verified-match` (`containers` the list) — a green verdict is NEVER emitted
+  from zero checked containers; (7) enumeration ran but produced NEITHER a
+  match/vendor-pin NOR a mismatch (empty, or all undeclared-unlabelled) →
+  `not-verified-no-evidence` (`containers` the possibly-empty list).
+
+### S17.5 — Declared vendor baseline (`[deploy.provenance]`, CIU-39)
+
+An image ciu never built has no `org.opencontainers.image.revision` label, is
+`unlabelled`, and never contributes `match` — so a deployment whose
+containers are all vendor artifacts (dstdns runs vault, authentik, consul
+this way) could never leave `not-verified-no-evidence`, and `verified-match`
+was unreachable live. The contract:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+  "hashicorp/consul:1.18",
+]
+```
+
+- **Reference equality is the whole verdict for a declared image.** A running
+  container whose image EQUALS a declared entry is `vendor-pinned` — judged
+  by reference, NEVER by this repo's commit (an upstream revision label
+  belongs to the upstream build; the label, if any, is still reported
+  verbatim in the document). Digest pinning is deliberately NOT this
+  feature: it adds a pin-file maintenance surface no consumer has today; the
+  declaration says "this exact reference is expected to be third-party", and
+  says no more.
+- **Drift is a mismatch.** A container whose image NAME matches a declared
+  entry at any OTHER reference (`vault:1.15` declared, `vault:1.16` running)
+  is `mismatch` — the declaration vouches for one artifact; a different one
+  is running. Prose names the declaration ("not the declared vendor
+  reference"), never a commit comparison that cannot apply.
+- **The escape hatch is honest.** Undeclared unlabelled images stay
+  `unlabelled` and contribute nothing — declaring vendor images cannot mask
+  a forgotten bake of an OWN image; only falsely declaring one's own image
+  as vendor escapes, which is auditable config. Malformed `vendor_images`
+  (not a list of non-empty strings) refuses exit 2: a silently ignored
+  declaration would certify exactly the deployment it was written to vouch
+  for.
+- **Schema bump.** The widened closed vocabularies make every verdict
+  `schema_version: 2`. Strict consumers refuse unknown members (fail-closed);
+  the seven schema-1 fixtures remain frozen as the historical grammar record.
 
 The `null` (enumeration did not/could not run) vs `[]` (enumeration ran,
 found nothing informative) distinction is load-bearing: collapsing both to

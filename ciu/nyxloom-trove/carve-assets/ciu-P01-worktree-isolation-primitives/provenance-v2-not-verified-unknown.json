@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "instance": "dstdns-dev",
+  "commit_under_test": "dev",
+  "tree_state": "not-a-checkout",
+  "containers": null,
+  "overall": "not-verified-unknown"
+}

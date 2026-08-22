@@ -187,6 +187,7 @@ Subsections:
 | `[deploy.profiles.<name>]` | Host profiles: which phases/stacks run on this host | S7.4 |
 | `[deploy.profiles.<name>.topology_overrides]` | Deep-merged over `[topology.*]` while profile is active | S7.4 |
 | `[deploy.layouts.<name>]` | Named host→bundles plan + the deployment's environment | S7.5c |
+| `[deploy.provenance]` | Declared vendor image baseline for `ciu provenance` | S17.5 |
 
 Each `[[deploy.phases.phase_N.services]]` entry identifies a stack with `path`;
 its `name` is display text only. The orchestration health gate discovers exact
@@ -284,6 +285,31 @@ bundles = ["db", "worker-io"]
 ciu layouts          # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
 ciu up --layout prod-edge
 ```
+
+### `[deploy.provenance]` — declared vendor image baseline [S17.5]
+
+`ciu provenance` compares running images' `org.opencontainers.image.revision`
+labels against the commit under test — which vendor images (vault, authentik,
+consul…) can never match: they carry no ciu bake, so an all-vendor deployment
+was pinned at `not-verified-no-evidence` forever. Declare the exact
+references expected to be third-party artifacts:
+
+```toml
+[deploy.provenance]
+vendor_images = [
+  "hashicorp/vault:1.15",
+  "ghcr.io/goauthentik/server:2024.2.2",
+  "hashicorp/consul:1.18",
+]
+```
+
+A running container whose image EQUALS a declared entry is `vendor-pinned`
+(judged by reference, never by this repo's commit); the same image NAME at a
+different reference is vendor drift → `mismatch`; undeclared unlabelled
+images stay `unlabelled`. With zero mismatches and at least one
+match-or-pin, the verdict is `verified-match`. Provenance documents are
+emitted at `schema_version: 2` (CIU-39 widened the closed vocabularies);
+strict consumers refuse unknown members.
 
 ### `[vault]` — Vault location and path registry [S4.16, S4.9]
 

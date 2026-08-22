@@ -10,6 +10,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): declared vendor baseline for `ciu provenance` —
+  `[deploy.provenance] vendor_images`; a running reference equal to a
+  declaration is `vendor-pinned`, same-name/different-reference is vendor
+  drift (`mismatch`), and `verified-match` is reachable for all-vendor
+  deployments (CIU-39, SPEC S17.5). **Provenance documents are now emitted at
+  `schema_version: 2`** (widened closed vocabularies); strict consumers
+  refuse unknown members, fail-closed
 - feat(ciu): cross-profile ASK_VAULT producer declaration `produced_by` — a
   partial profile selection excluding the producing profile now refuses
   upfront naming producer + path + both remedies, instead of failing at the

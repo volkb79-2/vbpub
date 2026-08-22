@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "instance": "dstdns-dev",
+  "commit_under_test": "1b369e23-dirty",
+  "tree_state": "dirty",
+  "containers": null,
+  "overall": "not-verified-dirty"
+}

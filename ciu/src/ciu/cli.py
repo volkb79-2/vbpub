@@ -587,7 +587,7 @@ def _provenance(rest: list[str]) -> int:
         # here, BEFORE verify_running_provenance is ever called — there is no
         # project_prefix to scope a check with.
         result = ProvenanceResult(
-            schema_version=1, instance=None, commit_under_test=None,
+            schema_version=2, instance=None, commit_under_test=None,
             tree_state=None, containers=None, overall="refused-no-identity",
         )
         if opts.json_output:
@@ -598,7 +598,22 @@ def _provenance(rest: list[str]) -> int:
                   file=sys.stderr)
         return 2
 
-    result = verify_running_provenance(f"{project}-{env_tag}")
+    # CIU-39: the declared vendor baseline ([deploy.provenance] vendor_images).
+    # Malformed declarations refuse loudly — a silently ignored declaration
+    # would certify exactly the deployment it was written to vouch for.
+    raw_vendor = deploy_cfg.get("provenance", {}).get("vendor_images", [])
+    if not isinstance(raw_vendor, list) or any(
+        not isinstance(v, str) or not v.strip() for v in raw_vendor
+    ):
+        print(
+            "ciu provenance: [deploy.provenance] vendor_images must be a list "
+            "of non-empty image references (e.g. \"hashicorp/vault:1.15\").",
+            file=sys.stderr,
+        )
+        return 2
+    vendor_images = [v.strip() for v in raw_vendor]
+
+    result = verify_running_provenance(f"{project}-{env_tag}", vendor_images=vendor_images)
 
     if opts.json_output:
         print(_json.dumps(result.to_dict(), indent=2))
@@ -607,18 +622,31 @@ def _provenance(rest: list[str]) -> int:
         return 0
 
     if result.overall == "mismatch":
+        from .deploy import _image_reference_name
+
         mismatches = [c for c in (result.containers or []) if c.status == "mismatch"]
-        detail = "\n".join(
-            f"  {c.name} ({c.image}): running {c.labelled_revision}, "
-            f"testing {result.commit_under_test}"
-            for c in mismatches
-        )
+        declared_names = {_image_reference_name(v) for v in vendor_images}
+        detail_lines = []
+        for c in mismatches:
+            if _image_reference_name(c.image) in declared_names:
+                # Vendor drift: the declaration's artifact was swapped — the
+                # evidence is reference-vs-declaration, not commit-vs-label.
+                detail_lines.append(
+                    f"  {c.name} ({c.image}): not the declared vendor reference"
+                )
+            else:
+                detail_lines.append(
+                    f"  {c.name} ({c.image}): running {c.labelled_revision}, "
+                    f"testing {result.commit_under_test}"
+                )
+        detail = "\n".join(detail_lines)
         message = (
-            f"[S17] {len(mismatches)} running container(s) were built from a "
-            f"different commit than the one under test:\n{detail}\n"
+            f"[S17] {len(mismatches)} running container(s) disagree with their "
+            f"expectation:\n{detail}\n"
             "Rebuild and redeploy (`ciu bake` + `ciu up`) so the result describes "
-            "the code under test, or pass --ignore-mismatch to run anyway (the "
-            "result then describes the OLD artifact, whatever it says)."
+            "the code under test, correct the declaration for drifted vendor "
+            "images, or pass --ignore-mismatch to run anyway (the result then "
+            "describes whatever is actually running)."
         )
         if not opts.ignore_mismatch:
             print(message, file=sys.stderr)
@@ -660,8 +688,19 @@ def _provenance(rest: list[str]) -> int:
 
     # Reached for "verified-match", and for "mismatch" + --ignore-mismatch
     # (the fall-through above). Every other case returned earlier, so this
-    # never claims "OK" for a run that could not check anything.
-    print(f"provenance OK — running containers match {result.commit_under_test}")
+    # never claims "OK" for a run that could not check anything. With declared
+    # vendor pins (CIU-39) the OK names what was actually verified: the commit
+    # under test and/or the declared vendor references.
+    vendor_pinned = [
+        c for c in (result.containers or []) if c.status == "vendor-pinned"
+    ]
+    if vendor_pinned:
+        print(
+            f"provenance OK — running containers match {result.commit_under_test} "
+            f"or their declared vendor references ({len(vendor_pinned)} pinned)"
+        )
+    else:
+        print(f"provenance OK — running containers match {result.commit_under_test}")
     return 0
 
 
