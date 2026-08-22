@@ -1987,10 +1987,12 @@ def action_clean(
     removed_nets, blocked_nets = _remove_identity_networks(target_networks)
     if removed_nets:
         info(f"Removed {len(removed_nets)} network(s): {', '.join(removed_nets)}")
+    announced_keeps: list[str] = []
     for net, reason in keep_networks.items():
         try:
             if _network_exists(net):
                 info(f"kept: {net} ({reason})")
+                announced_keeps.append(net)
         except ValueError as exc:
             warn(f"kept-network check failed for {net!r}: {exc}")
 
@@ -2046,8 +2048,10 @@ def action_clean(
         rc = 1
 
     if rc == 0:
-        if keep_networks:
-            kept = ", ".join(sorted(keep_networks))
+        # Name only what was verified present — claiming a keep of an absent
+        # network would overstate what happened.
+        if announced_keeps:
+            kept = ", ".join(sorted(announced_keeps))
             success(f"clean complete (kept: {kept})")
         else:
             success("clean complete")
