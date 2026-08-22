@@ -96,3 +96,37 @@ Every claim below names its command; failures are logged where they happened.
 - `nyxloom-gates.slice` (CPUWeight=25, IO caps): reserved for the future PROD
   nyxloomd instance outside this repo; a declared `cgroup_slice` is the
   mechanism to name it there.
+
+## Adversarial review round 1 (fresh reviewer, blind-then-reconcile)
+
+**VERDICT: ACCEPT-conditional** — 3 blockers, all mechanical, all fixed here:
+
+1. **Hollow wiring (3 behaviors survived deletion with zero reds):** the
+   LoadState guard CALL on the lane path (R-11), `docker logs -f` streaming
+   (R-17), success-path container cleanup (R-15). Fixed: three wiring tests
+   observe side effects of the real lane path (in-process main() with a
+   selective isdir patch — a blanket `isdir→True` breaks `shutil.which`,
+   whose `_access_check` skips anything isdir() calls a directory; that trap
+   is now written down). **Mutation-verified:** each reviewer mutation now
+   reds exactly its test (1 failed each), suite 54/54 restored.
+2. **CONSUMERS.md shipped an unpasteable example** (assay lane without
+   `assay_command`/`sha256` — rejected by the shipped validator). Fixed to
+   the fixture shape.
+3. **R-09 error named only the project file** even when a central file
+   exists (the spec requires naming BOTH candidates). Fixed: the message now
+   interpolates the central path + what it defines.
+
+Also folded in (reviewer non-blocking): README's stale `ciu.env`/
+`$PHYSICAL_REPO_ROOT` mechanics replaced with the shipped mountinfo
+derivation (design-authority prose now matches the code).
+
+Reviewer-verified independently: 51→54 unit green; O4 live PASS reproduced
+(LIVE_EXIT=0, dual mounts, both slice mechanisms, detached form); adoption
+flag-for-flag behavior-equivalent to the old argv; forbid-list clean (11
+allowed paths only); worktree clean after sanctioned mutations.
+
+Known non-blocking observations (recorded, not fixed): argparse usage errors
+exit 2 with 2-line stderr (no traceback; R-04 forbids tracebacks, not
+argparse's shape); lane names unvalidated against docker's name charset;
+negative `docker wait` codes surface as 255 through sys.exit; `memory` on a
+host lane validates then ignores; `--list extra` ignores the positional.

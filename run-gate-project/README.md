@@ -130,8 +130,10 @@ the tool's reason to exist and MUST be implemented + tested:
   error, AGENTS §4.2a), pass it BOTH as `--cgroup-parent` AND `-e` into the
   container (suites read it ambiently). LoadState pre-check ONLY where systemd
   is reachable (`[ -d /run/systemd/system ]`) — containerized contexts skip it.
-- **Path namespaces:** derive the physical repo root (READ `ciu.env` /
-  `$PHYSICAL_REPO_ROOT`, never invent); dual-mount physical AND devcontainer
+- **Path namespaces:** derive the physical repo root from
+  `/proc/self/mountinfo` (the bind mount whose mount point contains the repo;
+  cmru `tester-gate` precedent — never from `ciu.env`, whose generated values
+  have been observed stale); dual-mount physical AND devcontainer
   paths so worktree gitfiles resolve; `git config --global safe.directory '*'`
   inside the gate container.
 - **Artifact pins:** sha256 verification executed FROM the pin file's

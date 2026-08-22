@@ -75,8 +75,11 @@ duplicated registry:
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
-[lanes.ciu.pins]
-assay = { version = "2.1.0" }       # verified against the judge the image carries
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+
+[lanes.ciu.pins.assay]
+version = "2.1.0"                   # verified against the judge the image carries
+sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
 ```
 
 Division of labor, spelled out:

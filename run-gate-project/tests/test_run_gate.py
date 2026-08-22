@@ -548,12 +548,75 @@ class TestArgvConstruction:
             clean_tree = false
         """)
         log = fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "big")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
         assert run_call[run_call.index("--memory") + 1] == "4g"
+
+    # -- wiring guards: the reviewer's mutation probes showed these three
+    # load-bearing behaviors survived deletion with zero reds. Each test
+    # kills one such regression class by observing SIDE EFFECTS of the lane
+    # path itself (in-process so module patches apply).
+
+    def _in_process_lane(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        return proj, log
+
+    def test_lane_path_calls_loadstate_guard_where_systemd_reachable(
+            self, tmp_path, monkeypatch):
+        """R-11 WIRING: deleting verify_slice_loaded from the lane path must
+        red here — the guard protects against fail-open transient slices."""
+        proj, log = self._in_process_lane(tmp_path, monkeypatch)
+        real_run = subprocess.run
+
+        systemctl_cmds = []
+
+        def spy(cmd, **kw):
+            if cmd and cmd[0] == "systemctl":
+                systemctl_cmds.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="loaded\n",
+                                                   stderr="")
+            return real_run(cmd, **kw)
+
+        # Make ONLY /run/systemd/system appear reachable — a blanket
+        # isdir->True would make shutil.which reject the docker shim
+        # (_access_check skips anything isdir() calls a directory).
+        real_isdir = run_gate.os.path.isdir
+        monkeypatch.setattr(run_gate.os.path, "isdir",
+                            lambda p: p == "/run/systemd/system"
+                            or real_isdir(p))
+        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        code = run_gate.main(["suite"])
+        assert code == 0
+        assert systemctl_cmds, "LoadState probe never ran on the lane path"
+        assert "--property=LoadState" in systemctl_cmds[0]
+
+    def test_lane_streams_logs_with_follow(self, tmp_path, monkeypatch):
+        """R-17 WIRING: `docker logs -f` must be invoked (streaming till exit);
+        a no-op logs call would bury the job's output."""
+        proj, log = self._in_process_lane(tmp_path, monkeypatch)
+        code = run_gate.main(["suite"])
+        calls = [l.split("\x1f") for l in log.read_text().splitlines()]
+        logs_calls = [c for c in calls if c and c[0] == "logs"]
+        assert code == 0
+        assert any(c[:2] == ["logs", "-f"] for c in logs_calls), \
+            f"no `logs -f` call recorded: {logs_calls}"
+
+    def test_successful_run_removes_its_container(self, tmp_path, monkeypatch):
+        """R-15 WIRING: the finally-cleanup must fire on SUCCESS too — only
+        pinning failed-start cleanup let every green run leak a container."""
+        proj, log = self._in_process_lane(tmp_path, monkeypatch)
+        code = run_gate.main(["suite"])
+        calls = [l.split("\x1f") for l in log.read_text().splitlines()]
+        run_call = next(c for c in calls if c and c[0] == "run")
+        name = run_call[run_call.index("--name") + 1]
+        rm_calls = [c for c in calls if c and c[0] == "rm"]
+        assert code == 0
+        assert any(c[1:3] == ["-f", name] for c in rm_calls), \
+            f"container {name} not cleaned up: {rm_calls}"
 
 
 # ---------------------------------------------------------------------------
