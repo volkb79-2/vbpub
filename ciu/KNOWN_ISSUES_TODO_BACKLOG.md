@@ -11,7 +11,19 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-21 — **CIU-41, CIU-43, CIU-44 marked FIXED** by the
+Last updated: 2026-08-22 — released as **ciu-v6.4.0** (tag + wheel published;
+CHANGES §[6.4.0]): CIU-41, CIU-43, CIU-44 and their adversarial-review repairs
+went through the tester-unified gate and shipped. Backlog reconciliation the
+same day: status table re-sorted by ID; two dstdns-P112 second-reproduction
+notes that had been appended to CIU-23's WITHDRAWAL section relocated to
+CIU-41 and CIU-42 where they belong; the dangling empty `### CIU-39 detail`
+heading filled with a real stub. **CIU-46 FILED, OPEN** — the S6.4a residual:
+a shipped stack under the legacy compose-project fallback escapes clean's
+network/volume enumeration. **CIU-47 FILED, OPEN** — `PUBLIC_FQDN` ambient
+adoption during generate, the masked-default family CIU-41 fixed for the
+identity tuple.
+
+Previously, 2026-08-21 — **CIU-41, CIU-43, CIU-44 marked FIXED** by the
 consumer-wave branch `feat/ciu-consumer-wave-41-43-44`: S2.7 refined
 precedence extended to the derived identity tuple during generate (CIU-41),
 S6.4a identity-scoped network removal + compose-label volume pass with the
@@ -65,16 +77,18 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
 | CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c) |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | FIXED — `[deploy.hosts.<h>.secrets]` + `ciu host-secrets` (ciu-P11, S14.3a) |
-| CIU-40 | Gate-layering refactor (estate D-110 + D-111): **`run-gate.py`** built as a vbpub mini-project (argparse, usage() with lane list + in-file revision, own tests for the docker/cgroup/pin-verify/clean-tree mechanics), reading a per-project **`run-gate.toml`** it alone parses (orchestration only; assay lanes reference `assay.toml` by name — judgment stays there); vbpub projects symlink it, external repos copy (revision = drift detector); nyxloom.toml [gates] becomes a thin argv pointer; overarching+project AGENTS.md name it the canonical entry IN the same carve; DE-VENDOR `tools/assay/*.pyz` once assay is baked into tester-unified from in-repo source (keep only the version pin) | Medium | OPEN — decided 2026-08-20 (dstdns D-110/D-111+amendment); **handoff READY: `run-gate-project/HANDOFF-P01-build-and-adopt-ciu.md`** (build tool + ciu adoption; de-vendor stays pending the assay image-bake) |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
 | CIU-38 | No per-service Vault AppRole provisioning/delivery | Medium | OPEN — consumer-side-first (dstdns D-106); stays as the upstreaming ask |
 | CIU-39 | `provenance` adjudicates vendor images ciu never built → `verified-match` unreachable live (was CIU-28 on main; blocks assay B004) | High | OPEN |
+| CIU-40 | Gate-layering refactor (estate D-110 + D-111): **`run-gate.py`** built as a vbpub mini-project (argparse, usage() with lane list + in-file revision, own tests for the docker/cgroup/pin-verify/clean-tree mechanics), reading a per-project **`run-gate.toml`** it alone parses (orchestration only; assay lanes reference `assay.toml` by name — judgment stays there); vbpub projects symlink it, external repos copy (revision = drift detector); nyxloom.toml [gates] becomes a thin argv pointer; overarching+project AGENTS.md name it the canonical entry IN the same carve; DE-VENDOR `tools/assay/*.pyz` once assay is baked into tester-unified from in-repo source (keep only the version pin) | Medium | OPEN — decided 2026-08-20 (dstdns D-110/D-111+amendment); **handoff READY: `run-gate-project/HANDOFF-P01-build-and-adopt-ciu.md`** (build tool + ciu adoption; de-vendor stays pending the assay image-bake) |
 | CIU-41 | `ciu env generate` silently inherits an ambient `DOCKER_NETWORK_INTERNAL`, so a fresh-worktree generate joins the MAIN stack's network (masked default; inconsistent with the S2.7 handling of `PHYSICAL_REPO_ROOT` in the same run) | Medium | FIXED — S2.7 refined precedence extended to the derived identity tuple (`REPO_NAME`/`INSTANCE_ID`/`DOCKER_NETWORK_INTERNAL`): ambient adopted only when consistent; mismatch → derived value + stderr warning naming the S16.1 `--shared-infra` remedy; post-generate bootstrap steps parse the just-written file by exact path (2026-08-21). Follow-up candidate (same contamination family, out of filed scope): PUBLIC_FQDN ambient adoption at generate time
 | CIU-42 | No way to express that a stack's `ASK_VAULT` path is produced by another profile's provisioning — a partial profile selection (`core,db`) fails at the consuming stack with only the path name, not the missing producer | Low | OPEN — filed 2026-08-20 (dstdns P111 F3); doc-gap and mechanism-gap readings both presented |
 | CIU-43 | `ciu clean` reports `clean complete` while leaving instance-scoped networks behind (workspace network + compose `*_default`); by-design per `action_clean`'s docstring, a leak for ephemeral Mode-B instances | Medium | FIXED — S6.4a: clean removes the identity network (read from this workspace's own ciu.env) + each selected stack's `<compose-project>_default`, disconnecting lingering endpoints first (unremovable endpoint named, clean fails); instance-vs-main split (S16 record ⇒ unconditional, main keeps its workspace network but names the keep); post-clean invariant extended to networks from Docker STATE; volume pass gains an exact compose-label enumeration catching bare-project-prefix volumes (the 6.3.0 second reproduction's `<project>-vault-*` leak). Controlled-wrong oracle: no-op network removal fails the invariant (2026-08-21). Known residual: shipped stacks run under run_shipped's legacy-project fallback when project/env tags are absent, which escapes the compose-label enumeration — needs the same gate or label pass if a shipped stack ever hits it
 | CIU-44 | Templates cannot see the SELECTED profile/stack set at render time: `CIU_SERVICES_PROFILE` is unset on the `--profile` argv path (`cli.py:1005-1015`; `workspace_env.py:875-877` leaves it commented out), so a feature flag like reverse-proxy's `enable_pwmcp_mcp` cannot be derived from "is infra/pwmcp deployed" and any render-time precondition is unreachable or always-fails. Ask: expose the resolved deployed-stack set (or profile list) to the Jinja context so a template can fail loudly when it references an undeployed upstream (§4.2a) | Medium | FIXED — S3.12: `ciu.selected_profiles` + `ciu.deployed_stacks` in every deployment render's Jinja context (up/dev/render-toml/preflight/check/graph), computed once per invocation and threaded unchanged to hooks (`ctx.selected_profiles`/`ctx.deployed_stacks` + `ctx.instance_id`/`ctx.network` from the workspace's own ciu.env); omitted elsewhere so references fail loudly; nothing persisted into ciu.env or exported to compose env (2026-08-21) |
 | CIU-45 | ~~`requires` PROVISIONS rather than VERIFIES~~ — **misdiagnosis, see disposition below**. The lint rule is a plain `requires`/`provides` completeness check; a `post_compose` hook registering itself as a provider already ships (`infra/consul-server/ciu.defaults.toml.j2:9-17`). The actual dstdns failure was a missing `provides` array in one unrelated stack, fixed declaratively in-repo | — | **WITHDRAWN 2026-08-21** — see `## CIU-45` below for the full disposition; `dstdns/nyxloom-trove/decisions.md` D-170 |
+| CIU-46 | Shipped stacks run under the legacy directory-derived compose project when `deploy.project_name`/`environment_tag` are absent (`engine.py run_shipped`), and clean's S6.4a enumeration then sees no projects at all — legacy-project networks/volumes survive a reported-clean teardown | Low | OPEN — residual recorded during the CIU-43 fix (2026-08-21); latent until a shipped stack without tags is cleaned |
+| CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | OPEN — follow-up candidate named out-of-scope at the CIU-41 fix (2026-08-21) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -100,10 +114,6 @@ available from the selected worktree or its configuration.
 
 **Disposition:** WITHDRAWN on 2026-08-17. Package A removed the implementation
 after re-verification disproved its consumer premise.
-
-**Second reproduction (2026-08-20, dstdns P112 Mode-B):** verbatim recurrence in the very next package — `ciu env generate` inherited main's `DOCKER_NETWORK_INTERNAL` and would have silently produced a Mode-A stack; caught only because the P111 write-up primed the operator's agent to check. Two consecutive packages → priority bump warranted.
-
-**Second reproduction (2026-08-20, dstdns P112 Mode-B):** `core,db` again could not start controller/webapp-server without the two identity-profile `ASK_VAULT` paths; resolved the same way (disposable placeholders in the instance's own Vault, disclosed). Two consecutive packages → priority bump warranted.
 
 ### What was claimed
 
@@ -254,7 +264,29 @@ path into that service's rendered config (no secret VALUES rendered). dstdns
 decided runtime Vault fetch (SM2, D-098); if this lands upstream dstdns consumes
 it, otherwise dstdns builds it locally and notes the delta here.
 
-### CIU-39 detail
+### CIU-39 detail — `verified-match` is unreachable for vendor images
+
+Renumbered from main's CIU-28 at the 2026-08-19 merge (assay-side references
+updated the same day). Mechanism (source: `deploy.py` `_provenance_result`):
+a container's provenance status comes from its
+`org.opencontainers.image.revision` label vs the checkout commit; an image
+ciu never built (pulled from a vendor registry — dstdns runs vault,
+authentik, consul this way) has no such label, is `unlabelled`, and never
+contributes `match`. A deployment whose containers are all vendor artifacts
+can therefore never leave `not-verified-no-evidence`: provenance has no
+disposition that says "this image is a pinned vendor artifact, expected
+unlabelled". Blocks assay B004 (coverage-judge qualification on pinned
+artifacts).
+
+This entry predates this tracker's five-point format; before it is carved,
+capture the live reproduction (one `ciu provenance` run against an
+all-vendor deployment) and decide the contract shape — candidates: a
+declared vendor-baseline source (digest pin file) provenance can verify
+against, or an explicit per-container `vendor-pinned` disposition distinct
+from `unlabelled` — per [How issues get here](#how-issues-get-here).
+
+**SPEC ownership:** S17 (provenance semantics).
+
 ## CIU-25 — stale worktree/stack detection and reap
 
 **Status:** OPEN, deliberately outside the current milestone.
@@ -466,6 +498,8 @@ leak); the network name never received the fix.
 `env -u DOCKER_NETWORK_INTERNAL -u INSTANCE_ID -u PHYSICAL_REPO_ROOT -u REPO_ROOT -u REPO_NAME ciu env generate`
 → correct `p111-auth-cutover-e893b0-network`.
 
+**Second reproduction (2026-08-20, dstdns P112 Mode-B):** verbatim recurrence in the very next package — `ciu env generate` inherited main's `DOCKER_NETWORK_INTERNAL` and would have silently produced a Mode-A stack; caught only because the P111 write-up primed the operator's agent to check. Two consecutive packages → priority bump warranted.
+
 ### Why CIU owns it
 
 `env generate` is the identity-computation verb; its output is the record every
@@ -521,6 +555,8 @@ identity profile is multi-GB (Authentik) and the host had 2.9 GB available, so
 paths in the INSTANCE's own Vault with disposable placeholders — consistent
 with the stacks' own comments ("an identity-less deploy has nothing for this
 check to protect") and touching no shared state.
+
+**Second reproduction (2026-08-20, dstdns P112 Mode-B):** `core,db` again could not start controller/webapp-server without the two identity-profile `ASK_VAULT` paths; resolved the same way (disposable placeholders in the instance's own Vault, disclosed). Two consecutive packages → priority bump warranted.
 
 ### Two readings — both presented deliberately
 
@@ -668,6 +704,86 @@ against the P120 package that filed this issue, independently re-derived the fai
 the mechanism named in ciu's own error text before it is trusted, not just confirmation that a
 predicted refusal occurred. The consumer's own repo already had two working examples of the pattern
 this issue claimed was impossible.
+
+## CIU-46 — shipped stacks under the legacy compose-project fallback escape clean's S6.4a enumeration
+
+**Filed by:** ciu controller session, 2026-08-22, from the residual recorded
+in CIU-43's FIXED row during the consumer-wave adversarial review.
+Source-grounded: `engine.py` `run_shipped` (~line 1638) falls back to
+`shipped_project = None` (legacy directory-derived compose project) with only
+a warning when `deploy.project_name`/`environment_tag` are absent — shipped
+mode does not require a full deploy config (S8.5) — while clean's
+`_stack_compose_projects` (`deploy.py`) returns `[]` under exactly that
+condition, so the S6.4a network/volume enumeration never learns the legacy
+project name and its `*_default` network and label-prefixed volumes survive a
+reported-clean teardown.
+
+### Why CIU owns it
+
+S6.4a's contract is "clean leaves zero identity-scoped Docker objects, or
+fails loudly". The shipped path silently re-creates the CIU-43 leak species
+for any shipped stack deployed without tags; the consumer cannot fix this
+from its side — the enumeration is ciu's.
+
+### Proposed contract
+
+When clean encounters a selected shipped stack whose compose project cannot
+be derived (tags absent), either (a) enumerate the legacy directory-derived
+project name with the same compose-label filters and clean it, or (b) refuse
+clean for that stack naming the missing tags — never silently skip. Match
+whatever `run_shipped`'s fallback actually named at up time.
+
+### Oracles
+
+- Shipped stack deployed via the legacy fallback (no tags) → clean removes
+  its `*_default` network and label-prefixed volumes, or refuses naming the
+  tags; `clean complete` over a survivor is the controlled-wrong
+  implementation and must fail the oracle.
+- Tagged shipped stacks keep today's exact behavior.
+
+**SPEC ownership:** S6.4a (cleanup semantics), extending its shipped-stack
+coverage.
+
+## CIU-47 — `env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check
+
+**Filed by:** ciu controller session, 2026-08-22, from the follow-up
+candidate named out-of-scope in CIU-41's FIXED row. Source-grounded:
+`workspace_env.py` reads `PUBLIC_FQDN` from the ambient environment at
+generate time (bare `os.environ.get` at ~lines 278 and 1060) with no
+comparison against anything derived for THIS workspace — the identical
+masked-default shape CIU-41 fixed for `REPO_NAME`/`INSTANCE_ID`/
+`DOCKER_NETWORK_INTERNAL`. Any consumer whose login shell sources a main
+checkout's `ciu.env` (the documented convenience pattern) carries main's
+`PUBLIC_FQDN` into a fresh worktree's generated file, where it becomes the
+worktree's recorded public name.
+
+### Why CIU owns it
+
+Same reasoning as CIU-41: `env generate` is the identity-computation verb and
+its output is the record every later command trusts; the S2.7 refined
+precedence now covers the identity tuple but deliberately stopped at the
+filed scope, leaving this sibling unfixed.
+
+### Proposed contract
+
+Extend S2.7 refined precedence to `PUBLIC_FQDN`: during generate, an ambient
+value is adopted only when consistent with the value this workspace's own
+inputs derive; on mismatch use the derived value and warn on stderr naming
+the ignored ambient value. (Note `PUBLIC_FQDN` is host-derived rather than
+path-derived — decide what "consistent with this workspace" means: likely
+re-detection via the same detection path, with an explicit flag as the only
+override.)
+
+### Oracles
+
+- Generate in a worktree with main's `PUBLIC_FQDN` exported → generated
+  `ciu.env` carries the workspace-derived value and a warning names the
+  ignored ambient one.
+- Consistent pre-set value → silent, output unchanged.
+- Controlled wrong implementation: restoring the bare
+  `os.environ.get("PUBLIC_FQDN", ...)` fallback must fail the first oracle.
+
+**SPEC ownership:** S2 (workspace environment), extending S2.7.
 
 ## Compact resolved index
 
