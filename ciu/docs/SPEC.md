@@ -155,6 +155,24 @@ requirements are marked *(withdrawn)*.
   ambient `REPO_ROOT`. Read-path precedence of already-generated workspaces
   (ambient wins when consistent) is unchanged.
 
+  **Refined precedence for `PUBLIC_FQDN` (CIU-47).** The same masked-default
+  family, host-derived rather than path-derived: a shell that sourced a main
+  checkout's `ciu.env` carries that checkout's `PUBLIC_FQDN`, and generate
+  adopted it bare — making it the fresh worktree's recorded public name.
+  Contract: during generation `PUBLIC_FQDN` is derived from THIS workspace's
+  own inputs first (rendered `ciu.global.toml` `infrastructure.public_fqdn`,
+  else reverse DNS of the detected public IP); an ambient `PUBLIC_FQDN` is
+  adopted only when it EQUALS the derived one, or when the detection path
+  yielded NO independently sourced value to compare against (no config entry
+  and reverse DNS produced nothing — an offline host; there, the pre-set
+  value remains the legitimate manual override, adopted silently). On a real
+  mismatch the derived value is written and a stderr warning names the
+  ignored ambient value. Post-generation bootstrap steps act on the
+  just-written file's value (`PUBLIC_FQDN` is in
+  `GENERATED_IDENTITY_KEYS`); read-path precedence of already-generated
+  workspaces is unchanged. `PUBLIC_IP` and `PUBLIC_TLS_*` keep the plain
+  pre-set-wins read (out of CIU-47's filed scope).
+
 - **S2.8** `ciu env generate` is the **single bootstrap entry point** and
   MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network

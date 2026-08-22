@@ -7,6 +7,16 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Fixed
+- fix(ciu): env generate ignores an inconsistent ambient PUBLIC_FQDN — S2.7
+  refined precedence extended to the host-derived sibling (CIU-47): derived
+  from this workspace's own inputs (config → reverse DNS), ambient adopted
+  only when consistent or when detection yields no sourced value; mismatch
+  warns and writes the derived value; post-generate steps act on the written
+  record
+
 ## [6.4.0] - 2026-08-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fc8e50334d1c3a696e2f53657a70ba0c06990be -->

@@ -516,7 +516,7 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | `DOCKER_GID` | Yes | `stat /var/run/docker-host.sock` or `.sock`; else `getent group docker` |
 | `ENV_TYPE` | No | `devcontainer` \| `native` \| `github-actions` |
 | `PUBLIC_IP` | Conditional (S2.3) | ipify → reverse DNS → `localhost` |
-| `PUBLIC_FQDN` | Conditional (S2.3) | config → detected IP → `localhost` |
+| `PUBLIC_FQDN` | Conditional (S2.3) | config (`infrastructure.public_fqdn`) → reverse DNS of detected IP → detected IP/`localhost`; a pre-set value wins only when consistent with the derived one, or when detection yields nothing to compare against [S2.7, CIU-47] |
 | `PUBLIC_TLS_CRT_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 `CIU_SERVICES_PROFILE` remains an ambient compatibility input for direct CIU
@@ -528,16 +528,30 @@ generated `ciu.env`.
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].
 
-**`PHYSICAL_REPO_ROOT` is the one exception to "pre-set always wins" in this
-table (2026-07-16):** a devcontainer's login shell can `source` one repo's
-`ciu.env` (e.g. via a `REPO_ROOT`-triggered `.bashrc` hook for the primary
-workspace) and leave a stale `PHYSICAL_REPO_ROOT` set when later operating on
-an unrelated, nested repo — corrupting that repo's derived `REPO_NAME` /
-`INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL`. So a pre-set `PHYSICAL_REPO_ROOT`
-wins only when it agrees with this process's own mountinfo-derived physical
-root for `REPO_ROOT`, or when mountinfo has no entry to check against;
-otherwise the mountinfo-derived value wins and CIU warns on stderr. Every
-other key in this table keeps the simple "pre-set env always wins" rule.
+**Pre-set-wins exceptions in this table:** a devcontainer's login shell can
+`source` one repo's `ciu.env` (e.g. via a `REPO_ROOT`-triggered `.bashrc`
+hook for the primary workspace) and leave stale values set when later
+operating on an unrelated checkout or nested repo. Three keys therefore use
+refined precedence instead of "pre-set always wins":
+
+- **`PHYSICAL_REPO_ROOT`** (2026-07-16): a pre-set value wins only when it
+  agrees with this process's own mountinfo-derived physical root for
+  `REPO_ROOT`, or when mountinfo has no entry to check against; otherwise
+  the mountinfo-derived value wins and CIU warns on stderr.
+- **`REPO_NAME` / `INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL`** (CIU-41):
+  during generation these are derived from THIS physical root alone; an
+  ambient value is adopted only when equal, else the derived value is
+  written and a warning names the ignored one (with the `--shared-infra`
+  remedy for the network).
+- **`PUBLIC_FQDN`** (CIU-47): during generation the value is derived from
+  THIS workspace's own inputs (config entry, else reverse DNS of the
+  detected IP); an ambient value is adopted only when equal, or when
+  detection produced no sourced value to compare against (offline host —
+  the pre-set value stays the legitimate manual override); on a real
+  mismatch the derived value wins and a warning names the ignored one.
+
+Every other key in this table keeps the simple "pre-set env always wins"
+rule.
 
 ### Shared-infra join example [S16.1]
 
