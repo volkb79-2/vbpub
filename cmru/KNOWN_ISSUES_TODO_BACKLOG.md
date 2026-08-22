@@ -679,3 +679,59 @@ even parse the current config (it predates S15's `[[project.tool_dependencies]]`
 release had to run through the source engine. The clean resolution is to bootstrap the current
 wheel first — `cmru/build-initial-standalone.sh` builds it without a pre-installed cmru — then
 `pip install` it so the installed command matches the source before running `cmru.release.sh`.
+
+### KI-19 — the mutation lane's skip path emits no evidence artifact — *open*
+**Status:** open (filed 2026-08-22, adversarial review of the run-gate
+adoption wave `vbpub@4c6eb2b6..91959b3a`; finding 4 of the correctness
+review).
+**Mechanism.** Since KI-18's fix moved into `cmru/run-gate.toml`
+`[lanes.mutation]`, the lane short-circuits when the source diff against the
+resolved base tag is empty:
+
+```bash
+if git diff --quiet "$BASE"..HEAD -- src; then
+    echo "mutation: no changed source since $BASE — nothing to mutate, skipping"
+    exit 0
+fi
+```
+
+On that path the lane exits 0 **without writing
+`.assay/mutation-cmru.json`** — the file the `--evidence` flag names as this
+lane's recorded output. Pre-adoption, the same situation failed loudly via
+`--require-candidates` (ugly, but the failure and its reason existed in a
+log). The ancestry argument for the skip itself is sound (`git describe
+--match 'cmru-v*'` can only return an ancestor, so an empty diff is a true
+"nothing to mutate", never a misresolved base) — the gap is purely the
+missing record.
+
+**Reproduction.**
+
+```bash
+cd cmru && ./run-gate.py mutation      # on any tree with no src/ delta since the last cmru-v* tag
+# → "mutation: no changed source since cmru-v4.1.1 — nothing to mutate, skipping"; exit 0
+ls .assay/mutation-cmru.json           # → No such file or directory
+```
+
+(First reproducible on a tree at/after cmru-v4.1.1 with no subsequent
+`src/cmru` change; before that tag the campaign ran.)
+
+**Why it matters.** Any consumer assembling release evidence from the
+declared artifact paths (the release transaction's log archive, an auditor,
+a future verdict collector) sees the file MISSING exactly when "we checked
+and there was nothing to mutate" is the claim being made. Absence is
+indistinguishable from "never ran".
+
+**Proposed contract.** The skip path writes a machine-readable skipped
+record at the same declared path before exiting 0 — closed vocabulary, e.g.
+`{"status": "skipped", "reason": "no-changed-source", "base": "<tag>"}` — so
+absence keeps meaning "never ran" and presence always means "ran or
+consciously skipped, with the reason recorded". Alternatively verify no
+consumer will ever collect these artifacts and document the absence in the
+lane comment; the stub is preferred because the file already advertises
+itself as evidence via `--evidence`.
+
+**Oracles.**
+- Skip-condition run → `.assay/mutation-cmru.json` exists with the closed
+  skip shape naming the resolved base.
+- Non-skip run → real campaign payload, unchanged shape.
+- Controlled wrong implementation: today's bare `exit 0` fails oracle 1.

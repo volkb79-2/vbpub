@@ -1144,3 +1144,56 @@ the wrong behavior with a green verdict.
 
 Cross-references: B009 (image-baked distribution + assay.toml's estate role),
 ciu CIU-40 (gate-layering refactor / run-gate mini-project).
+
+## B011 — CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration
+
+**Filed 2026-08-22 (vbpub controller session, adversarial review of the
+run-gate estate-wide adoption wave `vbpub@4c6eb2b6..91959b3a`; consumer-UX
+reviewer, finding "stale against the adopted mechanism").**
+
+### The observation
+
+`docs/CONSUMERS.md` §"Wiring into a consumer gate" (the section around lines
+401–408) shows cmru invoking assay as:
+
+```bash
+cmru tester-gate --cwd cmru -- … tools/assay/assay-<version>.pyz run cmru --file assay.toml …
+```
+
+Since the adoption (vbpub@4c6eb2b6, 2026-08-22), cmru's shipped release gate
+is `["./run-gate.py", "gate"]` (`cmru/cmru.toml [steps.run-tests]`), whose
+sub-lanes are declared in `cmru/run-gate.toml` — the SSOT per estate decision
+D-110/D-111. The old raw `cmru tester-gate … pyz run …` shape no longer
+exists anywhere in cmru's configs. A consumer following assay's own doc
+builds an integration pattern the estate has retired; the doc actively
+teaches the superseded mechanism.
+
+### Why this is an assay concern
+
+The stale text is in assay's own consumer-facing documentation. run-gate's
+docs defer judgment-layer docs to assay (run-gate-project/CONSUMERS.md
+"Partner integration notes"), so this page is the one place a new adopter
+will look for the wiring — it must show the current shape.
+
+### Proposed fix
+
+Rewrite the example to the adopted two-file split: a `kind = "assay"`
+lane in `<project>/run-gate.toml`
+(`assay_lane` + explicit `assay_command` + sha256 pin) and a thin consumer
+pointer (`argv = ["./run-gate.py", "<lane>"]` in nyxloom.toml / cmru.toml),
+linking to run-gate-project/CONSUMERS.md for orchestration mechanics.
+Alternatively annotate the old form explicitly as the pre-run-gate
+alternative — but showing a dead integration as the primary example is the
+failure mode; prefer replacement.
+
+### Oracle
+
+Estate docs-contract discipline: any cross-tool wiring example must match a
+config that actually exists on main. Mechanically: a periodic sweep (or a
+manual check recorded in the fixing commit) that every `pyz run <lane>`
+example in this file corresponds to a live lane declaration in the named
+project. Controlled wrong implementation: the current text fails it today.
+
+**Related:** run-gate-project backlog RG-13 item 1 (the missing end-to-end
+worked example that should become the canonical stitched version of both
+halves).
