@@ -29,11 +29,15 @@ budget = "20m"
 # origin/main (KI-18): at release time the tree IS origin/main, so a base of
 # origin/main leaves zero candidates and the campaign fails
 # --require-candidates. git describe returns the nearest ancestor cmru-v* tag,
-# so every source line changed since the last release gets mutated.
+# so every source line changed since the last release gets mutated. When the
+# source diff against that verified-ancestor tag is genuinely EMPTY (a
+# release that changes no src/ lines), the lane skips with a notice instead
+# of failing — describe can only return an ancestor, so an empty diff here is
+# a true "nothing to mutate", never a misresolved base.
 [lanes.mutation]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-2.1.0.pyz --repo-root {worktree} --project-root . --base $(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-2.1.0.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
 
 [lanes.canary]
