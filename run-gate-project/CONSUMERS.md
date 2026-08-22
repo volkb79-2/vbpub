@@ -2,29 +2,38 @@
 
 How a project adopts `run-gate.py`, how partner tools plug in, and what the
 lane declarations look like per project type. Companion to `README.md`
-(design authority). Everything here is DESIGNED, pending the P01 build.
+(design authority) and **`SPEC.md` (normative contract)**. BUILT as of P01
+(2026-08-22); first adopter nyxloom.
 
 ## The adoption steps (any project)
 
 1. **Get the script.**
    - vbpub-internal: `ln -s ../run-gate-project/run-gate.py run-gate.py`
-     at the project root (relative symlink, committed).
+     at the project root (relative symlink, committed, exec bit on).
    - external repo (dstdns, groop): copy the file to the project root,
      commit it. The in-file `__revision__` is your drift marker — estate
      sweeps compare it; update by re-copying.
-2. **Declare lanes** in `run-gate.toml` next to it (schema below — parsed by
-   run-gate.py ONLY; no other tool may read this file).
-3. **Point consumers at argv.**
-   - nyxloom: `[gates.<name>] argv = ["./run-gate.py", "<lane>"]` — nothing
-     else in the argv. Keep `asserts`/`timeout_seconds` as the daemon's own
-     policy.
-   - cmru: the release-gate step becomes the same argv.
-   - CI (Buildkite, later): one step per lane from `./run-gate.py --list`.
-   - Humans/agents: `./run-gate.py <lane>` — no recipe, no traps.
+2. **Declare lanes** in `run-gate.toml` next to it (final schema below —
+   parsed by run-gate.py ONLY; no other tool may read this file). Shared
+   environment facts do NOT belong here if a repo-root central config
+   already defines them (see below).
+3. **Point consumers at argv** — e.g. nyxloom's `[gates.<name>]`:
+   `argv = ["bash", "-c", "cd {worktree}/<proj> && ./run-gate.py --worktree {worktree} <lane>"]`.
+   Nothing else in the argv; keep `asserts`/`timeout_seconds` as the
+   daemon's own policy.
 4. **AGENTS.md**: add one line naming `./run-gate.py` as the canonical test
    entrypoint (do this IN the adoption commit — docs never lead the tool).
 
-## Lane kinds
+## Central defaults (vbpub monorepo)
+
+`run-gate.toml` at the REPO ROOT holds environment facts once for all
+internal projects (`[environments.<name>]`: `image`, optional
+`cgroup_slice`). Discovery: nearest STRICT ancestor of the project dir;
+project tables shadow a name entirely; `[lanes.*]` in a central file is
+REJECTED. Copied-script repos (dstdns) are self-contained unless they grow
+their own root file.
+
+## Lane schema (final — what run-gate.py actually validates)
 
 ```toml
 # run-gate.toml — parsed by run-gate.py only
@@ -32,9 +41,26 @@ schema_version = 1
 
 [lanes.<name>]
 kind = "assay" | "command"
-environment = "tester-unified" | "test-runner" | "host" | "<image:tag>"
-budget = "20m"                      # advisory wall-clock; consumers may enforce
+environment = "tester-unified" | "test-runner" | "host" | "<any central/project env name>"
+budget = "20m"                      # advisory wall-clock; printed, never enforced here
+memory = "4g"                       # optional docker --memory (per-lane RAM override)
+clean_tree = true                   # default TRUE; false needs a written reason
+
+# command kind:
+argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
+
+# assay kind (all required — the tool never invents an assay invocation):
+assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+[lanes.<name>.pins.assay]
+version = "2.1.0"                   # provenance
+sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own directory
 ```
+
+Environment facts resolution order (no silent fallbacks anywhere):
+`cgroup_slice` declared on the environment → `$CGROUP_PARENT_DEV_BACKGROUND`
+(hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
+LoadState pre-check only where systemd is reachable.
 
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
@@ -78,10 +104,13 @@ clean_tree = true
 
 ## Per-project-type recipes
 
-**Python service repo with assay (ciu, cmru, assay itself, nyxloom):** the
-`kind="assay"` shape above. First adopter: **ciu** (HANDOFF-P01) — its
-current `nyxloom.toml [gates.tester-unified]` argv (the docker/cgroup/sha
-incantation) moves INTO the tool and the gate entry becomes two tokens.
+**Python service repo with assay (ciu, cmru, assay itself):** the
+`kind="assay"` shape above. First adopter was planned as **ciu** (HANDOFF-P01)
+but DEFERRED by controller amendment A1 (parallel development); **nyxloom**
+adopted first with a `kind="command"` lane (its judgment is still the in-tree
+coverage gate until NL-1 migrates it to assay). ciu's adoption will move its
+current `nyxloom.toml [gates.tester-unified]` argv INTO the tool and shrink
+the gate entry to the two-token form.
 
 **Python app estate with its own runner (dstdns):** dstdns's gate is
 `./scripts/testing-exec.sh` into its `test-runner` container with schema-gate

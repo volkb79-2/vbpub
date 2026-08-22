@@ -1,9 +1,37 @@
 # run-gate — the per-project gate entrypoint
 
-**Status:** DESIGNED (estate decisions dstdns D-110/D-111, 2026-08-20) — not yet
-built. The build-and-adopt handoff is `HANDOFF-P01-build-and-adopt-ciu.md` in
-this directory. This README is the design authority: build to it; when the code
-disagrees, the code is the defect.
+**Status:** BUILT (P01, 2026-08-22). First consumer: **nyxloom** (controller
+amendment A1 — ciu was under parallel development and is DEFERRED; its assay
+lane ships construction-tested with live proof at its adoption). This README
+remains the design authority; **`SPEC.md` is the normative implementation
+contract** the code and tests adhere to (`__revision__` in `run-gate.py`
+tracks it). Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
+chronological build log incl. every failure:
+`HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
+
+## Built deltas vs this design (all recorded, none silent)
+
+The build stayed faithful to the intent; four things crystallized differently
+than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
+
+1. **Central defaults (controller A2):** shared environment facts live in a
+   repo-root `run-gate.toml` — the NEAREST STRICT ANCESTOR of the project
+   dir. Environments only; `[lanes.*]` there is rejected. Project tables
+   shadow a central name entirely (auditable override, no field merging).
+2. **Config discovery:** the project config is found next to the INVOKED
+   script path WITHOUT resolving symlinks (a symlink's parent is the
+   project), CWD as fallback. CWD-first (the handoff's wording) breaks
+   `nyxloom/run-gate.py --list` from the repo root.
+3. **Slice policy (controller A3):** `$CGROUP_PARENT_DEV_BACKGROUND`
+   ambient resolution is the default; `cgroup_slice` may be DECLARED on an
+   environment as explicit policy (LoadState-verified where systemd is
+   reachable). nyxloom's dev gate migrated OFF its hardcoded
+   `nyxloom-gates.slice` literal (prod-instance intent).
+4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
+   overrides), `clean_tree` (default TRUE — refusals are the doctrine;
+   nyxloom adopts `false` explicitly until NL-1), `assay_command` REQUIRED
+   and explicit (the tool never invents an assay invocation), `budget`
+   advisory-only.
 
 ## Intent — what problem this solves
 
