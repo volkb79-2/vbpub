@@ -694,10 +694,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      above). Returning no projects for such a selection (the pre-CIU-46
      behavior) silently skipped the stack's `*_default` network and
      label-prefixed volumes over a printed `clean complete`. A missing or
-     key-less `ciu.env` REFUSES the enumeration — never a silent empty set.
-     Tagged selections keep the S8.7 scoped names, unchanged. Container
-     enumeration failure on this path is INDETERMINATE and fails the clean —
-     it is never folded into "nothing to remove".
+     key-less `ciu.env` REFUSES the enumeration (exit 2, before ANY teardown)
+     — never a silent empty set. Tagged selections keep the S8.7 scoped
+     names, unchanged. Container enumeration failure on this path is
+     INDETERMINATE and fails the clean (`invariant unverifiable`, symmetric
+     with volumes/networks) — it is never folded into "nothing to remove";
+     the TAGGED post-clean check keeps its pre-CIU-46 docker-gone-mid-clean
+     degradation to a warning, documented S6.4 behavior.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container

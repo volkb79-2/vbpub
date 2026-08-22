@@ -355,12 +355,12 @@ class TestResetServiceOrphanedContainers:
             f"got {ps}"
         )
 
-    def test_orphan_sweep_warns_when_it_cannot_scope(self, tmp_path, capsys):
-        """Without the S8.7 naming pair there is nothing to scope BY, and the
-        host-wide component sweep is deliberately kept (it is what catches
-        legacy pre-scoping containers). It must say so out loud rather than
-        quietly reaching across instances."""
-        config = _base_config()  # no environment_tag -> nothing to scope by
+    def test_orphan_sweep_scopes_to_identity_project_when_pair_absent(self, tmp_path):
+        """CIU-46 review fix: the tags-absent orphan sweep scopes to the SAME
+        workspace-identity project the down used — never host-wide. The old
+        component-only sweep reached into every instance on the host (the
+        exact CIU-19 incident class)."""
+        config = _base_config()  # no environment_tag
 
         def run(cmd, **kw):
             if "ps" in cmd:
@@ -370,10 +370,9 @@ class TestResetServiceOrphanedContainers:
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
             _reset(config, tmp_path, assume_yes=True)
 
-        out = capsys.readouterr().out
-        assert "across EVERY instance" in out
         ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
-        assert not any("com.docker.compose.project=" in a for a in ps)
+        expected = engine.identity_compose_project_name(tmp_path, tmp_path)
+        assert f"label=com.docker.compose.project={expected}" in ps
 
 
 class TestResetServiceValidation:

@@ -2288,6 +2288,7 @@ def action_clean(
     # silent-stale-state failures CIU-3 and CIU-43 closed. Degrade gracefully
     # if docker became unavailable mid-clean so the action still returns its
     # own typed result instead of escaping as an exception.
+    untagged_unverifiable = False
     try:
         if tagged:
             remaining_containers = _matching_containers(config, all_states=True)
@@ -2297,8 +2298,23 @@ def action_clean(
             # enumerate by label.
             remaining_containers = _stack_project_containers(stack_projects)
     except ValueError as exc:
-        warn(f"post-clean container check skipped (docker unavailable): {exc}")
-        remaining_containers = []
+        if tagged:
+            # Tagged path keeps its pre-CIU-46 degradation: docker gone
+            # mid-clean degrades to warn (documented S6.4 behavior).
+            warn(f"post-clean container check skipped (docker unavailable): {exc}")
+            remaining_containers = []
+        else:
+            # Review fix (B3 symmetry): the tags-absent enumeration is this
+            # wave's own proof-of-removal pass; an UNVERIFIABLE set fails the
+            # clean like unverifiable volumes/networks — indeterminacy never
+            # folds into 'clean complete'.
+            error(
+                f"post-clean invariant unverifiable (S6.4): project containers "
+                f"could not be enumerated — {exc}"
+            )
+            rc = 1
+            untagged_unverifiable = True
+            remaining_containers = []
     if remaining_containers:
         error(
             f"post-clean invariant violated (S6.4): {len(remaining_containers)} "

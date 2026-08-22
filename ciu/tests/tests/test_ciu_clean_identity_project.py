@@ -179,11 +179,16 @@ def test_identity_project_name_shape(tmp_path):
     )
 
 
-def test_identity_project_name_normalizes_basename(tmp_path):
+def test_identity_project_name_refuses_non_round_tripping_basename(tmp_path):
+    """Review fix: sibling stacks 'Vault' and 'vault' would normalize onto the
+    SAME compose project within one workspace — the second up silently
+    adopting the first one's containers. A directory name that does not
+    round-trip normalization refuses instead of colliding."""
     repo = _identity_repo(tmp_path)
     weird = repo / "apps" / "Vendor Stack"
     weird.mkdir()
-    assert engine.identity_compose_project_name(repo, weird) == f"{IDENTITY_PREFIX}-vendorstack"
+    with pytest.raises(ValueError, match="already normalized"):
+        engine.identity_compose_project_name(repo, weird)
 
 
 def test_identity_project_name_refuses_without_ciu_env(tmp_path):

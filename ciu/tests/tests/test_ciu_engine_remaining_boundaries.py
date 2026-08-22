@@ -32,7 +32,7 @@ def test_shipped_execution_names_identity_project_without_deploy_tags(
     docker derive a name identical for every checkout of the repo: it both
     collided across instances and escaped every teardown pass.
     """
-    stack = tmp_path / "vendor stack"
+    stack = tmp_path / "vendor-stack"  # round-trips normalization (CIU-46 guard)
     stack.mkdir()
     (stack / "vendor.yml").write_text("services: {legacy: {image: alpine:3}}\n")
     (tmp_path / "ciu.env").write_text(
@@ -75,11 +75,11 @@ def test_shipped_execution_names_identity_project_without_deploy_tags(
     }
     assert calls == [{
         "file_args": ["-f", "vendor.yml"], "cwd": stack.resolve(),
-        "env": {"X": "1"}, "project": "dstdns-abc123-vendorstack",
+        "env": {"X": "1"}, "project": "dstdns-abc123-vendor-stack",
     }]
-    assert guards == [(stack.resolve(), "dstdns-abc123-vendorstack")]
+    assert guards == [(stack.resolve(), "dstdns-abc123-vendor-stack")]
     assert (
-        "workspace-identity compose project 'dstdns-abc123-vendorstack'"
+        "workspace-identity compose project 'dstdns-abc123-vendor-stack'"
         in capsys.readouterr().out
     )
 

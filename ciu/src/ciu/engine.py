@@ -737,8 +737,10 @@ def reset_service(
     # a config-less `up` passed. There is no -p-less compose invocation left
     # in CIU; the withdrawn basename fallback could never be enumerated by
     # clean and collided across checkouts.
+    # S8.7 / CIU-46 cutover: ONE compose project name drives the down `-p`
+    # AND step 4's orphan-sweep scope — they can never disagree.
     try:
-        down_project_args = ["-p", compose_project_name(config, stack_dir)]
+        compose_project = compose_project_name(config, stack_dir)
     except ValueError:
         if repo_root is None:
             raise ValueError(
@@ -746,8 +748,8 @@ def reset_service(
                 "repo_root was provided to derive the workspace-identity "
                 "compose project; set both tags or pass repo_root."
             )
-        down_project_args = ["-p", identity_compose_project_name(Path(repo_root), stack_dir)]
-    down_cmd = ["docker", "compose", *down_project_args, "-f", CIU_COMPOSE_OUTPUT]
+        compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
+    down_cmd = ["docker", "compose", "-p", compose_project, "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     down_cmd += ["down", "-v", "--remove-orphans"]
@@ -820,28 +822,13 @@ def reset_service(
     # value used for `down -p` a few lines above — so this scopes the sweep to
     # exactly the containers this reset already owns.
     print("[INFO]   Step 4/4: Cleaning orphaned containers...", flush=True)
+    label_filter = f"label={label_prefix}.component={service_name}"
+    # Always scoped to the SAME compose project the down above used (CIU-19's
+    # lesson: a component-only sweep reaches into every instance on the host).
+    extra_filters = [
+        "--filter", f"label=com.docker.compose.project={compose_project}",
+    ]
     try:
-        label_filter = f"label={label_prefix}.component={service_name}"
-        extra_filters: list[str] = []
-        try:
-            extra_filters = [
-                "--filter",
-                "label=com.docker.compose.project="
-                f"{compose_project_name(config, stack_dir)}",
-            ]
-        except ValueError:
-            # No S8.7 naming pair — reset's minimal-config/legacy contract. The
-            # component-only sweep is what catches legacy containers created
-            # before project scoping existed, so it is KEPT here deliberately.
-            # It is also host-wide, hence the warning: with nothing to scope by,
-            # "every container with this component label" is the only handle we
-            # have, and the operator should know that is what ran.
-            print(
-                "[WARN] [S6.4] deploy.project_name/environment_tag not set — "
-                "orphan sweep matches this component label across EVERY "
-                "instance on the host, not just this one",
-                flush=True,
-            )
         result = procutil.run_cmd(
             ["docker", "ps", "-a", "--filter", label_filter, *extra_filters,
              "--format", "{{.Names}}"],
@@ -975,6 +962,18 @@ def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
         raise ValueError(
             f"[S8.7] workspace-identity compose project normalizes to "
             f"{name!r}, which docker compose would refuse; rename the stack "
+            "directory or set deploy.project_name/environment_tag."
+        )
+    basename = Path(stack_dir).name
+    if basename != re.sub(r"[^a-z0-9_-]", "", basename.lower()):
+        # Round-trip guard (adversarial review): sibling stacks 'Vault' and
+        # 'vault' (or 'my.repo' and 'myrepo') would normalize onto the SAME
+        # project within one workspace — the second up silently adopts the
+        # first one's containers. Refuse instead of colliding.
+        raise ValueError(
+            f"[S8.7] config-less compose naming requires the stack directory "
+            f"name to be already normalized ({basename!r} normalizes to "
+            f"{re.sub(r'[^a-z0-9_-]', '', basename.lower())!r}); rename the "
             "directory or set deploy.project_name/environment_tag."
         )
     return name
@@ -1655,12 +1654,42 @@ def run_shipped(
         if define_root:
             repo_root = Path(define_root).resolve()
         else:
+            # CIU-46 (review): prefer THIS checkout's own env root — found by
+            # walking UP from the stack dir to its global-defaults marker —
+            # over an ambient `REPO_ROOT`, which a shell that sourced ANOTHER
+            # checkout's ciu.env carries. A linked worktree nested under its
+            # main checkout would otherwise name its compose project with the
+            # MAIN instance's identity record and silently adopt main's
+            # containers. The walk-up lands on exactly the env root
+            # bootstrap_workspace_env loaded, so naming and environment agree.
+            resolved_env_root = resolve_env_root(
+                working_dir, None, GLOBAL_CONFIG_DEFAULTS
+            )
+            marker_found = (
+                resolved_env_root / GLOBAL_CONFIG_DEFAULTS
+            ).is_file() and resolved_env_root != working_dir.resolve()
             env_repo_root = os.environ.get("REPO_ROOT")
-            if not env_repo_root:
+            if marker_found:
+                if (
+                    env_repo_root
+                    and Path(env_repo_root).resolve() != resolved_env_root.resolve()
+                ):
+                    print(
+                        "[INFO] [S8.7] ambient REPO_ROOT points at "
+                        f"{Path(env_repo_root).resolve()} but this stack's "
+                        f"checkout resolves to {resolved_env_root} — using the "
+                        "checkout's own record for compose project identity.",
+                        flush=True,
+                    )
+                repo_root = resolved_env_root.resolve()
+                os.environ["REPO_ROOT"] = str(repo_root)
+            elif env_repo_root:
+                # No local marker to trust; keep the bootstrapped environment.
+                repo_root = Path(env_repo_root).resolve()
+            else:
                 raise WorkspaceEnvError(
                     "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
                 )
-            repo_root = Path(env_repo_root).resolve()
 
         # ---- Global chain only (no stack config in shipped mode) ----
         print("[SHIPPED 2/4] Rendering global configuration...", flush=True)
