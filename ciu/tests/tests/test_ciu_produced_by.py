@@ -122,7 +122,7 @@ def test_partial_selection_missing_producer_refuses_naming_everything():
     assert "authentik/bootstrap_token" in message
     assert "apps/controller" in message
     assert "(core,db)" in message
-    assert "--profile core,db,identity" in message
+    assert "Deploy the producer profile" in message
     assert "seed the path" in message
 
 
@@ -261,3 +261,83 @@ def test_selection_entry_missing_from_rendered_is_skipped():
         [{"path": "apps/ghost", "phase_num": 1}],
         rendered={},  # nothing rendered for it
     )
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — presence judged by DEPLOYED STACKS; violations reported together
+# ---------------------------------------------------------------------------
+
+
+def _profile_config_with_alias() -> dict:
+    cfg = _profile_config()
+    cfg["deploy"]["profiles"]["vault-alt"] = {"stacks": ["infra/vault"]}
+    cfg["deploy"]["profiles"]["vault-full"] = {"stacks": ["infra/vault"]}
+    return cfg
+
+
+def test_alias_profile_deploying_producer_stacks_satisfies():
+    """Review major: presence is about DEPLOYED STACKS, not the label. The
+    operator selects an ALIAS profile that deploys infra/vault AND the
+    selection really contains it — the producer's provisioning will run, so
+    no refusal (the old name-membership check false-positived here)."""
+    cfg = _profile_config_with_alias()
+    profile = profiles_pkg.Profile(name="apps,vault-alt", config=cfg)
+    rendered = {
+        "infra/vault": {"vault_stack": {}},  # producer stack IS deployed
+        **_rendered(produced_by="vault-full"),
+    }
+    selection = [{"path": "infra/vault"}, {"path": "apps/controller"}]
+    deploy.producer_preflight(profile, selection, rendered)
+
+
+def test_phases_narrowed_producer_still_refuses():
+    """Review minor: --phases can narrow the producer's stacks out of the
+    selection while the profile name is technically 'involved' — the
+    intersection check refuses because none of its stacks are deployed."""
+    cfg = _profile_config()
+    cfg["deploy"]["deploy"] = cfg["deploy"]  # no-op guard against typos
+    cfg["deploy"]["profiles"]["identity"] = {"phases": ["phase_3"]}
+    cfg["deploy"]["phases"] = {
+        "phase_3": {"services": [{"path": "infra/vault", "name": "vault"}]}
+    }
+    profile = profiles_pkg.Profile(name="core,db", config=cfg)
+    with pytest.raises(ValueError, match="none of its stacks"):
+        deploy.producer_preflight(profile, _SELECTION, _rendered(produced_by="identity"))
+
+
+def test_unknown_profile_and_missing_producer_reported_together():
+    """Review minor: one typo'd declaration plus one genuinely missing
+    producer must BOTH appear — the old mid-loop raise discarded the first
+    violation's companions."""
+    rendered = {
+        "apps/controller": {
+            "controller": {
+                "secrets": {
+                    "bootstrap_token": {
+                        "directive": "ASK_VAULT:authentik/bootstrap_token",
+                        "produced_by": "identiy",  # typo
+                    },
+                }
+            }
+        },
+        "apps/web": {
+            "web": {
+                "secrets": {
+                    "session": {
+                        "directive": "ASK_VAULT:consul/session",
+                        "produced_by": "identity",  # defined but not selected
+                    }
+                }
+            }
+        },
+    }
+    cfg = _profile_config()
+    cfg["deploy"]["profiles"]["apps"] = {"stacks": ["apps/controller", "apps/web"]}
+    profile = profiles_pkg.Profile(name="apps", config=cfg)
+    selection = [{"path": "apps/controller"}, {"path": "apps/web"}]
+
+    with pytest.raises(ValueError) as excinfo:
+        deploy.producer_preflight(profile, selection, rendered)
+    message = str(excinfo.value)
+    assert "'identiy'" in message and "not a defined profile" in message
+    assert "provisioned by profile 'identity'" in message

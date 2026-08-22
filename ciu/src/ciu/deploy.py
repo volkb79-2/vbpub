@@ -460,12 +460,37 @@ def vault_preflight(
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")
 
 
+def _producer_profile_stack_paths(config: dict, pdata: dict) -> set[str]:
+    """Every stack path a profile deploys: its `stacks` list plus the services
+    of its phases (S13.6 — producer presence is about DEPLOYED STACKS, not
+    the profile label: an alias profile deploying the same stacks satisfies
+    the producer just as well)."""
+    paths: set[str] = set()
+    stacks = pdata.get("stacks", [])
+    if isinstance(stacks, list):
+        for s in stacks:
+            if isinstance(s, str) and s:
+                paths.add(s)
+    phases = pdata.get("phases", [])
+    if isinstance(phases, list):
+        phase_table = config.get("deploy", {}).get("phases", {})
+        for pk in phases:
+            if not isinstance(pk, str):
+                continue
+            phase = phase_table.get(pk, {})
+            services = phase.get("services", []) if isinstance(phase, dict) else []
+            for svc in services or []:
+                if isinstance(svc, dict) and svc.get("path"):
+                    paths.add(svc["path"])
+    return paths
+
+
 def producer_preflight(
     profile: profiles_pkg.Profile,
     selection: list[dict],
     rendered: dict[str, dict],
 ) -> None:
-    """S13.6 / CIU-42 — refuse a partial selection that excludes a declared producer.
+    """S13.4 / CIU-42 — refuse a partial selection that excludes a declared producer.
 
     A stack's ASK_VAULT directive may declare ``produced_by = "<profile>"``:
     the value at its Vault path is provisioned by THAT profile's deployment
@@ -476,10 +501,17 @@ def producer_preflight(
     naming the producer profile, the path, and both remedies (deploy the
     producer profile, or seed the path out-of-band).
 
+    Producer PRESENCE is judged by deployed stacks, not the profile label
+    (adversarial review): the producer passes when any stack it deploys (its
+    `stacks` list or its phases' services) is in the selection — so an alias
+    profile deploying the same stacks satisfies it, and a `--phases` filter
+    that narrowed the producer's stacks out still refuses.
+
     The default selection (no named profile = all phases) deploys every
     stack's provisioning, so there is nothing to refuse. An unknown producer
     profile name is a configuration error even under the default selection:
     a typo'd declaration must fail loudly, never silently protect nothing.
+    ALL violations are reported together — one run names everything.
     """
     config = profile.config
     profiles_table = config.get("deploy", {}).get("profiles", {})
@@ -487,6 +519,7 @@ def producer_preflight(
         n.strip() for n in (profile.name or "").split(",") if n.strip()
     }
     named_selection = bool(selected_names)
+    selection_paths = {entry["path"] for entry in selection}
 
     refusals: list[str] = []
     for entry in selection:
@@ -502,21 +535,30 @@ def producer_preflight(
         for spec in secret_directives.discover(root_key, merged):
             if spec.kind != "ASK_VAULT" or not spec.produced_by:
                 continue
-            if spec.produced_by not in profiles_table:
-                raise ValueError(
-                    f"[S13.6] ASK_VAULT secret '{spec.name}' in stack '{rel}' "
-                    f"declares produced_by = {spec.produced_by!r}, which is "
-                    f"not a defined profile in [deploy.profiles]. Defined "
-                    f"profiles: {', '.join(sorted(profiles_table)) or '(none)'}."
+            producer = spec.produced_by
+            pdata = profiles_table.get(producer)
+            if not isinstance(pdata, dict):
+                refusals.append(
+                    f"  stack '{rel}': ASK_VAULT secret '{spec.name}' declares "
+                    f"produced_by = {producer!r}, which is not a defined "
+                    f"profile in [deploy.profiles]. Defined profiles: "
+                    f"{', '.join(sorted(profiles_table)) or '(none)'}."
                 )
-            if named_selection and spec.produced_by not in selected_names:
+                continue
+            if named_selection and producer not in selected_names:
+                producer_paths = _producer_profile_stack_paths(config, pdata)
+                if producer_paths & selection_paths:
+                    # A stack this producer deploys IS in the selection —
+                    # the provisioning will run; the profile label differs.
+                    continue
                 refusals.append(
                     f"  stack '{rel}': ASK_VAULT secret '{spec.name}' reads "
                     f"Vault path '{spec.locator}', which is provisioned by "
-                    f"profile '{spec.produced_by}' — not in your selection "
-                    f"({profile.name}). Deploy the producer profile "
-                    f"(ciu up --profile {profile.name},{spec.produced_by}) or "
-                    "seed the path out-of-band before deploying."
+                    f"profile '{producer}' — none of its stacks "
+                    f"({', '.join(sorted(producer_paths)) or '(none)'}) are "
+                    f"in your selection ({profile.name}). Deploy the producer "
+                    f"profile or its stacks, or seed the path out-of-band "
+                    "before deploying."
                 )
 
     if refusals:

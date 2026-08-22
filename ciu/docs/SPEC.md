@@ -1230,18 +1230,28 @@ the field by seeding placeholders). With it:
   local/ephemeral kinds have no cross-profile producer). Value: a non-empty
   string; anything else is a `[S13.6]` grammar abort. A bare-string
   directive has no producer and behaves exactly as before.
-- **Preflight:** `producer_preflight` runs beside `vault_preflight` on every
-  deploy-needing invocation. When the selection names profiles and a declared
-  producer is not among them, it refuses `[S13.6]` naming EVERY unmet tuple:
-  stack, secret name, Vault path, producer profile, the current selection,
-  and both remedies — deploy the producer profile (`ciu up --profile
-  <selection>,<producer>`) or seed the path out-of-band. The default
-  selection (all phases) never refuses: everything's provisioning runs.
+- **Preflight:** `producer_preflight` runs beside `vault_preflight` on the
+  orchestration deploy path (`ciu up` with phases/profiles — the same surface
+  vault_preflight covers; a single-stack `ciu up --dir` dispatch runs neither,
+  a pre-existing scope limit stated here rather than hidden). Producer
+  PRESENCE is judged by DEPLOYED STACKS, not the profile label: the producer
+  passes when any stack it deploys — its `stacks` list or its phases'
+  services — is in the selection. An alias profile deploying the same stacks
+  therefore satisfies it, and a `--phases` filter that narrowed the
+  producer's stacks out still refuses. When no declared producer's stacks are
+  selected, it refuses `[S13.6]` naming EVERY unmet tuple: stack, secret
+  name, Vault path, producer profile, its stack set, the current selection,
+  and both remedies — deploy the producer profile or its stacks, or seed the
+  path out-of-band. The default selection (all phases) never refuses:
+  everything's provisioning runs.
 - **Typo protection:** a `produced_by` naming an undefined profile is a
   configuration error EVEN under the default selection — a typo'd declaration
-  must fail loudly, never silently protect nothing.
+  must fail loudly, never silently protect nothing. The check walks the
+  SELECTED stacks' renders; declarations in non-selected stacks validate when
+  those stacks deploy.
 - **Scope:** shipped stacks have no CIU secrets surface (S8.6) and are
-  skipped; undeclared ASK_VAULT directives keep today's behavior exactly.
+  skipped; undeclared ASK_VAULT directives keep today's behavior exactly; all
+  violations in one run are reported TOGETHER — never one per run.
 - **Controlled wrong implementation:** dropping the declaration lookup makes
   the preflight pass where it must refuse — the refusal demonstrably comes
   from the declaration, not from the path.
