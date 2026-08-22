@@ -98,6 +98,15 @@ def docker_runs(log: Path) -> list[list[str]]:
     return out
 
 
+def docker_execs(log: Path) -> list[list[str]]:
+    out = []
+    for line in log.read_text().splitlines():
+        parts = line.split("\x1f")
+        if parts and parts[0] == "exec":
+            out.append([p for p in parts if p != ""])
+    return out
+
+
 def shim_dir_of(monkeypatch) -> Path:
     return Path(os.environ["PATH"].split(":")[0])
 
@@ -890,7 +899,7 @@ class TestExecMode:
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
         calls = log.read_text().splitlines()
-        exec_calls = [c.split("\x1f") for c in calls if c.startswith("exec")]
+        exec_calls = docker_execs(log)
         assert len(exec_calls) == 1
         call = exec_calls[0]
         idx = lambda flag: call.index(flag)
@@ -930,7 +939,7 @@ class TestExecMode:
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
         calls = log.read_text().splitlines()
-        exec_calls = [c.split("\x1f") for c in calls if c.startswith("exec")]
+        exec_calls = docker_execs(log)
         assert "custom-name" in exec_calls[0]
 
 
@@ -976,3 +985,78 @@ def test_safe_directory_uses_git_config_global_env():
     inner = run_gate.build_command_inner(
         {"argv": ["echo"]}, Path("/wt"))
     assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+class TestExecInnerWiring:
+    """Reviewer's hollow-wiring probe: the exec path must carry the REAL
+    inner command, not a stub. These tests fail if build_command_inner is
+    replaced with 'true' in run_exec_lane."""
+
+    def test_exec_inner_contains_substituted_argv(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('["echo", "hello"]',
+                                '["bash", "-c", "cd {worktree} && echo gate-ran"]')
+        proj = make_project(repo, cfg)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        calls = log.read_text().splitlines()
+        exec_calls = docker_execs(log)
+        inner = exec_calls[0][-1]
+        assert "echo gate-ran" in inner and "GIT_CONFIG_GLOBAL" in inner
+
+    def test_exec_assay_lane_builds_assay_inner_not_crash(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "r:latest"
+            mode = "exec"
+            [lanes.a]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "a", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        calls = log.read_text().splitlines()
+        exec_calls = docker_execs(log)
+        inner = exec_calls[0][-1]
+        assert "--file assay.toml" in inner
+        assert "GIT_CONFIG_GLOBAL" in inner
+
+
+def test_assay_inner_has_git_config_global():
+    inner = run_gate.build_assay_inner(
+        {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
+        Path("/proj"))
+    assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    proj = make_project(repo, SIMPLE_LANE)
+    log = fake_docker(tmp_path, monkeypatch)
+    monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "/a=/b::/c=/d")
+    monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+    proc = run_tool(proj, "suite")
+    assert proc.returncode == 1
+    assert "empty element" in proc.stderr

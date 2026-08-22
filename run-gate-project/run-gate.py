@@ -323,6 +323,7 @@ def substitute_worktree(argv: list[str], worktree: Path) -> list[str]:
 def build_assay_inner(lane: dict, project_dir: Path) -> str:
     verdict = f".assay/verdict-{lane['assay_lane']}.json"
     parts = ["set -euo pipefail",
+             "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
              shlex.join(["git", "config", "--global", "safe.directory", "*"]),
              f"cd {shlex.quote(str(project_dir))}"]
     for _pin_name, pin in lane.get("pins", {}).items():
@@ -351,7 +352,14 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         fail("docker not found on PATH — container lanes need it")
     phys = physical_path(repo)
     mounts = ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]  # dual: worktree gitfiles
-    for mount_spec in [item for item in os.environ.get(EXTRA_MOUNT_ENV_VAR, "").split(":") if item]:
+    extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
+    if extra_mounts_raw:
+        mount_specs = extra_mounts_raw.split(":")
+        if "" in mount_specs:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR}: empty element in {extra_mounts_raw!r}")
+    else:
+        mount_specs = []
+    for mount_spec in mount_specs:
         if "=" not in mount_spec or mount_spec.count("=") != 1:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: expected 'host=container'")
         source, target = mount_spec.split("=", 1)
@@ -446,17 +454,19 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if not docker:
         fail("docker not found on PATH — exec-mode lanes need it")
     name, name_src = resolve_container_name(env_name, env, repo, env_source)
-    running = subprocess.run(
-        [docker, "ps", "--format", "{{.Names}}"],
-        capture_output=True, text=True,
-    )
+    running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
+                             capture_output=True, text=True)
+    if running.returncode != 0:
+        detail = running.stderr.strip().splitlines()[-1:] or [f"exit {running.returncode}"]
+        fail(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
         fail(f"persistent runner '{name}' ({name_src}) is not running — "
              f"start it via 'ciu up --dir tools/test-runner' or the project's "
              f"runner lifecycle command before invoking this lane; run-gate "
              f"refuses to guess or auto-start deployment-managed containers")
-    inner = build_command_inner(lane, worktree)
+    inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
+        else build_command_inner(lane, worktree)
     argv = [docker, "exec", "--workdir", str(repo)]
     # Env passthrough allowlist: MOCK_MODE, RUN_LIVE_TESTS are dstdns's two
     # standard test-mode toggles. More can be added per-environment later.
