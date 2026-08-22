@@ -24,7 +24,8 @@ internal_port = @@PORT@@
 [@@ROOT_KEY@@.app.hostdir]
 data = ""
 
-# Secrets (S4.2). GEN_LOCAL mints once and reuses; swap for ASK_VAULT:<path>
-# once a Vault exists.
+# Secrets (S4.2). GEN_LOCAL mints once into the PROJECT store
+# (<repo-root>/.ciu/secrets/<locator>) and reuses that byte-stable value on
+# every run (S4.9/S4.11); swap for ASK_VAULT:<path> once a Vault exists.
 [@@ROOT_KEY@@.secrets]
 api_key = "GEN_LOCAL:demo/@@STACK_NAME@@_api_key"

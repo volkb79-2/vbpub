@@ -84,8 +84,10 @@ def test_gitignore_additions_applied_once(workdir, monkeypatch):
                                  workdir)
     files = scaffold.build_files(plan, workdir) if False else None
     # direct gitignore-merge path (what init_main does after writing):
-    existing_lines = set(first.splitlines())
-    missing = [e for e in scaffold._GITIGNORE_ENTRIES if e not in existing_lines]
+    existing_entries = {ln.split("  # ")[0] for ln in first.splitlines()
+                        if ln and not ln.startswith("#")}
+    missing = [e for e, _ in scaffold._GITIGNORE_ENTRIES
+               if e not in existing_entries]
     assert missing == []  # nothing left to add — deduped
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         scaffold.init_main(["--project-name", "demo"])  # targets now exist

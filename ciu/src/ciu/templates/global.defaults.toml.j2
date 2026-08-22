@@ -14,9 +14,13 @@ auto_connect_network = true
 [deploy]
 project_name = "@@PROJECT_NAME@@"
 environment_tag = "@@ENVIRONMENT_TAG@@"
+# Resolved from ciu.env (S2.6); every stack's compose declares it as an
+# EXTERNAL network, so all stacks in this workspace share one bridge.
 network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
+# Container label prefix for orphan cleanup (S6.4) — keep in sync with
+# project_name so `ciu clean` matches this workspace's containers only.
 [deploy.labels]
 prefix = "@@PROJECT_NAME@@"
 
