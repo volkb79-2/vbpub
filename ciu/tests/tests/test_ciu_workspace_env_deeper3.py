@@ -145,3 +145,30 @@ def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
     assert workspace_env.bootstrap_env_init(tmp_path) == env_path
     assert "Network setup skipped: daemon unavailable" in capsys.readouterr().out
     assert events == ["tls"]
+
+
+def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CIU-41 overwrite scope is EXACTLY the derived identity tuple: any other
+    key already present in os.environ keeps its ambient value."""
+    env_path = tmp_path / "ciu.env"
+    env_path.write_text(
+        'export DOCKER_NETWORK_INTERNAL="fresh-net"\n'
+        'export PUBLIC_FQDN="file-value.example"\n',
+        encoding="utf-8",
+    )
+    events: list[str] = []
+    monkeypatch.delenv("REPO_NAME", raising=False)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+    monkeypatch.setenv("PUBLIC_FQDN", "ambient-value.example")
+    monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
+    monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
+    monkeypatch.setattr(workspace_env, "ensure_workspace_network", events.append)
+    monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
+
+    workspace_env.bootstrap_env_init(tmp_path)
+
+    import os
+    assert os.environ["PUBLIC_FQDN"] == "ambient-value.example"
+    assert os.environ["DOCKER_NETWORK_INTERNAL"] == "fresh-net"

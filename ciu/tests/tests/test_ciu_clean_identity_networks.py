@@ -372,3 +372,219 @@ def test_custom_named_compose_network_removed_via_label_pass(monkeypatch, tmp_pa
 
     assert rc == 0
     assert fake.networks == {}
+
+
+# ---------------------------------------------------------------------------
+# Gate-repair coverage — every fail-closed path the release gate found dark
+# ---------------------------------------------------------------------------
+
+
+class InstrumentedDocker(FakeDocker):
+    """FakeDocker with ordinal-based ls-failure injection (1-based)."""
+
+    def __init__(self, *a, net_ls_fail_at=(), vol_ls_fail_at=(),
+                 inspect_garbage=(), inspect_empty=(), inspect_missing=(),
+                 rm_fail=(), **kw):
+        super().__init__(*a, **kw)
+        self.net_ls_fail_at = set(net_ls_fail_at)
+        self.vol_ls_fail_at = set(vol_ls_fail_at)
+        self._net_ls_seen = 0
+        self._vol_ls_seen = 0
+        self.inspect_garbage: set[str] = set(inspect_garbage)
+        self.inspect_empty: set[str] = set(inspect_empty)
+        self.inspect_missing: set[str] = set(inspect_missing)  # gone between exists and inspect
+        self.rm_fail: set[str] = set(rm_fail)
+
+    def __call__(self, args, **kw):
+        op, sub = args[0], args[1] if len(args) > 1 else ""
+        # Only FILTERED ls calls are counted: the legacy unfiltered volume
+        # name-pass predates S6.4a and its swallow-failure semantics are not
+        # under test here.
+        filtered = "--filter" in args
+        if op == "network" and sub == "ls" and filtered:
+            self._net_ls_seen += 1
+            if self._net_ls_seen in self.net_ls_fail_at:
+                return _proc(1, "", "Cannot connect to the Docker daemon")
+        if op == "volume" and sub == "ls" and filtered:
+            self._vol_ls_seen += 1
+            if self._vol_ls_seen in self.vol_ls_fail_at:
+                return _proc(1, "", "Cannot connect to the Docker daemon")
+        if op == "network" and sub == "inspect":
+            name = args[2]
+            if name in self.inspect_missing:
+                self.networks.pop(name, None)  # consistent: it IS gone
+                return _proc(1, "", f"Error: No such network: {name}")
+            if name in self.inspect_garbage:
+                return _proc(0, "NOT JSON {{", "")
+            if name in self.inspect_empty:
+                return _proc(0, "[]", "")
+        if op == "network" and sub == "rm" and args[2] in self.rm_fail:
+            self.calls.append(args)
+            return _proc(1, "", f"Error response from daemon: reference does not exist: {args[2]}")
+        return super().__call__(args, **kw)
+
+
+def _instance_repo_with_vault(tmp_path):
+    repo_root = _instance_repo(tmp_path)
+    # a compose-labeled network for the selected stack
+    return repo_root
+
+
+def test_rm_verify_daemon_failure_resolved_by_invariant_state(monkeypatch, tmp_path, capsys):
+    """Daemon dying BETWEEN rm and re-verification records the removal as
+    blocked-indeterminate; when the invariant's own state check then proves
+    the network gone (a concurrent teardown won), the clean legitimately
+    succeeds — the stale blocked entry never overrides Docker state."""
+    repo_root = _instance_repo(tmp_path)
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": [], "proj-env-vault_default": []},
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
+        # filtered-ls ordinals: 1 enum, 2 id-exists, 3 id-verify, 4 vault-exists,
+        # 5 vault-verify (FAILS), 6/7 invariant re-checks
+        net_ls_fail_at={5},
+    )
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 0
+    assert fake.networks == {}
+
+
+def test_invariant_unverifiable_fails_clean(monkeypatch, tmp_path, capsys):
+    """A network that cannot be re-checked at invariant time fails the clean
+    (review B3): indeterminacy never folds into 'gone'."""
+    repo_root = _instance_repo(tmp_path)
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": [], "proj-env-vault_default": []},
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
+        net_ls_fail_at={7},  # invariant's re-check of the second target
+    )
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "unverifiable" in out
+
+
+def test_removal_refusal_names_network_and_fails(monkeypatch, tmp_path, capsys):
+    repo_root = _instance_repo(tmp_path)
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": []},
+        rm_fail={"proj-abc123-network"},
+    )
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "proj-abc123-network" in out
+    assert "post-clean invariant violated (S6.4a)" in out
+
+
+def test_inspect_garbage_is_refused_not_empty(monkeypatch):
+    """Unparsable inspect output raises — absence-for-emptiness forbidden."""
+    fake = InstrumentedDocker(networks={"net-a": []}, inspect_garbage={"net-a"})
+    monkeypatch.setattr(deploy.procutil, "docker", fake)
+    with pytest.raises(ValueError, match="unparsable"):
+        deploy._network_endpoints("net-a")
+
+
+def test_inspect_empty_list_is_zero_endpoints(monkeypatch):
+    fake = InstrumentedDocker(networks={"net-a": []}, inspect_empty={"net-a"})
+    monkeypatch.setattr(deploy.procutil, "docker", fake)
+    assert deploy._network_endpoints("net-a") == []
+
+
+def test_concurrent_teardown_between_exists_and_inspect_is_skipped(monkeypatch, tmp_path):
+    """A network that vanishes right after the existence check is fine."""
+    repo_root = _instance_repo(tmp_path)
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": [], "proj-env-vault_default": []},
+        network_labels={"proj-env-vault_default": "proj-env-vault"},
+        inspect_missing={"proj-env-vault_default"},
+    )
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 0
+    assert fake.networks == {"proj-abc123-network": []} or len(fake.networks) <= 1
+
+
+def test_identity_env_parse_failure_reads_as_no_network(monkeypatch, tmp_path, capsys):
+    """An UNPARSEABLE ciu.env names no removable network — and says nothing."""
+    (tmp_path / "ciu.env").write_text("this line is not an assignment\n", encoding="utf-8")
+    (tmp_path / "ciu.worktree-instance.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "apps" / "vault").mkdir(parents=True)
+    repo_root = tmp_path
+    fake = FakeDocker(networks={})
+    monkeypatch.setattr(deploy.procutil, "docker", fake)
+    sel = [{"path": "apps/vault"}]
+    monkeypatch.setattr(deploy, "render_selected_stacks",
+                        lambda *a, **k: {e["path"]: {} for e in sel})
+    monkeypatch.setattr(deploy.engine, "reset_service", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+
+    assert deploy.action_clean(repo_root, _profile(), sel, ignore_errors=True) == 0
+
+
+def test_stack_projects_skip_missing_dirs():
+    from ciu.deploy_pkg.profiles import Profile
+    config = {"deploy": {"project_name": "p", "environment_tag": "e"}}
+    assert deploy._stack_compose_projects(
+        Path("/nonexistent-root"), config, [{"path": "no/such/dir"}]
+    ) == []
+
+
+def test_volume_enumeration_daemon_failure_fails_clean(monkeypatch, tmp_path, capsys):
+    """Volume ls failing mid-clean fails the clean — never 'nothing to remove'."""
+    repo_root = _instance_repo(tmp_path)
+    fake = InstrumentedDocker(networks={}, vol_ls_fail_at={1})
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "volume enumeration failed (S6.4a)" in out
+    assert "cannot certify a complete teardown" in out
+
+
+def test_main_workspace_kept_network_already_gone_stays_green(monkeypatch, tmp_path, capsys):
+    repo_root = _main_repo(tmp_path)
+    fake = FakeDocker(networks={}, )  # identity net named in ciu.env but absent
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "kept:" not in out
+    assert "clean complete" in out
+
+
+def test_stack_projects_dedupe_repeated_compose_projects(tmp_path):
+    """The dedupe arc: distinct stack paths whose BASENAMES collide resolve to
+    one compose project name (S8.7 keys on the basename)."""
+    config = {"deploy": {"project_name": "p", "environment_tag": "e"}}
+    root = tmp_path
+    for rel in ("apps/vault", "other/vault"):
+        (root / rel).mkdir(parents=True)
+    assert deploy._stack_compose_projects(
+        root, config,
+        [{"path": "apps/vault"}, {"path": "apps/vault"}, {"path": "other/vault"}],
+    ) == ["p-e-vault"]
+
+
+def test_enumerated_network_matching_a_keep_is_not_targeted(monkeypatch, tmp_path):
+    """A compose-labeled network whose name EQUALS the kept workspace network is
+    skipped as a target (the keep wins) — the skip-append arc."""
+    repo_root = _main_repo(tmp_path)
+    # identity net ALSO carries a compose label matching the selected project:
+    # pathological but expressible, and it must resolve to keep-not-remove.
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": []},
+        network_labels={"proj-abc123-network": "proj-env-vault"},
+    )
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 0
+    assert "proj-abc123-network" in fake.networks
+
+
+def test_kept_network_check_daemon_failure_warns_not_crashes(monkeypatch, tmp_path, capsys):
+    """The keep-existence check degrading (daemon failure) warns and keeps
+    going — the keep was declared by policy, not discovered by state."""
+    repo_root = _main_repo(tmp_path)
+    fake = InstrumentedDocker(networks={}, net_ls_fail_at={2})
+    # ordinals: 1 enum(label, empty), 2 keep-check(identity) FAILS -> warn path
+    rc = _run_clean(monkeypatch, repo_root, fake)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "kept-network check failed" in out
+    assert "clean complete" in out

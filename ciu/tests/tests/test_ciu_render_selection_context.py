@@ -307,3 +307,33 @@ def test_compose_render_also_merges_ciu_table(tmp_path):
 
     assert 'ATTACH: "True"' in rendered
     assert 'PROFILES: "core"' in rendered
+
+
+def test_engine_identity_read_survives_unreadable_ciu_env(
+    tmp_path, monkeypatch
+):
+    """An unreadable ciu.env degrades ctx identity to None — the deploy
+    proceeds; the OSError branch of the S3.12 wiring is exercised."""
+    import os
+
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    repo_root = _build_repo(tmp_path, monkeypatch)
+    stack = _add_stack(repo_root)
+
+    # Skip ONLY the step-1 bootstrap (it legitimately needs the record and
+    # already ran in _build_repo); make the file unreadable for the ENGINE's
+    # own S3.12 identity read: stat still succeeds so is_file() passes, but
+    # open() raises PermissionError(OSError).
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
+    env_path = repo_root / "ciu.env"
+    env_path.chmod(0o000)
+    try:
+        result = engine.main_execution(
+            stack, dry_run=True, yes=True, ciu_context=dict(_CTX)
+        )
+    finally:
+        env_path.chmod(0o644)  # let tmp cleanup work regardless of runner uid
+    assert result["status"] == "success"
+
+
+from ciu.hooks_runner import HookContext  # noqa: E402
