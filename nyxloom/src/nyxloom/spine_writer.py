@@ -53,7 +53,7 @@ _FALLBACK_FILENAMES: dict[str, str] = {
     "north_star": "1-north-star.md",
     "product_definition": "2-product-definition.md",
     "roadmap": "3-roadmap.md",
-    "backlog": "4-backlog.md",
+    "backlog": "4-backlog-inbox.md",
 }
 
 

@@ -19,7 +19,7 @@ INTERFACE CONTRACT:
        if none exists yet (never duplicates `cli.cmd_init`'s own scaffold --
        `cli.cmd_init` is now a thin wrapper AROUND `scaffold_trove`, so the
        trove layout has exactly one source of truth).
-    2. Instantiates any MISSING spine doc (1-north-star.md .. 4-backlog.md,
+    2. Instantiates any MISSING spine doc (1-north-star.md .. 4-backlog-inbox.md,
        docs/spine-documents-spec.md) with minimal-valid frontmatter (schema-
        checked by `lint.lint_spine` -- see tests/test_onboarding.py). An
        ALREADY-PRESENT spine doc is left completely untouched, never
@@ -205,6 +205,13 @@ worktree_root = "../.worktrees"
 # timeout_seconds = 1800
 # environment = "..."
 
+# Managed per-entry backlog (docs/backlog-entries-spec.md). Uncomment to
+# adopt; omitting the section entirely keeps every backlog-entry lint rule
+# and CLI verb silent.
+# [backlog_entries]
+# dir       = "nyxloom-trove/backlog"
+# id_prefix = "B"
+
 [policy]
 max_active_tasks = 3
 ready_queue_target = 5
@@ -253,7 +260,7 @@ A project may also keep:
 ## What nyxloom manages here
 
 `handoffs/`, `reports/`, `archive/`, `agent-logs/`, `decisions.md`, and the
-direction spine (`1-north-star.md` … `4-backlog.md`) if adopted. Configuration
+direction spine (`1-north-star.md` … `4-backlog-inbox.md`) if adopted. Configuration
 lives in `nyxloom.toml`.
 """
 
@@ -315,7 +322,7 @@ _SPINE_DOC_SPECS: tuple[tuple[str, str, str], ...] = (
     ("north_star", "1-north-star.md", "north-star"),
     ("product_definition", "2-product-definition.md", "product-definition"),
     ("roadmap", "3-roadmap.md", "roadmap"),
-    ("backlog", "4-backlog.md", "backlog"),
+    ("backlog", "4-backlog-inbox.md", "backlog"),
 )
 
 
@@ -397,7 +404,7 @@ def _wire_spine_keys(toml_path: Path, trove_name: str) -> list[str]:
         "north_star": f"{trove_name}/1-north-star.md",
         "product_definition": f"{trove_name}/2-product-definition.md",
         "roadmap": f"{trove_name}/3-roadmap.md",
-        "backlog": f"{trove_name}/4-backlog.md",
+        "backlog": f"{trove_name}/4-backlog-inbox.md",
     }
 
     text = toml_path.read_text(encoding="utf-8")

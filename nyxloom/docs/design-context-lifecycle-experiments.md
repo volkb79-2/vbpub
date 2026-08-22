@@ -1612,3 +1612,62 @@ above dispatching new work — a CHECKPOINT sitting in the queue is not neutral,
 decaying. The corollary for a planned hand-over (operator swapping controllers, as here): where
 schedulable, hand over at a boundary that is NOT mid-checkpoint, or accept and budget for the
 one-time cold-resume tax the successor's first action will pay.
+
+## V6 (proposed, not yet run) · fork-from-orientation-checkpoint + delta, as a genuine third lever distinct from V1 compact and V3/V4 snapshot-chain
+
+Surfaced 2026-08-21 in an operator discussion during the dstdns config wave, refining V3/V4's
+"snapshot-minted fork always pays cold cache_creation" finding into an operationally useful
+distinction the earlier addenda didn't separate cleanly: **cache warmth and context-window size
+are two different currencies, and the three known levers spend them differently.**
+
+| lever | cache cost on reuse | context-window footprint after reuse |
+|---|---|---|
+| grow-in-place, no compaction | cheap (warm, same session) | full (carries everything) |
+| V1 compact + resume | **cold** — synthesized summary text has never been sent as input before, so its first use is unconditionally `cache_creation` regardless of elapsed time (this is *why* V1 addendum 5's TTL-gap framing only explains variance in the compact CALL's own cost, not the state that results from it) | small (the whole point) |
+| **V6 proposal: fork from a REAL earlier turn** (not a synthesized summary) + append a small iteration-summary/git-diff delta | cheap IF the forked-from turn's specific prefix is still cache-warm (V4's "real fork re-pays the snapshot body" finding was about a *synthesized* snapshot never having been cached in the first place — a genuine prior turn is a different case, because it WAS sent as real input once, by the original session's own next turn) | small IF the fork point is chosen early (e.g. right after orientation, before the bulk of iteration work accumulates) — genuinely smaller than a late-session compact's ~70k floor if the checkpoint itself was taken at ~30-40k |
+
+The hypothesis this predicts: **forking from an early, real, still-warm checkpoint should beat
+both alternatives simultaneously** — cache-cheap like grow-in-place, context-window-cheap like
+compaction, provided (a) the checkpoint is a genuine turn boundary the ORIGINAL session actually
+sent as a request (not a hand-assembled brief — V3/V4 already showed those are always cold), and
+(b) it's forked from soon enough that its specific prefix bytes are still an addressable warm
+cache entry. Condition (b) is the open question V1-V5 never isolated: Claude Code's harness slides
+a bounded number of `cache_control` breakpoints forward as a transcript grows (see the CLAUDE.md
+cross-repo layer's cache-warmth section), so an EARLY checkpoint may stop being *explicitly*
+re-marked once the live session's own breakpoints move past it — even while the live session
+keeps hitting fine on its own newer markers. Whether the underlying block-level cache still
+serves a hit on that earlier, no-longer-explicitly-marked prefix is exactly what's unmeasured.
+
+**Proposed design (haiku workers, synthetic scratch repo — same harness as V3/V4, so results are
+directly comparable):**
+1. Run a real orientation phase (read N files, build a mental model) as an actual multi-turn
+   session — NOT a hand-assembled snapshot — and capture its session id at the point orientation
+   completes (this is the candidate fork point). Record `total_context_tokens` at that point.
+2. Let the SAME session continue for a further M turns of ordinary iteration work (simulating a
+   real implementer), reaching some larger context size C.
+3. At context size C, branch into three arms:
+   - **Arm A (grow+compact):** run `/compact`, then dispatch one more real turn from the
+     compacted state. Record cache_creation/cache_read on that first post-compact turn.
+   - **Arm B (fork-from-late-point):** `--resume <session> --fork-session` from the CURRENT tip
+     (context size C, not the orientation point), append a task turn. This is V3/V4's own
+     scenario, replayed as the direct control.
+   - **Arm C (fork-from-orientation-checkpoint):** `--resume <session> --fork-session` from the
+     EARLY orientation-complete point (not the current tip), append a mechanically-generated
+     delta (a short iteration-summary + `git diff` of what changed since orientation) plus the
+     same task turn Arms A/B received.
+4. For each arm, at varying Δt since the orientation point was reached (16s, 5min, 30min, near
+   the 1h TTL boundary — matching V4's Δt sweep design) record: first-turn `cache_creation_input_
+   tokens` / `cache_read_input_tokens`, resulting total context size, and whether the task turn's
+   OUTPUT QUALITY holds (does Arm C's smaller context still let the agent correctly use facts
+   from orientation that the delta didn't explicitly restate — the same kind of check V1 addendum
+   5 did informally for compaction, but as a designed oracle here: plant a fact during orientation
+   that only matters much later, and see if each arm's resumed session still uses it correctly).
+
+**What a result would change, either way.** If Arm C beats Arm A on cost at comparable context
+size and doesn't regress on the fact-retention oracle, this becomes a *fourth* checkpoint-strategy
+option worth adding to CLAUDE.md's "Long-running agent context discipline" section — reframed
+explicitly as picking a lever by which resource actually binds (`$` vs context-window headroom),
+not by a single "resume vs respawn" axis as currently written. If condition (b) turns out false at
+realistic Δt (the sliding-breakpoint concern), that's equally valuable: it would mean early
+checkpoints need to be *periodically re-touched* (a cheap no-op turn) to stay forkable, which is
+itself an actionable scheduling rule for a controller or future nyxloom daemon to implement.

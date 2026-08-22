@@ -19,7 +19,7 @@ _SPINE_FILENAMES = (
     "1-north-star.md",
     "2-product-definition.md",
     "3-roadmap.md",
-    "4-backlog.md",
+    "4-backlog-inbox.md",
 )
 
 
@@ -123,7 +123,7 @@ def test_onboard_greenfield_instantiates_lint_clean_spine(tmp_path):
     assert cfg.north_star == "nyxloom-trove/1-north-star.md"
     assert cfg.product_definition == "nyxloom-trove/2-product-definition.md"
     assert cfg.roadmap == "nyxloom-trove/3-roadmap.md"
-    assert cfg.backlog == "nyxloom-trove/4-backlog.md"
+    assert cfg.backlog == "nyxloom-trove/4-backlog-inbox.md"
 
     spine_findings = lint.lint_spine(cfg)
     assert set(spine_findings.keys()) == {
