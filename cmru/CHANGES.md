@@ -6,6 +6,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(cmru): `cmru init` guided scaffolding (single project / monorepo) —
+  generates loader-valid cmru.toml contracts and (monorepo)
+  cmru.orchestration.toml with the estate env block (${NAME:-default}
+  references, RAM/IO comments); templates ship in the wheel
+  (`cmru/templates/*`); validation-first via the real loaders; never
+  overwrites existing files
+
+
+
 ### Changed
 - feat(cmru): tester-gate cgroup-parent is DECLARED-CONFIG — resolves only
   `CMRU_TESTER_CGROUP_PARENT` (empty/unset = no slice tier, announced

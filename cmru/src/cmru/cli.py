@@ -1815,6 +1815,10 @@ def usage() -> str:
         "                                                  isolated source-first transaction\n"
         "    changelog --config C --project P --backfill-tag TAG\n"
         "                                                  catalog an already-published tagged release\n"
+        "    init [--layout single|monorepo] [--project ID] [--owner O] [--repo R]\n"
+        "                                                  guided scaffolding: writes cmru.toml (and, for a\n"
+        "                                                  monorepo, cmru.orchestration.toml) after validating\n"
+        "                                                  them with the real loaders; never overwrites\n"
         "    standards [--config C] [--project P ...] [--update]\n"
         "                                                  check/update CMRU framework markers\n"
         "    tool-deps [--config C] [--project P ...] [--json] [--timeout S]\n"
@@ -1881,6 +1885,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     verb = av[0]
     rest = av[1:]
+
+    if verb == "init":
+        from cmru.scaffold import init_main
+        return init_main(rest)
 
     if verb == "run":
         _sys.argv = ["cmru"] + rest
