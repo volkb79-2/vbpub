@@ -164,7 +164,7 @@ A stack that integrates with an optional upstream no longer hardcodes the
 coupling — it reads the selection. Paste into any stack's
 `ciu.defaults.toml.j2`:
 
-```toml
+```jinja
 [myapp.my_service.features]
 # on exactly when this invocation deploys infra/pwmcp (any profile name that
 # selects it — the template sees the resolved STACK set, not the flag spelling):

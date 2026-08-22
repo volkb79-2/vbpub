@@ -109,18 +109,15 @@ preflight/check/graph) exposes two read-only variables to all templates:
 | `ciu.selected_profiles` | list of str | Ordered named profiles resolved for THIS invocation; empty = the default all-phases profile |
 | `ciu.deployed_stacks` | list of str | The FULL stack set this invocation deploys (declaration order) — not just the stack being rendered |
 
-```toml
+```jinja
 # in any stack's ciu.defaults.toml.j2 — derive a feature flag from the
-# selected set instead of hardcoding it:
+// selected set instead of hardcoding it:
 [<root>.<service>.features]
 enable_pwmcp_mcp = {{ 'infra/pwmcp' in ciu.deployed_stacks }}
-```
 
-A template that references an undeployed upstream can gate loudly — outside
-a deployment render the membership test itself raises (UndefinedError), and
-inside one the branch simply stays off until upstream is selected:
-
-```toml
+# a reference to an undeployed upstream gates loudly: outside a deployment
+# render the membership test itself raises (UndefinedError); inside one the
+# branch simply stays off until upstream is selected
 {% if 'infra/vault' in ciu.deployed_stacks %}
 [<root>.<service>.upstream]
 host = "{{ vault.internal_host }}"

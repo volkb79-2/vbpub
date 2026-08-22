@@ -179,7 +179,7 @@ evidence. The gate resolves the container slice ONLY from
 `$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback), verifies the named
 slice is `LoadState=loaded` before `docker run` (fail-closed), and its final
 status is the Assay job's own exit status. See [SPEC S18](docs/SPEC.md#s18--implementation-gate-assay-backed) and
-[CONSUMERS §10](docs/CONSUMERS.md#10-the-implementation-gate-assay-backed-s18).
+[CONSUMERS §10](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18).
 
 ### Release scheme
 
