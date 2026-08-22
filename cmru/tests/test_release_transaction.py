@@ -858,7 +858,7 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
     monkeypatch.setenv("CMRU_TESTER_CPUS", "1.5")
     monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker:dind-test")
-    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_FORWARD_VAR", "dev-background.slice")
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "3g")
     monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "16g")
     monkeypatch.setattr(tester_gate.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0))
@@ -875,7 +875,10 @@ def test_tester_gate_main_wires_enable_docker_through_a_dind_sidecar(monkeypatch
         tester_gate.main(["--cwd", "modern-debian-tools-python-debug", "--enable-docker", "--", "true"])
 
     assert captured["sidecar_name"] == "cmru-tester-dind-fixedname"
-    assert captured["cgroup_parent"] == "dev-background.slice"
+    # CIU-46 wave: PLACEMENT comes from the declared CMRU_TESTER_CGROUP_PARENT
+    # (unset here -> "" = no slice tier), while the FORWARDED var is a
+    # separate declaration — the two are independent now.
+    assert captured["cgroup_parent"] == ""
     assert captured["cgroup_parent_dev_background"] == "dev-background.slice"
     assert captured["memory"] == "3g"
     assert captured["memory_swap"] == "16g"
@@ -927,23 +930,35 @@ def _full_tester_env(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "debian:test")
 
 
-def test_tester_gate_main_errors_when_no_cgroup_parent_resolvable(monkeypatch, tmp_path):
-    # cgroup_parent is NOT part of the KI-17 preflight (it has the ambient
-    # CGROUP_PARENT_DEV_BACKGROUND fallback), so with the full required env set
-    # the preflight passes and control reaches resolve_cgroup_parent, which
-    # then fails on its own when BOTH parent sources are absent.
+def test_tester_gate_main_launches_unscoped_when_no_cgroup_parent_declared(monkeypatch, tmp_path, capsys):
+    # CIU-46 wave: cgroup_parent is DECLARED-ONLY. With nothing declared the
+    # launch PROCEEDS without --cgroup-parent (announced on stderr); the
+    # per-container caps still apply.
     _full_tester_env(monkeypatch)
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT", raising=False)
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
     monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: tmp_path))
+    argv_seen = {}
 
-    def fail_if_called(*_a, **_k):
-        raise AssertionError("must not launch docker when cgroup_parent is unresolvable")
+    def fake_run(argv, **_k):
+        argv_seen["argv"] = argv
+        # git rev-parse --git-common-dir fails here => ordinary checkout,
+        # no extra bind mount; everything else "succeeds".
+        rc = 1 if "rev-parse" in argv else 0
+        return SimpleNamespace(returncode=rc, stdout="", stderr="")
 
-    monkeypatch.setattr(tester_gate.subprocess, "run", fail_if_called)
+    monkeypatch.setattr(tester_gate.subprocess, "run", fake_run)
 
-    with pytest.raises(SystemExit, match="no cgroup_parent resolvable"):
+    monkeypatch.setattr(
+        tester_gate, "_resolve_worktree_context", lambda _cwd, rel: (tmp_path, rel)
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
         tester_gate.main(["--cwd", "cmru", "--", "true"])
+    assert exit_info.value.code == 0  # an unscoped launch still SUCCEEDS
+    argv_seen["argv"] = argv_seen.get("argv") or []
+    assert not any(a.startswith("--cgroup-parent") for a in argv_seen["argv"])
+    assert "no cgroup-parent declared" in capsys.readouterr().err
 
 
 def test_tester_gate_main_errors_when_no_memory_resolvable(monkeypatch, tmp_path):
@@ -1097,8 +1112,10 @@ def test_build_docker_command_adds_no_extra_mount_for_an_ordinary_checkout(monke
 
 def test_tester_gate_main_refuses_to_launch_into_a_missing_slice(monkeypatch, tmp_path):
     # Full required env so the KI-17 preflight passes and control reaches the
-    # slice existence probe — the behaviour under test here.
+    # slice existence probe — the behaviour under test here. The slice is now
+    # DECLARED (the ambient var is no longer read).
     _full_tester_env(monkeypatch)
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev-background.slice")
     monkeypatch.setattr(
         tester_gate, "check_slice_unit",
         lambda _slice, _image: (False, "dev-background.slice: LoadState=not-found — the unit is not installed on this host"),
