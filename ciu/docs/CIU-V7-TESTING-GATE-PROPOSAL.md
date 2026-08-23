@@ -231,6 +231,9 @@ ciu.global.toml                 ← rendered output (gitignored)
 
 Per-stack overrides follow existing S3 merge chain.
 
+Note: We should list used files and rendering on project-level as well. 
+
+
 ### 2.3 Testing declarations live in the same file
 
 No separate `ciu.testing.toml`. Variable substitution works uniformly across services, topology, and testing sections because they share one rendering pass.
@@ -288,6 +291,8 @@ stub_mappings = "fixtures/wiremock_stubs/"
 [service.payment-api.mock]
 implementation = "tests/mocks/payment_mock.py"
 ```
+
+Other idea: differentiate `[service.internal.*]` vs `[service.3rd_party.*]` up front for clarity. could there be other types than internal and 3rd party?
 
 ### 3.2 Validation rules
 
@@ -357,13 +362,22 @@ wireguard_ip = "10.0.0.2"
 
 Profiles are reusable across multiple environments (multi-stack).
 
+Note: Ideally we would not write e.g. `postgres` but directly reference the service we have defined.
+Open question: Consider we want to consume a 3rd party service not live but as `owned-seeded`, we need to bring it up somewhere. If we add it to the profile it makes it not generic anymore. We could add a category `optional` or so, so if that service of type `owned-seeded` is needed, it would be started here. Also this means, every service which might need to get deployed, needs to be defined where to run in a profile, otherwise it is unknown how to handle it. Maybe we dont need `optional`, *what* is started is not decided by the profile, but what `ciu` decides which groups / services need to be started?
+
 ### 4.3 Startup ordering
 
-Computed from `init_requires` graph via topological sort. Only applies during initialization phase. After init:
+#### 4.3.1 Frist-Time Initialization 
+
+Computed from `init_requires` graph via topological sort. Only applies during initialization phase. 
+
+#### 4.3.2 Regular start
 
 - All services may start in any order
 - Services with unmet `depends_on` report degraded health
 - `allow_degraded_start` defaults to `true`; setting it to `false` means the service refuses to start if its usage deps aren't healthy
+
+Note: to prohibit errors during start due to degredation, `ciu` should allow a safe/hinted start order for clean startup. 
 
 No phases. No manual ordering.
 
@@ -491,6 +505,92 @@ CIU is agnostic to assay's internals. Assay is invoked as a subprocess with pinn
 - Exit code: 0 = PASS, non-zero = anything else
 
 Future: pluggable judge providers behind the same interface.
+
+### 5.7 Resource governance per lane and intent
+
+Every test lane consumes host resources: RAM (the real contention risk), CPU time
+(cgroup weights handle fair sharing without explicit limits), and I/O bandwidth.
+CIU must carry resource declarations so gates can run in parallel where memory allows,
+without degrading live/prod services sharing the same host.
+
+#### Defaults from host config
+
+CIU already resolves `cgroup_parent` via `resolve_cgroup_parent()` with no hardcoded
+fallback. Extend this to full resource governance:
+
+```toml
+# Host-level defaults — every lane inherits unless overridden
+[testing.resources.defaults]
+cgroup_parent = "dev-background.slice"
+memory = "1g"                     # hard RAM cap (mem_limit)
+memory_swap = "16g"               # combined mem+swap; swap absorbs bursts without OOM
+io_weight = 100                   # cgroup io.weight for blkio fairness
+cpu_weight = 100                  # cgroup cpu.weight for CPU scheduling fairness
+```
+
+The `memory_swap` pattern follows cmru's proven approach (`CMRU_TESTER_MEMORY = "1g"`,
+`CMRU_TESTER_MEMORY_SWAP = "16g"`): tight RAM prevents memory-pressure cascades into live
+services, while ample swap absorbs transient bursts (dependency resolution, test fixtures)
+without triggering OOM kills. CPU and I/O use cgroup weights rather than hard limits —
+weights provide proportional fair-sharing under contention without throttling when the
+host is idle.
+
+#### Per-lane overrides
+
+Lanes that need more or fewer resources declare overrides:
+
+```toml
+[testing.lanes.schema-gate]
+resources.memory = "2g"          # schema tests need more than default
+resources.io_weight = 200        # heavy DDL apply benefits from higher IO priority
+
+[testing.lanes.sql-mutation]
+resources.memory = "4g"          # multiple PG instances during mutation
+resources.io_weight = 300        # repeated schema rebuilds are IO-heavy
+resources.budget_per_candidate = "120s"
+```
+
+#### Rigor-based defaults
+
+Resource requirements correlate with rigor level. CIU should provide sensible presets:
+
+```toml
+[testing.rigor_defaults.R0]      # smoke: fast, light
+memory = "512m"
+
+[testing.rigor_defaults.R2]      # mutation: slow, may need more RAM for parallel jobs
+memory = "2g"
+jobs = 4
+
+[testing.rigor_defaults.R3]      # canary: needs live services but not extra RAM
+memory = "1g"
+```
+
+Explicit per-lane values override rigor defaults, which override host defaults.
+
+#### Gate admission policy (replacing global flock)
+
+With resource governance in place, the single-gate-at-a-time flock becomes unnecessarily
+restrictive. The rule changes from "one gate globally" to:
+
+> A gate runs if its declared memory fits within the host's available dev-tier budget,
+> AND it does not contend on shared infrastructure (same DB volume, same Redis instance).
+
+Implementation:
+- each lane declares `resources.memory`; CIU sums concurrent lanes' memory against the
+  dev-tier slice's total;
+- shared-infra detection: two lanes touching the same rendered service name cannot run
+  concurrently regardless of memory;
+- fully isolated instances (separate networks + separate volumes) run in parallel freely.
+
+This replaces `/tmp/<project>-testrunner.lock` with resource-aware admission, while
+preserving serialization for lanes that genuinely share state.
+
+#### Observability
+
+CIU logs at gate start/end: lane name, resolved cgroup_parent, memory/io/cpu weights,
+actual peak RSS (from cgroup memory.peak after exit). This builds the data needed to tune
+per-rigor defaults over time instead of guessing.
 
 ---
 
