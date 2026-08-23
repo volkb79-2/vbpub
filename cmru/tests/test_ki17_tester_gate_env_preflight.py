@@ -190,3 +190,20 @@ def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
 def test_resolve_memory_from_env(monkeypatch):
     monkeypatch.setenv("CMRU_TESTER_MEMORY", "4g")
     assert tester_gate.resolve_memory(None) == "4g"
+
+
+def test_partial_env_ref_warn_flushes(monkeypatch):
+    """flush=True flip: the LITERAL warning must reach the operator before a
+    fast-failing step swallows buffered stderr."""
+    import builtins
+    from cmru.config import _expand_env_reference
+    calls = []
+    orig = builtins.print
+
+    def spy(*a, **kw):
+        calls.append(kw)
+        return orig(*a, **kw)
+    monkeypatch.setattr(builtins, "print", spy)
+    out = _expand_env_reference("pre${MID}post", "orchestration.env", "K")
+    assert out == "pre${MID}post"
+    assert any(kw.get("flush") is True for kw in calls)

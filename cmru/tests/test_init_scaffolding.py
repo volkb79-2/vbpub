@@ -93,7 +93,8 @@ def test_cli_end_to_end_exit_zero_and_files(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     from cmru.cli import main
 
-    main(["init", "--layout", "monorepo", "--project", "solo", "--owner", "acme"])
+    assert main(["init", "--layout", "monorepo", "--project", "solo",
+                 "--owner", "acme"]) == 0
     assert (tmp_path / "solo" / "cmru.toml").is_file()
     assert (tmp_path / "cmru.orchestration.toml").is_file()
 
@@ -180,7 +181,7 @@ def test_validate_reports_standards_failure(monkeypatch, git_repo):
 def test_cli_init_help_prints_usage(capsys):
     from cmru.cli import main
 
-    assert main(["init", "--help"]) in (0, None)
+    assert main(["init", "--help"]) == 0
     out = capsys.readouterr().out
     assert "Guided scaffolding" in out and "--layout single|monorepo" in out
 
@@ -190,3 +191,107 @@ def test_interactive_monorepo_empty_ids_fall_back_to_root_name(monkeypatch, tmp_
     plan = scaffold.collect_plan([], tmp_path)
     assert [p["id"] for p in plan["projects"]] == [
         tmp_path.name.lower().replace("_", "-")]
+
+
+# --- mutation-driven hardening: every survivor below is a pinned behavior ---
+
+def test_git_owner_repo_passes_check_false(monkeypatch, tmp_path):
+    """check=False flip would turn failing git probes into raises; the
+    best-effort contract is 'never raise', pinned at the call site."""
+    import subprocess as sp
+    seen = {}
+    real_run = sp.run
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return sp.CompletedProcess([], 0, stdout="git@github.com:o/r.git\n")
+    monkeypatch.setattr(sp, "run", spy)
+    assert scaffold._git_owner_repo(tmp_path) == ("o", "r")
+    assert seen["check"] is False
+
+
+def test_flag_at_end_of_argv_yields_no_value(git_repo):
+    """A trailing --project consumes nothing: non-interactive fallback to the
+    root name, never an IndexError and never the flag token itself."""
+    plan = scaffold.collect_plan(["--layout", "monorepo", "--project"], git_repo)
+    assert [p["id"] for p in plan["projects"]] == [
+        git_repo.name.lower().replace("_", "-")]
+
+
+def test_real_git_origin_drives_owner_repo_defaults(tmp_path):
+    import subprocess as sp
+    sp.run(["git", "init", "-qb", "main", "."], cwd=tmp_path, check=True,
+           capture_output=True)
+    sp.run(["git", "-C", str(tmp_path), "remote", "add", "origin",
+            "https://github.com/acme/widgets.git"], check=True, capture_output=True)
+    plan = scaffold.collect_plan(["--layout", "single"], tmp_path)
+    assert plan["repo"] == "widgets"      # git-derived
+    assert plan["owner"] == "acme"
+    flagged = scaffold.collect_plan(
+        ["--layout", "single", "--repo", "explicit"], tmp_path)
+    assert flagged["repo"] == "explicit"  # flag outranks git
+
+
+def test_interactive_owner_prompt_shows_default(monkeypatch, tmp_path):
+    prompts = []
+    it = iter(["", "", "", ""])
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt="": prompts.append(prompt) or next(it))
+    scaffold.collect_plan([], tmp_path)
+    assert any("[your-github-owner]" in p for p in prompts)
+
+
+def test_noninteractive_without_layout_never_prompts(monkeypatch, git_repo):
+    def forbidden(prompt=""):
+        raise AssertionError("prompted outside interactive mode")
+    monkeypatch.setattr("builtins.input", forbidden)
+    with pytest.raises(SystemExit, match="unknown layout"):
+        scaffold.collect_plan(["--project", "x"], git_repo)
+
+
+def test_validate_mkdir_is_idempotent(monkeypatch, git_repo):
+    """exist_ok flip would crash validating two files sharing a directory."""
+    import subprocess as sp
+    from pathlib import Path
+    plan = scaffold.collect_plan(
+        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
+    files = scaffold.build_files(plan, git_repo)
+    real_mkdir = Path.mkdir
+    seen = []
+
+    def spy(self, *a, **kw):
+        seen.append(kw.get("exist_ok"))
+        return real_mkdir(self, *a, **kw)
+    monkeypatch.setattr(Path, "mkdir", spy)
+    monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess([], 0, "", ""))
+    scaffold.validate(files, git_repo)
+    assert True in seen
+
+
+def test_validate_standards_call_shape(monkeypatch, git_repo):
+    """The standards conformance probe must run captured+text (flips to
+    False would deadlock on inherited stdio or mangle encoding)."""
+    import subprocess as sp
+    plan = scaffold.collect_plan(
+        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
+    files = scaffold.build_files(plan, git_repo)
+    seen = {}
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return sp.CompletedProcess([], 1, stdout="boom", stderr="")
+    monkeypatch.setattr(sp, "run", spy)
+    with pytest.raises(SystemExit, match="standards"):
+        scaffold.validate(files, git_repo)
+    assert seen["capture_output"] is True and seen["text"] is True
+
+
+def test_init_main_tolerates_precreated_project_dir(monkeypatch, tmp_path):
+    """exist_ok flip in the write loop crashes when the operator already made
+    the project directory — scaffolding into a prepared tree must work."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "solo").mkdir()
+    from cmru.scaffold import init_main
+    assert init_main(["--layout", "monorepo", "--project", "solo",
+                      "--owner", "acme"]) == 0
+    assert (tmp_path / "solo" / "cmru.toml").is_file()
