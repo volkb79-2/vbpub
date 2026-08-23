@@ -55,11 +55,11 @@ CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
 #                              MEMORY_SWAP minus MEMORY (= 13g here).
 # These are flat PER-CONTAINER bounds, independent of how many gates run in
 # parallel and on top of whatever the slice tier caps in aggregate.
-CMRU_TESTER_MEMORY = "3g"
+CMRU_TESTER_MEMORY = "1g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 
 # CPU ceiling per gate container (docker --cpus), same per-container rule.
-CMRU_TESTER_CPUS = "1.5"
+CMRU_TESTER_CPUS = "2.5"
 
 # Minimal image for the HOST-systemd preflight probes below (needs nsenter;
 # deliberately NOT tester-unified). tester-gate runs it --privileged
