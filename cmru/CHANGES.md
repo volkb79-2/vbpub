@@ -4,6 +4,27 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.0.0] - 2026-08-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=6711d260974f859dacd947db6cffbdc0511f19da -->
+
+### Added
+- feat(cmru): cmru init guided scaffolding + wheel-shipped templates (2f2cd234)
+- feat(cmru)!: tester-gate cgroup-parent is DECLARED-CONFIG — supersedes the fallback tier (223e0bb0)
+- feat(cmru): declared cgroup-parent fallback tier for bare-host gate runs (b76bb2d3)
+
+### Fixed
+- fix(cmru): adversarial-review round — forward-var floor, io-preflight wiring tests, explicit-empty convention, probe honesty (98a27f42)
+
+### Changed
+- backlog: file run-gate adversarial-review findings — RG-1..14 (new backlog), cmru KI-19 (mutation skip emits no evidence), assay B011 (stale cross-tool wiring example) (75593bcc)
+
+### Testing
+- test(cmru): pin the write-loop/validate mkdir contract site-scoped (6711d260)
+- test(cmru): kill the 13 mutation survivors from the release-gate campaign (e8edb08b)
+- test(cmru): restore 100% branch coverage over the tester-gate/init wave (b2470223)
+- test(cmru): xdist-safe tester-gate main tests — declared cgroup-parent model, unscoped-launch contract, forward var via CMRU_TESTER_CGROUP_FORWARD_VAR (9ea87a32)
+
 ## [Unreleased]
 
 ### Added
