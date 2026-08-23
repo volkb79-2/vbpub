@@ -514,3 +514,58 @@ otherwise green run.
 
 Controlled wrong implementation: remove `SCHEMA_GATE_PW` from forwarding ⇒ gate refuses
 pre-execution naming it, instead of tests failing mid-run or skipping.
+
+## RG-20 — replace global gate flock with resource-aware admission
+
+**Filed 2026-08-23 (dstdns repair program; motivated by multi-stack CIU v6+ and cmru's memory-governance pattern).**
+
+### The observation
+
+The current single-gate-at-a-time flock (`/tmp/<project>-testrunner.lock`) serialises all
+gates globally, even when they target fully isolated CIU instances with separate networks
+and volumes. With multi-stack, this is unnecessarily restrictive: two worktree instances
+with independent PG/Redis can run their suites concurrently without contention.
+
+Conversely, the flock does NOT protect against the real hazard — memory pressure. Two
+concurrent gates each consuming 2 GB on a host running live services WILL degrade prod,
+regardless of whether they share a database.
+
+### The real constraint hierarchy
+
+| Resource | Contention risk | Correct control |
+|----------|----------------|----------------|
+| CPU | Low (cgroup weights handle fair sharing) | cpu.weight per lane |
+| RAM | HIGH (memory bursts cascade into live services) | mem_limit + memswap_limit per lane; sum concurrent lanes against host budget |
+| I/O | Medium (heavy DDL/test IO starves other workloads) | io.weight per lane |
+| Shared state (same DB volume, same Redis) | HIGH (data corruption / flaky results) | serialize via instance/service-name lock |
+
+CPU weights are sufficient because Linux cgroup CPU scheduling provides proportional
+fair-sharing under contention without throttling when idle. RAM is the actual bottleneck
+because swap absorbs bursts but cannot prevent OOM cascades into co-resident live
+services when combined usage exceeds physical+swap.
+
+cmru's proven pattern (`CMRU_TESTER_MEMORY = "1g"`, `CMRU_TESTER_MEMORY_SWAP = "16g"`)
+demonstrates the right shape: tight RAM prevents pressure cascades; ample swap absorbs
+transient bursts without OOM kills.
+
+### Proposed contract
+
+Replace global flock with resource-aware admission:
+
+1. Each lane declares `resources.memory`, `resources.io_weight`, `resources.cpu_weight`
+   (defaults from config or rigor preset).
+2. Gate admission checks:
+   - concurrent lanes' summed `resources.memory` fits within the dev-tier slice budget;
+   - no shared-infra collision (two lanes targeting the same rendered service name
+     cannot run concurrently).
+3. Fully isolated instances (separate networks + separate volumes + separate PG/Redis)
+   run in parallel freely.
+4. Shared-infra serialization uses an instance/service-scoped lock
+   (`/tmp/<project>-<service>-gate.lock`), not a global project lock.
+
+### Oracles
+
+- Two isolated instances with disjoint resources ⇒ both gates run concurrently.
+- Two gates sharing the same PG instance ⇒ second waits for first.
+- Combined declared memory exceeds host dev-tier budget ⇒ second refuses with message
+  naming current consumers and required headroom.
