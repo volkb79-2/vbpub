@@ -250,7 +250,9 @@ def test_noninteractive_without_layout_never_prompts(monkeypatch, git_repo):
 
 
 def test_validate_mkdir_is_idempotent(monkeypatch, git_repo):
-    """exist_ok flip would crash validating two files sharing a directory."""
+    """The validate tempdir writes pin the FULL mkdir contract: idempotent
+    (exist_ok) AND nested (parents) — flipping either flag changes what the
+    validator tolerates, even where current callers cannot observe it."""
     import subprocess as sp
     from pathlib import Path
     plan = scaffold.collect_plan(
@@ -260,12 +262,15 @@ def test_validate_mkdir_is_idempotent(monkeypatch, git_repo):
     seen = []
 
     def spy(self, *a, **kw):
-        seen.append(kw.get("exist_ok"))
+        seen.append((str(self), kw.get("parents"), kw.get("exist_ok")))
         return real_mkdir(self, *a, **kw)
     monkeypatch.setattr(Path, "mkdir", spy)
     monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess([], 0, "", ""))
     scaffold.validate(files, git_repo)
-    assert True in seen
+    # the copied alpha/ project dir must be created idempotently+nested;
+    # other libraries' mkdirs (parents=False) are out of scope here
+    alpha_calls = [t for t in seen if t[0].endswith("/alpha")]
+    assert alpha_calls and all(a is True and b is True for _, a, b in alpha_calls)
 
 
 def test_validate_standards_call_shape(monkeypatch, git_repo):
@@ -287,11 +292,31 @@ def test_validate_standards_call_shape(monkeypatch, git_repo):
 
 
 def test_init_main_tolerates_precreated_project_dir(monkeypatch, tmp_path):
-    """exist_ok flip in the write loop crashes when the operator already made
-    the project directory — scaffolding into a prepared tree must work."""
+    """The write loop's mkdir must stay idempotent (operator pre-made the dir)
+    and parent-creating; the contract is pinned by spying the kwargs because
+    no reachable caller can distinguish parents=False behaviorally."""
+    import subprocess as sp
+    from pathlib import Path
     monkeypatch.chdir(tmp_path)
     (tmp_path / "solo").mkdir()
+    real_mkdir = Path.mkdir
+    seen = []
+
+    def spy(self, *a, **kw):
+        seen.append((str(self), kw.get("parents"), kw.get("exist_ok")))
+        return real_mkdir(self, *a, **kw)
+
     from cmru.scaffold import init_main
-    assert init_main(["--layout", "monorepo", "--project", "solo",
-                      "--owner", "acme"]) == 0
+    monkeypatch.setattr(Path, "mkdir", spy)
+    try:
+        assert init_main(["--layout", "monorepo", "--project", "solo",
+                          "--owner", "acme"]) == 0
+    finally:
+        monkeypatch.undo()
     assert (tmp_path / "solo" / "cmru.toml").is_file()
+    # the write loop mkdirs exactly the repo root and the project dir; both
+    # must carry the full idempotent+nested contract — scoped to these paths
+    # because other libs' mkdirs legitimately use parents=False
+    mine = [t for t in seen
+            if t[0] in (str(tmp_path), str(tmp_path / "solo"))]
+    assert len(mine) >= 2 and all(a is True and b is True for _, a, b in mine)
