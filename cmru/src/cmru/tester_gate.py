@@ -274,6 +274,14 @@ def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not probe the Docker host's IO support ({exc})"
+    if result.returncode != 0:
+        # Partial/failed probe (e.g. cat failed): indeterminate, fail closed
+        # with the REAL cause rather than misreading partial output.
+        return False, (
+            "IO-support probe failed on the Docker host "
+            f"(rc={result.returncode}; stderr: "
+            f"{result.stderr.strip()[:300] or 'empty'})"
+        )
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     fstype = lines[0].strip() if lines else ""
     controllers = lines[1].split() if len(lines) > 1 else []
@@ -285,14 +293,16 @@ def _probe_io_support(probe_image: str) -> tuple[bool | None, str]:
             f"(controllers: {' '.join(controllers) or '(none)'}) — per-device "
             "blkio caps would fail at container create"
         )
-    if fstype.startswith("cgroup"):
+    if fstype == "tmpfs" or fstype.startswith("cgroup"):
+        # tmpfs root == hybrid/v1 mount shape: name it, don't fold it into
+        # 'could not determine' (review: status folding).
         return False, (
-            f"cgroup {fstype} hierarchy — per-device blkio caps need cgroup v2 "
-            "with the io controller"
+            "hybrid/v1 cgroup hierarchy detected — per-device blkio caps need "
+            "cgroup v2 with the io controller"
         )
     return False, (
         f"could not determine the Docker host's cgroup hierarchy "
-        f"(probe stderr: {result.stderr.strip()[:300] or 'empty'})"
+        f"(fstype={fstype!r}; stderr: {result.stderr.strip()[:300] or 'empty'})"
     )
 
 
@@ -656,11 +666,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             file=sys.stderr,
         )
 
-    device_caps = [
+    device_caps = [dc.strip() for dc in (
         args.device_read_iops, args.device_write_iops,
         args.device_read_bps, args.device_write_bps,
-    ]
-    if any(dc.strip() for dc in device_caps):
+    )]
+    args.device_read_iops, args.device_write_iops = device_caps[0], device_caps[1]
+    args.device_read_bps, args.device_write_bps = device_caps[2], device_caps[3]
+    if any(device_caps):
         io_ok, io_note = _probe_io_support(probe_image)
         if io_ok is False:
             raise SystemExit(

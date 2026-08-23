@@ -471,11 +471,20 @@ def _expand_env_reference(value: str, where: str, key: str) -> str:
     host): the TOML file stays the single source of WHAT is configured and
     may REFERENCE the environment, but resolution happens once, at load
     time, loudly — an unset ``${NAME}`` with no ``:-default`` is a load
-    error naming the key, never a silent empty. The expanded result is what
-    every runner manifest records.
+    error naming the key, never a silent empty. Expansion happens once at load;
+    the expanded value is what every resolver/step thereafter sees.
     """
     match = _ENV_REFERENCE_RE.fullmatch(value)
     if match is None:
+        if "${" in value:
+            # A silent literal here ships a wrong value into every step env
+            # with no error anywhere (estate rule: never a silent wrong
+            # answer) — say what the rule is instead.
+            print(
+                f"[WARN] {where}.{key}: contains ${{...}} but is not a "
+                "whole-value ${NAME} / ${NAME:-default} reference — left "
+                "LITERAL. Whole-value references only.", flush=True,
+            )
         return value
     name, default = match.group(1), match.group(2)
     actual = os.environ.get(name)

@@ -301,3 +301,85 @@ def test_tester_gate_io_probe_verdicts(monkeypatch):
     monkeypatch.setattr(tester_gate.shutil, "which", lambda name: None)
     ok, note = tester_gate._probe_io_support("debian:test")
     assert ok is None and "skipping" in note
+
+
+def _run_main_with_caps(monkeypatch, probe_result):
+    """Drive tester_gate.main with a device cap set and a mocked io probe."""
+    from types import SimpleNamespace as NS
+    import pytest as _pytest
+
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND",
+                 "CMRU_TESTER_DEVICE_READ_IOPS", "CMRU_TESTER_DEVICE_WRITE_IOPS",
+                 "CMRU_TESTER_DEVICE_READ_BPS", "CMRU_TESTER_DEVICE_WRITE_BPS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "img")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "2G")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "probe")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev.slice")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
+    monkeypatch.setattr(tester_gate, "_probe_io_support", lambda *_: probe_result)
+    argv_seen = {}
+    monkeypatch.setattr(
+        tester_gate, "build_docker_command",
+        lambda *a, **kw: argv_seen.update(kwargs=kw) or ["true"],
+    )
+    monkeypatch.setattr(tester_gate.subprocess, "run", lambda *a, **k: NS(returncode=0))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: Path(".")))
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
+                        lambda c, r: (Path("."), r))
+    with _pytest.raises(SystemExit) as ei:
+        tester_gate.main(["--cwd", ".", "--device-read-iops", "/dev/vda:1000",
+                          "--", "true"])
+    return ei, argv_seen
+
+
+def test_main_refuses_when_io_controller_unavailable(monkeypatch):
+    """Wiring-level contract: caps requested + unsupported host = named
+    refusal BEFORE any launch (deleting the gating block must fail this)."""
+    ei, seen = _run_main_with_caps(monkeypatch, (False, "io controller missing"))
+    assert ei.value.code != 0
+    assert "kwargs" not in seen  # never reached argv assembly
+
+
+def test_main_warns_and_proceeds_when_probe_indeterminate(monkeypatch, capsys):
+    ei, seen = _run_main_with_caps(monkeypatch, (None, "no docker here"))
+    assert ei.value.code == 0
+    assert "kwargs" in seen and seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"
+    assert "no docker here" in capsys.readouterr().err  # probe note forwarded verbatim
+
+
+def test_main_strips_whitespace_device_caps(monkeypatch):
+    """Whitespace-only values are treated as unset everywhere: no preflight,
+    no half-empty flag reaching docker (review finding)."""
+    from types import SimpleNamespace as NS
+
+    for name in ("CMRU_TESTER_DEVICE_READ_IOPS", "CMRU_TESTER_DEVICE_READ_BPS",
+                 "CMRU_TESTER_DEVICE_WRITE_IOPS", "CMRU_TESTER_DEVICE_WRITE_BPS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "img")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "1G")
+    monkeypatch.setenv("CMRU_TESTER_MEMORY_SWAP", "2G")
+    monkeypatch.setenv("CMRU_TESTER_CPUS", "1")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", "probe")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "dev.slice")
+    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_: (True, "ok"))
+    probe_called = []
+    monkeypatch.setattr(tester_gate, "_probe_io_support",
+                        lambda *_: probe_called.append(1) or (False, "x"))
+    argv_seen = {}
+    monkeypatch.setattr(tester_gate, "build_docker_command",
+                        lambda *a, **kw: argv_seen.update(kwargs=kw) or ["true"])
+    monkeypatch.setattr(tester_gate.subprocess, "run",
+                        lambda *a, **k: NS(returncode=0))
+    monkeypatch.setattr(tester_gate.Path, "cwd", staticmethod(lambda: Path("."))
+                        ) if False else None
+    monkeypatch.setattr(tester_gate, "_resolve_worktree_context",
+                        lambda c, r: (Path("."), r))
+    with pytest.raises(SystemExit) as ei:
+        tester_gate.main(["--cwd", ".",
+                          "--device-read-iops", "   ", "--", "true"])
+    assert ei.value.code == 0
+    assert probe_called == []  # whitespace = unset: no preflight triggered
+    assert argv_seen["kwargs"]["device_read_iops"] == ""

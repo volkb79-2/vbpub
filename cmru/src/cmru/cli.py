@@ -1819,6 +1819,11 @@ def usage() -> str:
         "                                                  guided scaffolding: writes cmru.toml (and, for a\n"
         "                                                  monorepo, cmru.orchestration.toml) after validating\n"
         "                                                  them with the real loaders; never overwrites\n"
+        "    tester-gate --cwd DIR --image IMG [--cgroup-parent SLICE] [--memory M]\n"
+        "              [--memory-swap MS] [--cpus N] [--cgroup-probe-image IMG]\n"
+        "              [--device-read/write-bps|iops DEV:RATE] [--enable-docker]\n"
+        "                                                  run one command inside tester-unified\n"
+        "                                                  for this worktree (declared caps + host-verified slice)\n"
         "    standards [--config C] [--project P ...] [--update]\n"
         "                                                  check/update CMRU framework markers\n"
         "    tool-deps [--config C] [--project P ...] [--json] [--timeout S]\n"
@@ -1887,6 +1892,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     rest = av[1:]
 
     if verb == "init":
+        if "-h" in rest or "--help" in rest or not rest:
+            print(
+                "cmru init [--layout single|monorepo] [--project ID]... "
+                "[--owner O] [--repo R]\n"
+                "  Guided scaffolding. Prompts when flags are absent; every\n"
+                "  generated contract is validated with the real loaders before\n"
+                "  anything is written; existing files are never overwritten."
+            )
+            return 0
         from cmru.scaffold import init_main
         return init_main(rest)
 

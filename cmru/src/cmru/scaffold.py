@@ -9,6 +9,7 @@ existing target file is never overwritten. Templates ship inside the wheel
 from __future__ import annotations
 
 import re
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -69,11 +70,20 @@ def _ask_project(root: Path, interactive: bool) -> dict:
     }
 
 
+def _expected_template_revision() -> int:
+    """The revision `cmru standards` demands — kept in ONE place there."""
+    from cmru.standards import PROJECT_TEMPLATE_REVISION
+
+    return PROJECT_TEMPLATE_REVISION
+
+
 def render_project_toml(
     *, project_id: str, description: str, owner: str, repo: str, owner_type: str,
     generated_by: str,
 ) -> str:
     text = _template("project-wheel.toml")
+    text = text.replace("template_revision = 4",
+                        f"template_revision = {_expected_template_revision()}")
     notes_key = f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES"
     for token, value in (
         ("@@OWNER@@", owner),
@@ -235,6 +245,21 @@ def validate(files: list[tuple[Path, str]], root: Path) -> None:
             name = path.name
             load_forge_config(temp_root / path.relative_to(root),
                               require_orchestration=(name == "cmru.orchestration.toml"))
+        if name == "cmru.orchestration.toml":
+            # The generated contracts must ALSO pass cmru's own conformance
+            # gate (review finding: template drifted from standards).
+            import subprocess as _sp
+
+            res = _sp.run(
+                [sys.executable, "-m", "cmru.cli", "standards", "--config",
+                 str(temp_root / "cmru.orchestration.toml")],
+                capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
+            )
+            if res.returncode != 0:
+                raise SystemExit(
+                    "init: generated contracts fail `cmru standards`:\n"
+                    + (res.stdout + res.stderr)[-2000:]
+                )
 
 
 def init_main(argv: list[str]) -> int:

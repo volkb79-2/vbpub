@@ -56,7 +56,11 @@ CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slic
 
 # Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
 # consumers whose own governance reads it there (e.g. ciu's resolver tests).
-CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+# Same floor as placement — bare-host consumers must learn the tier that
+# actually governs the gate container.
+# Same floor as placement: bare-host consumers (ciu governance inside the
+# gate) must learn the tier that actually governs the container.
+CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
 
 # ---------------------------------------------------------------------------
 # Per-container IO caps (docker --device-read/write-bps / -iops). OPTIONAL —
