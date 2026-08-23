@@ -35,7 +35,6 @@ def test_init_writes_tree_and_renders_clean(workdir):
     written = {p.relative_to(workdir).as_posix() for p, _ in files}
     assert written == {
         "ciu.global.defaults.toml.j2",
-        ".gitignore-additions.txt",
         "applications/api/ciu.defaults.toml.j2",
         "applications/api/ciu.compose.yml.j2",
     }
@@ -60,6 +59,12 @@ def test_init_writes_tree_and_renders_clean(workdir):
     parsed = tomllib.loads(rendered)
     assert parsed["deploy"]["project_name"] == "demo"
     assert parsed["deploy"]["network_name"] == "$DOCKER_NETWORK_INTERNAL"
+    # Review-blocker guard: ownership facts ship with the template.
+    shared = parsed["deploy"]["env"]["shared"]
+    assert {"CONTAINER_UID", "DOCKER_GID", "REPO_ROOT", "PHYSICAL_REPO_ROOT"} <= set(shared)
+    # Scaffolded stacks are REGISTERED for orchestration (render/up without --dir).
+    services = parsed["deploy"]["phases"]["phase_1"]["services"]
+    assert any(s["path"] == "applications/api" for s in services)
 
 
 def test_init_refuses_existing_targets(workdir):
@@ -84,8 +89,8 @@ def test_gitignore_additions_applied_once(workdir, monkeypatch):
                                  workdir)
     files = scaffold.build_files(plan, workdir) if False else None
     # direct gitignore-merge path (what init_main does after writing):
-    existing_entries = {ln.split("  # ")[0] for ln in first.splitlines()
-                        if ln and not ln.startswith("#")}
+    existing_entries = {ln.strip() for ln in first.splitlines()
+                        if ln.strip() and not ln.lstrip().startswith("#")}
     missing = [e for e, _ in scaffold._GITIGNORE_ENTRIES
                if e not in existing_entries]
     assert missing == []  # nothing left to add — deduped

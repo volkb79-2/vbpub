@@ -33,3 +33,19 @@ start_period = "5s"
 [deploy.env.defaults]
 TZ = "UTC"
 PYTHONUNBUFFERED = "1"
+
+# --- [deploy.env.shared] : machine facts exposed to templates (S2.6 / S2.7) --
+# REQUIRED for hostdir/secret-file ownership (S6.3/S4.10): the hostdir step
+# resolves CONTAINER_UID/DOCKER_GID from here. All four expand from ciu.env —
+# another reason `ciu env generate` must run first.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+DOCKER_GID = "$DOCKER_GID"
+REPO_ROOT = "$REPO_ROOT"
+PHYSICAL_REPO_ROOT = "$PHYSICAL_REPO_ROOT"
+
+# --- [deploy.phases.phase_1] : orchestration registration -------------------
+# Registers the scaffolded stacks with phase-based orchestration so
+# `ciu render` / `ciu up` see them without --dir. Extend per stack added.
+[deploy.phases.phase_1]
+@@PHASE_SERVICES@@

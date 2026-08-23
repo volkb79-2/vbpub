@@ -35,7 +35,10 @@ def _template(name: str) -> str:
 
 def _prompt(message: str, default: str) -> str:
     suffix = f" [{default}]" if default else ""
-    answer = input(f"{message}{suffix}: ").strip()
+    try:
+        answer = input(f"{message}{suffix}: ").strip()
+    except EOFError:
+        answer = ""   # non-interactive stdin: take the default / skip
     return answer or default
 
 
@@ -73,6 +76,11 @@ def collect_plan(argv: list[str], root: Path) -> dict:
     environment_tag = flag("--environment-tag") or (
         _prompt("Environment tag", "dev") if interactive else "dev"
     )
+    if not environment_tag.strip() or any(c in environment_tag for c in '"\n#'):
+        raise SystemExit(
+            f"init: --environment-tag {environment_tag!r} must be a plain TOML "
+            "string value (no quotes/newlines/#)."
+        )
     stacks_raw = flag("--stacks")
     stacks = [s for s in (stacks_raw or "").split(",") if s.strip()]
     if interactive and not stacks:
@@ -82,6 +90,9 @@ def collect_plan(argv: list[str], root: Path) -> dict:
     parsed_stacks: list[dict] = []
     for raw_name in stacks:
         name = _slug(raw_name.replace("_", "-"))
+        if name != raw_name:
+            print(f"[INFO] stacking '{raw_name}' as directory/name {name!r}")
+
         root_key = name.replace("-", "_")
         parsed_stacks.append({
             "dir": f"applications/{name}",
@@ -108,6 +119,11 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
             "env": {"defaults": {"TZ": "UTC", "PYTHONUNBUFFERED": "1"}},
         },
     }
+    phase_services = "\n".join(
+        f"[[deploy.phases.phase_1.services]]\n"
+        f'path = "{s["dir"]}"\nname = "{s["stack_name"]}"'
+        for s in plan["stacks"]
+    ) or "# (no stacks scaffolded — add [deploy.phases.*] entries as you go)"
     files: list[tuple[Path, str]] = [
         (
             root / "ciu.global.defaults.toml.j2",
@@ -115,12 +131,7 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 "@@PROJECT_NAME@@", plan["project_name"]
             ).replace("@@ENVIRONMENT_TAG@@", plan["environment_tag"]).replace(
                 "@@GENERATED_BY@@", generated_by
-            ),
-        ),
-        (
-            root / ".gitignore-additions.txt",
-            "# --- CIU generated artifacts ---\n"
-            + "".join(f"{entry}  # {why}\n" for entry, why in _GITIGNORE_ENTRIES),
+            ).replace("@@PHASE_SERVICES@@", phase_services),
         ),
     ]
     for stack in plan["stacks"]:
@@ -164,12 +175,28 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
 
     global_text = next(c for pth, c in files if pth.name == "ciu.global.defaults.toml.j2")
     rendered_global = jenv.from_string(global_text).render(**base_vars)
-    tomllib.loads(rendered_global)  # S3.2 step 3 equivalent
+    parsed_global = tomllib.loads(rendered_global)  # S3.2 step 3 equivalent
+
+    # Review-blocker guard: the pipeline needs [deploy.env.shared] with the
+    # ownership vars — parseability alone once shipped a repo that died at
+    # step 7. Assert the FACTS the deploy actually consumes.
+    shared = parsed_global.get("deploy", {}).get("env", {}).get("shared", {})
+    for required in ("CONTAINER_UID", "DOCKER_GID", "REPO_ROOT", "PHYSICAL_REPO_ROOT"):
+        if required not in shared:
+            raise SystemExit(
+                f"init: generated global template lacks deploy.env.shared.{required} "
+                "(hostdir/secret ownership would fail at deploy) — template bug."
+            )
+
+    from ciu import config_model
+
     for stack in plan["stacks"]:
         entry = next((c for pth, c in files if pth.name == "ciu.defaults.toml.j2"
                       and stack["dir"] in str(pth)))
         rendered = jenv.from_string(entry).render(**vars_stack)
         tomllib.loads(rendered)
+        # Real shape validator (S3.5/S3.7) on the RENDERED defaults:
+        config_model.validate_stack_shape(tomllib.loads(rendered))
     existing = [str(path.relative_to(root)) for path, _ in files
                 if path.name != ".gitignore-additions.txt" and path.exists()]
     if existing:
@@ -189,20 +216,30 @@ def init_main(argv: list[str]) -> int:
         path.write_text(content, encoding="utf-8")
         print(f"wrote {path.relative_to(root)}")
     gitignore = root / ".gitignore"
-    existing_lines = set(gitignore.read_text().splitlines()) if gitignore.exists() else set()
+    raw_lines = (gitignore.read_text().splitlines()
+                 if gitignore.exists() else [])
+    # Normalize: an entry may carry a trailing "  # why" comment from a prior
+    # init — compare on the ENTRY portion only, or reruns duplicate.
+    existing_entries = {ln.split("  # ")[0].strip() for ln in raw_lines
+                        if ln.strip()}
     missing = [entry for entry in _GITIGNORE_ENTRIES
-               if entry[0] not in existing_lines]
+               if entry[0] not in existing_entries]
     if missing:
         with gitignore.open("a", encoding="utf-8") as fh:
             fh.write("\n# --- CIU generated artifacts (added by `ciu init`) ---\n")
             for entry, why in missing:
-                fh.write(f"{entry}  # {why}\n")
+                # git .gitignore has NO trailing-comment syntax — everything
+                # after the pattern to EOL is PART of the pattern. Entry and
+                # explanation must be separate lines.
+                fh.write(f"# {why}\n{entry}\n")
         print(f"updated .gitignore (+{len(missing)} entries)")
     print(
         "\nNext steps:\n"
         "  1. Review the placeholders in ciu.global.defaults.toml.j2.\n"
-        "  2. Run `ciu env generate` (writes ciu.env; needs docker for the\n"
-        "     network ensure — safe to rerun).\n"
+        "  2. Run `ciu env generate` FROM THIS DIRECTORY. It ignores inherited\n"
+        "     identity from other checkouts' sourced ciu.env (S2.7), so this\n"
+        "     repo gets its own network/instance identity — never another\n"
+        "     checkout's. Needs docker for the network ensure; safe to rerun.\n"
         "  3. Bring the first stack up: `ciu up --dir <stack-dir>`.\n"
     )
     return 0
