@@ -1197,3 +1197,34 @@ project. Controlled wrong implementation: the current text fails it today.
 **Related:** run-gate-project backlog RG-13 item 1 (the missing end-to-end
 worked example that should become the canonical stitched version of both
 halves).
+
+## B012 — mutation execution observability, planning, resume/sharding, and per-candidate budgets
+
+**Filed 2026-08-23 (dstdns repair program; consumer evidence from P127 admission mutation lanes and the SQL mutation blocker).**
+
+### The observation
+
+A dstdns Python R2 lane with 17 candidates timed out three times. Each timeout left the same partial evidence (`4 killed / 3 survived / N unattempted`) with no way to tell which candidate was in flight or whether the lane was hung. A SQL R2 lane failed before its first mutant for an infrastructure reason (see B013) and emitted no per-mutant artifact either. The only available workaround was manually splitting one declared workload into several operator-group lanes and hand-maintaining disjoint/exhaustive coverage bookkeeping.
+
+### Required capabilities
+
+These are implementation-guess-free requirements, not design preferences:
+
+1. **Structured progress events.** Emit NDJSON after baseline and after each candidate: candidate index/total, deterministic candidate ID, path, operator, byte span, replacement hash, worker id, elapsed seconds, outcome bucket on end. Summarize the artifact path in the verdict.
+2. **Plan/preflight mode.** `assay plan <lane>` must report total candidates, per-file/per-operator counts, deterministic IDs, measured/estimated baseline runtime, projected serial/wall-clock runtime using `jobs`, without executing the command.
+3. **Deterministic candidate IDs.** Stable digest over repo-relative path + original file digest + byte span + replacement digest + operator; required for resume, sharding, survivor reports.
+4. **Resume/checkpointing.** Persist one JSON record per completed candidate under `.assay/mutation-state/<candidate_id>.json`; support `--resume`, mutation status, retry-unattempted semantics; invalidate stale records when source hashes change.
+5. **Native operator filtering/sharding.** Allow declared subsets of one lane (`--operators ...` or `--shard i/N`) with assignment derived deterministically from candidate IDs, plus a summary merge that refuses non-disjoint/non-exhaustive input.
+6. **Per-candidate budget distinct from lane budget.** `budget_per_candidate` marks one candidate `budget_exceeded`; `budget_total` remains the hard lane bound. Current behavior conflates “one slow mutant” with “lane cannot finish”.
+
+### Workaround currently used by consumers
+
+Split lanes by operator group, retain separate verdicts, and require a combined report summing every bucket (`killed`, `survived`, `crashed`, `equivalent`, `budget_exceeded`). Viable, but requires manual set algebra to prove full coverage.
+
+### Acceptance
+
+- [ ] progress events emitted and referenced from verdict;
+- [ ] `assay plan` reports deterministic totals/IDs/runtime estimate;
+- [ ] interrupted lane resumes without rerunning completed candidates;
+- [ ] shards are provably disjoint and exhaustive;
+- [ ] per-candidate timeouts do not abort unrelated candidates.
