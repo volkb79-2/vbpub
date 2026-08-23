@@ -430,3 +430,38 @@ If compatibility is desired, gate via explicit config (e.g. schema_version bump 
 
 Local fix reference: dstdns controller branch commit `7b17d331`
 (`central and lanes and not envs` interim guard), superseded by this requirement.
+
+## RG-17 — env forwarding allowlists silently drop schema-oracle credentials (SCHEMA_GATE_PW)
+
+**Filed 2026-08-23 (dstdns repair program; consumer evidence from P121/P126 sessions).**
+
+### The observation
+
+dstdns' central `run-gate.toml` declared
+`forward_env = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]` but omitted `SCHEMA_GATE_PW`.
+The schema lane's `as_role` fixture reads `os.environ["SCHEMA_GATE_PW"]`; when absent, the
+privilege oracles could not connect as service roles. The mutation helper's equivalence run
+reported green while privilege assertions never executed — the exact hollow-green failure
+mode the schema lane exists to prevent. Fix required adding `SCHEMA_GATE_PW` (and later
+`SCHEMA_GATE_PG_IMAGE`) to the allowlist; each omission was discovered only by manual diff.
+
+### Why this is a run-gate defect class, not a one-off typo
+
+Allowlist-based forwarding is the right security model, but it has no completeness check:
+a credential consumed by tests but forgotten in `forward_env` fails silently or, worse,
+fails only some assertions. The tool accepts the config without verifying that declared
+lane targets consume what they need.
+
+### Proposed contract (either suffices; both compatible)
+
+1. **Declared-consumption check:** lanes may declare
+   `required_env = ["NAME", ...]`. Validation refuses to start if any name is missing from
+   the resolved environment after forwarding, with an error naming the lane and variable.
+2. **Drift sweep:** a lint mode that scans test source for `os.environ[...]` /
+   `getenv` literals and warns when such names are neither forwarded nor declared as not
+   required.
+
+### Oracles
+
+- Lane declares `required_env = ["X"]`; invoke with X unset ⇒ refuse before execution.
+- Controlled wrong implementation: remove `forward_env` entry for a required var ⇒ oracle 1 fires.
