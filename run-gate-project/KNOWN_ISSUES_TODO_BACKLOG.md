@@ -375,3 +375,58 @@ anything the wheel doesn't.
 (script path, unchanged); `pip install`ed wheel exposes `run-gate` console
 script with identical behavior; version-mismatch between wheel and script
 fails the discipline test.
+
+## RG-15 — assay lanes must execute in the selected worktree, not the invoking checkout
+
+**Filed 2026-08-23 (dstdns repair program; reproduced with linked worktrees).**
+
+### The observation
+
+`run_container_lane` and `run_exec_lane` build assay lanes with the project/config
+checkout (`project_dir`) instead of the selected `--worktree`. Invoking
+`./run-gate.py <assay-lane> --worktree <linked-worktree>` therefore judged the wrong
+tree: dstdns saw `verdict`/`commit` from main while intending to test a feature branch,
+and locally committed wrapper fixes were silently not exercised.
+
+### Required behavior
+
+For both command and assay lanes, all user-declared execution paths resolve against the
+effective judged tree:
+
+```text
+effective_tree = --worktree if provided else invocation toplevel
+```
+
+Assay lanes must:
+- `cd` into `<effective_tree>`;
+- verify pinned artifacts relative to it;
+- run assay with its `<effective_tree>`-relative config;
+- write verdict/coverage artifacts under `<effective_tree>/.assay/`.
+
+### Oracle
+
+Linked worktree A at commit A plus checkout B at commit B:
+`./run-gate.py <assay-lane> --worktree A` must record A's HEAD and write artifacts under
+A. Exit-status-only tests are insufficient; assert verdict commit + artifact location.
+
+## RG-16 — central configs should be allowed to define shared lanes
+
+**Filed 2026-08-23 (same session).**
+
+Current validation rejects any lanes table in a central repo-root config (“central defines
+environment facts only”). That blocks the intended estate pattern where every package uses
+the identical lane pointer without copying definitions.
+
+### Required policy
+
+Allow central configs to define shared environments AND shared lanes, keeping:
+
+- project entries shadow central entries by name deterministically;
+- central lane paths must exist in every consumer project or validation fails;
+- malformed central/project tables still fail loudly.
+
+If compatibility is desired, gate via explicit config (e.g. schema_version bump or
+`[options] allow_central_lanes = true`) rather than guessing intent from shape.
+
+Local fix reference: dstdns controller branch commit `7b17d331`
+(`central and lanes and not envs` interim guard), superseded by this requirement.
