@@ -465,3 +465,52 @@ lane targets consume what they need.
 
 - Lane declares `required_env = ["X"]`; invoke with X unset ⇒ refuse before execution.
 - Controlled wrong implementation: remove `forward_env` entry for a required var ⇒ oracle 1 fires.
+
+## RG-18 — no pg_dump/PostgreSQL version-mismatch guard for schema lanes
+
+**Filed 2026-08-23 (dstdns repair program; consumer evidence: pg_dump 17.11 client vs TimescaleDB PG18 server produced equivalence artifacts that failed silently inside assay snapshots).**
+
+### The observation
+
+dstdns' SQL mutation lane runs `pg_dump` *inside* the server container to guarantee
+client/server version match, but the general schema-gate path allowed a runner-baked
+pg_dump of a different major version. Mismatches surfaced only as unexplained equivalence
+failures during archive inspection — the tooling never named the version pair.
+
+### Proposed contract
+
+`schema-gate.sh` (and any lane that pairs dump client with server) must:
+
+1. read `SHOW server_version_num` from the target server;
+2. resolve the matching `pg_dump` binary path (container-internal preferred);
+3. refuse loudly with both versions in the error when majors differ;
+4. record the resolved versions in any emitted artifact/log line.
+
+### Oracles
+
+- Server PG18 + client PG17 ⇒ refusal naming both versions.
+- Matching pair proceeds and records versions in output.
+
+## RG-19 — schema-lane credential propagation must be verified by the gate, not by test failure
+
+**Filed 2026-08-23 (same evidence as RG-17).**
+
+Schema lanes that provision roles need role passwords (`SCHEMA_GATE_PW`) forwarded into
+the runner. When omitted, privilege assertions cannot connect; depending on assertion
+shape this is either a loud fixture error or — worse — silently skipped coverage inside an
+otherwise green run.
+
+### Required behavior
+
+1. Gate config validation: any lane whose argv/tests reference provisioning credentials
+   must declare them in `forward_env`; a static sweep/lint flags undeclared references
+   (see RG-17).
+2. Runtime preflight: before executing schema tests, verify required credential env vars
+   are non-empty; otherwise fail fast naming the missing variable and its consumer.
+3. Verdict/log lines record which forwarding keys were present at start (names only,
+   never values).
+
+### Oracle
+
+Controlled wrong implementation: remove `SCHEMA_GATE_PW` from forwarding ⇒ gate refuses
+pre-execution naming it, instead of tests failing mid-run or skipping.
