@@ -7,6 +7,44 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [7.0.0] - 2026-08-23
+<!-- cmru: generated -->
+<!-- cmru: source-end=037f858cf2f46b5db13a387273124ef4e3ad6f2d -->
+
+### Added
+- feat(ciu): ciu init repository scaffolding + wheel-shipped templates (SPEC S19) (16e18f72)
+- feat(ciu): worktree branch hygiene — grounded survey + prune of merged branches (CIU-25 git half, SPEC S16.8) (c92377fb)
+- feat(ciu): declared vendor baseline for provenance — vendor-pinned status, schema_version 2 (CIU-39, SPEC S17.5) (dd788e70)
+- feat(ciu): cross-profile ASK_VAULT producer declaration produced_by (CIU-42, SPEC S13.6) (c8988bef)
+- feat(ciu)!: compose project naming cutover — identity-scoped default, no -p-less compose (CIU-46, SPEC S8.7/S6.4a) (64dd4141)
+
+### Fixed
+- fix(ciu): adversarial-review round — init'd repos pass the real pipeline (41ccbf90)
+- fix(ciu): CIU-46 review follow-ups — root resolution, round-trip guard, sweep scope, invariant symmetry (8b24f401)
+- fix(ciu): provenance compares Docker-canonical references; malformed-table + non-string guards (review majors/minors) (73a4a814)
+- fix(ciu): produced_by judges producer presence by deployed stacks (review majors) (568e388c)
+- fix(ciu): branch-hygiene destructive pass cannot half-prune (review blocker + majors) (2a6176d4)
+- fix(ciu): env generate ignores an inconsistent ambient PUBLIC_FQDN (CIU-47, SPEC S2.7) (d72c1b2c)
+
+### Changed
+- backlog(ciu): reconcile after the backlog wave — CIU-39/42/46/47 FIXED, CIU-25 PARTIAL (git half shipped, S16.8), CIU-40 FIXED on main; CIU-43 residual note resolved by CIU-46 (4fbb892b)
+
+### Documentation
+- docs(ciu): v7 adversarial review — independent agent findings with operator rulings on B1-B4 (a933f7cf)
+- docs(ciu): v7 proposal self-review — concrete motivation, per-host services, topology per-profile, feasibility behavior, remote execution detail (06f490fe)
+- docs(ciu): shipped templates explain what they install — per-entry gitignore comments, hostdir/network/GEN_LOCAL notes (ffbbdbc7)
+- docs(ciu): full-surface sync for the backlog wave — help texts, FEATURES, CIU.md, S11 catalog, CHANGES, backlog (a2aa934c)
+- docs(ciu): review fixes — parsable TOML examples, three-document sync, stale comment (753fc7af)
+
+### Testing
+- test(ciu): cover the review-round scaffold branches (037f858c)
+- test(ciu): pin CIU_KSM=off in build_repo — every engine-flow test is daemon-hermetic for the KSM shim build (flake hunt: generates_once hit the same live-docker path its sister did) (a057ba7a)
+- test(ciu): render-selection fixture stubs create_hostdirs — live chown/S6.5 fallback made it daemon-context-sensitive (second flake mode found in gate hunt) (4c293622)
+- test(ciu): pin CIU_KSM=off in the S4.12 refresh test — it reached the live-docker KSM shim build whenever no sibling worker leaked a disabling override (adversarial-review flake hunt) (6c94d2e6)
+- test(ciu): render-selection fixture scrubs inherited identity keys — xdist workers can carry a prior bootstrap's generated identity into this generate (ecbb83d4)
+- test(ciu): cover review-fix branches — sanity-guard arms, upstream pre-check, marker/ambient resolution; empty-param fix (040df76e)
+- test(ciu): bootstrap overwrite scope follows CIU-47 — PUBLIC_FQDN joins the post-generate adoption set (49447010)
+
 ## [Unreleased]
 
 ### Added
