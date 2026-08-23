@@ -383,3 +383,11 @@ def test_main_strips_whitespace_device_caps(monkeypatch):
     assert ei.value.code == 0
     assert probe_called == []  # whitespace = unset: no preflight triggered
     assert argv_seen["kwargs"]["device_read_iops"] == ""
+
+
+def test_main_proceeds_to_launch_when_io_caps_supported(monkeypatch):
+    """io_ok True skips both the refusal and the warning and proceeds to
+    argv assembly — the third verdict the gating block can produce."""
+    ei, seen = _run_main_with_caps(monkeypatch, (True, "io controller present"))
+    assert ei.value.code == 0
+    assert seen["kwargs"]["device_read_iops"] == "/dev/vda:1000"

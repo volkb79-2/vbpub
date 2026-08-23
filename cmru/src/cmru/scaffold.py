@@ -166,8 +166,6 @@ def collect_plan(argv: list[str], root: Path) -> dict:
         raise SystemExit(f"init: unknown layout {layout!r} (single|monorepo)")
 
     repeated_projects = flags("--project")
-    if repeated_projects and project_flag is None:
-        project_flag = repeated_projects[0] if len(repeated_projects) == 1 else None
 
     projects: list[dict] = []
     if layout == "single":

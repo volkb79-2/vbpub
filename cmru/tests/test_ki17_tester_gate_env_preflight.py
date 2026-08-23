@@ -163,3 +163,30 @@ def test_each_resolver_message_names_the_orchestration_document(
     message = str(excinfo.value)
     assert distinctive_label in message
     assert "cmru.orchestration.toml [env]" in message
+
+
+def test_io_probe_subprocess_failure_is_indeterminate_fail_closed(monkeypatch):
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
+
+    def boom(*a, **kw):
+        raise OSError("docker daemon vanished mid-probe")
+    monkeypatch.setattr(tester_gate.subprocess, "run", boom)
+    ok, note = tester_gate._probe_io_support("debian:test")
+    assert ok is False
+    assert "could not probe the Docker host's IO support" in note
+
+
+def test_io_probe_nonzero_rc_is_fail_closed_with_real_cause(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        tester_gate.subprocess, "run",
+        lambda *a, **kw: SimpleNamespace(returncode=42, stdout="", stderr="nsenter: boom"))
+    ok, note = tester_gate._probe_io_support("debian:test")
+    assert ok is False
+    assert "rc=42" in note and "nsenter: boom" in note
+
+
+def test_resolve_memory_from_env(monkeypatch):
+    monkeypatch.setenv("CMRU_TESTER_MEMORY", "4g")
+    assert tester_gate.resolve_memory(None) == "4g"

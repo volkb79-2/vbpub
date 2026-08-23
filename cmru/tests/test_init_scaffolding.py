@@ -96,3 +96,97 @@ def test_cli_end_to_end_exit_zero_and_files(monkeypatch, tmp_path):
     main(["init", "--layout", "monorepo", "--project", "solo", "--owner", "acme"])
     assert (tmp_path / "solo" / "cmru.toml").is_file()
     assert (tmp_path / "cmru.orchestration.toml").is_file()
+
+
+# --- coverage of the remaining branches: prompts, flag forms, failure paths ---
+
+def test_git_owner_repo_parses_origin_url(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: sp.CompletedProcess(
+        [], 0, stdout="git@github.com:acme/widgets.git\n", stderr=""))
+    assert scaffold._git_owner_repo(tmp_path) == ("acme", "widgets")
+
+
+def test_git_owner_repo_survives_subprocess_failure(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    def boom(*a, **kw):
+        raise OSError("git vanished")
+    monkeypatch.setattr(sp, "run", boom)
+    assert scaffold._git_owner_repo(tmp_path) == ("", "")
+
+
+def test_equals_style_flags_and_single_project_flag(git_repo):
+    plan = scaffold.collect_plan(
+        ["--layout=single", "--project=solo", "--owner=acme"], git_repo)
+    assert [p["id"] for p in plan["projects"]] == ["solo"]
+    assert plan["owner"] == "acme"
+
+
+def test_unknown_layout_refuses(git_repo):
+    with pytest.raises(SystemExit, match="unknown layout"):
+        scaffold.collect_plan(["--layout", "weird", "--project", "x"], git_repo)
+
+
+def _feed_input(monkeypatch, answers):
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
+
+
+def test_interactive_monorepo_flow_with_comma_ids(monkeypatch, tmp_path):
+    _feed_input(monkeypatch, ["myowner", "2", "alpha,beta"])
+    plan = scaffold.collect_plan([], tmp_path)
+    assert [p["id"] for p in plan["projects"]] == ["alpha", "beta"]
+    assert plan["owner"] == "myowner"
+
+
+def test_interactive_empty_answers_take_defaults(monkeypatch, tmp_path):
+    _feed_input(monkeypatch, ["", "", "", ""])
+    plan = scaffold.collect_plan([], tmp_path)
+    assert plan["owner"] == "your-github-owner"
+    assert plan["layout"] == "single"
+    assert plan["projects"][0]["id"] == tmp_path.name.lower().replace("_", "-")
+
+
+def test_interactive_invalid_project_id_refuses(monkeypatch, tmp_path):
+    # no flags -> interactive; choose single via the layout prompt, then
+    # feed a project id that violates the slug grammar
+    _feed_input(monkeypatch, ["", "", "9lives"])
+    with pytest.raises(SystemExit, match="must match"):
+        scaffold.collect_plan([], tmp_path)
+
+
+def test_interactive_bad_id_in_comma_list_refuses(monkeypatch, tmp_path):
+    _feed_input(monkeypatch, ["o", "2", "good,BAD!"])
+    with pytest.raises(SystemExit, match="BAD!"):
+        scaffold.collect_plan([], tmp_path)
+
+
+def test_validate_reports_standards_failure(monkeypatch, git_repo):
+    import subprocess as sp
+    from cmru import standards  # noqa: F401  (module must be patchable-env)
+
+    plan = scaffold.collect_plan(
+        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
+    files = scaffold.build_files(plan, git_repo)
+
+    monkeypatch.setattr(sp, "run", lambda *a, **kw: sp.CompletedProcess(
+        [], 1, stdout="STANDARDS-BOOM", stderr=""))
+    with pytest.raises(SystemExit, match=r"fail `cmru standards`[\s\S]*STANDARDS-BOOM"):
+        scaffold.validate(files, git_repo)
+
+
+def test_cli_init_help_prints_usage(capsys):
+    from cmru.cli import main
+
+    assert main(["init", "--help"]) in (0, None)
+    out = capsys.readouterr().out
+    assert "Guided scaffolding" in out and "--layout single|monorepo" in out
+
+
+def test_interactive_monorepo_empty_ids_fall_back_to_root_name(monkeypatch, tmp_path):
+    _feed_input(monkeypatch, ["", "2", ""])
+    plan = scaffold.collect_plan([], tmp_path)
+    assert [p["id"] for p in plan["projects"]] == [
+        tmp_path.name.lower().replace("_", "-")]
