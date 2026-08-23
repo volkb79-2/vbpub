@@ -1265,3 +1265,25 @@ Disposable server lease/fact files, owner-checked cleanup on exit/interrupt, per
 - [ ] missing/unresolvable inputs refuse loudly with named keys;
 - [ ] isolated commands receive only injected values, no host paths;
 - [ ] SQL lanes can complete full mutant scope without reading caller state.
+
+## B014 — persist bounded subprocess stdout/stderr in verdicts on COMMAND_FAILED
+
+**Filed 2026-08-23 (dstdns repair program; consumer evidence from CIU v7 proposal §10.1 and P121/P127 debugging sessions).**
+
+### The observation
+
+When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` with argv, commit, and timing — but zero command output. During dstdns debugging, a SQL lane failed before its first mutant for an environment-variable forwarding bug; diagnosing it required five manual reproductions because the verdict could not say *why* the command failed. `default_process_runner` already uses `capture_output=True`, so the bytes exist at the failure boundary; they are simply discarded.
+
+### Required behavior
+
+1. `CommandResult` gains optional bounded fields: `stdout_tail`, `stderr_tail` (each ≤64 KiB decoded lossily with replacement characters; dropped-byte counts recorded), populated for every non-PASS outcome and retained on PASS as empty or consumer-opt-in.
+2. `assemble_verdict` persists them into the verdict artifact under `result.stdout_tail` / `result.stderr_tail`.
+3. Truncation is head-side (keep last N bytes) so final error lines survive.
+4. No change to exit codes, outcomes, or reason codes.
+
+### Acceptance
+
+- [ ] failing lane verdict contains both tails;
+- [ ] oversized output truncated head-side with recorded dropped-byte counts;
+- [ ] PASS verdicts remain unchanged unless opted in;
+- [ ] existing consumers reading verdicts tolerate the new optional keys.
