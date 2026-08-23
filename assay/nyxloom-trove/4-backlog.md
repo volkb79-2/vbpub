@@ -1228,3 +1228,40 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 - [ ] interrupted lane resumes without rerunning completed candidates;
 - [ ] shards are provably disjoint and exhaustive;
 - [ ] per-candidate timeouts do not abort unrelated candidates.
+
+## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
+
+**Filed 2026-08-23 (dstdns SQL mutation blocker; consumer evidence from `dstdns-SQL-MUTATION-LANE-BLOCKER.md`).**
+
+### The observation
+
+A dstdns SQL/DDL R2 lane provisions a disposable PostgreSQL server and therefore needs three runtime facts: Docker network name, governed cgroup parent, and the PostgreSQL image used by the deployed stack. Under `snapshot_selection = "repository"`, assay materializes a private snapshot containing committed source only; rendered CIU state such as `ciu.global.toml` is deliberately absent. The lane command cannot read caller/runtime state from inside the snapshot without violating isolation, and cannot invent defaults without violating fail-fast policy. Minimal reproduction: archive HEAD into `/tmp/sql-mutation-lane-repro`, init git, run the wrapper — it fails with `FileNotFoundError` for `ciu.global.toml`.
+
+### Required contract
+
+Allow lanes to declare required infrastructure inputs, resolved OUTSIDE the snapshot by assay/run-gate before command execution:
+
+```toml
+[lanes.sql_example.infrastructure]
+network = "derived:ciu.deploy.network_name"
+cgroup_parent = "required-env:CGROUP_PARENT_DEV_BACKGROUND"
+postgres_image = "derived:ciu.service.infra.db_core.postgres.image"
+```
+
+Rules:
+- resolution happens in the invoking/consumer context, never inside the snapshot;
+- empty/unresolvable values fail loudly;
+- resolved values are injected into the isolated command as environment variables;
+- snapshots remain free of runtime state;
+- alternative acceptable solution: a native SQL mutation executor owning disposable database lifecycle/snapshotting.
+
+### Related consumer-side requirements already implemented in dstdns
+
+Disposable server lease/fact files, owner-checked cleanup on exit/interrupt, per-invocation database naming/roles, version-correct readiness probing. These should inform helper-level support so consumers stop reinventing incompatible cleanup contracts.
+
+### Acceptance
+
+- [ ] declared infrastructure inputs resolve before snapshot execution;
+- [ ] missing/unresolvable inputs refuse loudly with named keys;
+- [ ] isolated commands receive only injected values, no host paths;
+- [ ] SQL lanes can complete full mutant scope without reading caller state.
