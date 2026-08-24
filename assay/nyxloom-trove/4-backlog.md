@@ -1288,6 +1288,19 @@ stdout/stderr tails and dropped-byte counts; failed and timed-out verdicts carry
 them under optional v7 top-level result fields; PASS and pre-command refusals
 omit the contract.
 
+**Update 2026-08-24 (dstdns P128 evidence).** B013's scope is wider than SQL
+mutation lanes. Any R1 lane whose wrapper provisions disposable infrastructure
+(here: a schema-lineage lane spawning a throwaway PostgreSQL and a sibling
+runner container via `docker exec`) hits the same wall — the wrapper runs
+inside the snapshot, but the *tests* run in the sibling runner against the
+REAL worktree (via bind mount), so the snapshot is never exercised. Coverage is
+written to the real tree; the snapshot stays empty of measurement output;
+assay then reports `GIT_FAILED` (dirty real tree) or `EMPTY_COVERAGE`. The
+B013 contract must cover "wrapper provisions infra in sibling containers that
+bind-mount the caller's tree" as a first-class case, or document explicitly
+that such lanes cannot use `snapshot_selection = "repository"` and must use
+R0 + external coverage attestation instead.
+
 ### The observation
 
 When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` with argv, commit, and timing — but zero command output. During dstdns debugging, a SQL lane failed before its first mutant for an environment-variable forwarding bug; diagnosing it required five manual reproductions because the verdict could not say *why* the command failed. `default_process_runner` already uses `capture_output=True`, so the bytes exist at the failure boundary; they are simply discarded.
