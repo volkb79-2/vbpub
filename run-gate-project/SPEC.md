@@ -212,6 +212,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   neither `forward_env` nor `required_env`; it warns and exits 0 — the
   enforcement mechanisms are `required_env` + preflight.
 
+- `R-25` **Override-reachability guard (RG-1):** a container command lane
+  (ephemeral or exec) invoked with `--worktree` whose argv contains NO
+  `{worktree}` token is refused (exit 2) before execution: sub-steps would
+  re-derive their own tree and judge something else — the silent false-PASS
+  class. Assay lanes relocate automatically (R-21) and host lanes relocate
+  via cwd, so both are exempt. Conjunction lanes declare
+  `--worktree {worktree}` in EVERY sub-invocation (CONSUMERS recipe; cmru's
+  `[lanes.gate]` is the reference shape).
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns

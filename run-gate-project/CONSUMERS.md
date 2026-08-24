@@ -163,16 +163,22 @@ kind = "command"
 environment = "test-runner"
 # The implementation-gate conjunction: schema + mock + assay judgment.
 # Every consumer runs THIS lane; none duplicates its internals.
+# RG-1 rule: EVERY sub-invocation carries --worktree {worktree} — an
+# override given to the gate must reach every sub-lane.
 argv = [
     "bash", "-c",
-    '''RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock ./run-gate.py schema && ./run-gate.py test-runner && ./run-gate.py assay''',
+    '''RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock ./run-gate.py --worktree {worktree} schema && ./run-gate.py --worktree {worktree} test-runner && ./run-gate.py --worktree {worktree} assay''',
 ]
 clean_tree = false
 budget = "75m"
 ```
 
 The consumer then points at `./run-gate.py <lane>` exactly as for any other
-lane — the conjunction is invisible above this boundary.
+lane — the conjunction is invisible above this boundary. run-gate REFUSES a
+container command lane invoked with `--worktree` whose argv contains no
+`{worktree}` token (host lanes are exempt — their cwd relocates into the
+override tree), so a dropped override fails loudly instead of silently
+judging some other tree.
 
 ### Consumer examples
 

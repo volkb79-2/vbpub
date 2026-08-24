@@ -6,6 +6,7 @@ Every argv assertion compares the LIST, never a joined string.
 """
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -1072,7 +1073,9 @@ EXEC_LANE = """\
     [lanes.suite]
     kind = "command"
     environment = "runner"
-    argv = ["echo", "hello"]
+    # {worktree} token present: exec-mode command lanes invoked WITH
+    # --worktree must actually honor it (RG-1 validator).
+    argv = ["bash", "-c", "cd {worktree}/proj && echo hello"]
     clean_tree = false
 """
 
@@ -1213,8 +1216,9 @@ class TestExecInnerWiring:
 
     def test_exec_inner_contains_substituted_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
-        cfg = EXEC_LANE.replace('["echo", "hello"]',
-                                '["bash", "-c", "cd {worktree} && echo gate-ran"]')
+        cfg = EXEC_LANE.replace(
+            '["bash", "-c", "cd {worktree}/proj && echo hello"]',
+            '["bash", "-c", "cd {worktree} && echo gate-ran"]')
         proj = make_project(repo, cfg)
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
@@ -1677,6 +1681,123 @@ class TestRequiredEnv:
             proc = run_tool(proj, "--list")
             assert proc.returncode == 2, bad
             assert "'required_env'" in proc.stderr
+
+
+class TestConjunctionOverrideGuard:
+    """RG-1: a conjunction/container command lane whose argv carries no
+    {worktree} token cannot honor --worktree — refusing beats the silent
+    false-PASS where sub-steps re-derive their own tree."""
+
+    EPH_NO_TOKEN = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.suite]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "echo ran"]     # NOTE: no {worktree} token
+        clean_tree = false
+        """
+
+    CONJ_FORWARDED = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.suite]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "cd {worktree}/proj && pwd"]
+        clean_tree = false
+
+        [lanes.gate]
+        kind = "command"
+        environment = "host"
+        # RG-1 fixed shape: every sub-invocation carries the override.
+        argv = ["bash", "-c", "./run-gate.py --worktree {worktree} suite"]
+        clean_tree = false
+        """
+
+    CONJ_BARE = CONJ_FORWARDED.replace(
+        "./run-gate.py --worktree {worktree} suite",
+        "./run-gate.py suite")  # the pre-RG-1 shape — must refuse
+
+    def _conjunction_proj(self, tmp_path, gate_config: str):
+        base = tmp_path / "repo"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = repo / "proj"
+        proj.mkdir()
+        shutil.copy(_TOOL, proj / "run-gate.py")
+        (proj / "run-gate.py").chmod(0o755)
+        (proj / "run-gate.toml").write_text(textwrap.dedent(gate_config))
+        commit_all(repo, "conjunction fixture")
+        return repo, proj
+
+    def test_ephemeral_lane_without_token_refuses_override(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.EPH_NO_TOKEN)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        assert proc.returncode == 2
+        assert "SILENTLY IGNORED" in proc.stderr
+        assert "{worktree}" in proc.stderr
+        assert "'suite'" in proc.stderr
+        assert log.read_text() == ""  # docker never invoked
+
+    def test_token_carrying_lane_still_accepts_override(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_host_lane_without_token_still_accepts_override(self, tmp_path, monkeypatch):
+        # host lanes relocate via cwd (R-19/R-21), so no token is needed.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "pwd"]
+            clean_tree = false
+            """)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert str(wt / "proj") in proc.stdout
+
+    def test_conjunction_forwards_worktree_to_sublane(self, tmp_path, monkeypatch):
+        repo, proj = self._conjunction_proj(tmp_path, self.CONJ_FORWARDED)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "gate", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[-1][-1]  # the SUB-lane's recorded container
+        assert f"cd {wt}/proj" in inner   # sub-lane judged the OVERRIDE tree
+
+    def test_bare_host_conjunction_safe_by_cwd_relocation(
+            self, tmp_path, monkeypatch):
+        # The pre-RG-1 BARE shape survives for HOST conjunction lanes only
+        # structurally: the host runner's cwd relocates into the override
+        # tree (R-19/R-21), so bare sub-calls derive the same toplevel. This
+        # is why the guard targets CONTAINER command lanes (ephemeral/exec)
+        # — their inner commands do NOT inherit that cwd.
+        repo, proj = self._conjunction_proj(tmp_path, self.CONJ_BARE)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "gate", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[-1][-1]
+        assert f"cd {wt}/proj" in inner  # judged W, not the invocation tree
 
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):

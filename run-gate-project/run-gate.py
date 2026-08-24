@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 12  # rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 13  # rev 12: RG-1 override-reachability guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -939,6 +939,18 @@ def main(argv: list[str] | None = None) -> int:
         # pointer recipe embeds {worktree} into bash strings regardless of
         # what this particular lane does with it.
         check_worktree_charset(worktree)
+        # RG-1: an override the lane cannot possibly honor is a silent
+        # false-PASS machine — a container command lane whose argv carries no
+        # {worktree} token would let sub-steps re-derive their own tree and
+        # judge something else. Assay lanes relocate automatically (R-21) and
+        # host lanes relocate via cwd, so both are exempt.
+        if args.worktree and lane["kind"] == "command" and env \
+                and not any("{worktree}" in element for element in lane["argv"]):
+            fail(f"--worktree '{args.worktree}' would be SILENTLY IGNORED by "
+                 f"container lane '{args.lane}': its argv contains no "
+                 f"{{worktree}} token, so sub-steps re-derive their own tree — "
+                 f"declare '--worktree {{worktree}}' inside the lane argv "
+                 f"(CONSUMERS 'Gate-conjunction lanes') or drop the flag")
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
         if not env:  # built-in 'host'

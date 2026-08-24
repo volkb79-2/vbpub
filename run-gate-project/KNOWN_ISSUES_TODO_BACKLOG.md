@@ -18,7 +18,7 @@ SPEC §9.
 
 | ID | Summary | Severity | Status |
 |---|---|---|---|
-| RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | OPEN |
+| RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | FIXED 2026-08-24 |
 | RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
 | RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
@@ -101,6 +101,27 @@ if this default is wrong, does anything fail loudly?" — nothing does here).
   fail oracle 1.
 - `--allow-dirty` reaches sub-lanes (dirty sub-lane proceeds instead of
   refusing).
+
+**FIXED 2026-08-24** (both halves, per interview; sequenced after RG-15 as
+planned):
+1. **Forward:** `cmru/run-gate.toml [lanes.gate]` now writes
+   `./run-gate.py --worktree {worktree} <sub>` for EVERY sub-invocation —
+   the reference shape, mirrored in CONSUMERS' conjunction recipe.
+2. **Reject:** SPEC `R-25` — a CONTAINER command lane (ephemeral or exec)
+   invoked with `--worktree` whose argv has no `{worktree}` token refuses
+   (exit 2) before execution. Assay lanes relocate automatically (R-21) and
+   host lanes relocate via cwd, so both are exempt.
+
+Discovery worth recording: post-RG-15 the BARE host conjunction is safe BY
+CONSTRUCTION (the host runner's cwd relocates into the override tree, so
+bare sub-calls derive the same toplevel) — the residual hazard is exactly
+the container class, which the guard covers. `--allow-dirty` is NOT
+forwarded by any mechanism: conjunctions that want dirty-tolerance write it
+per sub-call explicitly; anything else would silently weaken sub-lanes'
+clean-tree checks (the loud-refusal direction is the safe one). Oracles:
+forwarded shape judges W (nested fixture records the SUB-lane's docker run);
+controlled wrong shape (token-less ephemeral lane under --worktree) refuses
+with docker never invoked. Tests: TestConjunctionOverrideGuard x5.
 
 **SPEC owner:** §2 (R-02/R-03) + §5 execution contract; CONSUMERS.md
 conjunction recipe must change with it.
