@@ -141,6 +141,10 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.
+- **Effective tree:** `--worktree` doesn't just redirect checks — the lane
+  EXECUTES in the selected tree (assay cd, pin verification, artifacts,
+  host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
+  worktree B is the silent false-PASS class this kills.
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury

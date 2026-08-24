@@ -1,6 +1,7 @@
 # run-gate SPEC — normative implementation contract
 
-**Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Distilled from `README.md` (design
+**Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Rev 3: backlog-sweep
+amendments (`R-21` effective-tree execution, RG-15). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -115,19 +116,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail && git
   config --global safe.directory '*' && ...`. Command kind: the lane argv
   (`{worktree}`-substituted, shell-quoted) appended. Assay kind: `cd
-  <project_dir>` first, then per pin `(cd <pin's parent dir> && sha256sum -c
-  <bare filename>)` — verification FROM the pin file's own directory — then
-  `mkdir -p .assay`, then `<assay_command> run <assay_lane> --file
-  assay.toml --verdict-json .assay/verdict-<assay_lane>.json`.
+  <effective project dir>` first (R-21), then per pin `(cd <pin's parent dir>
+  && sha256sum -c <bare filename>)` — verification FROM the pin file's own
+  directory — then `mkdir -p .assay`, then `<assay_command> run <assay_lane>
+  --file assay.toml --verdict-json .assay/verdict-<assay_lane>.json`.
 - `R-17` **Run form + status:** `docker logs -f` streams; `docker wait`
   supplies the exit code, which IS the tool's exit code (no masking); an
   unreadable exit status → hard error ("refusing to guess"), never 0.
 - `R-18` **Verdict discipline:** assay lanes print the verdict artifact path
   (namespace-visible) after the run; every lane prints a final
   `lane '<name>' exit <code>` line.
-- `R-19` **Host lanes** exec the substituted argv directly with cwd = project
-  dir (no docker, no safe.directory — that trap is container-specific); exit
-  passthrough identical.
+- `R-19` **Host lanes** exec the substituted argv directly with cwd = the
+  effective project dir (R-21; no docker, no safe.directory — that trap is
+  container-specific); exit passthrough identical.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config --global
@@ -135,6 +136,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   read-only or shared across containers.
 - `R-20` `budget` is parsed, validated, and PRINTED as advisory; the tool
   does not enforce it (consumers may).
+
+- `R-21` **Effective tree (RG-15):** all user-declared execution paths —
+  the assay `cd`, pin verification, verdict/artifact locations, command-argv
+  `{worktree}` substitution, host-lane cwd — resolve against the JUDGED
+  WORKTREE via `<worktree>/<project-relative-to-invocation-toplevel>`. With
+  no `--worktree` override this is exactly the invocation project dir.
+  Refusal when the project dir lies outside its own toplevel (nothing then
+  defines its position inside the override tree). Existence inside the
+  override tree is NEVER pre-checked with a local stat — the override tree
+  may live in another mount namespace; the inner `cd` fails loudly where the
+  right view exists.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

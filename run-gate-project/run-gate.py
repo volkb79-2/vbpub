@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 3
+__revision__ = 4  # rev 4: RG-15 — lanes execute in the selected worktree (SPEC R-21)
 
 import argparse
 import os
@@ -261,9 +261,11 @@ def git_out(*args: str, cwd: Path) -> str:
 
 
 def resolve_repo_and_worktree(project_dir: Path, worktree_override: str | None
-                              ) -> tuple[Path, Path]:
+                              ) -> tuple[Path, Path, Path]:
     """repo = the checkout owning the shared .git (worktrees live under it);
-    judged worktree = the toplevel containing the project, unless overridden.
+    judged worktree = the toplevel containing the project, unless overridden;
+    also returns the invocation toplevel (the base the project dir is
+    relocated from when an override selects a different tree).
 
     NOTE: `--git-common-dir` is relative to the INVOCATION CWD (here:
     project_dir), never to the toplevel — joining it onto the wrong base
@@ -278,7 +280,34 @@ def resolve_repo_and_worktree(project_dir: Path, worktree_override: str | None
     else:
         repo = common_path.parent            # linked worktree: common-dir owner
     worktree = Path(worktree_override) if worktree_override else toplevel
-    return repo, worktree
+    return repo, worktree, toplevel
+
+
+def effective_project_dir(project_dir: Path, toplevel: Path,
+                          worktree: Path) -> Path:
+    """RG-15: the project's position INSIDE the judged tree.
+
+    All user-declared execution paths — the assay cd target, pin verification,
+    verdict/artifact locations, host-lane cwd — resolve against the SELECTED
+    worktree, never the invocation checkout: <worktree>/<project-relative-
+    to-toplevel>. With no --worktree override this is exactly project_dir.
+    Refuses when the project sits outside its own toplevel: nothing then
+    defines its position inside the override tree, and guessing would run the
+    lane against an unrelated directory. Existence is deliberately NOT
+    pre-checked here — the override tree may live in another mount namespace,
+    and a local stat would ask the wrong kernel; the inner `cd` fails loudly
+    where the right view exists.
+    """
+    try:
+        rel = project_dir.relative_to(toplevel)
+    except ValueError:
+        try:  # symlinked layouts: compare through realpath, keep caller's prefix
+            rel = project_dir.resolve().relative_to(toplevel.resolve())
+        except ValueError:
+            fail(f"project dir {project_dir} is outside its git toplevel "
+                 f"{toplevel} — cannot relocate it into the judged worktree "
+                 f"{worktree}")
+    return worktree / rel
 
 
 def resolve_slice(env: dict, env_source: str) -> tuple[str, str]:
@@ -357,6 +386,8 @@ def build_command_inner(lane: dict, worktree: Path) -> str:
 
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str) -> int:
+    # project_dir arrives already relocated into the judged worktree (RG-15):
+    # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
     if not docker:
         fail("docker not found on PATH — container lanes need it")
@@ -460,6 +491,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   worktree: Path, env: dict, env_source: str, env_name: str) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
+    project_dir arrives already relocated into the judged worktree (RG-15).
     Fail-fast: refuses to start the runner itself — that is CIU's job.
     This keeps run-gate as pure gate orchestration without duplicating
     lifecycle management that belongs to the deployment authority.
@@ -498,6 +530,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
 
 
 def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path) -> int:
+    # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
+    # host lane must not quietly operate on the invocation checkout either.
     argv = substitute_worktree(lane["argv"], worktree)
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env built-in 'host'",
           flush=True)
@@ -583,16 +617,21 @@ def main(argv: list[str] | None = None) -> int:
         lane = lanes[args.lane]
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
-        repo, worktree = resolve_repo_and_worktree(project_dir, args.worktree)
+        repo, worktree, toplevel = resolve_repo_and_worktree(
+            project_dir, args.worktree)
+        # RG-15: runners receive the project RELOCATED into the judged tree —
+        # their `project_dir` parameter is the effective one, never the
+        # invocation checkout when --worktree selects a different tree.
+        eff_proj = effective_project_dir(project_dir, toplevel, worktree)
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
         if not env:  # built-in 'host'
-            code = run_host_lane(lane, args.lane, project_dir, worktree)
+            code = run_host_lane(lane, args.lane, eff_proj, worktree)
         elif env.get("mode") == "exec":
-            code = run_exec_lane(lane, args.lane, project_dir, repo, worktree,
+            code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
                                  env, env_source, lane_environment_name(lane))
         else:
-            code = run_container_lane(lane, args.lane, project_dir, repo, worktree,
+            code = run_container_lane(lane, args.lane, eff_proj, repo, worktree,
                                       env, env_source)
         print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
         return code

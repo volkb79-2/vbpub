@@ -635,21 +635,129 @@ class TestArgvConstruction:
 class TestTreeResolution:
     def test_plain_repo_toplevel_is_repo(self, tmp_path):
         repo = make_repo(tmp_path)
-        got_repo, wt = run_gate.resolve_repo_and_worktree(repo, None)
-        assert got_repo == repo and wt == repo
+        got_repo, wt, toplevel = run_gate.resolve_repo_and_worktree(repo, None)
+        assert got_repo == repo and wt == repo and toplevel == repo
 
     def test_linked_worktree_resolves_common_owner(self, tmp_path):
         repo = make_repo(tmp_path)
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
-        got_repo, got_wt = run_gate.resolve_repo_and_worktree(wt, None)
+        got_repo, got_wt, toplevel = run_gate.resolve_repo_and_worktree(wt, None)
         assert got_repo == repo   # mounts must cover the MAIN checkout
         assert got_wt == wt       # judged tree = the worktree itself
+        assert toplevel == wt     # relocation base = invocation toplevel
 
     def test_worktree_override_honored(self, tmp_path):
         repo = make_repo(tmp_path)
-        _, wt = run_gate.resolve_repo_and_worktree(repo, "/elsewhere/tree")
+        _, wt, toplevel = run_gate.resolve_repo_and_worktree(repo, "/elsewhere/tree")
         assert wt == Path("/elsewhere/tree")
+
+
+class TestEffectiveTreeExecution:
+    """RG-15: --worktree relocates ALL user-declared execution paths into the
+    judged tree — the invocation checkout is never judged by side effect.
+    Exit-status-only assertions are insufficient here: these pin WHERE the
+    lane executes and WHERE artifacts land."""
+
+    ASSAY_CFG = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.ciu]
+        kind = "assay"
+        assay_lane = "ciu"
+        environment = "tester-unified"
+        assay_command = ["/opt/tester-venv/bin/python",
+                         "tools/assay/assay-2.1.0.pyz"]
+
+        [lanes.ciu.pins.assay]
+        version = "2.1.0"
+        sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+    """
+
+    def _repo_with_worktree(self, tmp_path, config: str | None = None):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, config or self.ASSAY_CFG)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        return repo, proj, wt
+
+    def test_assay_lane_judges_selected_worktree(self, tmp_path, monkeypatch):
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "ciu", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[0][-1]
+        # cd target AND pin verification relocated INTO the selected tree…
+        assert f"cd {wt}/proj" in inner
+        assert f"(cd {wt}/proj/tools/assay && " \
+            f"sha256sum -c assay-2.1.0.pyz.sha256)" in inner
+        # …and the invocation checkout appears NOWHERE in the judged command
+        # (controlled wrong implementation: pre-RG-15 built this exact string)
+        assert str(proj) not in inner
+        # verdict location follows the judged tree (R-18 discipline)
+        assert f"verdict artifact: {wt}/proj/.assay/verdict-ciu.json" \
+            in proc.stdout
+
+    def test_exec_assay_lane_judges_selected_worktree(self, tmp_path, monkeypatch):
+        repo, proj, wt = self._repo_with_worktree(tmp_path, """\
+            schema_version = 1
+            [environments.runner]
+            image = "r:latest"
+            mode = "exec"
+
+            [lanes.a]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+        """)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu global")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "a", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_execs(log)[0][-1]
+        assert f"cd {wt}/proj" in inner
+        assert str(proj) not in inner
+
+    def test_host_lane_cwd_is_the_effective_project_dir(self, tmp_path):
+        repo, proj, wt = self._repo_with_worktree(tmp_path, """\
+            schema_version = 1
+
+            [lanes.where]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "pwd"]
+            clean_tree = false
+        """)
+        proc = run_tool(proj, "where", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert str(wt / "proj") in proc.stdout  # pwd ran INSIDE the judged tree
+
+    def test_no_override_keeps_project_dir_exactly(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        assert run_gate.effective_project_dir(proj, repo, repo) == proj
+
+    def test_project_outside_its_toplevel_refuses_relocation(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        repo_a = make_repo(tmp_path / "a")
+        repo_b = make_repo(tmp_path / "b")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.effective_project_dir(repo_b, repo_a, Path("/wt/tree"))
+        assert "outside its git toplevel" in str(exc.value)
 
 
 class TestCleanTree:

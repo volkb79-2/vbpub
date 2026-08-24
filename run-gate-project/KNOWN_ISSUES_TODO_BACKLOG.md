@@ -32,6 +32,7 @@ SPEC §9.
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | OPEN |
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
+| RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
 
 ---
 
@@ -408,6 +409,12 @@ Assay lanes must:
 Linked worktree A at commit A plus checkout B at commit B:
 `./run-gate.py <assay-lane> --worktree A` must record A's HEAD and write artifacts under
 A. Exit-status-only tests are insufficient; assert verdict commit + artifact location.
+
+**FIXED 2026-08-24** (`R-21` in SPEC Rev 3): `effective_project_dir` relocates the
+project into the judged tree for both runner modes AND host-lane cwd; pin
+verification and verdict paths follow. Oracle landed as `TestEffectiveTreeExecution`
+(container assay, exec assay, host cwd, identity-without-override,
+outside-toplevel refusal).
 
 ## RG-16 — central configs should be allowed to define shared lanes
 

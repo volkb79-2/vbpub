@@ -168,6 +168,12 @@ commands:
 ./run-gate.py schema        # schema-only iteration
 ```
 
+`--worktree PATH` selects a DIFFERENT tree to judge (the daemon/dispatch
+case): the lane's execution relocates there — assay runs from
+`<PATH>/<project>`, pin verification and verdict/artifacts resolve under it,
+host lanes get that cwd. The invoking checkout is never judged by side
+effect (SPEC R-21).
+
 ## Per-project-type recipes
 
 **Python service repo with assay (ciu, cmru, assay itself):** the
