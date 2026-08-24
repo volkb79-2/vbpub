@@ -305,3 +305,9 @@ printf '%s\n' "$REPO_ROOT" "$PHYSICAL_REPO_ROOT"
 ciu version
 
 ```
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

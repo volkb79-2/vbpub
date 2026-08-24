@@ -324,3 +324,9 @@ you're changing assay itself:
 - `src/assay/schemas/verdict.schema.json` — the verdict artifact's JSON
   Schema, shipped as data. Read this if you're building a consumer that
   reads assay's output without depending on assay's own code.
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

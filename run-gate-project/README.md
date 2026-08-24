@@ -16,8 +16,11 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 
 1. **Central defaults (controller A2):** shared environment facts live in a
    repo-root `run-gate.toml` — the NEAREST STRICT ANCESTOR of the project
-   dir. Environments only; `[lanes.*]` there is rejected. Project tables
-   shadow a central name entirely (auditable override, no field merging).
+   dir. At P01 build time environments only (`[lanes.*]` there was
+   rejected) — **superseded by RG-16 (`R-22`)**: central `[lanes.*]` are
+   legal shared lanes every consuming project inherits BY NAME. Project
+   tables shadow a central name entirely (auditable override, no field
+   merging).
 2. **Config discovery:** the project config is found next to the INVOKED
    script path WITHOUT resolving symlinks (a symlink's parent is the
    project), CWD as fallback. CWD-first (the handoff's wording) breaks
@@ -134,15 +137,31 @@ the tool's reason to exist and MUST be implemented + tested:
   `/proc/self/mountinfo` (the bind mount whose mount point contains the repo;
   cmru `tester-gate` precedent — never from `ciu.env`, whose generated values
   have been observed stale); dual-mount physical AND devcontainer
-  paths so worktree gitfiles resolve; `git config --global safe.directory '*'`
+  paths so worktree gitfiles resolve — when no alias is derivable (bare
+  host, `phys == repo`) the lane refuses instead of silently collapsing to
+  one mount; declare the second view via
+  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
+  `git config --global safe.directory '*'`
   inside the gate container.
 - **Artifact pins:** sha256 verification executed FROM the pin file's
-  directory (`cd <dir> && sha256sum -c <pin>`), fail-closed.
+  directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
+  `version` is a claim the artifact must satisfy — the lane probes
+  `<assay_command> --version` and refuses mismatches (no provenance theater).
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.
+- **Effective tree:** `--worktree` doesn't just redirect checks — the lane
+  EXECUTES in the selected tree (assay cd, pin verification, artifacts,
+  host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
+  worktree B is the silent false-PASS class this kills.
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
+  Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
+  (infrastructure) so scripts never parse prose to tell them apart.
+- **Gate-safe paths:** `{worktree}` is substituted textually into consumer
+  shell strings, so a judged tree at a path with whitespace or shell
+  metacharacters is refused up front (every lane kind) instead of
+  word-splitting or executing downstream.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury
   it in a stream a consumer might truncate.
 

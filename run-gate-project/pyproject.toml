@@ -1,0 +1,41 @@
+# RG-14 — the wheel as a SECOND artifact beside the canonical script.
+#
+# The script stays PRIMARY: fresh clone, zero installs, `./run-gate.py --list`
+# unchanged (CONSUMERS step 1). This file only wraps the SAME single module
+# for pip-installable distribution, published through cmru's wheel-publish
+# like assay/ciu. The wheel must never become a requirement — CONSUMERS.md
+# says so in prose and this file cannot make it one.
+#
+# Version is DERIVED, never declared twice (defaults-are-hazards): setuptools
+# reads `__revision__` straight out of run-gate.py (AST read, no import), so
+# the wheel's version cannot drift from the copies' drift marker that external
+# repos compare. tests/test_run_gate.py enforces the whole chain structurally.
+[build-system]
+# Pinned exactly like assay/ciu so wheel builds are reproducible (same
+# toolchain + SOURCE_DATE_EPOCH -> identical sha256).
+requires = ["setuptools==84.0.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "run-gate"
+description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
+readme = "README.md"
+requires-python = ">=3.11"   # floor: tomllib import in run-gate.py (same reason every estate wheel declares it)
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+dependencies = []            # stdlib-only is the design win; this staying empty keeps the wheel honest
+
+dynamic = ["version"]
+
+[project.scripts]
+run-gate = "run_gate:main"
+
+[tool.setuptools]
+# run-gate.py keeps its hyphenated canonical name; Python identifiers cannot
+# carry hyphens, so py_modules cannot auto-find it. The committed symlink
+# run_gate.py -> run-gate.py gives the build an importable name for the SAME
+# bytes (dereferenced at copy time), and the console script binds to it.
+py-modules = ["run_gate"]
+
+[tool.setuptools.dynamic]
+version = {attr = "run_gate.__revision__"}

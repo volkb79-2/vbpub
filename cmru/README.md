@@ -341,3 +341,9 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 - Full contract & rationale: [`docs/SPEC.md`](docs/SPEC.md) — start at *S-CLI* and *S-REL*.
 - Monorepo tooling overview: [`../docs/RELEASE-TOOLING.md`](../docs/RELEASE-TOOLING.md).
 - Release-modes design/plan: [`../docs/plan-cmru-release-modes.md`](../docs/plan-cmru-release-modes.md).
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

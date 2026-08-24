@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -81,7 +82,14 @@ def test_non_slice_name_is_refused_before_docker(tmp_path: Path):
 def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     """The trove gate is a thin pointer at the run-gate SSOT lane (D-110/D-111);
     the lane invokes the driver, and the driver still derives and verifies the
-    cgroup tier itself — no literal slice anywhere in the chain."""
+    cgroup tier itself — no literal slice anywhere in the chain.
+
+    The pointer itself is parsed STRUCTURALLY (RG-2): exactly one cd into this
+    project, an exact-token run-gate invocation carrying --worktree {worktree},
+    naming a lane that exists in the SSOT — not substrings, which a broken
+    pointer (`echo run-gate.py`; `tester-unified-typo`) satisfies trivially.
+    `./run-gate.py validate-pointers nyxloom-trove/nyxloom.toml` enforces the
+    same contract estate-wide; this pins THIS project's specific shape."""
     document = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))
     argv = document["gates"]["tester-unified"]["argv"]
     gate_cfg = tomllib.loads(
@@ -91,7 +99,14 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     driver = GATE_DRIVER.read_text(encoding="utf-8")
 
     pointer = argv[-1]
-    assert "run-gate.py" in pointer and "tester-unified" in pointer
+    assert re.findall(r"\bcd\s+(\S+)", pointer) == ["{worktree}/assay"]
+    invocation = re.search(r"run-gate\.py\s+([^&;]*)$", pointer)
+    assert invocation is not None, "no run-gate.py invocation in pointer"
+    assert invocation.group(1).split() == [
+        "--worktree", "{worktree}", "tester-unified"
+    ]
+    assert "tester-unified" in gate_cfg["lanes"], (
+        "pointer names a lane the SSOT no longer declares")
     assert lane["environment"] == "host"
     assert lane["argv"][0] == "bash"
     assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"

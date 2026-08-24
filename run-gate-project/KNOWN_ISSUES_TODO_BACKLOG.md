@@ -18,20 +18,26 @@ SPEC §9.
 
 | ID | Summary | Severity | Status |
 |---|---|---|---|
-| RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | OPEN |
-| RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
-| RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | OPEN |
-| RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | OPEN |
-| RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | OPEN |
-| RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | OPEN |
-| RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | OPEN |
-| RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
-| RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
-| RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | OPEN |
-| RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | OPEN |
-| RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | OPEN |
-| RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
-| RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
+| RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | FIXED 2026-08-24 |
+| RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | FIXED 2026-08-24 |
+| RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
+| RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
+| RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
+| RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | FIXED 2026-08-24 |
+| RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | FIXED 2026-08-24 |
+| RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | FIXED 2026-08-24 |
+| RG-9 | No `doctor` preflight subcommand | Enhancement | FIXED 2026-08-24 |
+| RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | FIXED 2026-08-24 |
+| RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
+| RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
+| RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | FIXED 2026-08-24 |
+| RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | FIXED 2026-08-24 |
+| RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
+| RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
+| RG-17 | required-env forwarding completeness (schema-oracle credentials silently dropped) | Major | FIXED 2026-08-24 |
+| RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN |
+| RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
+| RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
 
 ---
 
@@ -96,6 +102,27 @@ if this default is wrong, does anything fail loudly?" — nothing does here).
 - `--allow-dirty` reaches sub-lanes (dirty sub-lane proceeds instead of
   refusing).
 
+**FIXED 2026-08-24** (both halves, per interview; sequenced after RG-15 as
+planned):
+1. **Forward:** `cmru/run-gate.toml [lanes.gate]` now writes
+   `./run-gate.py --worktree {worktree} <sub>` for EVERY sub-invocation —
+   the reference shape, mirrored in CONSUMERS' conjunction recipe.
+2. **Reject:** SPEC `R-25` — a CONTAINER command lane (ephemeral or exec)
+   invoked with `--worktree` whose argv has no `{worktree}` token refuses
+   (exit 2) before execution. Assay lanes relocate automatically (R-21) and
+   host lanes relocate via cwd, so both are exempt.
+
+Discovery worth recording: post-RG-15 the BARE host conjunction is safe BY
+CONSTRUCTION (the host runner's cwd relocates into the override tree, so
+bare sub-calls derive the same toplevel) — the residual hazard is exactly
+the container class, which the guard covers. `--allow-dirty` is NOT
+forwarded by any mechanism: conjunctions that want dirty-tolerance write it
+per sub-call explicitly; anything else would silently weaken sub-lanes'
+clean-tree checks (the loud-refusal direction is the safe one). Oracles:
+forwarded shape judges W (nested fixture records the SUB-lane's docker run);
+controlled wrong shape (token-less ephemeral lane under --worktree) refuses
+with docker never invoked. Tests: TestConjunctionOverrideGuard x5.
+
 **SPEC owner:** §2 (R-02/R-03) + §5 execution contract; CONSUMERS.md
 conjunction recipe must change with it.
 
@@ -155,6 +182,26 @@ assay's meta-test restored to structural checks (parse the pointer string).
 **SPEC owner:** §2 (CLI contract gains validate verb or documented recipe);
 CONSUMERS.md adoption steps gain "add the linkage test".
 
+**FIXED 2026-08-24** (SPEC `R-27`): new verb `run-gate.py validate-pointers
+CONSUMER.toml [--root DIR]`. Schema-agnostic: it walks any parsed TOML and
+certifies EVERY run-gate invocation it finds (an argv-style list whose first
+element is run-gate.py is joined into one pointer — cmru's list-form release
+step). Per invocation it enforces exactly one `{worktree}`-relative cd
+target whose project has a run-gate.toml (no cd → the document's own
+directory when that IS a project), `--worktree {worktree}` present whenever
+the pointer substitutes `{worktree}` at all (the RG-1 false-PASS class,
+caught at test time), and exactly one positional lane name that EXISTS in
+the effective lane set — loaded with the REAL parser including central
+inheritance, never a second parse. Exit 2 on any defect; documents that
+never invoke run-gate (srdm's gate.sh pointers) are trivially clean. Estate
+linkage now runs on every suite run: TestPointerLinkage ×9 construction pins
+(renamed-lane oracle goes RED at test time) + TestPointerLinkageEstate —
+all five trove nyxloom.toml files plus cmru.toml certified against their
+SSOT lanes (6 real invocations, all green today). assay's meta-test
+substring assertion restored to STRUCTURAL checks: exact cd target, exact
+token list `--worktree {worktree} tester-unified`, lane-exists-in-SSOT.
+CONSUMERS adoption gains step 3a ("Certify the linkage").
+
 ## RG-3 — dual-mount degenerates outside the cockpit namespace
 
 **Found by:** adversarial correctness review, 2026-08-22.
@@ -173,6 +220,19 @@ silent divergence from the documented four-traps recipe the tool embodies.
 present; when absent, either declare the constraint loudly at startup
 ("container lanes assume the devcontainer namespace alias; found none") or
 accept an explicit env fact. Never collapse silently.
+
+**FIXED 2026-08-24** (explicit env fact — the "5b" explicitness choice):
+`dual_mount_flags(repo, phys)` emits the two `-v` views only when they are
+DISTINCT. When `phys == repo` (bare host — mountinfo offers no alias) the
+lane refuses (exit 2, message names "collapse") unless
+`$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` declares the second view;
+malformed entries and a host side ≠ repo root are refused by name. The alias
+only ever changes the container-side path of the SECOND view — both flags
+always bind-mount the same physical tree. SPEC `R-23`; README path-
+namespaces bullet and CONSUMERS resolution-order paragraph amended. Test
+note: the end-to-end refusal is driven in-process (`run_gate.main`) because
+subprocess runs derive REAL mountinfo views and this devcontainer's `/tmp`
+bind mount hides the bare-host collapse from them.
 
 **Oracle:** simulated mountinfo without an alias → loud refusal or explicit
 single-mount notice naming both paths tried; controlled wrong implementation
@@ -203,6 +263,14 @@ cheap, stdlib, closes the gap.
 **Oracles:** mismatched version → lane refuses naming both values; equal →
 silent; controlled wrong implementation (today's no-check) fails oracle 1.
 
+**FIXED 2026-08-24** (option a, mechanical): `build_assay_inner` gains an
+in-lane probe per pin declaring `version` — `<assay_command> --version` must
+succeed and its output match the declaration, else the lane exits 2 naming
+both values. Empty declarations rejected at validation. Oracles include a
+LIVE shell execution of the generated inner (fake artifact reporting the
+wrong/right version). SPEC R-08 + CONSUMERS schema comment updated: declaring
+`version` asserts the `--version` convention.
+
 ## RG-5 — `{worktree}` textual substitution: quoting/injection surface
 
 **Found by:** adversarial correctness review, 2026-08-22.
@@ -220,6 +288,19 @@ linkage surface.
 
 **SPEC owner:** R-02 (substitution contract).
 
+**FIXED 2026-08-24** (charset guard now; env-var migration deferred to the
+CIU-V7 cutover, per interview): `check_worktree_charset(worktree)` enforces
+`^[A-Za-z0-9_./][A-Za-z0-9_./-]*$` on the RESOLVED worktree before any lane
+runs — every kind uniformly (the daemon pointer recipe embeds `{worktree}`
+into bash strings regardless of what an individual lane does with it).
+Refusal is exit 2 naming the offending characters and the reason; mid-path
+leading-dash components are deliberately ALLOWED (absolute paths always
+start with `/`, so the flag look-alike hazard never materializes — tighter
+than the backlog's sketch, which wrongly admitted spaces). SPEC R-02
+amended; README "Gate-safe paths" bullet; CONSUMERS adoption step 3.
+Revisit at V7 cutover: out-of-band `RUN_GATE_WORKTREE` to shrink pointer
+argvs (and RG-2's linkage surface) entirely.
+
 ## RG-6 — exec-mode refusal prescribes a ciu-specific remedy for every project
 
 **Found by:** consumer-UX review, 2026-08-22.
@@ -235,6 +316,16 @@ estate rule that a remedy message must prescribe a CORRECT fix.
 ciu.global.toml-derived → name that file and `ciu render`/`ciu up` as
 applicable. **Oracle:** exec lane with stopped container → message names the
 source actually used; dstdns-shaped project never sees ciu's command.
+
+**FIXED 2026-08-24** (remedy derived from resolution source, per the entry):
+`resolve_container_name` now returns `(name, source, start_remedy)` — a
+declared `container_name` yields "start it via YOUR project's deployment
+authority", ciu-derived names yield `ciu render`/`ciu up` naming the config
+file used. The not-running refusal interpolates the remedy verbatim; the
+hardcoded `ciu up --dir tools/test-runner` is gone. SPEC R-14a amended;
+CONSUMERS dstdns recipe notes the rule. Oracle covered both ways: declared-
+name refusal asserts `"ciu"` appears NOWHERE in stderr; ciu-derived refusal
+asserts the lifecycle AND `ciu.global.toml` are named.
 
 ## RG-7 — usage()/`--list` hide the environment contract and lane metadata
 
@@ -260,6 +351,18 @@ clean_tree columns; optional `description` lane key (validated, shown);
 document the gitignore obligation for command-kind artifacts (see RG-13).
 Schema change additive; one parser owns it.
 
+**FIXED 2026-08-24:** `usage()` gains FLAGS (`--worktree`; `--allow-dirty`
+with the explicit two-layer caveat that assay still enforces its own
+clean-tree rule) and ENVIRONMENT CONTRACT sections naming all three
+variables the tool reads — `CGROUP_PARENT_DEV_BACKGROUND`,
+`RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS` — with failure semantics.
+The human lane table now shows `clean_tree`, advisory `budget`, `memory`,
+and a new validated optional `description` key (one line, `--help` only).
+`--list` stays THREE columns by design: it is the machine-readable contract
+(CONSUMERS anti-goal) and never grows columns. SPEC R-01/R-08 amended;
+CONSUMERS schema comment updated. Gitignore obligation for command-kind
+artifacts lands with RG-10/RG-13. Tests: TestUsageEnvironmentContract x5.
+
 ## RG-8 — no `--dry-run`
 
 **Enhancement, 2026-08-22 (CLI audit; wanted repeatedly during the adoption
@@ -272,6 +375,19 @@ command) and exit 0 without `docker run`. Invaluable for debugging adoption
 **Oracle:** `--dry-run <container lane>` performs no `docker run` (fake
 docker records argv), prints the identical argv the live run would use.
 
+**FIXED 2026-08-24** (SPEC `R-28`): `--dry-run` on every lane kind. The
+flag is a REHEARSAL, not a bypass: all preflights run exactly as live
+(config, required-env, worktree resolution + charset guard,
+override-reachability, clean-tree — `--allow-dirty` composes), then the
+runners return the fully assembled plan and exit 0 instead of executing.
+Container lanes print the identical docker argv (same assembly code path;
+only `--name` differs by pid/epoch — the oracle normalizes it in tests);
+exec lanes rehearse name resolution AND the runner-running check (a stopped
+runner gives its real exit-2 refusal); host lanes print argv + cwd. No
+evidence-path disclosure on dry runs — nothing ran, nothing landed. Tests:
+TestDryRun ×6 including the oracle (live vs dry argv equality with name
+normalized) and both preflight rehearsals.
+
 ## RG-9 — no `doctor` preflight subcommand
 
 **Enhancement, 2026-08-22 (consumer-UX review).** Recompose existing checks
@@ -281,6 +397,19 @@ from mountinfo; git identity/safe.directory writability; referenced images
 exist locally. One command turns four first-contact failure classes into a
 preflight a newcomer runs once. All inputs already implemented — pure
 recomposition, stdlib only.
+
+**FIXED 2026-08-24** (SPEC `R-30`): `./run-gate.py doctor`. One
+`[OK]/[WARN]/[FAIL]` line per check + summary; exit 2 iff any FAIL. Checks:
+docker present; per-environment slice resolution + LoadState where systemd
+reachable (distinct envs deduplicated); git worktree resolution; mountinfo
+derivability (bare-host view = WARN naming `$RUN_GATE_MOUNT_ALIAS`, per
+RG-3); `/tmp` writability for GIT_CONFIG_GLOBAL; referenced images present
+locally (advisory WARN — a missing image may legitimately pull). Doctor
+runs nothing and must itself survive a broken host: a preflight that
+tracebacks on exactly the machine that needs it defeats its purpose, so an
+unrunnable git is a `[FAIL] git` line, not a traceback. Tests: TestDoctor
+×6 (healthy all-OK, unresolvable-slice refusal, missing-image advisory,
+docker-absent failure, host-only skip, mountinfo always reported).
 
 ## RG-10 — verdict/evidence path printed only for ephemeral-container assay lanes
 
@@ -298,6 +427,21 @@ on every lane exit, `{worktree}`-substituted), defaulting to the assay-verdict
 convention for assay-kind lanes in both runner modes. Backfill cmru's three
 evidence paths.
 
+**FIXED 2026-08-24** (SPEC `R-08` + `R-18` amendment): `artifacts` is a
+validated lane key (non-empty list of non-empty strings); new
+`print_lane_artifacts` runs after EVERY lane exit in ALL THREE runners —
+ephemeral, exec, host — any kind, success or failure. Assay lanes always
+disclose `.assay/verdict-<assay_lane>.json` resolved against the EFFECTIVE
+project dir (the ephemeral runner's inline print was replaced by the helper,
+so the path is now worktree-correct under `--worktree` too, not just
+present); declared entries are `{worktree}`-substituted,
+absolute-or-project-relative, and deduplicated against the verdict
+convention. A failed lane still names its evidence — that is exactly when
+the reader needs the paths. cmru's three evidence paths backfilled as
+declared `artifacts`. Tests: TestArtifactsDisclosure ×8 (ephemeral command
+lane disclosure, verdict dedup, `{worktree}` substitution, exec assay
+verdict, host lane, failed-lane disclosure, invalid-key rejection ×2).
+
 ## RG-11 — uniform exit code 1 for every refusal
 
 **Found by:** consumer-UX review, 2026-08-22.
@@ -310,6 +454,11 @@ Messages carry the information; machines don't. With CI fan-out consuming
 **Proposed reserved codes:** 2 = configuration/refusal (incl. dirty tree,
 unknown lane), 3 = execution-infrastructure failure; document in usage().
 Cheap now, breaking later.
+
+**FIXED 2026-08-24** (SPEC R-04 amended): `GateError.exit_code` = 2
+(configuration/refusal), `GateInfraError` = 3 (docker absent/failing, git
+failures, mountinfo underivation, unreadable wait status). Documented in
+usage() with a red-guard test; all ten exit-code pins reclassified.
 
 ## RG-12 — failing-container evidence destroyed
 
@@ -324,6 +473,19 @@ line is rarely last. On lane failure the container is `rm -f`'d in `finally`
 print the path on failure; keep ≥ last N stderr lines in the immediate
 message. **Oracle:** forced-fail lane leaves a readable log at the printed
 path after the container is gone.
+
+**FIXED 2026-08-24** (SPEC `R-26`): `save_container_logs` copies the full
+logs to `$RUN_GATE_EVIDENCE_DIR/<container>.log` (default `/tmp/run-gate`)
+BEFORE every `rm -f`; a failed lane prints the preserved path, and the
+oracle holds — the file exists and reads back after removal. A failed
+`docker run` also preserves partial logs and its refusal now shows up to
+the last 10 stderr lines (indented block) instead of only the last one.
+Capture is best-effort: failure to capture never changes the lane's exit
+status, it only downgrades the message to "could NOT be captured".
+Exec-mode containers are externally owned — never removed, never captured.
+Tests: forced-fail lane (wait 7 → passthrough 7 + readable log),
+run-failure with TWO stderr lines both present in the refusal, and the
+evidence-dir override honored.
 
 ## RG-13 — docs gaps (CONSUMERS.md + adoption hygiene)
 
@@ -356,6 +518,41 @@ they share the same fix surface:
 Related but separate: assay's own CONSUMERS.md teaches the superseded
 pre-adoption cmru wiring — filed as assay B011, not here.
 
+**FIXED 2026-08-24 (rev 21) — all five items, closed LAST as the estate
+retro:**
+
+1. **Worked example added** to CONSUMERS.md ("Worked example — run-gate ×
+   assay, end to end"): pyz + sidecar acquisition → minimal R0 `assay.toml`
+   (template keys verbatim) → `kind="assay"` lane with pins → canonical
+   consumer pointer → first run → reading/verifying
+   `.assay/verdict-<lane>.json`. R1+ adoption noted as an assay.toml-only
+   edit.
+2. **Gitignore obligation stated** as adoption step 5: copied-script repos
+   must replicate the monorepo root's ignores for every path their lanes
+   write (union of declared `artifacts` lists = checklist), else the NEXT
+   lane's clean-tree check refuses on yesterday's evidence.
+3. **Step 4 retro-executed ×9 adopters** (assay, ciu, cmru, nyxloom, topos,
+   pwmcp, shared-ramdisk-depot-manager, modern-debian-tools-python-debug,
+   plesk-mailbox-create). Deviation with reason: no project carries an
+   AGENTS.md, so the canonical-entrypoint line landed in each project's own
+   README under "## Testing" (srdm's existing Testing section amended to
+   lead with it).
+4. **Root-level discovery added**: vbpub root README gained the
+   `cd <project> && ./run-gate.py --list` line pointing at CONSUMERS.md.
+5. **Budget↔timeout drift guarded by test**, estate-wide:
+   `TestEstateBudgetTimeoutPairing` loads each nyxloom-trove project's lanes
+   with the REAL parser and asserts consumer `timeout_seconds >= lane
+   budget` wherever a gate argv names the lane as a whole token (8 live
+   pairings across assay/ciu/nyxloom/topos/srdm; cmru.toml steps carry no
+   timeout field — nothing to pair; srdm canary-run.sh names no lane —
+   skipped by construction). The sweep caught ONE real drift on its first
+   run and it was reconciled: srdm `[gates.privileged-e2e]` timeout 2400s
+   truncated the `e2e` lane whose budget is 60m → widened to 3600s with a
+   comment naming this rule. Rule documented in CONSUMERS.md ("Consumer
+   timeouts must not cut lanes short") + SPEC `R-32`.
+
+With this entry the RG sweep (RG-1…RG-20) is complete.
+
 ## RG-14 — release model: wheel as second artifact beside the canonical script
 
 **Enhancement, 2026-08-22 (operator question, answered in review session).**
@@ -375,6 +572,27 @@ anything the wheel doesn't.
 (script path, unchanged); `pip install`ed wheel exposes `run-gate` console
 script with identical behavior; version-mismatch between wheel and script
 fails the discipline test.
+
+**FIXED 2026-08-24 (rev 20).** `pyproject.toml` wraps the module for
+setuptools (toolchain pinned exactly, assay/ciu precedent). The hyphenated
+filename cannot be a py_module, so a committed symlink
+`run_gate.py -> run-gate.py` gives the build an importable name for the SAME
+bytes (dereferenced at copy time); the wheel ships only that module plus
+dist-info, byte-identical to the canonical script. Console script
+`run-gate = run_gate:main`. Version discipline made structural rather than
+test-compared: `[tool.setuptools.dynamic] version = {attr =
+"run_gate.__revision__"}` DERIVES the wheel version from the script at build
+time — dual bookkeeping (and therefore drift) is impossible by construction,
+and tests/test_run_gate.py::TestWheelPackaging pins the derivation plus
+builds/installs the wheel in-suite asserting identical `--list` output
+between copied script and installed console script. Deliberate deviation:
+the entry's `run-gate-vX.Y.Z` tag shape becomes `run-gate-v<derived>` (e.g.
+`run-gate-v20`) because the script's whole version story is the bare
+revision integer until semver meaning exists; the enforced invariant is
+tag-body == wheel version. CONSUMERS.md gained "Distribution — script first,
+wheel second"; SPEC §7 rewritten + `R-31`. First release: tag
+`run-gate-v21` after merge (the RG-13 rev bump rides along), publish via
+cmru's wheel-publish.
 
 ## RG-15 — assay lanes must execute in the selected worktree, not the invoking checkout
 
@@ -409,6 +627,12 @@ Linked worktree A at commit A plus checkout B at commit B:
 `./run-gate.py <assay-lane> --worktree A` must record A's HEAD and write artifacts under
 A. Exit-status-only tests are insufficient; assert verdict commit + artifact location.
 
+**FIXED 2026-08-24** (`R-21` in SPEC Rev 3): `effective_project_dir` relocates the
+project into the judged tree for both runner modes AND host-lane cwd; pin
+verification and verdict paths follow. Oracle landed as `TestEffectiveTreeExecution`
+(container assay, exec assay, host cwd, identity-without-override,
+outside-toplevel refusal).
+
 ## RG-16 — central configs should be allowed to define shared lanes
 
 **Filed 2026-08-23 (same session).**
@@ -430,6 +654,14 @@ If compatibility is desired, gate via explicit config (e.g. schema_version bump 
 
 Local fix reference: dstdns controller branch commit `7b17d331`
 (`central and lanes and not envs` interim guard), superseded by this requirement.
+
+**FIXED 2026-08-24** (unconditional admission, per interview): central
+`[lanes.*]` schema-validated and inherited; `merge_lanes` shadows by name
+wholesale; per-consumer pin-sidecar existence enforced at load naming both
+files; argv strings deliberately never stat'd (they are shell text — a check
+narrower than its message is the KI-12 class). usage()/`--list` show the
+effective set with `*` marking inherited entries; SPEC R-22 + §1 amended,
+CONSUMERS central-defaults section rewritten with a real shared-lane recipe.
 
 ## RG-17 — env forwarding allowlists silently drop schema-oracle credentials (SCHEMA_GATE_PW)
 
@@ -465,6 +697,20 @@ lane targets consume what they need.
 
 - Lane declares `required_env = ["X"]`; invoke with X unset ⇒ refuse before execution.
 - Controlled wrong implementation: remove `forward_env` entry for a required var ⇒ oracle 1 fires.
+
+**FIXED 2026-08-24** (both proposals, compatible, per the "5b explicitness"
+interview choice): lanes gained a validated `required_env` key; the gate
+refuses (exit 2) before ANY execution when a declared name is absent or
+empty in the invoking environment (RG-19 preflight), and — container lanes
+only — when a required name is NOT on the environment's forward_env
+allowlist at all (the completeness check this entry demanded: such a
+requirement could never reach the lane). The advisory drift sweep is
+`--check-env`: scans the project's Python sources for `os.environ[...]` /
+`os.environ.get(...)` / `getenv(...)` literals and flags names covered by
+neither allowlist nor required_env; heuristic by nature, so it WARNS and
+exits 0 — enforcement lives in required_env + preflight. SPEC R-24;
+CONSUMERS env-facts paragraph + schema comment. Oracle covered: unset ⇒
+refusal with docker never invoked; empty string counts as absent.
 
 ## RG-18 — no pg_dump/PostgreSQL version-mismatch guard for schema lanes
 
@@ -514,6 +760,17 @@ otherwise green run.
 
 Controlled wrong implementation: remove `SCHEMA_GATE_PW` from forwarding ⇒ gate refuses
 pre-execution naming it, instead of tests failing mid-run or skipping.
+
+**FIXED 2026-08-24** (jointly with RG-17, see there): the runtime preflight
+is `preflight_required_env` — presence + non-emptiness verified before any
+execution, refusal naming lane and variable. The forwarding record is
+`log_forwarded_env`, printed at every container-lane start: which
+forward_env keys were present and which declared-but-absent — NAMES ONLY,
+never values. Discovered during implementation and fixed in the same
+entry: the R-05 docker-argv print would have echoed credential VALUES via
+`-e KEY=value`; it now masks forwarded payloads (`KEY=<redacted>`) so the
+mechanics stay visible without leaking secrets into logs. Test asserts the
+sentinel value appears nowhere in the run output.
 
 ## RG-20 — replace global gate flock with resource-aware admission
 
@@ -569,3 +826,30 @@ Replace global flock with resource-aware admission:
 - Two gates sharing the same PG instance ⇒ second waits for first.
 - Combined declared memory exceeds host dev-tier budget ⇒ second refuses with message
   naming current consumers and required headroom.
+
+**FIXED 2026-08-24** (SPEC `R-29`; interview choice: full §5.7-shaped
+admission MINUS rigor presets, budget DERIVED from the slice's cgroupfs
+memory.max). Note: run-gate.py itself never had the global flock — that was
+the retired dstdns `testing-exec.sh` shim — so this entry IMPLEMENTS
+admission rather than removing a lock. Lane key `[lanes.<name>.resources]`:
+`memory` (supersedes top-level `memory`; declaring both refused),
+`memory_swap` (docker `--memory-swap`, cmru's tight-RAM/ample-swap pattern),
+`cpu_weight`/`io_weight` (validated + printed ADVISORY — docker has no
+portable cgroup-v2 flag; pretending otherwise would be enforcement theater;
+CIU V7 §5.7 owns cgroup-adjacent enforcement), `shared` (service names).
+Memory admission reads kernel truth at admission time:
+`slice/memory.current + declared <= slice/memory.max` under
+`$RUN_GATE_CGROUPFS_ROOT` (default /sys/fs/cgroup, systemd dash-nesting
+resolved) — counts EVERYTHING in the slice (other gates AND live services),
+so no cross-process bookkeeping can drift. Over budget → exit 2 refusal
+naming usage/budget/need/overage; no derivable ceiling → loud warning,
+shared-infra-only admission. Shared-infra: per-name flock at
+`/tmp/run-gate-shared-<name>.lock`; second gate WAITS with a notice then
+proceeds; isolated names never meet. Locks acquired after all fast-fail
+preflights, released in finally; `--dry-run` plans but never blocks. Slice
+resolution moved from runner into main() so admission and execution share
+one resolution. cmru backfilled: all four container lanes declare
+1g/16g (the proven CMRU_TESTER_MEMORY values). Tests: TestResourceAdmission
+×17 including all three oracles (over-budget refusal with numbers,
+same-service serialization with a real held flock, unbounded-slice
+degradation).

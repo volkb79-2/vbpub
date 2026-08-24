@@ -5,11 +5,19 @@ lesson); live acceptance is oracle O4, run against real docker separately.
 Every argv assertion compares the LIST, never a joined string.
 """
 
+import fcntl
 import os
+import re
+import shutil
 import stat
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+import tomllib
+import warnings
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -158,9 +166,20 @@ class TestUxSurface:
 
     def test_no_config_is_one_line_not_traceback(self, tmp_path):
         proc = run_tool(tmp_path, "--help")  # empty dir: no config anywhere
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert proc.stderr.count("\n") == 1
         assert "Traceback" not in proc.stderr
+
+    def test_reserved_exit_codes_documented_in_usage(self, tmp_path):
+        # RG-11: the codes are part of the scripting contract — invisible
+        # usage text would be provenance theater about them.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "--help")
+        assert proc.returncode == 0
+        assert "exit codes:" in proc.stdout
+        assert "2 = configuration/refusal" in proc.stdout
+        assert "3 = execution infrastructure" in proc.stdout
 
     def test_list_machine_readable_sorted(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -182,7 +201,7 @@ class TestUxSurface:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         proc = run_tool(proj, "nope")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "unknown lane 'nope'" in proc.stderr
         assert "suite" in proc.stderr
         assert str(proj / "run-gate.toml") in proc.stderr
@@ -324,15 +343,131 @@ class TestConfigValidation:
                                          cfg_path, cpath)
         assert "missing-env" in str(exc.value)
 
-    def test_central_file_rejects_lanes(self, tmp_path):
+    def test_central_lanes_inherited_and_shadowed(self, tmp_path):
+        """RG-16: central configs may define shared lanes; the project
+        shadows by name WHOLESALE (no field merging)."""
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.shared]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "from-central"]
+            clean_tree = false
+            [lanes.shadowed]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "central-version"]
+            clean_tree = false
+        """))
+        commit_all(repo, "central shared lanes")
+        proj = make_project(repo, SIMPLE_LANE + """
+            [lanes.shadowed]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo project-version"]
+            clean_tree = false
+        """)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        merged = run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                      cfg_path, cpath)
+        assert set(merged) == {"suite", "shared", "shadowed"}
+        assert merged["shadowed"]["argv"] == [
+            "bash", "-c", "cd {worktree}/proj && echo project-version"]
+        # inherited marker computed for usage() excludes shadowed names
+        inherited = set(central.get("lanes", {})) - set(cfg.get("lanes", {}))
+        assert inherited == {"shared"}
+
+    def test_central_lane_missing_pin_sidecar_refuses_for_consumer(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.assay-shared]
+            kind = "assay"
+            environment = "host"
+            assay_lane = "gate"
+            assay_command = ["./tools/assay.pyz"]
+            clean_tree = false
+            [lanes.assay-shared.pins.assay]
+            version = "2.1.0"
+            sha256 = "tools/assay.pyz.sha256"
+        """))
+        commit_all(repo, "central assay lane")
+        proj = make_project(repo, SIMPLE_LANE)  # does NOT vendor tools/assay.pyz.sha256
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                 cfg_path, cpath)
+        assert "does not exist in this project" in str(exc.value)
+        assert "tools/assay.pyz.sha256" in str(exc.value)
+
+    def test_project_lane_pin_sidecar_checked_symmetrically(self, tmp_path):
+        """Review fix: a PROJECT lane's own pins get the same load-time
+        existence check as inherited central lanes — previously the sha256
+        verify failed only mid-run, inside the container."""
+        repo = make_repo(tmp_path)
+        cfg = textwrap.dedent("""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.pinned]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "gate"
+            assay_command = ["./tools/assay.pyz"]
+            clean_tree = false
+            [lanes.pinned.pins.assay]
+            version = "2.2.0"
+            sha256 = "tools/assay.pyz.sha256"
+        """)
+        proj = make_project(repo, cfg)
+        c, cp, central, cpath = run_gate.load_config(proj)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.merge_lanes(c.get("lanes", {}), central, proj, cp, cpath)
+        assert "[lanes.pinned]" in str(exc.value)
+        assert "does not exist in this project" in str(exc.value)
+
+    def test_reserved_verb_lane_name_refused_at_load(self, tmp_path):
+        """Review fix: a lane named like a CLI verb can never be invoked (the
+        verb wins) and validate-pointers exempts the verbs — refuse the
+        shadowing name at load."""
+        repo = make_repo(tmp_path)
+        proj = make_project(
+            repo, SIMPLE_LANE.replace("[lanes.suite]", "[lanes.doctor]"))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "'doctor' is reserved" in str(exc.value)
+
+    def test_central_lane_malformed_still_fails_loudly(self, tmp_path):
         repo = make_repo(tmp_path)
         (repo / "run-gate.toml").write_text(
-            "schema_version = 1\n[lanes.bad]\nkind = 'command'\n"
-            "environment = 'host'\nargv = ['true']\n")
+            "schema_version = 1\n[lanes.bad]\nkind = 'makefile'\n")
         proj = make_project(repo, SIMPLE_LANE)
         with pytest.raises(run_gate.GateError) as exc:
             run_gate.load_config(proj)
-        assert "central" in str(exc.value)
+        assert "[lanes.bad]" in str(exc.value)
+
+    def test_invoking_a_shared_central_lane_end_to_end(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.shared]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+            clean_tree = false
+            [environments.tester-unified]
+            image = "tester-unified:local"
+        """))
+        commit_all(repo, "central lane + env")
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "shared")
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[0][-1]
+        assert "echo gate-ran" in inner
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +503,7 @@ class TestNoSilentDefaults:
             argv = ["bash", "-c", "echo hi"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -448,7 +583,7 @@ class TestArgvConstruction:
     def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -490,7 +625,13 @@ class TestArgvConstruction:
             version = "2.1.0"
             sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        # Load-time sidecar existence is checked for project lanes too; the
+        # docker shim only records argv, so a placeholder suffices.
+        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        commit_all(repo, "vendor sidecar")
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "ciu")
@@ -523,13 +664,13 @@ class TestArgvConstruction:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 3
         assert "refusing to guess" in proc.stderr
 
     def test_docker_run_failure_cleans_up_and_fails_loud(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text().replace('run) echo "fake-container-id" ;;',
                                         'run) echo "docker: bad flag" >&2; exit 125 ;;')
@@ -537,7 +678,7 @@ class TestArgvConstruction:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 3
         assert "docker run failed" in proc.stderr
         rm_calls = [l.split() for l in log.read_text().splitlines()
                     if l.split()[:1] == ["rm"]]
@@ -556,7 +697,7 @@ class TestArgvConstruction:
             memory = "4g"
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "big")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -570,7 +711,7 @@ class TestArgvConstruction:
     def _in_process_lane(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
         return proj, log
 
@@ -635,21 +776,136 @@ class TestArgvConstruction:
 class TestTreeResolution:
     def test_plain_repo_toplevel_is_repo(self, tmp_path):
         repo = make_repo(tmp_path)
-        got_repo, wt = run_gate.resolve_repo_and_worktree(repo, None)
-        assert got_repo == repo and wt == repo
+        got_repo, wt, toplevel = run_gate.resolve_repo_and_worktree(repo, None)
+        assert got_repo == repo and wt == repo and toplevel == repo
 
     def test_linked_worktree_resolves_common_owner(self, tmp_path):
         repo = make_repo(tmp_path)
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
-        got_repo, got_wt = run_gate.resolve_repo_and_worktree(wt, None)
+        got_repo, got_wt, toplevel = run_gate.resolve_repo_and_worktree(wt, None)
         assert got_repo == repo   # mounts must cover the MAIN checkout
         assert got_wt == wt       # judged tree = the worktree itself
+        assert toplevel == wt     # relocation base = invocation toplevel
 
     def test_worktree_override_honored(self, tmp_path):
         repo = make_repo(tmp_path)
-        _, wt = run_gate.resolve_repo_and_worktree(repo, "/elsewhere/tree")
+        _, wt, toplevel = run_gate.resolve_repo_and_worktree(repo, "/elsewhere/tree")
         assert wt == Path("/elsewhere/tree")
+
+
+class TestEffectiveTreeExecution:
+    """RG-15: --worktree relocates ALL user-declared execution paths into the
+    judged tree — the invocation checkout is never judged by side effect.
+    Exit-status-only assertions are insufficient here: these pin WHERE the
+    lane executes and WHERE artifacts land."""
+
+    ASSAY_CFG = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.ciu]
+        kind = "assay"
+        assay_lane = "ciu"
+        environment = "tester-unified"
+        assay_command = ["/opt/tester-venv/bin/python",
+                         "tools/assay/assay-2.1.0.pyz"]
+
+        [lanes.ciu.pins.assay]
+        version = "2.1.0"
+        sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+    """
+
+    def _repo_with_worktree(self, tmp_path, config: str | None = None):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, config or self.ASSAY_CFG)
+        # The pin sidecar must exist in the JUDGED tree (load-time existence
+        # check is symmetric for project lanes now); content is irrelevant —
+        # the docker shim only records the assembled command.
+        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        commit_all(repo, "vendor sidecar")
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        return repo, proj, wt
+
+    def test_assay_lane_judges_selected_worktree(self, tmp_path, monkeypatch):
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "ciu", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[0][-1]
+        # cd target AND pin verification relocated INTO the selected tree…
+        assert f"cd {wt}/proj" in inner
+        assert f"(cd {wt}/proj/tools/assay && " \
+            f"sha256sum -c assay-2.1.0.pyz.sha256)" in inner
+        # …and the invocation checkout appears NOWHERE in the judged command
+        # (controlled wrong implementation: pre-RG-15 built this exact string)
+        assert str(proj) not in inner
+        # verdict location follows the judged tree (R-18 discipline)
+        assert f"verdict artifact: {wt}/proj/.assay/verdict-ciu.json" \
+            in proc.stdout
+
+    def test_exec_assay_lane_judges_selected_worktree(self, tmp_path, monkeypatch):
+        repo, proj, wt = self._repo_with_worktree(tmp_path, """\
+            schema_version = 1
+            [environments.runner]
+            image = "r:latest"
+            mode = "exec"
+
+            [lanes.a]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+        """)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu global")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "a", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_execs(log)[0][-1]
+        assert f"cd {wt}/proj" in inner
+        assert str(proj) not in inner
+
+    def test_host_lane_cwd_is_the_effective_project_dir(self, tmp_path):
+        repo, proj, wt = self._repo_with_worktree(tmp_path, """\
+            schema_version = 1
+
+            [lanes.where]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "pwd"]
+            clean_tree = false
+        """)
+        proc = run_tool(proj, "where", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert str(wt / "proj") in proc.stdout  # pwd ran INSIDE the judged tree
+
+    def test_no_override_keeps_project_dir_exactly(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        assert run_gate.effective_project_dir(proj, repo, repo) == proj
+
+    def test_project_outside_its_toplevel_refuses_relocation(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        repo_a = make_repo(tmp_path / "a")
+        repo_b = make_repo(tmp_path / "b")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.effective_project_dir(repo_b, repo_a, Path("/wt/tree"))
+        assert "outside its git toplevel" in str(exc.value)
 
 
 class TestCleanTree:
@@ -679,7 +935,7 @@ class TestCleanTree:
         log = fake_docker(tmp_path, monkeypatch)
         (repo / "dirt.txt").write_text("x\n")
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "dirty" in proc.stderr
         log = Path(tmp_path / "docker-calls.log")
         assert "gate-ran" not in log.read_text()
@@ -760,7 +1016,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -782,7 +1038,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -856,7 +1112,7 @@ def test_no_stdlib_violations():
     imports = [l.split()[1].split(".")[0] for l in src.splitlines()
                if l.startswith("import ") or l.startswith("from ")]
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
-               "time", "tomllib", "pathlib"}
+               "time", "tomllib", "pathlib", "fcntl"}  # fcntl: stdlib, Linux-only (RG-20 locks)
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -874,7 +1130,9 @@ EXEC_LANE = """\
     [lanes.suite]
     kind = "command"
     environment = "runner"
-    argv = ["echo", "hello"]
+    # {worktree} token present: exec-mode command lanes invoked WITH
+    # --worktree must actually honor it (RG-1 validator).
+    argv = ["bash", "-c", "cd {worktree}/proj && echo hello"]
     clean_tree = false
 """
 
@@ -914,16 +1172,37 @@ class TestExecMode:
         body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
         shim.write_text(body)
         proc = run_tool(proj, "suite", "--worktree", str(repo))
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "not running" in proc.stderr
+        # RG-6: the remedy names the ciu lifecycle AND the config file used.
         assert "ciu up" in proc.stderr
+        assert "ciu.global.toml" in proc.stderr
+
+    def test_exec_mode_declared_name_refusal_prescribes_project_authority(
+            self, tmp_path, monkeypatch):
+        # RG-6 oracle: a dstdns-shaped project (declared container_name, no
+        # ciu.global.toml anywhere) must NEVER be told to run a ciu command.
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\ncontainer_name = "custom-name"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2
+        assert "declared container_name" in proc.stderr
+        assert "deployment authority" in proc.stderr
+        assert "ciu" not in proc.stderr
 
     def test_exec_mode_fails_without_ciu_config_or_declared_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, EXEC_LANE)
         log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", str(repo))
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "container_name" in proc.stderr
         assert "ciu.global.toml" in proc.stderr
 
@@ -977,7 +1256,7 @@ class TestExtraMounts:
         monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "no-equals-sign")
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys/host"))
         proc = run_tool(proj, "s")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "host=container" in proc.stderr
 
 
@@ -987,6 +1266,99 @@ def test_safe_directory_uses_git_config_global_env():
     assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
 
 
+class TestExecDisclosure:
+    """Review fix (R-05/R-28): exec lanes disclose mechanics exactly like
+    ephemeral lanes do — the governing slice (naming-only: docker exec can
+    neither place nor cap work) and the fully assembled redacted argv, live
+    AND dry. Declarations that LOOK like governance on an exec lane draw a
+    loud warning instead of silent no-op enforcement theater."""
+
+    def _runner_up(self, tmp_path, monkeypatch) -> tuple[Path, Path, Path]:
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n"
+        )
+        commit_all(repo, "ciu config")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        return repo, proj, log
+
+    def test_live_run_discloses_slice_and_redacted_argv(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv("SECRET_TOKEN", "hunter2")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    forward_env = ["SECRET_TOKEN"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert ("slice dev-background.slice "
+                "($CGROUP_PARENT_DEV_BACKGROUND, naming-only)") in proc.stdout
+        assert "docker argv:" in proc.stdout
+        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "hunter2" not in proc.stdout + proc.stderr
+
+    def test_dry_run_prints_same_argv_and_execs_nothing(
+            self, tmp_path, monkeypatch):
+        repo, proj, log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv("SECRET_TOKEN", "hunter2")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    forward_env = ["SECRET_TOKEN"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo), "--dry-run")
+        assert proc.returncode == 0, proc.stderr
+        assert "docker argv:" in proc.stdout
+        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "hunter2" not in proc.stdout + proc.stderr
+        assert "DRY RUN — the argv above is what a live run would exec" \
+            in proc.stdout
+        # The `ps` preflight ran (rehearsed); no `exec` ever did.
+        assert docker_execs(log) == []
+
+    def test_declared_cgroup_slice_warns_naming_only(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice = "dev-background.slice"'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert "WARNING: cgroup_slice on exec environment" in proc.stdout
+        assert "naming-only" in proc.stdout
+        assert "slice dev-background.slice (declared" in proc.stdout
+
+    def test_resources_on_exec_lane_warned_not_enforced(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            "clean_tree = false",
+            'clean_tree = false\n\n    [lanes.suite.resources]\n'
+            '    memory = "999G"\n    shared = ["db"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr  # 999G over any budget: NOT enforced
+        assert ("resources/memory but its environment is exec-mode") in proc.stdout
+
+    def test_no_slice_anywhere_still_runs(self, tmp_path, monkeypatch):
+        """Behavior-compat oracle: disclosure never adds an exec-mode refusal."""
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert "slice (none)" in proc.stdout
+
+
 class TestExecInnerWiring:
     """Reviewer's hollow-wiring probe: the exec path must carry the REAL
     inner command, not a stub. These tests fail if build_command_inner is
@@ -994,8 +1366,9 @@ class TestExecInnerWiring:
 
     def test_exec_inner_contains_substituted_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
-        cfg = EXEC_LANE.replace('["echo", "hello"]',
-                                '["bash", "-c", "cd {worktree} && echo gate-ran"]')
+        cfg = EXEC_LANE.replace(
+            '["bash", "-c", "cd {worktree}/proj && echo hello"]',
+            '["bash", "-c", "cd {worktree} && echo gate-ran"]')
         proj = make_project(repo, cfg)
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
@@ -1051,6 +1424,95 @@ def test_assay_inner_has_git_config_global():
     assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
 
 
+class TestPinVersionVerify:
+    """RG-4: a declared pins.*.version is a CLAIM the artifact must satisfy,
+    verified in-lane via `<assay_command> --version` — never provenance
+    theater. Controlled wrong implementation (the pre-fix no-check) fails
+    the first test."""
+
+    def _lane(self, version):
+        pin = {"sha256": "tools/assay/assay.pyz.sha256"}
+        if version is not None:
+            pin["version"] = version
+        return {"assay_lane": "x", "assay_command": ["./tools/assay/assay.pyz"],
+                "pins": {"assay": pin}}
+
+    def test_declared_version_probed_in_lane(self):
+        inner = run_gate.build_assay_inner(self._lane("2.1.0"), Path("/proj"))
+        assert "./tools/assay/assay.pyz --version" in inner
+        assert '[ "$tok" = 2.1.0 ]' in inner and "version mismatch" in inner
+
+    def test_prefix_version_never_matches_longer_reported(self, tmp_path):
+        """Review fix: the old substring glob let declared '2.1' pass for a
+        reported '2.11.0' — a claim the artifact never made."""
+        proc = self._run_inner(tmp_path, "2.1", "assay 2.11.0")
+        assert proc.returncode != 0
+        assert "version mismatch" in proc.stderr
+
+    def test_undeclared_version_never_probes(self):  # controlled wrong impl
+        inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"))
+        assert "--version" not in inner
+
+    def _live_proj(self, tmp_path, reported_version: str) -> Path:
+        """Project whose fake pinned artifact reports `reported_version`."""
+        proj = tmp_path / "proj"
+        (proj / "tools/assay").mkdir(parents=True)
+        artifact = proj / "tools/assay/assay.pyz"
+        artifact.write_text("#!/bin/sh\n"
+                            f'case "$1" in --version) echo "{reported_version}";; '
+                            '*) exit 0;; esac\n')
+        artifact.chmod(artifact.stat().st_mode | stat.S_IEXEC)
+        import hashlib
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        (proj / "tools/assay/assay.pyz.sha256").write_text(f"{digest}  assay.pyz\n")
+        return proj
+
+    def _run_inner(self, tmp_path, declared_version, reported_version):
+        proj = self._live_proj(tmp_path, reported_version)
+        inner = run_gate.build_assay_inner(self._lane(declared_version), proj)
+        proc = subprocess.run(["bash", "-c", inner], cwd=proj,
+                              capture_output=True, text=True)
+        return proc
+
+    def test_mismatched_version_refuses_naming_both_values(self, tmp_path):
+        proc = self._run_inner(tmp_path, "2.1.0", "assay 9.9.9")
+        assert proc.returncode != 0
+        assert "version mismatch" in proc.stderr
+        assert "2.1.0" in proc.stderr and "9.9.9" in proc.stderr
+
+    def test_matching_version_runs_silently(self, tmp_path):
+        proc = self._run_inner(tmp_path, "2.1.0", "assay 2.1.0")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_punctuated_report_still_matches(self, tmp_path):
+        """Trailing punctuation (v2.1.0,) or a leading bracket must not
+        break the whole-token match."""
+        proc = self._run_inner(tmp_path, "2.1.0", "(assay) reports: v2.1.0, ok")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_empty_version_declaration_rejected(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.ciu]
+            kind = "assay"
+            assay_lane = "ciu"
+            environment = "tester-unified"
+            assay_command = ["assay"]
+
+            [lanes.ciu.pins.assay]
+            version = ""
+            sha256 = "x.sha256"
+        """)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'version' must be a non-empty string" in proc.stderr
+
+
 def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     proj = make_project(repo, SIMPLE_LANE)
@@ -1058,8 +1520,539 @@ def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "/a=/b::/c=/d")
     monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
     proc = run_tool(proj, "suite")
-    assert proc.returncode == 1
+    assert proc.returncode == 2
     assert "empty element" in proc.stderr
+
+
+class TestDualMountGuard:
+    """RG-3: outside the cockpit namespace phys == repo would collapse both
+    -v flags into one silent single mount; that state must be declared, not
+    guessed. Controlled wrong implementation (pre-fix collapse) fails these."""
+
+    def test_distinct_views_dual_mount_unchanged(self, tmp_path):
+        repo = make_repo(tmp_path)
+        phys = Path("/phys/host/root")
+        assert run_gate.dual_mount_flags(repo, phys) == [
+            "-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
+
+    def test_collapsed_views_without_alias_refuse_loudly(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        monkeypatch.delenv(run_gate.MOUNT_ALIAS_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.dual_mount_flags(repo, repo)
+        assert "collapse" in str(exc.value)
+        assert run_gate.MOUNT_ALIAS_ENV_VAR in str(exc.value)
+
+    def test_alias_malformed_or_mismatched_rejected(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        for raw in ("no-equals", f"{repo}=", "=namespace", "/other/path=ns"):
+            monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR, raw)
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.dual_mount_flags(repo, repo)
+            assert run_gate.MOUNT_ALIAS_ENV_VAR in str(exc.value)
+
+    def test_declared_alias_yields_namespace_second_view(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}=/workspaces/estate")
+        flags = run_gate.dual_mount_flags(repo, repo)
+        assert flags == ["-v", f"{repo}:{repo}",
+                         "-v", f"{repo}:/workspaces/estate"]
+
+    def test_bare_host_container_lane_refuses_then_runs_with_alias(
+            self, tmp_path, monkeypatch, capsys):
+        # In-PROCESS (main()) so the identity patch applies: a subprocess run
+        # derives REAL views and this devcontainer bind-mounts /tmp distinct
+        # from its namespace path, hiding the bare-host collapse.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: p)
+        monkeypatch.delenv(run_gate.MOUNT_ALIAS_ENV_VAR, raising=False)
+        assert run_gate.main(["suite"]) == 2
+        assert "collapse" in capsys.readouterr().err
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}=/workspaces/vbpub")
+        assert run_gate.main(["suite"]) == 0
+        last_run = docker_runs(log)[-1]
+        mounts = sorted(last_run[i + 1] for i, p in enumerate(last_run) if p == "-v")
+        assert mounts == [f"{repo}:{repo}", f"{repo}:/workspaces/vbpub"]
+
+
+class TestWorktreeCharsetGuard:
+    """RG-5: {worktree} is substituted textually into consumer bash strings,
+    so a tree whose resolved path carries whitespace/shell metacharacters is
+    refused before any lane runs — every kind, uniformly."""
+
+    def test_estate_real_paths_are_gate_safe(self):
+        for p in ("/home/vb/volkb79-2/vbpub",
+                  "/workspaces/vbpub/.worktrees/run-gate-rg-sweep",
+                  "/tmp/pytest-of-vscode/pytest-1/test_x_0/repo.d"):
+            run_gate.check_worktree_charset(Path(p))  # must not raise
+
+    def test_metachars_rejected_at_helper(self):
+        for p in ("/tmp/a b", "/tmp/$(x)", "/tmp/`x`",
+                  "/tmp/a;b", "/tmp/x|y", "/tmp/'q'"):
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.check_worktree_charset(Path(p))
+            assert "gate-safe" in str(exc.value)
+
+    def test_offending_characters_named_in_error(self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.check_worktree_charset(Path("/tmp/wei`rd"))
+        assert "'`'" in str(exc.value)
+
+    def test_leading_dash_named_as_position_not_charset(self):
+        """Review fix: '-' is legal INSIDE a gate-safe path; a leading dash
+        is a position problem and the message must say so, not list '-' as
+        an offending character."""
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.check_worktree_charset(Path("-weird/tree"))
+        assert "starts with '-'" in str(exc.value)
+        assert "offending character" not in str(exc.value)
+
+    def test_space_path_refused_end_to_end_container_lane(self, tmp_path):
+        base = tmp_path / "bad path"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "gate-safe" in proc.stderr
+        assert str(repo) in proc.stderr
+
+    def test_space_path_refused_for_host_lane_too(self, tmp_path):
+        base = tmp_path / "also bad"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "hi"]
+            """)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "gate-safe" in proc.stderr
+
+
+class TestUsageEnvironmentContract:
+    """RG-7: usage() exposes the environment contract, flag semantics, and
+    per-lane metadata; --list stays 3-column machine-readable."""
+
+    def test_help_documents_env_contract_and_flag_caveat(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "--help")
+        assert proc.returncode == 0, proc.stderr
+        for var in ("CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_EXTRA_MOUNTS",
+                    "RUN_GATE_MOUNT_ALIAS"):
+            assert var in proc.stdout
+        assert "still enforce assay's own clean-tree rule" in proc.stdout
+
+    def test_table_shows_budget_memory_clean_tree_and_description(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            budget = "30m"
+            memory = "2g"
+            description = "unit suite in the unified tester"
+            """)
+        out = run_tool(proj, "--help").stdout
+        assert "budget=30m (advisory)" in out
+        assert "memory=2g" in out
+        assert "clean_tree=true" in out
+        assert "unit suite in the unified tester" in out
+
+    def test_dirty_ok_lane_marked_false_in_usage(self, tmp_path):
+        # SIMPLE_LANE already ships clean_tree = false — the FALSE marker
+        # must be loud so a reader knows the default was consciously waived.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        assert "clean_tree=FALSE" in run_tool(proj, "--help").stdout
+
+    def test_empty_description_rejected(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE.replace(
+            'environment = "tester-unified"',
+            'environment = "tester-unified"\ndescription = ""'))
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'description' must be a non-empty string" in proc.stderr
+
+    def test_list_output_stays_three_column(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE.replace(
+            'environment = "tester-unified"',
+            'environment = "tester-unified"\nbudget = "5m"\ndescription = "x"'))
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 0
+        assert proc.stdout.splitlines() == ["suite\tcommand\ttester-unified"]
+
+
+class TestRequiredEnv:
+    """RG-17/RG-19: declared inputs are verified by the GATE — preflight
+    before execution, allowlist reachability for containers, names-only
+    forwarding log, and an advisory drift sweep."""
+
+    def _proj(self, tmp_path, extra_env="", extra_lane=""):
+        repo = make_repo(tmp_path)
+        cfg = f"""\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            forward_env = ["SCHEMA_GATE_PW"{', ' + extra_env if extra_env else ''}]
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            clean_tree = false
+            required_env = ["SCHEMA_GATE_PW"]
+            {extra_lane}
+            """
+        return make_project(repo, cfg)
+
+    def test_missing_required_var_refuses_before_any_execution(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv("SCHEMA_GATE_PW", raising=False)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr
+        assert "requires" in proc.stderr
+        assert log.read_text() == ""  # docker never invoked
+
+    def test_empty_required_var_counts_as_absent(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "")
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "unset or empty" in proc.stderr
+
+    def test_satisfied_requirement_runs_and_logs_names_not_values(
+            self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "sekret-value")
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "forwarded: SCHEMA_GATE_PW" in proc.stdout
+        assert "sekret-value" not in proc.stdout  # names only, never values
+
+    def test_declared_but_absent_is_visible_in_log(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            forward_env = ["PRESENT_VAR", "ABSENT_VAR"]
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            clean_tree = false
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("PRESENT_VAR", "x")
+        monkeypatch.delenv("ABSENT_VAR", raising=False)
+        out = run_tool(proj, "suite").stdout
+        assert "forwarded: PRESENT_VAR" in out
+        assert "declared but ABSENT: ABSENT_VAR" in out
+
+    def test_container_cannot_receive_unlisted_requirement(self, tmp_path, monkeypatch):
+        # RG-17 oracle: required var missing from forward_env refuses at load.
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            required_env = ["SCHEMA_GATE_PW"]
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "sekret-value")  # present but unreachable
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr
+        assert "forward_env" in proc.stderr
+        assert "tester-unified" in proc.stderr
+
+    def test_host_lane_enforces_preflight_without_allowlist(self, tmp_path, monkeypatch):
+        # host lanes have no forwarding boundary: presence check only.
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "echo ran"]
+            required_env = ["HOST_ONLY_VAR"]
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv("HOST_ONLY_VAR", raising=False)
+        refused = run_tool(proj, "suite")
+        assert refused.returncode == 2
+        assert "HOST_ONLY_VAR" in refused.stderr
+        monkeypatch.setenv("HOST_ONLY_VAR", "x")
+        assert run_tool(proj, "suite").returncode == 0
+
+    def test_check_env_flags_uncovered_reference(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        (proj / "tests").mkdir()
+        (proj / "tests/test_x.py").write_text(
+            "import os\n"
+            "COVERED = os.environ['SCHEMA_GATE_PW']\n"
+            "STRAY = os.environ.get('UNLISTED_VAR')\n")
+        proc = run_tool(proj, "--check-env")
+        assert proc.returncode == 0
+        assert "UNLISTED_VAR" in proc.stdout
+        assert "test_x.py:3" in proc.stdout
+        assert "env-drift: $SCHEMA_GATE_PW" not in proc.stdout
+
+    def test_check_env_quiet_when_everything_covered(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        (proj / "tests").mkdir()
+        (proj / "tests/test_x.py").write_text(
+            "import os\nX = os.environ['SCHEMA_GATE_PW']\n")
+        proc = run_tool(proj, "--check-env")
+        assert proc.returncode == 0
+        assert "0 uncovered reference(s)" in proc.stdout
+
+    def test_invalid_required_env_entries_rejected(self, tmp_path):
+        for i, bad in enumerate(('["9BAD"]', '["A B"]', '["X", "X"]',
+                                 '"JUST_A_STRING"', '[""]')):
+            base = tmp_path / f"case{i}"
+            base.mkdir()
+            repo = make_repo(base)
+            cfg = SIMPLE_LANE.replace(
+                'environment = "tester-unified"',
+                f'environment = "tester-unified"\nrequired_env = {bad}')
+            proj = make_project(repo, cfg)
+            proc = run_tool(proj, "--list")
+            assert proc.returncode == 2, bad
+            assert "'required_env'" in proc.stderr
+
+
+class TestConjunctionOverrideGuard:
+    """RG-1: a conjunction/container command lane whose argv carries no
+    {worktree} token cannot honor --worktree — refusing beats the silent
+    false-PASS where sub-steps re-derive their own tree."""
+
+    EPH_NO_TOKEN = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.suite]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "echo ran"]     # NOTE: no {worktree} token
+        clean_tree = false
+        """
+
+    CONJ_FORWARDED = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.suite]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "cd {worktree}/proj && pwd"]
+        clean_tree = false
+
+        [lanes.gate]
+        kind = "command"
+        environment = "host"
+        # RG-1 fixed shape: every sub-invocation carries the override.
+        argv = ["bash", "-c", "./run-gate.py --worktree {worktree} suite"]
+        clean_tree = false
+        """
+
+    CONJ_BARE = CONJ_FORWARDED.replace(
+        "./run-gate.py --worktree {worktree} suite",
+        "./run-gate.py suite")  # the pre-RG-1 shape — must refuse
+
+    def _conjunction_proj(self, tmp_path, gate_config: str):
+        base = tmp_path / "repo"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = repo / "proj"
+        proj.mkdir()
+        shutil.copy(_TOOL, proj / "run-gate.py")
+        (proj / "run-gate.py").chmod(0o755)
+        (proj / "run-gate.toml").write_text(textwrap.dedent(gate_config))
+        commit_all(repo, "conjunction fixture")
+        return repo, proj
+
+    def test_ephemeral_lane_without_token_refuses_override(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.EPH_NO_TOKEN)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        assert proc.returncode == 2
+        assert "SILENTLY IGNORED" in proc.stderr
+        assert "{worktree}" in proc.stderr
+        assert "'suite'" in proc.stderr
+        assert log.read_text() == ""  # docker never invoked
+
+    def test_token_carrying_lane_still_accepts_override(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_host_lane_without_token_still_accepts_override(self, tmp_path, monkeypatch):
+        # host lanes relocate via cwd (R-19/R-21), so no token is needed.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "pwd"]
+            clean_tree = false
+            """)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert str(wt / "proj") in proc.stdout
+
+    def test_conjunction_forwards_worktree_to_sublane(self, tmp_path, monkeypatch):
+        repo, proj = self._conjunction_proj(tmp_path, self.CONJ_FORWARDED)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "gate", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[-1][-1]  # the SUB-lane's recorded container
+        assert f"cd {wt}/proj" in inner   # sub-lane judged the OVERRIDE tree
+
+    def test_bare_host_conjunction_safe_by_cwd_relocation(
+            self, tmp_path, monkeypatch):
+        # The pre-RG-1 BARE shape survives for HOST conjunction lanes only
+        # structurally: the host runner's cwd relocates into the override
+        # tree (R-19/R-21), so bare sub-calls derive the same toplevel. This
+        # is why the guard targets CONTAINER command lanes (ephemeral/exec)
+        # — their inner commands do NOT inherit that cwd.
+        repo, proj = self._conjunction_proj(tmp_path, self.CONJ_BARE)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "gate", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[-1][-1]
+        assert f"cd {wt}/proj" in inner  # judged W, not the invocation tree
+
+
+class TestFailingContainerEvidence:
+    """RG-12: failing containers leave readable logs behind — evidence is
+    preserved BEFORE `rm -f`, the printed path must be readable afterwards,
+    and a failed `docker run` shows a real stderr tail (not just one line)."""
+
+    def _evidence_dir(self, tmp_path, monkeypatch) -> Path:
+        ev = tmp_path / "evidence"
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(ev))
+        return ev
+
+    def test_failed_lane_leaves_readable_log_after_container_gone(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch, wait_code="7")
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7  # the job's own status still passes through
+        marker = "full container logs preserved at "
+        assert marker in proc.stdout
+        log_path = Path(proc.stdout.split(marker)[1].splitlines()[0].strip()
+                        .rstrip(".;"))
+        assert log_path.is_relative_to(ev)
+        assert log_path.read_text() == "FAKE-LOGS-LINE\n"
+        # container really was removed AFTER capture: rm recorded in the log
+        calls = log.read_text().splitlines()
+        assert any("rm" in c and "-f" in c for c in calls)
+
+    def test_docker_run_failure_shows_multi_line_stderr_tail(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        self._evidence_dir(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text().replace(
+            'run) echo "fake-container-id" ;;',
+            'run) echo "Unable to find image locally" >&2;'
+            ' echo "docker: pull access denied" >&2; exit 125 ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3  # infrastructure failure class
+        assert "last stderr line(s)" in proc.stderr
+        assert "pull access denied" in proc.stderr      # line 2 — not just last-line-only...
+        assert "Unable to find image locally" in proc.stderr  # ...first line kept too
+
+    def test_evidence_dir_env_var_controls_location(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code="3")
+        custom = tmp_path / "custom-evidence"
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(custom))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert str(custom) in proc.stdout
+        files = list(custom.glob("*.log"))
+        assert len(files) == 1 and files[0].read_text() == "FAKE-LOGS-LINE\n"
+
+    def test_green_lane_leaves_no_evidence(self, tmp_path, monkeypatch):
+        """Review fix (R-26): evidence is for FAILING containers — a passing
+        lane must not litter the evidence dir with a full log of everything
+        the suite echoed."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)  # wait exits 0
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert not ev.exists() or not list(ev.glob("*.log"))
+
+    def test_failed_log_is_owner_only(self, tmp_path, monkeypatch):
+        """Review fix (R-26): container logs may echo credential material —
+        preserved evidence is mode 0600, never world-readable."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code="7")
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7
+        (log_path,) = ev.glob("*.log")
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
 
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
@@ -1119,5 +2112,1173 @@ def test_environment_rejects_invalid_forward_env_name(tmp_path):
     )
     proj = make_project(repo, config)
     proc = run_tool(proj, "--list")
-    assert proc.returncode == 1
+    assert proc.returncode == 2
     assert "'forward_env' must be a list" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-10 — declared artifacts + evidence-path disclosure on every lane exit
+# ---------------------------------------------------------------------------
+
+class TestArtifactsDisclosure:
+    """R-18 amendment: after EVERY run — any kind, any runner mode, success or
+    failure — the gate says where the evidence landed. Assay lanes always
+    disclose the verdict convention; declared `artifacts` add to it. Paths
+    resolve against the EFFECTIVE project dir (R-21); `{worktree}` tokens in
+    entries are substituted."""
+
+    def test_ephemeral_command_lane_prints_declared_artifacts(self, tmp_path,
+                                                              monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["out/coverage.json", "reports/x.txt"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: artifact: {proj}/out/coverage.json" in proc.stdout
+        assert f"run-gate: artifact: {proj}/reports/x.txt" in proc.stdout
+
+    def test_assay_lane_dedupes_verdict_entry(self, tmp_path, monkeypatch):
+        """An artifacts entry equal to the verdict convention is disclosed ONCE."""
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.a]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+            artifacts = [".assay/verdict-mock.json"]
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "a")
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.count("run-gate: verdict artifact:") == 1
+        assert "run-gate: artifact:" not in proc.stdout
+
+    def test_verdict_dedup_normalizes_path_spellings(self, tmp_path, monkeypatch):
+        """Review fix (R-18): './.assay/verdict-mock.json' and the absolute
+        {worktree}-spelled form of the same file ARE the verdict convention —
+        each disclosed once via the verdict line, never as a second artifact."""
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.a]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+            artifacts = ["./.assay/verdict-mock.json",
+                         "{worktree}/proj/.assay/verdict-mock.json"]
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "a")
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.count("run-gate: verdict artifact:") == 1
+        assert "run-gate: artifact:" not in proc.stdout
+
+    def test_artifacts_entries_get_worktree_substitution(self, tmp_path,
+                                                         monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["{worktree}/proj/absolute-report.txt"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        # Absolute AFTER substitution — never re-joined under the project dir.
+        assert f"run-gate: artifact: {repo}/proj/absolute-report.txt" in proc.stdout
+
+    def test_exec_assay_lane_discloses_verdict(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "r:latest"
+            mode = "exec"
+            [lanes.a]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "a", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: verdict artifact: {repo}/proj/.assay/verdict-mock.json" \
+            in proc.stdout
+
+    def test_host_lane_discloses_declared_artifacts(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+            artifacts = ["smoke-result.txt"]
+        """
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "smoke")
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: artifact: {proj}/smoke-result.txt" in proc.stdout
+
+    def test_failing_lane_still_discloses(self, tmp_path, monkeypatch):
+        """Disclosure is unconditional — a FAILED lane names its evidence too
+        (that is exactly when the reader needs the paths)."""
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["out/partial.json"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch, wait_code=7)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7
+        assert f"run-gate: artifact: {proj}/out/partial.json" in proc.stdout
+
+    @pytest.mark.parametrize("bad", ['artifacts = "out.json"', "artifacts = []"])
+    def test_invalid_artifacts_rejected(self, tmp_path, bad):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n", f"    clean_tree = false\n    {bad}\n")
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'artifacts'" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-2 — pointer↔lane linkage: validate-pointers + estate certification
+# ---------------------------------------------------------------------------
+
+class TestPointerLinkage:
+    """The dispatched artifact (the consumer pointer) is certified by a test:
+    renaming a lane while pointers still name the old one goes RED HERE — at
+    test time, not at daemon dispatch time."""
+
+    def _estate(self, tmp_path, pointer: str, *, trove_name="nyxloom.toml"):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        trove_dir = proj / "nyxloom-trove"
+        trove_dir.mkdir()
+        doc = '[gates.tester-unified]\nargv = ["bash", "-c", ' \
+              f'"{pointer.replace(chr(34), chr(92)+chr(34))}"]\n'
+        (trove_dir / trove_name).write_text(doc)
+        commit_all(repo, "trove")
+        return repo, proj, trove_dir / trove_name
+
+    def _validate(self, *args):
+        return subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", *[str(a) for a in args]],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+
+    CANONICAL = ("cd {worktree}/proj && exec ./run-gate.py "
+                 "--worktree {worktree} suite")
+
+    def test_valid_pointer_certifies(self, tmp_path):
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_renamed_lane_goes_red_at_test_time(self, tmp_path):
+        """THE oracle: lane renamed in the SSOT, pointer still names it."""
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace("[lanes.suite]", "[lanes.suiteX]"))
+        commit_all(repo, "rename lane without touching pointer")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "suite" in proc.stdout and "known lanes: suiteX" in proc.stdout
+
+    def test_missing_worktree_forwarding_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd {worktree}/proj && exec ./run-gate.py suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "drops '--worktree {worktree}'" in proc.stdout
+
+    def test_wrong_project_dir_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd {worktree}/assayX && exec ./run-gate.py "
+                      "--worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "has no run-gate.toml" in proc.stdout
+
+    def test_noncanonical_cd_target_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd $PWD && exec ./run-gate.py --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "'{worktree}/<project-relative>'" in proc.stdout
+
+    def test_no_pointer_document_is_clean(self, tmp_path):
+        """srdm shape: gates that never invoke run-gate certify nothing."""
+        repo, proj, trove = self._estate(
+            tmp_path, "exec tools/gate.sh {worktree} unit")
+        proc = self._validate(trove)
+        assert proc.returncode == 0
+        assert "no run-gate pointers" in proc.stdout
+
+    def test_list_form_argv_is_joined_and_resolves_to_file_project(self, tmp_path):
+        """cmru [steps.run-tests] shape: argv = ["./run-gate.py", "gate"] with
+        no cd — the project resolves to the document's own directory."""
+        repo, proj, _ = self._estate(tmp_path, self.CANONICAL)  # reuse lanes
+        steps = proj / "consumer-steps.toml"
+        steps.write_text('[[steps]]\nlabel = "x"\n'
+                         'argv = ["./run-gate.py", "suite"]\ncwd = "."\n')
+        proc = self._validate(steps, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_root_override_flag(self, tmp_path):
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        proc = self._validate(trove, "--root", str(tmp_path / "elsewhere"))
+        assert proc.returncode == 2
+        assert "is not a directory" in proc.stderr
+        proc = self._validate(trove, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout
+
+    def test_invalid_toml_refused(self, tmp_path):
+        bad = tmp_path / "bad.toml"
+        bad.write_text("not [ valid toml ===")
+        proc = self._validate(bad, "--root", str(tmp_path))
+        assert proc.returncode == 2
+        assert "invalid TOML" in proc.stderr
+
+    # --- console-script form (review fix): RG-14 made `run-gate` real -------
+
+    def test_console_script_form_certifies(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec run-gate --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_console_script_form_catches_unknown_lane(self, tmp_path):
+        """The bare form gets the SAME certification, not a pass-by."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec run-gate --worktree {worktree} nope")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "'nope'" in proc.stdout and "known lanes: suite" in proc.stdout
+
+    def test_prose_and_config_mentions_certify_nothing(self, tmp_path):
+        """run-gate.toml / run-gate-project / run-gateway are names, not
+        invocations — collecting them would certify nothing and could only
+        manufacture false defects."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cat {worktree}/proj/run-gate.toml && ls {worktree}/run-gate-project "
+            "&& echo run-gateway-notes")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "nothing to certify" in proc.stdout
+
+    def test_discovery_snippet_inside_pointer_tolerated(self, tmp_path):
+        """"--list names no lane by design — and needs no --worktree either
+        (it reads config beside the script). The real invocation after &&
+        still gets certified."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && ./run-gate.py --list && "
+            "exec ./run-gate.py --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 2 invocation(s)" in proc.stdout
+
+    def test_equals_form_worktree_accepted(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec ./run-gate.py --worktree={worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_absolute_path_console_form_fail_closed(self, tmp_path):
+        """/usr/local/bin/run-gate ... is deliberately NOT recognized (the
+        bare-name boundary excludes path-anchored forms): fail closed means
+        uncertified — never waved through as valid."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "/usr/local/bin/run-gate --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "nothing to certify" in proc.stdout
+
+    def test_prose_label_field_not_an_invocation(self, tmp_path):
+        """A label DESCRIBES an invocation, it doesn't run one. The widened
+        bare-form collector manufactured 'trailing arguments' out of the real
+        cmru.toml label 'cmru: run-gate gate conjunction'; prose-named fields
+        are not command surface."""
+        repo, proj, _trove = self._estate(tmp_path, self.CANONICAL)
+        steps = proj / "consumer-steps.toml"
+        steps.write_text('[[steps]]\n'
+                         'label = "proj: run-gate gate conjunction"\n'
+                         'argv = ["./run-gate.py", "--worktree", '
+                         '"{worktree}", "suite"]\ncwd = "."\n')
+        proc = self._validate(steps, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+
+class TestPointerLinkageEstate:
+    """RG-2's real payoff: THIS checkout's actual consumer documents are
+    certified against their SSOT lane tables on every suite run."""
+
+    ESTATE_DOCS = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
+
+    @pytest.mark.parametrize("doc", ESTATE_DOCS,
+                             ids=[d.parent.parent.name for d in ESTATE_DOCS])
+    def test_trove_pointers_name_real_lanes(self, doc):
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", str(doc)],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+        assert proc.returncode == 0, f"{doc}:\n{proc.stdout}{proc.stderr}"
+
+    def test_cmru_release_step_names_a_real_lane(self):
+        cmru_doc = RUN_GATE_DIR.parent / "cmru" / "cmru.toml"
+        if not cmru_doc.is_file():
+            pytest.skip("cmru not present in this checkout")
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+        assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# RG-8 — --dry-run: rehearse every preflight, execute nothing
+# ---------------------------------------------------------------------------
+
+def _docker_argv_line(stdout: str) -> str:
+    lines = [ln for ln in stdout.splitlines() if "docker argv:" in ln]
+    assert len(lines) == 1, stdout
+    return lines[0].split("docker argv:", 1)[1].strip()
+
+
+class TestDryRun:
+    def _proj(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        return repo, proj
+
+    def test_container_lane_dry_run_prints_identical_argv_runs_nothing(
+            self, tmp_path, monkeypatch):
+        """THE oracle: no `docker run`, and the printed argv is what a live
+        run would use (container NAME normalized out — it embeds pid/epoch)."""
+        repo, proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+
+        live = run_tool(proj, "suite")
+        assert live.returncode == 0, live.stderr
+        live_line = _docker_argv_line(live.stdout)
+        import re as _re
+        live_norm = _re.sub(r"--name \S+", "--name N", live_line)
+
+        log.write_text("")
+        dry = run_tool(proj, "suite", "--dry-run")
+        assert dry.returncode == 0, dry.stderr
+        assert docker_runs(log) == [], "dry-run must not start a container"
+        dry_line = _docker_argv_line(dry.stdout)
+        assert _re.sub(r"--name \S+", "--name N", dry_line) == live_norm
+        assert "DRY RUN" in dry.stdout
+
+    def test_assay_lane_dry_run_discloses_no_verdict(self, tmp_path,
+                                                     monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace('kind = "command"', 'kind = "assay"') \
+            .replace('argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]',
+                     'assay_lane = "mock"\n            assay_command = ["assay"]')
+        proj = make_project(repo, cfg)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 0, proc.stderr
+        assert docker_runs(log) == []
+        assert "verdict artifact:" not in proc.stdout  # nothing ran, none landed
+        assert "--file assay.toml" in _docker_argv_line(proc.stdout)
+
+    def test_host_lane_dry_run_does_not_execute(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "exit 5"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "smoke", "--dry-run")
+        # exit 5 would be the LIVE passthrough; a dry-run never runs it.
+        assert proc.returncode == 0
+        assert f"would run in {proj}" in proc.stdout
+        assert "'exit' '5'" in proc.stdout or "exit 5" in proc.stdout
+
+    def test_exec_lane_dry_run_rehearses_runner_preflight(self, tmp_path,
+                                                          monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        log = fake_docker(tmp_path, monkeypatch)
+
+        # Runner DOWN: the refusal is rehearsed identically.
+        down = run_tool(proj, "suite", "--dry-run")
+        assert down.returncode == 2
+        assert "is not running" in down.stderr
+
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        up = run_tool(proj, "suite", "--dry-run")
+        assert up.returncode == 0, up.stderr
+        assert docker_execs(log) == [], "dry-run must not exec anything"
+        assert "DRY RUN" in up.stdout and "myproj-dev1-runner" in up.stdout
+
+    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path):
+        repo = make_repo(tmp_path)
+        # clean_tree defaults TRUE — SIMPLE_LANE opts out deliberately.
+        proj = make_project(repo, SIMPLE_LANE.replace("clean_tree = false",
+                                                      "clean_tree = true"))
+        (proj / "uncommitted.txt").write_text("dirty\n")
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 2
+        assert "--allow-dirty" in proc.stderr
+        proc = run_tool(proj, "suite", "--dry-run", "--allow-dirty")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_preflights_are_rehearsed_required_env(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            '    clean_tree = false\n',
+            '    clean_tree = false\n    required_env = ["SCHEMA_GATE_PW"]\n')
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-20 — resource-aware admission: slice-RAM budget + shared-infra locks
+# ---------------------------------------------------------------------------
+
+def _fake_cgroupfs(tmp_path: Path, *, max_raw: str, current: str) -> Path:
+    """A cgroupfs root exposing dev.slice/dev-background.slice numbers."""
+    sl = tmp_path / "cgfs" / "dev.slice" / "dev-background.slice"
+    sl.mkdir(parents=True, exist_ok=True)
+    (sl / "memory.max").write_text(max_raw + "\n")
+    (sl / "memory.current").write_text(current + "\n")
+    return tmp_path / "cgfs"
+
+
+GB = 1024 ** 3
+
+
+class TestResourceAdmission:
+    def _proj(self, tmp_path, resources: str):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE + (
+            "    [lanes.suite.resources]\n"
+            f"{textwrap.indent(textwrap.dedent(resources), '    ').rstrip()}\n")
+        proj = make_project(repo, cfg)
+        return repo, proj
+
+    @pytest.mark.parametrize("snippet", [
+        'memory = "512m"\nwat = 1',
+        'cpu_weight = "high"',
+        'cpu_weight = 0',
+        'io_weight = 20000',
+        'shared = ["ok", ""]',
+        'shared = ["has space"]',
+        'shared = ["dup", "dup"]',
+    ])
+    def test_invalid_resources_rejected(self, tmp_path, snippet):
+        repo, proj = self._proj(tmp_path, snippet)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+
+    def test_dual_memory_declaration_conflict(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            '    clean_tree = false\n    memory = "1g"\n'
+            "    [lanes.suite.resources]\n    memory = \"2g\"\n")
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "declare RAM once" in proc.stderr
+
+    def test_memory_admission_refuses_when_over_budget(self, tmp_path,
+                                                       monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(1 * GB),
+                              current=str(int(0.9 * GB)))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "resource admission REFUSED" in proc.stderr
+        assert "922MB of its 1024MB budget" in proc.stderr
+        assert docker_runs(Path(tmp_path / "docker-calls.log")) == []
+
+    def test_memory_admission_passes_and_caps_container(self, tmp_path,
+                                                        monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(2 * GB),
+                              current=str(256 * 1024 * 1024))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "512m" in run_argv
+
+    def test_uppercase_size_units_admit_and_cap(self, tmp_path, monkeypatch):
+        # Review fix (blocker): '512M' passed _validate_memory (IGNORECASE
+        # since earlier revs) but crashed parse_size_bytes at admission with
+        # a raw traceback / exit 1. One case-insensitive grammar everywhere.
+        repo, proj = self._proj(tmp_path, 'memory = "512M"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(2 * GB),
+                              current=str(256 * 1024 * 1024))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "512M" in run_argv
+
+    def test_uppercase_legacy_top_level_memory_admits(self, tmp_path,
+                                                      monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            '    clean_tree = false\n    memory = "4G"\n')
+        proj = make_project(repo, cfg)
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(8 * GB),
+                              current=str(1 * GB))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "4G" in run_argv
+
+    def test_unbounded_slice_warns_and_proceeds(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw="max", current="123")
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "no derivable memory ceiling" in proc.stdout
+        assert "admission by shared-infra rules only" in proc.stdout
+
+    def test_missing_cgroupfs_warns_names_override(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "RUN_GATE_CGROUPFS_ROOT" in proc.stdout
+
+    def test_lane_without_memory_declaration_not_accounted(self, tmp_path,
+                                                           monkeypatch):
+        repo, proj = self._proj(tmp_path, 'io_weight = 100')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "declares no resources.memory — not memory-accounted" \
+            in proc.stdout
+
+    def test_memory_swap_reaches_docker_argv(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory_swap = "16g"')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        run_argv = docker_runs(log)[0]
+        assert "--memory-swap" in run_argv and "16g" in run_argv
+
+    def test_shared_infra_serializes_concurrent_gates(self, tmp_path,
+                                                      monkeypatch, capsys):
+        """THE oracle: second gate on the same service name WAITS for the
+        first; isolated names never meet."""
+        svc = f"pg-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)  # the "first gate" holds it
+
+        result = {}
+
+        def gate():
+            result["rc"] = run_gate.main(["suite"])
+
+        worker = threading.Thread(target=gate)
+        worker.start()
+        deadline = time.time() + 5
+        while worker.is_alive() and time.time() < deadline:
+            time.sleep(0.05)
+        assert worker.is_alive(), "gate must block while another gate holds " \
+                                  f"the '{svc}' lock"
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)  # "first gate" finished -> waiter proceeds
+        worker.join(timeout=15)
+        assert not worker.is_alive()
+        assert result["rc"] == 0
+        out = capsys.readouterr().out
+        assert f"waiting for shared infra '{svc}'" in out
+
+    def test_sorted_acquisition_kills_abba(self, tmp_path, monkeypatch,
+                                           capsys):
+        """Review MAJOR fix: locks are taken in SORTED-name order (a
+        canonical global order), not declared order. A gate declaring
+        [zzz, aaa] must block on 'aaa' while holding NOTHING on 'zzz' —
+        under declared-order acquisition it held zzz while waiting, which
+        is the half-open state of an ABBA deadlock."""
+        svc_a = f"aaa-{os.getpid()}"
+        svc_z = f"zzz-{os.getpid()}"
+        repo, proj = self._proj(tmp_path,
+                                f'shared = ["{svc_z}", "{svc_a}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        a_lock = Path("/tmp") / f"run-gate-shared-{svc_a}.lock"
+        holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        result = {}
+
+        def gate():
+            result["rc"] = run_gate.main(["suite"])
+
+        worker = threading.Thread(target=gate)
+        worker.start()
+        deadline = time.time() + 5
+        while worker.is_alive() and time.time() < deadline:
+            time.sleep(0.05)
+        assert worker.is_alive(), "gate must block on the contended name"
+        # While blocked, the gate must NOT hold the alphabetically-later
+        # service: probe its lock non-blocking from here.
+        z_lock = Path("/tmp") / f"run-gate-shared-{svc_z}.lock"
+        probe = os.open(z_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must succeed
+        except BlockingIOError:
+            raise AssertionError(
+                "gate held the later-sorted service while waiting on the "
+                "earlier one — declared-order acquisition is back")
+        finally:
+            fcntl.flock(probe, fcntl.LOCK_UN)
+            os.close(probe)
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+        worker.join(timeout=15)
+        assert not worker.is_alive()
+        assert result["rc"] == 0
+
+    def test_unusable_lock_path_is_infra_failure_not_traceback(self, tmp_path,
+                                                               monkeypatch):
+        svc = f"dir-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path.mkdir()  # a directory where the flock file must go
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert "shared-infra lock" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_planted_symlink_at_lock_refused(self, tmp_path, monkeypatch):
+        svc = f"sym-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        target = tmp_path / "victim"
+        target.write_text("x")
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        if lock_path.exists():
+            lock_path.unlink()
+        lock_path.symlink_to(target)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert "shared-infra lock" in proc.stderr
+        assert "Traceback" not in proc.stderr
+        # O_NOFOLLOW: the symlink's TARGET must be untouched.
+        assert target.read_text() == "x"
+
+    def test_admission_refusal_precedes_lock_wait(self, tmp_path,
+                                                  monkeypatch):
+        """R-29 ordering sentence: an admission refusal must never wait
+        behind a held shared-infra lock. Over-budget memory AND a contended
+        service -> refusal arrives promptly at exit 2; under the old
+        ordering this invocation hung until the timeout."""
+        svc = f"order-{os.getpid()}"
+        repo, proj = self._proj(
+            tmp_path, f'memory = "512m"\nshared = ["{svc}"]')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(1 * GB),
+                              current=str(int(0.9 * GB)))
+        env = {**os.environ, "RUN_GATE_CGROUPFS_ROOT": str(cgfs)}
+        a_lock = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(RUN_GATE_DIR / "run-gate.py"), "suite"],
+                capture_output=True, text=True, cwd=str(proj), env=env,
+                timeout=20)
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "resource admission REFUSED" in proc.stderr
+
+    def test_shared_infra_dry_run_never_blocks(self, tmp_path, monkeypatch,
+                                               capsys):
+        svc = f"pg-dry-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            rc = run_gate.main(["suite", "--dry-run"])
+            assert rc == 0
+            out = capsys.readouterr().out
+            assert "serialization planned for" in out
+            assert "waiting for shared infra" not in out
+        finally:
+            os.close(holder)
+
+    def test_host_lane_honors_shared_lock_without_memory_accounting(
+            self, tmp_path, monkeypatch, capsys):
+        svc = f"host-{os.getpid()}"
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+            [lanes.smoke.resources]
+""" + textwrap.dedent(f"""\
+            memory = "256m"
+            shared = ["{svc}"]
+""")
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        monkeypatch.chdir(proj)
+        rc = run_gate.main(["smoke"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # host lane: no slice to account against — declaration stays advisory
+        assert "admission" not in out or "not memory-accounted" not in out
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        probe = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released?
+        finally:
+            os.close(probe)
+
+
+# ---------------------------------------------------------------------------
+# RG-9 — doctor: one preflight command for the first-contact failure classes
+# ---------------------------------------------------------------------------
+
+class TestDoctor:
+    def test_healthy_container_project_all_ok(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "[OK] docker:" in proc.stdout
+        assert f"[OK] slice for env tester-unified: dev-background.slice" \
+            in proc.stdout
+        assert "[OK] git: " in proc.stdout
+        assert "check(s):" in proc.stdout and ", 0 failure(s)" in proc.stdout
+
+    def test_unresolvable_slice_fails_doctor(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # no var, no declared slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "[FAIL] slice for env tester-unified" in proc.stdout
+
+    def test_missing_image_warns_not_fails(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  image) exit 1 ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout  # advisory only
+        assert "[WARN] image tester-unified" in proc.stdout
+
+    def test_docker_absent_is_a_failure(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        shim_dir = tmp_path / "empty-path"
+        shim_dir.mkdir()
+        monkeypatch.setenv("PATH", str(shim_dir))
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "[FAIL] docker" in proc.stdout
+
+    def test_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # host needs no slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "slice for env" not in proc.stdout
+
+    def test_mountinfo_bare_host_view_warns(self, tmp_path, monkeypatch):
+        """phys == repo (no alias derivable): container lanes would need the
+        declared alias — doctor says so instead of letting RG-3 surprise."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "doctor"],
+            capture_output=True, text=True, cwd=str(proj),
+            env={**os.environ,
+                 "PYTHONPATH": str(RUN_GATE_DIR / "tests")},
+        )
+        # Either WARN (bare-host view) or OK (namespace alias derivable):
+        # both are healthy outcomes here — this pins that mountinfo is
+        # REPORTED, never silently skipped.
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "[WARN] mountinfo" in proc.stdout or \
+            "[OK] mountinfo" in proc.stdout
+
+    def test_exec_env_without_slice_warns_not_fails(self, tmp_path, monkeypatch):
+        """Review fix (R-30): exec environments need NO slice — the old
+        unconditional resolve_slice made doctor report a bogus [FAIL] for a
+        healthy exec project that has neither a declared slice nor ambient
+        var."""
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\n    container_name = "ext-runner"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "[WARN] slice for env runner (exec)" in proc.stdout
+        assert "[FAIL]" not in proc.stdout
+
+    def test_exec_env_declared_slice_is_naming_only_ok(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            'mode = "exec"',
+            'mode = "exec"\n    container_name = "ext-runner"\n'
+            '    cgroup_slice = "dev-background.slice"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert ("[OK] slice for env runner (exec): dev-background.slice "
+                "(declared") in proc.stdout
+
+    def test_verify_slice_loaded_survives_missing_systemctl(self, monkeypatch,
+                                                            capsys):
+        """Review fix (R-30): run-dir present but systemctl not runnable —
+        loud skip on stderr, never a FileNotFoundError traceback."""
+        monkeypatch.setattr(run_gate.os.path, "isdir",
+                            lambda p: p == "/run/systemd/system")
+
+        def boom(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "systemctl")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        run_gate.verify_slice_loaded("dev-background.slice")  # must not raise
+        assert "cannot LoadState-check dev-background.slice" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# RG-14 — wheel as SECOND artifact + version discipline (R-31)
+# ---------------------------------------------------------------------------
+
+def _has_module(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+class TestWheelPackaging:
+    """The wheel never replaces the script; it wraps the SAME bytes.
+
+    Discipline chain (backlog RG-14): the wheel's version must equal the
+    in-file `__revision__` so copies' drift marker stays truthful. Rather
+    than TEST two independently-declared numbers for equality (a test that
+    merely documents a dual-bookkeeping hazard), the pyproject DERIVES the
+    version from `run_gate.__revision__` at build time and these tests pin
+    the derivation structurally — drift is impossible by construction, and
+    anyone re-declaring a static version fails test_pyproject_... below.
+    """
+
+    def test_pyproject_derives_version_from_revision(self):
+        cfg = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
+        proj = cfg["project"]
+        assert cfg["build-system"]["build-backend"] == "setuptools.build_meta"
+        # version comes from the script, never a second declaration:
+        assert "version" not in proj
+        assert "version" in proj["dynamic"]
+        assert cfg["tool"]["setuptools"]["dynamic"]["version"] == {
+            "attr": "run_gate.__revision__"}
+        # console script + module mapping + zero runtime deps:
+        assert proj["scripts"] == {"run-gate": "run_gate:main"}
+        assert cfg["tool"]["setuptools"]["py-modules"] == ["run_gate"]
+        assert proj["dependencies"] == []
+        # the importable name exists and is the SAME bytes as the canonical
+        # script (committed symlink run_gate.py -> run-gate.py):
+        link = RUN_GATE_DIR / "run_gate.py"
+        assert os.path.islink(link)
+        assert os.path.realpath(link) == os.path.realpath(RUN_GATE_DIR / "run-gate.py")
+        assert link.read_bytes() == (RUN_GATE_DIR / "run-gate.py").read_bytes()
+
+    @pytest.fixture(scope="class")
+    def built_wheel(self, tmp_path_factory):
+        """Build the real wheel once, exactly the way cmru's publish flow
+        does (`python -m build`). Lives entirely in tmp: the worktree gains
+        no dist/ or egg-info."""
+        if not (_has_module("setuptools") and _has_module("build")):
+            # Review fix: a silent skip hides toolchain drift — make it loud
+            # in the warnings summary even when the suite stays green.
+            warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain "
+                          "unavailable (setuptools/build not installed)")
+            pytest.skip("wheel toolchain unavailable")
+        import setuptools
+        pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
+        pin = next(r for r in pyproject["build-system"]["requires"]
+                   if r.startswith("setuptools=="))
+        want = pin.split("==")[1]
+        if setuptools.__version__ != want:
+            warnings.warn(f"run-gate wheel tests SKIPPED: local setuptools "
+                          f"{setuptools.__version__} != pinned {want}")
+            pytest.skip(
+                f"local setuptools {setuptools.__version__} != pinned {want} "
+                "(python -m build refuses a mismatched --no-isolation closure)")
+        stage = tmp_path_factory.mktemp("wheel-stage")
+        for name in ("run-gate.py", "pyproject.toml", "README.md"):
+            shutil.copy2(RUN_GATE_DIR / name, stage / name)
+        # copy2 FOLLOWS the symlink: the staged tree holds the dereferenced
+        # copy a git-archive/sdist build would see.
+        shutil.copy2(RUN_GATE_DIR / "run_gate.py", stage / "run_gate.py")
+        proc = subprocess.run(
+            [sys.executable, "-m", "build", "--wheel", "--no-isolation", "."],
+            cwd=stage, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+        wheels = list((stage / "dist").glob("*.whl"))
+        assert len(wheels) == 1, wheels
+        return wheels[0]
+
+    def test_built_wheel_ships_identical_module_and_derived_version(
+            self, built_wheel):
+        rev = str(run_gate.__revision__)
+        assert built_wheel.name == f"run_gate-{rev}-py3-none-any.whl"
+        with zipfile.ZipFile(built_wheel) as z:
+            names = z.namelist()
+            assert "run_gate.py" in names
+            top = {n.split("/")[0] for n in names}
+            assert top == {"run_gate.py", f"run_gate-{rev}.dist-info"}, sorted(top)
+            ep = z.read(f"run_gate-{rev}.dist-info/entry_points.txt").decode()
+            assert "[console_scripts]" in ep
+            assert "run-gate = run_gate:main" in ep
+            meta = z.read(f"run_gate-{rev}.dist-info/METADATA").decode()
+            assert f"Version: {rev}" in meta
+            # THE truthfulness core: what pip installs is byte-identical to
+            # the canonical script, so its __revision__ IS the drift marker.
+            assert z.read("run_gate.py") == \
+                (RUN_GATE_DIR / "run-gate.py").read_bytes()
+
+    def test_installed_console_script_matches_script_behavior(
+            self, built_wheel, tmp_path):
+        install = tmp_path / "install"
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "--no-index",
+             "--no-deps", "--target", str(install), str(built_wheel)],
+            check=True, capture_output=True, text=True)
+        bin_gate = install / "bin" / "run-gate"
+        assert bin_gate.exists(), "console script not exposed by the wheel"
+        # An adopting project via CONSUMERS step 1: COPIED canonical script,
+        # no wheel anywhere on its path.
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        shutil.copy2(RUN_GATE_DIR / "run-gate.py", proj / "run-gate.py")
+        (proj / "run-gate.toml").write_text(
+            'schema_version = 1\n'
+            '[lanes.suite]\nkind = "command"\nenvironment = "host"\n'
+            'argv = ["true"]\nclean_tree = false\n')
+        canon = subprocess.run([os.path.join(".", "run-gate.py"), "--list"],
+                               cwd=proj, capture_output=True, text=True)
+        wheeled = subprocess.run(
+            [str(bin_gate), "--list"], cwd=proj, capture_output=True,
+            text=True, env={**os.environ, "PYTHONPATH": str(install)})
+        assert canon.returncode == 0, canon.stderr
+        assert wheeled.returncode == 0, wheeled.stderr
+        assert canon.stdout.strip() != ""
+        assert wheeled.stdout == canon.stdout
+
+
+# ---------------------------------------------------------------------------
+# RG-13 item 5 — estate-wide budget↔timeout pairing sweep (R-32)
+# ---------------------------------------------------------------------------
+
+_BUDGET_UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def _budget_seconds(value: str) -> int:
+    return int(value[:-1]) * _BUDGET_UNITS[value[-1]]
+
+
+class TestEstateBudgetTimeoutPairing:
+    """Every consumer gate that runs a project's lane must give it at least
+    the lane's declared budget: run-gate's budget is advisory and PRINTED,
+    but a consumer timeout tighter than the budget silently truncates the
+    lane before its own declared wall-clock expires — the drift RG-13 filed.
+    Pairing rule (assay's assert-it pattern, replicated estate-wide): for
+    each nyxloom trove whose project declares lanes in run-gate.toml (loaded
+    with the REAL parser), any [gates.X] table whose argv names that lane as
+    a whole token must carry timeout_seconds >= lane budget. cmru.toml steps
+    carry no timeout field, so they have nothing to pair. A gate whose argv
+    invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
+    nothing and is skipped by construction."""
+
+    # Review fix: accumulated across the parametrized sweep so a final
+    # aggregate test can prove the pairing mechanism is ALIVE estate-wide
+    # (per-trove skips must never add up to a vacuously green sweep).
+    PAIRINGS_SEEN: list[tuple[str, str]] = []
+
+    @pytest.mark.parametrize("trove", sorted(
+        (RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))),
+        ids=lambda p: p.parent.parent.name)
+    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+        proj_dir = trove.parent.parent
+        if not (proj_dir / "run-gate.toml").is_file():
+            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+        project, _, central, central_path = run_gate.load_config(proj_dir)
+        lanes = run_gate.merge_lanes(
+            project.get("lanes", {}), central,
+            proj_dir, proj_dir.resolve().parent, central_path)
+        gates = tomllib.loads(trove.read_text()).get("gates", {})
+        paired = []
+        for gate_name, gate in gates.items():
+            timeout = gate.get("timeout_seconds")
+            if timeout is not None and not isinstance(timeout, int):
+                # Review fix: an unparseable timeout used to be silently
+                # skipped — exactly the rot this sweep exists to catch.
+                pytest.fail(
+                    f"{trove}: [gates.{gate_name}] timeout_seconds must be "
+                    f"integer seconds, got {timeout!r} — the pairing sweep "
+                    f"refuses to skip it silently")
+            if timeout is None:
+                continue
+            argv_text = " ".join(gate.get("argv", []))
+            for lane_name, lane in lanes.items():
+                budget = lane.get("budget")
+                if budget is None:
+                    continue
+                # Whole-token on BOTH sides anchored at whitespace/ends
+                # (review fix): the old lookaround let 'out/suite.json'
+                # pair as lane 'suite'.
+                if re.search(rf"(?:^|\s){re.escape(lane_name)}(?:\s|$)",
+                             argv_text):
+                    paired.append((gate_name, lane_name))
+                    self.PAIRINGS_SEEN.append((proj_dir.name, gate_name))
+                    assert timeout >= _budget_seconds(budget), (
+                        f"{trove}: [gates.{gate_name}] timeout_seconds="
+                        f"{timeout} is TIGHTER than {proj_dir.name} lane "
+                        f"'{lane_name}' budget {budget} — widen the consumer "
+                        f"timeout or shrink the declared budget")
+        assert paired, (
+            f"{trove}: no gate↔lane pairing found — either the trove stopped "
+            f"pointing at run-gate lanes or the pairing regex rotted")
+
+    def test_estate_pairing_sweep_is_alive(self):
+        """Rot-guard (review fix): the per-trove tests each prove their own
+        pairings, but a mass rename could empty every trove at once. The
+        aggregate demands the sweep found REAL gate↔lane pairs somewhere."""
+        if not self.PAIRINGS_SEEN:
+            pytest.skip("no troves scanned (estate layout absent)")
+        assert len(self.PAIRINGS_SEEN) >= 3, (
+            f"estate-wide pairing collapsed to {self.PAIRINGS_SEEN} — the "
+            f"sweep's grammar and the estate's gate tables have drifted "
+            f"apart; fix one or the other, never widen this guard to pass")

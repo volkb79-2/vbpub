@@ -497,3 +497,9 @@ overlap <~25%, demote this pass to a plain checklist runner or drop it.
 gstammtisch (Debian 13, cgroup v2, zswap, Pterodactyl/Wings game server).
 Degradation on other hosts must be graceful (spec §6.3), but no distro matrix
 work before v2 (spec §10).
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

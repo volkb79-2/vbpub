@@ -139,3 +139,9 @@ the two places they buy quality: carve and review.
 Automated merge (originally deferred here pending exact-commit provenance) is
 now live as **guarded-automatic** — see "Current state" above; this bullet
 list no longer lists it as a non-goal because it shipped (P48).
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

@@ -5,6 +5,12 @@
 # rigor is not yet declared here). The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
 # See run-gate-project/SPEC.md.
+#
+# RG-20 resources: every container lane declares its RAM so gate admission
+# can sum concurrent gates against the dev-tier slice budget. Values mirror
+# the proven CMRU_TESTER_MEMORY=1g / _MEMORY_SWAP=16g pattern: a tight RAM
+# cap keeps bursts from cascading into co-resident live services, ample swap
+# absorbs transients without OOM kills.
 # =============================================================================
 schema_version = 1
 
@@ -19,11 +25,20 @@ budget = "20m"
 version = "2.2.0"
 sha256 = "tools/assay/assay-2.2.0.pyz.sha256"
 
+[lanes.assay.resources]
+memory = "1g"
+memory_swap = "16g"
+
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
+artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+
+[lanes.coverage.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
 # origin/main (KI-18): at release time the tree IS origin/main, so a base of
@@ -39,19 +54,32 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-2.2.0.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
+artifacts = [".assay/mutation-cmru.json"]
+
+[lanes.mutation.resources]
+memory = "1g"
+memory_swap = "16g"
 
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
+artifacts = [".assay/coverage-canary-cmru.json"]
+
+[lanes.canary.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # The implementation/release gate: every consumer (cmru release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. Host lane:
 # each sub-lane launches its own gated tester-unified container via run-gate.
+# RG-1: every sub-invocation carries `--worktree {worktree}` explicitly — an
+# override given to `gate` must reach every sub-lane (run-gate refuses
+# container lanes whose argv drops it; here we simply never drop it).
 [lanes.gate]
 kind = "command"
 environment = "host"
-argv = ["bash", "-c", "./run-gate.py assay && ./run-gate.py coverage && ./run-gate.py mutation && ./run-gate.py canary"]
+argv = ["bash", "-c", "./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "5h"

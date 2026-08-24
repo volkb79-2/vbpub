@@ -161,3 +161,9 @@ token = soup.find('input', {'name': 'forgery_protection_token'})['value']
 ```python
 if 'email-address/list' in response.url or 'success' in response.text.lower():
 ```
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

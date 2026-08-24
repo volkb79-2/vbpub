@@ -288,3 +288,9 @@ ciu-build -d . push-images
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
 - [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
