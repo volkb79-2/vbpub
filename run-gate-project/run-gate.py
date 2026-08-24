@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 7  # rev 7: RG-16 shared central lanes (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 8  # rev 7: RG-16 shared central lanes (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -31,6 +31,7 @@ SCHEMA_VERSION = 1
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
 HOST_ENV = "host"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
+MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 
 
 class GateError(Exception):
@@ -449,6 +450,35 @@ def build_command_inner(lane: dict, worktree: Path) -> str:
                         shlex.join(substitute_worktree(lane["argv"], worktree))])
 
 
+def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
+    """RG-3: the repo is dual-mounted (physical AND namespace paths) so
+    worktree gitfiles recorded under EITHER namespace resolve (AGENTS trap
+    #2). Inside the devcontainer the second view comes from mountinfo; on a
+    bare host there is no alias to derive and phys == repo — letting both -v
+    flags collapse would be a silent single mount diverging from the
+    documented recipe, so the alias must be declared explicitly instead.
+    """
+    if phys != repo:
+        return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
+    raw = os.environ.get(MOUNT_ALIAS_ENV_VAR, "").strip()
+    if not raw:
+        fail(f"cannot dual-mount {repo}: the derived physical path EQUALS the "
+             f"namespace path, so both -v flags would collapse into one silent "
+             f"mount (container lanes assume the devcontainer namespace alias "
+             f"and none is derivable outside a container). Declare it: export "
+             f"{MOUNT_ALIAS_ENV_VAR}='{repo}=<namespace-path-git-was-recording>'")
+    if raw.count("=") != 1:
+        fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: expected "
+             f"'host-path=namespace-path'")
+    host, namespace = (part.strip() for part in raw.split("=", 1))
+    if not host or not namespace:
+        fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: empty path")
+    if Path(host) != repo:
+        fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
+             f"repo root is {repo} — the alias names THIS repo's namespace view")
+    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
+
+
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
@@ -457,7 +487,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
     phys = physical_path(repo)
-    mounts = ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]  # dual: worktree gitfiles
+    mounts = dual_mount_flags(repo, phys)  # dual: worktree gitfiles (RG-3)
     extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
     if extra_mounts_raw:
         mount_specs = extra_mounts_raw.split(":")

@@ -83,7 +83,11 @@ sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own director
 Environment facts resolution order (no silent fallbacks anywhere):
 `cgroup_slice` declared on the environment → `$CGROUP_PARENT_DEV_BACKGROUND`
 (hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
-LoadState pre-check only where systemd is reachable.
+LoadState pre-check only where systemd is reachable. Container lanes
+dual-mount the repo (physical + namespace views) for worktree gitfiles;
+outside the devcontainer namespace — where no second view is derivable — the
+lane refuses rather than silently mounting once; declare the alias with
+`$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` (host side must equal the repo root).
 
 Container lanes forward only the implicit cgroup infrastructure variable plus
 the environment's explicit `forward_env = ["SCHEMA_GATE_DSN"]` allowlist. A

@@ -134,7 +134,11 @@ the tool's reason to exist and MUST be implemented + tested:
   `/proc/self/mountinfo` (the bind mount whose mount point contains the repo;
   cmru `tester-gate` precedent — never from `ciu.env`, whose generated values
   have been observed stale); dual-mount physical AND devcontainer
-  paths so worktree gitfiles resolve; `git config --global safe.directory '*'`
+  paths so worktree gitfiles resolve — when no alias is derivable (bare
+  host, `phys == repo`) the lane refuses instead of silently collapsing to
+  one mount; declare the second view via
+  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
+  `git config --global safe.directory '*'`
   inside the gate container.
 - **Artifact pins:** sha256 verification executed FROM the pin file's
   directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared

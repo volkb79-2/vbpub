@@ -1336,6 +1336,62 @@ def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     assert "empty element" in proc.stderr
 
 
+class TestDualMountGuard:
+    """RG-3: outside the cockpit namespace phys == repo would collapse both
+    -v flags into one silent single mount; that state must be declared, not
+    guessed. Controlled wrong implementation (pre-fix collapse) fails these."""
+
+    def test_distinct_views_dual_mount_unchanged(self, tmp_path):
+        repo = make_repo(tmp_path)
+        phys = Path("/phys/host/root")
+        assert run_gate.dual_mount_flags(repo, phys) == [
+            "-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
+
+    def test_collapsed_views_without_alias_refuse_loudly(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        monkeypatch.delenv(run_gate.MOUNT_ALIAS_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.dual_mount_flags(repo, repo)
+        assert "collapse" in str(exc.value)
+        assert run_gate.MOUNT_ALIAS_ENV_VAR in str(exc.value)
+
+    def test_alias_malformed_or_mismatched_rejected(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        for raw in ("no-equals", f"{repo}=", "=namespace", "/other/path=ns"):
+            monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR, raw)
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.dual_mount_flags(repo, repo)
+            assert run_gate.MOUNT_ALIAS_ENV_VAR in str(exc.value)
+
+    def test_declared_alias_yields_namespace_second_view(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}=/workspaces/estate")
+        flags = run_gate.dual_mount_flags(repo, repo)
+        assert flags == ["-v", f"{repo}:{repo}",
+                         "-v", f"{repo}:/workspaces/estate"]
+
+    def test_bare_host_container_lane_refuses_then_runs_with_alias(
+            self, tmp_path, monkeypatch, capsys):
+        # In-PROCESS (main()) so the identity patch applies: a subprocess run
+        # derives REAL views and this devcontainer bind-mounts /tmp distinct
+        # from its namespace path, hiding the bare-host collapse.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: p)
+        monkeypatch.delenv(run_gate.MOUNT_ALIAS_ENV_VAR, raising=False)
+        assert run_gate.main(["suite"]) == 2
+        assert "collapse" in capsys.readouterr().err
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}=/workspaces/vbpub")
+        assert run_gate.main(["suite"]) == 0
+        last_run = docker_runs(log)[-1]
+        mounts = sorted(last_run[i + 1] for i, p in enumerate(last_run) if p == "-v")
+        assert mounts == [f"{repo}:{repo}", f"{repo}:/workspaces/vbpub"]
+
+
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
     CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested

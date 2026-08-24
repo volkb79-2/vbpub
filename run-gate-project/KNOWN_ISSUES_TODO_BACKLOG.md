@@ -20,7 +20,7 @@ SPEC §9.
 |---|---|---|---|
 | RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | OPEN |
 | RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
-| RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | OPEN |
+| RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | OPEN |
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | OPEN |
@@ -175,6 +175,19 @@ silent divergence from the documented four-traps recipe the tool embodies.
 present; when absent, either declare the constraint loudly at startup
 ("container lanes assume the devcontainer namespace alias; found none") or
 accept an explicit env fact. Never collapse silently.
+
+**FIXED 2026-08-24** (explicit env fact — the "5b" explicitness choice):
+`dual_mount_flags(repo, phys)` emits the two `-v` views only when they are
+DISTINCT. When `phys == repo` (bare host — mountinfo offers no alias) the
+lane refuses (exit 2, message names "collapse") unless
+`$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` declares the second view;
+malformed entries and a host side ≠ repo root are refused by name. The alias
+only ever changes the container-side path of the SECOND view — both flags
+always bind-mount the same physical tree. SPEC `R-23`; README path-
+namespaces bullet and CONSUMERS resolution-order paragraph amended. Test
+note: the end-to-end refusal is driven in-process (`run_gate.main`) because
+subprocess runs derive REAL mountinfo views and this devcontainer's `/tmp`
+bind mount hides the bare-host collapse from them.
 
 **Oracle:** simulated mountinfo without an alias → loud refusal or explicit
 single-mount notice naming both paths tried; controlled wrong implementation

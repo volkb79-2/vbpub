@@ -1,7 +1,8 @@
 # run-gate SPEC — normative implementation contract
 
 **Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Rev 3: backlog-sweep
-amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in `R-04`). Distilled from `README.md` (design
+amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in `R-04`; RG-3
+`R-23` dual-mount guard). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -125,7 +126,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
   run-gate-<repo>-<lane>-<pid>-<epoch> --cgroup-parent <slice> -e
-  CGROUP_PARENT_DEV_BACKGROUND=<slice> -v <phys>:<phys> -v <phys>:<repo>
+  CGROUP_PARENT_DEV_BACKGROUND=<slice> <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
   namespace paths — worktree gitfiles), `--rm` never used (explicit
@@ -164,6 +165,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   override tree is NEVER pre-checked with a local stat — the override tree
   may live in another mount namespace; the inner `cd` fails loudly where the
   right view exists.
+
+- `R-23` **Dual-mount guard (RG-3):** R-15's two repo views must stay
+  DISTINCT. When the derived physical path equals the namespace path (bare
+  host — mountinfo offers no alias), emitting both `-v` flags would collapse
+  into one silent single mount diverging from the documented recipe, so the
+  gate refuses (exit 2) unless `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`
+  declares the second view. The alias's host side must equal this gate's
+  repo root; malformed or mismatched declarations are refused by name.
+  Both views always bind-mount the SAME physical tree — only their
+  container-side paths differ.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
