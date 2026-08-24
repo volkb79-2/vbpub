@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 11  # rev 10: RG-6 exec remedy per name source; rev 9 RG-5 gate-safe paths (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 12  # rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -129,7 +129,7 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(
         table,
         {"kind", "environment", "argv", "assay_lane", "assay_command", "pins",
-         "clean_tree", "budget", "memory", "description"},
+         "clean_tree", "budget", "memory", "description", "required_env"},
         f"{where} [lanes.{name}]",
     )
     kind = table.get("kind")
@@ -141,6 +141,15 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
                                    or not table["description"].strip()):
         fail(f"{where} [lanes.{name}]: 'description' must be a non-empty string "
              f"(shown by --help; keep it one line)")
+    if "required_env" in table:
+        req = table["required_env"]
+        if not isinstance(req, list) or \
+                not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v)
+                        for v in req):
+            fail(f"{where} [lanes.{name}]: 'required_env' must be a list of "
+                 f"valid environment-variable names")
+        if len(set(req)) != len(req):
+            fail(f"{where} [lanes.{name}]: 'required_env' entries must be unique")
     if "budget" in table:
         _validate_budget(table["budget"], f"{where} [lanes.{name}]")
     if "memory" in table:
@@ -414,6 +423,122 @@ def substitute_worktree(argv: list[str], worktree: Path) -> list[str]:
     return [a.replace("{worktree}", str(worktree)) for a in argv]
 
 
+def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
+    """RG-19 companion to log_forwarded_env: the printed docker argv shows
+    mechanics (R-05) but must NOT echo forwarded credential VALUES — mask
+    every `-e KEY=...` payload for allowlisted keys; names stay visible."""
+    prefixes = tuple(f"{k}=" for k in keys)
+    out: list[str] = []
+    expect_value = False
+    for tok in argv:
+        if expect_value:
+            if tok.startswith(prefixes):
+                out.append(tok.split("=", 1)[0] + "=<redacted>")
+            else:
+                out.append(tok)
+            expect_value = False
+        else:
+            out.append(tok)
+            expect_value = tok == "-e"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# required_env preflight + forwarding transparency (RG-17 / RG-19)
+# ---------------------------------------------------------------------------
+
+def preflight_required_env(lane: dict, lane_name: str) -> None:
+    """RG-19: a lane that declares required_env refuses to start unless every
+    named variable is PRESENT and NON-EMPTY in the invoking environment —
+    credentials must be verified by the gate, not discovered by a fixture
+    mid-run (or worse, by silently skipped assertions inside a green run)."""
+    for key in lane.get("required_env", []):
+        value = os.environ.get(key)
+        if value is None or value == "":
+            fail(f"lane '{lane_name}' requires ${key} but it is unset or empty "
+                 f"— export it before invoking this gate (run-gate refuses to "
+                 f"start a lane whose declared inputs are missing)")
+
+
+def check_required_reaches_container(lane: dict, lane_name: str, env: dict,
+                                     env_name: str, env_source: str) -> None:
+    """RG-17: for container lanes, a required variable that is not on the
+    environment's forward_env allowlist can NEVER reach the lane — refuse at
+    load instead of failing (or hollow-skipping) inside the container."""
+    forwarded = set(env.get("forward_env", []))
+    missing = [k for k in lane.get("required_env", []) if k not in forwarded]
+    if missing:
+        fail(f"lane '{lane_name}' requires {', '.join(missing)} but they are "
+             f"not on environment '{env_name}'s forward_env allowlist "
+             f"({env_source}) — the container can never receive them; add "
+             f"them to forward_env or drop the required_env entry")
+
+
+def log_forwarded_env(env: dict, prefix: str) -> None:
+    """RG-19: print WHICH forwarding keys were present at start — names
+    only, never values — so omissions are visible in the run record."""
+    present, absent = [], []
+    for key in env.get("forward_env", []):
+        (present if os.environ.get(key) else absent).append(key)
+    parts = []
+    if present:
+        parts.append(f"forwarded: {', '.join(sorted(present))}")
+    if absent:
+        parts.append(f"declared but ABSENT: {', '.join(sorted(absent))}")
+    print(f"run-gate: {prefix} env ({' ; '.join(parts) if parts else 'nothing declared'})",
+          flush=True)
+
+
+ENV_REF_RE = re.compile(
+    r"(?:os\.environ\[|os\.environ\.get\(|\bgetenv\()"
+    r"\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]")
+
+
+def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+                  cfg_path: Path, central_path: Path | None) -> int:
+    """RG-17 drift sweep (ADVISORY): scan the project's Python sources for
+    os.environ[...] / os.environ.get(...) / getenv(...) literals and flag
+    names covered by neither forward_env nor required_env. Heuristic by
+    nature (a .get with a default may be deliberately optional), so this
+    WARNS; enforcement lives in required_env + the preflight."""
+    covered = {CGROUP_ENV_VAR}
+    for name, lane in lanes.items():
+        covered.update(lane.get("required_env", []))
+        try:
+            env, _ = resolve_environment(lane, name, cfg, central,
+                                         cfg_path, central_path)
+        except GateError:
+            continue  # config errors surface elsewhere, louder
+        if env:
+            covered.update(env.get("forward_env", []))
+    findings = []
+    for path in sorted(project_dir.rglob("*.py")):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for match in ENV_REF_RE.finditer(line):
+                var = match.group(1)
+                if var not in covered:
+                    form = "subscript" if "environ[" in line else "access"
+                    findings.append((var, path.relative_to(project_dir),
+                                     lineno, form))
+    seen = set()
+    for var, rel, lineno, form in findings:
+        if (var, str(rel)) in seen:
+            continue
+        seen.add((var, str(rel)))
+        print(f"run-gate: env-drift: ${var} referenced in {rel}:{lineno} "
+              f"is neither forwarded nor declared required_env — add it to "
+              f"the environment's forward_env or the lane's required_env",
+              flush=True)
+    print(f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
+          f"{' — ADVISORY ONLY, the run was not affected' if seen else ''}",
+          flush=True)
+    return 0
+
+
 # RG-5: consumer pointers embed {worktree} into bash -c STRINGS unquoted
 # (`cd {worktree}/proj && exec ./run-gate.py --worktree {worktree} <lane>`),
 # so any path the tool substitutes must survive that embedding verbatim.
@@ -537,16 +662,19 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             *mounts]
     for key in env.get("forward_env", []):
         value = os.environ.get(key)
-        if value is not None:
+        if value:  # empty string counts as ABSENT — matches log_forwarded_env
             argv += ["-e", f"{key}={value}"]
     if lane.get("memory"):
         argv += ["--memory", lane["memory"]]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
+    log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
-    print(f"run-gate: docker argv: {shlex.join(argv)}", flush=True)
+    print(f"run-gate: docker argv: "
+          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          flush=True)
     started = subprocess.run(argv, capture_output=True, text=True)
     if started.returncode != 0:
         detail = started.stderr.strip().splitlines()[-1:] or ["(no stderr)"]
@@ -650,6 +778,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv += [name, "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"container {name}", flush=True)
+    log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
     code = subprocess.run(argv).returncode
@@ -711,6 +840,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --allow-dirty     bypass THIS tool's clean-tree refusal; assay lanes",
         "                    still enforce assay's own clean-tree rule afterwards",
         "                    (two independent layers — the flag lifts only this one)",
+        "  --check-env       advisory drift sweep: env references in the project's",
+        "                    Python sources covered by neither forward_env nor a",
+        "                    lane's required_env (heuristic — warns, never refuses)",
         "",
         "environment contract (DERIVE / READ / FAIL — no silent defaults):",
         "  CGROUP_PARENT_DEV_BACKGROUND  container lanes take their cgroup slice",
@@ -749,6 +881,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--check-env", action="store_true",
+                        help="advisory drift sweep: env references not covered "
+                             "by forward_env/required_env")
     parser.add_argument("--worktree")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--help", "-h", action="store_true")
@@ -756,7 +891,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         project_dir = find_project_dir()
-        if args.help or (args.lane is None and not args.list):
+        if args.help or (args.lane is None and not args.list
+                         and not args.check_env):
             if project_dir is None:
                 fail(f"no {CONFIG_NAME} found next to the invoked script or CWD "
                      f"(run-gate rev {__revision__})")
@@ -775,6 +911,9 @@ def main(argv: list[str] | None = None) -> int:
                             cfg_path, central_path)
         if args.list:
             return cmd_list(lanes)
+        if args.check_env:
+            return cmd_check_env(lanes, project_dir, cfg, central,
+                                 cfg_path, central_path)
         if args.lane not in lanes:
             fail(f"unknown lane {args.lane!r} — known lanes: "
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
@@ -782,6 +921,14 @@ def main(argv: list[str] | None = None) -> int:
         lane = lanes[args.lane]
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
+        # RG-17/19: declared inputs verified BEFORE anything runs — presence
+        # in the invoking environment for every kind; for container lanes
+        # also that the names are on the forward_env allowlist at all.
+        preflight_required_env(lane, args.lane)
+        if env:
+            check_required_reaches_container(lane, args.lane, env,
+                                             lane_environment_name(lane),
+                                             env_source)
         repo, worktree, toplevel = resolve_repo_and_worktree(
             project_dir, args.worktree)
         # RG-15: runners receive the project RELOCATED into the judged tree —

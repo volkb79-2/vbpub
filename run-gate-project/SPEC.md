@@ -38,7 +38,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   clean-tree rule) and an ENVIRONMENT CONTRACT section naming every
   environment variable the tool reads and when it fails
   (`CGROUP_PARENT_DEV_BACKGROUND`, `RUN_GATE_EXTRA_MOUNTS`,
-  `RUN_GATE_MOUNT_ALIAS`) (RG-7); unknown lane exits non-zero naming the
+  `RUN_GATE_MOUNT_ALIAS`) plus `--check-env` (R-24 drift sweep) (RG-7);
+  unknown lane exits non-zero naming the
   known lanes and the config path.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking).
@@ -81,7 +82,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   report it — declaring it asserts the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
   advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
-  `description` (optional non-empty string, one line, shown by `--help`).
+  `description` (optional non-empty string, one line, shown by `--help`),
+  `required_env` (optional unique list of valid environment-variable names
+  this lane's tests REQUIRE — enforced per R-24).
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
@@ -193,6 +196,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   repo root; malformed or mismatched declarations are refused by name.
   Both views always bind-mount the SAME physical tree — only their
   container-side paths differ.
+
+- `R-24` **Declared inputs (RG-17/RG-19):** a lane's `required_env` names
+  are verified by the GATE, never discovered by test failure. Before any
+  execution (every lane kind): each name must be present and non-empty in
+  the invoking environment — else refusal (exit 2) naming the lane and
+  variable. For container lanes additionally: every required name MUST be
+  on the environment's `forward_env` allowlist (else it can never reach the
+  lane — refuse at load). Every container-lane start prints WHICH
+  forwarding keys were present and which were declared-but-absent — NAMES
+  ONLY, never values; the printed docker argv masks forwarded
+  `-e KEY=...` payloads for the same reason. `--check-env` runs an ADVISORY
+  drift sweep over the project's Python sources (`os.environ[...]`,
+  `os.environ.get(...)`, `getenv(...)` literals) flagging names covered by
+  neither `forward_env` nor `required_env`; it warns and exits 0 — the
+  enforcement mechanisms are `required_env` + preflight.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

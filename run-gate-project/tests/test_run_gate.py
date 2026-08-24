@@ -1522,6 +1522,163 @@ class TestUsageEnvironmentContract:
         assert proc.stdout.splitlines() == ["suite\tcommand\ttester-unified"]
 
 
+class TestRequiredEnv:
+    """RG-17/RG-19: declared inputs are verified by the GATE — preflight
+    before execution, allowlist reachability for containers, names-only
+    forwarding log, and an advisory drift sweep."""
+
+    def _proj(self, tmp_path, extra_env="", extra_lane=""):
+        repo = make_repo(tmp_path)
+        cfg = f"""\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            forward_env = ["SCHEMA_GATE_PW"{', ' + extra_env if extra_env else ''}]
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            clean_tree = false
+            required_env = ["SCHEMA_GATE_PW"]
+            {extra_lane}
+            """
+        return make_project(repo, cfg)
+
+    def test_missing_required_var_refuses_before_any_execution(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv("SCHEMA_GATE_PW", raising=False)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr
+        assert "requires" in proc.stderr
+        assert log.read_text() == ""  # docker never invoked
+
+    def test_empty_required_var_counts_as_absent(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "")
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "unset or empty" in proc.stderr
+
+    def test_satisfied_requirement_runs_and_logs_names_not_values(
+            self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "sekret-value")
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "forwarded: SCHEMA_GATE_PW" in proc.stdout
+        assert "sekret-value" not in proc.stdout  # names only, never values
+
+    def test_declared_but_absent_is_visible_in_log(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            forward_env = ["PRESENT_VAR", "ABSENT_VAR"]
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            clean_tree = false
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("PRESENT_VAR", "x")
+        monkeypatch.delenv("ABSENT_VAR", raising=False)
+        out = run_tool(proj, "suite").stdout
+        assert "forwarded: PRESENT_VAR" in out
+        assert "declared but ABSENT: ABSENT_VAR" in out
+
+    def test_container_cannot_receive_unlisted_requirement(self, tmp_path, monkeypatch):
+        # RG-17 oracle: required var missing from forward_env refuses at load.
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo ran"]
+            required_env = ["SCHEMA_GATE_PW"]
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("SCHEMA_GATE_PW", "sekret-value")  # present but unreachable
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr
+        assert "forward_env" in proc.stderr
+        assert "tester-unified" in proc.stderr
+
+    def test_host_lane_enforces_preflight_without_allowlist(self, tmp_path, monkeypatch):
+        # host lanes have no forwarding boundary: presence check only.
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "echo ran"]
+            required_env = ["HOST_ONLY_VAR"]
+            """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv("HOST_ONLY_VAR", raising=False)
+        refused = run_tool(proj, "suite")
+        assert refused.returncode == 2
+        assert "HOST_ONLY_VAR" in refused.stderr
+        monkeypatch.setenv("HOST_ONLY_VAR", "x")
+        assert run_tool(proj, "suite").returncode == 0
+
+    def test_check_env_flags_uncovered_reference(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        (proj / "tests").mkdir()
+        (proj / "tests/test_x.py").write_text(
+            "import os\n"
+            "COVERED = os.environ['SCHEMA_GATE_PW']\n"
+            "STRAY = os.environ.get('UNLISTED_VAR')\n")
+        proc = run_tool(proj, "--check-env")
+        assert proc.returncode == 0
+        assert "UNLISTED_VAR" in proc.stdout
+        assert "test_x.py:3" in proc.stdout
+        assert "env-drift: $SCHEMA_GATE_PW" not in proc.stdout
+
+    def test_check_env_quiet_when_everything_covered(self, tmp_path, monkeypatch):
+        proj = self._proj(tmp_path)
+        (proj / "tests").mkdir()
+        (proj / "tests/test_x.py").write_text(
+            "import os\nX = os.environ['SCHEMA_GATE_PW']\n")
+        proc = run_tool(proj, "--check-env")
+        assert proc.returncode == 0
+        assert "0 uncovered reference(s)" in proc.stdout
+
+    def test_invalid_required_env_entries_rejected(self, tmp_path):
+        for i, bad in enumerate(('["9BAD"]', '["A B"]', '["X", "X"]',
+                                 '"JUST_A_STRING"', '[""]')):
+            base = tmp_path / f"case{i}"
+            base.mkdir()
+            repo = make_repo(base)
+            cfg = SIMPLE_LANE.replace(
+                'environment = "tester-unified"',
+                f'environment = "tester-unified"\nrequired_env = {bad}')
+            proj = make_project(repo, cfg)
+            proc = run_tool(proj, "--list")
+            assert proc.returncode == 2, bad
+            assert "'required_env'" in proc.stderr
+
+
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
     CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested

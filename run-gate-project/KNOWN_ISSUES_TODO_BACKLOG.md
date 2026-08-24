@@ -34,6 +34,10 @@ SPEC §9.
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
 | RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
+| RG-17 | required-env forwarding completeness (schema-oracle credentials silently dropped) | Major | FIXED 2026-08-24 |
+| RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN |
+| RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
+| RG-20 | replace global gate flock with resource-aware admission | Enhancement | OPEN |
 
 ---
 
@@ -543,6 +547,20 @@ lane targets consume what they need.
 - Lane declares `required_env = ["X"]`; invoke with X unset ⇒ refuse before execution.
 - Controlled wrong implementation: remove `forward_env` entry for a required var ⇒ oracle 1 fires.
 
+**FIXED 2026-08-24** (both proposals, compatible, per the "5b explicitness"
+interview choice): lanes gained a validated `required_env` key; the gate
+refuses (exit 2) before ANY execution when a declared name is absent or
+empty in the invoking environment (RG-19 preflight), and — container lanes
+only — when a required name is NOT on the environment's forward_env
+allowlist at all (the completeness check this entry demanded: such a
+requirement could never reach the lane). The advisory drift sweep is
+`--check-env`: scans the project's Python sources for `os.environ[...]` /
+`os.environ.get(...)` / `getenv(...)` literals and flags names covered by
+neither allowlist nor required_env; heuristic by nature, so it WARNS and
+exits 0 — enforcement lives in required_env + preflight. SPEC R-24;
+CONSUMERS env-facts paragraph + schema comment. Oracle covered: unset ⇒
+refusal with docker never invoked; empty string counts as absent.
+
 ## RG-18 — no pg_dump/PostgreSQL version-mismatch guard for schema lanes
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence: pg_dump 17.11 client vs TimescaleDB PG18 server produced equivalence artifacts that failed silently inside assay snapshots).**
@@ -591,6 +609,17 @@ otherwise green run.
 
 Controlled wrong implementation: remove `SCHEMA_GATE_PW` from forwarding ⇒ gate refuses
 pre-execution naming it, instead of tests failing mid-run or skipping.
+
+**FIXED 2026-08-24** (jointly with RG-17, see there): the runtime preflight
+is `preflight_required_env` — presence + non-emptiness verified before any
+execution, refusal naming lane and variable. The forwarding record is
+`log_forwarded_env`, printed at every container-lane start: which
+forward_env keys were present and which declared-but-absent — NAMES ONLY,
+never values. Discovered during implementation and fixed in the same
+entry: the R-05 docker-argv print would have echoed credential VALUES via
+`-e KEY=value`; it now masks forwarded payloads (`KEY=<redacted>`) so the
+mechanics stay visible without leaking secrets into logs. Test asserts the
+sentinel value appears nowhere in the run output.
 
 ## RG-20 — replace global gate flock with resource-aware admission
 

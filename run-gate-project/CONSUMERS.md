@@ -72,6 +72,8 @@ budget = "20m"                      # advisory wall-clock; printed, never enforc
 memory = "4g"                       # optional docker --memory (per-lane RAM override)
 clean_tree = true                   # default TRUE; false needs a written reason
 description = "one-line what/why"   # optional; shown by --help (never by --list)
+required_env = ["SCHEMA_GATE_PW"]   # optional; gate refuses to start if unset/empty,
+                                    # and (container lanes) if not on the env's forward_env
 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
@@ -97,6 +99,13 @@ Container lanes forward only the implicit cgroup infrastructure variable plus
 the environment's explicit `forward_env = ["SCHEMA_GATE_DSN"]` allowlist. A
 declared but unset value remains absent rather than becoming a default; the
 lane's own required-input policy must fail loudly when absence matters.
+Lanes that NEED a variable declare `required_env = ["SCHEMA_GATE_PW"]`: the
+gate refuses to start unless each name is present and non-empty, verifies
+container lanes can actually receive it (it must be on `forward_env`), and
+prints which forwarding keys were present at start — names only, never
+values (the docker-argv print redacts them too). Run
+`./run-gate.py --check-env` for an advisory sweep of env references in the
+project's Python sources that no lane forwards or requires.
 
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
