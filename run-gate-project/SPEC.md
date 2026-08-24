@@ -18,6 +18,8 @@ docs truth, evidence captured only on failure at 0600, doctor survives
 broken hosts and exec envs need no slice, normalized verdict dedup,
 whole-token pin-version match, reserved lane names + symmetric sidecar
 checks.
+Rev 6: RG-22 — `R-19a`'s safe.directory write is idempotent under
+pre-existing entries (`--replace-all`).
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -212,9 +214,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   container-specific); exit passthrough identical.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
-  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config --global
-  safe.directory '*'`. This avoids writing to `~/.gitconfig`, which may be
-  read-only or shared across containers.
+  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
+  --global --replace-all safe.directory '*'`. This avoids writing to
+  `~/.gitconfig`, which may be read-only or shared across containers.
+  `--replace-all` (RG-22) makes the write idempotent regardless of prior
+  state: a plain single-value `git config --global safe.directory '*'` fails
+  with "cannot overwrite multiple values" the moment the isolated gitconfig
+  already carries more than one `safe.directory` entry — reachable in
+  practice wherever exec-mode reuses that file across invocations sharing a
+  host or another process writes to it under the same `GIT_CONFIG_GLOBAL`.
 - `R-20` `budget` is parsed, validated, and PRINTED as advisory; the tool
   does not enforce it (consumers may).
 

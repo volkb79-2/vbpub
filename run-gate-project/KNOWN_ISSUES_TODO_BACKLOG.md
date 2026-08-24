@@ -39,6 +39,7 @@ SPEC §9.
 | RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
 | RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
+| RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 
 ---
 
@@ -994,3 +995,12 @@ git config --global --add safe.directory "/some/project"
 # Then invoke any exec-mode lane; before fix: exit 129 with "cannot overwrite"
 # After fix: passes cleanly
 ```
+
+**FIXED 2026-08-24 (rev 23).** `--replace-all` added to both call sites, as
+proposed above; the `GIT_CONFIG_COUNT` alternative was not taken (minimal
+change, no behavior change to the isolated-gitconfig mechanism). SPEC `R-19a`
+now states the write is idempotent under pre-existing entries. Oracle landed
+as `test_safe_directory_write_survives_preexisting_entries`, which
+pre-populates the real isolated gitconfig with two entries and runs the built
+inner command as a live subprocess (fails pre-fix with "cannot overwrite
+multiple values", passes after).

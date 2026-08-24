@@ -601,7 +601,7 @@ class TestArgvConstruction:
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
-        assert "git config --global safe.directory '*'" in inner
+        assert "git config --global --replace-all safe.directory '*'" in inner
         assert "cd /wt/tree/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
@@ -1264,6 +1264,41 @@ def test_safe_directory_uses_git_config_global_env():
     inner = run_gate.build_command_inner(
         {"argv": ["echo"]}, Path("/wt"))
     assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+def test_safe_directory_write_survives_preexisting_entries(tmp_path):
+    """RG-22: a plain `git config --global safe.directory '*'` (no
+    --replace-all) fails with "cannot overwrite multiple values" the moment
+    the isolated gitconfig at /tmp/run-gate-gitconfig already carries more
+    than one safe.directory entry — reproduced from dstdns P126/P127's
+    linked-worktree runners sharing a host. --replace-all makes the write
+    succeed regardless of how many entries were already there.
+
+    This test touches the REAL /tmp/run-gate-gitconfig path (the inner
+    command hard-codes it, matching TestPinVersionVerify's live-subprocess
+    pattern elsewhere in this file) and restores its prior content
+    afterward — other tests in this suite write a single entry there too.
+    """
+    gitconfig = Path("/tmp/run-gate-gitconfig")
+    original = gitconfig.read_bytes() if gitconfig.exists() else None
+    try:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(gitconfig)}
+        for path in ("/some/project", "/other/project"):
+            proc = subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", path],
+                env=env, capture_output=True, text=True)
+            assert proc.returncode == 0, proc.stderr
+        inner = run_gate.build_command_inner(
+            {"argv": ["echo", "ok"]}, tmp_path)
+        proc = subprocess.run(["bash", "-c", inner], cwd=tmp_path,
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "ok" in proc.stdout
+    finally:
+        if original is None:
+            gitconfig.unlink(missing_ok=True)
+        else:
+            gitconfig.write_bytes(original)
 
 
 class TestExecDisclosure:
