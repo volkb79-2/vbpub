@@ -28,7 +28,7 @@ SPEC §9.
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | OPEN |
-| RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | OPEN |
+| RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | OPEN |
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
@@ -311,6 +311,11 @@ Messages carry the information; machines don't. With CI fan-out consuming
 **Proposed reserved codes:** 2 = configuration/refusal (incl. dirty tree,
 unknown lane), 3 = execution-infrastructure failure; document in usage().
 Cheap now, breaking later.
+
+**FIXED 2026-08-24** (SPEC R-04 amended): `GateError.exit_code` = 2
+(configuration/refusal), `GateInfraError` = 3 (docker absent/failing, git
+failures, mountinfo underivation, unreadable wait status). Documented in
+usage() with a red-guard test; all ten exit-code pins reclassified.
 
 ## RG-12 — failing-container evidence destroyed
 

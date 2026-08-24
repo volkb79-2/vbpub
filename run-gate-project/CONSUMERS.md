@@ -174,6 +174,11 @@ case): the lane's execution relocates there — assay runs from
 host lanes get that cwd. The invoking checkout is never judged by side
 effect (SPEC R-21).
 
+Scripting against gates: the lane's own exit status passes through
+unchanged; run-gate's own refusals reserve **2** = configuration/refusal and
+**3** = execution-infrastructure failure, so CI fan-out can distinguish
+"your config says no" from "docker/git broke" without parsing stderr.
+
 ## Per-project-type recipes
 
 **Python service repo with assay (ciu, cmru, assay itself):** the

@@ -1,7 +1,7 @@
 # run-gate SPEC — normative implementation contract
 
 **Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Rev 3: backlog-sweep
-amendments (`R-21` effective-tree execution, RG-15). Distilled from `README.md` (design
+amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in `R-04`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -35,10 +35,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   its attempt path textually before invoking).
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
   fail closed inside assay itself — this flag never weakens assay).
-- `R-04` Every config/env error is ONE line on stderr, exit 1, naming the
-  offending key AND file. A traceback reaching the user for any config/usage
-  error is a defect. `{worktree}` in a lane argv is substituted textually with
-  the judged worktree path (all occurrences, every element).
+- `R-04` Every config/env error is ONE line on stderr naming the offending
+  key AND file; a traceback reaching the user for any config/usage error is a
+  defect. Reserved exit codes (RG-11): the LANE'S OWN status passes through
+  unchanged; tool refusals and failures use **2** = configuration/refusal
+  (bad or unknown key/lane/environment, dirty tree, preflight refusals) and
+  **3** = execution-infrastructure failure (docker/git/mountinfo could not do
+  their job). Uniform legacy exit 1 for every refusal is superseded.
+  `{worktree}` in a lane argv is substituted textually with the judged
+  worktree path (all occurrences, every element).
 - `R-05` The tool prints, before executing: revision, lane name, environment
   source, resolved slice + its source, and (container lanes) the full docker
   argv. Mechanics are visible, never buried.

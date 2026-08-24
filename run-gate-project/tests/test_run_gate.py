@@ -158,9 +158,20 @@ class TestUxSurface:
 
     def test_no_config_is_one_line_not_traceback(self, tmp_path):
         proc = run_tool(tmp_path, "--help")  # empty dir: no config anywhere
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert proc.stderr.count("\n") == 1
         assert "Traceback" not in proc.stderr
+
+    def test_reserved_exit_codes_documented_in_usage(self, tmp_path):
+        # RG-11: the codes are part of the scripting contract — invisible
+        # usage text would be provenance theater about them.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "--help")
+        assert proc.returncode == 0
+        assert "exit codes:" in proc.stdout
+        assert "2 = configuration/refusal" in proc.stdout
+        assert "3 = execution infrastructure" in proc.stdout
 
     def test_list_machine_readable_sorted(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -182,7 +193,7 @@ class TestUxSurface:
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
         proc = run_tool(proj, "nope")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "unknown lane 'nope'" in proc.stderr
         assert "suite" in proc.stderr
         assert str(proj / "run-gate.toml") in proc.stderr
@@ -523,7 +534,7 @@ class TestArgvConstruction:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 3
         assert "refusing to guess" in proc.stderr
 
     def test_docker_run_failure_cleans_up_and_fails_loud(self, tmp_path, monkeypatch):
@@ -537,7 +548,7 @@ class TestArgvConstruction:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 3
         assert "docker run failed" in proc.stderr
         rm_calls = [l.split() for l in log.read_text().splitlines()
                     if l.split()[:1] == ["rm"]]
@@ -787,7 +798,7 @@ class TestCleanTree:
         log = fake_docker(tmp_path, monkeypatch)
         (repo / "dirt.txt").write_text("x\n")
         proc = run_tool(proj, "suite")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "dirty" in proc.stderr
         log = Path(tmp_path / "docker-calls.log")
         assert "gate-ran" not in log.read_text()
@@ -1022,7 +1033,7 @@ class TestExecMode:
         body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
         shim.write_text(body)
         proc = run_tool(proj, "suite", "--worktree", str(repo))
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "not running" in proc.stderr
         assert "ciu up" in proc.stderr
 
@@ -1031,7 +1042,7 @@ class TestExecMode:
         proj = make_project(repo, EXEC_LANE)
         log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", str(repo))
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "container_name" in proc.stderr
         assert "ciu.global.toml" in proc.stderr
 
@@ -1085,7 +1096,7 @@ class TestExtraMounts:
         monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "no-equals-sign")
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys/host"))
         proc = run_tool(proj, "s")
-        assert proc.returncode == 1
+        assert proc.returncode == 2
         assert "host=container" in proc.stderr
 
 
@@ -1166,7 +1177,7 @@ def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("RUN_GATE_EXTRA_MOUNTS", "/a=/b::/c=/d")
     monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
     proc = run_tool(proj, "suite")
-    assert proc.returncode == 1
+    assert proc.returncode == 2
     assert "empty element" in proc.stderr
 
 
@@ -1227,5 +1238,5 @@ def test_environment_rejects_invalid_forward_env_name(tmp_path):
     )
     proj = make_project(repo, config)
     proc = run_tool(proj, "--list")
-    assert proc.returncode == 1
+    assert proc.returncode == 2
     assert "'forward_env' must be a list" in proc.stderr

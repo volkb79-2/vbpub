@@ -147,6 +147,8 @@ the tool's reason to exist and MUST be implemented + tested:
   worktree B is the silent false-PASS class this kills.
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
+  Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
+  (infrastructure) so scripts never parse prose to tell them apart.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury
   it in a stream a consumer might truncate.
 

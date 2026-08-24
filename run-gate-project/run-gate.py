@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 4  # rev 4: RG-15 — lanes execute in the selected worktree (SPEC R-21)
+__revision__ = 5  # rev 5: RG-11 reserved exit codes 2/3 (SPEC R-04); rev 4 RG-15 R-21
 
 import argparse
 import os
@@ -34,11 +34,30 @@ EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 
 
 class GateError(Exception):
-    """One-line, user-facing failure. Never a traceback for config/env errors."""
+    """One-line, user-facing failure. Never a traceback for config/env errors.
+
+    Reserved exit codes (RG-11, SPEC R-04): 2 = configuration or refusal
+    (bad/unknown anything, dirty tree, preflight refusals); 3 = execution-
+    infrastructure failure (docker/git/mountinfo could not do their job).
+    Scripts consume the distinction; messages stay the human channel."""
+    exit_code = 2
+
+
+class GateInfraError(GateError):
+    """Execution-infrastructure failure: the environment could not do its
+    job (docker absent/failing, git failing, physical path underivable) —
+    distinct from "your configuration says no" so CI can tell them apart."""
+    exit_code = 3
 
 
 def fail(msg: str) -> None:
+    """Configuration error / policy refusal (exit 2)."""
     raise GateError(msg)
+
+
+def fail_infra(msg: str) -> None:
+    """Execution-infrastructure failure (exit 3)."""
+    raise GateInfraError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +251,8 @@ def physical_path(path: Path, mountinfo_text: str | None = None,
         try:
             mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
         except OSError as exc:
-            fail(f"cannot read /proc/self/mountinfo to derive the physical host path "
-                 f"of {path}: {exc}")
+            fail_infra(f"cannot read /proc/self/mountinfo to derive the physical host path "
+                       f"of {path}: {exc}")
     best_mp, best_root = "", ""
     for line in mountinfo_text.splitlines():
         fields = line.split()
@@ -246,8 +265,8 @@ def physical_path(path: Path, mountinfo_text: str | None = None,
             if len(mountpoint) > len(best_mp):
                 best_mp, best_root = mountpoint, root
     if not best_mp:
-        fail(f"could not derive a physical host path for {path} from /proc/self/mountinfo "
-             f"— is the repo bind-mounted into this container?")
+        fail_infra(f"could not derive a physical host path for {path} from /proc/self/mountinfo "
+                   f"— is the repo bind-mounted into this container?")
     return Path(best_root + str(path)[len(best_mp):])
 
 
@@ -256,7 +275,7 @@ def git_out(*args: str, cwd: Path) -> str:
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else f"exit {proc.returncode}"
-        fail(f"git {' '.join(args)} failed in {cwd}: {detail}")
+        fail_infra(f"git {' '.join(args)} failed in {cwd}: {detail}")
     return proc.stdout.strip()
 
 
@@ -344,7 +363,7 @@ def check_clean_tree(worktree: Path) -> None:
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else proc.returncode
-        fail(f"git status failed in {worktree}: {detail}")
+        fail_infra(f"git status failed in {worktree}: {detail}")
     entries = [l for l in proc.stdout.splitlines() if l.strip()]
     if entries:
         fail(f"refusing to judge a dirty tree: {worktree} has {len(entries)} uncommitted "
@@ -390,7 +409,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
     if not docker:
-        fail("docker not found on PATH — container lanes need it")
+        fail_infra("docker not found on PATH — container lanes need it")
     phys = physical_path(repo)
     mounts = ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]  # dual: worktree gitfiles
     extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
@@ -432,7 +451,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if started.returncode != 0:
         detail = started.stderr.strip().splitlines()[-1:] or ["(no stderr)"]
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
-        fail(f"docker run failed: {detail[0]}")
+        fail_infra(f"docker run failed: {detail[0]}")
     try:
         logs = subprocess.run([docker, "logs", "-f", name])
         waited = subprocess.run([docker, "wait", name], capture_output=True, text=True)
@@ -446,8 +465,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         verdict_path = project_dir / f".assay/verdict-{lane['assay_lane']}.json"
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     if code is None:
-        fail("could not read the container's exit status (docker wait failed) — "
-             "refusing to guess")
+        fail_infra("could not read the container's exit status (docker wait failed) — "
+                   "refusing to guess")
     return code
 
 
@@ -498,13 +517,13 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     """
     docker = shutil.which("docker")
     if not docker:
-        fail("docker not found on PATH — exec-mode lanes need it")
+        fail_infra("docker not found on PATH — exec-mode lanes need it")
     name, name_src = resolve_container_name(env_name, env, repo, env_source)
     running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
                              capture_output=True, text=True)
     if running.returncode != 0:
         detail = running.stderr.strip().splitlines()[-1:] or [f"exit {running.returncode}"]
-        fail(f"docker ps failed for exec-mode preflight: {detail[0]}")
+        fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
     names = set(running.stdout.strip().splitlines())
     if name not in names:
         fail(f"persistent runner '{name}' ({name_src}) is not running — "
@@ -569,6 +588,11 @@ def usage(project_cfg: dict) -> str:
         "Lane declarations: run-gate.toml next to this script; shared environment",
         "facts may live in an enclosing repo-root run-gate.toml. Judgment policy",
         "belongs to assay (assay.toml), never here. See run-gate-project/README.md.",
+        "",
+        "exit codes: the lane's own status passes through unchanged; refusals and",
+        "            failures reserve 2 = configuration/refusal (bad key, unknown",
+        "            lane, dirty tree, preflight) and 3 = execution infrastructure",
+        "            (docker/git/mountinfo could not do their job).",
     ]
     return "\n".join(lines)
 
@@ -637,7 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         return code
     except GateError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
-        return 1
+        return exc.exit_code
 
 
 if __name__ == "__main__":
