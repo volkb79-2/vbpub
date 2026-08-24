@@ -378,6 +378,7 @@ run_inner() {
   # running the locked module as though its controls were still valid.
   PYTHONPATH= "$scratch/run-venv/bin/python" - "$worktree/assay" <<'PYEOF'
 import json
+import sys
 from pathlib import Path
 
 from assay.verify import verify_document
