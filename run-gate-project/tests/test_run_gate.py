@@ -5,6 +5,7 @@ lesson); live acceptance is oracle O4, run against real docker separately.
 Every argv assertion compares the LIST, never a joined string.
 """
 
+import atexit
 import fcntl
 import os
 import re
@@ -34,8 +35,13 @@ _TOOL = RUN_GATE_DIR / "run-gate.py"  # hyphenated filename: load via importlib
 # subprocess invocation goes through this neutral symlink instead — the same
 # indirection real external consumers use ("symlink's parent, never the
 # target's dir"), living in a directory that never gets a run-gate.toml.
-_TOOL_INVOKE = Path(tempfile.mkdtemp(prefix="run-gate-test-invoke-")) / "run-gate.py"
+# The selftest lane now runs in HOST mode (real host /tmp, not a throwaway
+# container filesystem), so this tempdir is cleaned up on interpreter exit
+# rather than left to accumulate across every real gate run.
+_TOOL_INVOKE_DIR = tempfile.mkdtemp(prefix="run-gate-test-invoke-")
+_TOOL_INVOKE = Path(_TOOL_INVOKE_DIR) / "run-gate.py"
 _TOOL_INVOKE.symlink_to(_TOOL)
+atexit.register(shutil.rmtree, _TOOL_INVOKE_DIR, ignore_errors=True)
 
 import importlib.util  # noqa: E402
 
@@ -2531,6 +2537,24 @@ class TestPointerLinkageEstate:
             [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
         assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"
+
+    def test_cmru_toml_id_matches_orchestration_key(self):
+        """cmru's config loader errors ('config declares project.id=X,
+        expected Y') if run-gate-project/cmru.toml's id ever diverges from
+        the key it's registered under in the root orchestration file — a
+        future rename of either side without the other silently orphans
+        the release, since cmru derives its change-detection watch path
+        from the ORCHESTRATION KEY (the directory holding whatever the
+        key's own `config = "..."` names), never from `id` itself."""
+        cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
+        orch_doc = tomllib.loads(
+            (RUN_GATE_DIR.parent / "cmru.orchestration.toml").read_text())
+        entries = orch_doc["orchestration"]["project"]
+        matches = [key for key, entry in entries.items()
+                  if entry.get("config", "").startswith("run-gate-project/")]
+        assert matches, "run-gate-project is not registered in " \
+                        "cmru.orchestration.toml at all"
+        assert cmru_doc["project"]["id"] in matches
 
 
 # ---------------------------------------------------------------------------

@@ -265,8 +265,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="path to `coverage json` output")
     p.add_argument("--base", default="main",
                     help="ref the change is measured against (default: main)")
-    p.add_argument("--source", default="run-gate-project",
-                   help="source path prefix (default: run-gate-project)")
+    p.add_argument("--source", default="run-gate-project/run-gate.py",
+                   help="source path prefix (default: run-gate-project/run-gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",

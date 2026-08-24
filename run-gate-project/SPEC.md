@@ -411,19 +411,31 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `cmru.orchestration.toml` (`depends_on = []`: it consumes no first-party
   wheel and nothing releases after it that needs its artifact today) and
   ships its own `cmru.toml` (schema identical to ciu/cmru/assay: `[github]`,
-  `[targets]`, `[project]` with `id = "run-gate-project"` — cmru derives its
-  change-detection watch path from `id`, so it MUST equal the directory
-  name even though release/tag naming stays `run-gate-v*` via `--prefix`).
-  The release gate IS the project's own dogfooded lane
-  (`cmru.toml [steps.run-tests]` runs `./run-gate.py selftest` — SSOT,
-  D-110/D-111: one parser, no duplicated pytest invocation) which chains
-  `pytest` with `tools/coverage_gate.py` (vendored from `topos/tools/`,
-  the estate's thinnest copy — MIGRATION PENDING per its header, do not
-  fork further). Because TOTAL line+branch coverage measured ~47% at
-  adoption time, the floor enforced is DIFF coverage at 100% (topos/nyxloom
-  legacy-code pattern: every changed executable line must be covered,
-  same-commit) rather than `--cov-fail-under=100`; a later campaign to
-  reach a total 100% floor is its own backlog item, and only then does the
+  `[targets]`, `[project]` with `id = "run-gate-project"`, which cmru's
+  config loader requires to equal the KEY this project is registered under
+  in `cmru.orchestration.toml` — that key, not `id` itself, is what drives
+  cmru's change-detection watch path; it equals the directory name here
+  only by convention). Because the pre-existing tag `run-gate-v22` is a
+  bare integer, not semver, cmru's auto-bump cannot parse it and `cmru
+  status`/`cmru release` CRASH for this project's first release without an
+  explicit `--set-version 23.0.0` override (verified live) — every release
+  after that resolves normally. The release gate IS the project's own
+  dogfooded lane (`cmru.toml [steps.run-tests]` runs `./run-gate.py
+  selftest` — SSOT, D-110/D-111: one parser, no duplicated pytest
+  invocation), run in HOST mode deliberately (not tester-unified: this
+  suite is self-referential — it exercises `physical_path()`'s real
+  `/proc/self/mountinfo` lookup against its own pytest fixtures, which
+  breaks under an extra container layer) which chains `pytest` with
+  `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
+  thinnest copy — MIGRATION PENDING per its header, do not fork further;
+  its own `--source` default is scoped to `run-gate.py` alone, not the
+  whole project, so a bare invocation can't silently reproduce the
+  scoping bug this floor was built to prevent). Because TOTAL line+branch
+  coverage measured ~47% at adoption time, the floor enforced is DIFF
+  coverage at 100% (topos/nyxloom legacy-code pattern: every changed
+  executable line must be covered, same-commit) rather than
+  `--cov-fail-under=100`; a later campaign to reach a total 100% floor is
+  its own backlog item, and only then does the
   lane flip to a total floor like cmru's own.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
@@ -441,10 +453,13 @@ repos copy the file; `__revision__` is the drift marker; stdlib only, runs
 on a fresh clone with zero installs.
 
 SECONDARY: the wheel (`pyproject.toml` here) packages the same bytes as
-module `run_gate` with a `run-gate` console script, version derived from
-`__revision__`, published through cmru's wheel-publish and tagged
-`run-gate-v<version>`. Adoption never requires it; nothing in the gate's
-own lanes or checks may assume an install exists.
+module `run_gate` with a `run-gate` console script, published through
+cmru's wheel-publish and tagged `run-gate-v<version>`. Adoption never
+requires it; nothing in the gate's own lanes or checks may assume an
+install exists. Version identity is TWO-TIER (superseding RG-14's
+original wording here): the wheel's semver version is DERIVED from the
+git tag by setuptools-scm, NOT from `__revision__` — the two numbers are
+independent and can legitimately disagree at any moment (`R-31`).
 
 ## 8. Controller amendments (this session, 2026-08-22)
 

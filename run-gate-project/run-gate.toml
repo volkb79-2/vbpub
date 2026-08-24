@@ -34,11 +34,12 @@
 # itself (tools/coverage_gate.py is vendored infrastructure, outside the
 # scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
-# not a meaningful check). Paths are cwd-relative (run_host_lane execs argv
-# with cwd = the effective project dir, i.e. run-gate-project/ itself) but
-# --source stays repo-root-relative ("run-gate.py", not "./run-gate.py")
-# because git diff --name-only always reports repo-root-relative paths
-# regardless of --repo's cwd.
+# not a meaningful check). Both --source and --coverage-json are plain
+# "run-gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
+# invokes `git diff --relative ...`, which reports paths relative to CWD,
+# and run_host_lane execs argv with cwd = the effective project dir (i.e.
+# run-gate-project/ itself) — so the bare filename is what git actually
+# reports, not a repo-root-relative path.
 # =============================================================================
 schema_version = 1
 
