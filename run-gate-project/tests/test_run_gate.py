@@ -2492,6 +2492,115 @@ class TestResourceAdmission:
         out = capsys.readouterr().out
         assert f"waiting for shared infra '{svc}'" in out
 
+    def test_sorted_acquisition_kills_abba(self, tmp_path, monkeypatch,
+                                           capsys):
+        """Review MAJOR fix: locks are taken in SORTED-name order (a
+        canonical global order), not declared order. A gate declaring
+        [zzz, aaa] must block on 'aaa' while holding NOTHING on 'zzz' —
+        under declared-order acquisition it held zzz while waiting, which
+        is the half-open state of an ABBA deadlock."""
+        svc_a = f"aaa-{os.getpid()}"
+        svc_z = f"zzz-{os.getpid()}"
+        repo, proj = self._proj(tmp_path,
+                                f'shared = ["{svc_z}", "{svc_a}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        a_lock = Path("/tmp") / f"run-gate-shared-{svc_a}.lock"
+        holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        result = {}
+
+        def gate():
+            result["rc"] = run_gate.main(["suite"])
+
+        worker = threading.Thread(target=gate)
+        worker.start()
+        deadline = time.time() + 5
+        while worker.is_alive() and time.time() < deadline:
+            time.sleep(0.05)
+        assert worker.is_alive(), "gate must block on the contended name"
+        # While blocked, the gate must NOT hold the alphabetically-later
+        # service: probe its lock non-blocking from here.
+        z_lock = Path("/tmp") / f"run-gate-shared-{svc_z}.lock"
+        probe = os.open(z_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must succeed
+        except BlockingIOError:
+            raise AssertionError(
+                "gate held the later-sorted service while waiting on the "
+                "earlier one — declared-order acquisition is back")
+        finally:
+            fcntl.flock(probe, fcntl.LOCK_UN)
+            os.close(probe)
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+        worker.join(timeout=15)
+        assert not worker.is_alive()
+        assert result["rc"] == 0
+
+    def test_unusable_lock_path_is_infra_failure_not_traceback(self, tmp_path,
+                                                               monkeypatch):
+        svc = f"dir-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path.mkdir()  # a directory where the flock file must go
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert "shared-infra lock" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_planted_symlink_at_lock_refused(self, tmp_path, monkeypatch):
+        svc = f"sym-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        target = tmp_path / "victim"
+        target.write_text("x")
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        if lock_path.exists():
+            lock_path.unlink()
+        lock_path.symlink_to(target)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert "shared-infra lock" in proc.stderr
+        assert "Traceback" not in proc.stderr
+        # O_NOFOLLOW: the symlink's TARGET must be untouched.
+        assert target.read_text() == "x"
+
+    def test_admission_refusal_precedes_lock_wait(self, tmp_path,
+                                                  monkeypatch):
+        """R-29 ordering sentence: an admission refusal must never wait
+        behind a held shared-infra lock. Over-budget memory AND a contended
+        service -> refusal arrives promptly at exit 2; under the old
+        ordering this invocation hung until the timeout."""
+        svc = f"order-{os.getpid()}"
+        repo, proj = self._proj(
+            tmp_path, f'memory = "512m"\nshared = ["{svc}"]')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(1 * GB),
+                              current=str(int(0.9 * GB)))
+        env = {**os.environ, "RUN_GATE_CGROUPFS_ROOT": str(cgfs)}
+        a_lock = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(RUN_GATE_DIR / "run-gate.py"), "suite"],
+                capture_output=True, text=True, cwd=str(proj), env=env,
+                timeout=20)
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "resource admission REFUSED" in proc.stderr
+
     def test_shared_infra_dry_run_never_blocks(self, tmp_path, monkeypatch,
                                                capsys):
         svc = f"pg-dry-{os.getpid()}"

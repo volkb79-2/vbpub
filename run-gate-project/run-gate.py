@@ -546,15 +546,31 @@ def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]
                   f"for: {', '.join(sorted(names))}", flush=True)
         return []
     fds: list[int] = []
-    for svc in names:
+    # Sorted order is the deadlock fix (review MAJOR): declared-order
+    # acquisition let gate A hold 'pg' while waiting on 'redis' and gate B
+    # hold 'redis' while waiting on 'pg' — a classic ABBA hang with no
+    # diagnostic. A canonical GLOBAL order makes hold-and-wait cycles
+    # impossible regardless of how each project lists its services.
+    for svc in sorted(names):
         path = Path(SHARED_LOCK_DIR) / f"run-gate-shared-{svc}.lock"
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(f"run-gate: lane {lane_name!r}: waiting for shared infra "
-                  f"'{svc}' — another gate holds {path}", flush=True)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            # 0600 + O_NOFOLLOW (review MINOR): the file is content-free
+            # coordination state with a predictable name; don't follow a
+            # planted symlink and don't share it across accounts.
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(f"run-gate: lane {lane_name!r}: waiting for shared "
+                      f"infra '{svc}' — another gate holds {path}", flush=True)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            # Release everything this call already holds, then refuse as
+            # infrastructure failure (exit 3 one-liner, never a traceback).
+            for held in fds:
+                os.close(held)
+            fail_infra(f"lane {lane_name!r}: shared-infra lock {path} "
+                       f"unusable: {exc}")
         fds.append(fd)
     return fds
 
@@ -1503,17 +1519,19 @@ def main(argv: list[str] | None = None) -> int:
                  f"(CONSUMERS 'Gate-conjunction lanes') or drop the flag")
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
-        # RG-20 resource-aware admission: shared-infra serialization for every
-        # kind (acquired last — a blocking wait must never precede fast-fail
-        # refusals; released in finally), and slice-memory accounting for
-        # ephemeral container lanes whose slice is the accounting domain.
+        # RG-20 resource-aware admission: slice-memory accounting FIRST
+        # (fast-fail — review fix: a gate blocked on a held lock used to
+        # wait before receiving an admission refusal it could have been
+        # given instantly), THEN shared-infra serialization — the only
+        # potentially-blocking step, in sorted-name order, released in
+        # finally.
+        slice_name = slice_src = None
+        if env and env.get("mode") != "exec":
+            slice_name, slice_src = resolve_slice(env, env_source)
+            check_slice_memory_admission(lane, args.lane, slice_name,
+                                         slice_src)
         locks = acquire_shared_locks(lane, args.lane, args.dry_run)
         try:
-            slice_name = slice_src = None
-            if env and env.get("mode") != "exec":
-                slice_name, slice_src = resolve_slice(env, env_source)
-                check_slice_memory_admission(lane, args.lane, slice_name,
-                                             slice_src)
             if not env:  # built-in 'host'
                 code = run_host_lane(lane, args.lane, eff_proj, worktree,
                                      dry_run=args.dry_run)

@@ -296,7 +296,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`/tmp/run-gate-shared-<name>.lock`) — the second gate WAITS with a
   notice, then proceeds; fully isolated instances never meet and run
   concurrently. Locks are acquired AFTER all fast-fail preflights (a
-  blocking wait never precedes refusals) and released in `finally`;
+  blocking wait never precedes refusals — slice-memory admission runs
+  before any wait) and released in `finally`; acquisition is in
+  sorted-name order, a canonical global order that makes hold-and-wait
+  cycles impossible regardless of how each project lists its services.
   `--dry-run` plans the serialization but never blocks. Host/exec lanes get
   shared-infra rules only — their RAM does not land in this tool's slice.
 
