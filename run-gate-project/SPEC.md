@@ -62,9 +62,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
   is a non-empty string list — the tool NEVER invents an assay invocation),
   `pins` (assay kind: table of `{sha256 = "<path>", version = "<str>"}` —
-  `sha256` required, path relative to the project), `clean_tree` (bool,
-  default **true**), `budget` (`\d+[smh]`, advisory only), `memory`
-  (`\d+[bkmg]?`, docker `--memory`).
+  `sha256` required, path relative to the project; a declared `version` is
+  VERIFIED in-lane via `<assay_command> --version`, which must succeed and
+  report it — declaring it asserts the command honors that convention,
+  RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
+  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`).
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The

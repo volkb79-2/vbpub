@@ -57,7 +57,7 @@ argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substitute
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
 [lanes.<name>.pins.assay]
-version = "2.1.0"                   # provenance
+version = "2.1.0"                   # DECLARING it = a claim: the lane verifies <assay_command> --version reports it
 sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own directory
 ```
 

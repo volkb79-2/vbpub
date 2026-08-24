@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 5  # rev 5: RG-11 reserved exit codes 2/3 (SPEC R-04); rev 4 RG-15 R-21
+__revision__ = 6  # rev 6: RG-4 pins.version verified in-lane; rev 5 RG-11 codes; rev 4 RG-15 R-21
 
 import argparse
 import os
@@ -162,8 +162,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
                     or not pin["sha256"].strip():
                 fail(f'{where} [lanes.{name}].pins.{pin_name}: requires a non-empty '
                      f"string 'sha256' (path to the .sha256 file, relative to the project)")
-            if "version" in pin and not isinstance(pin["version"], str):
-                fail(f"{where} [lanes.{name}].pins.{pin_name}: 'version' must be a string")
+            if "version" in pin and (not isinstance(pin["version"], str)
+                                     or not pin["version"].strip()):
+                fail(f"{where} [lanes.{name}].pins.{pin_name}: 'version' must be a "
+                     f"non-empty string; declaring it asserts the lane's "
+                     f"assay_command supports '--version' (verified in-lane)")
     if "clean_tree" in table and not isinstance(table["clean_tree"], bool):
         fail(f"{where} [lanes.{name}]: 'clean_tree' must be a boolean")
 
@@ -384,11 +387,26 @@ def build_assay_inner(lane: dict, project_dir: Path) -> str:
              "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
              shlex.join(["git", "config", "--global", "safe.directory", "*"]),
              f"cd {shlex.quote(str(project_dir))}"]
-    for _pin_name, pin in lane.get("pins", {}).items():
+    for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
         # verify FROM the pin file's own directory (bare-filename resolution trap)
         parts.append(f"(cd {shlex.quote(str(Path(project_dir / sha.parent)))} && "
                      f"sha256sum -c {shlex.quote(sha.name)})")
+        if pin.get("version"):
+            # RG-4: a declared version is a CLAIM the artifact must satisfy,
+            # checked in-lane right after byte verification — provenance, not
+            # decoration. Declaring version asserts the command honors the
+            # `--version` convention (documented in SPEC R-08/CONSUMERS).
+            declared = shlex.quote(pin["version"])
+            probe = shlex.join([*lane["assay_command"], "--version"])
+            parts.append(
+                f"{{ reported=$({probe}) || "
+                f"{{ echo \"run-gate: pin '{pin_name}': version probe failed: {probe}\" "
+                f">&2; exit 2; }}; "
+                f"case \"$reported\" in *{declared}*) ;; *) "
+                f"echo \"run-gate: pin '{pin_name}' version mismatch: declared "
+                f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
+                f"or republish the artifact\" >&2; exit 2; ;; esac; }}")
     parts.append("mkdir -p .assay")
     parts.append(shlex.join([*lane["assay_command"], "run", lane["assay_lane"],
                              "--file", "assay.toml", "--verdict-json", verdict]))

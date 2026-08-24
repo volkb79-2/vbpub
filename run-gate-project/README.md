@@ -137,7 +137,9 @@ the tool's reason to exist and MUST be implemented + tested:
   paths so worktree gitfiles resolve; `git config --global safe.directory '*'`
   inside the gate container.
 - **Artifact pins:** sha256 verification executed FROM the pin file's
-  directory (`cd <dir> && sha256sum -c <pin>`), fail-closed.
+  directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
+  `version` is a claim the artifact must satisfy — the lane probes
+  `<assay_command> --version` and refuses mismatches (no provenance theater).
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.

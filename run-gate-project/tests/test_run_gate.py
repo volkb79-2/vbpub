@@ -1170,6 +1170,82 @@ def test_assay_inner_has_git_config_global():
     assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
 
 
+class TestPinVersionVerify:
+    """RG-4: a declared pins.*.version is a CLAIM the artifact must satisfy,
+    verified in-lane via `<assay_command> --version` — never provenance
+    theater. Controlled wrong implementation (the pre-fix no-check) fails
+    the first test."""
+
+    def _lane(self, version):
+        pin = {"sha256": "tools/assay/assay.pyz.sha256"}
+        if version is not None:
+            pin["version"] = version
+        return {"assay_lane": "x", "assay_command": ["./tools/assay/assay.pyz"],
+                "pins": {"assay": pin}}
+
+    def test_declared_version_probed_in_lane(self):
+        inner = run_gate.build_assay_inner(self._lane("2.1.0"), Path("/proj"))
+        assert "./tools/assay/assay.pyz --version" in inner
+        assert "*2.1.0*" in inner and "version mismatch" in inner
+
+    def test_undeclared_version_never_probes(self):  # controlled wrong impl
+        inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"))
+        assert "--version" not in inner
+
+    def _live_proj(self, tmp_path, reported_version: str) -> Path:
+        """Project whose fake pinned artifact reports `reported_version`."""
+        proj = tmp_path / "proj"
+        (proj / "tools/assay").mkdir(parents=True)
+        artifact = proj / "tools/assay/assay.pyz"
+        artifact.write_text("#!/bin/sh\n"
+                            f'case "$1" in --version) echo "{reported_version}";; '
+                            '*) exit 0;; esac\n')
+        artifact.chmod(artifact.stat().st_mode | stat.S_IEXEC)
+        import hashlib
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        (proj / "tools/assay/assay.pyz.sha256").write_text(f"{digest}  assay.pyz\n")
+        return proj
+
+    def _run_inner(self, tmp_path, declared_version, reported_version):
+        proj = self._live_proj(tmp_path, reported_version)
+        inner = run_gate.build_assay_inner(self._lane(declared_version), proj)
+        proc = subprocess.run(["bash", "-c", inner], cwd=proj,
+                              capture_output=True, text=True)
+        return proc
+
+    def test_mismatched_version_refuses_naming_both_values(self, tmp_path):
+        proc = self._run_inner(tmp_path, "2.1.0", "assay 9.9.9")
+        assert proc.returncode != 0
+        assert "version mismatch" in proc.stderr
+        assert "2.1.0" in proc.stderr and "9.9.9" in proc.stderr
+
+    def test_matching_version_runs_silently(self, tmp_path):
+        proc = self._run_inner(tmp_path, "2.1.0", "assay 2.1.0")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_empty_version_declaration_rejected(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.ciu]
+            kind = "assay"
+            assay_lane = "ciu"
+            environment = "tester-unified"
+            assay_command = ["assay"]
+
+            [lanes.ciu.pins.assay]
+            version = ""
+            sha256 = "x.sha256"
+        """)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'version' must be a non-empty string" in proc.stderr
+
+
 def test_extra_mounts_empty_element_rejected(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     proj = make_project(repo, SIMPLE_LANE)

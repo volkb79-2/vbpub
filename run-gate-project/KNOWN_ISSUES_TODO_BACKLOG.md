@@ -21,7 +21,7 @@ SPEC §9.
 | RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | OPEN |
 | RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
 | RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | OPEN |
-| RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | OPEN |
+| RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | OPEN |
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | OPEN |
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | OPEN |
@@ -203,6 +203,14 @@ cheap, stdlib, closes the gap.
 
 **Oracles:** mismatched version → lane refuses naming both values; equal →
 silent; controlled wrong implementation (today's no-check) fails oracle 1.
+
+**FIXED 2026-08-24** (option a, mechanical): `build_assay_inner` gains an
+in-lane probe per pin declaring `version` — `<assay_command> --version` must
+succeed and its output match the declaration, else the lane exits 2 naming
+both values. Empty declarations rejected at validation. Oracles include a
+LIVE shell execution of the generated inner (fake artifact reporting the
+wrong/right version). SPEC R-08 + CONSUMERS schema comment updated: declaring
+`version` asserts the `--version` convention.
 
 ## RG-5 — `{worktree}` textual substitution: quoting/injection surface
 
