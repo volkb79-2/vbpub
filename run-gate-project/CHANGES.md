@@ -6,6 +6,19 @@ it, and any consumer holding a COPY (not a symlink) must re-copy when it
 moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
+## [Unreleased]
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
+
+_Nothing yet._
+
+<!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
+     CLEARED immediately after a release. cmru generates the dated entry
+     below from the commit range but does NOT clear this hand-written block
+     itself — leaving content here would republish shipped work as
+     "unreleased" on the next cycle. -->
+
+<!-- cmru: release history -->
+
 ## [22] - 2026-08-24 — RG-sweep program complete
 
 Backlog entries RG-1..RG-20 implemented (RG-18 excepted — dstdns-side scope,
