@@ -442,9 +442,15 @@ candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after th
 every completed candidate, and the verdict names that file under
 `claims[].mutation.progress_artifact`.
 
+When a command fails or times out, read the optional top-level
+`result_stdout_tail` / `result_stderr_tail` fields for the final error output.
+Each tail is at most 64 KiB; its paired `*_dropped_bytes` field says how much
+head-side output was omitted. Absent tails mean no captured-output contract
+applies (for example, the command never started).
+
 ## Adopting a v2-capable release
 
-Verdict schema v6 and lane schema v2 are both hard cuts (no dual-version verifier, no
+Verdict schema v7 and lane schema v2 are both hard cuts (no dual-version verifier, no
 compatibility shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the

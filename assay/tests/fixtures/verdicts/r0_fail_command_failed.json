@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -28,6 +28,10 @@
   "env_effective": {},
   "scope": "S1",
   "enforcement": "gate",
+  "result_stdout_tail": "",
+  "result_stderr_tail": "E       assert 7 == 0\n",
+  "result_stdout_dropped_bytes": 0,
+  "result_stderr_dropped_bytes": 0,
   "claims": [
     {
       "rigor": "R0",

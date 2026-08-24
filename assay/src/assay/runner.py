@@ -222,6 +222,29 @@ def default_process_runner(
     )
 
 
+COMMAND_TAIL_BYTES = 64 * 1024
+
+
+def _bounded_tail(raw: str | None) -> tuple[str, int]:
+    """Keep the final *COMMAND_TAIL_BYTES* of captured text.
+
+    The input is decoded by ``subprocess`` under ``text=True``, so the byte
+    count is measured on its UTF-8 encoding: the same currency as the
+    process's output and the artifact's stated bound. Undecodable child bytes
+    have already become U+FFFD at that boundary; re-encoding them preserves
+    the replacement character without inventing a second decode policy.
+    """
+    if raw is None or raw == "":
+        return "", 0
+    encoded = raw.encode("utf-8")
+    if len(encoded) <= COMMAND_TAIL_BYTES:
+        return raw, 0
+    cutoff = len(encoded) - COMMAND_TAIL_BYTES
+    while cutoff < len(encoded) and (encoded[cutoff] & 0xC0) == 0x80:
+        cutoff += 1
+    return encoded[cutoff:].decode("utf-8"), cutoff
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -276,6 +299,13 @@ class CommandResult:
     #: ``None`` when the process never started (append refused, exec failed,
     #: or the budget expired before it returned).
     returncode: int | None
+    #: B014: bounded final output retained for every non-PASS terminal. A
+    #: process that never started has no tail; a PASS omits evidence it does
+    #: not need unless a caller explicitly supplies one.
+    stdout_tail: str | None = None
+    stderr_tail: str | None = None
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
     started: str
     ended: str
 
@@ -340,6 +370,8 @@ def execute_plan(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
             returncode=None,
+            stdout_tail="",
+            stderr_tail="",
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
@@ -351,11 +383,17 @@ def execute_plan(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(exc.stdout)
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(exc.stderr)
         return CommandResult(
             plan=plan,
             outcome=Outcome.BUDGET_EXCEEDED,
             reason_code=ReasonCode.LANE_TIMEOUT,
             returncode=None,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            stdout_dropped_bytes=stdout_dropped_bytes,
+            stderr_dropped_bytes=stderr_dropped_bytes,
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
@@ -365,20 +403,32 @@ def execute_plan(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
             returncode=None,
+            stdout_tail="",
+            stderr_tail="",
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
     ended = iso_utc(clock())
     if proc.returncode == 0:
         return CommandResult(
-            plan=plan, outcome=Outcome.PASS, reason_code=None,
-            returncode=0, started=iso_utc(started_at), ended=ended,
+            plan=plan,
+            outcome=Outcome.PASS,
+            reason_code=None,
+            returncode=0,
+            started=iso_utc(started_at),
+            ended=ended,
         )
+    stdout_tail, stdout_dropped_bytes = _bounded_tail(proc.stdout)
+    stderr_tail, stderr_dropped_bytes = _bounded_tail(proc.stderr)
     return CommandResult(
         plan=plan,
         outcome=Outcome.FAIL,
         reason_code=ReasonCode.COMMAND_FAILED,
         returncode=proc.returncode,
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        stdout_dropped_bytes=stdout_dropped_bytes,
+        stderr_dropped_bytes=stderr_dropped_bytes,
         started=iso_utc(started_at),
         ended=ended,
     )
@@ -887,6 +937,10 @@ def assemble_verdict(
         env_effective=plan.env_effective,
         scope=lane.scope,
         enforcement=lane.enforcement,
+        result_stdout_tail=result.stdout_tail,
+        result_stderr_tail=result.stderr_tail,
+        result_stdout_dropped_bytes=result.stdout_dropped_bytes,
+        result_stderr_dropped_bytes=result.stderr_dropped_bytes,
         judgment=judgment,
         claims=claims,
         evidence=evidence,

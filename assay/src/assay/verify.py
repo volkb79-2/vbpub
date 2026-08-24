@@ -1241,6 +1241,16 @@ def _reconstruct_verdict(document: dict) -> Verdict:
         judgment_kwargs["snapshot_policy"] = _reconstruct_snapshot_policy(
             document["snapshot_policy"]
         )
+    if "result_stdout_tail" in document:
+        judgment_kwargs["result_stdout_tail"] = document["result_stdout_tail"]
+        judgment_kwargs["result_stdout_dropped_bytes"] = document[
+            "result_stdout_dropped_bytes"
+        ]
+    if "result_stderr_tail" in document:
+        judgment_kwargs["result_stderr_tail"] = document["result_stderr_tail"]
+        judgment_kwargs["result_stderr_dropped_bytes"] = document[
+            "result_stderr_dropped_bytes"
+        ]
 
     reason_code = document.get("reason_code")
     verdict = Verdict(

@@ -30,7 +30,9 @@ from conftest import SCHEMA_PATH, VERDICT_FIXTURES, verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
+from assay.verify import verify_document
 from assay.verdict import (
+    COMMAND_TAIL_BYTES,
     VERDICT_SCHEMA_VERSION,
     Claim,
     Coverage,
@@ -320,6 +322,40 @@ def build_inconclusive() -> Verdict:
     )
 
 
+def build_failed_with_output_tails() -> Verdict:
+    return Verdict(
+        lane="package",
+        commit="2" * 40,
+        outcome=Outcome.FAIL,
+        reason_code=ReasonCode.COMMAND_FAILED,
+        started="2026-08-07T10:05:00+00:00",
+        ended="2026-08-07T10:05:01+00:00",
+        assay_version=VERSION,
+        declared_rigor=("R0",),
+        declared_evidence=(),
+        argv_declared=("/bin/sh", "-c", "exit 7"),
+        argv_appended=(),
+        argv_effective=("/bin/sh", "-c", "exit 7"),
+        env_declared={},
+        env_effective={},
+        scope="S1",
+        enforcement="gate",
+        result_stdout_tail="",
+        result_stderr_tail="E       assert 7 == 0\n",
+        result_stdout_dropped_bytes=0,
+        result_stderr_dropped_bytes=0,
+        claims=(
+            Claim(
+                rigor="R0",
+                source="computed",
+                status=Outcome.FAIL,
+                verified_by_assay=True,
+                reason_code=ReasonCode.COMMAND_FAILED,
+            ),
+        ),
+    )
+
+
 BUILDERS = {
     "PASS": lambda: build("PASS"),
     "FAIL": lambda: build("FAIL"),
@@ -328,6 +364,8 @@ BUILDERS = {
     "BUDGET_EXCEEDED": build_budget_exceeded,
     "INCONCLUSIVE": build_inconclusive,
 }
+
+TAIL_BUILDERS = {"FAIL": build_failed_with_output_tails}
 
 
 # --- the fixtures really cover the vocabulary ---------------------------------
@@ -529,3 +567,68 @@ def test_iso_utc_refuses_a_naive_datetime():
 
     with pytest.raises(ValueError, match="naive"):
         iso_utc(datetime(2026, 8, 6, 9, 0, 0))
+
+
+# --- B014: bounded command-output tails --------------------------------------
+
+
+@pytest.mark.parametrize("builder", sorted(TAIL_BUILDERS.values(), key=lambda f: f.__name__))
+def test_a_failed_command_serializes_bounded_output_tails(
+    builder, validator: Draft202012Validator
+):
+    document = json.loads(builder().to_json())
+
+    assert why_invalid(validator, document) == []
+    assert document["result_stdout_tail"] == ""
+    assert document["result_stderr_tail"] == "E       assert 7 == 0\n"
+    assert document["result_stdout_dropped_bytes"] == 0
+    assert document["result_stderr_dropped_bytes"] == 0
+
+
+@pytest.mark.parametrize("field", ["result_stdout_tail", "result_stderr_tail"])
+def test_the_model_refuses_an_oversized_command_tail(field: str):
+    kwargs = {
+        "lane": "package",
+        "commit": "7" * 40,
+        "outcome": Outcome.FAIL,
+        "reason_code": ReasonCode.COMMAND_FAILED,
+        "started": "2026-08-07T10:05:00+00:00",
+        "ended": "2026-08-07T10:05:01+00:00",
+        "assay_version": VERSION,
+        field: "\ufffd" * (COMMAND_TAIL_BYTES + 1),
+    }
+    with pytest.raises(ValueError, match=field):
+        Verdict(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "result_stdout_dropped_bytes",
+        "result_stderr_dropped_bytes",
+    ],
+)
+def test_the_model_refuses_an_invalid_dropped_byte_count(field: str):
+    kwargs = {
+        "lane": "package",
+        "commit": "7" * 40,
+        "outcome": Outcome.FAIL,
+        "reason_code": ReasonCode.COMMAND_FAILED,
+        "started": "2026-08-07T10:05:00+00:00",
+        "ended": "2026-08-07T10:05:01+00:00",
+        "assay_version": VERSION,
+        field: -1,
+    }
+    with pytest.raises(ValueError, match=field):
+        Verdict(**kwargs)
+
+
+@pytest.mark.parametrize("field", ["result_stdout_tail", "result_stderr_tail"])
+def test_the_verifier_rejects_a_tail_without_its_dropped_count(field: str):
+    document = verdict_fixture("FAIL")
+    document[field] = ""
+
+    failures = verify_document(document)
+
+    dropped_field = field.replace("tail", "dropped_bytes")
+    assert any(dropped_field in failure for failure in failures), failures

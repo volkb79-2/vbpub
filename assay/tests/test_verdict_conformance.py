@@ -1136,7 +1136,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-        "schema_version": 6,
+            "schema_version": 7,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1248,9 +1248,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 6: a verdict "
+        "schema_version 2 is not this verifier's version 7: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 6"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 7"
     ]
 
 
@@ -1269,7 +1269,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 6" in failures[0]
+    assert "schema_version 3 is not this verifier's version 7" in failures[0]
 
 
 # ============================================================================
