@@ -18,6 +18,12 @@ docs truth, evidence captured only on failure at 0600, doctor survives
 broken hosts and exec envs need no slice, normalized verdict dedup,
 whole-token pin-version match, reserved lane names + symmetric sidecar
 checks.
+Rev 6: RG-22 — `R-19a`'s safe.directory write is idempotent under
+pre-existing entries (`--replace-all`).
+Rev 7: release-adoption program — `R-31` amended (wheel version now DERIVED
+from the git tag by setuptools-scm, not `__revision__`; the two-tier split is
+now stated explicitly), new `R-33` (estate release orchestration + a
+diff-coverage floor pending a total-100% campaign).
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -212,9 +218,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   container-specific); exit passthrough identical.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
-  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config --global
-  safe.directory '*'`. This avoids writing to `~/.gitconfig`, which may be
-  read-only or shared across containers.
+  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
+  --global --replace-all safe.directory '*'`. This avoids writing to
+  `~/.gitconfig`, which may be read-only or shared across containers.
+  `--replace-all` (RG-22) makes the write idempotent regardless of prior
+  state: a plain single-value `git config --global safe.directory '*'` fails
+  with "cannot overwrite multiple values" the moment the isolated gitconfig
+  already carries more than one `safe.directory` entry — reachable in
+  practice wherever exec-mode reuses that file across invocations sharing a
+  host or another process writes to it under the same `GIT_CONFIG_GLOBAL`.
 - `R-20` `budget` is parsed, validated, and PRINTED as advisory; the tool
   does not enforce it (consumers may).
 
@@ -359,15 +371,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (committed symlink `run_gate.py -> run-gate.py`, dereferenced at build
   time — py_modules cannot carry a hyphen) and exposes console script
   `run-gate = run_gate:main`; the shipped `run_gate.py` is byte-identical to
-  the canonical file. Version discipline is DERIVED, not declared twice:
-  setuptools reads `__revision__` from the script at build time (`attr`),
-  so the wheel's version cannot drift from the copies' drift marker; a test
-  pins the derivation structurally and builds/installs the wheel in-suite,
-  asserting identical `--list` behavior between copied script and installed
-  console script. Build toolchain pinned exactly (assay/ciu precedent);
-  publish goes through cmru's wheel-publish; a release tag names the derived
-  version (`run-gate-v<version>`, e.g. `run-gate-v21`). The wheel NEVER
-  becomes required — CONSUMERS.md states it in prose and this contract
+  the canonical file. Version identity is TWO-TIER (superseding this rule's
+  original `__revision__`-attr coupling, release-adoption program): the
+  wheel's version is DERIVED from the git tag (`run-gate-vX.Y.Z`) by
+  setuptools-scm — `[tool.setuptools_scm]` with `root = ".."` and
+  `--match run-gate-v*`, matching ciu/cmru/assay/topos/nyxloom exactly —
+  while `__revision__` inside the script stays the SEPARATE copy-drift
+  marker external repos compare; the two never need to agree, and
+  CONSUMERS.md states which one governs which decision. A release build
+  never runs `git describe` live: cmru's wheel-build step sets
+  `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE` from the tag it just
+  minted (`cmru.toml`'s `scm_dist = "run_gate"`). Build toolchain pinned
+  exactly (assay/ciu precedent); a release tag names the semver version
+  (`run-gate-v<version>`) — because the pre-existing tag `run-gate-v22` is
+  itself matched by the tag pattern and parses as version `22`, the first
+  semver release MUST be numbered `>= run-gate-v23` (e.g. `run-gate-v23.0.0`)
+  or version ordering inverts (pip would read a `run-gate-v1.0.0` release as
+  older than the untagged `22`-based dev builds that precede it). The wheel
+  NEVER becomes required — CONSUMERS.md states it in prose and this contract
   forbids any lane or check that assumes an install.
 
 - `R-32` **Adoption hygiene + estate pairing sweep (RG-13):** the adoption
@@ -385,6 +406,38 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   timeout >= budget wherever a gate argv names the lane as a whole token —
   the drift is caught by test, not by memory.
 
+- `R-33` **Estate release orchestration + coverage floor (release-adoption
+  program):** `run-gate-project` is registered in the vbpub-root
+  `cmru.orchestration.toml` (`depends_on = []`: it consumes no first-party
+  wheel and nothing releases after it that needs its artifact today) and
+  ships its own `cmru.toml` (schema identical to ciu/cmru/assay: `[github]`,
+  `[targets]`, `[project]` with `id = "run-gate-project"`, which cmru's
+  config loader requires to equal the KEY this project is registered under
+  in `cmru.orchestration.toml` — that key, not `id` itself, is what drives
+  cmru's change-detection watch path; it equals the directory name here
+  only by convention). Because the pre-existing tag `run-gate-v22` is a
+  bare integer, not semver, cmru's auto-bump cannot parse it and `cmru
+  status`/`cmru release` CRASH for this project's first release without an
+  explicit `--set-version 23.0.0` override (verified live) — every release
+  after that resolves normally. The release gate IS the project's own
+  dogfooded lane (`cmru.toml [steps.run-tests]` runs `./run-gate.py
+  selftest` — SSOT, D-110/D-111: one parser, no duplicated pytest
+  invocation), run in HOST mode deliberately (not tester-unified: this
+  suite is self-referential — it exercises `physical_path()`'s real
+  `/proc/self/mountinfo` lookup against its own pytest fixtures, which
+  breaks under an extra container layer) which chains `pytest` with
+  `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
+  thinnest copy — MIGRATION PENDING per its header, do not fork further;
+  its own `--source` default is scoped to `run-gate.py` alone, not the
+  whole project, so a bare invocation can't silently reproduce the
+  scoping bug this floor was built to prevent). Because TOTAL line+branch
+  coverage measured ~47% at adoption time, the floor enforced is DIFF
+  coverage at 100% (topos/nyxloom legacy-code pattern: every changed
+  executable line must be covered, same-commit) rather than
+  `--cov-fail-under=100`; a later campaign to reach a total 100% floor is
+  its own backlog item, and only then does the
+  lane flip to a total floor like cmru's own.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns
@@ -400,10 +453,13 @@ repos copy the file; `__revision__` is the drift marker; stdlib only, runs
 on a fresh clone with zero installs.
 
 SECONDARY: the wheel (`pyproject.toml` here) packages the same bytes as
-module `run_gate` with a `run-gate` console script, version derived from
-`__revision__`, published through cmru's wheel-publish and tagged
-`run-gate-v<version>`. Adoption never requires it; nothing in the gate's
-own lanes or checks may assume an install exists.
+module `run_gate` with a `run-gate` console script, published through
+cmru's wheel-publish and tagged `run-gate-v<version>`. Adoption never
+requires it; nothing in the gate's own lanes or checks may assume an
+install exists. Version identity is TWO-TIER (superseding RG-14's
+original wording here): the wheel's semver version is DERIVED from the
+git tag by setuptools-scm, NOT from `__revision__` — the two numbers are
+independent and can legitimately disagree at any moment (`R-31`).
 
 ## 8. Controller amendments (this session, 2026-08-22)
 

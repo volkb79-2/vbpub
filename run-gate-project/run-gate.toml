@@ -1,0 +1,51 @@
+# =============================================================================
+# run-gate-project's own gate lanes — parsed ONLY by run-gate.py (one parser,
+# D-110). This file declares the lane only.
+#
+# The selftest lane IS the release gate: cmru.toml [steps.run-tests] runs
+# `./run-gate.py selftest`, so a release cannot be tagged or published unless
+# this passes. Dogfooding by design — run-gate gates itself through its own
+# machinery.
+#
+# HOST mode, deliberately — NOT tester-unified (verified empirically
+# 2026-08-24, a container run of this exact lane produced 53 unrelated
+# failures a bare-host run did not). test_run_gate.py's own suite is
+# self-referential: many tests exercise physical_path()'s REAL
+# /proc/self/mountinfo lookup against pytest's own tmp_path fixtures (only
+# `docker run` itself is faked; RG-3's dual-mount and friends need a genuine
+# host-mounted /tmp to resolve). Wrapping that suite inside ANOTHER
+# container layer breaks mountinfo resolution for paths pytest creates
+# fresh inside that container's own filesystem — they were never
+# bind-mounted from anywhere, so "is the repo bind-mounted into this
+# container?" fires on tests that have nothing to do with this change. This
+# is unlike every other consumer's suite, which doesn't test run-gate's own
+# docker-orchestration internals and gates cleanly in tester-unified.
+#
+# Coverage discipline (2026-08-24 decision): TOTAL line+branch coverage sits
+# at ~47% today, so a passing --cov-fail-under=100 does not exist yet. The
+# floor enforced here is DIFF coverage at 100% (topos/nyxloom estate pattern,
+# vendored thin gate in tools/coverage_gate.py): every executable line added
+# or changed since the merge-base with main must be covered, same-commit.
+# The total-100 campaign is Phase 2 of the release-adoption program; when it
+# lands this lane flips to --cov-fail-under=100 like cmru's.
+#
+# --source is scoped to run-gate.py ALONE (not the whole project directory),
+# mirroring topos's own `--source topos/src/topos`: the gate never measures
+# itself (tools/coverage_gate.py is vendored infrastructure, outside the
+# scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
+# topos/src/topos) or the test suite (a test's own "coverage" of itself is
+# not a meaningful check). Both --source and --coverage-json are plain
+# "run-gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
+# invokes `git diff --relative ...`, which reports paths relative to CWD,
+# and run_host_lane execs argv with cwd = the effective project dir (i.e.
+# run-gate-project/ itself) — so the bare filename is what git actually
+# reports, not a repo-root-relative path.
+# =============================================================================
+schema_version = 1
+
+[lanes.selftest]
+kind = "command"
+environment = "host"
+argv = ["bash", "-c", "python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+budget = "20m"
+artifacts = ["coverage.json"]       # disclosed after every run (RG-10)

@@ -5,6 +5,7 @@ lesson); live acceptance is oracle O4, run against real docker separately.
 Every argv assertion compares the LIST, never a joined string.
 """
 
+import atexit
 import fcntl
 import os
 import re
@@ -12,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -24,6 +26,22 @@ import pytest
 
 RUN_GATE_DIR = Path(__file__).resolve().parent.parent
 _TOOL = RUN_GATE_DIR / "run-gate.py"  # hyphenated filename: load via importlib
+
+# run-gate-project now dogfoods itself (run-gate-project/run-gate.toml, the
+# selftest lane), so RUN_GATE_DIR is no longer an config-free directory: per
+# find_project_dir(), "directory of the invoked script path" is checked
+# BEFORE the CWD fallback, so invoking _TOOL directly would always resolve
+# THIS project's own config instead of a fixture's. Every fixture-driven
+# subprocess invocation goes through this neutral symlink instead — the same
+# indirection real external consumers use ("symlink's parent, never the
+# target's dir"), living in a directory that never gets a run-gate.toml.
+# The selftest lane now runs in HOST mode (real host /tmp, not a throwaway
+# container filesystem), so this tempdir is cleaned up on interpreter exit
+# rather than left to accumulate across every real gate run.
+_TOOL_INVOKE_DIR = tempfile.mkdtemp(prefix="run-gate-test-invoke-")
+_TOOL_INVOKE = Path(_TOOL_INVOKE_DIR) / "run-gate.py"
+_TOOL_INVOKE.symlink_to(_TOOL)
+atexit.register(shutil.rmtree, _TOOL_INVOKE_DIR, ignore_errors=True)
 
 import importlib.util  # noqa: E402
 
@@ -140,7 +158,7 @@ SIMPLE_LANE = """\
 
 
 def run_tool(proj: Path, *args, cwd=None):
-    return subprocess.run([sys.executable, str(_TOOL), *args],
+    return subprocess.run([sys.executable, str(_TOOL_INVOKE), *args],
                           cwd=cwd or proj, capture_output=True, text=True)
 
 
@@ -601,7 +619,7 @@ class TestArgvConstruction:
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
-        assert "git config --global safe.directory '*'" in inner
+        assert "git config --global --replace-all safe.directory '*'" in inner
         assert "cd /wt/tree/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
@@ -1264,6 +1282,41 @@ def test_safe_directory_uses_git_config_global_env():
     inner = run_gate.build_command_inner(
         {"argv": ["echo"]}, Path("/wt"))
     assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+def test_safe_directory_write_survives_preexisting_entries(tmp_path):
+    """RG-22: a plain `git config --global safe.directory '*'` (no
+    --replace-all) fails with "cannot overwrite multiple values" the moment
+    the isolated gitconfig at /tmp/run-gate-gitconfig already carries more
+    than one safe.directory entry — reproduced from dstdns P126/P127's
+    linked-worktree runners sharing a host. --replace-all makes the write
+    succeed regardless of how many entries were already there.
+
+    This test touches the REAL /tmp/run-gate-gitconfig path (the inner
+    command hard-codes it, matching TestPinVersionVerify's live-subprocess
+    pattern elsewhere in this file) and restores its prior content
+    afterward — other tests in this suite write a single entry there too.
+    """
+    gitconfig = Path("/tmp/run-gate-gitconfig")
+    original = gitconfig.read_bytes() if gitconfig.exists() else None
+    try:
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(gitconfig)}
+        for path in ("/some/project", "/other/project"):
+            proc = subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", path],
+                env=env, capture_output=True, text=True)
+            assert proc.returncode == 0, proc.stderr
+        inner = run_gate.build_command_inner(
+            {"argv": ["echo", "ok"]}, tmp_path)
+        proc = subprocess.run(["bash", "-c", inner], cwd=tmp_path,
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "ok" in proc.stdout
+    finally:
+        if original is None:
+            gitconfig.unlink(missing_ok=True)
+        else:
+            gitconfig.write_bytes(original)
 
 
 class TestExecDisclosure:
@@ -2485,6 +2538,24 @@ class TestPointerLinkageEstate:
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
         assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"
 
+    def test_cmru_toml_id_matches_orchestration_key(self):
+        """cmru's config loader errors ('config declares project.id=X,
+        expected Y') if run-gate-project/cmru.toml's id ever diverges from
+        the key it's registered under in the root orchestration file — a
+        future rename of either side without the other silently orphans
+        the release, since cmru derives its change-detection watch path
+        from the ORCHESTRATION KEY (the directory holding whatever the
+        key's own `config = "..."` names), never from `id` itself."""
+        cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
+        orch_doc = tomllib.loads(
+            (RUN_GATE_DIR.parent / "cmru.orchestration.toml").read_text())
+        entries = orch_doc["orchestration"]["project"]
+        matches = [key for key, entry in entries.items()
+                  if entry.get("config", "").startswith("run-gate-project/")]
+        assert matches, "run-gate-project is not registered in " \
+                        "cmru.orchestration.toml at all"
+        assert cmru_doc["project"]["id"] in matches
+
 
 # ---------------------------------------------------------------------------
 # RG-8 — --dry-run: rehearse every preflight, execute nothing
@@ -2884,7 +2955,7 @@ class TestResourceAdmission:
         fcntl.flock(holder, fcntl.LOCK_EX)
         try:
             proc = subprocess.run(
-                [sys.executable, str(RUN_GATE_DIR / "run-gate.py"), "suite"],
+                [sys.executable, str(_TOOL_INVOKE), "suite"],
                 capture_output=True, text=True, cwd=str(proj), env=env,
                 timeout=20)
         finally:
@@ -3018,7 +3089,7 @@ class TestDoctor:
         proj = make_project(repo, SIMPLE_LANE)
         fake_docker(tmp_path, monkeypatch)
         proc = subprocess.run(
-            [sys.executable, str(_TOOL), "doctor"],
+            [sys.executable, str(_TOOL_INVOKE), "doctor"],
             capture_output=True, text=True, cwd=str(proj),
             env={**os.environ,
                  "PYTHONPATH": str(RUN_GATE_DIR / "tests")},
@@ -3082,28 +3153,37 @@ def _has_module(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
+_SCM_PRETEND_VERSION = "1.2.3"  # fixed test version — the point of pretend-version
+                                # is that the wheel build needs NO git history at all
+
+
 class TestWheelPackaging:
     """The wheel never replaces the script; it wraps the SAME bytes.
 
-    Discipline chain (backlog RG-14): the wheel's version must equal the
-    in-file `__revision__` so copies' drift marker stays truthful. Rather
-    than TEST two independently-declared numbers for equality (a test that
-    merely documents a dual-bookkeeping hazard), the pyproject DERIVES the
-    version from `run_gate.__revision__` at build time and these tests pin
-    the derivation structurally — drift is impossible by construction, and
-    anyone re-declaring a static version fails test_pyproject_... below.
+    Version identity is TWO-TIER (release-adoption program, superseding
+    RG-14's original coupling): `__revision__` inside the script stays the
+    copy-drift marker external repos compare; the wheel's version is
+    DERIVED from the git tag (`run-gate-vX.Y.Z`) by setuptools-scm, matching
+    ciu/cmru/assay/topos/nyxloom. A real release build never runs `git
+    describe` live — cmru's wheel-build step sets
+    `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE` from the tag it just
+    minted (cmru.toml's `scm_dist = "run_gate"`), which is exactly what
+    these tests do too, so no git history needs to travel into the tmp
+    build stage.
     """
 
-    def test_pyproject_derives_version_from_revision(self):
+    def test_pyproject_declares_scm_version(self):
         cfg = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
         proj = cfg["project"]
         assert cfg["build-system"]["build-backend"] == "setuptools.build_meta"
-        # version comes from the script, never a second declaration:
+        # version comes from the git tag, never a second static declaration:
         assert "version" not in proj
         assert "version" in proj["dynamic"]
-        assert cfg["tool"]["setuptools"]["dynamic"]["version"] == {
-            "attr": "run_gate.__revision__"}
-        # console script + module mapping + zero runtime deps:
+        scm = cfg["tool"]["setuptools_scm"]
+        assert scm["root"] == ".."
+        assert scm["tag_regex"] == r"^run-gate-v(?P<version>[0-9].*)$"
+        assert scm["git_describe_command"][-2:] == ["--match", "run-gate-v*"]
+        # console script + module mapping + zero runtime deps (unchanged):
         assert proj["scripts"] == {"run-gate": "run_gate:main"}
         assert cfg["tool"]["setuptools"]["py-modules"] == ["run_gate"]
         assert proj["dependencies"] == []
@@ -3117,34 +3197,44 @@ class TestWheelPackaging:
     @pytest.fixture(scope="class")
     def built_wheel(self, tmp_path_factory):
         """Build the real wheel once, exactly the way cmru's publish flow
-        does (`python -m build`). Lives entirely in tmp: the worktree gains
-        no dist/ or egg-info."""
-        if not (_has_module("setuptools") and _has_module("build")):
+        does (`python -m build`, pretend-version env var). Lives entirely
+        in tmp: the worktree gains no dist/ or egg-info."""
+        if not (_has_module("setuptools") and _has_module("build")
+                and _has_module("setuptools_scm")):
             # Review fix: a silent skip hides toolchain drift — make it loud
             # in the warnings summary even when the suite stays green.
             warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain "
-                          "unavailable (setuptools/build not installed)")
+                          "unavailable (setuptools/build/setuptools_scm not "
+                          "installed)")
             pytest.skip("wheel toolchain unavailable")
         import setuptools
+        from importlib.metadata import version as _dist_version
         pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
-        pin = next(r for r in pyproject["build-system"]["requires"]
-                   if r.startswith("setuptools=="))
-        want = pin.split("==")[1]
-        if setuptools.__version__ != want:
-            warnings.warn(f"run-gate wheel tests SKIPPED: local setuptools "
-                          f"{setuptools.__version__} != pinned {want}")
-            pytest.skip(
-                f"local setuptools {setuptools.__version__} != pinned {want} "
-                "(python -m build refuses a mismatched --no-isolation closure)")
+        for dist, have in (("setuptools", setuptools.__version__),
+                           ("setuptools_scm", _dist_version("setuptools_scm"))):
+            pin = next(r for r in pyproject["build-system"]["requires"]
+                      if r.startswith(f"{dist}=="))
+            want = pin.split("==")[1]
+            if have != want:
+                warnings.warn(f"run-gate wheel tests SKIPPED: local {dist} "
+                              f"{have} != pinned {want}")
+                pytest.skip(
+                    f"local {dist} {have} != pinned {want} (python -m build "
+                    "refuses a mismatched --no-isolation closure)")
         stage = tmp_path_factory.mktemp("wheel-stage")
         for name in ("run-gate.py", "pyproject.toml", "README.md"):
             shutil.copy2(RUN_GATE_DIR / name, stage / name)
         # copy2 FOLLOWS the symlink: the staged tree holds the dereferenced
         # copy a git-archive/sdist build would see.
         shutil.copy2(RUN_GATE_DIR / "run_gate.py", stage / "run_gate.py")
+        # No .git in this stage at all (matches a real sdist/tarball build):
+        # the pretend-version env var is the ONLY version source, exactly
+        # like cmru's release build sets it from the tag it just minted.
+        env = {**os.environ,
+              "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE": _SCM_PRETEND_VERSION}
         proc = subprocess.run(
             [sys.executable, "-m", "build", "--wheel", "--no-isolation", "."],
-            cwd=stage, capture_output=True, text=True)
+            cwd=stage, capture_output=True, text=True, env=env)
         assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
         wheels = list((stage / "dist").glob("*.whl"))
         assert len(wheels) == 1, wheels
@@ -3152,20 +3242,21 @@ class TestWheelPackaging:
 
     def test_built_wheel_ships_identical_module_and_derived_version(
             self, built_wheel):
-        rev = str(run_gate.__revision__)
-        assert built_wheel.name == f"run_gate-{rev}-py3-none-any.whl"
+        v = _SCM_PRETEND_VERSION
+        assert built_wheel.name == f"run_gate-{v}-py3-none-any.whl"
         with zipfile.ZipFile(built_wheel) as z:
             names = z.namelist()
             assert "run_gate.py" in names
             top = {n.split("/")[0] for n in names}
-            assert top == {"run_gate.py", f"run_gate-{rev}.dist-info"}, sorted(top)
-            ep = z.read(f"run_gate-{rev}.dist-info/entry_points.txt").decode()
+            assert top == {"run_gate.py", f"run_gate-{v}.dist-info"}, sorted(top)
+            ep = z.read(f"run_gate-{v}.dist-info/entry_points.txt").decode()
             assert "[console_scripts]" in ep
             assert "run-gate = run_gate:main" in ep
-            meta = z.read(f"run_gate-{rev}.dist-info/METADATA").decode()
-            assert f"Version: {rev}" in meta
+            meta = z.read(f"run_gate-{v}.dist-info/METADATA").decode()
+            assert f"Version: {v}" in meta
             # THE truthfulness core: what pip installs is byte-identical to
-            # the canonical script, so its __revision__ IS the drift marker.
+            # the canonical script regardless of the wheel's own version —
+            # __revision__ (unaffected by this) is the copies' drift marker.
             assert z.read("run_gate.py") == \
                 (RUN_GATE_DIR / "run-gate.py").read_bytes()
 

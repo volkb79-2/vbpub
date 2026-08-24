@@ -1,0 +1,92 @@
+# =============================================================================
+# run-gate-project release contract — parsed ONLY by cmru (one parser per
+# format, D-110). Adopted 2026-08-24 from the ciu/cmru pattern: same [github]/
+# [targets]/[project]/[steps] shape, wheel artifact, scm versioning.
+#
+# Naming has ONE deliberate quirk: `project.id` below MUST equal the key this
+# project is registered under in the root cmru.orchestration.toml
+# ([orchestration.project.run-gate-project]) — cmru's config loader errors
+# ("config declares project.id=X, expected Y") if they diverge; that key is
+# what actually drives the change-detection watch path (the directory holding
+# WHATEVER file that key's `config = "..."` names, not the id itself). It
+# equals this directory's name here only because that is what the key was
+# chosen to be — a readability convention this file follows, not a mechanical
+# requirement. test_run_gate.py::test_cmru_toml_id_matches_orchestration_key
+# pins the two staying equal structurally. Release/tag/publish naming does
+# NOT use the id at all: tags are minted as `<prefix><version>` and the
+# GitHub Release is keyed by --prefix on the push step, so everything
+# user-facing stays `run-gate-v*` / `run_gate-*.whl`.
+#
+# Version identity is TWO-TIER (pyproject.toml header): __revision__ inside
+# run-gate.py stays the copy-drift marker external repos compare; semver
+# tags/releases are the publish identity, derived by setuptools-scm from the
+# tag this config's strategy mints.
+#
+# ONE-TIME TRANSITIONAL GOTCHA for the FIRST release only: `strategy = "scm"`
+# asks cmru to auto-bump the version from the last matching tag, but the
+# pre-existing tag `run-gate-v22` is a bare integer, not semver — cmru's
+# `bump_version()` cannot parse it and `cmru status`/`cmru release` CRASH
+# (`ValueError: Cannot parse version: '22'`) without an explicit override.
+# The first release MUST pass `--set-version 23.0.0` (bare semver, NO
+# `run-gate-v` prefix — passing the prefixed form double-prefixes the tag).
+# Every release after that resolves normally: the new tag is real semver, so
+# auto-bump has something parseable to work from.
+# =============================================================================
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+
+[project]
+id = "run-gate-project"
+description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
+template_revision = 4
+prefix = "run-gate-v"
+artifacts = ["wheel"]
+scm_dist = "run_gate"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+# SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
+# lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
+# line and not `cmru tester-gate` — dogfooding means run-gate gates itself
+# through its own machinery, and the lane owns all test logic (pytest +
+# diff-coverage floor) in exactly one place. The lane runs in HOST mode
+# deliberately (run-gate.toml explains why: this suite is self-referential
+# and a container-wrapped run breaks its own mountinfo assertions). Steps
+# execute with project_root as cwd, so the sibling script resolves directly.
+# First standalone bootstrap before cmru is installed anywhere fresh:
+# python3 run-gate.py selftest works with zero installs (stdlib-only).
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "run-gate: selftest gate (diff-coverage floor)", argv = ["./run-gate.py", "selftest"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "run-gate: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "run-gate: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
+]

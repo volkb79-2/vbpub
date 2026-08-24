@@ -408,10 +408,23 @@ The steps above are the PRIMARY distribution and stay canonical: symlink
 (internal) or copy (external), zero installs, `__revision__` as the drift
 marker. A wheel exists as a SECOND artifact for pip-flavored consumers:
 `pip install run-gate` exposes a `run-gate` console script running the SAME
-bytes, with the version derived from `__revision__` (never declared twice),
-built by cmru's wheel-publish and tagged `run-gate-v<version>`. The wheel
-NEVER becomes required — no adoption step, lane, or check may assume an
-install; if you have the script you need nothing else.
+bytes, built by cmru's wheel-publish and tagged `run-gate-v<version>`. The
+wheel NEVER becomes required — no adoption step, lane, or check may assume
+an install; if you have the script you need nothing else.
+
+**Two SEPARATE version numbers, two SEPARATE jobs — do not conflate them:**
+- `__revision__` (inside the script) is the copy-drift marker: bump it
+  whenever `run-gate.py` behavior changes, and it is what CONSUMERS step 2
+  compares to decide whether YOUR copy needs re-syncing.
+- The wheel's semver tag (`run-gate-vX.Y.Z`, derived from the git tag by
+  setuptools-scm) is the pip/GitHub-Release publish identity. It moves only
+  when a release is cut through cmru; it says nothing about whether your
+  copied script is stale.
+A `pip install`ed wheel and a freshly-copied script can therefore report
+DIFFERENT numbers (revision vs. version) at the same moment — that is by
+design, not drift. The one invariant both obey: the wheel's `run_gate.py`
+is always byte-identical to the canonical script, whatever either number
+says.
 
 ## Anti-goals (read before extending)
 
