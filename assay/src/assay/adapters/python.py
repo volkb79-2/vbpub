@@ -476,6 +476,11 @@ _EMPTY_COLLECTION_TEXT: dict[type, str] = {
     ast.Set: "set()",
 }
 
+#: B015's UUID constructor spellings. The AST cannot know a parameter's runtime
+#: type, so eligibility is deliberately syntactic: a comparison is UUID-aware
+#: only when one side constructs a UUID in place. This avoids guessing from
+#: variable names while still covering the dominant real-world identity check.
+_UUID_CONSTRUCTOR_NAMES: frozenset[str] = frozenset({"UUID", "uuid4", "uuid5"})
 
 class _Site(NamedTuple):
     """One candidate mutation site, before line-eligibility filtering and
@@ -677,6 +682,84 @@ def _falsy_swap_site(node: ast.Return, text_bytes: bytes) -> _Site | None:
     )
 
 
+def _is_uuid_expression(node: ast.expr) -> bool:
+    """True only for an in-place UUID construction expression."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _UUID_CONSTRUCTOR_NAMES
+        and (
+            (isinstance(node.func.value, ast.Name) and node.func.value.id == "uuid")
+            or (
+                isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "uuid"
+            )
+        )
+    ) or (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _UUID_CONSTRUCTOR_NAMES
+    )
+
+
+def _is_enum_member_expression(node: ast.expr) -> bool:
+    """True for a dotted identifier such as ``Color.RED`` or
+    ``enums.Color.RED``; false for bare names, calls and computed attributes.
+    """
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+
+
+def _semantic_comparison_sites(
+    node: ast.Compare,
+    text_bytes: bytes,
+) -> list[_Site]:
+    """B015's two semantic families, restricted to exact equality tokens.
+
+    Each site flips `==` to `!=` or the reverse, but records which semantic
+    family selected it. Unlike generic compare-swap, this never mutates
+    ordering or identity operators, and it requires evidence that one operand
+    belongs to the named semantic domain.
+    """
+    sites: list[_Site] = []
+    left = node.left
+    for index, op in enumerate(node.ops):
+        right = node.comparators[index]
+        if type(op) not in (ast.Eq, ast.NotEq):
+            continue
+        uuid_match = _is_uuid_expression(left) or _is_uuid_expression(right)
+        enum_match = (
+            _is_enum_member_expression(left) and not _is_uuid_expression(right)
+        ) or (_is_enum_member_expression(right) and not _is_uuid_expression(left))
+        if not uuid_match and not enum_match:
+            continue
+        target_cls = ast.NotEq if type(op) is ast.Eq else ast.Eq
+        gap_start = byte_offset(text_bytes, left.end_lineno, left.end_col_offset)
+        gap_end = byte_offset(text_bytes, right.lineno, right.col_offset)
+        start, end = _find_token_span(
+            text_bytes,
+            gap_start,
+            gap_end,
+            _COMPARE_TOKEN[type(op)],
+            whole_word=False,
+        )
+        sites.append(
+            _Site(
+                lineno=line_for_offset(text_bytes, start),
+                operator=(
+                    "python:uuid-equality-swap"
+                    if uuid_match
+                    else "python:enum-comparison-swap"
+                ),
+                description=f"{type(op).__name__}->{target_cls.__name__}",
+                start=start,
+                end=end,
+                replacement=_COMPARE_TOKEN[target_cls].encode("utf-8"),
+            )
+        )
+        left = right
+    return sites
+
+
 @dataclass(frozen=True)
 class _Worst:
     """Inverted ordering, so :mod:`heapq`'s min-heap behaves as a MAX-heap.
@@ -696,7 +779,9 @@ class _Worst:
 def _candidate_sites(node: ast.AST, text_bytes: bytes) -> list[_Site]:
     """Every catalogue site *node* itself contributes, before any filtering."""
     if isinstance(node, ast.Compare):
-        return _compare_swap_sites(node, text_bytes)
+        return _compare_swap_sites(node, text_bytes) + _semantic_comparison_sites(
+            node, text_bytes
+        )
     if isinstance(node, ast.BoolOp):
         return _boolop_swap_sites(node, text_bytes)
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):

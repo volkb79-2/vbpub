@@ -58,7 +58,10 @@ __all__ = [
 #:
 #: * ``python`` -- the original four, adopted verbatim from
 #:   ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`` and
-#:   DESIGN-GUIDE §11's own TOML example, now qualified.
+#:   DESIGN-GUIDE §11's own TOML example, now qualified. B015 adds two semantic
+#:   families: UUID-aware equality swapping and enum-member comparison swapping.
+#:   Both remain exact single-token comparisons; neither invents a replacement
+#:   object or mutates an unrelated operand.
 #: * ``go`` (A-221) -- three faithful analogues of the Python catalogue,
 #:   transcribed under A-112 rather than invented. There is deliberately NO
 #:   ``falsy-swap`` analogue: Python's exploits duck-typed truthiness, while
@@ -81,6 +84,8 @@ MUTATION_OPERATORS_BY_LANGUAGE: Mapping[str, tuple[str, ...]] = MappingProxyType
             "python:boolop-swap",
             "python:bool-const-flip",
             "python:falsy-swap",
+            "python:uuid-equality-swap",
+            "python:enum-comparison-swap",
         ),
         "go": (
             "go:compare-swap",
