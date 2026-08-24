@@ -1,8 +1,8 @@
 {
   "schema_version": 7,
-  "assay_version": "1.3.0",
+  "assay_version": "@ASSAY_VERSION@",
   "lane": "topos-qualification",
-  "commit": "c23bbafbc3d52bd1a5d8ab58a23ca8ae61a70d9e",
+  "commit": "1111111111111111111111111111111111111111",
   "outcome": "FAIL",
   "reason_code": "UNCOVERED_LINES",
   "exit_code": 1,
@@ -73,7 +73,7 @@
       "source_roots": [
         "topos/src/topos"
       ],
-      "base": "93c31eebd233b2aa9eb95f5533695a29e7c11516"
+      "base": "2222222222222222222222222222222222222222"
     }
   },
   "claims": [

@@ -810,10 +810,10 @@ def normalize_artifact(
     normalized.pop("result_stderr_tail", None)
     normalized.pop("result_stdout_dropped_bytes", None)
     normalized.pop("result_stderr_dropped_bytes", None)
-    normalized["commit"] = "@HEAD_OID@"
-    normalized["started"] = "@STARTED@"
-    normalized["ended"] = "@ENDED@"
-    normalized["judgment"]["resolved"]["base"] = "@BASE_OID@"
+    normalized["commit"] = "1" * 40
+    normalized["started"] = "2026-08-11T00:00:00+00:00"
+    normalized["ended"] = "2026-08-11T00:00:01+00:00"
+    normalized["judgment"]["resolved"]["base"] = "2" * 40
     for field in ("env_declared", "env_effective"):
         normalized[field]["ASSAY_P25_WITNESS"] = "@WITNESS_PATH@"
         normalized[field]["ASSAY_P25_LOG"] = "@PYTEST_LOG@"
