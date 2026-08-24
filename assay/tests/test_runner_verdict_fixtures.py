@@ -170,7 +170,10 @@ def test_r0_only_budget_exceeded_matches_p01bs_own_hand_written_fixture(
     )
 
     def raise_timeout(argv, *, env, cwd, timeout):
-        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+        exc = subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+        exc.stdout = ""
+        exc.stderr = ""
+        raise exc
 
     result = runner.execute_command(
         lane, cwd=tmp_path, process_runner=raise_timeout, clock=clock
@@ -184,7 +187,14 @@ def test_r0_only_budget_exceeded_matches_p01bs_own_hand_written_fixture(
     )
 
     document = json.loads(verdict.to_json())
-    assert document == verdict_fixture("BUDGET_EXCEEDED")
+    expected = verdict_fixture("BUDGET_EXCEEDED")
+    expected.update(
+        result_stdout_tail="",
+        result_stderr_tail="",
+        result_stdout_dropped_bytes=0,
+        result_stderr_dropped_bytes=0,
+    )
+    assert document == expected
     _validate(document, validator)
 
 
