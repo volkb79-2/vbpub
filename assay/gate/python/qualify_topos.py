@@ -783,6 +783,8 @@ def normalize_artifact(
 ) -> dict[str, Any]:
     """Replace only runtime identities whose real value is checked separately."""
     normalized = copy.deepcopy(dict(document))
+    if normalized.get("schema_version") != 7:
+        raise QualificationError("artifact schema_version is not the current v7 contract")
     if normalized.get("assay_version") != assay_version:
         raise QualificationError("artifact assay_version is not the installed version")
     if normalized.get("commit") != head_oid:
@@ -837,6 +839,8 @@ def compare_complete_artifact(
         pytest_log=pytest_log,
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
+    if expected.get("schema_version") != 7:
+        raise QualificationError("locked template is not a v7 successor")
     if normalized != expected:
         differing = sorted(
             key
