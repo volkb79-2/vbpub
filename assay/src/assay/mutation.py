@@ -101,11 +101,15 @@ and avoids re-opening the same cycle purely for a type hint.
 from __future__ import annotations
 
 import fnmatch
+import json
+import math
+import time
 from concurrent.futures import Executor, ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import hashlib
 from typing import Literal
@@ -127,6 +131,7 @@ __all__ = [
     "MutationDiscoveryError",
     "MutationSite",
     "MutationTarget",
+    "ProgressWriter",
     "build_mutation_claim",
     "byte_offset",
     "collect_mutation_sites",
@@ -628,9 +633,40 @@ def collect_mutation_sites(
 #: boundary itself (O2), never by elapsed time.
 ExecutorFactory = Callable[[int], Executor]
 
+ProgressWriter = Callable[[Mapping[str, Any]], None]
+
 
 def _default_executor_factory(jobs: int) -> Executor:
     return ThreadPoolExecutor(max_workers=jobs)
+
+
+@contextmanager
+def progress_writer(path: Path) -> Iterator[ProgressWriter]:
+    """Append one compact JSON object per line and flush every record."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+
+        def write(event: Mapping[str, Any]) -> None:
+            stream.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+            stream.flush()
+
+        yield write
+
+
+def _progress_event(
+    *, candidate_index: int, candidate_total: int, job: MutantJob
+) -> dict[str, Any]:
+    original_bytes = job.original_text.encode("utf-8")
+    replacement_bytes = job.site.apply(original_bytes)
+    return {
+        "candidate_index": candidate_index,
+        "candidate_total": candidate_total,
+        "path": job.path,
+        "operator": job.site.operator,
+        "start_byte": job.site.start_byte,
+        "end_byte": job.site.end_byte,
+        "replacement_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+    }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -647,6 +683,7 @@ class _MutantRun:
     result: CommandResult
     equivalence_bytes: bytes | None = None
     kill_signal: str | None = None
+    elapsed_seconds: float = 0.0
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -840,6 +877,8 @@ def run_mutation(
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
+    budget_per_candidate_seconds: float | None = None,
+    progress_artifact: Path | str | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -923,40 +962,103 @@ def run_mutation(
             "baseline's own artifact bytes (or its own EXEC_FAILED refusal, "
             "when the baseline never wrote it) before calling this function"
         )
+    if budget_per_candidate_seconds is not None and (
+        isinstance(budget_per_candidate_seconds, bool)
+        or not isinstance(budget_per_candidate_seconds, (int, float))
+        or not math.isfinite(budget_per_candidate_seconds)
+        or budget_per_candidate_seconds <= 0
+    ):
+        raise ValueError(
+            "run_mutation budget_per_candidate_seconds must be a positive "
+            f"finite number or None, got {budget_per_candidate_seconds!r}"
+        )
 
     if baseline.outcome is not Outcome.PASS:
         return None
 
-    # A-180: discovery is bounded at max+1 -- one MORE than the cap, so the
-    # difference between "exactly at the cap" and "more than the cap" is an
-    # observation rather than a guess, and the sentinel can state a fact.
-    collected = collect_mutation_sites(
-        targets, adapter=adapter, operators=operators, limit=max_mutants + 1
+    progress_context = (
+        progress_writer(Path(progress_artifact))
+        if progress_artifact is not None
+        else nullcontext[ProgressWriter | None](None)
     )
-    # A-183: propagated BEFORE any snapshot, executor construction, or
-    # submission. There is nothing to isolate and nothing to run when no
-    # analysis ever happened.
-    if collected == UNSUPPORTED:
-        return UNSUPPORTED
 
-    job_list = collected
-    candidate_count = len(job_list)
-    if candidate_count > max_mutants:
-        # The pre-submission refusal. No partial sample and no credit: the
-        # sentinel records what was observed and that nothing was attempted.
-        # `prepared`/`executor_factory`/`process_runner` are never touched.
-        return Mutation(candidate_count=candidate_count, total=0)
-    total = candidate_count
-    if total == 0:
-        return Mutation(candidate_count=0, total=0)
+    with progress_context as write_progress:
+        from .runner import execute_plan
 
-    from .runner import execute_plan
+        collected = collect_mutation_sites(
+            targets, adapter=adapter, operators=operators, limit=max_mutants + 1
+        )
+        if collected == UNSUPPORTED:
+            return UNSUPPORTED
+
+        job_list = collected
+        candidate_count = len(job_list)
+        if candidate_count > max_mutants:
+            return Mutation(candidate_count=candidate_count, total=0)
+        total = candidate_count
+        if total == 0:
+            return Mutation(candidate_count=0, total=0)
+
+        if write_progress is not None:
+            write_progress(
+                {
+                    "candidate_index": -1,
+                    "candidate_total": total,
+                    "event": "baseline",
+                    "path": ".",
+                    "operator": "baseline",
+                    "start_byte": 0,
+                    "end_byte": 0,
+                    "replacement_sha256": "",
+                }
+            )
+
+        return _execute_mutation_jobs(
+            job_list=job_list,
+            deadline=deadline,
+            jobs=jobs,
+            prepared=prepared,
+            plan=plan,
+            process_runner=process_runner,
+            clock=clock,
+            executor_factory=executor_factory,
+            equivalence_artifact=equivalence_artifact,
+            kill_signal_artifact=kill_signal_artifact,
+            baseline_equivalence=baseline_equivalence,
+            budget_per_candidate_seconds=budget_per_candidate_seconds,
+            execute_plan=execute_plan,
+            write_progress=write_progress,
+            total=total,
+            candidate_count=candidate_count,
+        )
+
+
+def _execute_mutation_jobs(
+    *,
+    job_list: Sequence[MutantJob],
+    deadline: LaneDeadline,
+    jobs: int,
+    prepared: SnapshotRepository,
+    plan: CommandPlan,
+    process_runner: ProcessRunner,
+    clock: Clock,
+    executor_factory: ExecutorFactory = _default_executor_factory,
+    equivalence_artifact: str | None = None,
+    kill_signal_artifact: str | None = None,
+    baseline_equivalence: bytes | None = None,
+    budget_per_candidate_seconds: float | None = None,
+    write_progress: ProgressWriter | None,
+    execute_plan: Callable[..., CommandResult],
+    total: int,
+    candidate_count: int,
+) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
         job = job_list[index]
         original_bytes = job.original_text.encode("utf-8")
         replacement_bytes = job.site.apply(original_bytes)
         materialize_timeout = deadline.remaining()
+        started_monotonic = time.monotonic()
         with prepared.materialize_replacement(
             path=PurePosixPath(job.path),
             expected=original_bytes,
@@ -987,13 +1089,20 @@ def run_mutation(
                 if kill_signal_artifact is not None
                 else None
             )
+            command_deadline = deadline.remaining()
+            if (
+                budget_per_candidate_seconds is not None
+                and budget_per_candidate_seconds < command_deadline
+            ):
+                command_deadline = budget_per_candidate_seconds
             result = execute_plan(
                 plan,
                 cwd=snapshot.project_root,
-                timeout=deadline.remaining(),
+                timeout=command_deadline,
                 process_runner=process_runner,
                 clock=clock,
             )
+            elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
             try:
                 # P26/A-212: the ONE lane deadline IS forwarded here, so this
                 # check's own Git children are bounded by the same budget as
@@ -1046,11 +1155,13 @@ def run_mutation(
             result=result,
             equivalence_bytes=equivalence_bytes,
             kill_signal=kill_signal_text,
+            elapsed_seconds=elapsed_seconds,
         )
 
     results: list[_MutantRun | None] = [None] * total
     budget_exceeded_mask = [False] * total
     fatal: AssayError | None = None
+    per_candidate_timeout_positions: set[int] = set()
 
     with executor_factory(jobs) as pool:
         index = 0
@@ -1081,6 +1192,19 @@ def run_mutation(
                         wave_stopped = True
                     elif fatal is None:
                         fatal = exc
+                run = results[position]
+                if write_progress is not None and run is not None:
+                    write_progress(
+                        {
+                            **_progress_event(
+                                candidate_index=position,
+                                candidate_total=total,
+                                job=job_list[position],
+                            ),
+                            "outcome_bucket": _classify_mutant_result(run.result),
+                            "elapsed_seconds": round(run.elapsed_seconds, 3),
+                        }
+                    )
             index = wave[-1] + 1
             if fatal is not None or wave_stopped:
                 for leftover in range(index, total):

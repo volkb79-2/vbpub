@@ -46,18 +46,22 @@ code *is* the verdict (§6), and stdout is for humans.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import shlex
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Sequence, TextIO
+from collections import Counter
+from typing import Any, Sequence, TextIO
 
 from . import __version__
-from . import attestation, git, registry, runner
+from . import attestation, diff, git, isolation, measurability, mutation, registry, runner
 from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
-from .config import Lane, LaneFile, find_lane_file, load_lane_file
+from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
 from .errors import AssayError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output
 from .verdict import Evidence, EvidenceDeclaration, Verdict
@@ -115,6 +119,28 @@ def build_parser() -> argparse.ArgumentParser:
             "current directory"
         ),
     )
+
+    plan = subparsers.add_parser(
+        "plan",
+        help="report a mutation lane's candidate plan without executing it",
+        description=(
+            "Discover the named mutation lane's candidates, print total and "
+            "grouped counts with deterministic identities, and estimate serial "
+            "and wall-clock runtime. Runs no lane command and creates no "
+            "mutant snapshots."
+        ),
+    )
+    plan.add_argument("lane", help="the mutation lane name to inspect")
+    plan.add_argument(
+        "--file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "path to assay.toml; by default assay searches upward from the "
+            "current directory"
+        ),
+    )
     run.add_argument(
         "--verdict-json",
         type=str,
@@ -150,6 +176,8 @@ def main(
             _render_lanes(_resolve_lane_file(args.file), out)
         elif args.command == "run":
             return _cmd_run(args, appended, out, err)
+        elif args.command == "plan":
+            return _cmd_plan(args, out)
         elif args.command == "verify":
             return cmd_verify(args.path, stdin=inp, stderr=err)
         else:  # pragma: no cover - argparse rejects unknown subcommands first
@@ -440,6 +468,143 @@ def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
     print(f"  argv: {shlex.join(verdict.argv_effective or ())}", file=out)
     if verdict.argv_modified:
         print(f"    (appended: {shlex.join(verdict.argv_appended or ())})", file=out)
+
+
+def _plan_candidate_id(job: mutation.MutantJob) -> str:
+    original_bytes = job.original_text.encode("utf-8")
+    replacement_bytes = job.site.apply(original_bytes)
+    identity = "\0".join(
+        (
+            job.path,
+            hashlib.sha256(original_bytes).hexdigest(),
+            str(job.site.start_byte),
+            str(job.site.end_byte),
+            hashlib.sha256(replacement_bytes).hexdigest(),
+            job.site.operator,
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
+    lane_file = _resolve_lane_file(args.file)
+    lane = lane_file.lane(args.lane)
+    if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
+        raise LaneConfigError(f"lane {lane.name!r} does not declare an R2 mutation judge")
+    adapter = _resolve_declared_adapters(lane)
+    if adapter is None:
+        raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+
+    deadline = runner.LaneDeadline.start(
+        budget_seconds=lane.budget_seconds, monotonic=time.monotonic
+    )
+    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    repo_top = git.repo_top(lane_file.project_root, remaining=deadline.remaining)
+    project_prefix = runner._resolved_project_prefix(repo_top, lane_file.project_root)
+    snapshot_policy = runner._snapshot_policy_for_lane(lane)
+    assert snapshot_policy is not None
+
+    with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
+        seed_root = Path(raw_seed).resolve()
+        spec = isolation.SnapshotSpec(
+            repo_top=repo_top,
+            commit=commit,
+            project_prefix=project_prefix,
+            scratch_root=seed_root,
+            snapshot_policy=snapshot_policy,
+        )
+        with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+            relocated = runner._relocate_source_roots(
+                lane,
+                project_root=lane_file.project_root,
+                scratch_project_root=(prepared.spec.scratch_root / "unused"),
+            )
+            resolved_base = (
+                runner._resolve_declared_base(
+                    lane_file.project_root,
+                    lane.judge.base,
+                    remaining=deadline.remaining,
+                )
+                if lane.judge.base is not None
+                else None
+            )
+            if lane.judge.mode == "whole_target":
+                targets = runner._mutation_targets_whole(
+                    prepared=prepared,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    project_prefix=project_prefix,
+                    deadline=deadline,
+                    adapter=adapter,
+                    source_root_paths=relocated.judge.source_root_paths,
+                    targets=lane.judge.targets or (),
+                )
+            else:
+                checked = measurability.check_base_is_head(
+                    prepared.spec.repo_top,
+                    resolved_base,
+                    remaining=deadline.remaining,
+                )
+                diff_text = git.run(
+                    prepared.spec.repo_top,
+                    "diff",
+                    "--unified=0",
+                    checked.base_rev,
+                    checked.head_rev,
+                    remaining=deadline.remaining,
+                )
+                added = diff.parse_added_lines(diff_text)
+                targets = runner._mutation_targets_from_diff(
+                    added,
+                    prepared=prepared,
+                    deadline=deadline,
+                    adapter=adapter,
+                    snapshot_repo_top=prepared.spec.repo_top,
+                    source_root_paths=relocated.judge.source_root_paths,
+                )
+            jobs = mutation.collect_mutation_sites(
+                targets,
+                adapter=adapter,
+                operators=lane.judge.mutation.operators,
+                limit=lane.judge.mutation.max_mutants + 1,
+            )
+
+    if jobs == mutation.UNSUPPORTED:
+        payload: dict[str, Any] = {
+            "status": "unsupported",
+            "reason_code": "MUTATION_UNSUPPORTED",
+        }
+    else:
+        by_operator = Counter(job.site.operator for job in jobs)
+        by_file = Counter(job.path for job in jobs)
+        per_candidate = lane.judge.mutation.budget_per_candidate
+        per_candidate_seconds = parse_duration(per_candidate) if per_candidate else 60.0
+        serial_estimate = len(jobs) * per_candidate_seconds
+        wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
+        payload = {
+            "status": "ok",
+            "candidate_count": len(jobs),
+            "max_mutants": lane.judge.mutation.max_mutants,
+            "jobs": lane.judge.mutation.jobs,
+            "budget_per_candidate": per_candidate,
+            "estimated_serial_seconds": round(serial_estimate, 3),
+            "estimated_wall_seconds": round(wall_estimate, 3),
+            "by_operator": dict(sorted(by_operator.items())),
+            "by_file": dict(sorted(by_file.items())),
+            "candidates": [
+                {
+                    "id": _plan_candidate_id(job),
+                    "path": job.path,
+                    "operator": job.site.operator,
+                    "start_byte": job.site.start_byte,
+                    "end_byte": job.site.end_byte,
+                    "lineno": job.site.lineno,
+                    "description": job.site.description,
+                }
+                for job in jobs
+            ],
+        }
+    print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    return 0
 
 
 def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:

@@ -5,7 +5,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-_Nothing yet._
+### Added
+- feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
+- feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
+
+### Fixed
+- fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
+
+_Nothing else yet._
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
@@ -368,3 +375,7 @@ _Nothing yet._
 - test(assay): bind gate receipts to checked driver (cfd340cc)
 - test(assay): P10 -- pin A-110's remap independently of the outer catch (911af565)
 - test(assay): close the last untested rejection paths in the loader (c9119092)
+# [Unreleased]
+
+### Added
+- feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)

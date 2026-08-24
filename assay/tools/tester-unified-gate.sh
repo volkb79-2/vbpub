@@ -204,6 +204,14 @@ run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
 
+  # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
+  # precondition requires the reviewed source to be committed. Refuse before
+  # building a wheel from the private clone and then discovering the reviewed
+  # tree cannot be judged at all.
+  if [[ -n "$(git -C "$worktree" status --porcelain=v1 -- assay)" ]]; then
+    die "assay has uncommitted changes; commit them before running the merge gate"
+  fi
+
   local scratch distribution wheel version run_venv_site
   scratch="$(mktemp -d)"
   distribution="$worktree/assay/gate/distribution"

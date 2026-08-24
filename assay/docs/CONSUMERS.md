@@ -398,17 +398,23 @@ ambient Assay version: that would make a consumer's evidence depend on whichever
 to be rebuilt. Instead a consumer pins a wheel in its own gate setup, or vendors the verified
 zipapp as an explicit input. A CMRU project can run the latter through its existing gate:
 
-<!-- assay-doc-example:skip reason="cmru.toml step config, not an assay lane file -- has no schema_version/[lanes] table and is not parsed by assay's loader" -->
+<!-- assay-doc-example:skip reason="run-gate.toml lane config, not an assay lane file -- has no schema_version/[lanes] table and is not parsed by assay's loader" -->
 ```toml
-[steps.run-tests]
-quiet = true
-commands = [
-  { label = "example: assay lane in tester-unified", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz", "run", "unit", "--file", "assay.toml", "--verdict-json", ".assay/verdict-unit.json"], cwd = "." },
-]
+[lanes.assay]
+kind = "assay"
+assay_lane = "unit"
+environment = "tester-unified"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
+budget = "20m"
+
+[lanes.assay.pins.assay]
+version = "<version>"
+sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
 
-The product, not CMRU, owns the `assay.toml` lane, pinned Assay artifact, and verdict retention.
-CMRU only supplies the isolated execution boundary and concise logging.
+The product owns the `assay.toml` lane and the pinned Assay artifact; `run-gate.py` owns the isolated
+execution boundary. A consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
+for orchestration mechanics.
 
 ## Adopting a v2-capable release
 

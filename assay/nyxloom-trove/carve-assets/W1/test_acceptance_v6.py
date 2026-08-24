@@ -170,7 +170,9 @@ def test_shipped_schema_is_byte_identical_to_the_locked_v6_asset():
     """
     shipped = (ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_bytes()
     locked = (HERE / "verdict.schema.v6.json").read_bytes()
-    assert shipped == locked, "the shipped schema drifted from the v6 snapshot landed with it"
+    assert shipped == locked, (
+        "the shipped schema drifted from the v6 snapshot landed with it"
+    )
 
 
 # --- the two negatives the schema-version short-circuit was masking -----------
