@@ -28,6 +28,13 @@ lane declarations look like per project type. Companion to `README.md`
    declare a conjunction lane in `run-gate.toml` (see below) and point the
    consumer at it. Keep `asserts`/`timeout_seconds` as the daemon's own
    policy.
+3a. **Certify the linkage (RG-2).** Add ONE project test that runs
+   `./run-gate.py validate-pointers <your-consumer-document>` (exit 0 = every
+   pointer names a lane the SSOT really declares, with the canonical
+   `--worktree {worktree}` shape). This is what makes a renamed lane go RED
+   at TEST time instead of dying as `unknown lane` at dispatch time — the
+   pointer is part of the dispatched surface, so it is certified like any
+   other artifact, not assumed.
 4. **AGENTS.md**: add one line naming `./run-gate.py` as the canonical test
    entrypoint (do this IN the adoption commit — docs never lead the tool).
 

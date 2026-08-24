@@ -19,7 +19,7 @@ SPEC §9.
 | ID | Summary | Severity | Status |
 |---|---|---|---|
 | RG-1 | Conjunction lanes silently drop `--worktree` and `--allow-dirty` — a daemon override can vanish into a false PASS | Major | FIXED 2026-08-24 |
-| RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
+| RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | FIXED 2026-08-24 |
 | RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
@@ -181,6 +181,26 @@ assay's meta-test restored to structural checks (parse the pointer string).
 
 **SPEC owner:** §2 (CLI contract gains validate verb or documented recipe);
 CONSUMERS.md adoption steps gain "add the linkage test".
+
+**FIXED 2026-08-24** (SPEC `R-27`): new verb `run-gate.py validate-pointers
+CONSUMER.toml [--root DIR]`. Schema-agnostic: it walks any parsed TOML and
+certifies EVERY run-gate invocation it finds (an argv-style list whose first
+element is run-gate.py is joined into one pointer — cmru's list-form release
+step). Per invocation it enforces exactly one `{worktree}`-relative cd
+target whose project has a run-gate.toml (no cd → the document's own
+directory when that IS a project), `--worktree {worktree}` present whenever
+the pointer substitutes `{worktree}` at all (the RG-1 false-PASS class,
+caught at test time), and exactly one positional lane name that EXISTS in
+the effective lane set — loaded with the REAL parser including central
+inheritance, never a second parse. Exit 2 on any defect; documents that
+never invoke run-gate (srdm's gate.sh pointers) are trivially clean. Estate
+linkage now runs on every suite run: TestPointerLinkage ×9 construction pins
+(renamed-lane oracle goes RED at test time) + TestPointerLinkageEstate —
+all five trove nyxloom.toml files plus cmru.toml certified against their
+SSOT lanes (6 real invocations, all green today). assay's meta-test
+substring assertion restored to STRUCTURAL checks: exact cd target, exact
+token list `--worktree {worktree} tester-unified`, lane-exists-in-SSOT.
+CONSUMERS adoption gains step 3a ("Certify the linkage").
 
 ## RG-3 — dual-mount degenerates outside the cockpit namespace
 

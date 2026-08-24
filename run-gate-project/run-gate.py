@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 15  # rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 16  # rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -597,6 +597,178 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Pointer↔lane linkage (RG-2): a consumer pointer is certified, not assumed
+# ---------------------------------------------------------------------------
+
+_CD_TARGET_RE = re.compile(r"\bcd\s+(\S+)")
+_INVOCATION_RE = re.compile(r"run-gate\.py(?:\s+[^&;]*)?")
+
+
+def _collect_pointers(node, where: str) -> list[tuple[str, str]]:
+    """Every (location, text) pair in a parsed consumer document that invokes
+    run-gate.py. An argv-style LIST whose first element IS run-gate.py is one
+    pointer (joined) — list-form consumers otherwise split the command across
+    elements, so no single string contains both the tool and the lane."""
+    found: list[tuple[str, str]] = []
+
+    def visit(node, where: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                visit(value, f"{where}.{key}" if where else str(key))
+        elif isinstance(node, list):
+            if node and isinstance(node[0], str) \
+                    and node[0].endswith("run-gate.py") \
+                    and all(isinstance(v, str) for v in node):
+                visit(" ".join(node), f"{where}[argv]")
+            else:
+                for i, v in enumerate(node):
+                    visit(v, f"{where}[{i}]")
+        elif isinstance(node, str) and "run-gate.py" in node:
+            found.append((where, node))
+
+    visit(node, where)
+    return found
+
+
+def _pointer_project_dir(text: str, file_path: Path, root: Path,
+                         where: str) -> tuple[Path | None, list[str]]:
+    """Resolve the project a pointer judges: its single `cd {worktree}/rel`
+    target — or, for legacy list-form steps with no cd at all, the pointer
+    file's own directory when that directory IS a project."""
+    defects: list[str] = []
+    targets: set[str] = set()
+    noncanonical: set[str] = set()
+    for m in _CD_TARGET_RE.finditer(text):
+        raw = m.group(1).strip("'\"")
+        if raw.startswith("{worktree}/"):
+            targets.add(raw[len("{worktree}/"):])
+        elif raw == "{worktree}":
+            targets.add(".")
+        else:
+            noncanonical.add(raw)
+    for raw in sorted(noncanonical):
+        defects.append(
+            f"{where}: cd target '{raw}' is not '{{worktree}}/<project-relative>' "
+            f"— the daemon substitutes {{worktree}} textually; a cd bound to any "
+            f"other cwd judges whatever tree it happens to run from")
+    if len(targets) > 1:
+        defects.append(f"{where}: pointer cds into {sorted(targets)} — exactly "
+                       f"one project target is allowed")
+        return None, defects
+    if targets:
+        proj = root / next(iter(targets))
+        if not (proj / CONFIG_NAME).is_file():
+            defects.append(f"{where}: cd target resolves to {proj}, which has "
+                           f"no {CONFIG_NAME} — no lanes to certify against")
+            return None, defects
+        return proj, defects
+    fallback = file_path.parent
+    if (fallback / CONFIG_NAME).is_file():
+        return fallback, defects
+    defects.append(f"{where}: pointer declares no 'cd {{worktree}}/<project>' "
+                   f"and {fallback} has no {CONFIG_NAME} — cannot resolve the "
+                   f"judged project")
+    return None, defects
+
+
+def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
+                     lanes_cache: dict) -> tuple[list[str], int]:
+    """Validate EVERY run-gate.py invocation inside one pointer string.
+    Returns (defects, invocations_checked)."""
+    defects: list[str] = []
+    checked = 0
+    uses_worktree = "{worktree}" in text
+    proj, resolve_defects = _pointer_project_dir(text, file_path, root, where)
+    defects += resolve_defects
+    if proj is None:
+        return defects, 0
+    key = str(proj)
+    if key not in lanes_cache:
+        try:
+            cfg, cfg_path, central, central_path = load_config(proj)
+            lanes_cache[key] = merge_lanes(cfg.get("lanes", {}), central,
+                                           proj, cfg_path, central_path)
+        except GateError as exc:
+            lanes_cache[key] = None
+            defects.append(f"{where}: loading {proj / CONFIG_NAME}: {exc}")
+            return defects, 0
+    lanes = lanes_cache[key]
+    if lanes is None:
+        return defects, 0
+    for m in _INVOCATION_RE.finditer(text):
+        checked += 1
+        tokens = m.group(0).split()
+        positional: list[str] = []
+        i = 1
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--worktree":
+                i += 2  # flag plus its value
+                continue
+            if tok.startswith("-"):
+                i += 1
+                continue
+            positional.append(tok)
+            i += 1
+        if uses_worktree and "--worktree" not in tokens:
+            defects.append(
+                f"{where}: pointer substitutes {{worktree}} but its run-gate "
+                f"invocation drops '--worktree {{worktree}}' — sub-steps would "
+                f"re-derive their own tree (the RG-1 silent false-PASS class)")
+        if not positional:
+            defects.append(f"{where}: run-gate invocation names no lane")
+        elif len(positional) > 1:
+            defects.append(f"{where}: unexpected trailing arguments "
+                           f"{positional[1:]!r} — a pointer names exactly one lane")
+        elif positional[0] not in lanes:
+            defects.append(
+                f"{where}: lane {positional[0]!r} is not declared in "
+                f"{proj / CONFIG_NAME} — known lanes: "
+                f"{', '.join(sorted(lanes)) or '(none)'}")
+    return defects, checked
+
+
+def cmd_validate_pointers(file_path: Path, root_override: str | None) -> int:
+    """RG-2: certify every run-gate pointer in a consumer document (a trove
+    nyxloom.toml [gates.*], cmru.toml steps, anything TOML) against the SSOT
+    lane table it must name. Renaming a lane while pointers still use the old
+    name goes RED HERE — at test time, never at daemon dispatch time."""
+    if not file_path.is_file():
+        fail(f"validate-pointers: no such file: {file_path}")
+    doc = _read_toml(file_path)
+    if root_override:
+        root = Path(root_override)
+        if not root.is_dir():
+            fail(f"validate-pointers: --root {root_override} is not a directory")
+    else:
+        # {worktree} stands for the judged worktree root; for a committed
+        # pointer that is this checkout's git toplevel.
+        root = Path(git_out("rev-parse", "--show-toplevel",
+                            cwd=file_path.parent).strip())
+    pointers = _collect_pointers(doc, "")
+    if not pointers:
+        print(f"run-gate: validate-pointers: {file_path}: no run-gate pointers "
+              f"(nothing to certify)")
+        return 0
+    cache: dict = {}
+    defects: list[str] = []
+    total = 0
+    for where, text in pointers:
+        d, n = _pointer_defects(text, file_path, root, where, cache)
+        defects += d
+        total += n
+    if defects:
+        for d in defects:
+            print(f"run-gate: DEFECT {d}")
+        print(f"run-gate: validate-pointers FAILED: {len(defects)} defect(s) "
+              f"across {total} invocation(s) in {file_path}")
+        return 2
+    print(f"run-gate: validate-pointers OK: {total} invocation(s) in "
+          f"{file_path} certified against their lanes")
+    return 0
+
+
 # RG-5: consumer pointers embed {worktree} into bash -c STRINGS unquoted
 # (`cd {worktree}/proj && exec ./run-gate.py --worktree {worktree} <lane>`),
 # so any path the tool substitutes must survive that embedding verbatim.
@@ -887,6 +1059,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "",
         "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty]",
         "       run-gate.py --list   (machine-readable: name<TAB>kind<TAB>environment)",
+        "       run-gate.py validate-pointers CONSUMER.toml [--root DIR]",
+        "         (RG-2: certify every run-gate pointer in a consumer document —",
+        "          trove gates, release steps — against the SSOT lanes they name)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -955,10 +1130,14 @@ def find_project_dir() -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
+    parser.add_argument("target", nargs="?")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--check-env", action="store_true",
                         help="advisory drift sweep: env references not covered "
                              "by forward_env/required_env")
+    parser.add_argument("--root", help="validate-pointers only: the worktree "
+                        "root {worktree} stands for (default: git toplevel of "
+                        "the pointer file)")
     parser.add_argument("--worktree")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--help", "-h", action="store_true")
@@ -975,6 +1154,13 @@ def main(argv: list[str] | None = None) -> int:
             print(usage(cfg.get("lanes", {}), set(central.get("lanes", {}))
                         - set(cfg.get("lanes", {}))))
             return 0
+        if args.lane == "validate-pointers":
+            # RG-2 linkage verb — certifies CONSUMER documents; needs no
+            # project config of its own.
+            if not args.target:
+                fail("validate-pointers requires the consumer file to certify "
+                     "(e.g. <proj>/nyxloom-trove/nyxloom.toml)")
+            return cmd_validate_pointers(Path(args.target), args.root)
         if project_dir is None:
             fail(f"no {CONFIG_NAME} found next to the invoked script or "
                  f"{Path.cwd()} — run-gate resolves its config beside the invoked "

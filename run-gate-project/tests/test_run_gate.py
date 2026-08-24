@@ -2049,3 +2049,140 @@ class TestArtifactsDisclosure:
         proc = run_tool(proj, "--list")
         assert proc.returncode == 2
         assert "'artifacts'" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-2 — pointer↔lane linkage: validate-pointers + estate certification
+# ---------------------------------------------------------------------------
+
+class TestPointerLinkage:
+    """The dispatched artifact (the consumer pointer) is certified by a test:
+    renaming a lane while pointers still name the old one goes RED HERE — at
+    test time, not at daemon dispatch time."""
+
+    def _estate(self, tmp_path, pointer: str, *, trove_name="nyxloom.toml"):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        trove_dir = proj / "nyxloom-trove"
+        trove_dir.mkdir()
+        doc = '[gates.tester-unified]\nargv = ["bash", "-c", ' \
+              f'"{pointer.replace(chr(34), chr(92)+chr(34))}"]\n'
+        (trove_dir / trove_name).write_text(doc)
+        commit_all(repo, "trove")
+        return repo, proj, trove_dir / trove_name
+
+    def _validate(self, *args):
+        return subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", *[str(a) for a in args]],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+
+    CANONICAL = ("cd {worktree}/proj && exec ./run-gate.py "
+                 "--worktree {worktree} suite")
+
+    def test_valid_pointer_certifies(self, tmp_path):
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_renamed_lane_goes_red_at_test_time(self, tmp_path):
+        """THE oracle: lane renamed in the SSOT, pointer still names it."""
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace("[lanes.suite]", "[lanes.suiteX]"))
+        commit_all(repo, "rename lane without touching pointer")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "suite" in proc.stdout and "known lanes: suiteX" in proc.stdout
+
+    def test_missing_worktree_forwarding_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd {worktree}/proj && exec ./run-gate.py suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "drops '--worktree {worktree}'" in proc.stdout
+
+    def test_wrong_project_dir_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd {worktree}/assayX && exec ./run-gate.py "
+                      "--worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "has no run-gate.toml" in proc.stdout
+
+    def test_noncanonical_cd_target_rejected(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path, "cd $PWD && exec ./run-gate.py --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "'{worktree}/<project-relative>'" in proc.stdout
+
+    def test_no_pointer_document_is_clean(self, tmp_path):
+        """srdm shape: gates that never invoke run-gate certify nothing."""
+        repo, proj, trove = self._estate(
+            tmp_path, "exec tools/gate.sh {worktree} unit")
+        proc = self._validate(trove)
+        assert proc.returncode == 0
+        assert "no run-gate pointers" in proc.stdout
+
+    def test_list_form_argv_is_joined_and_resolves_to_file_project(self, tmp_path):
+        """cmru [steps.run-tests] shape: argv = ["./run-gate.py", "gate"] with
+        no cd — the project resolves to the document's own directory."""
+        repo, proj, _ = self._estate(tmp_path, self.CANONICAL)  # reuse lanes
+        steps = proj / "consumer-steps.toml"
+        steps.write_text('[[steps]]\nlabel = "x"\n'
+                         'argv = ["./run-gate.py", "suite"]\ncwd = "."\n')
+        proc = self._validate(steps, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_root_override_flag(self, tmp_path):
+        repo, proj, trove = self._estate(tmp_path, self.CANONICAL)
+        proc = self._validate(trove, "--root", str(tmp_path / "elsewhere"))
+        assert proc.returncode == 2
+        assert "is not a directory" in proc.stderr
+        proc = self._validate(trove, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout
+
+    def test_invalid_toml_refused(self, tmp_path):
+        bad = tmp_path / "bad.toml"
+        bad.write_text("not [ valid toml ===")
+        proc = self._validate(bad, "--root", str(tmp_path))
+        assert proc.returncode == 2
+        assert "invalid TOML" in proc.stderr
+
+
+class TestPointerLinkageEstate:
+    """RG-2's real payoff: THIS checkout's actual consumer documents are
+    certified against their SSOT lane tables on every suite run."""
+
+    ESTATE_DOCS = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
+
+    @pytest.mark.parametrize("doc", ESTATE_DOCS,
+                             ids=[d.parent.parent.name for d in ESTATE_DOCS])
+    def test_trove_pointers_name_real_lanes(self, doc):
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", str(doc)],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+        assert proc.returncode == 0, f"{doc}:\n{proc.stdout}{proc.stderr}"
+
+    def test_cmru_release_step_names_a_real_lane(self):
+        cmru_doc = RUN_GATE_DIR.parent / "cmru" / "cmru.toml"
+        if not cmru_doc.is_file():
+            pytest.skip("cmru not present in this checkout")
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
+            capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
+        assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"

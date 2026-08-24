@@ -5,7 +5,7 @@ amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in 
 `R-23` dual-mount guard). Rev 4: continues the backlog sweep — RG-16 central lanes (`R-22`),
 RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`), RG-12
 failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
-disclosure (`R-08`, `R-18`). Distilled from `README.md` (design
+disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -242,6 +242,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   line is rarely last). Evidence capture is best-effort and NEVER changes
   the lane's exit status; exec-mode containers are externally owned and are
   never removed nor captured here.
+
+- `R-27` **Pointer↔lane linkage (RG-2):** `validate-pointers CONSUMER.toml
+  [--root DIR]` certifies every run-gate invocation inside a consumer
+  document (any TOML: a trove `[gates.*]`, release-step files) against the
+  SSOT lane table it names. Per invocation: exactly one `{worktree}`-
+  relative cd target whose project has a `run-gate.toml` (a pointer with no
+  cd resolves to the document's own directory when that is a project);
+  whenever the pointer substitutes `{worktree}` at all, every invocation
+  must carry `--worktree {worktree}`; exactly one positional lane name that
+  EXISTS in the effective lane set — loaded with the REAL parser, central
+  inheritance included, never re-parsed here. Defects print one line each;
+  exit **2** if any defect, else 0; documents that never invoke run-gate are
+  trivially clean. `{worktree}` stands for the git toplevel of the pointer
+  file unless `--root` says otherwise. Adoption includes one linkage test
+  per project running this verb against its own consumer document — the
+  dispatched artifact is certified by a test, not assumed (a renamed lane
+  goes RED at test time, never at daemon dispatch time).
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
