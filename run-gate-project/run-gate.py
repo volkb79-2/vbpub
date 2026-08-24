@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 16  # rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 17  # rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -859,7 +859,8 @@ def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
 
 
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
-                       worktree: Path, env: dict, env_source: str) -> int:
+                       worktree: Path, env: dict, env_source: str,
+                       dry_run: bool = False) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
@@ -905,6 +906,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
           flush=True)
+    if dry_run:
+        # RG-8: the plan above IS what the live run executes — same assembly
+        # code path, only the `docker run` itself skipped.
+        print("run-gate: DRY RUN — no container was started", flush=True)
+        return 0
     started = subprocess.run(argv, capture_output=True, text=True)
     if started.returncode != 0:
         # RG-12: a failed `docker run` may still have created the container
@@ -986,7 +992,8 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
 
 
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
-                  worktree: Path, env: dict, env_source: str, env_name: str) -> int:
+                  worktree: Path, env: dict, env_source: str, env_name: str,
+                  dry_run: bool = False) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -1023,12 +1030,19 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
+    if dry_run:
+        # RG-8: name resolution + running-check above are rehearsed too —
+        # a dry-run against a stopped runner reports the real refusal.
+        print(f"run-gate: DRY RUN — would exec {name} ({name_src}); "
+              f"no command was run", flush=True)
+        return 0
     code = subprocess.run(argv).returncode
     print_lane_artifacts(lane, lane_name, project_dir, worktree)
     return code
 
 
-def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path) -> int:
+def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path,
+                  dry_run: bool = False) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # host lane must not quietly operate on the invocation checkout either.
     argv = substitute_worktree(lane["argv"], worktree)
@@ -1036,6 +1050,10 @@ def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path)
           flush=True)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
+    if dry_run:
+        print(f"run-gate: DRY RUN — would run in {project_dir}: "
+              f"{shlex.join(argv)}", flush=True)
+        return 0
     code = subprocess.run(argv, cwd=str(project_dir)).returncode
     print_lane_artifacts(lane, lane_name, project_dir, worktree)
     return code
@@ -1088,6 +1106,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --allow-dirty     bypass THIS tool's clean-tree refusal; assay lanes",
         "                    still enforce assay's own clean-tree rule afterwards",
         "                    (two independent layers — the flag lifts only this one)",
+        "  --dry-run         print the full execution plan (docker argv, mounts,",
+        "                    slice, inner command) and exit 0 — every preflight",
+        "                    is rehearsed, nothing runs",
         "  --check-env       advisory drift sweep: env references in the project's",
         "                    Python sources covered by neither forward_env nor a",
         "                    lane's required_env (heuristic — warns, never refuses)",
@@ -1140,6 +1161,9 @@ def main(argv: list[str] | None = None) -> int:
                         "the pointer file)")
     parser.add_argument("--worktree")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the full execution plan and exit 0 — "
+                             "every preflight is rehearsed, nothing runs")
     parser.add_argument("--help", "-h", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1215,13 +1239,15 @@ def main(argv: list[str] | None = None) -> int:
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
         if not env:  # built-in 'host'
-            code = run_host_lane(lane, args.lane, eff_proj, worktree)
+            code = run_host_lane(lane, args.lane, eff_proj, worktree,
+                                 dry_run=args.dry_run)
         elif env.get("mode") == "exec":
             code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                 env, env_source, lane_environment_name(lane))
+                                 env, env_source, lane_environment_name(lane),
+                                 dry_run=args.dry_run)
         else:
             code = run_container_lane(lane, args.lane, eff_proj, repo, worktree,
-                                      env, env_source)
+                                      env, env_source, dry_run=args.dry_run)
         print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
         return code
     except GateError as exc:

@@ -2186,3 +2186,118 @@ class TestPointerLinkageEstate:
             [sys.executable, str(_TOOL), "validate-pointers", str(cmru_doc)],
             capture_output=True, text=True, cwd=str(RUN_GATE_DIR))
         assert proc.returncode == 0, f"{cmru_doc}:\n{proc.stdout}{proc.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# RG-8 — --dry-run: rehearse every preflight, execute nothing
+# ---------------------------------------------------------------------------
+
+def _docker_argv_line(stdout: str) -> str:
+    lines = [ln for ln in stdout.splitlines() if "docker argv:" in ln]
+    assert len(lines) == 1, stdout
+    return lines[0].split("docker argv:", 1)[1].strip()
+
+
+class TestDryRun:
+    def _proj(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        return repo, proj
+
+    def test_container_lane_dry_run_prints_identical_argv_runs_nothing(
+            self, tmp_path, monkeypatch):
+        """THE oracle: no `docker run`, and the printed argv is what a live
+        run would use (container NAME normalized out — it embeds pid/epoch)."""
+        repo, proj = self._proj(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+
+        live = run_tool(proj, "suite")
+        assert live.returncode == 0, live.stderr
+        live_line = _docker_argv_line(live.stdout)
+        import re as _re
+        live_norm = _re.sub(r"--name \S+", "--name N", live_line)
+
+        log.write_text("")
+        dry = run_tool(proj, "suite", "--dry-run")
+        assert dry.returncode == 0, dry.stderr
+        assert docker_runs(log) == [], "dry-run must not start a container"
+        dry_line = _docker_argv_line(dry.stdout)
+        assert _re.sub(r"--name \S+", "--name N", dry_line) == live_norm
+        assert "DRY RUN" in dry.stdout
+
+    def test_assay_lane_dry_run_discloses_no_verdict(self, tmp_path,
+                                                     monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace('kind = "command"', 'kind = "assay"') \
+            .replace('argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]',
+                     'assay_lane = "mock"\n            assay_command = ["assay"]')
+        proj = make_project(repo, cfg)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 0, proc.stderr
+        assert docker_runs(log) == []
+        assert "verdict artifact:" not in proc.stdout  # nothing ran, none landed
+        assert "--file assay.toml" in _docker_argv_line(proc.stdout)
+
+    def test_host_lane_dry_run_does_not_execute(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "exit 5"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "smoke", "--dry-run")
+        # exit 5 would be the LIVE passthrough; a dry-run never runs it.
+        assert proc.returncode == 0
+        assert f"would run in {proj}" in proc.stdout
+        assert "'exit' '5'" in proc.stdout or "exit 5" in proc.stdout
+
+    def test_exec_lane_dry_run_rehearses_runner_preflight(self, tmp_path,
+                                                          monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        log = fake_docker(tmp_path, monkeypatch)
+
+        # Runner DOWN: the refusal is rehearsed identically.
+        down = run_tool(proj, "suite", "--dry-run")
+        assert down.returncode == 2
+        assert "is not running" in down.stderr
+
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        up = run_tool(proj, "suite", "--dry-run")
+        assert up.returncode == 0, up.stderr
+        assert docker_execs(log) == [], "dry-run must not exec anything"
+        assert "DRY RUN" in up.stdout and "myproj-dev1-runner" in up.stdout
+
+    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path):
+        repo = make_repo(tmp_path)
+        # clean_tree defaults TRUE — SIMPLE_LANE opts out deliberately.
+        proj = make_project(repo, SIMPLE_LANE.replace("clean_tree = false",
+                                                      "clean_tree = true"))
+        (proj / "uncommitted.txt").write_text("dirty\n")
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 2
+        assert "--allow-dirty" in proc.stderr
+        proc = run_tool(proj, "suite", "--dry-run", "--allow-dirty")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_preflights_are_rehearsed_required_env(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            '    clean_tree = false\n',
+            '    clean_tree = false\n    required_env = ["SCHEMA_GATE_PW"]\n')
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 2
+        assert "SCHEMA_GATE_PW" in proc.stderr

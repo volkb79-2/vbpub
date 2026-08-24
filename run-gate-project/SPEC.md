@@ -5,7 +5,8 @@ amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in 
 `R-23` dual-mount guard). Rev 4: continues the backlog sweep — RG-16 central lanes (`R-22`),
 RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`), RG-12
 failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
-disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`). Distilled from `README.md` (design
+disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--dry-run`
+plan rehearsal (`R-28`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -259,6 +260,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   per project running this verb against its own consumer document — the
   dispatched artifact is certified by a test, not assumed (a renamed lane
   goes RED at test time, never at daemon dispatch time).
+
+- `R-28` **Dry run (RG-8):** `--dry-run` rehearses the gate WITHOUT
+  executing: every preflight runs exactly as live (config validation,
+  required-env, worktree resolution + charset guard, override-reachability,
+  clean-tree — so `--allow-dirty` composes), then the fully assembled plan
+  is printed and exit is 0. Container lanes print the identical docker argv
+  a live run would (same assembly code path; only the container NAME differs
+  by pid/epoch) and start nothing; exec lanes rehearse name resolution AND
+  the runner-running preflight (a stopped runner reports its real refusal)
+  but exec nothing; host lanes print the argv and cwd and run nothing. No
+  evidence-path disclosure on a dry run — nothing ran, no artifact landed.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

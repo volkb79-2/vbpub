@@ -25,7 +25,7 @@ SPEC §9.
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | FIXED 2026-08-24 |
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | FIXED 2026-08-24 |
-| RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
+| RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | FIXED 2026-08-24 |
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | FIXED 2026-08-24 |
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
@@ -374,6 +374,19 @@ command) and exit 0 without `docker run`. Invaluable for debugging adoption
 
 **Oracle:** `--dry-run <container lane>` performs no `docker run` (fake
 docker records argv), prints the identical argv the live run would use.
+
+**FIXED 2026-08-24** (SPEC `R-28`): `--dry-run` on every lane kind. The
+flag is a REHEARSAL, not a bypass: all preflights run exactly as live
+(config, required-env, worktree resolution + charset guard,
+override-reachability, clean-tree — `--allow-dirty` composes), then the
+runners return the fully assembled plan and exit 0 instead of executing.
+Container lanes print the identical docker argv (same assembly code path;
+only `--name` differs by pid/epoch — the oracle normalizes it in tests);
+exec lanes rehearse name resolution AND the runner-running check (a stopped
+runner gives its real exit-2 refusal); host lanes print argv + cwd. No
+evidence-path disclosure on dry runs — nothing ran, nothing landed. Tests:
+TestDryRun ×6 including the oracle (live vs dry argv equality with name
+normalized) and both preflight rehearsals.
 
 ## RG-9 — no `doctor` preflight subcommand
 
