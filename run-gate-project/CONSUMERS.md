@@ -86,6 +86,16 @@ artifacts = ["coverage.json"]       # optional; paths printed after EVERY run (s
                                     # resolve against the effective project dir; assay
                                     # lanes always disclose .assay/verdict-<lane>.json too
 
+# RG-20 resources (optional sub-table — declare RAM so admission can protect
+# the host; supersedes the top-level `memory` key, never both):
+[lanes.<name>.resources]
+memory = "1g"                       # hard RAM cap (--memory) + admission accounting:
+                                    # refused if slice usage + this exceeds memory.max
+memory_swap = "16g"                 # --memory-swap; tight RAM + ample swap absorbs bursts
+cpu_weight = 100                    # advisory 1..10000 (printed; no portable docker flag)
+io_weight = 100                     # advisory 1..10000 (printed; no portable docker flag)
+shared = ["pg-main"]                # serialize with any other gate declaring the same name
+
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
 

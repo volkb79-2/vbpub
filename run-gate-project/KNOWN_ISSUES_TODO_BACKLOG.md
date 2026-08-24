@@ -37,7 +37,7 @@ SPEC §9.
 | RG-17 | required-env forwarding completeness (schema-oracle credentials silently dropped) | Major | FIXED 2026-08-24 |
 | RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN |
 | RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
-| RG-20 | replace global gate flock with resource-aware admission | Enhancement | OPEN |
+| RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
 
 ---
 
@@ -757,3 +757,30 @@ Replace global flock with resource-aware admission:
 - Two gates sharing the same PG instance ⇒ second waits for first.
 - Combined declared memory exceeds host dev-tier budget ⇒ second refuses with message
   naming current consumers and required headroom.
+
+**FIXED 2026-08-24** (SPEC `R-29`; interview choice: full §5.7-shaped
+admission MINUS rigor presets, budget DERIVED from the slice's cgroupfs
+memory.max). Note: run-gate.py itself never had the global flock — that was
+the retired dstdns `testing-exec.sh` shim — so this entry IMPLEMENTS
+admission rather than removing a lock. Lane key `[lanes.<name>.resources]`:
+`memory` (supersedes top-level `memory`; declaring both refused),
+`memory_swap` (docker `--memory-swap`, cmru's tight-RAM/ample-swap pattern),
+`cpu_weight`/`io_weight` (validated + printed ADVISORY — docker has no
+portable cgroup-v2 flag; pretending otherwise would be enforcement theater;
+CIU V7 §5.7 owns cgroup-adjacent enforcement), `shared` (service names).
+Memory admission reads kernel truth at admission time:
+`slice/memory.current + declared <= slice/memory.max` under
+`$RUN_GATE_CGROUPFS_ROOT` (default /sys/fs/cgroup, systemd dash-nesting
+resolved) — counts EVERYTHING in the slice (other gates AND live services),
+so no cross-process bookkeeping can drift. Over budget → exit 2 refusal
+naming usage/budget/need/overage; no derivable ceiling → loud warning,
+shared-infra-only admission. Shared-infra: per-name flock at
+`/tmp/run-gate-shared-<name>.lock`; second gate WAITS with a notice then
+proceeds; isolated names never meet. Locks acquired after all fast-fail
+preflights, released in finally; `--dry-run` plans but never blocks. Slice
+resolution moved from runner into main() so admission and execution share
+one resolution. cmru backfilled: all four container lanes declare
+1g/16g (the proven CMRU_TESTER_MEMORY values). Tests: TestResourceAdmission
+×17 including all three oracles (over-budget refusal with numbers,
+same-service serialization with a real held flock, unbounded-slice
+degradation).

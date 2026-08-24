@@ -6,7 +6,8 @@ amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in 
 RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`), RG-12
 failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
 disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--dry-run`
-plan rehearsal (`R-28`). Distilled from `README.md` (design
+plan rehearsal (`R-28`), RG-20 resource-aware admission (`R-29`, lane `resources`
+key in `R-08`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -271,6 +272,31 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the runner-running preflight (a stopped runner reports its real refusal)
   but exec nothing; host lanes print the argv and cwd and run nothing. No
   evidence-path disclosure on a dry run — nothing ran, no artifact landed.
+
+- `R-29` **Resource-aware admission (RG-20):** gates are admitted by RAM
+  headroom and shared-infra collision, not serialized globally. Lane key
+  `[lanes.<name>.resources]`: `memory` (size; supersedes top-level
+  `memory` — declaring both is refused), `memory_swap` (size → docker
+  `--memory-swap`; tight RAM + ample swap per cmru's proven pattern),
+  `cpu_weight`/`io_weight` (integers 1..10000 — VALIDATED and PRINTED as
+  advisory; `docker run` has no portable cgroup-v2 flag for them, and
+  pretending otherwise would be enforcement theater), `shared` (list of
+  service names). **Memory half:** ephemeral container lanes account
+  against their slice's cgroupfs truth at admission time —
+  `memory.current + declared <= memory.max` read from
+  `$RUN_GATE_CGROUPFS_ROOT` (default `/sys/fs/cgroup`; systemd dash-nesting:
+  `dev-background.slice` → `dev.slice/dev-background.slice`). Over budget →
+  refusal naming current usage, budget, declared need, and the overage. No
+  derivable ceiling (`max`, hidden cgroupfs) → loud WARNING, admission by
+  shared-infra rules only. This counts EVERYTHING in the slice (kernel
+  truth), so no cross-process bookkeeping can drift. **Shared-infra half:**
+  lanes declaring the same `shared` name serialize on a per-name flock
+  (`/tmp/run-gate-shared-<name>.lock`) — the second gate WAITS with a
+  notice, then proceeds; fully isolated instances never meet and run
+  concurrently. Locks are acquired AFTER all fast-fail preflights (a
+  blocking wait never precedes refusals) and released in `finally`;
+  `--dry-run` plans the serialization but never blocks. Host/exec lanes get
+  shared-infra rules only — their RAM does not land in this tool's slice.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

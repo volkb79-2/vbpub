@@ -5,12 +5,15 @@ lesson); live acceptance is oracle O4, run against real docker separately.
 Every argv assertion compares the LIST, never a joined string.
 """
 
+import fcntl
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1055,7 +1058,7 @@ def test_no_stdlib_violations():
     imports = [l.split()[1].split(".")[0] for l in src.splitlines()
                if l.startswith("import ") or l.startswith("from ")]
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
-               "time", "tomllib", "pathlib"}
+               "time", "tomllib", "pathlib", "fcntl"}  # fcntl: stdlib, Linux-only (RG-20 locks)
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -2301,3 +2304,206 @@ class TestDryRun:
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 2
         assert "SCHEMA_GATE_PW" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-20 — resource-aware admission: slice-RAM budget + shared-infra locks
+# ---------------------------------------------------------------------------
+
+def _fake_cgroupfs(tmp_path: Path, *, max_raw: str, current: str) -> Path:
+    """A cgroupfs root exposing dev.slice/dev-background.slice numbers."""
+    sl = tmp_path / "cgfs" / "dev.slice" / "dev-background.slice"
+    sl.mkdir(parents=True, exist_ok=True)
+    (sl / "memory.max").write_text(max_raw + "\n")
+    (sl / "memory.current").write_text(current + "\n")
+    return tmp_path / "cgfs"
+
+
+GB = 1024 ** 3
+
+
+class TestResourceAdmission:
+    def _proj(self, tmp_path, resources: str):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE + (
+            "    [lanes.suite.resources]\n"
+            f"{textwrap.indent(textwrap.dedent(resources), '    ').rstrip()}\n")
+        proj = make_project(repo, cfg)
+        return repo, proj
+
+    @pytest.mark.parametrize("snippet", [
+        'memory = "512m"\nwat = 1',
+        'cpu_weight = "high"',
+        'cpu_weight = 0',
+        'io_weight = 20000',
+        'shared = ["ok", ""]',
+        'shared = ["has space"]',
+        'shared = ["dup", "dup"]',
+    ])
+    def test_invalid_resources_rejected(self, tmp_path, snippet):
+        repo, proj = self._proj(tmp_path, snippet)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+
+    def test_dual_memory_declaration_conflict(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            '    clean_tree = false\n    memory = "1g"\n'
+            "    [lanes.suite.resources]\n    memory = \"2g\"\n")
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "declare RAM once" in proc.stderr
+
+    def test_memory_admission_refuses_when_over_budget(self, tmp_path,
+                                                       monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(1 * GB),
+                              current=str(int(0.9 * GB)))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "resource admission REFUSED" in proc.stderr
+        assert "922MB of its 1024MB budget" in proc.stderr
+        assert docker_runs(Path(tmp_path / "docker-calls.log")) == []
+
+    def test_memory_admission_passes_and_caps_container(self, tmp_path,
+                                                        monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(2 * GB),
+                              current=str(256 * 1024 * 1024))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "512m" in run_argv
+
+    def test_unbounded_slice_warns_and_proceeds(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw="max", current="123")
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "no derivable memory ceiling" in proc.stdout
+        assert "admission by shared-infra rules only" in proc.stdout
+
+    def test_missing_cgroupfs_warns_names_override(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory = "512m"')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "RUN_GATE_CGROUPFS_ROOT" in proc.stdout
+
+    def test_lane_without_memory_declaration_not_accounted(self, tmp_path,
+                                                           monkeypatch):
+        repo, proj = self._proj(tmp_path, 'io_weight = 100')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "declares no resources.memory — not memory-accounted" \
+            in proc.stdout
+
+    def test_memory_swap_reaches_docker_argv(self, tmp_path, monkeypatch):
+        repo, proj = self._proj(tmp_path, 'memory_swap = "16g"')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        run_argv = docker_runs(log)[0]
+        assert "--memory-swap" in run_argv and "16g" in run_argv
+
+    def test_shared_infra_serializes_concurrent_gates(self, tmp_path,
+                                                      monkeypatch, capsys):
+        """THE oracle: second gate on the same service name WAITS for the
+        first; isolated names never meet."""
+        svc = f"pg-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)  # the "first gate" holds it
+
+        result = {}
+
+        def gate():
+            result["rc"] = run_gate.main(["suite"])
+
+        worker = threading.Thread(target=gate)
+        worker.start()
+        deadline = time.time() + 5
+        while worker.is_alive() and time.time() < deadline:
+            time.sleep(0.05)
+        assert worker.is_alive(), "gate must block while another gate holds " \
+                                  f"the '{svc}' lock"
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)  # "first gate" finished -> waiter proceeds
+        worker.join(timeout=15)
+        assert not worker.is_alive()
+        assert result["rc"] == 0
+        out = capsys.readouterr().out
+        assert f"waiting for shared infra '{svc}'" in out
+
+    def test_shared_infra_dry_run_never_blocks(self, tmp_path, monkeypatch,
+                                               capsys):
+        svc = f"pg-dry-{os.getpid()}"
+        repo, proj = self._proj(tmp_path, f'shared = ["{svc}"]')
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
+                           str(tmp_path / "no-such-cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            rc = run_gate.main(["suite", "--dry-run"])
+            assert rc == 0
+            out = capsys.readouterr().out
+            assert "serialization planned for" in out
+            assert "waiting for shared infra" not in out
+        finally:
+            os.close(holder)
+
+    def test_host_lane_honors_shared_lock_without_memory_accounting(
+            self, tmp_path, monkeypatch, capsys):
+        svc = f"host-{os.getpid()}"
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+            [lanes.smoke.resources]
+""" + textwrap.dedent(f"""\
+            memory = "256m"
+            shared = ["{svc}"]
+""")
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        monkeypatch.chdir(proj)
+        rc = run_gate.main(["smoke"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # host lane: no slice to account against — declaration stays advisory
+        assert "admission" not in out or "not memory-accounted" not in out
+        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        probe = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released?
+        finally:
+            os.close(probe)

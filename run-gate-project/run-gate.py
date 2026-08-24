@@ -12,9 +12,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 17  # rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 18  # rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
+import fcntl
 import os
 import re
 import shlex
@@ -35,6 +36,8 @@ MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
 EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
+CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
+SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
 
 
 class GateError(Exception):
@@ -133,7 +136,7 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         table,
         {"kind", "environment", "argv", "assay_lane", "assay_command", "pins",
          "clean_tree", "budget", "memory", "description", "required_env",
-         "artifacts"},
+         "artifacts", "resources"},
         f"{where} [lanes.{name}]",
     )
     kind = table.get("kind")
@@ -164,6 +167,37 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         _validate_budget(table["budget"], f"{where} [lanes.{name}]")
     if "memory" in table:
         _validate_memory(table["memory"], f"{where} [lanes.{name}]")
+    if "resources" in table:
+        res = table["resources"]
+        if not isinstance(res, dict):
+            fail(f"{where} [lanes.{name}]: 'resources' must be a table")
+        _check_keys(res, {"memory", "memory_swap", "cpu_weight", "io_weight",
+                          "shared"},
+                    f"{where} [lanes.{name}.resources]")
+        if "memory" in res and table.get("memory"):
+            fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
+                 f"and 'resources.memory' are the same knob; use 'resources.memory'")
+        for key in ("memory", "memory_swap"):
+            if key in res and (not isinstance(res[key], str)
+                               or not re.fullmatch(r"\d+[bkmg]?", res[key])):
+                fail(f"{where} [lanes.{name}.resources]: '{key}' must be a size "
+                     f"like '512m' or '4g'")
+        for key in ("cpu_weight", "io_weight"):
+            if key in res and (not isinstance(res[key], int)
+                               or isinstance(res[key], bool)
+                               or not 1 <= res[key] <= 10000):
+                fail(f"{where} [lanes.{name}.resources]: '{key}' must be an "
+                     f"integer 1..10000 (cgroup v2 weight scale)")
+        shared = res.get("shared")
+        if shared is not None:
+            if not isinstance(shared, list) \
+                    or not all(isinstance(v, str)
+                               and re.fullmatch(r"[A-Za-z0-9_.-]+", v) for v in shared):
+                fail(f"{where} [lanes.{name}.resources]: 'shared' must be a list "
+                     f"of service names ([A-Za-z0-9_.-]+)")
+            if len(set(shared)) != len(shared):
+                fail(f"{where} [lanes.{name}.resources]: 'shared' names must "
+                     f"be unique")
     if kind == "command":
         argv = table.get("argv")
         if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
@@ -410,6 +444,115 @@ def verify_slice_loaded(slice_name: str) -> None:
         fail(f"gate slice {slice_name} is not LoadState=loaded (got: {state}) — "
              f"a typo'd slice name fails OPEN (systemd auto-creates an unlimited "
              f"transient slice)")
+
+
+# ---------------------------------------------------------------------------
+# RG-20 — resource-aware admission: RAM is the real contention hazard
+# ---------------------------------------------------------------------------
+
+_SIZE_MULT = {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+
+
+def parse_size_bytes(value: str) -> int:
+    """'4g' -> bytes. Callers validate the \\d+[bkmg]? shape first."""
+    m = re.fullmatch(r"(\d+)([bkmg]?)", value)
+    return int(m.group(1)) * _SIZE_MULT[m.group(2)]
+
+
+def _fmt_mb(n: int) -> str:
+    return f"{n / 1024 ** 2:.0f}MB"
+
+
+def slice_cgroupfs_dir(slice_name: str) -> Path:
+    """systemd slice nesting under the cgroupfs root: dev-background.slice
+    lives at dev.slice/dev-background.slice (dashes are hierarchy)."""
+    stem = slice_name[:-len(".slice")] if slice_name.endswith(".slice") \
+        else slice_name
+    parts = stem.split("-")
+    if len(parts) == 1:
+        return Path(f"{stem}.slice")
+    return Path("/".join(p + ".slice" for p in parts[:-1])) / slice_name
+
+
+def check_slice_memory_admission(lane: dict, lane_name: str,
+                                 slice_name: str, slice_src: str) -> None:
+    """RG-20 admission, memory half: the lane's declared RAM must fit in the
+    slice's REMAINING budget, read from cgroupfs kernel truth at admission
+    time (memory.current + declared <= memory.max). This counts EVERYTHING
+    already running in the slice — other gates, live services — not just
+    gates this tool started, so no cross-process bookkeeping can drift.
+
+    No derivable ceiling ('max', cgroupfs hidden/unreadable): say so loudly
+    and admit on shared-infra rules only — a hard refuse here would make the
+    gate unusable in every namespace that cannot see the host cgroupfs."""
+    res = lane.get("resources", {})
+    declared = res.get("memory") or lane.get("memory")
+    if not declared:
+        print(f"run-gate: admission: lane {lane_name!r} declares no "
+              f"resources.memory — not memory-accounted (shared-infra rules "
+              f"still apply)", flush=True)
+        return
+    root = Path(os.environ.get(CGROUPFS_ROOT_ENV_VAR, "/sys/fs/cgroup"))
+    sl_dir = root / slice_cgroupfs_dir(slice_name)
+
+    def _read(name: str) -> str | None:
+        try:
+            return (sl_dir / name).read_text().strip()
+        except OSError:
+            return None
+
+    max_raw = _read("memory.max")
+    cur_raw = _read("memory.current")
+    if max_raw is None or max_raw == "max":
+        print(f"run-gate: admission WARNING: no derivable memory ceiling for "
+              f"slice {slice_name} ({sl_dir}/memory.max "
+              f"{'absent' if max_raw is None else '= max'}; export "
+              f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here) — "
+              f"admission by shared-infra rules only", flush=True)
+        return
+    if cur_raw is None or not cur_raw.isdigit():
+        print(f"run-gate: admission WARNING: slice {slice_name} current usage "
+              f"unreadable ({sl_dir}/memory.current) — admission by shared-infra "
+              f"rules only", flush=True)
+        return
+    cap = int(max_raw)
+    current = int(cur_raw)
+    need = parse_size_bytes(declared)
+    if current + need > cap:
+        fail(f"resource admission REFUSED for lane {lane_name!r}: slice "
+             f"{slice_name} ({slice_src}) is using {_fmt_mb(current)} of its "
+             f"{_fmt_mb(cap)} budget and this lane declares {declared} — "
+             f"{_fmt_mb(current + need - cap)} over. Wait for a consumer to "
+             f"finish, or lower 'resources.memory'")
+    print(f"run-gate: admission OK: slice {slice_name} usage {_fmt_mb(current)} "
+          f"+ {lane_name!r} {declared} <= budget {_fmt_mb(cap)}", flush=True)
+
+
+def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]:
+    """RG-20 admission, shared-infra half: lanes declaring the same
+    resources.shared service name serialize on a per-name flock
+    (/tmp/run-gate-shared-<name>.lock), so two gates hitting one PG/Redis
+    instance wait instead of corrupting each other — while fully isolated
+    instances never meet here and run concurrently. Dry runs plan the wait
+    but never block. Returns held fds; closing each releases its lock."""
+    names = lane.get("resources", {}).get("shared") or []
+    if dry_run:
+        if names:
+            print(f"run-gate: DRY RUN — shared-infra serialization planned "
+                  f"for: {', '.join(sorted(names))}", flush=True)
+        return []
+    fds: list[int] = []
+    for svc in names:
+        path = Path(SHARED_LOCK_DIR) / f"run-gate-shared-{svc}.lock"
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"run-gate: lane {lane_name!r}: waiting for shared infra "
+                  f"'{svc}' — another gate holds {path}", flush=True)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        fds.append(fd)
+    return fds
 
 
 def check_clean_tree(worktree: Path) -> None:
@@ -860,6 +1003,7 @@ def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
 
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str,
+                       slice_name: str, slice_src: str,
                        dry_run: bool = False) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
@@ -882,7 +1026,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         if not source or not target:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
         mounts += ["-v", f"{source}:{target}"]
-    slice_name, slice_src = resolve_slice(env, env_source)
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree)
@@ -895,8 +1038,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         value = os.environ.get(key)
         if value:  # empty string counts as ABSENT — matches log_forwarded_env
             argv += ["-e", f"{key}={value}"]
-    if lane.get("memory"):
-        argv += ["--memory", lane["memory"]]
+    mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
+    if mem_cap:
+        argv += ["--memory", mem_cap]
+    if lane.get("resources", {}).get("memory_swap"):
+        # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
+        # without OOM-killing the lane mid-campaign.
+        argv += ["--memory-swap", lane["resources"]["memory_swap"]]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
@@ -1093,9 +1241,21 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
                 else "clean_tree=FALSE"]
         if lane.get("budget"):
             bits.append(f"budget={lane['budget']} (advisory)")
-        if lane.get("memory"):
-            bits.append(f"memory={lane['memory']}")
+        mem = lane.get("resources", {}).get("memory") or lane.get("memory")
+        if mem:
+            bits.append(f"memory={mem}")
+        res = lane.get("resources", {})
+        res_bits = []
+        if res.get("memory_swap"):
+            res_bits.append(f"swap={res['memory_swap']}")
+        for key in ("cpu_weight", "io_weight"):
+            if res.get(key):
+                res_bits.append(f"{key}={res[key]} (advisory)")
+        if res.get("shared"):
+            res_bits.append(f"shared=[{','.join(res['shared'])}]")
         lines.append(f"  {name:<24}{marker} " + "  ".join(bits))
+        if res_bits:
+            lines.append(f"  {'':<24}  resources: " + "  ".join(res_bits))
         if lane.get("description"):
             lines.append(f"  {'':<24}  {lane['description']}")
     lines += [
@@ -1123,6 +1283,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                mount view when none is derivable (bare host)",
         "  RUN_GATE_EVIDENCE_DIR         where preserved container logs are written",
         f"                                on failure (default {EVIDENCE_DIR_DEFAULT})",
+        f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
+        "                                (default /sys/fs/cgroup; override in namespaces",
+        "                                that hide the host cgroup or in tests)",
         "",
         "Lane declarations: run-gate.toml next to this script; shared environment",
         "facts may live in an enclosing repo-root run-gate.toml. Judgment policy",
@@ -1238,18 +1401,34 @@ def main(argv: list[str] | None = None) -> int:
                  f"(CONSUMERS 'Gate-conjunction lanes') or drop the flag")
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
-        if not env:  # built-in 'host'
-            code = run_host_lane(lane, args.lane, eff_proj, worktree,
-                                 dry_run=args.dry_run)
-        elif env.get("mode") == "exec":
-            code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                 env, env_source, lane_environment_name(lane),
-                                 dry_run=args.dry_run)
-        else:
-            code = run_container_lane(lane, args.lane, eff_proj, repo, worktree,
-                                      env, env_source, dry_run=args.dry_run)
-        print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
-        return code
+        # RG-20 resource-aware admission: shared-infra serialization for every
+        # kind (acquired last — a blocking wait must never precede fast-fail
+        # refusals; released in finally), and slice-memory accounting for
+        # ephemeral container lanes whose slice is the accounting domain.
+        locks = acquire_shared_locks(lane, args.lane, args.dry_run)
+        try:
+            slice_name = slice_src = None
+            if env and env.get("mode") != "exec":
+                slice_name, slice_src = resolve_slice(env, env_source)
+                check_slice_memory_admission(lane, args.lane, slice_name,
+                                             slice_src)
+            if not env:  # built-in 'host'
+                code = run_host_lane(lane, args.lane, eff_proj, worktree,
+                                     dry_run=args.dry_run)
+            elif env.get("mode") == "exec":
+                code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
+                                     env, env_source, lane_environment_name(lane),
+                                     dry_run=args.dry_run)
+            else:
+                code = run_container_lane(lane, args.lane, eff_proj, repo,
+                                          worktree, env, env_source,
+                                          slice_name, slice_src,
+                                          dry_run=args.dry_run)
+            print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
+            return code
+        finally:
+            for fd in locks:
+                os.close(fd)  # releases the flock
     except GateError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return exc.exit_code

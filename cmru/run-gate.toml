@@ -5,6 +5,12 @@
 # rigor is not yet declared here). The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
 # See run-gate-project/SPEC.md.
+#
+# RG-20 resources: every container lane declares its RAM so gate admission
+# can sum concurrent gates against the dev-tier slice budget. Values mirror
+# the proven CMRU_TESTER_MEMORY=1g / _MEMORY_SWAP=16g pattern: a tight RAM
+# cap keeps bursts from cascading into co-resident live services, ample swap
+# absorbs transients without OOM kills.
 # =============================================================================
 schema_version = 1
 
@@ -19,12 +25,20 @@ budget = "20m"
 version = "2.1.0"
 sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
 
+[lanes.assay.resources]
+memory = "1g"
+memory_swap = "16g"
+
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+
+[lanes.coverage.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
 # origin/main (KI-18): at release time the tree IS origin/main, so a base of
@@ -42,12 +56,20 @@ argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev
 budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 
+[lanes.mutation.resources]
+memory = "1g"
+memory_swap = "16g"
+
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
+
+[lanes.canary.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # The implementation/release gate: every consumer (cmru release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. Host lane:
