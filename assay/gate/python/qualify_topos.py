@@ -804,6 +804,10 @@ def normalize_artifact(
     if env.get("ASSAY_P25_LOG") != str(pytest_log):
         raise QualificationError("artifact pytest-log path differs from the committed plan")
     normalized["assay_version"] = "@ASSAY_VERSION@"
+    normalized.pop("result_stdout_tail", None)
+    normalized.pop("result_stderr_tail", None)
+    normalized.pop("result_stdout_dropped_bytes", None)
+    normalized.pop("result_stderr_dropped_bytes", None)
     normalized["commit"] = "@HEAD_OID@"
     normalized["started"] = "@STARTED@"
     normalized["ended"] = "@ENDED@"
