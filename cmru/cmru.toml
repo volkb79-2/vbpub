@@ -29,9 +29,9 @@ scm_dist = "cmru"
 # release time and on demand; it never runs during `pytest` (see docs/SPEC.md S15).
 [[project.tool_dependencies]]
 project = "assay"
-version = "2.1.0"
-path    = "tools/assay/assay-2.1.0.pyz"
-sha256  = "f2f13021a1bb781cacb0af5f370b78d172cde909ea485293fda2f35fb812806d"
+version = "2.2.0"
+path    = "tools/assay/assay-2.2.0.pyz"
+sha256  = "e76806ba7a8ba1fcc5c21fbac11e731f37a6763532170aacf917d2c866af375d"
 
 [project.version]
 strategy = "scm"

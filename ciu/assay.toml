@@ -6,7 +6,7 @@
 # coverage: the changed-line floor on base..HEAD (the role the retired
 # nyxloom.coverage_gate used to play), the 100% whole-source floor, and a
 # verifiable verdict artifact. tester-unified supplies the environment; the
-# pinned zipapp (tools/assay/assay-2.1.0.pyz, sha256-verified) is the Assay
+# pinned zipapp (tools/assay/assay-2.2.0.pyz, sha256-verified) is the Assay
 # CLI boundary — Assay source is never imported and no nyxloom
 # evidence-judgment command remains in the gate (see nyxloom.toml).
 #
