@@ -1096,14 +1096,6 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         (_EXPECTED_ROOT / "p25-missing-v7-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
-    # B014: diagnostic output tails are runtime evidence and are normalized
-    # away above. They can never be a discriminating defect.
-    runtime_fields = {
-        "result_stdout_tail",
-        "result_stderr_tail",
-        "result_stdout_dropped_bytes",
-        "result_stderr_dropped_bytes",
-    }
     if not differing:
         raise QualificationError("a wrong-source-root decoy incorrectly passed the complete artifact comparison")
     if "judgment" not in differing:
