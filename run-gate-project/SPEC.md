@@ -7,7 +7,7 @@ RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`),
 failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
 disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--dry-run`
 plan rehearsal (`R-28`), RG-20 resource-aware admission (`R-29`, lane `resources`
-key in `R-08`). Distilled from `README.md` (design
+key in `R-08`), RG-9 doctor preflight verb (`R-30`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -297,6 +297,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   blocking wait never precedes refusals) and released in `finally`;
   `--dry-run` plans the serialization but never blocks. Host/exec lanes get
   shared-infra rules only — their RAM does not land in this tool's slice.
+
+- `R-30` **Doctor (RG-9):** `doctor` recomposes the implemented preflights
+  into one first-contact command — docker present; per-environment slice
+  resolution + LoadState where systemd reachable; physical-path
+  derivability from mountinfo (bare-host view = warning naming
+  `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
+  writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
+  (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
+  `[FAIL]` line per check plus a summary; exit 2 iff any FAIL. Doctor runs
+  nothing, changes nothing, and must itself survive a broken host: a
+  preflight that tracebacks on exactly the machine that needs it defeats
+  its purpose (git/docker absent → FAIL lines, never a traceback).
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

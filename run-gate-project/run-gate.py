@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 18  # rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 19  # rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import fcntl
@@ -872,6 +872,99 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
     return defects, checked
 
 
+def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+               cfg_path: Path, central_path: Path | None) -> int:
+    """RG-9: recompose the implemented preflights into one first-contact
+    command. Pure recomposition — every check here already exists on the run
+    path; doctor just runs them BEFORE a newcomer's first lane does."""
+    results: list[tuple[str, str, str]] = []
+
+    def record(status: str, topic: str, detail: str) -> None:
+        results.append((status, topic, detail))
+        print(f"run-gate: doctor: [{status}] {topic}: {detail}", flush=True)
+
+    # 1. docker present
+    docker = shutil.which("docker")
+    if docker:
+        record("OK", "docker", docker)
+    else:
+        record("FAIL", "docker", "not found on PATH — container/exec lanes need it")
+
+    # 2. per-environment facts: resolution + slice LoadState
+    env_cache: dict[str, tuple[dict, str]] = {}
+    for name in sorted(lanes):
+        try:
+            env, env_source = resolve_environment(lanes[name], name, cfg,
+                                                 central, cfg_path, central_path)
+        except GateError as exc:
+            record("FAIL", f"lane {name!r} environment", str(exc))
+            continue
+        env_name = lane_environment_name(lanes[name])
+        if env_name == HOST_ENV or not env:
+            env_cache.setdefault("<host>", (env, "built-in 'host'"))
+            continue
+        if env_name in env_cache:
+            continue
+        env_cache[env_name] = (env, env_source)
+        try:
+            slice_name, slice_src = resolve_slice(env, env_source)
+            record("OK", f"slice for env {env_name}",
+                   f"{slice_name} ({slice_src})")
+            verify_slice_loaded(slice_name)  # no-op where systemd unreachable
+            record("OK", f"slice LoadState {slice_name}",
+                   "loaded (or systemd unreachable — skipped)")
+        except GateError as exc:
+            record("FAIL", f"slice for env {env_name}", str(exc))
+
+    # 3. physical-path derivability + git health
+    try:
+        repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
+        record("OK", "git", f"worktree {worktree}")
+        try:
+            phys = physical_path(repo)
+            if phys != repo:
+                record("OK", "mountinfo", f"namespace alias derivable: {phys}")
+            else:
+                record("WARN", "mountinfo",
+                       "physical path equals namespace path (bare-host view) — "
+                       f"container lanes need ${MOUNT_ALIAS_ENV_VAR}")
+        except GateError as exc:
+            record("FAIL", "mountinfo", str(exc))
+    except GateError as exc:
+        record("FAIL", "git", str(exc))
+    except OSError as exc:
+        # A preflight that tracebacks on a broken host defeats its purpose.
+        record("FAIL", "git", f"git not runnable: {exc}")
+    if os.access("/tmp", os.W_OK):
+        record("OK", "git-config", "/tmp writable for GIT_CONFIG_GLOBAL "
+                                   "(safe.directory isolation)")
+    else:
+        record("WARN", "git-config", "/tmp NOT writable — safe.directory "
+                                     "isolation via GIT_CONFIG_GLOBAL will fail")
+
+    # 4. referenced images exist locally (advisory — a missing image may pull)
+    if docker:
+        for env_name, (env, _src) in sorted(env_cache.items()):
+            image = env.get("image")
+            if not image:
+                continue
+            probe = subprocess.run([docker, "image", "inspect", image],
+                                   capture_output=True, text=True)
+            if probe.returncode == 0:
+                record("OK", f"image {env_name}", f"{image} present locally")
+            else:
+                record("WARN", f"image {env_name}",
+                       f"{image} not local — it must pull or exist before the "
+                       f"lane runs")
+
+    ok_n = sum(1 for s, *_ in results if s == "OK")
+    warn_n = sum(1 for s, *_ in results if s == "WARN")
+    fail_n = sum(1 for s, *_ in results if s == "FAIL")
+    print(f"run-gate: doctor: {len(results)} check(s): {ok_n} OK, "
+          f"{warn_n} warning(s), {fail_n} failure(s)", flush=True)
+    return 2 if fail_n else 0
+
+
 def cmd_validate_pointers(file_path: Path, root_override: str | None) -> int:
     """RG-2: certify every run-gate pointer in a consumer document (a trove
     nyxloom.toml [gates.*], cmru.toml steps, anything TOML) against the SSOT
@@ -1228,6 +1321,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate.py validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
         "          trove gates, release steps — against the SSOT lanes they name)",
+        "       run-gate.py doctor   (RG-9 preflight: docker, slices, mountinfo, git, images)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -1357,6 +1451,10 @@ def main(argv: list[str] | None = None) -> int:
         # lanes by name; per-consumer pin existence checked inside.
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
                             cfg_path, central_path)
+        if args.lane == "doctor":
+            # RG-9 preflight — reads the world, runs nothing.
+            return cmd_doctor(lanes, project_dir, cfg, central,
+                              cfg_path, central_path)
         if args.list:
             return cmd_list(lanes)
         if args.check_env:

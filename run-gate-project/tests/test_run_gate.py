@@ -2507,3 +2507,89 @@ class TestResourceAdmission:
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released?
         finally:
             os.close(probe)
+
+
+# ---------------------------------------------------------------------------
+# RG-9 — doctor: one preflight command for the first-contact failure classes
+# ---------------------------------------------------------------------------
+
+class TestDoctor:
+    def test_healthy_container_project_all_ok(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "[OK] docker:" in proc.stdout
+        assert f"[OK] slice for env tester-unified: dev-background.slice" \
+            in proc.stdout
+        assert "[OK] git: " in proc.stdout
+        assert "check(s):" in proc.stdout and ", 0 failure(s)" in proc.stdout
+
+    def test_unresolvable_slice_fails_doctor(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # no var, no declared slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "[FAIL] slice for env tester-unified" in proc.stdout
+
+    def test_missing_image_warns_not_fails(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  image) exit 1 ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout  # advisory only
+        assert "[WARN] image tester-unified" in proc.stdout
+
+    def test_docker_absent_is_a_failure(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        shim_dir = tmp_path / "empty-path"
+        shim_dir.mkdir()
+        monkeypatch.setenv("PATH", str(shim_dir))
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "[FAIL] docker" in proc.stdout
+
+    def test_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # host needs no slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "slice for env" not in proc.stdout
+
+    def test_mountinfo_bare_host_view_warns(self, tmp_path, monkeypatch):
+        """phys == repo (no alias derivable): container lanes would need the
+        declared alias — doctor says so instead of letting RG-3 surprise."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        proc = subprocess.run(
+            [sys.executable, str(_TOOL), "doctor"],
+            capture_output=True, text=True, cwd=str(proj),
+            env={**os.environ,
+                 "PYTHONPATH": str(RUN_GATE_DIR / "tests")},
+        )
+        # Either WARN (bare-host view) or OK (namespace alias derivable):
+        # both are healthy outcomes here — this pins that mountinfo is
+        # REPORTED, never silently skipped.
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "[WARN] mountinfo" in proc.stdout or \
+            "[OK] mountinfo" in proc.stdout

@@ -26,7 +26,7 @@ SPEC §9.
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | FIXED 2026-08-24 |
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | FIXED 2026-08-24 |
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | FIXED 2026-08-24 |
-| RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
+| RG-9 | No `doctor` preflight subcommand | Enhancement | FIXED 2026-08-24 |
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | FIXED 2026-08-24 |
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
@@ -397,6 +397,19 @@ from mountinfo; git identity/safe.directory writability; referenced images
 exist locally. One command turns four first-contact failure classes into a
 preflight a newcomer runs once. All inputs already implemented — pure
 recomposition, stdlib only.
+
+**FIXED 2026-08-24** (SPEC `R-30`): `./run-gate.py doctor`. One
+`[OK]/[WARN]/[FAIL]` line per check + summary; exit 2 iff any FAIL. Checks:
+docker present; per-environment slice resolution + LoadState where systemd
+reachable (distinct envs deduplicated); git worktree resolution; mountinfo
+derivability (bare-host view = WARN naming `$RUN_GATE_MOUNT_ALIAS`, per
+RG-3); `/tmp` writability for GIT_CONFIG_GLOBAL; referenced images present
+locally (advisory WARN — a missing image may legitimately pull). Doctor
+runs nothing and must itself survive a broken host: a preflight that
+tracebacks on exactly the machine that needs it defeats its purpose, so an
+unrunnable git is a `[FAIL] git` line, not a traceback. Tests: TestDoctor
+×6 (healthy all-OK, unresolvable-slice refusal, missing-image advisory,
+docker-absent failure, host-only skip, mountinfo always reported).
 
 ## RG-10 — verdict/evidence path printed only for ephemeral-container assay lanes
 
