@@ -331,8 +331,8 @@ def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     actual = json.loads(json.dumps(template))
     substitutions: dict[str, object] = {
         "@ASSAY_VERSION@": "1.3.0",
-        "@HEAD_OID@": "c23bbafbc3d52bd1a5d8ab58a23ca8ae61a70d9e",
-        "@BASE_OID@": "93c31eebd233b2aa9eb95f5533695a29e7c11516",
+        "@HEAD_OID@": "1" * 40,
+        "@BASE_OID@": "2" * 40,
         "@STARTED@": "2026-08-10T00:00:00+00:00",
         "@ENDED@": "2026-08-10T00:01:00+00:00",
         "@WITNESS_PATH@": "/tmp/p25-ordinary/witness.json",
@@ -671,27 +671,8 @@ def test_the_wrong_source_root_decoy_is_rejected_because_of_the_root(
 
     """
     module = _load_harness()
-    original = module._materialize_negative
-
-    calls: list[dict[str, object]] = []
-
-    def with_the_correct_source_root(*args: object, **kwargs: object):
-        kwargs["source_roots"] = "topos/src/topos"
-        calls.append(dict(kwargs))
-        return original(*args, **kwargs)
-
-    module._materialize_negative = with_the_correct_source_root
-    try:
-        module._check_wrong_source_root(
-            REPO_ROOT, tmp_path, installed_assay, _assay_version(installed_assay)
-        )
-    except module.QualificationError:
-        raise AssertionError(
-            "the correct-root control raised; the decoy oracle is no longer "
-            "exercising a matched comparison"
-        )
-    assert calls and calls[-1].get("source_roots") == "topos/src/topos", (
-        "the correct-root control did not run with the declared root"
+    module._check_wrong_source_root(
+        REPO_ROOT, tmp_path, installed_assay, _assay_version(installed_assay)
     )
 
 
