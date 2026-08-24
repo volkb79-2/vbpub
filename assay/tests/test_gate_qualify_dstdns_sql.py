@@ -532,7 +532,7 @@ def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
         )
 
 
-def test_witness_file_is_valid_json_with_the_v6_schema_version() -> None:
+def test_witness_file_is_valid_json_with_the_v7_schema_version() -> None:
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
     assert document["schema_version"] == 7
     assert document["judgment"]["resolved"]["language"] == "sql"

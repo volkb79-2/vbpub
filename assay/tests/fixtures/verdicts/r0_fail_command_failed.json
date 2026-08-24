@@ -29,7 +29,7 @@
   "scope": "S1",
   "enforcement": "gate",
   "result_stdout_tail": "",
-  "result_stderr_tail": "E       assert 7 == 0\n",
+  "result_stderr_tail": "",
   "result_stdout_dropped_bytes": 0,
   "result_stderr_dropped_bytes": 0,
   "claims": [

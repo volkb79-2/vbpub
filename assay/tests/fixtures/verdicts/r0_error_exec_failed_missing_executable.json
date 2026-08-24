@@ -35,5 +35,9 @@
       "reason_code": "EXEC_FAILED"
     }
   ],
-  "evidence": []
+  "evidence": [],
+  "result_stdout_tail": "",
+  "result_stderr_tail": "",
+  "result_stdout_dropped_bytes": 0,
+  "result_stderr_dropped_bytes": 0
 }

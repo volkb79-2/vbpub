@@ -129,7 +129,7 @@
   "lane": "dstdns_sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 6,
+  "schema_version": 7,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"
