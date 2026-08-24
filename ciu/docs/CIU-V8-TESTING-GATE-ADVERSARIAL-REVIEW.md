@@ -1,8 +1,10 @@
-# Adversarial Review: CIU v7 Proposal
+# Adversarial Review: CIU v8 Proposal
+
+**Status:** *STALE* - was created for the initial unversioned CIU v8 proposal. Kept to check during future reviews if important things still stand out to be folded in.
 
 **Reviewed:** 2026-08-23
 **Reviewer:** Independent adversarial agent
-**Proposal under review:** CIU-V7-TESTING-GATE-PROPOSAL.md
+**Proposal under review:** CIU-V8-TESTING-GATE-PROPOSAL.md
 **Reference specs:** CIU v5 SPEC.md (S3/S7/S13/S14/S16/S17); run-gate-project SPEC.md/CONSUMERS.md; live dstdns configs
 
 ---
@@ -49,7 +51,7 @@ How does the gate know which tree supplies test files, changed-file diffs, assay
 
 ### M1: Provenance disappears from gate semantics
 
-S17 treats running-image mismatch as fail-closed test-time concern. V7's gate composes five axes but never requires or records a provenance verdict. A passing R0/R1/R2 result could describe stale images.
+S17 treats running-image mismatch as fail-closed test-time concern. V8's gate composes five axes but never requires or records a provenance verdict. A passing R0/R1/R2 result could describe stale images.
 
 ### M2: Rigor levels are vocabulary, not enforceable contracts
 
@@ -65,7 +67,7 @@ No diff base, merge-base policy, renamed/deleted files, generated files, nested 
 
 ### M5: Profiles/groups split discards composition semantics
 
-Existing profiles support ordered stacks, phases, compose profiles, env/topology overrides, layouts. V7 groups are unordered sets without these capabilities.
+Existing profiles support ordered stacks, phases, compose profiles, env/topology overrides, layouts. V8 groups are unordered sets without these capabilities.
 
 ### M6: Multi-host model regresses from layouts
 
@@ -77,7 +79,7 @@ S16.1 shared-infra join for worktrees is ignored. Common multi-stack optimizatio
 
 ### M8: Concurrency budget and locking incomplete
 
-S16.3 coordinates family-wide cold starts through shared locks. V7 doesn't explain interaction between named environments, locks, budgets, shared networks, parallel CI.
+S16.3 coordinates family-wide cold starts through shared locks. V8 doesn't explain interaction between named environments, locks, budgets, shared networks, parallel CI.
 
 ### M9: Migration operationally brittle
 
@@ -85,11 +87,11 @@ Hard cutover spans nyxloom pointers, copied scripts, standalone adopters, CI pip
 
 ### M10: Run-gate invocation mechanics lost without replacement
 
-Cgroup placement, mounts, Docker socket access, memory limits, artifact paths, clean-tree policy, exit-code discipline — currently normatively owned by run-gate SPEC. V7 moves both into CIU without specifying replacements.
+Cgroup placement, mounts, Docker socket access, memory limits, artifact paths, clean-tree policy, exit-code discipline — currently normatively owned by run-gate SPEC. V8 moves both into CIU without specifying replacements.
 
 ### M11: Assay pinning weakened
 
-Current lanes verify pinned assay artifacts by version+SHA. V7 says "de-vendor" but provides no artifact-lock format or verification mechanism.
+Current lanes verify pinned assay artifacts by version+SHA. V8 says "de-vendor" but provides no artifact-lock format or verification mechanism.
 
 ---
 
@@ -122,4 +124,4 @@ Current lanes verify pinned assay artifacts by version+SHA. V7 says "de-vendor" 
 
 ## Bottom line
 
-The proposal correctly identifies integration friction. But v7 as drafted replaces a stack-oriented orchestration system with an under-specified abstraction. Largest dangers: silent partial gates, unproven rigor claims, lost provenance, broken one-shot initialization semantics, disruptive migration without operational detail. Revise around CIU's existing stack/S13/S16/S17/secrets/layout models rather than replacing wholesale.
+The proposal correctly identifies integration friction. But v8 as drafted replaces a stack-oriented orchestration system with an under-specified abstraction. Largest dangers: silent partial gates, unproven rigor claims, lost provenance, broken one-shot initialization semantics, disruptive migration without operational detail. Revise around CIU's existing stack/S13/S16/S17/secrets/layout models rather than replacing wholesale.

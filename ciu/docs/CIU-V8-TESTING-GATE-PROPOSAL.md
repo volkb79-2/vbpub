@@ -1,10 +1,12 @@
-# CIU v7 Proposal — Native Testing Gate, Logical Services, and Environment Instances
+# CIU v8 Proposal — Native Testing Gate, Logical Services, and Environment Instances
 
 **Status:** PROPOSAL — not yet normative
 **Author:** Derived from dstdns repair-program design sessions (2026-08-22–23)
-**Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model
-**Target:** CIU v7.0.0 (breaking; `revision` key gates config acceptance)
+**Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
+**Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
 
+**Proposal revision:** 1.1
+**Updated:** 2026-08-24
 ---
 
 ## 0. Why this proposal exists
@@ -199,7 +201,7 @@ Cross-host external addresses (when VPN isn't used) are routing facts owned by t
 
 ### 1.9 Conjunction lane flag forwarding bug (run-gate finding)
 
-Run-gate conjunction lanes (`gate = schema && test-runner && assay`) silently drop `--worktree` and `--allow-dirty`. Sub-lanes re-derive their worktree from CWD. If the consumer's pointer script doesn't `cd {worktree}` first, every sub-lane judges the wrong tree — false green. Absorbing run-gate into CIU eliminates this class of bug because there are no sub-invocations.
+Fixed in `run-gate`, solution could be adopted.
 
 ### 1.10 Assay integration 
 
@@ -228,7 +230,7 @@ Everything lives in `ciu.global.defaults.toml.j2` (existing name, new revision).
 A `revision` key gates acceptance:
 
 ```toml
-revision = 7    # CIU v7 requires revision >= 7; refuses lower
+revision = 8    # CIU v8 requires revision >= 8; refuses lower
 ```
 
 Old configs lacking this key are refused with a clear upgrade message. Hard cutover — no compatibility shim.
@@ -243,7 +245,7 @@ ciu.global.toml                 ← rendered output (gitignored)
 
 Per-stack overrides follow existing S3 merge chain.
 
-Note: We should list used files and rendering on project-level as well. 
+Note: We should list used files and rendering on project-level as well to make hierarchy transparent. 
 
 
 ### 2.3 Testing declarations live in the same file
@@ -634,7 +636,8 @@ per-rigor defaults over time instead of guessing.
 
 ### 7.1 Version gating
 
-New configs carry `revision = 7`. CIU v7 refuses configs without this key or with revision < 7. Old CIU v6 ignores unknown keys and continues working against old configs — no breakage until consumer upgrades both sides simultaneously.
+New configs carry `revision = 8`. CIU v8 refuses configs without this key or with revision < 8. 
+Until now CIU ignores unknown keys and continues working against old configs - no breakage until consumer upgrades both sides simultaneously.
 
 ### 7.2 Consumer cutover
 
@@ -643,9 +646,9 @@ Hard cutover once ready. nyxloom, dstdns, cmru, and any other consumers update t
 ### 7.3 Implementation phases
 
 1. **Config schema extension:** Add `[service.*]`, `[deploy.groups]`, `[testing.*]` sections alongside existing keys. Validate structure. No behavior change yet.
-2. **Gate module:** Port run-gate mechanics (exec-mode, mounts, pin verify, clean-tree) into `ciu/src/ciu/gate.py`. Read lanes from rendered config instead of `run-gate.toml`.
+2. **Gate module:** Port `run-gate` mechanics (exec-mode, mounts, pin verify, clean-tree) into `ciu/src/ciu/gate.py`. Read lanes from rendered config instead of `run-gate.toml`.
 3. **Dynamic assembly:** Implement selection pattern matching, intent expansion, realness resolution, feasibility validation.
-4. **Delete legacy:** Remove `[deploy.phases]`, old profiles format, `run-gate-project/` directory. Bump revision gate.
+4. **Delete legacy:** Remove `[deploy.phases]`, old profiles format. Bump revision gate.
 5. **Consumer migration:** Update all repos' configs and AGENTS.md pointers in one coordinated wave.
 
 ---
@@ -830,7 +833,94 @@ ciu gate --rigor R0,R2 --selection database --environment ci-build-42
 
 ## 10. Upstream asks filed separately
 
-These improvements benefit the ecosystem regardless of v7 adoption timeline:
+These improvements benefit the ecosystem regardless of v8 adoption timeline:
 
-1. **Assay: capture subprocess stdout/stderr on COMMAND_FAILED** — bounded output persisted in verdict artifact. Eliminates blind debugging.
-2. **Conjunction lane flag forwarding** — absorbed by v7, but worth documenting as a known defect in run-gate-project for anyone still using it.
+### 10.1 dstdns P129 — env-passthrough gap between run-gate and assay snapshots (2026-08-24)
+
+**Problem.** A scoped R1 lane (`p129_enumeration_cursor`) required a derived CIU
+instance identity (`P129_PHYSICAL_REPO_ROOT`) inside its lane command. The value
+was correctly forwarded by `run-gate.toml` into the docker exec that runs the
+assay CLI, but assay's own snapshot isolation creates a fresh ephemeral checkout
+and runs the lane command there using ONLY the variables listed in the lane's
+`env_passthrough`. Because `P129_PHYSICAL_REPO_ROOT` was absent from that list,
+the command failed with a missing-required-env error even though run-gate had
+forwarded it.
+
+**Root cause.** Two independent env-forwarding layers exist:
+
+1. run-gate → assay CLI (controlled by `[environments.*].forward_env`)
+2. assay CLI → snapshot command (controlled by lane `env_passthrough`)
+
+Neither layer is aware of the other's allow-list, so adding a variable at one
+layer does not automatically make it available to the other. This is not an
+assay bug — the snapshot isolation contract explicitly requires declared
+passthrough for reproducibility — but it is a footgun when consumers must
+coordinate two config files for one variable.
+
+**dstdns fix.** Added the variable to both lists and corrected the CIU identity
+derivation (`PROJECT_NAME = "dstdns"`, `ENVIRONMENT_TAG = sha256-prefix`).
+
+**CIU-v8 resolution.** When CIU natively owns gate invocation (§5), this class
+of bug disappears because:
+
+- CIU injects instance identity directly into the runner environment from its
+  own rendered state; no multi-layer forwarding needed.
+- The rendered `ciu.global.toml` already contains every fact a lane needs;
+  CIU-v8 should expose a structured subset of those facts to each lane command
+  as environment variables or a well-known TOML sidecar, eliminating manual
+  passthrough declarations entirely.
+- Lane commands can read their own identity from the filesystem (a
+  `.ciu-instance.json` written by CIU during stack bring-up) rather than
+  requiring hash-derived env vars threaded through multiple tools.
+
+### 10.2 SQL mutation testing — template databases and savepoint resets
+
+**Problem.** dstdns's SQL mutation lanes provision a fresh throwaway PostgreSQL
+container per invocation, apply the full DDL schema, run tests, then tear down.
+For R2 mutation testing with dozens of candidates, this means dozens of full
+schema builds — slow and IO-heavy.
+
+**Two optimization strategies:**
+
+a) **Template databases** — PostgreSQL's `CREATE DATABASE ... TEMPLATE`
+   mechanism produces a byte-level clone of a pre-built schema in milliseconds.
+   CIU could manage a "prepare step": bring up the DB container once, apply DDL,
+   mark it as a template, then per-candidate tests clone from it instead of
+   re-applying DDL.
+
+b) **Savepoint-based step resets** — within a single test session, individual
+   test cases that mutate state can wrap each step in a PostgreSQL SAVEPOINT
+   and roll back after assertion, avoiding any cross-test contamination without
+   restarting the container.
+
+**Upstream facilitation needed:**
+
+| Layer | What should provide it |
+|-------|----------------------|
+| **Assay** | Declare `judge.mutation.database_template` naming a prepare-step artifact; assay manages template creation before baseline and clones per mutant |
+| **CIU v8** | Own infrastructure provisioning: bring up DB container, execute prepare script, mark template ready; expose connection details to lanes via rendered config |
+| **run-gate / ciu gate** | Pass `TEMPLATE_DB_DSN` to lane commands so they clone instead of building from scratch |
+
+**Proposed config surface (CIU v8):**
+
+```toml
+[testing.lanes.sql-mutation]
+database_template = "workflow-core-schema"
+prepare_script = "scripts/schema-apply.sh"
+reset_strategy = "template"          # "template" | "savepoint" | "container"
+
+[testing.templates.workflow-core-schema]
+image = "timescale/timescaledb-ha:pg18"
+init_scripts = ["infra/db-init/init-scripts/*.sql"]
+ready_query = "SELECT 1 FROM schema_meta WHERE key = 'schema_ready'"
+```
+
+CIU brings up the container, applies init scripts, verifies readiness via
+`ready_query`, then marks the database as a PostgreSQL template. Each lane
+execution clones from it. Assay coordinates the clone-per-mutant lifecycle
+during R2 execution.
+
+This eliminates the need for consumer projects to hand-roll docker provisioning
+inside wrapper scripts (which is what dstdns currently does in
+`scripts/p128-assay-schema.sh` and `scripts/p129-assay-schema.sh`) and makes
+the pattern reusable across all projects with database-dependent mutation lanes.
