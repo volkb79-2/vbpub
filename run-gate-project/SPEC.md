@@ -9,6 +9,15 @@ disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--
 plan rehearsal (`R-28`), RG-20 resource-aware admission (`R-29`, lane `resources`
 key in `R-08`), RG-9 doctor preflight verb (`R-30`), RG-14 wheel as second
 artifact (`R-31`), RG-13 adoption hygiene + estate pairing sweep (`R-32`).
+Rev 5: adversarial-review hardening (two fresh reviewers; every confirmed
+defect its own commit) — one size grammar for all declaration sites,
+sorted-order lock acquisition + admission-before-wait + O_NOFOLLOW/0600
+locks, pointer collector certifies the console-script form while exempting
+discovery/prose, exec-lane slice/argv naming-only disclosure, central-lanes
+docs truth, evidence captured only on failure at 0600, doctor survives
+broken hosts and exec envs need no slice, normalized verdict dedup,
+whole-token pin-version match, reserved lane names + symmetric sidecar
+checks.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
