@@ -86,10 +86,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
   is a non-empty string list — the tool NEVER invents an assay invocation),
   `pins` (assay kind: table of `{sha256 = "<path>", version = "<str>"}` —
-  `sha256` required, path relative to the project; a declared `version` is
-  VERIFIED in-lane via `<assay_command> --version`, which must succeed and
-  report it — declaring it asserts the command honors that convention,
+  `sha256` required, path relative to the project and existence-checked at
+  load (project lanes and inherited central lanes alike); a declared
+  `version` is VERIFIED in-lane via `<assay_command> --version`, which must
+  succeed and report it as a WHOLE punctuation-delimited token (declared
+  `2.1` does NOT match reported `2.11.0`; one decorative leading `v` is
+  tolerated; review fix) — declaring it asserts
+  the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
+  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
+  `description` (optional non-empty string, one line, shown by `--help`),
+  `required_env` (optional unique list of valid environment-variable names
+  this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
+  NON-EMPTY list of non-empty path strings the lane is expected to leave
+  behind — disclosed after every run per R-18; `{worktree}` tokens are
+  substituted, relative entries resolve against the effective project dir).
+  Lane names `doctor` and `validate-pointers` are RESERVED (they collide
+  with CLI verbs) and refused at load; a lane named like a verb could never
+  be invoked anyway.
   advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names

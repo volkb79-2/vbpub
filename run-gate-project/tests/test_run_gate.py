@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 import tomllib
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -400,6 +401,43 @@ class TestConfigValidation:
         assert "does not exist in this project" in str(exc.value)
         assert "tools/assay.pyz.sha256" in str(exc.value)
 
+    def test_project_lane_pin_sidecar_checked_symmetrically(self, tmp_path):
+        """Review fix: a PROJECT lane's own pins get the same load-time
+        existence check as inherited central lanes — previously the sha256
+        verify failed only mid-run, inside the container."""
+        repo = make_repo(tmp_path)
+        cfg = textwrap.dedent("""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.pinned]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "gate"
+            assay_command = ["./tools/assay.pyz"]
+            clean_tree = false
+            [lanes.pinned.pins.assay]
+            version = "2.2.0"
+            sha256 = "tools/assay.pyz.sha256"
+        """)
+        proj = make_project(repo, cfg)
+        c, cp, central, cpath = run_gate.load_config(proj)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.merge_lanes(c.get("lanes", {}), central, proj, cp, cpath)
+        assert "[lanes.pinned]" in str(exc.value)
+        assert "does not exist in this project" in str(exc.value)
+
+    def test_reserved_verb_lane_name_refused_at_load(self, tmp_path):
+        """Review fix: a lane named like a CLI verb can never be invoked (the
+        verb wins) and validate-pointers exempts the verbs — refuse the
+        shadowing name at load."""
+        repo = make_repo(tmp_path)
+        proj = make_project(
+            repo, SIMPLE_LANE.replace("[lanes.suite]", "[lanes.doctor]"))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "'doctor' is reserved" in str(exc.value)
+
     def test_central_lane_malformed_still_fails_loudly(self, tmp_path):
         repo = make_repo(tmp_path)
         (repo / "run-gate.toml").write_text(
@@ -465,7 +503,7 @@ class TestNoSilentDefaults:
             argv = ["bash", "-c", "echo hi"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -545,7 +583,7 @@ class TestArgvConstruction:
     def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--worktree", "/wt/tree")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -587,7 +625,13 @@ class TestArgvConstruction:
             version = "2.1.0"
             sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        # Load-time sidecar existence is checked for project lanes too; the
+        # docker shim only records argv, so a placeholder suffices.
+        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        commit_all(repo, "vendor sidecar")
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "ciu")
@@ -626,7 +670,7 @@ class TestArgvConstruction:
     def test_docker_run_failure_cleans_up_and_fails_loud(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text().replace('run) echo "fake-container-id" ;;',
                                         'run) echo "docker: bad flag" >&2; exit 125 ;;')
@@ -653,7 +697,7 @@ class TestArgvConstruction:
             memory = "4g"
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "big")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
@@ -667,7 +711,7 @@ class TestArgvConstruction:
     def _in_process_lane(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
         return proj, log
 
@@ -777,6 +821,13 @@ class TestEffectiveTreeExecution:
     def _repo_with_worktree(self, tmp_path, config: str | None = None):
         repo = make_repo(tmp_path)
         proj = make_project(repo, config or self.ASSAY_CFG)
+        # The pin sidecar must exist in the JUDGED tree (load-time existence
+        # check is symmetric for project lanes now); content is irrelevant —
+        # the docker shim only records the assembled command.
+        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        commit_all(repo, "vendor sidecar")
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
         return repo, proj, wt
@@ -965,7 +1016,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -987,7 +1038,7 @@ class TestCentralDefaults:
             argv = ["bash", "-c", "true"]
             clean_tree = false
         """)
-        log = log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
@@ -1389,7 +1440,14 @@ class TestPinVersionVerify:
     def test_declared_version_probed_in_lane(self):
         inner = run_gate.build_assay_inner(self._lane("2.1.0"), Path("/proj"))
         assert "./tools/assay/assay.pyz --version" in inner
-        assert "*2.1.0*" in inner and "version mismatch" in inner
+        assert '[ "$tok" = 2.1.0 ]' in inner and "version mismatch" in inner
+
+    def test_prefix_version_never_matches_longer_reported(self, tmp_path):
+        """Review fix: the old substring glob let declared '2.1' pass for a
+        reported '2.11.0' — a claim the artifact never made."""
+        proc = self._run_inner(tmp_path, "2.1", "assay 2.11.0")
+        assert proc.returncode != 0
+        assert "version mismatch" in proc.stderr
 
     def test_undeclared_version_never_probes(self):  # controlled wrong impl
         inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"))
@@ -1424,6 +1482,12 @@ class TestPinVersionVerify:
 
     def test_matching_version_runs_silently(self, tmp_path):
         proc = self._run_inner(tmp_path, "2.1.0", "assay 2.1.0")
+        assert proc.returncode == 0, proc.stderr
+
+    def test_punctuated_report_still_matches(self, tmp_path):
+        """Trailing punctuation (v2.1.0,) or a leading bracket must not
+        break the whole-token match."""
+        proc = self._run_inner(tmp_path, "2.1.0", "(assay) reports: v2.1.0, ok")
         assert proc.returncode == 0, proc.stderr
 
     def test_empty_version_declaration_rejected(self, tmp_path):
@@ -1538,6 +1602,15 @@ class TestWorktreeCharsetGuard:
         with pytest.raises(run_gate.GateError) as exc:
             run_gate.check_worktree_charset(Path("/tmp/wei`rd"))
         assert "'`'" in str(exc.value)
+
+    def test_leading_dash_named_as_position_not_charset(self):
+        """Review fix: '-' is legal INSIDE a gate-safe path; a leading dash
+        is a position problem and the message must say so, not list '-' as
+        an offending character."""
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.check_worktree_charset(Path("-weird/tree"))
+        assert "starts with '-'" in str(exc.value)
+        assert "offending character" not in str(exc.value)
 
     def test_space_path_refused_end_to_end_container_lane(self, tmp_path):
         base = tmp_path / "bad path"
@@ -3047,6 +3120,10 @@ class TestWheelPackaging:
         does (`python -m build`). Lives entirely in tmp: the worktree gains
         no dist/ or egg-info."""
         if not (_has_module("setuptools") and _has_module("build")):
+            # Review fix: a silent skip hides toolchain drift — make it loud
+            # in the warnings summary even when the suite stays green.
+            warnings.warn("run-gate wheel tests SKIPPED: wheel toolchain "
+                          "unavailable (setuptools/build not installed)")
             pytest.skip("wheel toolchain unavailable")
         import setuptools
         pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
@@ -3054,6 +3131,8 @@ class TestWheelPackaging:
                    if r.startswith("setuptools=="))
         want = pin.split("==")[1]
         if setuptools.__version__ != want:
+            warnings.warn(f"run-gate wheel tests SKIPPED: local setuptools "
+                          f"{setuptools.__version__} != pinned {want}")
             pytest.skip(
                 f"local setuptools {setuptools.__version__} != pinned {want} "
                 "(python -m build refuses a mismatched --no-isolation closure)")
@@ -3143,6 +3222,11 @@ class TestEstateBudgetTimeoutPairing:
     invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
     nothing and is skipped by construction."""
 
+    # Review fix: accumulated across the parametrized sweep so a final
+    # aggregate test can prove the pairing mechanism is ALIVE estate-wide
+    # (per-trove skips must never add up to a vacuously green sweep).
+    PAIRINGS_SEEN: list[tuple[str, str]] = []
+
     @pytest.mark.parametrize("trove", sorted(
         (RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))),
         ids=lambda p: p.parent.parent.name)
@@ -3158,16 +3242,27 @@ class TestEstateBudgetTimeoutPairing:
         paired = []
         for gate_name, gate in gates.items():
             timeout = gate.get("timeout_seconds")
-            argv_text = " ".join(gate.get("argv", []))
-            if not isinstance(timeout, int):
+            if timeout is not None and not isinstance(timeout, int):
+                # Review fix: an unparseable timeout used to be silently
+                # skipped — exactly the rot this sweep exists to catch.
+                pytest.fail(
+                    f"{trove}: [gates.{gate_name}] timeout_seconds must be "
+                    f"integer seconds, got {timeout!r} — the pairing sweep "
+                    f"refuses to skip it silently")
+            if timeout is None:
                 continue
+            argv_text = " ".join(gate.get("argv", []))
             for lane_name, lane in lanes.items():
                 budget = lane.get("budget")
                 if budget is None:
                     continue
-                if re.search(rf"(?<![\w-]){re.escape(lane_name)}(?![\w-])",
+                # Whole-token on BOTH sides anchored at whitespace/ends
+                # (review fix): the old lookaround let 'out/suite.json'
+                # pair as lane 'suite'.
+                if re.search(rf"(?:^|\s){re.escape(lane_name)}(?:\s|$)",
                              argv_text):
                     paired.append((gate_name, lane_name))
+                    self.PAIRINGS_SEEN.append((proj_dir.name, gate_name))
                     assert timeout >= _budget_seconds(budget), (
                         f"{trove}: [gates.{gate_name}] timeout_seconds="
                         f"{timeout} is TIGHTER than {proj_dir.name} lane "
@@ -3176,3 +3271,14 @@ class TestEstateBudgetTimeoutPairing:
         assert paired, (
             f"{trove}: no gate↔lane pairing found — either the trove stopped "
             f"pointing at run-gate lanes or the pairing regex rotted")
+
+    def test_estate_pairing_sweep_is_alive(self):
+        """Rot-guard (review fix): the per-trove tests each prove their own
+        pairings, but a mass rename could empty every trove at once. The
+        aggregate demands the sweep found REAL gate↔lane pairs somewhere."""
+        if not self.PAIRINGS_SEEN:
+            pytest.skip("no troves scanned (estate layout absent)")
+        assert len(self.PAIRINGS_SEEN) >= 3, (
+            f"estate-wide pairing collapsed to {self.PAIRINGS_SEEN} — the "
+            f"sweep's grammar and the estate's gate tables have drifted "
+            f"apart; fix one or the other, never widen this guard to pass")

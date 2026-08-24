@@ -142,6 +142,12 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
     kind = table.get("kind")
     if kind not in ("command", "assay"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\" or \"assay\" (got {kind!r})")
+    if name in _RESERVED_POINTER_VERBS:
+        # Review fix: a lane named like a CLI verb can never be invoked (the
+        # verb wins) and validate-pointers deliberately exempts the verbs —
+        # refuse the shadowing name at load instead.
+        fail(f"{where} [lanes.{name}]: lane name {name!r} is reserved — it is "
+             f"a run-gate CLI verb; rename the lane")
     if not isinstance(table.get("environment"), str) or not table["environment"].strip():
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
     if "description" in table and (not isinstance(table["description"], str)
@@ -162,7 +168,8 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if not isinstance(arts, list) or not arts \
                 or not all(isinstance(v, str) and v.strip() for v in arts):
             fail(f"{where} [lanes.{name}]: 'artifacts' must be a non-empty "
-                 f"list of non-empty relative paths (printed on lane exit)")
+                 f"list of non-empty path strings (relative to the effective "
+                 f"project dir or absolute; printed on lane exit)")
     if "budget" in table:
         _validate_budget(table["budget"], f"{where} [lanes.{name}]")
     if "memory" in table:
@@ -269,26 +276,28 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
     """Effective lane set: central [lanes.*] inherited, project entries
     shadow BY NAME (whole lane — no field merging, RG-16).
 
-    Per-consumer existence check: a central lane's pin sidecars must exist
-    relative to THIS consuming project — a shared gate referencing artifacts
-    the project does not vendor refuses at load, naming both files. Free-form
-    argv strings are deliberately NOT stat'd: they are shell text, not
-    declared paths, and pretending otherwise would certify nothing.
+    Per-consumer existence check: a pin sidecar must exist relative to THIS
+    consuming project — for INHERITED lanes (a shared gate referencing
+    artifacts the project does not vendor) and, symmetrically (review fix),
+    for the project's OWN lane pins. Both refuse at load naming lane,
+    sidecar, and project dir. Free-form argv strings are deliberately NOT
+    stat'd: they are shell text, not declared paths, and pretending
+    otherwise would certify nothing.
     """
-    if not central.get("lanes"):
-        return project_lanes
-    merged = dict(central["lanes"])
+    merged = dict(central.get("lanes", {}))
     merged.update(project_lanes)
-    for name, lane in central["lanes"].items():
-        if name in project_lanes:
-            continue  # shadowed wholesale by the project's own definition
+    for name, lane in merged.items():
+        inherited = name in central.get("lanes", {}) \
+            and name not in project_lanes
         for pin_name, pin in lane.get("pins", {}).items():
             sidecar = project_dir / pin["sha256"]
-            if not sidecar.is_file():
-                fail(f"central lane '[lanes.{name}]' ({central_path}): pin "
-                     f"'{pin_name}' sidecar {pin['sha256']} does not exist in this "
-                     f"project ({project_dir}) — vendor it or shadow the lane in "
-                     f"{project_path}")
+            if sidecar.is_file():
+                continue
+            origin = (f"central lane '[lanes.{name}]' ({central_path})"
+                      if inherited else f"lane '[lanes.{name}]'")
+            fail(f"{origin}: pin '{pin_name}' sidecar {pin['sha256']} does not "
+                 f"exist in this project ({project_dir}) — vendor it or shadow "
+                 f"the lane")
     return merged
 
 
@@ -304,8 +313,14 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
     if central_path is not None and name in central.get("environments", {}):
         return dict(central["environments"][name]), \
             f"[environments.{name}] in central {central_path}"
-    fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not defined "
-         f"in {project_path} nor in a central repo-root {CONFIG_NAME}")
+    # Review fix: name the file ACTUALLY searched, never a generic claim —
+    # when no central config exists at all, saying "nor in a repo-root
+    # run-gate.toml" sends the reader hunting for a file that isn't there.
+    if central_path is not None:
+        fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is "
+             f"not defined in {project_path} nor in central config {central_path}")
+    fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not "
+         f"defined in {project_path} (no central {CONFIG_NAME} exists)")
 
 
 def lane_environment_name(lane: dict) -> str:
@@ -1109,9 +1124,16 @@ def check_worktree_charset(worktree: Path) -> None:
     text = str(worktree)
     if GATE_SAFE_PATH_RE.fullmatch(text):
         return
+    if text.startswith("-"):
+        # Review fix: '-' IS in the charset for later positions; listing it
+        # as an "offending character" would misdescribe a POSITION problem —
+        # a leading dash gets parsed as an option, not a path.
+        fail(f"worktree path {text!r} is not gate-safe: it starts with '-', "
+             f"which consumer shells would parse as an option prefix, not a "
+             f"path — relocate or rename the tree")
     bad = sorted({c for c in text if not re.fullmatch(r"[A-Za-z0-9_./-]", c)})
     fail(f"worktree path {text!r} is not gate-safe (offending character(s): "
-         f"{' '.join(repr(c) for c in sorted(bad))}): consumer pointers embed "
+         f"{' '.join(repr(c) for c in bad)}): consumer pointers embed "
          f"{{worktree}} into shell strings, so paths with whitespace or shell "
          f"metacharacters are refused — relocate or rename the tree")
 
@@ -1132,16 +1154,25 @@ def build_assay_inner(lane: dict, project_dir: Path) -> str:
             # checked in-lane right after byte verification — provenance, not
             # decoration. Declaring version asserts the command honors the
             # `--version` convention (documented in SPEC R-08/CONSUMERS).
+            # Review fix: WHOLE-TOKEN equality — edge punctuation stripped,
+            # one decorative leading 'v' tolerated ('v2.1.0' == '2.1.0').
+            # The old substring glob let declared '2.1' pass for reported
+            # '2.11.0', a claim the artifact never made.
             declared = shlex.quote(pin["version"])
             probe = shlex.join([*lane["assay_command"], "--version"])
             parts.append(
                 f"{{ reported=$({probe}) || "
                 f"{{ echo \"run-gate: pin '{pin_name}': version probe failed: {probe}\" "
                 f">&2; exit 2; }}; "
-                f"case \"$reported\" in *{declared}*) ;; *) "
+                f"hit=0; for tok in $reported; do "
+                f"tok=${{tok#\"${{tok%%[![:punct:]]*}}\"}}; "
+                f"tok=${{tok%\"${{tok##*[![:punct:]]}}\"}}; "
+                f"case \"$tok\" in v[0-9]*) tok=${{tok#v}} ;; esac; "
+                f"if [ \"$tok\" = {declared} ]; then hit=1; fi; done; "
+                f"if [ \"$hit\" != 1 ]; then "
                 f"echo \"run-gate: pin '{pin_name}' version mismatch: declared "
                 f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
-                f"or republish the artifact\" >&2; exit 2; ;; esac; }}")
+                f"or republish the artifact\" >&2; exit 2; fi; }}")
     parts.append("mkdir -p .assay")
     parts.append(shlex.join([*lane["assay_command"], "run", lane["assay_lane"],
                              "--file", "assay.toml", "--verdict-json", verdict]))
