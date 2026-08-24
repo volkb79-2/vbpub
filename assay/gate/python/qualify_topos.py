@@ -838,7 +838,15 @@ def compare_complete_artifact(
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
     if normalized != expected:
-        raise QualificationError("the complete v4 artifact differs from the locked hand template")
+        differing = sorted(
+            key
+            for key in set(normalized) | set(expected)
+            if normalized.get(key) != expected.get(key)
+        )
+        raise QualificationError(
+            "the complete v4 artifact differs from the locked hand template "
+            f"(differing fields: {differing})"
+        )
 
 
 def _check_line_manifests(results: Mapping[str, ScenarioResult]) -> None:
