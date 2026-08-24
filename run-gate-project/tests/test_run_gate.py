@@ -2385,6 +2385,38 @@ class TestResourceAdmission:
         run_argv = docker_runs(log)[0]
         assert "--memory" in run_argv and "512m" in run_argv
 
+    def test_uppercase_size_units_admit_and_cap(self, tmp_path, monkeypatch):
+        # Review fix (blocker): '512M' passed _validate_memory (IGNORECASE
+        # since earlier revs) but crashed parse_size_bytes at admission with
+        # a raw traceback / exit 1. One case-insensitive grammar everywhere.
+        repo, proj = self._proj(tmp_path, 'memory = "512M"')
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(2 * GB),
+                              current=str(256 * 1024 * 1024))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "512M" in run_argv
+
+    def test_uppercase_legacy_top_level_memory_admits(self, tmp_path,
+                                                      monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            '    clean_tree = false\n    memory = "4G"\n')
+        proj = make_project(repo, cfg)
+        cgfs = _fake_cgroupfs(tmp_path, max_raw=str(8 * GB),
+                              current=str(1 * GB))
+        monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT", str(cgfs))
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "admission OK" in proc.stdout
+        run_argv = docker_runs(log)[0]
+        assert "--memory" in run_argv and "4G" in run_argv
+
     def test_unbounded_slice_warns_and_proceeds(self, tmp_path, monkeypatch):
         repo, proj = self._proj(tmp_path, 'memory = "512m"')
         cgfs = _fake_cgroupfs(tmp_path, max_raw="max", current="123")

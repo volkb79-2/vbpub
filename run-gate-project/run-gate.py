@@ -127,7 +127,7 @@ def _validate_budget(value: object, where: str) -> None:
 
 
 def _validate_memory(value: object, where: str) -> None:
-    if not isinstance(value, str) or not re.fullmatch(r"\d+[bkmg]?", value, re.IGNORECASE):
+    if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
         fail(f"{where}: 'memory' must look like '536870912', '512m' or '4g' (got {value!r})")
 
 
@@ -179,7 +179,7 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
                  f"and 'resources.memory' are the same knob; use 'resources.memory'")
         for key in ("memory", "memory_swap"):
             if key in res and (not isinstance(res[key], str)
-                               or not re.fullmatch(r"\d+[bkmg]?", res[key])):
+                               or not _SIZE_RE.fullmatch(res[key])):
                 fail(f"{where} [lanes.{name}.resources]: '{key}' must be a size "
                      f"like '512m' or '4g'")
         for key in ("cpu_weight", "io_weight"):
@@ -451,12 +451,16 @@ def verify_slice_loaded(slice_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 _SIZE_MULT = {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+# ONE size grammar for every declaration site and the parser (review fix:
+# _validate_memory accepted '512M' case-insensitively while this parser was
+# case-sensitive — a grammar-valid config used to traceback at admission).
+_SIZE_RE = re.compile(r"(\d+)([bkmg]?)", re.IGNORECASE)
 
 
 def parse_size_bytes(value: str) -> int:
     """'4g' -> bytes. Callers validate the \\d+[bkmg]? shape first."""
-    m = re.fullmatch(r"(\d+)([bkmg]?)", value)
-    return int(m.group(1)) * _SIZE_MULT[m.group(2)]
+    m = _SIZE_RE.fullmatch(value)
+    return int(m.group(1)) * _SIZE_MULT[m.group(2).lower()]
 
 
 def _fmt_mb(n: int) -> str:
