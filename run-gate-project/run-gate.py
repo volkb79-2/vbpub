@@ -633,17 +633,21 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
     verdict convention; declared `artifacts` add to it. Paths resolve
     against the EFFECTIVE project dir (relocated into the judged tree,
     R-21); `{worktree}` tokens inside entries are substituted."""
-    verdict_rel = None
+    verdict_path: Path | None = None
     if lane["kind"] == "assay":
-        verdict_rel = ".assay/verdict-" + lane["assay_lane"] + ".json"
-        print(f"run-gate: verdict artifact: {project_dir / verdict_rel}",
-              flush=True)
+        verdict_path = Path(os.path.normpath(
+            project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
+        print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     for entry in lane.get("artifacts", []):
         substituted = substitute_worktree([entry], worktree)[0]
         target = Path(substituted)
         if not target.is_absolute():
             target = project_dir / target
-        if verdict_rel is not None and substituted == verdict_rel:
+        # Review fix: dedup compares NORMALIZED effective paths, not raw
+        # strings — './.assay/verdict-x.json' or the absolute spelling of
+        # the same file is the verdict convention too, disclosed once.
+        target = Path(os.path.normpath(target))
+        if target == verdict_path:
             continue  # already disclosed above
         print(f"run-gate: artifact: {target}", flush=True)
 

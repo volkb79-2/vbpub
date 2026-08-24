@@ -2090,6 +2090,31 @@ class TestArtifactsDisclosure:
         assert proc.stdout.count("run-gate: verdict artifact:") == 1
         assert "run-gate: artifact:" not in proc.stdout
 
+    def test_verdict_dedup_normalizes_path_spellings(self, tmp_path, monkeypatch):
+        """Review fix (R-18): './.assay/verdict-mock.json' and the absolute
+        {worktree}-spelled form of the same file ARE the verdict convention —
+        each disclosed once via the verdict line, never as a second artifact."""
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.a]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+            artifacts = ["./.assay/verdict-mock.json",
+                         "{worktree}/proj/.assay/verdict-mock.json"]
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "a")
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.count("run-gate: verdict artifact:") == 1
+        assert "run-gate: artifact:" not in proc.stdout
+
     def test_artifacts_entries_get_worktree_substitution(self, tmp_path,
                                                          monkeypatch):
         repo = make_repo(tmp_path)
