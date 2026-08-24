@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 14  # rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 15  # rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -132,7 +132,8 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(
         table,
         {"kind", "environment", "argv", "assay_lane", "assay_command", "pins",
-         "clean_tree", "budget", "memory", "description", "required_env"},
+         "clean_tree", "budget", "memory", "description", "required_env",
+         "artifacts"},
         f"{where} [lanes.{name}]",
     )
     kind = table.get("kind")
@@ -153,6 +154,12 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
                  f"valid environment-variable names")
         if len(set(req)) != len(req):
             fail(f"{where} [lanes.{name}]: 'required_env' entries must be unique")
+    if "artifacts" in table:
+        arts = table["artifacts"]
+        if not isinstance(arts, list) or not arts \
+                or not all(isinstance(v, str) and v.strip() for v in arts):
+            fail(f"{where} [lanes.{name}]: 'artifacts' must be a non-empty "
+                 f"list of non-empty relative paths (printed on lane exit)")
     if "budget" in table:
         _validate_budget(table["budget"], f"{where} [lanes.{name}]")
     if "memory" in table:
@@ -446,6 +453,28 @@ def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
     return out
 
 
+def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
+                         worktree: Path) -> None:
+    """R-18/RG-10: after EVERY run — any kind, any runner mode, success or
+    failure — say where the evidence landed. Assay lanes always disclose the
+    verdict convention; declared `artifacts` add to it. Paths resolve
+    against the EFFECTIVE project dir (relocated into the judged tree,
+    R-21); `{worktree}` tokens inside entries are substituted."""
+    verdict_rel = None
+    if lane["kind"] == "assay":
+        verdict_rel = ".assay/verdict-" + lane["assay_lane"] + ".json"
+        print(f"run-gate: verdict artifact: {project_dir / verdict_rel}",
+              flush=True)
+    for entry in lane.get("artifacts", []):
+        substituted = substitute_worktree([entry], worktree)[0]
+        target = Path(substituted)
+        if not target.is_absolute():
+            target = project_dir / target
+        if verdict_rel is not None and substituted == verdict_rel:
+            continue  # already disclosed above
+        print(f"run-gate: artifact: {target}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # failing-container evidence preservation (RG-12)
 # ---------------------------------------------------------------------------
@@ -726,9 +755,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
     if logs.returncode != 0:
         print(f"run-gate: WARNING: docker logs exit {logs.returncode}", file=sys.stderr)
-    if lane["kind"] == "assay":
-        verdict_path = project_dir / f".assay/verdict-{lane['assay_lane']}.json"
-        print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     if code is None:
         fail_infra("could not read the container's exit status (docker wait failed) — "
                    "refusing to guess")
@@ -738,6 +764,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                  "; container logs could NOT be captured before removal")
         print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
               flush=True)
+    print_lane_artifacts(lane, lane_name, project_dir, worktree)
     return code
 
 
@@ -825,6 +852,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
     code = subprocess.run(argv).returncode
+    print_lane_artifacts(lane, lane_name, project_dir, worktree)
     return code
 
 
@@ -836,7 +864,9 @@ def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path)
           flush=True)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
-    return subprocess.run(argv, cwd=str(project_dir)).returncode
+    code = subprocess.run(argv, cwd=str(project_dir)).returncode
+    print_lane_artifacts(lane, lane_name, project_dir, worktree)
+    return code
 
 
 # ---------------------------------------------------------------------------

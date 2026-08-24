@@ -2,7 +2,10 @@
 
 **Status:** NORMATIVE for the P01 build. Rev 2: adds exec-mode + extra-mounts. Rev 3: backlog-sweep
 amendments (RG-15 `R-21` effective-tree execution; RG-11 reserved exit codes in `R-04`; RG-3
-`R-23` dual-mount guard). Distilled from `README.md` (design
+`R-23` dual-mount guard). Rev 4: continues the backlog sweep — RG-16 central lanes (`R-22`),
+RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`), RG-12
+failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
+disclosure (`R-08`, `R-18`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -84,7 +87,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names
-  this lane's tests REQUIRE — enforced per R-24).
+  this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
+  NON-EMPTY list of non-empty path strings the lane is expected to leave
+  behind — disclosed after every run per R-18; `{worktree}` tokens are
+  substituted, relative entries resolve against the effective project dir).
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
@@ -162,9 +168,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-17` **Run form + status:** `docker logs -f` streams; `docker wait`
   supplies the exit code, which IS the tool's exit code (no masking); an
   unreadable exit status → hard error ("refusing to guess"), never 0.
-- `R-18` **Verdict discipline:** assay lanes print the verdict artifact path
-  (namespace-visible) after the run; every lane prints a final
-  `lane '<name>' exit <code>` line.
+- `R-18` **Verdict discipline:** after EVERY lane exit — any kind, any
+  runner mode, success or failure — the gate says where the evidence
+  landed: assay lanes always print the verdict artifact path
+  (`<effective project dir>/.assay/verdict-<assay_lane>.json`,
+  namespace-visible); declared `artifacts` entries each print as
+  `run-gate: artifact: <path>` (absolute-or-effective-project-dir-relative,
+  `{worktree}`-substituted, deduplicated against the verdict convention);
+  every lane prints a final `lane '<name>' exit <code>` line. Disclosure is
+  unconditional — a FAILED lane names its evidence paths too.
 - `R-19` **Host lanes** exec the substituted argv directly with cwd = the
   effective project dir (R-21; no docker, no safe.directory — that trap is
   container-specific); exit passthrough identical.

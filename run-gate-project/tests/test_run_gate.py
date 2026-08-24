@@ -1918,3 +1918,134 @@ def test_environment_rejects_invalid_forward_env_name(tmp_path):
     proc = run_tool(proj, "--list")
     assert proc.returncode == 2
     assert "'forward_env' must be a list" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# RG-10 — declared artifacts + evidence-path disclosure on every lane exit
+# ---------------------------------------------------------------------------
+
+class TestArtifactsDisclosure:
+    """R-18 amendment: after EVERY run — any kind, any runner mode, success or
+    failure — the gate says where the evidence landed. Assay lanes always
+    disclose the verdict convention; declared `artifacts` add to it. Paths
+    resolve against the EFFECTIVE project dir (R-21); `{worktree}` tokens in
+    entries are substituted."""
+
+    def test_ephemeral_command_lane_prints_declared_artifacts(self, tmp_path,
+                                                              monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["out/coverage.json", "reports/x.txt"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: artifact: {proj}/out/coverage.json" in proc.stdout
+        assert f"run-gate: artifact: {proj}/reports/x.txt" in proc.stdout
+
+    def test_assay_lane_dedupes_verdict_entry(self, tmp_path, monkeypatch):
+        """An artifacts entry equal to the verdict convention is disclosed ONCE."""
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.a]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+            artifacts = [".assay/verdict-mock.json"]
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "a")
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.count("run-gate: verdict artifact:") == 1
+        assert "run-gate: artifact:" not in proc.stdout
+
+    def test_artifacts_entries_get_worktree_substitution(self, tmp_path,
+                                                         monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["{worktree}/proj/absolute-report.txt"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        # Absolute AFTER substitution — never re-joined under the project dir.
+        assert f"run-gate: artifact: {repo}/proj/absolute-report.txt" in proc.stdout
+
+    def test_exec_assay_lane_discloses_verdict(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "r:latest"
+            mode = "exec"
+            [lanes.a]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "mock"
+            assay_command = ["assay"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
+        commit_all(repo, "ciu")
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "a", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: verdict artifact: {repo}/proj/.assay/verdict-mock.json" \
+            in proc.stdout
+
+    def test_host_lane_discloses_declared_artifacts(self, tmp_path):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+            artifacts = ["smoke-result.txt"]
+        """
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "smoke")
+        assert proc.returncode == 0, proc.stderr
+        assert f"run-gate: artifact: {proj}/smoke-result.txt" in proc.stdout
+
+    def test_failing_lane_still_discloses(self, tmp_path, monkeypatch):
+        """Disclosure is unconditional — a FAILED lane names its evidence too
+        (that is exactly when the reader needs the paths)."""
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n",
+            "    clean_tree = false\n"
+            '    artifacts = ["out/partial.json"]\n')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch, wait_code=7)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7
+        assert f"run-gate: artifact: {proj}/out/partial.json" in proc.stdout
+
+    @pytest.mark.parametrize("bad", ['artifacts = "out.json"', "artifacts = []"])
+    def test_invalid_artifacts_rejected(self, tmp_path, bad):
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace(
+            "    clean_tree = false\n", f"    clean_tree = false\n    {bad}\n")
+        proj = make_project(repo, cfg)
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'artifacts'" in proc.stderr

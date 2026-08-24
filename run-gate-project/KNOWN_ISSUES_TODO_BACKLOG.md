@@ -27,7 +27,7 @@ SPEC §9.
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | FIXED 2026-08-24 |
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
-| RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | OPEN |
+| RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | FIXED 2026-08-24 |
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
@@ -380,6 +380,21 @@ where evidence landed.
 on every lane exit, `{worktree}`-substituted), defaulting to the assay-verdict
 convention for assay-kind lanes in both runner modes. Backfill cmru's three
 evidence paths.
+
+**FIXED 2026-08-24** (SPEC `R-08` + `R-18` amendment): `artifacts` is a
+validated lane key (non-empty list of non-empty strings); new
+`print_lane_artifacts` runs after EVERY lane exit in ALL THREE runners —
+ephemeral, exec, host — any kind, success or failure. Assay lanes always
+disclose `.assay/verdict-<assay_lane>.json` resolved against the EFFECTIVE
+project dir (the ephemeral runner's inline print was replaced by the helper,
+so the path is now worktree-correct under `--worktree` too, not just
+present); declared entries are `{worktree}`-substituted,
+absolute-or-project-relative, and deduplicated against the verdict
+convention. A failed lane still names its evidence — that is exactly when
+the reader needs the paths. cmru's three evidence paths backfilled as
+declared `artifacts`. Tests: TestArtifactsDisclosure ×8 (ephemeral command
+lane disclosure, verdict dedup, `{worktree}` substitution, exec assay
+verdict, host lane, failed-lane disclosure, invalid-key rejection ×2).
 
 ## RG-11 — uniform exit code 1 for every refusal
 

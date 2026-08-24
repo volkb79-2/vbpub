@@ -74,6 +74,10 @@ clean_tree = true                   # default TRUE; false needs a written reason
 description = "one-line what/why"   # optional; shown by --help (never by --list)
 required_env = ["SCHEMA_GATE_PW"]   # optional; gate refuses to start if unset/empty,
                                     # and (container lanes) if not on the env's forward_env
+artifacts = ["coverage.json"]       # optional; paths printed after EVERY run (success or
+                                    # failure); {worktree} substituted; relative entries
+                                    # resolve against the effective project dir; assay
+                                    # lanes always disclose .assay/verdict-<lane>.json too
 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
