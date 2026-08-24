@@ -35,9 +35,10 @@ SPEC §9.
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
 | RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
 | RG-17 | required-env forwarding completeness (schema-oracle credentials silently dropped) | Major | FIXED 2026-08-24 |
-| RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN |
+| RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN — dstdns-side scope (schema-gate.sh), not run-gate.py; see body |
 | RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
+| RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
 
 ---
 
@@ -737,6 +738,11 @@ failures during archive inspection — the tooling never named the version pair.
 - Server PG18 + client PG17 ⇒ refusal naming both versions.
 - Matching pair proceeds and records versions in output.
 
+**Sweep-audit note (2026-08-24):** stays OPEN by scope, not neglect — the
+guard belongs in `schema-gate.sh` / the dstdns schema lane, not in
+run-gate.py; run-gate has no dump/server pairing to guard. Tracked for the
+dstdns adoption of these gates.
+
 ## RG-19 — schema-lane credential propagation must be verified by the gate, not by test failure
 
 **Filed 2026-08-23 (same evidence as RG-17).**
@@ -853,3 +859,49 @@ one resolution. cmru backfilled: all four container lanes declare
 ×17 including all three oracles (over-budget refusal with numbers,
 same-service serialization with a real held flock, unbounded-slice
 degradation).
+
+## RG-21 — linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence)
+
+**Filed 2026-08-24 (phase-B verification of this sweep; evidence: srdm
+coverage lane run from `.worktrees/run-gate-rg-sweep`).**
+
+### The observation
+
+run-gate's `{worktree}` forwarding places lane execution in the selected
+worktree correctly, and exit-status passthrough stayed honest — this is NOT a
+run-gate.py defect. But a downstream harness that bind-mounts the repo into a
+container by HOST path mounts only its own `$repo_root` subtree. From a linked
+worktree that subtree is the worktree itself, whose `.git` FILE points at an
+absolute gitdir under the MAIN checkout; when that path is not inside the
+mount, every in-container git plumbing call fails:
+
+```
+covergate: git rev-list --parents -n 1 HEAD failed: exit status 128:
+fatal: not a git repository: /workspaces/vbpub/.git/worktrees/run-gate-rg-sweep
+```
+
+Same family: `SRDM_HOST_REPO_ROOT` cannot be auto-derived for a worktree path
+(the devcontainer's docker inspect maps only `/workspaces/vbpub`), so it must
+be exported by hand. Evidence site:
+`shared-ramdisk-depot-manager/tools/gate.sh` (`repo_root` = worktree toplevel;
+single `-v "$host_repo_root:$repo_root"` mount). On the main checkout the same
+lane passes — `.git` is a directory inside the mount.
+
+### Candidate directions
+
+1. Harness-side (real fix): also mount the common gitdir into the container
+   (`-v <main>/.git:<expected path>`) or resolve the worktree gitdir and hand
+   `GIT_DIR` to the container explicitly.
+2. run-gate-side (narrow): `doctor` could WARN when a host-path-mapped lane
+   runs from a linked worktree whose gitdir lies outside `{worktree}`
+   (detection is cheap: `.git` is a file, not a directory). Listing verbs and
+   non-git lanes stay unaffected either way.
+3. Document: until one of the above lands, host-path-mapped lanes are
+   main-checkout-only when the tree is a linked worktree.
+
+### Oracles
+
+- From a linked worktree, srdm coverage passes (today it fails with the
+  gitdir error above).
+- `doctor` names the condition before the lane fails mid-run.
+
