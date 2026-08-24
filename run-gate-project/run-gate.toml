@@ -1,0 +1,30 @@
+# =============================================================================
+# run-gate-project's own gate lanes — parsed ONLY by run-gate.py (one parser,
+# D-110). Environment facts come from the CENTRAL vbpub-root run-gate.toml
+# ([environments.tester-unified]); this file declares the lane only.
+#
+# The selftest lane IS the release gate: cmru.toml [steps.run-tests] runs
+# `./run-gate.py selftest`, so a release cannot be tagged or published unless
+# this passes in the same gated tester-unified container development uses.
+# Dogfooding by design — run-gate gates itself through its own machinery.
+#
+# Coverage discipline (2026-08-24 decision): TOTAL line+branch coverage sits
+# at ~47% today, so a passing --cov-fail-under=100 does not exist yet. The
+# floor enforced here is DIFF coverage at 100% (topos/nyxloom estate pattern,
+# vendored thin gate in tools/coverage_gate.py): every executable line added
+# or changed since the merge-base with main must be covered, same-commit.
+# The total-100 campaign is Phase 2 of the release-adoption program; when it
+# lands this lane flips to --cov-fail-under=100 like cmru's.
+# =============================================================================
+schema_version = 1
+
+[lanes.selftest]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree} && /opt/tester-venv/bin/python -m pytest run-gate-project/tests -q --cov=run-gate-project --cov-branch --cov-report=json:run-gate-project/coverage.json && exec /opt/tester-venv/bin/python run-gate-project/tools/coverage_gate.py --repo . --base main --coverage-json run-gate-project/coverage.json --source run-gate-project"]
+budget = "20m"
+artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+
+[lanes.selftest.resources]
+memory = "1g"
+memory_swap = "16g"

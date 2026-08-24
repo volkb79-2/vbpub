@@ -596,6 +596,20 @@ wheel second"; SPEC §7 rewritten + `R-31`. First release: tag
 `run-gate-v21` after merge (the RG-13 rev bump rides along), publish via
 cmru's wheel-publish.
 
+**AMENDED 2026-08-24 (release-adoption program).** The `__revision__`-attr
+version coupling above is SUPERSEDED, not the wheel-as-second-artifact
+design: `bump_version("22")` is unparseable by cmru's conventional-commit
+version automation, and an integer counter cannot drive semver. The wheel's
+version is now DERIVED from the git tag by setuptools-scm
+(`[tool.setuptools_scm]`, matching ciu/cmru/assay/topos/nyxloom exactly);
+`__revision__` stays the copy-drift marker but is no longer the version
+SOURCE. Two tiers, two jobs — see CONSUMERS.md's "Distribution" section.
+SPEC `R-31` rewritten; new `R-33` covers the estate release-orchestration
+registration this necessitated. Load-bearing consequence: because the
+pre-existing tag `run-gate-v22` itself parses as version `22` under the new
+tag pattern, the first real semver release must be numbered `>= v23` or
+version ordering inverts.
+
 ## RG-15 — assay lanes must execute in the selected worktree, not the invoking checkout
 
 **Filed 2026-08-23 (dstdns repair program; reproduced with linked worktrees).**

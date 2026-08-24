@@ -1,0 +1,75 @@
+# =============================================================================
+# run-gate-project release contract — parsed ONLY by cmru (one parser per
+# format, D-110). Adopted 2026-08-24 from the ciu/cmru pattern: same [github]/
+# [targets]/[project]/[steps] shape, wheel artifact, scm versioning.
+#
+# Naming has ONE deliberate quirk, forced by cmru mechanics: `project.id` MUST
+# equal this directory's name ("run-gate-project") because cmru derives the
+# change-detection watch path from the id ([name]/... — no paths override
+# exists in the S2 schema). Release/tag/publish naming does NOT use the id:
+# tags are minted as `<prefix><version>` and the GitHub Release is keyed by
+# --prefix on the push step, so everything user-facing stays `run-gate-v*` /
+# `run_gate-*.whl`. See tests/test_run_gate.py, which enforces the id==dirname
+# invariant structurally so a future rename cannot silently orphan releases.
+#
+# Version identity is TWO-TIER (pyproject.toml header): __revision__ inside
+# run-gate.py stays the copy-drift marker external repos compare; semver
+# tags/releases are the publish identity, derived by setuptools-scm from the
+# tag this config's strategy mints.
+# =============================================================================
+schema_version = 1
+
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
+[env]
+RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+
+[project]
+id = "run-gate-project"
+description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
+template_revision = 4
+prefix = "run-gate-v"
+artifacts = ["wheel"]
+scm_dist = "run_gate"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+# SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
+# lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
+# line and not `cmru tester-gate` — dogfooding means run-gate gates itself
+# through the same gated container development uses, and the lane owns all
+# test logic (pytest + diff-coverage floor) in exactly one place. Steps
+# execute with project_root as cwd, so the sibling script resolves directly.
+# First standalone bootstrap before cmru is installed anywhere fresh:
+# python3 run-gate.py selftest works with zero installs (stdlib-only).
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "run-gate: selftest gate (diff-coverage floor)", argv = ["./run-gate.py", "selftest"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "run-gate: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "run-gate: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
+]

@@ -20,6 +20,10 @@ whole-token pin-version match, reserved lane names + symmetric sidecar
 checks.
 Rev 6: RG-22 — `R-19a`'s safe.directory write is idempotent under
 pre-existing entries (`--replace-all`).
+Rev 7: release-adoption program — `R-31` amended (wheel version now DERIVED
+from the git tag by setuptools-scm, not `__revision__`; the two-tier split is
+now stated explicitly), new `R-33` (estate release orchestration + a
+diff-coverage floor pending a total-100% campaign).
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -367,15 +371,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (committed symlink `run_gate.py -> run-gate.py`, dereferenced at build
   time — py_modules cannot carry a hyphen) and exposes console script
   `run-gate = run_gate:main`; the shipped `run_gate.py` is byte-identical to
-  the canonical file. Version discipline is DERIVED, not declared twice:
-  setuptools reads `__revision__` from the script at build time (`attr`),
-  so the wheel's version cannot drift from the copies' drift marker; a test
-  pins the derivation structurally and builds/installs the wheel in-suite,
-  asserting identical `--list` behavior between copied script and installed
-  console script. Build toolchain pinned exactly (assay/ciu precedent);
-  publish goes through cmru's wheel-publish; a release tag names the derived
-  version (`run-gate-v<version>`, e.g. `run-gate-v21`). The wheel NEVER
-  becomes required — CONSUMERS.md states it in prose and this contract
+  the canonical file. Version identity is TWO-TIER (superseding this rule's
+  original `__revision__`-attr coupling, release-adoption program): the
+  wheel's version is DERIVED from the git tag (`run-gate-vX.Y.Z`) by
+  setuptools-scm — `[tool.setuptools_scm]` with `root = ".."` and
+  `--match run-gate-v*`, matching ciu/cmru/assay/topos/nyxloom exactly —
+  while `__revision__` inside the script stays the SEPARATE copy-drift
+  marker external repos compare; the two never need to agree, and
+  CONSUMERS.md states which one governs which decision. A release build
+  never runs `git describe` live: cmru's wheel-build step sets
+  `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE` from the tag it just
+  minted (`cmru.toml`'s `scm_dist = "run_gate"`). Build toolchain pinned
+  exactly (assay/ciu precedent); a release tag names the semver version
+  (`run-gate-v<version>`) — because the pre-existing tag `run-gate-v22` is
+  itself matched by the tag pattern and parses as version `22`, the first
+  semver release MUST be numbered `>= run-gate-v23` (e.g. `run-gate-v23.0.0`)
+  or version ordering inverts (pip would read a `run-gate-v1.0.0` release as
+  older than the untagged `22`-based dev builds that precede it). The wheel
+  NEVER becomes required — CONSUMERS.md states it in prose and this contract
   forbids any lane or check that assumes an install.
 
 - `R-32` **Adoption hygiene + estate pairing sweep (RG-13):** the adoption
@@ -392,6 +405,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   nyxloom-trove project's lanes with the REAL parser and enforces
   timeout >= budget wherever a gate argv names the lane as a whole token —
   the drift is caught by test, not by memory.
+
+- `R-33` **Estate release orchestration + coverage floor (release-adoption
+  program):** `run-gate-project` is registered in the vbpub-root
+  `cmru.orchestration.toml` (`depends_on = []`: it consumes no first-party
+  wheel and nothing releases after it that needs its artifact today) and
+  ships its own `cmru.toml` (schema identical to ciu/cmru/assay: `[github]`,
+  `[targets]`, `[project]` with `id = "run-gate-project"` — cmru derives its
+  change-detection watch path from `id`, so it MUST equal the directory
+  name even though release/tag naming stays `run-gate-v*` via `--prefix`).
+  The release gate IS the project's own dogfooded lane
+  (`cmru.toml [steps.run-tests]` runs `./run-gate.py selftest` — SSOT,
+  D-110/D-111: one parser, no duplicated pytest invocation) which chains
+  `pytest` with `tools/coverage_gate.py` (vendored from `topos/tools/`,
+  the estate's thinnest copy — MIGRATION PENDING per its header, do not
+  fork further). Because TOTAL line+branch coverage measured ~47% at
+  adoption time, the floor enforced is DIFF coverage at 100% (topos/nyxloom
+  legacy-code pattern: every changed executable line must be covered,
+  same-commit) rather than `--cov-fail-under=100`; a later campaign to
+  reach a total 100% floor is its own backlog item, and only then does the
+  lane flip to a total floor like cmru's own.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
