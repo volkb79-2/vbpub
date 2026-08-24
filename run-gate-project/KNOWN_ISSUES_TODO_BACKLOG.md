@@ -905,3 +905,92 @@ lane passes — `.git` is a directory inside the mount.
   gitdir error above).
 - `doctor` names the condition before the lane fails mid-run.
 
+
+## RG-22 — `git config --global safe.directory "*"` fails when global config already has safe.directory entries
+
+**Filed:** 2026-08-24, from dstdns P126/P127 adoption (linked worktrees with
+per-worktree instance runners).
+
+### The bug
+
+`build_assay_inner()` and `build_command_inner()` both emit:
+
+```python
+shlex.join(["git", "config", "--global", "safe.directory", "*"])
+```
+
+Git's `--replace-all` is the correct mode here, but the code omits it. When
+`~/.gitconfig` already contains one or more `safe.directory` entries (which is
+the NORMAL state after any prior gate run in a multi-worktree estate, or after
+any tool that adds a project-specific entry), this command fails:
+
+```
+error: cannot overwrite multiple values with a single value
+       Use a regexp, --add or --replace-all to change safe.directory.
+```
+
+With `set -euo pipefail`, the inner script exits 129 immediately. The lane
+reports exit 5 (run-gate's generic failure), and the operator sees only the
+cryptic git error — no indication that the fix is trivial.
+
+### When it fires
+
+1. First gate run: works (no pre-existing entry → single-value write succeeds).
+2. A second run in a DIFFERENT linked worktree whose runner shares `/root`
+   but has a different `.git/config`: also works (still one value).
+3. Any scenario where another tool (CIU hooks, IDE integration, or a previous
+   run-gate invocation using a DIFFECT gitconfig) has already added a
+   project-specific `safe.directory` path alongside `*`: FAILS.
+
+This last case is the dstdns trigger: CIU's per-instance provisioning writes
+`safe.directory = /workspaces/dstdns/.worktrees/<name>` into the shared
+`/root/.gitconfig`. The next run-gate lane then hits "multiple values" on its
+own `*` write.
+
+### Why it matters
+
+The failure is silent in the sense that the error message points at git's
+config syntax rather than at run-gate's own missing flag. An operator seeing
+"cannot overwrite multiple values" has no reason to suspect a one-line fix in
+the harness. Worse, the error is INTERMITTENT from the operator's view: it
+appears only after some other tool has populated the config, so the same
+command can pass and fail depending on what ran before it.
+
+### Fix
+
+Add `--replace-all` to both call sites:
+
+```diff
+-shlex.join(["git", "config", "--global", "safe.directory", "*"]),
++shlex.join(["git", "config", "--global", "--replace-all", "safe.directory", "*"]),
+```
+
+Two locations: `build_assay_inner()` (~line 1145) and
+`build_command_inner()` (~line 1186). The semantic intent is already "make
+this the ONLY safe.directory value for this ephemeral gitconfig" — which is
+exactly what `--replace-all` does.
+
+### Alternative considered
+
+Use `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0` env vars instead of writing a file,
+sidestepping the overwrite problem entirely:
+
+```python
+parts.append("export GIT_CONFIG_COUNT=1")
+parts.append("export GIT_CONFIG_KEY_0=safe.directory")
+parts.append("export GIT_CONFIG_VALUE_0=*")
+```
+
+This avoids mutating any persistent state, which is arguably cleaner (the
+gitconfig at `/tmp/run-gate-gitconfig` exists solely as a side-channel for
+this one directive). However, `--replace-all` is the minimal change and keeps
+the existing file-based mechanism intact.
+
+### Oracle
+
+```bash
+# Pre-populate the global config with an extra entry
+git config --global --add safe.directory "/some/project"
+# Then invoke any exec-mode lane; before fix: exit 129 with "cannot overwrite"
+# After fix: passes cleanly
+```
