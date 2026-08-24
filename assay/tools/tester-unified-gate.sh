@@ -366,13 +366,25 @@ run_inner() {
     -q -p no:randomly --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=lane-schema-v2-successors-verified'
 
+  # B014/B015: `VERDICT_SCHEMA_VERSION` 6 -> 7 and the two new Python
+  # semantic operators are another additive/hard-cut pair. The locked v6
+  # successor suite below is therefore now deselected wholesale: its
+  # differential controls are v6 documents, its identity test pins v6, and
+  # its byte snapshot pins the shipped schema to v6. Those assets remain
+  # frozen evidence; a later wave owns their v7 successors rather than
+  # rewriting history in place.
+  #
   # Wave-1: the 26 one-for-one v6 successors for the 26 locked P33 nodes
   # deselected just above by the schema-version hard cut. Same
   # installed-wheel pattern as every locked suite it carries forward.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
     "$worktree/assay/nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
-    -q -p no:randomly --override-ini=pythonpath=
+    -q -p no:randomly --override-ini=pythonpath= \
+    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_schema_identity_is_internally_consistent_under_v6 \
+    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_shipped_schema_is_byte_identical_to_the_locked_v6_asset \
+    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_a_v6_artifact_missing_judgment_resolved_is_refused \
+    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_a_cross_language_operator_is_refused_under_v6
   echo 'ASSAY_GATE_PHASE=verdict-v6-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version"
