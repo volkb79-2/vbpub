@@ -1306,6 +1306,12 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 
 **Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
 
+**Scope boundary:** `budget_per_candidate` (shipped in `assay-v2.2.0`, see B012)
+partially mitigates the other P127 blocker — a hanging comparison mutant — by
+marking that candidate `budget_exceeded` and continuing. It does **not** help
+B015 at all: a bounded timeout says nothing about whether UUID or enum semantics
+were actually mutated. These remain independent upstream deliverables.
+
 ### The gap
 
 The released Python mutation catalogue is exactly the four qualified members in
