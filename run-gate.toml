@@ -1,9 +1,9 @@
 # =============================================================================
-# run-gate CENTRAL environment facts — vbpub monorepo root.
+# run-gate CENTRAL config — vbpub monorepo root.
 # Parsed ONLY by run-gate.py (one parser, D-110). Project configs live next to
 # each project's run-gate.py symlink/copy; they inherit THESE tables unless
-# they shadow a name. Lanes are FORBIDDEN here (central = environment facts
-# only — run-gate rejects [lanes.*] in this file).
+# they shadow a name. Since RG-16 (SPEC R-22) central [lanes.*] are LEGAL
+# here: shared lanes inherited by every consuming project by name.
 # See run-gate-project/SPEC.md (normative) and README.md (design authority).
 # =============================================================================
 schema_version = 1

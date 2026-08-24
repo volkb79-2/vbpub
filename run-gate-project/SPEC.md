@@ -105,8 +105,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-22` **Shared central lanes (RG-16):** a central config may define
   `[lanes.*]`, schema-validated wherever it lives. The EFFECTIVE lane set of
   a project = its own lanes shadowing central lanes BY NAME (whole lane — no
-  field merging); `--list`/usage show the effective set, inherited entries
-  marked `*`. Per-consumer check at load: a central lane's pin sidecars must
+  field merging); both views show the effective set — the human usage marks
+  inherited entries `*`, while `--list` stays a plain machine table.
+  Per-consumer check at load: a central lane's pin sidecars must
   exist relative to the CONSUMING project dir, else refusal naming lane,
   sidecar, and both files (vendor it or shadow the lane). Free-form argv
   strings are deliberately never stat'd — they are shell text, not declared
@@ -221,7 +222,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the invoking environment — else refusal (exit 2) naming the lane and
   variable. For container lanes additionally: every required name MUST be
   on the environment's `forward_env` allowlist (else it can never reach the
-  lane — refuse at load). Every container-lane start prints WHICH
+  lane — refused on the run path before anything executes, NOT at load:
+  listing/inspection verbs stay usable). Every container-lane start prints WHICH
   forwarding keys were present and which were declared-but-absent — NAMES
   ONLY, never values; the printed docker argv masks forwarded
   `-e KEY=...` payloads for the same reason. `--check-env` runs an ADVISORY

@@ -16,8 +16,11 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 
 1. **Central defaults (controller A2):** shared environment facts live in a
    repo-root `run-gate.toml` — the NEAREST STRICT ANCESTOR of the project
-   dir. Environments only; `[lanes.*]` there is rejected. Project tables
-   shadow a central name entirely (auditable override, no field merging).
+   dir. At P01 build time environments only (`[lanes.*]` there was
+   rejected) — **superseded by RG-16 (`R-22`)**: central `[lanes.*]` are
+   legal shared lanes every consuming project inherits BY NAME. Project
+   tables shadow a central name entirely (auditable override, no field
+   merging).
 2. **Config discovery:** the project config is found next to the INVOKED
    script path WITHOUT resolving symlinks (a symlink's parent is the
    project), CWD as fallback. CWD-first (the handoff's wording) breaks

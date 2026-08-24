@@ -684,8 +684,10 @@ def preflight_required_env(lane: dict, lane_name: str) -> None:
 def check_required_reaches_container(lane: dict, lane_name: str, env: dict,
                                      env_name: str, env_source: str) -> None:
     """RG-17: for container lanes, a required variable that is not on the
-    environment's forward_env allowlist can NEVER reach the lane — refuse at
-    load instead of failing (or hollow-skipping) inside the container."""
+    environment's forward_env allowlist can NEVER reach the lane — refuse
+    before anything runs instead of failing (or hollow-skipping) inside the
+    container. Run-path timing is deliberate: --list/doctor stay usable on
+    an imperfect config."""
     forwarded = set(env.get("forward_env", []))
     missing = [k for k in lane.get("required_env", []) if k not in forwarded]
     if missing:
