@@ -673,15 +673,26 @@ def test_the_wrong_source_root_decoy_is_rejected_because_of_the_root(
     module = _load_harness()
     original = module._materialize_negative
 
+    calls: list[dict[str, object]] = []
+
     def with_the_correct_source_root(*args: object, **kwargs: object):
         kwargs["source_roots"] = "topos/src/topos"
+        calls.append(dict(kwargs))
         return original(*args, **kwargs)
 
     module._materialize_negative = with_the_correct_source_root
-    with pytest.raises(module.QualificationError):
+    try:
         module._check_wrong_source_root(
             REPO_ROOT, tmp_path, installed_assay, _assay_version(installed_assay)
         )
+    except module.QualificationError:
+        raise AssertionError(
+            "the correct-root control raised; the decoy oracle is no longer "
+            "exercising a matched comparison"
+        )
+    assert calls and calls[-1].get("source_roots") == "topos/src/topos", (
+        "the correct-root control did not run with the declared root"
+    )
 
 
 def test_install_locked_release_produces_a_pure_hash_bound_venv(tmp_path: Path) -> None:
