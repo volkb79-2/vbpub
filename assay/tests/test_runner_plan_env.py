@@ -19,12 +19,18 @@ Two levels of proof on purpose:
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from conftest import make_lane
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
+
+
+def _clock(*moments):
+    iterator = iter(moments)
+    return lambda: next(iterator)
 
 
 # --- env: declared-only, plus exactly the named passthrough ------------------
@@ -60,6 +66,44 @@ def test_a_declared_passthrough_name_absent_from_the_source_is_simply_omitted():
     plan = runner.resolve_command_plan(lane, passthrough_source={})
 
     assert dict(plan.env_effective) == {}
+
+
+def test_command_failure_retains_bounded_stdout_and_stderr(tmp_path):
+    lane = make_lane(argv=("/bin/sh", "-c", "printf 'head'; printf 'error' >&2; exit 7"))
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        process_runner=runner.default_process_runner,
+        clock=_clock(datetime(2026, 8, 24, tzinfo=timezone.utc), datetime.now(timezone.utc)),
+    )
+
+    assert result.outcome is Outcome.FAIL
+    assert result.stdout_tail == "head"
+    assert result.stderr_tail == "error"
+    assert result.stdout_dropped_bytes == 0
+    assert result.stderr_dropped_bytes == 0
+
+
+def test_oversized_command_output_is_truncated_head_side_with_dropped_bytes(
+    tmp_path,
+):
+    dropped = "DROPPED-HEAD"
+    retained = "RETAINED-TAIL"
+    filler = "x" * (runner.COMMAND_TAIL_BYTES - len(retained))
+    text = dropped + filler + retained
+    lane = make_lane(argv=("/bin/sh", "-c", f"printf '%s' '{text}'; exit 7"))
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        process_runner=runner.default_process_runner,
+        clock=_clock(datetime(2026, 8, 24, tzinfo=timezone.utc), datetime.now(timezone.utc)),
+    )
+
+    assert len(result.stdout_tail.encode("utf-8")) <= runner.COMMAND_TAIL_BYTES
+    assert result.stdout_tail.endswith(retained)
+    assert result.stdout_dropped_bytes == len(dropped.encode("utf-8"))
 
 
 def test_passthrough_source_defaults_to_os_environ(monkeypatch):

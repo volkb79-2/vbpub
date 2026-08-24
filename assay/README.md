@@ -182,6 +182,12 @@ Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
 each candidate; the verdict's optional `mutation.progress_artifact` names that
 file.
 
+When a lane command fails or times out, its verdict can retain at most the last
+64 KiB of each output stream in `result_stdout_tail` and `result_stderr_tail`.
+Truncation is head-side and visible through the paired dropped-byte counts, so
+the final error survives without turning a verdict artifact into an unbounded
+log.
+
 ## How it works
 
 1. A project adds an `assay.toml` **lane file** with three axes, matching

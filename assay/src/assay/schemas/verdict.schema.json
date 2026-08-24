@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:6",
+  "$id": "urn:assay:schema:verdict:7",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.target against judgment.r3.target), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks.",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 6
+      "const": 7
     },
     "assay_version": {
       "type": "string",
@@ -97,6 +97,26 @@
     },
     "snapshot_policy": {
       "$ref": "#/$defs/snapshot_policy"
+    },
+    "result_stdout_tail": {
+      "description": "B014: bounded final stdout from a failed or timed-out lane command, UTF-8 decoded with replacement characters. Present only when command output was captured for diagnosis; empty means captured and empty.",
+      "type": "string",
+      "maxLength": 65536
+    },
+    "result_stderr_tail": {
+      "description": "B014: bounded final stderr from a failed or timed-out lane command, UTF-8 decoded with replacement characters. Present only when command output was captured for diagnosis; empty means captured and empty.",
+      "type": "string",
+      "maxLength": 65536
+    },
+    "result_stdout_dropped_bytes": {
+      "description": "B014: head-side UTF-8 byte count removed before result_stdout_tail.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "result_stderr_dropped_bytes": {
+      "description": "B014: head-side UTF-8 byte count removed before result_stderr_tail.",
+      "type": "integer",
+      "minimum": 0
     },
     "claims": {
       "description": "Exactly one computed claim per declared rigor level; model construction enforces the cross-array equality.",

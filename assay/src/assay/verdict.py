@@ -90,6 +90,7 @@ __all__ = [
     "MUTATION_OPERATORS",
     "MUTATION_OPERATORS_BY_LANGUAGE",
     "LANE_RESOLVED_FIELDS",
+    "COMMAND_TAIL_BYTES",
     "REASON_CODES",
     "ROLLUP_PRECEDENCE",
     "SCHEMA_RESOURCE",
@@ -150,6 +151,11 @@ __all__ = [
 #: adapter actually invoked. Still exactly ONE active schema per build
 #: (A-170): a v4 artifact is refused on its version, never upgraded in place.
 #:
+#: Bumped 6 -> 7 (B014, hard cut): failed and timed-out commands can retain
+#: bounded stdout/stderr tails and dropped-byte counts. The fields are optional,
+#: but their presence/absence contract is a new artifact dialect: v6 producers
+#: never emit them, while this verifier reconstructs and bounds-checks them.
+#:
 #: Bumped 5 -> 6 (wave-1 §4/§5/§6, A-261, hard cut): branch coverage is
 #: judged whenever the artifact reports it (A-258), which changes what PASS
 #: means for an existing R1 lane -- precisely why this is a major bump and
@@ -174,7 +180,7 @@ __all__ = [
 #: dual-version verifier, no compatibility shim (A-170's rule, restated):
 #: producers emit v6 only, and `assay verify` refuses v5 exactly as it
 #: refuses v4 today.
-VERDICT_SCHEMA_VERSION = 6
+VERDICT_SCHEMA_VERSION = 7
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -275,6 +281,12 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
     "scope",
     "enforcement",
 )
+
+#: B014: the maximum retained UTF-8 byte length of each command-output tail.
+#: Duplicated deliberately from :mod:`assay.runner`: this module owns artifact
+#: acceptance, and a model that could serialize an oversized tail would let a
+#: forged verdict agree with itself.
+COMMAND_TAIL_BYTES = 64 * 1024
 
 # Kept deliberately identical in intent to `$defs/timestamp` in the schema. The
 # duplication is real; the alternative is a model that can build an artifact its
@@ -2318,6 +2330,16 @@ class Verdict:
     #: error produced before a lane resolves at all. See
     #: :meth:`_check_snapshot_policy_matches_declared_rigor`.
     snapshot_policy: SnapshotPolicy | None = None
+    #: (B014) bounded final output from a failed or timed-out lane command.
+    #: ``None`` means no command-output contract applies (a pre-command refusal,
+    #: a PASS whose evidence was not requested, or an error before the command);
+    #: empty strings mean output was captured and known to be empty.
+    result_stdout_tail: str | None = None
+    result_stderr_tail: str | None = None
+    #: (B014) head-side bytes removed by tailing, so truncation is visible and
+    #: bounded rather than silently lossy.
+    result_stdout_dropped_bytes: int = 0
+    result_stderr_dropped_bytes: int = 0
     schema_version: int = VERDICT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -2346,6 +2368,22 @@ class Verdict:
                 f"enforcement must be one of {sorted(ENFORCEMENTS)}, got "
                 f"{self.enforcement!r}"
             )
+        for name in ("result_stdout_tail", "result_stderr_tail"):
+            value = getattr(self, name)
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(f"{name} must be a string when present")
+                if len(value.encode("utf-8")) > COMMAND_TAIL_BYTES:
+                    raise ValueError(
+                        f"{name} exceeds {COMMAND_TAIL_BYTES} UTF-8 bytes"
+                    )
+        for name in (
+            "result_stdout_dropped_bytes",
+            "result_stderr_dropped_bytes",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
 
         _check_reason_code(self.outcome, self.reason_code, "verdict")
         self._check_interval_is_ordered()
@@ -2910,6 +2948,16 @@ class Verdict:
             payload["judgment"] = self.judgment.to_dict()
         if self.snapshot_policy is not None:
             payload["snapshot_policy"] = self.snapshot_policy.to_dict()
+        if self.result_stdout_tail is not None:
+            payload["result_stdout_tail"] = self.result_stdout_tail
+            payload["result_stdout_dropped_bytes"] = (
+                self.result_stdout_dropped_bytes
+            )
+        if self.result_stderr_tail is not None:
+            payload["result_stderr_tail"] = self.result_stderr_tail
+            payload["result_stderr_dropped_bytes"] = (
+                self.result_stderr_dropped_bytes
+            )
         # A-230a: omitted when no helper ran, never `helpers: []`.
         if self.helpers is not None:
             payload["helpers"] = [helper.to_dict() for helper in self.helpers]

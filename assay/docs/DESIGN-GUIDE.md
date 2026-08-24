@@ -365,6 +365,17 @@ must stop and ask, never invent one:
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
+### Bounded command-output tails
+
+A non-PASS terminal that captured process output may carry four optional
+top-level fields: two 64 KiB UTF-8 tails (`result_stdout_tail`,
+`result_stderr_tail`) and their paired head-side dropped-byte counts. Empty
+tails mean "captured and empty"; absent tails mean no command-output evidence
+applies. The bound is measured after decoding because `subprocess.run(text=True)`
+is the production boundary; undecodable bytes are already replacement characters
+by then. This is diagnosis, not proof: claim status still comes from exit status,
+declared artifacts, and the existing rigor pipeline.
+
 **(A-277) `ALL_MUTANTS_EQUIVALENT` was missing from this table from the moment
 v5 introduced it (A-223d) until wave 2 found it.** It fires when `killed +
 survived == 0` while `equivalent` is non-empty — every mutant the analysis

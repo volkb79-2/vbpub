@@ -1283,6 +1283,10 @@ Disposable server lease/fact files, owner-checked cleanup on exit/interrupt, per
 ## B014 — persist bounded subprocess stdout/stderr in verdicts on COMMAND_FAILED
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from CIU v7 proposal §10.1 and P121/P127 debugging sessions).**
+**Status:** **IMPLEMENTED 2026-08-24.** `CommandResult` captures bounded
+stdout/stderr tails and dropped-byte counts; failed and timed-out verdicts carry
+them under optional v7 top-level result fields; PASS and pre-command refusals
+omit the contract.
 
 ### The observation
 
@@ -1297,10 +1301,10 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 
 ### Acceptance
 
-- [ ] failing lane verdict contains both tails;
-- [ ] oversized output truncated head-side with recorded dropped-byte counts;
-- [ ] PASS verdicts remain unchanged unless opted in;
-- [ ] existing consumers reading verdicts tolerate the new optional keys.
+- [x] failing lane verdict contains both tails;
+- [x] oversized output truncated head-side with recorded dropped-byte counts;
+- [x] PASS verdicts remain unchanged unless opted in;
+- [x] existing consumers reading verdicts tolerate the new optional keys.
 
 ## B015 — UUID/equality/enum-aware Python mutation operators
 
