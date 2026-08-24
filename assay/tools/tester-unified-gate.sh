@@ -366,26 +366,40 @@ run_inner() {
     -q -p no:randomly --override-ini=pythonpath=
   echo 'ASSAY_GATE_PHASE=lane-schema-v2-successors-verified'
 
-  # B014/B015: `VERDICT_SCHEMA_VERSION` 6 -> 7 and the two new Python
-  # semantic operators are another additive/hard-cut pair. The locked v6
-  # successor suite below is therefore now deselected wholesale: its
-  # differential controls are v6 documents, its identity test pins v6, and
-  # its byte snapshot pins the shipped schema to v6. Those assets remain
-  # frozen evidence; a later wave owns their v7 successors rather than
-  # rewriting history in place.
-  #
   # Wave-1: the 26 one-for-one v6 successors for the 26 locked P33 nodes
   # deselected just above by the schema-version hard cut. Same
   # installed-wheel pattern as every locked suite it carries forward.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
     "$worktree/assay/nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
-    -q -p no:randomly --override-ini=pythonpath= \
-    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_schema_identity_is_internally_consistent_under_v6 \
-    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_shipped_schema_is_byte_identical_to_the_locked_v6_asset \
-    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_a_v6_artifact_missing_judgment_resolved_is_refused \
-    --deselect nyxloom-trove/carve-assets/W1/test_acceptance_v6.py::test_a_cross_language_operator_is_refused_under_v6
+    -q -p no:randomly --override-ini=pythonpath= --co -q >/dev/null
+  # The suite must COLLECT, but its controls are intentionally v6 and must be
+  # rejected under v7. Prove the hard cut with a raw verifier probe instead of
+  # running the locked module as though its controls were still valid.
+  PYTHONPATH= "$scratch/run-venv/bin/python" - "$worktree/assay" <<'PYEOF'
+import json
+from pathlib import Path
+
+from assay.verify import verify_document
+
+root = Path(sys.argv[1])
+expected = root / "nyxloom-trove" / "carve-assets" / "W1" / "expected"
+for path in sorted(expected.glob("*.json")):
+    document = json.loads(path.read_text())
+    failures = verify_document(document)
+    assert failures == [
+        "schema_version 6 is not this verifier's version 7: a verdict "
+        "artifact is rejected, never upgraded in place -- re-produce it "
+        "with an assay whose VERDICT_SCHEMA_VERSION is 7"
+    ], (path.name, failures)
+print(f"v6 hard-cut guard passed for {len(list(expected.glob('*.json')))} frozen templates")
+PYEOF
   echo 'ASSAY_GATE_PHASE=verdict-v6-successors-verified'
+
+  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+    "$worktree/assay/nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
+    -q -p no:randomly --override-ini=pythonpath=
+  echo 'ASSAY_GATE_PHASE=verdict-v7-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version"
 
