@@ -201,9 +201,21 @@ Cross-host external addresses (when VPN isn't used) are routing facts owned by t
 
 Run-gate conjunction lanes (`gate = schema && test-runner && assay`) silently drop `--worktree` and `--allow-dirty`. Sub-lanes re-derive their worktree from CWD. If the consumer's pointer script doesn't `cd {worktree}` first, every sub-lane judges the wrong tree — false green. Absorbing run-gate into CIU eliminates this class of bug because there are no sub-invocations.
 
-### 1.10 Assay subprocess output capture (upstream ask)
+### 1.10 Assay integration 
+
+CIU should validate the verdict JSON against Assay’s packaged schema, preserve/pin the producing version, and treat exit status as routing—not proof. That avoids weakening evidence to “process returned zero.”
+
+CIU-specific resource governance belongs in CIU, consistent with Assay’s explicit non-goal of being an orchestrator (assay/nyxloom-trove/2-product-definition.md:460). For infrastructure-dependent lanes, however, B013 is the key Assay gap.
+
+#### 1.11 subprocess output capture (upstream ask)
 
 When an assay lane command fails, the verdict says `COMMAND_FAILED` with zero stdout/stderr context. This forced five manual reproductions during dstdns P121 debugging. Assay should capture bounded output (≤64KB) from failed commands and persist it in the verdict artifact. Filed separately upstream; independent of this proposal.
+
+#### 1.12 Higher Rigor
+
+- Assay should provide evidence contracts for higher rigor, not become a property-testing/fuzzing engine. Hypothesis, proptest, ClusterFuzzLite, AFL-style tools, and domain-specific fuzzers remain better producers.
+- The sensible boundary: specialized tools generate cases and produce structured evidence; Assay validates thresholds, binds evidence to commit/input, emits verdicts, and fails loudly. This also matches its existing non-goals and avoids reinventing mature tooling.
+- For mutation rigor specifically, finishing B012 resume/checkpointing and provable sharding is higher value than inventing an “R4.” Property/fuzzing can later enter as another evidence tier/provider contract once CIU actually needs a second judge producer.
 
 ---
 
@@ -392,6 +404,8 @@ ciu up --group app --profile two-host --name staging
 
 Multiple instances can coexist (multi-stack). Each gets unique `INSTANCE_ID`, network, container prefix — existing S16 behavior.
 
+Note: If lots of groups are defined it might be useful to allow exclusion (subtract) a group/service from start like `--group full,-excluded_service`
+
 **Locking:**
 
 ```bash
@@ -432,13 +446,17 @@ execution = "local"              # default: run here, connect to remote stack
 # execution = "remote"           # SSH to stack host and execute there
 ```
 
+Note: Secrets for e.g. buildkite (infra 3rd party service) or hosts (for `ciu` deploy access) goes to central `ciu.secrets.toml`.
+
 ---
 
 ## 5. Testing gate module
 
 ### 5.1 Location
 
-`ciu/src/ciu/gate.py` — native CIU module, replacing standalone `run-gate.py`.
+`ciu/src/ciu/gate.py` — native CIU module.
+
+`run-gate-proejct` will be maintained as project in parallel. `ciu` gains its functionality and adapts/extends to leverage integration.
 
 ### 5.2 Invocation
 
@@ -465,6 +483,8 @@ Given intent + environment + changed files:
 When a matched selection requires a realness level unavailable in the environment (e.g., integration scope needs `owned-seeded` postgres but everything is mocked):
 - **Skip with warning** (default): scope not executed; CIU reports which scopes were skipped and why
 - **Fail** (`--strict-realness`): refuse the entire gate rather than produce partial evidence
+
+Note: what would "pluggable" mean for `ciu`, what are advantages?
 
 ### 5.4 Scope narrowing
 
@@ -534,6 +554,9 @@ services, while ample swap absorbs transient bursts (dependency resolution, test
 without triggering OOM kills. CPU and I/O use cgroup weights rather than hard limits —
 weights provide proportional fair-sharing under contention without throttling when the
 host is idle.
+
+Note: we also need support for IO bandwidth and IO iops limits. probably needs `bfq` enabled in kernel?
+a parent slice might carry it, but we need to support setting it here, e.g. `riops_max`, `wiops_max`, ... 
 
 #### Per-lane overrides
 
