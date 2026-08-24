@@ -1462,6 +1462,66 @@ class TestWorktreeCharsetGuard:
         assert "gate-safe" in proc.stderr
 
 
+class TestUsageEnvironmentContract:
+    """RG-7: usage() exposes the environment contract, flag semantics, and
+    per-lane metadata; --list stays 3-column machine-readable."""
+
+    def test_help_documents_env_contract_and_flag_caveat(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "--help")
+        assert proc.returncode == 0, proc.stderr
+        for var in ("CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_EXTRA_MOUNTS",
+                    "RUN_GATE_MOUNT_ALIAS"):
+            assert var in proc.stdout
+        assert "still enforce assay's own clean-tree rule" in proc.stdout
+
+    def test_table_shows_budget_memory_clean_tree_and_description(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            budget = "30m"
+            memory = "2g"
+            description = "unit suite in the unified tester"
+            """)
+        out = run_tool(proj, "--help").stdout
+        assert "budget=30m (advisory)" in out
+        assert "memory=2g" in out
+        assert "clean_tree=true" in out
+        assert "unit suite in the unified tester" in out
+
+    def test_dirty_ok_lane_marked_false_in_usage(self, tmp_path):
+        # SIMPLE_LANE already ships clean_tree = false — the FALSE marker
+        # must be loud so a reader knows the default was consciously waived.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        assert "clean_tree=FALSE" in run_tool(proj, "--help").stdout
+
+    def test_empty_description_rejected(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE.replace(
+            'environment = "tester-unified"',
+            'environment = "tester-unified"\ndescription = ""'))
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "'description' must be a non-empty string" in proc.stderr
+
+    def test_list_output_stays_three_column(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE.replace(
+            'environment = "tester-unified"',
+            'environment = "tester-unified"\nbudget = "5m"\ndescription = "x"'))
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 0
+        assert proc.stdout.splitlines() == ["suite\tcommand\ttester-unified"]
+
+
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
     CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested

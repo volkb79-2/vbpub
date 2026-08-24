@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 10  # rev 9: RG-5 gate-safe worktree paths (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 11  # rev 10: RG-6 exec remedy per name source; rev 9 RG-5 gate-safe paths (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -129,7 +129,7 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(
         table,
         {"kind", "environment", "argv", "assay_lane", "assay_command", "pins",
-         "clean_tree", "budget", "memory"},
+         "clean_tree", "budget", "memory", "description"},
         f"{where} [lanes.{name}]",
     )
     kind = table.get("kind")
@@ -137,6 +137,10 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\" or \"assay\" (got {kind!r})")
     if not isinstance(table.get("environment"), str) or not table["environment"].strip():
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
+    if "description" in table and (not isinstance(table["description"], str)
+                                   or not table["description"].strip()):
+        fail(f"{where} [lanes.{name}]: 'description' must be a non-empty string "
+             f"(shown by --help; keep it one line)")
     if "budget" in table:
         _validate_budget(table["budget"], f"{where} [lanes.{name}]")
     if "memory" in table:
@@ -674,23 +678,48 @@ def cmd_list(lanes: dict) -> int:
 
 
 def usage(lanes: dict, inherited: set[str] | None = None) -> str:
+    inherited = inherited or set()
+    table = sorted(lanes.items())
     lines = [
         f"{PROG} rev {__revision__} — the per-project gate entrypoint",
         "",
         "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty]",
-        "       run-gate.py --list",
+        "       run-gate.py --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
-    inherited = inherited or set()
-    table = sorted(lanes.items())
     if not table:
         lines.append("  (none defined)")
     for name, lane in table:
         marker = "*" if name in inherited else ""
-        lines.append(f"  {name:<24} kind={lane['kind']:<8} "
-                     f"environment={lane['environment']}{marker}")
+        bits = [f"kind={lane['kind']}",
+                f"environment={lane['environment']}",
+                "clean_tree=true" if lane.get("clean_tree", True)
+                else "clean_tree=FALSE"]
+        if lane.get("budget"):
+            bits.append(f"budget={lane['budget']} (advisory)")
+        if lane.get("memory"):
+            bits.append(f"memory={lane['memory']}")
+        lines.append(f"  {name:<24}{marker} " + "  ".join(bits))
+        if lane.get("description"):
+            lines.append(f"  {'':<24}  {lane['description']}")
     lines += [
+        "",
+        "flags:",
+        "  --worktree PATH   judge — and execute lanes IN — a different tree; the",
+        "                    invoking checkout is never judged by side effect",
+        "  --allow-dirty     bypass THIS tool's clean-tree refusal; assay lanes",
+        "                    still enforce assay's own clean-tree rule afterwards",
+        "                    (two independent layers — the flag lifts only this one)",
+        "",
+        "environment contract (DERIVE / READ / FAIL — no silent defaults):",
+        "  CGROUP_PARENT_DEV_BACKGROUND  container lanes take their cgroup slice",
+        "                                from the environment's declared cgroup_slice,",
+        "                                else THIS variable; absent = hard error",
+        "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
+        "                                to EPHEMERAL container lanes (e.g. docker.sock)",
+        "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
+        "                                mount view when none is derivable (bare host)",
         "",
         "Lane declarations: run-gate.toml next to this script; shared environment",
         "facts may live in an enclosing repo-root run-gate.toml. Judgment policy",

@@ -30,8 +30,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 ## 2. CLI contract
 
 - `R-01` `<lane>` runs one lane; `--list` emits `name<TAB>kind<TAB>environment`
-  per lane, sorted by name; `--help`/no-args prints revision + lane table;
-  unknown lane exits non-zero naming the known lanes and the config path.
+  per lane, sorted by name — THREE columns, stable, machine-readable, never
+  extended (consumers parse it). `--help`/no-args prints revision + the
+  human lane table — each lane's `clean_tree`, advisory `budget`, `memory`,
+  and declared `description` — plus a FLAGS section (`--worktree`;
+  `--allow-dirty` with the caveat that assay lanes still enforce assay's own
+  clean-tree rule) and an ENVIRONMENT CONTRACT section naming every
+  environment variable the tool reads and when it fails
+  (`CGROUP_PARENT_DEV_BACKGROUND`, `RUN_GATE_EXTRA_MOUNTS`,
+  `RUN_GATE_MOUNT_ALIAS`) (RG-7); unknown lane exits non-zero naming the
+  known lanes and the config path.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking).
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
@@ -72,7 +80,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   VERIFIED in-lane via `<assay_command> --version`, which must succeed and
   report it — declaring it asserts the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
-  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`).
+  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
+  `description` (optional non-empty string, one line, shown by `--help`).
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The

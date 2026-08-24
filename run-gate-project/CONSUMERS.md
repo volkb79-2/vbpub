@@ -71,6 +71,7 @@ environment = "tester-unified" | "test-runner" | "host" | "<any central/project 
 budget = "20m"                      # advisory wall-clock; printed, never enforced here
 memory = "4g"                       # optional docker --memory (per-lane RAM override)
 clean_tree = true                   # default TRUE; false needs a written reason
+description = "one-line what/why"   # optional; shown by --help (never by --list)
 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted

@@ -24,7 +24,7 @@ SPEC §9.
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | FIXED 2026-08-24 |
-| RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | OPEN |
+| RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | FIXED 2026-08-24 |
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | OPEN |
@@ -305,6 +305,18 @@ nor caveats; the environment contract is invisible until first failure:
 clean_tree columns; optional `description` lane key (validated, shown);
 document the gitignore obligation for command-kind artifacts (see RG-13).
 Schema change additive; one parser owns it.
+
+**FIXED 2026-08-24:** `usage()` gains FLAGS (`--worktree`; `--allow-dirty`
+with the explicit two-layer caveat that assay still enforces its own
+clean-tree rule) and ENVIRONMENT CONTRACT sections naming all three
+variables the tool reads — `CGROUP_PARENT_DEV_BACKGROUND`,
+`RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS` — with failure semantics.
+The human lane table now shows `clean_tree`, advisory `budget`, `memory`,
+and a new validated optional `description` key (one line, `--help` only).
+`--list` stays THREE columns by design: it is the machine-readable contract
+(CONSUMERS anti-goal) and never grows columns. SPEC R-01/R-08 amended;
+CONSUMERS schema comment updated. Gitignore obligation for command-kind
+artifacts lands with RG-10/RG-13. Tests: TestUsageEnvironmentContract x5.
 
 ## RG-8 — no `--dry-run`
 
