@@ -1289,6 +1289,7 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
 
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   worktree: Path, env: dict, env_source: str, env_name: str,
+                  slice_name: str | None, slice_src: str,
                   dry_run: bool = False) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
@@ -1322,15 +1323,23 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             argv += ["-e", f"{key}={value}"]
     argv += [name, "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
-          f"container {name}", flush=True)
+          f"container {name} | slice {slice_name or '(none)'} ({slice_src})",
+          flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
+    # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
+    # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
+    # (RG-19). The slice name itself stays visible: it is mechanics, not a
+    # credential.
+    print(f"run-gate: docker argv: "
+          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          flush=True)
     if dry_run:
         # RG-8: name resolution + running-check above are rehearsed too —
         # a dry-run against a stopped runner reports the real refusal.
-        print(f"run-gate: DRY RUN — would exec {name} ({name_src}); "
-              f"no command was run", flush=True)
+        print(f"run-gate: DRY RUN — the argv above is what a live run would "
+              f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
     code = subprocess.run(argv).returncode
     print_lane_artifacts(lane, lane_name, project_dir, worktree)
@@ -1561,7 +1570,33 @@ def main(argv: list[str] | None = None) -> int:
         # potentially-blocking step, in sorted-name order, released in
         # finally.
         slice_name = slice_src = None
-        if env and env.get("mode") != "exec":
+        if env and env.get("mode") == "exec":
+            # Review fix (R-05): exec lanes DISCLOSE their slice but never
+            # memory-admit or cap: the persistent runner predates this
+            # invocation (its placement was decided when CIU started it) and
+            # `docker exec` can neither place nor cap work in a slice.
+            if env.get("cgroup_slice"):
+                print(f"run-gate: WARNING: cgroup_slice on exec environment "
+                      f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
+                      f"— docker exec cannot enforce slice placement or caps; "
+                      f"the runner is governed by how it was started",
+                      flush=True)
+                slice_name = env["cgroup_slice"]
+                slice_src = f"declared {env_source}, naming-only"
+            else:
+                ambient = os.environ.get(CGROUP_ENV_VAR)
+                if ambient:
+                    slice_name = ambient
+                    slice_src = f"${CGROUP_ENV_VAR}, naming-only"
+                else:
+                    slice_src = (f"no cgroup_slice declared and no "
+                                 f"${CGROUP_ENV_VAR}")
+            if lane.get("resources") or lane.get("memory"):
+                print(f"run-gate: WARNING: lane {args.lane!r} declares "
+                      f"resources/memory but its environment is exec-mode — "
+                      f"resource admission and --memory caps apply to "
+                      f"ephemeral container lanes only", flush=True)
+        elif env:
             slice_name, slice_src = resolve_slice(env, env_source)
             check_slice_memory_admission(lane, args.lane, slice_name,
                                          slice_src)
@@ -1573,6 +1608,7 @@ def main(argv: list[str] | None = None) -> int:
             elif env.get("mode") == "exec":
                 code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
                                      env, env_source, lane_environment_name(lane),
+                                     slice_name, slice_src,
                                      dry_run=args.dry_run)
             else:
                 code = run_container_lane(lane, args.lane, eff_proj, repo,

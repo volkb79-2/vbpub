@@ -67,8 +67,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   from a tree at an unsafe path refuses (exit 2) before execution, naming
   the offending characters.
 - `R-05` The tool prints, before executing: revision, lane name, environment
-  source, resolved slice + its source, and (container lanes) the full docker
-  argv. Mechanics are visible, never buried.
+  source, resolved slice + its source (on exec lanes this is naming-only
+  disclosure — `docker exec` can neither place nor cap work), and (container
+  AND exec lanes) the fully assembled docker argv with forwarded values
+  redacted (RG-19). Mechanics are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
@@ -271,8 +273,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   is printed and exit is 0. Container lanes print the identical docker argv
   a live run would (same assembly code path; only the container NAME differs
   by pid/epoch) and start nothing; exec lanes rehearse name resolution AND
-  the runner-running preflight (a stopped runner reports its real refusal)
-  but exec nothing; host lanes print the argv and cwd and run nothing. No
+  the runner-running preflight (a stopped runner reports its real refusal),
+  print the identical redacted docker-exec argv a live run would, but exec
+  nothing; host lanes print the argv and cwd and run nothing. No
   evidence-path disclosure on a dry run — nothing ran, no artifact landed.
 
 - `R-29` **Resource-aware admission (RG-20):** gates are admitted by RAM
@@ -302,6 +305,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   cycles impossible regardless of how each project lists its services.
   `--dry-run` plans the serialization but never blocks. Host/exec lanes get
   shared-infra rules only — their RAM does not land in this tool's slice.
+  On an exec lane a `cgroup_slice`/`resources.memory` declaration draws a
+  loud naming-only WARNING (docker exec has neither placement nor caps;
+  pretending otherwise would be enforcement theater), never a refusal.
 
 - `R-30` **Doctor (RG-9):** `doctor` recomposes the implemented preflights
   into one first-contact command — docker present; per-environment slice

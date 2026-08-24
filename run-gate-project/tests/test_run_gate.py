@@ -1215,6 +1215,99 @@ def test_safe_directory_uses_git_config_global_env():
     assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
 
 
+class TestExecDisclosure:
+    """Review fix (R-05/R-28): exec lanes disclose mechanics exactly like
+    ephemeral lanes do — the governing slice (naming-only: docker exec can
+    neither place nor cap work) and the fully assembled redacted argv, live
+    AND dry. Declarations that LOOK like governance on an exec lane draw a
+    loud warning instead of silent no-op enforcement theater."""
+
+    def _runner_up(self, tmp_path, monkeypatch) -> tuple[Path, Path, Path]:
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n"
+        )
+        commit_all(repo, "ciu config")
+        log = fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
+        shim.write_text(body)
+        return repo, proj, log
+
+    def test_live_run_discloses_slice_and_redacted_argv(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv("SECRET_TOKEN", "hunter2")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    forward_env = ["SECRET_TOKEN"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert ("slice dev-background.slice "
+                "($CGROUP_PARENT_DEV_BACKGROUND, naming-only)") in proc.stdout
+        assert "docker argv:" in proc.stdout
+        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "hunter2" not in proc.stdout + proc.stderr
+
+    def test_dry_run_prints_same_argv_and_execs_nothing(
+            self, tmp_path, monkeypatch):
+        repo, proj, log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv("SECRET_TOKEN", "hunter2")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    forward_env = ["SECRET_TOKEN"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo), "--dry-run")
+        assert proc.returncode == 0, proc.stderr
+        assert "docker argv:" in proc.stdout
+        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "hunter2" not in proc.stdout + proc.stderr
+        assert "DRY RUN — the argv above is what a live run would exec" \
+            in proc.stdout
+        # The `ps` preflight ran (rehearsed); no `exec` ever did.
+        assert docker_execs(log) == []
+
+    def test_declared_cgroup_slice_warns_naming_only(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice = "dev-background.slice"'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert "WARNING: cgroup_slice on exec environment" in proc.stdout
+        assert "naming-only" in proc.stdout
+        assert "slice dev-background.slice (declared" in proc.stdout
+
+    def test_resources_on_exec_lane_warned_not_enforced(
+            self, tmp_path, monkeypatch):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            "clean_tree = false",
+            'clean_tree = false\n\n    [lanes.suite.resources]\n'
+            '    memory = "999G"\n    shared = ["db"]'))
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr  # 999G over any budget: NOT enforced
+        assert ("resources/memory but its environment is exec-mode") in proc.stdout
+
+    def test_no_slice_anywhere_still_runs(self, tmp_path, monkeypatch):
+        """Behavior-compat oracle: disclosure never adds an exec-mode refusal."""
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 0, proc.stderr
+        assert "slice (none)" in proc.stdout
+
+
 class TestExecInnerWiring:
     """Reviewer's hollow-wiring probe: the exec path must carry the REAL
     inner command, not a stub. These tests fail if build_command_inner is
