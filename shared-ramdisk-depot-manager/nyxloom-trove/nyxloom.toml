@@ -117,7 +117,10 @@ environment = "srdm-gate"
 argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} e2e"]
 phase = "pre-merge"
 asserts = ["tests-pass"]
-timeout_seconds = 2400
+# RG-13 estate sweep pairing rule: consumer timeout must never be TIGHTER
+# than the paired lane's budget (run-gate.toml [lanes.e2e] budget = "60m").
+# Was 2400 (40m) — the consumer truncated a lane whose own budget allows 60.
+timeout_seconds = 3600
 environment = "srdm-gate-e2e"
 
 # Proves the gate REJECTS known-bad code. Each canary breaks exactly one

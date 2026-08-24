@@ -196,10 +196,16 @@ shared-ramdisk-depot-manager/
 
 ## Testing
 
+`./run-gate.py` is the canonical test entrypoint (`--list` discovers the
+declared lanes); definitions live in `run-gate.toml`, whose host lanes
+invoke the drivers below:
+
 ```bash
 tools/gate.sh          # build, vet, and the O1–O5 oracles, in srdm-gate
 tools/canary-run.sh    # prove each oracle REJECTS a break of its contract
 ```
+
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 Never the devcontainer — and in srdm's case the devcontainer could not
 pretend, having no Go toolchain. Both scripts refuse to launch until the

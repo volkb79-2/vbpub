@@ -583,3 +583,9 @@ External references:
 - Python manifest — <https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json>
 - MCR tag list — <https://mcr.microsoft.com/v2/devcontainers/python/tags/list>
 - Awesome Docker — <https://github.com/veggiemonk/awesome-docker>
+
+## Testing
+
+`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+discovers the declared lanes; definitions live in `run-gate.toml`.
+See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

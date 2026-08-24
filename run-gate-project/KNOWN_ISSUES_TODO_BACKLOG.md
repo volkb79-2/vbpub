@@ -30,7 +30,7 @@ SPEC §9.
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | FIXED 2026-08-24 |
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
-| RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
+| RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | FIXED 2026-08-24 |
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | FIXED 2026-08-24 |
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
 | RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
@@ -518,6 +518,41 @@ they share the same fix surface:
 Related but separate: assay's own CONSUMERS.md teaches the superseded
 pre-adoption cmru wiring — filed as assay B011, not here.
 
+**FIXED 2026-08-24 (rev 21) — all five items, closed LAST as the estate
+retro:**
+
+1. **Worked example added** to CONSUMERS.md ("Worked example — run-gate ×
+   assay, end to end"): pyz + sidecar acquisition → minimal R0 `assay.toml`
+   (template keys verbatim) → `kind="assay"` lane with pins → canonical
+   consumer pointer → first run → reading/verifying
+   `.assay/verdict-<lane>.json`. R1+ adoption noted as an assay.toml-only
+   edit.
+2. **Gitignore obligation stated** as adoption step 5: copied-script repos
+   must replicate the monorepo root's ignores for every path their lanes
+   write (union of declared `artifacts` lists = checklist), else the NEXT
+   lane's clean-tree check refuses on yesterday's evidence.
+3. **Step 4 retro-executed ×9 adopters** (assay, ciu, cmru, nyxloom, topos,
+   pwmcp, shared-ramdisk-depot-manager, modern-debian-tools-python-debug,
+   plesk-mailbox-create). Deviation with reason: no project carries an
+   AGENTS.md, so the canonical-entrypoint line landed in each project's own
+   README under "## Testing" (srdm's existing Testing section amended to
+   lead with it).
+4. **Root-level discovery added**: vbpub root README gained the
+   `cd <project> && ./run-gate.py --list` line pointing at CONSUMERS.md.
+5. **Budget↔timeout drift guarded by test**, estate-wide:
+   `TestEstateBudgetTimeoutPairing` loads each nyxloom-trove project's lanes
+   with the REAL parser and asserts consumer `timeout_seconds >= lane
+   budget` wherever a gate argv names the lane as a whole token (8 live
+   pairings across assay/ciu/nyxloom/topos/srdm; cmru.toml steps carry no
+   timeout field — nothing to pair; srdm canary-run.sh names no lane —
+   skipped by construction). The sweep caught ONE real drift on its first
+   run and it was reconciled: srdm `[gates.privileged-e2e]` timeout 2400s
+   truncated the `e2e` lane whose budget is 60m → widened to 3600s with a
+   comment naming this rule. Rule documented in CONSUMERS.md ("Consumer
+   timeouts must not cut lanes short") + SPEC `R-32`.
+
+With this entry the RG sweep (RG-1…RG-20) is complete.
+
 ## RG-14 — release model: wheel as second artifact beside the canonical script
 
 **Enhancement, 2026-08-22 (operator question, answered in review session).**
@@ -555,8 +590,9 @@ the entry's `run-gate-vX.Y.Z` tag shape becomes `run-gate-v<derived>` (e.g.
 `run-gate-v20`) because the script's whole version story is the bare
 revision integer until semver meaning exists; the enforced invariant is
 tag-body == wheel version. CONSUMERS.md gained "Distribution — script first,
-wheel second"; SPEC §7 rewritten + `R-31`. First release: tag `run-gate-v20`
-after merge, publish via cmru's wheel-publish.
+wheel second"; SPEC §7 rewritten + `R-31`. First release: tag
+`run-gate-v21` after merge (the RG-13 rev bump rides along), publish via
+cmru's wheel-publish.
 
 ## RG-15 — assay lanes must execute in the selected worktree, not the invoking checkout
 

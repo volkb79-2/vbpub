@@ -7,6 +7,7 @@ Every argv assertion compares the LIST, never a joined string.
 
 import fcntl
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -2713,3 +2714,62 @@ class TestWheelPackaging:
         assert wheeled.returncode == 0, wheeled.stderr
         assert canon.stdout.strip() != ""
         assert wheeled.stdout == canon.stdout
+
+
+# ---------------------------------------------------------------------------
+# RG-13 item 5 — estate-wide budget↔timeout pairing sweep (R-32)
+# ---------------------------------------------------------------------------
+
+_BUDGET_UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def _budget_seconds(value: str) -> int:
+    return int(value[:-1]) * _BUDGET_UNITS[value[-1]]
+
+
+class TestEstateBudgetTimeoutPairing:
+    """Every consumer gate that runs a project's lane must give it at least
+    the lane's declared budget: run-gate's budget is advisory and PRINTED,
+    but a consumer timeout tighter than the budget silently truncates the
+    lane before its own declared wall-clock expires — the drift RG-13 filed.
+    Pairing rule (assay's assert-it pattern, replicated estate-wide): for
+    each nyxloom trove whose project declares lanes in run-gate.toml (loaded
+    with the REAL parser), any [gates.X] table whose argv names that lane as
+    a whole token must carry timeout_seconds >= lane budget. cmru.toml steps
+    carry no timeout field, so they have nothing to pair. A gate whose argv
+    invokes a helper rather than a lane (srdm's canary-run.sh) pairs with
+    nothing and is skipped by construction."""
+
+    @pytest.mark.parametrize("trove", sorted(
+        (RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))),
+        ids=lambda p: p.parent.parent.name)
+    def test_consumer_timeouts_never_cut_lanes_short(self, trove):
+        proj_dir = trove.parent.parent
+        if not (proj_dir / "run-gate.toml").is_file():
+            pytest.skip(f"{proj_dir.name} has no run-gate.toml")
+        project, _, central, central_path = run_gate.load_config(proj_dir)
+        lanes = run_gate.merge_lanes(
+            project.get("lanes", {}), central,
+            proj_dir, proj_dir.resolve().parent, central_path)
+        gates = tomllib.loads(trove.read_text()).get("gates", {})
+        paired = []
+        for gate_name, gate in gates.items():
+            timeout = gate.get("timeout_seconds")
+            argv_text = " ".join(gate.get("argv", []))
+            if not isinstance(timeout, int):
+                continue
+            for lane_name, lane in lanes.items():
+                budget = lane.get("budget")
+                if budget is None:
+                    continue
+                if re.search(rf"(?<![\w-]){re.escape(lane_name)}(?![\w-])",
+                             argv_text):
+                    paired.append((gate_name, lane_name))
+                    assert timeout >= _budget_seconds(budget), (
+                        f"{trove}: [gates.{gate_name}] timeout_seconds="
+                        f"{timeout} is TIGHTER than {proj_dir.name} lane "
+                        f"'{lane_name}' budget {budget} — widen the consumer "
+                        f"timeout or shrink the declared budget")
+        assert paired, (
+            f"{trove}: no gate↔lane pairing found — either the trove stopped "
+            f"pointing at run-gate lanes or the pairing regex rotted")

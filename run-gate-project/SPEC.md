@@ -8,7 +8,8 @@ failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional 
 disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--dry-run`
 plan rehearsal (`R-28`), RG-20 resource-aware admission (`R-29`, lane `resources`
 key in `R-08`), RG-9 doctor preflight verb (`R-30`), RG-14 wheel as second
-artifact (`R-31`). Distilled from `README.md` (design
+artifact (`R-31`), RG-13 adoption hygiene + estate pairing sweep (`R-32`).
+Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -325,9 +326,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   asserting identical `--list` behavior between copied script and installed
   console script. Build toolchain pinned exactly (assay/ciu precedent);
   publish goes through cmru's wheel-publish; a release tag names the derived
-  version (`run-gate-v<version>`, e.g. `run-gate-v20`). The wheel NEVER
+  version (`run-gate-v<version>`, e.g. `run-gate-v21`). The wheel NEVER
   becomes required — CONSUMERS.md states it in prose and this contract
   forbids any lane or check that assumes an install.
+
+- `R-32` **Adoption hygiene + estate pairing sweep (RG-13):** the adoption
+  contract in CONSUMERS.md is complete enough to execute without tribal
+  knowledge: a worked run-gate × assay example stitches both halves; the
+  gitignore obligation for lane-written evidence (`.assay/`, declared
+  `artifacts`) is stated as an adoption step, because copied-script repos do
+  not inherit the monorepo root's ignores and a dirty tree fails the NEXT
+  lane's clean-tree check; every adopting project names `./run-gate.py` as
+  its canonical test entrypoint in its own README; and the repo-root README
+  carries the discovery line (`cd <project> && ./run-gate.py --list`).
+  Consumer `timeout_seconds` paired with a lane's advisory `budget` must
+  never be TIGHTER than it: `TestEstateBudgetTimeoutPairing` loads each
+  nyxloom-trove project's lanes with the REAL parser and enforces
+  timeout >= budget wherever a gate argv names the lane as a whole token —
+  the drift is caught by test, not by memory.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

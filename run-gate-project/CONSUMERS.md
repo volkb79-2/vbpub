@@ -35,8 +35,15 @@ lane declarations look like per project type. Companion to `README.md`
    at TEST time instead of dying as `unknown lane` at dispatch time — the
    pointer is part of the dispatched surface, so it is certified like any
    other artifact, not assumed.
-4. **AGENTS.md**: add one line naming `./run-gate.py` as the canonical test
+4. **AGENTS.md/README**: add one line naming `./run-gate.py` as the canonical test
    entrypoint (do this IN the adoption commit — docs never lead the tool).
+5. **Gitignore the artifacts.** Lanes write evidence into the tree —
+   `.assay/`, `coverage.json`, and anything else a lane's `artifacts` list
+   names. The vbpub root `.gitignore` already covers internal projects; a
+   copied-script repo MUST replicate the entries for every path its lanes
+   write, or the NEXT lane's `clean_tree` check refuses mysteriously on
+   yesterday's evidence. Treat the union of declared `artifacts` lists as
+   the checklist.
 
 ## Central defaults (vbpub monorepo)
 
@@ -158,6 +165,59 @@ Division of labor, spelled out:
 | verdict artifact + PASS/FAIL meaning | assay |
 | WHEN a lane must pass (release policy) | the project's release config (cmru) |
 
+### Worked example — run-gate × assay, end to end
+
+The halves are documented separately (this file owns orchestration;
+[`../assay/docs/CONSUMERS.md`](../assay/docs/CONSUMERS.md) owns judgment).
+Here is the whole seam on one page:
+
+1. **Get the judge** into the project with its sidecar:
+   ```bash
+   mkdir -p tools/assay && cp /path/to/assay-<version>.pyz{,.sha256} tools/assay/
+   (cd tools/assay && sha256sum -c assay-<version>.pyz.sha256)
+   ```
+2. **Declare one R0 lane** in the project root as `assay.toml` — start from
+   `assay/templates/consumer-assay.toml`; R0 claims nothing but a
+   schema-validated verdict:
+   ```toml
+   schema_version = 2
+
+   [lanes.unit]
+   scope = "S1"
+   rigor = ["R0"]
+   enforcement = "gate"
+   argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
+   env = {}
+   env_passthrough = []
+   budget = "20m"
+   allow_argv_append = false
+   ```
+3. **Declare the run-gate lane** in `run-gate.toml` — orchestration + pin:
+   ```toml
+   [lanes.unit]
+   kind = "assay"
+   assay_lane = "unit"                 # -> assay.toml [lanes.unit]
+   environment = "tester-unified"
+   assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
+
+   [lanes.unit.pins.assay]
+   version = "<version>"               # verified via <assay_command> --version
+   sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own dir
+   ```
+4. **Point the consumer** at it in the canonical, `validate-pointers`-certifiable
+   form:
+   `argv = ["bash", "-c", "cd {worktree}/<proj> && exec ./run-gate.py --worktree {worktree} unit"]`
+5. **First run:** `./run-gate.py unit` — run-gate verifies the pin, runs the
+   lane in the declared environment, prints the verdict path
+   (`.assay/verdict-unit.json`) on success AND failure, and passes assay's
+   exit status through as the gate decision.
+6. **Read the evidence:** `assay verify .assay/verdict-unit.json`
+   re-validates the retained verdict later. Keep `.assay/` gitignored
+   (adoption step 5) so yesterday's evidence never dirties today's tree.
+
+Adopting R1/R2/R3 (coverage floors, mutation, canary) is an `assay.toml`
+edit per assay's docs — the run-gate lane above does not change.
+
 ### `kind = "command"` — projects that cannot (or need not) adopt assay
 
 The lane runs a command in the declared environment with the same
@@ -241,6 +301,18 @@ Scripting against gates: the lane's own exit status passes through
 unchanged; run-gate's own refusals reserve **2** = configuration/refusal and
 **3** = execution-infrastructure failure, so CI fan-out can distinguish
 "your config says no" from "docker/git broke" without parsing stderr.
+
+### Consumer timeouts must not cut lanes short
+
+A consumer `timeout_seconds` tighter than the paired lane's `budget`
+silently truncates the lane before its own declared wall-clock expires —
+the budget is advisory and printed, but only if the consumer lets the lane
+run that long. The rule: **consumer timeout >= lane budget** (wider is
+fine). The estate sweep in
+`run-gate-project/tests/test_run_gate.py::TestEstateBudgetTimeoutPairing`
+enforces this pairing for every trove that points at run-gate lanes (assay's
+assert-it pattern, replicated estate-wide); when you add a gate, it joins
+the sweep automatically by naming the lane in its argv.
 
 ## Per-project-type recipes
 

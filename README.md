@@ -20,6 +20,10 @@ one config and one installed CLI.
 
 Each product has its own README with product-specific detail.
 
+Testing is uniform across the projects that adopted the gate entrypoint:
+`cd <project> && ./run-gate.py --list` discovers that project's declared
+lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
+
 ## Repository setup and initial CMRU build
 
 CMRU itself is the first wheel to build in a fresh checkout. The bootstrap script is
