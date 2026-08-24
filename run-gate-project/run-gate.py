@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 9  # rev 8: RG-3 dual-mount guard (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 10  # rev 9: RG-5 gate-safe worktree paths (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -567,16 +567,20 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
 
 
 def resolve_container_name(env_name: str, env: dict, repo: Path,
-                           env_source: str) -> tuple[str, str]:
+                           env_source: str) -> tuple[str, str, str]:
     """Resolve the persistent container name for an exec-mode environment.
 
-    Priority: declared `container_name` > CIU convention `{prefix}-{env_name}`.
-    The CIU prefix is read from the rendered ciu.global.toml [deploy] table
-    (project_name + environment_tag), falling back to DOCKER_NETWORK_INTERNAL.
-    No silent default — missing config is a hard error naming what to fix.
+    Returns (name, human-readable source, START REMEDY). The remedy names the
+    authority that actually owns the resolved name — a declared container_name
+    points at the project's own deployment authority, a ciu-derived name at
+    the ciu lifecycle (RG-6: a dstdns-shaped project must never be told to
+    run a vbpub-specific ciu directory).
     """
     if env.get("container_name"):
-        return env["container_name"], f"declared container_name ({env_source})"
+        return env["container_name"], f"declared container_name ({env_source})", \
+            "start it via YOUR project's deployment authority (whoever owns " \
+            "this container); run-gate refuses to guess or auto-start " \
+            "deployment-managed containers"
     global_toml = repo / "ciu.global.toml"
     if not global_toml.is_file():
         fail(f"exec-mode environment '{env_name}' needs either a declared "
@@ -587,16 +591,21 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
             deploy = tomllib.load(fh).get("deploy", {})
     except tomllib.TOMLDecodeError as exc:
         fail(f"{global_toml}: invalid TOML: {exc}")
+    ciu_remedy = (f"start it via this project's ciu lifecycle ('ciu render' "
+                  f"if stale, then 'ciu up'; config: {global_toml}); run-gate "
+                  f"refuses to guess or auto-start deployment-managed containers")
     project = deploy.get("project_name") or ""
     tag = deploy.get("environment_tag") or ""
     if project and tag:
         return f"{project}-{tag}-{env_name}", \
-            f"ciu.global.toml deploy.project_name+environment_tag ({global_toml})"
+            f"ciu.global.toml deploy.project_name+environment_tag ({global_toml})", \
+            ciu_remedy
     network = deploy.get("network_name") or ""
     if network and network.endswith("-network"):
         prefix = network[:-len("-network")]
         return f"{prefix}-{env_name}", \
-            f"ciu.global.toml deploy.network_name stripped of '-network' ({global_toml})"
+            f"ciu.global.toml deploy.network_name stripped of '-network' ({global_toml})", \
+            ciu_remedy
     fail(f"cannot derive container name from {global_toml}: need "
          f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
          f"or declare container_name on the environment")
@@ -614,7 +623,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — exec-mode lanes need it")
-    name, name_src = resolve_container_name(env_name, env, repo, env_source)
+    name, name_src, start_remedy = resolve_container_name(
+        env_name, env, repo, env_source)
     running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
                              capture_output=True, text=True)
     if running.returncode != 0:
@@ -623,9 +633,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     names = set(running.stdout.strip().splitlines())
     if name not in names:
         fail(f"persistent runner '{name}' ({name_src}) is not running — "
-             f"start it via 'ciu up --dir tools/test-runner' or the project's "
-             f"runner lifecycle command before invoking this lane; run-gate "
-             f"refuses to guess or auto-start deployment-managed containers")
+             f"{start_remedy}")
     inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree)
     argv = [docker, "exec", "--workdir", str(repo)]

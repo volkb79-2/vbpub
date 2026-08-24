@@ -117,8 +117,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   on the environment, or derived from the repo's `ciu.global.toml` [deploy]
   table (`project_name + environment_tag`, falling back to
   `network_name stripped of "-network"`). Missing config → hard error naming
-  what to fix. If the resolved container is not running → hard error naming
-  the lifecycle command to start it; no silent fallback.
+  what to fix. If the resolved container is not running → hard error whose
+  START REMEDY names the authority the name was resolved FROM (RG-6):
+  declared `container_name` → the project's OWN deployment authority;
+  ciu.global.toml-derived → the ciu lifecycle (`ciu render` if stale, then
+  `ciu up`) naming the config file used. A non-ciu project must never be
+  prescribed a ciu command. No silent fallback.
 
 - `R-14b` **Extra mounts:** `$RUN_GATE_EXTRA_MOUNTS` is an optional colon-
   separated list of `host=container` pairs appended as `-v` flags to ephemeral

@@ -1114,7 +1114,28 @@ class TestExecMode:
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 2
         assert "not running" in proc.stderr
+        # RG-6: the remedy names the ciu lifecycle AND the config file used.
         assert "ciu up" in proc.stderr
+        assert "ciu.global.toml" in proc.stderr
+
+    def test_exec_mode_declared_name_refusal_prescribes_project_authority(
+            self, tmp_path, monkeypatch):
+        # RG-6 oracle: a dstdns-shaped project (declared container_name, no
+        # ciu.global.toml anywhere) must NEVER be told to run a ciu command.
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\ncontainer_name = "custom-name"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in', 'case "$1" in\n  ps) : ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2
+        assert "declared container_name" in proc.stderr
+        assert "deployment authority" in proc.stderr
+        assert "ciu" not in proc.stderr
 
     def test_exec_mode_fails_without_ciu_config_or_declared_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)

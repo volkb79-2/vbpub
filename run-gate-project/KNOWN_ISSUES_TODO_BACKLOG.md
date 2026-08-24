@@ -23,7 +23,7 @@ SPEC §9.
 | RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
 | RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
-| RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | OPEN |
+| RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | FIXED 2026-08-24 |
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | OPEN |
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
@@ -271,6 +271,16 @@ estate rule that a remedy message must prescribe a CORRECT fix.
 ciu.global.toml-derived → name that file and `ciu render`/`ciu up` as
 applicable. **Oracle:** exec lane with stopped container → message names the
 source actually used; dstdns-shaped project never sees ciu's command.
+
+**FIXED 2026-08-24** (remedy derived from resolution source, per the entry):
+`resolve_container_name` now returns `(name, source, start_remedy)` — a
+declared `container_name` yields "start it via YOUR project's deployment
+authority", ciu-derived names yield `ciu render`/`ciu up` naming the config
+file used. The not-running refusal interpolates the remedy verbatim; the
+hardcoded `ciu up --dir tools/test-runner` is gone. SPEC R-14a amended;
+CONSUMERS dstdns recipe notes the rule. Oracle covered both ways: declared-
+name refusal asserts `"ciu"` appears NOWHERE in stderr; ciu-derived refusal
+asserts the lifecycle AND `ciu.global.toml` are named.
 
 ## RG-7 — usage()/`--list` hide the environment contract and lane metadata
 

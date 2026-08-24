@@ -218,7 +218,11 @@ the gate entry to the two-token form.
 **Python app estate with its own runner (dstdns):** dstdns uses `mode = "exec"`
 against its CIU-managed persistent `test-runner`. run-gate owns invocation
 uniformly (clean-tree, budget, worktree substitution); CIU owns build/deploy/
-lifecycle. The old `testing-exec.sh` shim is retired — run-gate execs directly.
+lifecycle. A not-running refusal prescribes the lifecycle of whichever
+authority resolved the container name — declared `container_name` → your
+project's own deployment authority; ciu-derived → the ciu lifecycle naming
+the config file (never a vbpub-specific remedy for another project's tree).
+The old `testing-exec.sh` shim is retired — run-gate execs directly.
 Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
 lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
 coverage work as they land (B1-style).
