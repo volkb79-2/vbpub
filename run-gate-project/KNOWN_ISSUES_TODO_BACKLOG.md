@@ -22,7 +22,7 @@ SPEC §9.
 | RG-2 | Pointer↔lane linkage untested estate-wide: meta-tests certify `run-gate.toml` while the daemon executes the trove pointer | Major | OPEN |
 | RG-3 | Dual-mount degenerates outside the cockpit namespace (`phys == repo` collapses both mounts) | Minor | FIXED 2026-08-24 |
 | RG-4 | `pins.version` is validated but never checked — provenance theater claiming more than the check performs | Minor | FIXED 2026-08-24 |
-| RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | OPEN |
+| RG-5 | `{worktree}` textual substitution: quoting/injection surface, doubled sites in pointer argvs | Minor | FIXED 2026-08-24 |
 | RG-6 | Exec-mode refusal prescribes a ciu-specific remedy for every project | Minor | OPEN |
 | RG-7 | `usage()`/`--list` do not surface the environment contract or lane metadata (budget, clean_tree, description) | Minor | OPEN |
 | RG-8 | No `--dry-run`: resolved docker argv/mounts/slice cannot be inspected without executing | Enhancement | OPEN |
@@ -242,6 +242,19 @@ run-gate, e.g. `RUN_GATE_WORKTREE`, reducing pointers to
 linkage surface.
 
 **SPEC owner:** R-02 (substitution contract).
+
+**FIXED 2026-08-24** (charset guard now; env-var migration deferred to the
+CIU-V7 cutover, per interview): `check_worktree_charset(worktree)` enforces
+`^[A-Za-z0-9_./][A-Za-z0-9_./-]*$` on the RESOLVED worktree before any lane
+runs — every kind uniformly (the daemon pointer recipe embeds `{worktree}`
+into bash strings regardless of what an individual lane does with it).
+Refusal is exit 2 naming the offending characters and the reason; mid-path
+leading-dash components are deliberately ALLOWED (absolute paths always
+start with `/`, so the flag look-alike hazard never materializes — tighter
+than the backlog's sketch, which wrongly admitted spaces). SPEC R-02
+amended; README "Gate-safe paths" bullet; CONSUMERS adoption step 3.
+Revisit at V7 cutover: out-of-band `RUN_GATE_WORKTREE` to shrink pointer
+argvs (and RG-2's linkage surface) entirely.
 
 ## RG-6 — exec-mode refusal prescribes a ciu-specific remedy for every project
 

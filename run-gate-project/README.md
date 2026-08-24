@@ -155,6 +155,10 @@ the tool's reason to exist and MUST be implemented + tested:
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
   Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
   (infrastructure) so scripts never parse prose to tell them apart.
+- **Gate-safe paths:** `{worktree}` is substituted textually into consumer
+  shell strings, so a judged tree at a path with whitespace or shell
+  metacharacters is refused up front (every lane kind) instead of
+  word-splitting or executing downstream.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury
   it in a stream a consumer might truncate.
 

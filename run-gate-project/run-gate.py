@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 8  # rev 7: RG-16 shared central lanes (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 9  # rev 8: RG-3 dual-mount guard (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -410,6 +410,26 @@ def substitute_worktree(argv: list[str], worktree: Path) -> list[str]:
     return [a.replace("{worktree}", str(worktree)) for a in argv]
 
 
+# RG-5: consumer pointers embed {worktree} into bash -c STRINGS unquoted
+# (`cd {worktree}/proj && exec ./run-gate.py --worktree {worktree} <lane>`),
+# so any path the tool substitutes must survive that embedding verbatim.
+# Gate-safe charset: letters/digits/_ . / -, no leading '-' (flag look-alike);
+# whitespace and shell metacharacters word-split or execute downstream, so a
+# tree living at such a path is refused instead of half-working.
+GATE_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./][A-Za-z0-9_./-]*$")
+
+
+def check_worktree_charset(worktree: Path) -> None:
+    text = str(worktree)
+    if GATE_SAFE_PATH_RE.fullmatch(text):
+        return
+    bad = sorted({c for c in text if not re.fullmatch(r"[A-Za-z0-9_./-]", c)})
+    fail(f"worktree path {text!r} is not gate-safe (offending character(s): "
+         f"{' '.join(repr(c) for c in sorted(bad))}): consumer pointers embed "
+         f"{{worktree}} into shell strings, so paths with whitespace or shell "
+         f"metacharacters are refused — relocate or rename the tree")
+
+
 def build_assay_inner(lane: dict, project_dir: Path) -> str:
     verdict = f".assay/verdict-{lane['assay_lane']}.json"
     parts = ["set -euo pipefail",
@@ -731,6 +751,10 @@ def main(argv: list[str] | None = None) -> int:
         # their `project_dir` parameter is the effective one, never the
         # invocation checkout when --worktree selects a different tree.
         eff_proj = effective_project_dir(project_dir, toplevel, worktree)
+        # RG-5: every lane kind refuses a metachar worktree path — the daemon
+        # pointer recipe embeds {worktree} into bash strings regardless of
+        # what this particular lane does with it.
+        check_worktree_charset(worktree)
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
         if not env:  # built-in 'host'

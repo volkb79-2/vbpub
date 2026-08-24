@@ -19,6 +19,9 @@ lane declarations look like per project type. Companion to `README.md`
    already defines them (see below).
 3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && ./run-gate.py --worktree {worktree} <lane>"]`.
+   `{worktree}` is substituted textually into a shell string, so judged
+   trees must live at gate-safe paths (letters/digits `_ . / -`; no spaces or
+   shell metacharacters) — the gate refuses any other path, every lane kind.
    The consumer adds NO test logic of its own — no suite argv, no lane
    sequencing, no coverage flags. All test definitions live in
    `run-gate.toml` (the SSOT); if multiple sub-lanes must run together,

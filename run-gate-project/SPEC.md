@@ -44,7 +44,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   **3** = execution-infrastructure failure (docker/git/mountinfo could not do
   their job). Uniform legacy exit 1 for every refusal is superseded.
   `{worktree}` in a lane argv is substituted textually with the judged
-  worktree path (all occurrences, every element).
+  worktree path (all occurrences, every element). Because consumer pointers
+  embed that path into `bash -c` STRINGS unquoted (RG-5), the resolved
+  worktree must be gate-safe — `^[A-Za-z0-9_./][A-Za-z0-9_./-]*$`, i.e. no
+  whitespace or shell metacharacters anywhere in the path; any lane kind run
+  from a tree at an unsafe path refuses (exit 2) before execution, naming
+  the offending characters.
 - `R-05` The tool prints, before executing: revision, lane name, environment
   source, resolved slice + its source, and (container lanes) the full docker
   argv. Mechanics are visible, never buried.

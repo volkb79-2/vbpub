@@ -1392,6 +1392,55 @@ class TestDualMountGuard:
         assert mounts == [f"{repo}:{repo}", f"{repo}:/workspaces/vbpub"]
 
 
+class TestWorktreeCharsetGuard:
+    """RG-5: {worktree} is substituted textually into consumer bash strings,
+    so a tree whose resolved path carries whitespace/shell metacharacters is
+    refused before any lane runs — every kind, uniformly."""
+
+    def test_estate_real_paths_are_gate_safe(self):
+        for p in ("/home/vb/volkb79-2/vbpub",
+                  "/workspaces/vbpub/.worktrees/run-gate-rg-sweep",
+                  "/tmp/pytest-of-vscode/pytest-1/test_x_0/repo.d"):
+            run_gate.check_worktree_charset(Path(p))  # must not raise
+
+    def test_metachars_rejected_at_helper(self):
+        for p in ("/tmp/a b", "/tmp/$(x)", "/tmp/`x`",
+                  "/tmp/a;b", "/tmp/x|y", "/tmp/'q'"):
+            with pytest.raises(run_gate.GateError) as exc:
+                run_gate.check_worktree_charset(Path(p))
+            assert "gate-safe" in str(exc.value)
+
+    def test_offending_characters_named_in_error(self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.check_worktree_charset(Path("/tmp/wei`rd"))
+        assert "'`'" in str(exc.value)
+
+    def test_space_path_refused_end_to_end_container_lane(self, tmp_path):
+        base = tmp_path / "bad path"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = make_project(repo, SIMPLE_LANE)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "gate-safe" in proc.stderr
+        assert str(repo) in proc.stderr
+
+    def test_space_path_refused_for_host_lane_too(self, tmp_path):
+        base = tmp_path / "also bad"
+        base.mkdir()
+        repo = make_repo(base)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "hi"]
+            """)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 2
+        assert "gate-safe" in proc.stderr
+
+
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
     CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested
