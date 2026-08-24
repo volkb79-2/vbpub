@@ -2932,6 +2932,49 @@ class TestDoctor:
         assert "[WARN] mountinfo" in proc.stdout or \
             "[OK] mountinfo" in proc.stdout
 
+    def test_exec_env_without_slice_warns_not_fails(self, tmp_path, monkeypatch):
+        """Review fix (R-30): exec environments need NO slice — the old
+        unconditional resolve_slice made doctor report a bogus [FAIL] for a
+        healthy exec project that has neither a declared slice nor ambient
+        var."""
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\n    container_name = "ext-runner"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "[WARN] slice for env runner (exec)" in proc.stdout
+        assert "[FAIL]" not in proc.stdout
+
+    def test_exec_env_declared_slice_is_naming_only_ok(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            'mode = "exec"',
+            'mode = "exec"\n    container_name = "ext-runner"\n'
+            '    cgroup_slice = "dev-background.slice"')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert ("[OK] slice for env runner (exec): dev-background.slice "
+                "(declared") in proc.stdout
+
+    def test_verify_slice_loaded_survives_missing_systemctl(self, monkeypatch,
+                                                            capsys):
+        """Review fix (R-30): run-dir present but systemctl not runnable —
+        loud skip on stderr, never a FileNotFoundError traceback."""
+        monkeypatch.setattr(run_gate.os.path, "isdir",
+                            lambda p: p == "/run/systemd/system")
+
+        def boom(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "systemctl")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        run_gate.verify_slice_loaded("dev-background.slice")  # must not raise
+        assert "cannot LoadState-check dev-background.slice" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # RG-14 — wheel as SECOND artifact + version discipline (R-31)

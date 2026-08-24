@@ -434,11 +434,21 @@ def resolve_slice(env: dict, env_source: str) -> tuple[str, str]:
 def verify_slice_loaded(slice_name: str) -> None:
     """LoadState pre-check ONLY where systemd is reachable (containerized
     contexts ship a shim / no systemd — there the -e passthrough carries the
-    slice and the suite's own governance tests verify placement)."""
+    slice and the suite's own governance tests verify placement). A host
+    that has the run-dir but no runnable systemctl counts as unreachable
+    too — review fix: loud skip, never a FileNotFoundError traceback
+    (R-30: a preflight must survive the broken host it diagnoses)."""
     if not os.path.isdir("/run/systemd/system"):
         return
-    proc = subprocess.run(["systemctl", "show", "--property=LoadState", "--value",
-                           slice_name], capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["systemctl", "show", "--property=LoadState",
+                               "--value", slice_name],
+                              capture_output=True, text=True)
+    except OSError as exc:
+        print(f"run-gate: WARNING: cannot LoadState-check {slice_name}: {exc} "
+              f"— pre-check unreachable here; the -e passthrough carries the "
+              f"slice either way", file=sys.stderr, flush=True)
+        return
     if proc.returncode != 0 or proc.stdout.strip() != "loaded":
         state = proc.stdout.strip() or f"systemctl exit {proc.returncode}"
         fail(f"gate slice {slice_name} is not LoadState=loaded (got: {state}) — "
@@ -966,6 +976,23 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         if env_name in env_cache:
             continue
         env_cache[env_name] = (env, env_source)
+        if env.get("mode") == "exec":
+            # Review fix (R-30): exec lanes need NO slice — docker exec can
+            # neither place nor cap work. Disclose what governs the runner,
+            # demand nothing; the old unconditional resolve_slice here made
+            # doctor report a bogus [FAIL] for a healthy exec project.
+            declared = env.get("cgroup_slice")
+            ambient = os.environ.get(CGROUP_ENV_VAR)
+            if declared or ambient:
+                src = (f"declared {env_source}, naming-only" if declared
+                       else f"${CGROUP_ENV_VAR}, naming-only")
+                record("OK", f"slice for env {env_name} (exec)",
+                       f"{declared or ambient} ({src})")
+            else:
+                record("WARN", f"slice for env {env_name} (exec)",
+                       "none derivable — fine: docker exec cannot place or "
+                       "cap work; the runner is governed by how it was started")
+            continue
         try:
             slice_name, slice_src = resolve_slice(env, env_source)
             record("OK", f"slice for env {env_name}",

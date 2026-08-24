@@ -316,7 +316,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - `R-30` **Doctor (RG-9):** `doctor` recomposes the implemented preflights
   into one first-contact command — docker present; per-environment slice
-  resolution + LoadState where systemd reachable; physical-path
+  resolution + LoadState where systemd reachable (exec environments are
+  checked naming-only — they need no slice; a host with the systemd run-dir
+  but no runnable `systemctl` degrades to a loud skip, never a traceback);
+  physical-path
   derivability from mountinfo (bare-host view = warning naming
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
   writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
