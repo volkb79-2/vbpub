@@ -15,13 +15,20 @@
 # or changed since the merge-base with main must be covered, same-commit.
 # The total-100 campaign is Phase 2 of the release-adoption program; when it
 # lands this lane flips to --cov-fail-under=100 like cmru's.
+#
+# --source is scoped to run-gate.py ALONE (not the whole project directory),
+# mirroring topos's own `--source topos/src/topos`: the gate never measures
+# itself (tools/coverage_gate.py is vendored infrastructure, outside the
+# scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
+# topos/src/topos) or the test suite (a test's own "coverage" of itself is
+# not a meaningful check).
 # =============================================================================
 schema_version = 1
 
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree} && /opt/tester-venv/bin/python -m pytest run-gate-project/tests -q --cov=run-gate-project --cov-branch --cov-report=json:run-gate-project/coverage.json && exec /opt/tester-venv/bin/python run-gate-project/tools/coverage_gate.py --repo . --base main --coverage-json run-gate-project/coverage.json --source run-gate-project"]
+argv = ["bash", "-c", "cd {worktree} && /opt/tester-venv/bin/python -m pytest run-gate-project/tests -q --cov=run-gate-project --cov-branch --cov-report=json:run-gate-project/coverage.json && exec /opt/tester-venv/bin/python run-gate-project/tools/coverage_gate.py --repo . --base main --coverage-json run-gate-project/coverage.json --source run-gate-project/run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
