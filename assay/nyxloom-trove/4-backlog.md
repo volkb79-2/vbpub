@@ -1411,3 +1411,42 @@ discipline.
 - [x] synthetic fixtures prove each eligible/ineligible AST boundary;
 - [ ] a real R2 lane demonstrates kills attributable to each admitted family;
 - [ ] P126's deferred debt is re-evaluated and its disposition recorded.
+
+## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
+
+**Filed 2026-08-24 (dstdns P128 R1 blocker; consumer evidence from P128 debugging session).**
+
+### The observation
+
+Under `snapshot_selection = "repository"`, assay 2.3.0 materializes a snapshot
+that contains `__pycache__/*.pyc` entries but omits the corresponding tracked
+`.py` source files. Reproduction: any commit where `libs/common/src/common/`
+contains both tracked `.py` sources and untracked-but-present `__pycache__`
+directories. After `prepare_snapshot(...).materialize()`, the snapshot's
+`libs/common/src/common/` holds only `__pycache__/` and no `.py` leaves. The
+blob objects are present and readable via `git cat-file`; the tree walk finds
+them; but `_write_worktree` never writes them.
+
+### Suspected cause
+
+`_write_worktree` builds its write set from `manifest.entries`. When both a
+directory entry (tree) and a file entry (blob) exist at overlapping paths — or
+when `__pycache__` directories appear as untracked-in-source but
+tracked-in-snapshot content — the manifest's `directories` tuple records the
+parent, but the blob `entries` for sibling `.py` files are dropped during
+materialization rather than written.
+
+### Required contract
+
+- Every tracked regular-file leaf in the commit MUST be materialized in the
+  snapshot worktree, regardless of whether sibling `__pycache__` directories
+  also appear.
+- A post-materialization verification must assert: for every `_Entry` in the
+  manifest, the corresponding path exists on disk.
+
+### Acceptance
+
+- [ ] a regression test reproduces the omission with a fixture containing
+      both `.py` sources and `__pycache__` siblings;
+- [ ] all manifest entries are materialized after the fix;
+- [ ] dstdns P128 R1 lane passes end-to-end against the fixed build.
