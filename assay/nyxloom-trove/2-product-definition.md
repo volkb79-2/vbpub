@@ -404,7 +404,7 @@ features:
   - The lane is R0,R2 - no SQL R3 space exists by construction, because R3's uncovered-line canary needs R1 coverage and DDL has no coverage tool.
   - Qualified against a real PostgreSQL project rather than a synthetic fixture.
   - The five adapter methods SQL cannot answer raise rather than return a plausible value (A-242), and a helper that fails during discovery can still record its provenance (A-243).
-  status: planned
+  status: shipped
   milestone: M5
 - id: F014
   title: Release ergonomics - cmru adoption and a parallel zipapp artifact
@@ -447,8 +447,10 @@ features:
     - tests/test_distribution_build_release.py::test_the_fallback_version_is_refused_on_an_untagged_build
   - id: F014-A6
     text: The wheel, the zipapp, both .sha256 sidecars and the release manifest all appear as assets on one GitHub Release, with the manifest documented as authoritative because only it can feed pip's hash mode.
-    status: absent
-  status: building
+    status: proven
+    evidence:
+    - github-release:assay-v2.2.0 assets assay-2.2.0-py3-none-any.whl, assay-2.2.0-py3-none-any.whl.sha256, assay-2.2.0.pyz, assay-2.2.0.pyz.sha256, release-manifest.json, release-manifest.json.sha256
+  status: shipped
   milestone: M4
 - id: F015
   title: fail-before/pass-after as a computed method
@@ -511,9 +513,12 @@ exists to make impossible.
 ## What "proven" costs here
 
 The `proven`/`absent` vocabulary is narrower than the charter's four states,
-and this document uses it literally: `proven` means at least one real, passing,
-named test drives the shipped entry point at that criterion. Two habits behind
-that, both bought expensively:
+and this document uses it literally. For computed claims, `proven` means at
+least one real, passing, named test drives the shipped entry point at that
+criterion. `F014-A6` is deliberately different: it claims the published asset
+set itself, so its evidence names the complete `assay-v2.2.0` GitHub Release
+assets rather than a test that would only rehearse publication. Two habits
+behind that, both bought expensively:
 
 - **A stated pass/fail count is not evidence** (A-232). A criterion's evidence
   is node ids someone can run, not a number someone reported.

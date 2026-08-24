@@ -33,13 +33,13 @@ milestones:
   target_product_version: 1
   features:
   - F014
-  status: active
+  status: done
 - id: M5
   title: A second language
   target_product_version: 1
   features:
   - F013
-  status: planned
+  status: done
 - id: M6
   title: Go, honestly
   target_product_version: 1
@@ -64,8 +64,8 @@ look arbitrary.
 **Execution order is the array order above**, and milestone ids run with it:
 
 ```text
-M1 M2 M3 (done) -> M4 [ship: cmru + zipapp] -> M5 (SQL, P34)
-   -> M6 (Go: P27 resumed -> P28 -> P29 -> P30 -> P31 -> P32) -> M7
+M1 M2 M3 M4 M5 (done) ->
+   M6 (Go: P27 resumed -> P28 -> P29 -> P30 -> P31 -> P32) -> M7
 ```
 
 Note for anyone holding an older copy: `M4`/`M5`/`M6` were reassigned once, by
@@ -84,39 +84,41 @@ cites a passing test in `2-product-definition.md`, and the ones that could not
 be proved are marked `absent` rather than quietly rolled into a `shipped`
 feature.
 
-## M4 — Ship: release ergonomics (ACTIVE)
+## M4 — Ship: release ergonomics (DONE)
 
 **Delivers F014: cmru adoption plus a zipapp published beside the wheel.**
 
-This is the ship milestone, and it now runs **first** of the remaining work —
-ahead of SQL, not after Go (A-248). The reasoning is the one that was already
+This ship milestone ran **first** among the remaining milestones — ahead of
+SQL, not after Go (A-248). The reasoning is the one that was already
 sitting in this document as the honest alternative to its own ordering: a
 zipapp is the near-zero-cost answer for a consumer with no installed Python
 manager, which is A-O04's srdm blocker, and every additional package assay
 merges before shipping is a package whose value no consumer can reach.
 
-What made this landable rather than a checkpoint is that A-247's two blockers
+What made this landable rather than a checkpoint was that A-247's two blockers
 are rulings, not unknowns: assay adopts cmru's **orchestration** and declines
 its **build** (cmru's built-in `wheel-build` is bare `python -m build`, with
 none of A-198/A-199's hash-bound closure), and where a cmru `.sha256` sidecar
 and assay's own release manifest sit on one Release, the manifest is
 authoritative because only it can feed pip's hash mode.
 
-## M5 — A second language (PLANNED)
+Closure evidence is `assay-v2.2.0`: its GitHub Release carries the wheel,
+zipapp, both artifact sidecars and both manifest sidecars.
+
+## M5 — A second language (DONE)
 
 **Delivers F013 (the SQL/DDL adapter), as package P34.**
 
-P34 was previously "next, unblocked"; A-248 **postpones it behind ship**. It
-stays unblocked in the sense that matters — both rulings its carve was waiting
-on are landed (A-242, the flat seven-method adapter with raising stubs; A-243,
-helper provenance for a failed discovery), so the carve inherits them rather
-than making them — but it must not be dispatched until M4 is done.
+F013 shipped in wave 3 as assay-v2.1.0 (`judge.language = "sql"`, R2-only,
+seven declared DDL operators). Its qualification against a real PostgreSQL
+project is recorded by B001; this milestone is closed without changing the
+identity of package P34.
 
-The trade this milestone rests on is named rather than hidden. A-219 already
-gave up A-215's ordering rationale (do not freeze a second-language mutation
-contract before the first language is qualified) in order to design schema v5
-once for SQL and Go together instead of twice; A-248 does not revisit that, it
-only moves the release ahead of the second language.
+The trade this milestone rests on is retained for history: A-219 gave up
+A-215's ordering rationale (do not freeze a second-language mutation contract
+before the first language is qualified) in order to design schema v5 once for
+SQL and Go together instead of twice; A-248 had moved release ahead of the
+second language.
 
 ## M6 — Go, honestly (PLANNED)
 
