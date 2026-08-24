@@ -78,7 +78,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # unfrozen transform is machinery to be trusted, whereas a frozen expectation
 # is evidence to be checked, and the whole point of comparing against a
 # locked template is that nothing in the run under test produced it.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W1" / "expected"
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W2" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -1089,7 +1089,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v6-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v7-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1126,7 +1126,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v6-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v7-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1174,8 +1174,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v6-template.json"),
-        (missing, "p25-missing-v6-template.json"),
+        (primary, "p25-pass-v7-template.json"),
+        (missing, "p25-missing-v7-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch
