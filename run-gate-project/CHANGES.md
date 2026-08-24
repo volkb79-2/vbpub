@@ -19,6 +19,22 @@ _Nothing yet._
 
 <!-- cmru: release history -->
 
+## [23.0.0] - 2026-08-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=f8178d9b0b821405f4f0fb8831d710056352193f -->
+
+### Added
+- feat(run-gate): adopt estate release orchestration with a diff-coverage floor (b6ec5d6a)
+
+### Fixed
+- fix(run-gate): resolve adversarial-review findings on the release-adoption program (db173082)
+- fix(run-gate): run the selftest lane in host mode, not tester-unified (ca023b78)
+- fix(run-gate): scope the selftest diff-coverage floor to run-gate.py alone (1c1d2fda)
+- fix(run-gate): RG-22 — safe.directory global-config write survives pre-existing entries (9ad6388f)
+
+### Changed
+- backlog(run-gate): RG-22 — safe.directory overwrite fails when global config has multiple entries (2174d22e)
+
 ## [22] - 2026-08-24 — RG-sweep program complete
 
 Backlog entries RG-1..RG-20 implemented (RG-18 excepted — dstdns-side scope,
