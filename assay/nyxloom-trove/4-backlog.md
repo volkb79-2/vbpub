@@ -10,6 +10,7 @@ items:
   - {id: B006, title: "B006(a): explicit, commit-validated omission of unsafe symlink leaves for monorepo R1/R2/R3 lanes — never an unsafe-symlink ignore, and NOT the withdrawn project-boundary design A-269 replaces; B006(b): assay-owned artifact parents created inside the private snapshot. IMPLEMENTED (wave 1): both shipped, gated, documented, and qualified end to end — CMRU makes genuine R0/R1/R2/R3 claims while Topos's tracked /etc/passwd fixtures stay in place.", type: bug, component: isolation, context_estimate: large}
   - {id: B007, title: "Ordered, bounded, explicitly declared multi-target R3 canary — try several declared source files so a gate is not cleared merely because one arbitrarily chosen module is never imported. Proposed by nyxloom 2026-08-17 while adopting assay. ASSESSED AND DEFERRED out of wave 1: the first post-v6 schema item (v7), with five design findings recorded for its carver. No automatic discovery or ranking.", type: feature, component: canary, context_estimate: large}
   - {id: B010, title: "assay run executes the lane argv in the invoking environment with no way to declare WHERE the lane is valid -- in the dstdns devcontainer cockpit `assay run auth` cannot execute at all (the suite imports fastapi.routing.iter_route_contexts, absent from the cockpit's FastAPI 0.135.1 and present only in the app image's pin), so the lane had to be evidenced by re-running its argv manually in the gate container plus a hand-check of the judge criteria against the artifact. Ask: either document the doctrinal answer (assay runs only in the gate environment; run-gate.py/B009 owns getting it there) or add a lane-level environment preflight that refuses with a clear message instead of surfacing the suite's raw ImportError.", type: feature, component: execution, context_estimate: small}
+  - {id: B015, title: "UUID/equality/enum-aware Python mutation operators. NOT in assay-v2.2.0; the shipped Python catalogue remains compare-swap, boolop-swap, bool-const-flip and falsy-swap, so P126's deferred R2 debt remains deferred.", type: feature, component: adapters, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -1300,3 +1301,85 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 - [ ] oversized output truncated head-side with recorded dropped-byte counts;
 - [ ] PASS verdicts remain unchanged unless opted in;
 - [ ] existing consumers reading verdicts tolerate the new optional keys.
+
+## B015 — UUID/equality/enum-aware Python mutation operators
+
+**Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
+
+### The gap
+
+The released Python mutation catalogue is exactly the four qualified members in
+`assay/src/assay/vocabulary.py`: `python:compare-swap`, `python:boolop-swap`,
+`python:bool-const-flip` and `python:falsy-swap`. The packaged verdict schema
+closes the same four names, and `PythonAdapter` implements only their AST site
+rules. It has no operator that deliberately perturbs UUID identity/equality
+boundaries, broader equality semantics, or enum comparison semantics.
+
+The nearest current behavior is deliberately narrow:
+
+- `compare-swap` already swaps `==`/`!=` and `is`/`is not`, but it is a generic
+  token-level swap with no knowledge that an operand is a UUID, enum member or
+  other semantic identity.
+- `falsy-swap` covers direct falsy returns (`None`, zero, empty bytes,
+  empty collections and empty mappings), not object equality.
+
+This is a release-boundary fact, not an implementation oversight discovered
+after publication: **B015 is not yet in `assay-v2.2.0`.** The deferred R2 debt
+from dstdns P126 therefore remains deferred until these operator families are
+designed, bounded and qualified like the existing catalogue.
+
+### Candidate operator families
+
+The eventual catalogue may need more than one closed name; this filing does not
+freeze names. At minimum, separate these concerns so each has a measurable site
+rule and a distinct failure cause:
+
+1. **UUID-aware equality/boundary mutation.** Recognize expressions whose type
+   or construction is a UUID (including likely constructor calls and typed
+   parameters where safely derivable) and mutate only exact token boundaries
+   such as `==`/`!=`; do not reinterpret UUIDs as strings or invent format
+   mutations without measured value.
+2. **Enum-aware comparison mutation.** Recognize enum-member access/comparison
+  sites and mutate only comparison tokens or member references whose replacement
+  remains parseable and semantically distinct. Do not swap unrelated enum types.
+3. **General semantic equality.** Only add a third family if its sites are not
+  already covered by `compare-swap` and it produces kills that generic swapping
+  cannot attribute.
+
+Names, eligibility rules, and whether family 3 earns admission must be decided
+by carve evidence. A broad “UUID/enum mode” hidden inside existing operators
+would blur attribution and violate the catalogue’s one-site/one-operator
+discipline.
+
+### Contract constraints inherited from v6/P33
+
+- Operator names remain language-qualified under the closed `python:*`
+  vocabulary.
+- Adding names is additive to the schema’s per-language `oneOf`, but adapter
+  generation, model vocabulary, docs tests, and verifier agreement must move
+  together.
+- Every generated mutant remains a valid single-site byte splice at the recorded
+  commit; discovery must not replace whole expressions when the catalogue means
+  an operator/value token.
+- Sites outside the changed-line scope remain out of bounds for R2.
+
+### Required before dispatch
+
+- Define each operator family's exact AST sites and replacement grammar.
+- Keep the public `python:*` vocabulary closed and schema/model-consistent.
+- Prove generated mutants parse and produce distinct observable behavior.
+- Qualify against real consumer code where UUID/equality/enum semantics decide
+  test outcomes, not only synthetic AST fixtures.
+- Decide explicitly whether any proposed site overlaps `compare-swap` enough to
+  be indistinguishable evidence; reject or split accordingly.
+- Preserve deterministic candidate IDs across discovery runs.
+- Update README, DESIGN-GUIDE and CONSUMERS.md in the same work item.
+
+### Acceptance
+
+- [ ] new operators register through the existing adapter protocol;
+- [ ] their vocabulary is documented and schema-enforced;
+- [ ] generated mutants are valid single-site Python programs;
+- [ ] synthetic fixtures prove each eligible/ineligible AST boundary;
+- [ ] a real R2 lane demonstrates kills attributable to each admitted family;
+- [ ] P126's deferred debt is re-evaluated and its disposition recorded.
