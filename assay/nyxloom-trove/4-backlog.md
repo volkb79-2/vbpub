@@ -1305,6 +1305,11 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 ## B015 — UUID/equality/enum-aware Python mutation operators
 
 **Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
+**Status:** **IMPLEMENTED 2026-08-24** as two bounded families:
+`python:uuid-equality-swap` and `python:enum-comparison-swap`. Eligibility is
+syntactic and conservative: an in-place UUID construction or a
+`Class.MEMBER` enum access must supply semantic evidence, and only the exact
+`==`/`!=` token is spliced.
 
 **Scope boundary:** `budget_per_candidate` (shipped in `assay-v2.2.0`, see B012)
 partially mitigates the other P127 blocker — a hanging comparison mutant — by
@@ -1383,9 +1388,9 @@ discipline.
 
 ### Acceptance
 
-- [ ] new operators register through the existing adapter protocol;
-- [ ] their vocabulary is documented and schema-enforced;
-- [ ] generated mutants are valid single-site Python programs;
-- [ ] synthetic fixtures prove each eligible/ineligible AST boundary;
+- [x] new operators register through the existing adapter protocol;
+- [x] their vocabulary is documented and schema-enforced;
+- [x] generated mutants are valid single-site Python programs;
+- [x] synthetic fixtures prove each eligible/ineligible AST boundary;
 - [ ] a real R2 lane demonstrates kills attributable to each admitted family;
 - [ ] P126's deferred debt is re-evaluated and its disposition recorded.

@@ -159,6 +159,12 @@ itself declares. See
 for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
+Python mutation lanes may also declare the two B015 semantic families,
+`python:uuid-equality-swap` and `python:enum-comparison-swap`. They flip only
+`==`/`!=` at sites where an in-place UUID construction or an enum-member
+access supplies semantic evidence; unlike generic `compare-swap`, they never
+perturb ordering or identity operators.
+
 The seven closed `judge.mutation.operators` values a SQL lane may declare:
 
 ```

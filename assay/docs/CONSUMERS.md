@@ -437,6 +437,11 @@ operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
 
+Add `python:uuid-equality-swap` when changed code compares an in-place UUID
+construction, and `python:enum-comparison-swap` when it compares an enum member
+such as `Color.RED`. Both flip only `==`/`!=`; generic ordering swaps remain the
+jurisdiction of `python:compare-swap`.
+
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after the baseline and after
 every completed candidate, and the verdict names that file under
