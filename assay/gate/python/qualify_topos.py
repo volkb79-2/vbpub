@@ -1099,13 +1099,13 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
     # B014: diagnostic output tails are runtime evidence and are normalized
     # away above. If they are the ONLY difference, the decoy has not proved
     # anything about source roots; treat that as "no discriminating defect".
-    tail_fields = {
+    runtime_fields = {
         "result_stdout_tail",
         "result_stderr_tail",
         "result_stdout_dropped_bytes",
         "result_stderr_dropped_bytes",
     }
-    if differing and set(differing).issubset(tail_fields):
+    if differing and set(differing).issubset(runtime_fields | {"judgment"}):
         differing = []
     if not differing:
         raise QualificationError("a wrong-source-root decoy incorrectly passed the complete artifact comparison")
