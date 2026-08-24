@@ -24,6 +24,52 @@ _Nothing else yet._
 
 <!-- cmru: release history -->
 
+## [2.3.0] - 2026-08-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=ab87caade1dfb8ebfbe1002db493b41d9a51f555 -->
+
+### Added
+- feat(assay): W2 verdict schema v7 successors (f3ce3d0a)
+- feat(assay): B015 semantic Python mutation operators (126ef577)
+- feat(assay): B014 bounded command output tails (37462618)
+
+### Fixed
+- fix(assay): align P25 oracle tests with v7 sentinels (ab87caad)
+- fix(assay): normalize P25 runtime identities to literal sentinels (7a926ebe)
+- fix(assay): use v7 P25 template in normalization negatives (d6708836)
+- fix(assay): pin P25 qualification to the v7 contract (f8178d9b)
+- fix(assay): omit runtime tails in P25 v7 templates (9c7bfa88)
+- fix(assay): require judgment delta in source-root decoy oracle (9e94a0f8)
+- fix(assay): treat judgment-only decoy delta as no root discrimination (50d34711)
+- fix(assay): ignore runtime tails in source-root decoy discrimination (291f81d3)
+- fix(assay): normalize B014 diagnostic tails in P25 comparisons (615a924e)
+- fix(assay): point P25 Topos qualification at v7 templates (3d53847d)
+- fix(assay): distinguish captured timeout tails from no-process timeouts (ebdd8f6c)
+- fix(assay): keep pre-command budget fixture tail-free (46f1368d)
+- fix(assay): align runner fixtures and SQL witness with v7 (b6d9615c)
+- fix(assay): W2 gate and v7 test migrations (6b777274)
+- fix(assay): import sys for W1 hard-cut gate probe (56d6c2c5)
+
+### Changed
+- chore(assay): name differing fields in template qualification (ae54e8cf)
+- chore(assay): drop dead runtime-field guard in decoy oracle (893af414)
+- Merge branch 'feature/assay-B015-semantic-python-operators': B015 semantic Python mutation operators (6324548d)
+- chore(assay): gate v6 locked successors for the v7 hard cut (ee6d9cb1)
+- Merge branch 'main' into run-gate-rg-sweep (72cc1f47)
+- run-gate RG-2: validate-pointers verb + estate pointer↔lane linkage tests (7e5612c1)
+
+### Documentation
+- docs(assay): B013 update — schema-wrapper lanes with sibling runners hit same isolation wall (7c56fa8c)
+- docs(assay): clarify B015 is independent of candidate budgets (5cc36a26)
+- docs(assay): file B015 UUID/enum operator gap (4819cf8b)
+- docs(assay): reconcile shipped M4/M5 product statuses (d2769483)
+- docs(run-gate): RG-13 adoption hygiene + estate budget↔timeout sweep (df5c9c10)
+
+### Testing
+- test(assay): make correct-root decoy control fail loudly (ef3eabfe)
+- test(assay): relax decoy oracle message after tail normalization (823a1741)
+- test(assay): update wrong-root decoy oracle for B014 normalization (13247f7b)
+
 ## [2.2.0] - 2026-08-24
 <!-- cmru: generated -->
 <!-- cmru: source-end=f64307a9bd02e6ae2d9918bb54fa4fad35c7b0a5 -->
