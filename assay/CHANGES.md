@@ -24,6 +24,38 @@ _Nothing else yet._
 
 <!-- cmru: release history -->
 
+## [2.2.0] - 2026-08-24
+<!-- cmru: generated -->
+<!-- cmru: source-end=f64307a9bd02e6ae2d9918bb54fa4fad35c7b0a5 -->
+
+### Added
+- feat(assay): B010/B012 preflight and mutation observability with review fixes (8a2a4731)
+- feat(gates): whole-target SQL mutation targets and declared env forwarding (ba8908d6)
+
+### Changed
+- backlog: file run-gate adversarial-review findings — RG-1..14 (new backlog), cmru KI-19 (mutation skip emits no evidence), assay B011 (stale cross-tool wiring example) (75593bcc)
+- run-gate: estate-wide adoption as SSOT test definition (CIU-40 adoption half) (4c6eb2b6)
+- backlog(ciu,assay): CIU-41..43 + assay B010 — four upstream findings from dstdns P111's Mode-B live pass (7f64090c)
+- run-gate-project: README (design authority) + CONSUMERS (adoption guide) + HANDOFF-P01 (build + ciu first adoption) — estate D-110/D-111+amendment (647364ab)
+- backlog: CIU-40 + assay B009 refined per D-111 (run-gate.py + gates.toml, one parser, orchestration/judgment split) (910d8b8e)
+- backlog: assay B009 (assay.toml role docs + image-baked distribution) + ciu CIU-40 (run-gate.sh + de-vendor) per estate D-110 (e9bd9b27)
+- backlog(assay): B008 — R1 base resolves to first-parent on merge-commit HEADs, silently narrowing the changed-line floor (measured, ciu gate) (f0d6f858)
+- ciu+assay: sync main to the worktree branch's resolved config-wave docs (backlog with CIU-39 renumber, brief rev 2, re-frozen handoffs); assay provenance refs CIU-28 -> CIU-39 (d3f80b9c)
+- assay: wave 3 complete -- W3-RESUME is the standing successor brief (e0462ebe)
+- backlog(assay): correct B001 and B004's frontmatter rows (3bf9e571)
+
+### Documentation
+- docs(assay): document and disposition B010/B011/B012 (f64307a9)
+- docs(backlog): file B014 bounded subprocess output capture on failure (93f0eae1)
+- docs(backlog): file B013 SQL infrastructure injection requirement (c057199c)
+- docs(backlog): file B012 mutation execution requirements (ab4a75d7)
+- docs(estate+assay): two general hazards, and why the rigor levels differ (4ec6437a)
+- docs(assay): consumer practices, and reconcile B002/B003 as COMPLETE (273ba944)
+
+### Testing
+- test(assay): self-hosting cgroup-wiring meta-test reads the SSOT run-gate.toml lane, not the trove pointer argv (91959b3a)
+- test(assay): gate-pointer meta-test asserts the run-gate SSOT chain — trove pointer → host lane → self-hosting driver; driver safety assertions unchanged (e1c8cfd2)
+
 ## [2.1.0] - 2026-08-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=52534ef7e78d5c113c7873db5e8dc8f2940542d6 -->
