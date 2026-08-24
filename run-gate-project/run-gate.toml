@@ -1,12 +1,25 @@
 # =============================================================================
 # run-gate-project's own gate lanes — parsed ONLY by run-gate.py (one parser,
-# D-110). Environment facts come from the CENTRAL vbpub-root run-gate.toml
-# ([environments.tester-unified]); this file declares the lane only.
+# D-110). This file declares the lane only.
 #
 # The selftest lane IS the release gate: cmru.toml [steps.run-tests] runs
 # `./run-gate.py selftest`, so a release cannot be tagged or published unless
-# this passes in the same gated tester-unified container development uses.
-# Dogfooding by design — run-gate gates itself through its own machinery.
+# this passes. Dogfooding by design — run-gate gates itself through its own
+# machinery.
+#
+# HOST mode, deliberately — NOT tester-unified (verified empirically
+# 2026-08-24, a container run of this exact lane produced 53 unrelated
+# failures a bare-host run did not). test_run_gate.py's own suite is
+# self-referential: many tests exercise physical_path()'s REAL
+# /proc/self/mountinfo lookup against pytest's own tmp_path fixtures (only
+# `docker run` itself is faked; RG-3's dual-mount and friends need a genuine
+# host-mounted /tmp to resolve). Wrapping that suite inside ANOTHER
+# container layer breaks mountinfo resolution for paths pytest creates
+# fresh inside that container's own filesystem — they were never
+# bind-mounted from anywhere, so "is the repo bind-mounted into this
+# container?" fires on tests that have nothing to do with this change. This
+# is unlike every other consumer's suite, which doesn't test run-gate's own
+# docker-orchestration internals and gates cleanly in tester-unified.
 #
 # Coverage discipline (2026-08-24 decision): TOTAL line+branch coverage sits
 # at ~47% today, so a passing --cov-fail-under=100 does not exist yet. The
@@ -21,17 +34,17 @@
 # itself (tools/coverage_gate.py is vendored infrastructure, outside the
 # scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
-# not a meaningful check).
+# not a meaningful check). Paths are cwd-relative (run_host_lane execs argv
+# with cwd = the effective project dir, i.e. run-gate-project/ itself) but
+# --source stays repo-root-relative ("run-gate.py", not "./run-gate.py")
+# because git diff --name-only always reports repo-root-relative paths
+# regardless of --repo's cwd.
 # =============================================================================
 schema_version = 1
 
 [lanes.selftest]
 kind = "command"
-environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree} && /opt/tester-venv/bin/python -m pytest run-gate-project/tests -q --cov=run-gate-project --cov-branch --cov-report=json:run-gate-project/coverage.json && exec /opt/tester-venv/bin/python run-gate-project/tools/coverage_gate.py --repo . --base main --coverage-json run-gate-project/coverage.json --source run-gate-project/run-gate.py"]
+environment = "host"
+argv = ["bash", "-c", "python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
-
-[lanes.selftest.resources]
-memory = "1g"
-memory_swap = "16g"
