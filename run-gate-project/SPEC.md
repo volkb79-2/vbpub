@@ -247,7 +247,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   path — readable AFTER the container is gone. A failed `docker run`
   preserves partial logs the same way and its refusal shows up to the last
   10 stderr lines (pull/network failures are multi-line; the interesting
-  line is rarely last). Evidence capture is best-effort and NEVER changes
+  line is rarely last). Evidence is captured ONLY for a failing run — a
+  green lane leaves nothing behind — and is written mode 0600 (container
+  logs may echo credential material the suite exercised; review fix).
+  Evidence capture is best-effort and NEVER changes
   the lane's exit status; exec-mode containers are externally owned and are
   never removed nor captured here.
 

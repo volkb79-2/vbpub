@@ -1957,6 +1957,30 @@ class TestFailingContainerEvidence:
         files = list(custom.glob("*.log"))
         assert len(files) == 1 and files[0].read_text() == "FAKE-LOGS-LINE\n"
 
+    def test_green_lane_leaves_no_evidence(self, tmp_path, monkeypatch):
+        """Review fix (R-26): evidence is for FAILING containers — a passing
+        lane must not litter the evidence dir with a full log of everything
+        the suite echoed."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)  # wait exits 0
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert not ev.exists() or not list(ev.glob("*.log"))
+
+    def test_failed_log_is_owner_only(self, tmp_path, monkeypatch):
+        """Review fix (R-26): container logs may echo credential material —
+        preserved evidence is mode 0600, never world-readable."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code="7")
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7
+        (log_path,) = ev.glob("*.log")
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward

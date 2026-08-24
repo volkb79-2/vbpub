@@ -658,7 +658,10 @@ def save_container_logs(docker: str, name: str) -> Path | None:
             return None
         target = evidence_dir() / f"{name}.log"
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Review fix: container logs may echo credential material the suite
+        # exercised — owner-only, never world-readable.
         target.write_text(combined)
+        target.chmod(0o600)
         return target
     except OSError:
         return None
@@ -1221,13 +1224,19 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
+    saved_log: Path | None = None
     try:
         logs = subprocess.run([docker, "logs", "-f", name])
         waited = subprocess.run([docker, "wait", name], capture_output=True, text=True)
         out = waited.stdout.strip()
         code = int(out) if waited.returncode == 0 and re.fullmatch(r"-?\d+", out) else None
+        # Review fix (R-26): evidence is for FAILING containers — a green
+        # lane leaves nothing in the evidence dir. Captured here, BEFORE the
+        # finally removes the container (an unreadable exit status counts as
+        # failing: infra diagnosis needs the logs too).
+        if code is None or code != 0:
+            saved_log = save_container_logs(docker, name)
     finally:
-        saved_log = save_container_logs(docker, name)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
     if logs.returncode != 0:
         print(f"run-gate: WARNING: docker logs exit {logs.returncode}", file=sys.stderr)
