@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 13  # rev 12: RG-1 override-reachability guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 14  # rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -32,6 +32,9 @@ CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
 HOST_ENV = "host"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
+EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
+EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
+EVIDENCE_TAIL_LINES = 10
 
 
 class GateError(Exception):
@@ -444,6 +447,32 @@ def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# failing-container evidence preservation (RG-12)
+# ---------------------------------------------------------------------------
+
+def evidence_dir() -> Path:
+    return Path(os.environ.get(EVIDENCE_DIR_ENV_VAR) or EVIDENCE_DIR_DEFAULT)
+
+
+def save_container_logs(docker: str, name: str) -> Path | None:
+    """RG-12: copy the container's full logs somewhere readable BEFORE the
+    `rm -f` destroys them. Returns the written path, or None when capture
+    fails (never raises — evidence is best-effort, the lane result stands)."""
+    try:
+        grabbed = subprocess.run([docker, "logs", name], capture_output=True,
+                                 text=True)
+        combined = grabbed.stdout + grabbed.stderr
+        if grabbed.returncode != 0 and not combined.strip():
+            return None
+        target = evidence_dir() / f"{name}.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(combined)
+        return target
+    except OSError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # required_env preflight + forwarding transparency (RG-17 / RG-19)
 # ---------------------------------------------------------------------------
 
@@ -677,15 +706,23 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           flush=True)
     started = subprocess.run(argv, capture_output=True, text=True)
     if started.returncode != 0:
-        detail = started.stderr.strip().splitlines()[-1:] or ["(no stderr)"]
+        # RG-12: a failed `docker run` may still have created the container
+        # (pull/entrypoint failures) — preserve its logs, then show a REAL
+        # tail of stderr instead of only the last line.
+        saved = save_container_logs(docker, name)
+        lines = started.stderr.strip().splitlines() or ["(no stderr)"]
+        tail = "\n".join(f"    {line}" for line in lines[-EVIDENCE_TAIL_LINES:])
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
-        fail_infra(f"docker run failed: {detail[0]}")
+        where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
+        fail_infra(f"docker run failed (exit {started.returncode}); last "
+                   f"stderr line(s):\n{tail}{where}")
     try:
         logs = subprocess.run([docker, "logs", "-f", name])
         waited = subprocess.run([docker, "wait", name], capture_output=True, text=True)
         out = waited.stdout.strip()
         code = int(out) if waited.returncode == 0 and re.fullmatch(r"-?\d+", out) else None
     finally:
+        saved_log = save_container_logs(docker, name)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
     if logs.returncode != 0:
         print(f"run-gate: WARNING: docker logs exit {logs.returncode}", file=sys.stderr)
@@ -695,6 +732,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if code is None:
         fail_infra("could not read the container's exit status (docker wait failed) — "
                    "refusing to guess")
+    if code != 0:
+        where = (f"; full container logs preserved at {saved_log}"
+                 if saved_log else
+                 "; container logs could NOT be captured before removal")
+        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
+              flush=True)
     return code
 
 
@@ -852,6 +895,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
         "                                mount view when none is derivable (bare host)",
+        "  RUN_GATE_EVIDENCE_DIR         where preserved container logs are written",
+        f"                                on failure (default {EVIDENCE_DIR_DEFAULT})",
         "",
         "Lane declarations: run-gate.toml next to this script; shared environment",
         "facts may live in an enclosing repo-root run-gate.toml. Judgment policy",

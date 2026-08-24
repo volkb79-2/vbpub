@@ -29,7 +29,7 @@ SPEC §9.
 | RG-9 | No `doctor` preflight subcommand | Enhancement | OPEN |
 | RG-10 | Verdict/evidence artifact path printed only for ephemeral-container assay lanes; exec-mode prints nothing | Minor | OPEN |
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
-| RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | OPEN |
+| RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
@@ -412,6 +412,19 @@ line is rarely last. On lane failure the container is `rm -f`'d in `finally`
 print the path on failure; keep ≥ last N stderr lines in the immediate
 message. **Oracle:** forced-fail lane leaves a readable log at the printed
 path after the container is gone.
+
+**FIXED 2026-08-24** (SPEC `R-26`): `save_container_logs` copies the full
+logs to `$RUN_GATE_EVIDENCE_DIR/<container>.log` (default `/tmp/run-gate`)
+BEFORE every `rm -f`; a failed lane prints the preserved path, and the
+oracle holds — the file exists and reads back after removal. A failed
+`docker run` also preserves partial logs and its refusal now shows up to
+the last 10 stderr lines (indented block) instead of only the last one.
+Capture is best-effort: failure to capture never changes the lane's exit
+status, it only downgrades the message to "could NOT be captured".
+Exec-mode containers are externally owned — never removed, never captured.
+Tests: forced-fail lane (wait 7 → passthrough 7 + readable log),
+run-failure with TWO stderr lines both present in the refusal, and the
+evidence-dir override honored.
 
 ## RG-13 — docs gaps (CONSUMERS.md + adoption hygiene)
 

@@ -1800,6 +1800,65 @@ class TestConjunctionOverrideGuard:
         assert f"cd {wt}/proj" in inner  # judged W, not the invocation tree
 
 
+class TestFailingContainerEvidence:
+    """RG-12: failing containers leave readable logs behind — evidence is
+    preserved BEFORE `rm -f`, the printed path must be readable afterwards,
+    and a failed `docker run` shows a real stderr tail (not just one line)."""
+
+    def _evidence_dir(self, tmp_path, monkeypatch) -> Path:
+        ev = tmp_path / "evidence"
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(ev))
+        return ev
+
+    def test_failed_lane_leaves_readable_log_after_container_gone(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch, wait_code="7")
+        ev = self._evidence_dir(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 7  # the job's own status still passes through
+        marker = "full container logs preserved at "
+        assert marker in proc.stdout
+        log_path = Path(proc.stdout.split(marker)[1].splitlines()[0].strip()
+                        .rstrip(".;"))
+        assert log_path.is_relative_to(ev)
+        assert log_path.read_text() == "FAKE-LOGS-LINE\n"
+        # container really was removed AFTER capture: rm recorded in the log
+        calls = log.read_text().splitlines()
+        assert any("rm" in c and "-f" in c for c in calls)
+
+    def test_docker_run_failure_shows_multi_line_stderr_tail(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        self._evidence_dir(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text().replace(
+            'run) echo "fake-container-id" ;;',
+            'run) echo "Unable to find image locally" >&2;'
+            ' echo "docker: pull access denied" >&2; exit 125 ;;')
+        shim.write_text(body)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3  # infrastructure failure class
+        assert "last stderr line(s)" in proc.stderr
+        assert "pull access denied" in proc.stderr      # line 2 — not just last-line-only...
+        assert "Unable to find image locally" in proc.stderr  # ...first line kept too
+
+    def test_evidence_dir_env_var_controls_location(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch, wait_code="3")
+        custom = tmp_path / "custom-evidence"
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR, str(custom))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 3
+        assert str(custom) in proc.stdout
+        files = list(custom.glob("*.log"))
+        assert len(files) == 1 and files[0].read_text() == "FAKE-LOGS-LINE\n"
+
+
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
     CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested

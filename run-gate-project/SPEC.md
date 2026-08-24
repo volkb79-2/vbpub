@@ -221,6 +221,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `--worktree {worktree}` in EVERY sub-invocation (CONSUMERS recipe; cmru's
   `[lanes.gate]` is the reference shape).
 
+- `R-26` **Failing-container evidence (RG-12):** container logs are copied
+  to the evidence directory (`$RUN_GATE_EVIDENCE_DIR`, default
+  `/tmp/run-gate`) BEFORE the `rm -f`; a failed lane prints the preserved
+  path — readable AFTER the container is gone. A failed `docker run`
+  preserves partial logs the same way and its refusal shows up to the last
+  10 stderr lines (pull/network failures are multi-line; the interesting
+  line is rarely last). Evidence capture is best-effort and NEVER changes
+  the lane's exit status; exec-mode containers are externally owned and are
+  never removed nor captured here.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns
