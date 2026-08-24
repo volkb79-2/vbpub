@@ -176,7 +176,7 @@ venv result is not a release signal.
 
 The gate runs CIU's suite inside `tester-unified` and is **judged by the
 released Assay CLI** — a hash-pinned, vendored zipapp
-(`tools/assay/assay-2.2.0.pyz` + `.sha256`, verified by `sha256sum -c` before
+(`tools/assay/assay-2.3.0.pyz` + `.sha256`, verified by `sha256sum -c` before
 every run and invoked explicitly; Assay source is never imported). The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
 line+branch) inside Assay's isolated snapshot, and Assay itself judges the
