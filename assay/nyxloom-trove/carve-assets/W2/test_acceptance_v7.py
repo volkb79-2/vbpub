@@ -96,6 +96,13 @@ def test_p25_v7_siblings_validate(verify_document, name):
     assert verify_document(load(HERE / "expected" / name)) == []
 
 
+@pytest.mark.parametrize("name", P25_V7_TEMPLATES)
+def test_p25_v7_templates_omit_runtime_output_tails(name):
+    doc = load(HERE / "expected" / name)
+    assert not any(key.startswith("result_stdout") for key in doc)
+    assert not any(key.startswith("result_stderr") for key in doc)
+
+
 @pytest.mark.parametrize(
     "name",
     [
