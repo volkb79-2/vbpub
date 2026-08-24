@@ -528,6 +528,60 @@ CIU is agnostic to assay's internals. Assay is invoked as a subprocess with pinn
 
 Future: pluggable judge providers behind the same interface.
 
+### 5.7 `ciu exec` — native container command execution
+
+Today, consumer projects hand-roll wrapper scripts that shell out to `docker exec`
+to run one-off commands inside a running service container (provision a test DB,
+run a schema check, inspect state). Each wrapper duplicates container-name
+resolution, user-identity mapping, network selection, and env forwarding — the
+exact facts CIU already owns in its rendered config. This creates fragile,
+unauditable shell glue that breaks on every rename or topology change.
+
+`ciu exec` eliminates all of it:
+
+```bash
+# Run a one-off command inside a named service's container
+ciu exec test-runner "python3 -m pytest tests/schema -q"
+
+# Target a specific worktree instance by name
+ciu exec --instance ci-build-42 test-runner "psql -c '\\dt'"
+
+# Interactive shell
+ciu exec --interactive controller bash
+```
+
+**What CIU resolves automatically (never re-derived by the caller):**
+
+| Fact | Source | Why CIU owns it |
+|------|--------|----------------|
+| Container name | Rendered `[deploy.project_name]` + `[deploy.environment_tag]` + service name | Renaming or forking an instance must not break every script |
+| User identity | Service-level `exec_user` declaration or platform default | UID/GID mapping is deployment policy, not per-script boilerplate |
+| Network | Instance's resolved network from `[deploy.network_name]` | Services talk over instance-scoped networks, not host networking |
+| Environment | Filtered subset of rendered `[service.<name>.env]` + explicit `--env KEY=VALUE` overrides | Required config must come from the same source as deployment |
+| Working directory | Service-declared default or `--workdir` override | Consistent with how the service itself starts |
+
+**Design rules:**
+
+- No silent defaults: if the target service is not running, fail loudly naming
+  the instance, service, and remedy (`ciu up --group ... --name ...`).
+- No hardcoded container names anywhere in consumer code; the caller always
+  references the *logical service name*, never a Docker-resolved name.
+- Stdout/stderr stream transparently (no buffering); exit code passes through.
+- `--dry-run` prints the full docker argv with redacted env values (same RG-19
+  discipline as gate lanes).
+
+**What gets deleted from dstdns once available:**
+
+| Script | What it hand-rolls |
+|--------|-------------------|
+| `scripts/p128-assay-schema.sh` | Container name derivation, docker run, docker cp, docker exec |
+| `scripts/p129-assay-schema.sh` | Same pattern for P129 scoped coverage |
+| `scripts/schema-gate.sh` | Throwaway PG provisioning + schema apply |
+
+All three become unnecessary when CIU can natively provision a disposable PG,
+apply DDL, and expose its DSN to the test lane — which is exactly what the
+template-database proposal in §10.2 describes.
+
 ### 5.7 Resource governance per lane and intent
 
 Every test lane consumes host resources: RAM (the real contention risk), CPU time
