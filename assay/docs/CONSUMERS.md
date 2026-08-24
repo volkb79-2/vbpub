@@ -416,6 +416,32 @@ The product owns the `assay.toml` lane and the pinned Assay artifact; `run-gate.
 execution boundary. A consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
 for orchestration mechanics.
 
+## Size a mutation lane before running it
+
+For any R2 mutation lane, inspect the workload without executing its command or creating mutant
+snapshots:
+
+```bash
+assay plan worker_lane --file assay.toml
+```
+
+The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
+worker concurrency, and runtime estimates. Use those facts to choose an optional per-candidate bound:
+
+<!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.worker_lane.judge.mutation]
+jobs = 4
+max_mutants = 100
+operators = ["python:compare-swap"]
+budget_per_candidate = "300s"
+```
+
+A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
+candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after the baseline and after
+every completed candidate, and the verdict names that file under
+`claims[].mutation.progress_artifact`.
+
 ## Adopting a v2-capable release
 
 Verdict schema v6 and lane schema v2 are both hard cuts (no dual-version verifier, no
