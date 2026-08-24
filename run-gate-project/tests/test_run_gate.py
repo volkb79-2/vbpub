@@ -2169,6 +2169,83 @@ class TestPointerLinkage:
         assert proc.returncode == 2
         assert "invalid TOML" in proc.stderr
 
+    # --- console-script form (review fix): RG-14 made `run-gate` real -------
+
+    def test_console_script_form_certifies(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec run-gate --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_console_script_form_catches_unknown_lane(self, tmp_path):
+        """The bare form gets the SAME certification, not a pass-by."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec run-gate --worktree {worktree} nope")
+        proc = self._validate(trove)
+        assert proc.returncode == 2
+        assert "'nope'" in proc.stdout and "known lanes: suite" in proc.stdout
+
+    def test_prose_and_config_mentions_certify_nothing(self, tmp_path):
+        """run-gate.toml / run-gate-project / run-gateway are names, not
+        invocations — collecting them would certify nothing and could only
+        manufacture false defects."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cat {worktree}/proj/run-gate.toml && ls {worktree}/run-gate-project "
+            "&& echo run-gateway-notes")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "nothing to certify" in proc.stdout
+
+    def test_discovery_snippet_inside_pointer_tolerated(self, tmp_path):
+        """"--list names no lane by design — and needs no --worktree either
+        (it reads config beside the script). The real invocation after &&
+        still gets certified."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && ./run-gate.py --list && "
+            "exec ./run-gate.py --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 2 invocation(s)" in proc.stdout
+
+    def test_equals_form_worktree_accepted(self, tmp_path):
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "cd {worktree}/proj && exec ./run-gate.py --worktree={worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
+    def test_absolute_path_console_form_fail_closed(self, tmp_path):
+        """/usr/local/bin/run-gate ... is deliberately NOT recognized (the
+        bare-name boundary excludes path-anchored forms): fail closed means
+        uncertified — never waved through as valid."""
+        repo, proj, trove = self._estate(
+            tmp_path,
+            "/usr/local/bin/run-gate --worktree {worktree} suite")
+        proc = self._validate(trove)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "nothing to certify" in proc.stdout
+
+    def test_prose_label_field_not_an_invocation(self, tmp_path):
+        """A label DESCRIBES an invocation, it doesn't run one. The widened
+        bare-form collector manufactured 'trailing arguments' out of the real
+        cmru.toml label 'cmru: run-gate gate conjunction'; prose-named fields
+        are not command surface."""
+        repo, proj, _trove = self._estate(tmp_path, self.CANONICAL)
+        steps = proj / "consumer-steps.toml"
+        steps.write_text('[[steps]]\n'
+                         'label = "proj: run-gate gate conjunction"\n'
+                         'argv = ["./run-gate.py", "--worktree", '
+                         '"{worktree}", "suite"]\ncwd = "."\n')
+        proc = self._validate(steps, "--root", str(repo))
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "OK: 1 invocation(s)" in proc.stdout
+
 
 class TestPointerLinkageEstate:
     """RG-2's real payoff: THIS checkout's actual consumer documents are

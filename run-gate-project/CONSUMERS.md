@@ -207,6 +207,16 @@ Here is the whole seam on one page:
 4. **Point the consumer** at it in the canonical, `validate-pointers`-certifiable
    form:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && exec ./run-gate.py --worktree {worktree} unit"]`
+
+   Both tool names certify: the script form (`./run-gate.py …`) and — since
+   RG-14 — the installed console script (`exec run-gate --worktree {worktree}
+   unit`). Discovery snippets (`--list`, `--help`, `--check-env`) and the
+   reserved verbs (`doctor`, `validate-pointers`) name no lane by design and
+   are exempt from the lane check; prose-named fields (`label`,
+   `description`, …) are never parsed as invocations. One deliberate limit:
+   a path-anchored console form (`/usr/local/bin/run-gate …`) is NOT
+   recognized — it stays uncertified (fail closed) rather than waved through;
+   invoke it as bare `run-gate` if you want it certified.
 5. **First run:** `./run-gate.py unit` — run-gate verifies the pin, runs the
    lane in the declared environment, prints the verdict path
    (`.assay/verdict-unit.json`) on success AND failure, and passes assay's

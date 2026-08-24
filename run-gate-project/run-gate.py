@@ -765,14 +765,31 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
 # ---------------------------------------------------------------------------
 
 _CD_TARGET_RE = re.compile(r"\bcd\s+(\S+)")
-_INVOCATION_RE = re.compile(r"run-gate\.py(?:\s+[^&;]*)?")
+# One invocation shape, two tool names (review fix): the canonical script
+# form `run-gate.py` and — since RG-14 made it real — the installed console
+# script `run-gate`. The bare name must not match inside run-gate.toml,
+# run-gate-project, or hyphenated prose; absolute-pathed console invocations
+# are deliberately not recognized (fail closed: uncertified, not waved).
+_INVOCATION_RE = re.compile(
+    r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
+_BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
+_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers"}
+_DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
+# Fields that are prose BY NAME: a label describes an invocation, it doesn't
+# run one ("label = \"proj: run-gate gate conjunction\"" — found live in
+# cmru/cmru.toml). Certifying prose would manufacture defects out of English;
+# skipping it cannot hide a real pointer, which lives in a command-bearing
+# field (argv/commands/steps), never in a label.
+_PROSE_KEYS = {"label", "title", "description", "comment", "note", "notes",
+               "summary", "help", "doc", "readme"}
 
 
 def _collect_pointers(node, where: str) -> list[tuple[str, str]]:
     """Every (location, text) pair in a parsed consumer document that invokes
-    run-gate.py. An argv-style LIST whose first element IS run-gate.py is one
-    pointer (joined) — list-form consumers otherwise split the command across
-    elements, so no single string contains both the tool and the lane."""
+    run-gate (either tool name). An argv-style LIST whose first element IS a
+    run-gate invocation is one pointer (joined) — list-form consumers
+    otherwise split the command across elements, so no single string contains
+    both the tool and the lane."""
     found: list[tuple[str, str]] = []
 
     def visit(node, where: str) -> None:
@@ -781,14 +798,18 @@ def _collect_pointers(node, where: str) -> list[tuple[str, str]]:
                 visit(value, f"{where}.{key}" if where else str(key))
         elif isinstance(node, list):
             if node and isinstance(node[0], str) \
-                    and node[0].endswith("run-gate.py") \
+                    and os.path.basename(node[0]) in {"run-gate.py",
+                                                      "run-gate"} \
                     and all(isinstance(v, str) for v in node):
                 visit(" ".join(node), f"{where}[argv]")
             else:
                 for i, v in enumerate(node):
                     visit(v, f"{where}[{i}]")
-        elif isinstance(node, str) and "run-gate.py" in node:
-            found.append((where, node))
+        elif isinstance(node, str):
+            leaf = re.sub(r"\[\d+\]$", "", where.rsplit(".", 1)[-1])
+            if leaf not in _PROSE_KEYS and ("run-gate.py" in node
+                                            or _BARE_TOOL_RE.search(node)):
+                found.append((where, node))
 
     visit(node, where)
     return found
@@ -863,18 +884,32 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
         checked += 1
         tokens = m.group(0).split()
         positional: list[str] = []
+        carries_worktree = False
         i = 1
         while i < len(tokens):
             tok = tokens[i]
             if tok == "--worktree":
+                carries_worktree = True
                 i += 2  # flag plus its value
+                continue
+            if tok.startswith("--worktree="):
+                carries_worktree = True  # equals-form counts (review fix)
+                i += 1
                 continue
             if tok.startswith("-"):
                 i += 1
                 continue
             positional.append(tok)
             i += 1
-        if uses_worktree and "--worktree" not in tokens:
+        # Discovery/verb invocations name no lane BY DESIGN (review fix): a
+        # `--list` discovery snippet or a reserved verb is legitimate
+        # consumer surface, not a missing lane — and needs no --worktree
+        # either (--list reads config beside the script, never a tree).
+        if len(positional) == 1 and positional[0] in _RESERVED_POINTER_VERBS:
+            continue
+        if not positional and any(tok in _DISCOVERY_FLAGS for tok in tokens):
+            continue
+        if uses_worktree and not carries_worktree:
             defects.append(
                 f"{where}: pointer substitutes {{worktree}} but its run-gate "
                 f"invocation drops '--worktree {{worktree}}' — sub-steps would "
