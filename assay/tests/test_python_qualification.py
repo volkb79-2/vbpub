@@ -321,18 +321,18 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: P33's carver-supplied v5 siblings, so this consumer follows it. Reading
 #: the v4 original here would test the harness against a contract the
 #: product no longer emits.
-P33_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P33" / "expected"
+P25_V7_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W2" / "expected"
 
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P33_EXPECTED_ROOT / "p25-pass-v5-template.json").read_text()
+        (P25_V7_EXPECTED_ROOT / "p25-pass-v7-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
     substitutions: dict[str, object] = {
-        "@ASSAY_VERSION@": "9.9.9",
-        "@HEAD_OID@": "1" * 40,
-        "@BASE_OID@": "2" * 40,
+        "@ASSAY_VERSION@": "1.3.0",
+        "@HEAD_OID@": "c23bbafbc3d52bd1a5d8ab58a23ca8ae61a70d9e",
+        "@BASE_OID@": "93c31eebd233b2aa9eb95f5533695a29e7c11516",
         "@STARTED@": "2026-08-10T00:00:00+00:00",
         "@ENDED@": "2026-08-10T00:01:00+00:00",
         "@WITNESS_PATH@": "/tmp/p25-ordinary/witness.json",
