@@ -15,7 +15,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   Defines lanes; may also define environments.
 - **central config** — the nearest `run-gate.toml` in a STRICT ancestor
   directory of the project dir. Optional. Defines shared environment facts
-  ONLY (lanes are rejected there).
+  and (since Rev 3, RG-16) shared lanes inherited by every consumer.
 - **environment** — a named container/host execution fact set: `image`
   (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
   or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
@@ -51,8 +51,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
 - `R-06` Top-level keys: `schema_version` (required), `environments`,
-  `lanes`. Unknown top-level key → error naming key + file. A central config
-  containing `[lanes.*]` → error.
+  `lanes`. Unknown top-level key → error naming key + file. A central
+  config's `[lanes.*]` are legal (R-22).
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
   `cgroup_slice` (optional non-empty string), `forward_env` (optional,
   unique list of valid environment-variable names; values are forwarded to
@@ -71,6 +71,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
   environment's origin (project vs central + path) is printed (R-05).
+
+- `R-22` **Shared central lanes (RG-16):** a central config may define
+  `[lanes.*]`, schema-validated wherever it lives. The EFFECTIVE lane set of
+  a project = its own lanes shadowing central lanes BY NAME (whole lane — no
+  field merging); `--list`/usage show the effective set, inherited entries
+  marked `*`. Per-consumer check at load: a central lane's pin sidecars must
+  exist relative to the CONSUMING project dir, else refusal naming lane,
+  sidecar, and both files (vendor it or shadow the lane). Free-form argv
+  strings are deliberately never stat'd — they are shell text, not declared
+  paths. Malformed central tables fail loudly as always.
 
 ## 4. Environment-fact resolution (DERIVE / READ / FAIL — never invent)
 

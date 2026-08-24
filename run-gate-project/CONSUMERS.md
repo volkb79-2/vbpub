@@ -32,10 +32,29 @@ lane declarations look like per project type. Companion to `README.md`
 
 `run-gate.toml` at the REPO ROOT holds environment facts once for all
 internal projects (`[environments.<name>]`: `image`, optional
-`cgroup_slice`). Discovery: nearest STRICT ancestor of the project dir;
-project tables shadow a name entirely; `[lanes.*]` in a central file is
-REJECTED. Copied-script repos (dstdns) are self-contained unless they grow
-their own root file.
+`cgroup_slice`) and, since RG-16, SHARED LANES too: every package can use
+the identical lane without copying definitions. Discovery: nearest STRICT
+ancestor of the project dir; project entries shadow a central name entirely
+(whole table, no field merging — same rule for environments and lanes). A
+central lane's pin sidecars must exist in each consuming project — the gate
+refuses at load naming both files when a project doesn't vendor them; shadow
+the lane locally to opt out. Copied-script repos (dstdns) are self-contained
+unless they grow their own root file.
+
+```toml
+# repo-root run-gate.toml — one shared assay lane every package inherits;
+# paths are relative to EACH consuming project (which must vendor them):
+[lanes.assay-shared]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "gate"
+assay_command = ["./tools/assay/assay.pyz"]
+clean_tree = false
+
+[lanes.assay-shared.pins.assay]
+version = "2.1.0"
+sha256 = "tools/assay/assay.pyz.sha256"
+```
 
 ## Lane schema (final — what run-gate.py actually validates)
 

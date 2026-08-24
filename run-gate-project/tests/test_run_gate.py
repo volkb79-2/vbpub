@@ -335,15 +335,94 @@ class TestConfigValidation:
                                          cfg_path, cpath)
         assert "missing-env" in str(exc.value)
 
-    def test_central_file_rejects_lanes(self, tmp_path):
+    def test_central_lanes_inherited_and_shadowed(self, tmp_path):
+        """RG-16: central configs may define shared lanes; the project
+        shadows by name WHOLESALE (no field merging)."""
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.shared]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "from-central"]
+            clean_tree = false
+            [lanes.shadowed]
+            kind = "command"
+            environment = "host"
+            argv = ["echo", "central-version"]
+            clean_tree = false
+        """))
+        commit_all(repo, "central shared lanes")
+        proj = make_project(repo, SIMPLE_LANE + """
+            [lanes.shadowed]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo project-version"]
+            clean_tree = false
+        """)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        merged = run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                      cfg_path, cpath)
+        assert set(merged) == {"suite", "shared", "shadowed"}
+        assert merged["shadowed"]["argv"] == [
+            "bash", "-c", "cd {worktree}/proj && echo project-version"]
+        # inherited marker computed for usage() excludes shadowed names
+        inherited = set(central.get("lanes", {})) - set(cfg.get("lanes", {}))
+        assert inherited == {"shared"}
+
+    def test_central_lane_missing_pin_sidecar_refuses_for_consumer(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.assay-shared]
+            kind = "assay"
+            environment = "host"
+            assay_lane = "gate"
+            assay_command = ["./tools/assay.pyz"]
+            clean_tree = false
+            [lanes.assay-shared.pins.assay]
+            version = "2.1.0"
+            sha256 = "tools/assay.pyz.sha256"
+        """))
+        commit_all(repo, "central assay lane")
+        proj = make_project(repo, SIMPLE_LANE)  # does NOT vendor tools/assay.pyz.sha256
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.merge_lanes(cfg.get("lanes", {}), central, proj,
+                                 cfg_path, cpath)
+        assert "does not exist in this project" in str(exc.value)
+        assert "tools/assay.pyz.sha256" in str(exc.value)
+
+    def test_central_lane_malformed_still_fails_loudly(self, tmp_path):
         repo = make_repo(tmp_path)
         (repo / "run-gate.toml").write_text(
-            "schema_version = 1\n[lanes.bad]\nkind = 'command'\n"
-            "environment = 'host'\nargv = ['true']\n")
+            "schema_version = 1\n[lanes.bad]\nkind = 'makefile'\n")
         proj = make_project(repo, SIMPLE_LANE)
         with pytest.raises(run_gate.GateError) as exc:
             run_gate.load_config(proj)
-        assert "central" in str(exc.value)
+        assert "[lanes.bad]" in str(exc.value)
+
+    def test_invoking_a_shared_central_lane_end_to_end(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.shared]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+            clean_tree = false
+            [environments.tester-unified]
+            image = "tester-unified:local"
+        """))
+        commit_all(repo, "central lane + env")
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        proc = run_tool(proj, "shared")
+        assert proc.returncode == 0, proc.stderr
+        inner = docker_runs(log)[0][-1]
+        assert "echo gate-ran" in inner
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ SPEC §9.
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
 | RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
+| RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
 
 ---
 
@@ -450,6 +451,14 @@ If compatibility is desired, gate via explicit config (e.g. schema_version bump 
 
 Local fix reference: dstdns controller branch commit `7b17d331`
 (`central and lanes and not envs` interim guard), superseded by this requirement.
+
+**FIXED 2026-08-24** (unconditional admission, per interview): central
+`[lanes.*]` schema-validated and inherited; `merge_lanes` shadows by name
+wholesale; per-consumer pin-sidecar existence enforced at load naming both
+files; argv strings deliberately never stat'd (they are shell text — a check
+narrower than its message is the KI-12 class). usage()/`--list` show the
+effective set with `*` marking inherited entries; SPEC R-22 + §1 amended,
+CONSUMERS central-defaults section rewritten with a real shared-lane recipe.
 
 ## RG-17 — env forwarding allowlists silently drop schema-oracle credentials (SCHEMA_GATE_PW)
 

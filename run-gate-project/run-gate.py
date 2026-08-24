@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 6  # rev 6: RG-4 pins.version verified in-lane; rev 5 RG-11 codes; rev 4 RG-15 R-21
+__revision__ = 7  # rev 7: RG-16 shared central lanes (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import os
@@ -181,9 +181,6 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     lanes = cfg.get("lanes", {})
     if not isinstance(envs, dict) or not isinstance(lanes, dict):
         fail(f"{where}: 'environments' and 'lanes' must be tables")
-    if central and lanes:
-        fail(f"{where}: a central (repo-root) config defines environment facts only — "
-             f"move [lanes.*] into the project config ({sorted(lanes)})")
     for name, table in envs.items():
         _validate_environment(name, table, where)
     for name, table in lanes.items():
@@ -192,7 +189,10 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
 
 
 def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
-    """Load the project config + the nearest ancestor (central) config."""
+    """Load the project config + the nearest ancestor (central) config.
+
+    Central configs may define shared environments AND shared lanes
+    (RG-16); every declared lane is schema-validated wherever it lives."""
     project_path = project_dir / CONFIG_NAME
     project = _validate_config(_read_toml(project_path), project_path, central=False)
     central_path: Path | None = None
@@ -204,6 +204,34 @@ def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
             central = _validate_config(_read_toml(candidate), candidate, central=True)
             break
     return project, project_path, central, central_path
+
+
+def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
+                project_path: Path, central_path: Path | None) -> dict:
+    """Effective lane set: central [lanes.*] inherited, project entries
+    shadow BY NAME (whole lane — no field merging, RG-16).
+
+    Per-consumer existence check: a central lane's pin sidecars must exist
+    relative to THIS consuming project — a shared gate referencing artifacts
+    the project does not vendor refuses at load, naming both files. Free-form
+    argv strings are deliberately NOT stat'd: they are shell text, not
+    declared paths, and pretending otherwise would certify nothing.
+    """
+    if not central.get("lanes"):
+        return project_lanes
+    merged = dict(central["lanes"])
+    merged.update(project_lanes)
+    for name, lane in central["lanes"].items():
+        if name in project_lanes:
+            continue  # shadowed wholesale by the project's own definition
+        for pin_name, pin in lane.get("pins", {}).items():
+            sidecar = project_dir / pin["sha256"]
+            if not sidecar.is_file():
+                fail(f"central lane '[lanes.{name}]' ({central_path}): pin "
+                     f"'{pin_name}' sidecar {pin['sha256']} does not exist in this "
+                     f"project ({project_dir}) — vendor it or shadow the lane in "
+                     f"{project_path}")
+    return merged
 
 
 def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict,
@@ -581,26 +609,29 @@ def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path)
 # CLI
 # ---------------------------------------------------------------------------
 
-def cmd_list(cfg: dict) -> int:
-    for name, lane in sorted(cfg.get("lanes", {}).items()):
+def cmd_list(lanes: dict) -> int:
+    for name, lane in sorted(lanes.items()):
         print(f"{name}\t{lane['kind']}\t{lane['environment']}")
     return 0
 
 
-def usage(project_cfg: dict) -> str:
+def usage(lanes: dict, inherited: set[str] | None = None) -> str:
     lines = [
         f"{PROG} rev {__revision__} — the per-project gate entrypoint",
         "",
         "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty]",
         "       run-gate.py --list",
         "",
-        "lanes (run-gate.toml):",
+        "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
-    table = sorted(project_cfg.get("lanes", {}).items())
+    inherited = inherited or set()
+    table = sorted(lanes.items())
     if not table:
         lines.append("  (none defined)")
     for name, lane in table:
-        lines.append(f"  {name:<24} kind={lane['kind']:<8} environment={lane['environment']}")
+        marker = "*" if name in inherited else ""
+        lines.append(f"  {name:<24} kind={lane['kind']:<8} "
+                     f"environment={lane['environment']}{marker}")
     lines += [
         "",
         "Lane declarations: run-gate.toml next to this script; shared environment",
@@ -642,20 +673,25 @@ def main(argv: list[str] | None = None) -> int:
             if project_dir is None:
                 fail(f"no {CONFIG_NAME} found next to the invoked script or CWD "
                      f"(run-gate rev {__revision__})")
-            cfg, _, _, _ = load_config(project_dir)
-            print(usage(cfg))
+            cfg, _, central, _ = load_config(project_dir)
+            print(usage(cfg.get("lanes", {}), set(central.get("lanes", {}))
+                        - set(cfg.get("lanes", {}))))
             return 0
         if project_dir is None:
             fail(f"no {CONFIG_NAME} found next to the invoked script or "
                  f"{Path.cwd()} — run-gate resolves its config beside the invoked "
                  f"(sym)link/copy")
         cfg, cfg_path, central, central_path = load_config(project_dir)
+        # RG-16: effective lane set = project lanes shadowing shared central
+        # lanes by name; per-consumer pin existence checked inside.
+        lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
+                            cfg_path, central_path)
         if args.list:
-            return cmd_list(cfg)
-        lanes = dict(cfg.get("lanes", {}))
+            return cmd_list(lanes)
         if args.lane not in lanes:
             fail(f"unknown lane {args.lane!r} — known lanes: "
-                 f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path})")
+                 f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+                 f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
