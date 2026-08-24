@@ -88,7 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 6,
+        "schema_version": 7,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -468,7 +468,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "description": "drop the CHECK constraint",
     }
     document = {
-        "schema_version": 6,
+        "schema_version": 7,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,

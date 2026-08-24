@@ -376,6 +376,7 @@ run_inner() {
   # The suite must COLLECT, but its controls are intentionally v6 and must be
   # rejected under v7. Prove the hard cut with a raw verifier probe instead of
   # running the locked module as though its controls were still valid.
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" - "$worktree/assay" <<'PYEOF'
 import json
 import sys
@@ -397,6 +398,7 @@ print(f"v6 hard-cut guard passed for {len(list(expected.glob('*.json')))} frozen
 PYEOF
   echo 'ASSAY_GATE_PHASE=verdict-v6-successors-verified'
 
+  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
     "$worktree/assay/nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
     -q -p no:randomly --override-ini=pythonpath=

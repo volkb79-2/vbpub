@@ -382,7 +382,7 @@ def execute_plan(
             cwd=cwd,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         stdout_tail, stdout_dropped_bytes = _bounded_tail(exc.stdout)
         stderr_tail, stderr_dropped_bytes = _bounded_tail(exc.stderr)
         return CommandResult(

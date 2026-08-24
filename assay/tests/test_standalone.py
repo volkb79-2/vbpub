@@ -338,7 +338,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 6,
+        "schema_version": 7,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -575,7 +575,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 6,
+        "schema_version": 7,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -639,9 +639,19 @@ def _expected_r2_artifact(
 
 
 def _assert_complete(real: dict, expected: dict) -> None:
-    # `assay_version`/`started`/`ended` are the three values a real run
-    # genuinely cannot hand-inject; everything else is compared.
-    volatile = {"assay_version", "started", "ended"}
+    # `assay_version`/`started`/`ended` are values a real run genuinely cannot
+    # hand-inject. B014's optional output tails are diagnosis evidence whose
+    # exact bytes depend on the child's buffering; their presence is proven by
+    # the dedicated runner tests and schema tests, not duplicated here.
+    volatile = {
+        "assay_version",
+        "started",
+        "ended",
+        "result_stdout_tail",
+        "result_stderr_tail",
+        "result_stdout_dropped_bytes",
+        "result_stderr_dropped_bytes",
+    }
     assert {k: v for k, v in real.items() if k not in volatile} == expected
 
 
@@ -1033,7 +1043,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 6,
+        "schema_version": 7,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1386,7 +1396,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 6,
+        "schema_version": 7,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
