@@ -7,7 +7,8 @@ RG-17/RG-19 declared inputs (`R-24`), RG-1 override-reachability guard (`R-25`),
 failing-container evidence (`R-26`), RG-10 declared `artifacts` + unconditional evidence-path
 disclosure (`R-08`, `R-18`), RG-2 pointer↔lane linkage verb (`R-27`), RG-8 `--dry-run`
 plan rehearsal (`R-28`), RG-20 resource-aware admission (`R-29`, lane `resources`
-key in `R-08`), RG-9 doctor preflight verb (`R-30`). Distilled from `README.md` (design
+key in `R-08`), RG-9 doctor preflight verb (`R-30`), RG-14 wheel as second
+artifact (`R-31`). Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
 adherence targets: the implementation conforms to THESE sentences; the
@@ -310,6 +311,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
 
+- `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
+  fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
+  win and must never regress. A wheel wraps the SAME bytes for
+  pip-installable distribution: `pyproject.toml` maps module `run_gate`
+  (committed symlink `run_gate.py -> run-gate.py`, dereferenced at build
+  time — py_modules cannot carry a hyphen) and exposes console script
+  `run-gate = run_gate:main`; the shipped `run_gate.py` is byte-identical to
+  the canonical file. Version discipline is DERIVED, not declared twice:
+  setuptools reads `__revision__` from the script at build time (`attr`),
+  so the wheel's version cannot drift from the copies' drift marker; a test
+  pins the derivation structurally and builds/installs the wheel in-suite,
+  asserting identical `--list` behavior between copied script and installed
+  console script. Build toolchain pinned exactly (assay/ciu precedent);
+  publish goes through cmru's wheel-publish; a release tag names the derived
+  version (`run-gate-v<version>`, e.g. `run-gate-v20`). The wheel NEVER
+  becomes required — CONSUMERS.md states it in prose and this contract
+  forbids any lane or check that assumes an install.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns
@@ -317,11 +336,18 @@ floors/R-levels/verdict meaning); no non-stdlib imports; no silent defaults
 for environment facts; no test definitions in consumer configs — the SSOT
 is `run-gate.toml`; release policy stays with the consumer (cmru/nyxloom).
 
-## 7. Distribution (unchanged from README/CONSUMERS)
+## 7. Distribution — script first, wheel second (`R-31`)
 
-vbpub-internal: relative symlink `../run-gate-project/run-gate.py` committed
-at the project root. External repos: copy the file; `__revision__` is the
-drift marker. Stdlib only, runs on a fresh clone with zero installs.
+PRIMARY, unchanged: vbpub-internal relative symlink
+`../run-gate-project/run-gate.py` committed at the project root; external
+repos copy the file; `__revision__` is the drift marker; stdlib only, runs
+on a fresh clone with zero installs.
+
+SECONDARY: the wheel (`pyproject.toml` here) packages the same bytes as
+module `run_gate` with a `run-gate` console script, version derived from
+`__revision__`, published through cmru's wheel-publish and tagged
+`run-gate-v<version>`. Adoption never requires it; nothing in the gate's
+own lanes or checks may assume an install exists.
 
 ## 8. Controller amendments (this session, 2026-08-22)
 

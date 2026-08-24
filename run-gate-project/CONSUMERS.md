@@ -320,6 +320,17 @@ noticing — that boundary is the point.
   (mutation, fuzz) via the identical entrypoint; `--list` output is the
   pipeline generator's input. Design note lives in assay B009.
 
+## Distribution — script first, wheel second
+
+The steps above are the PRIMARY distribution and stay canonical: symlink
+(internal) or copy (external), zero installs, `__revision__` as the drift
+marker. A wheel exists as a SECOND artifact for pip-flavored consumers:
+`pip install run-gate` exposes a `run-gate` console script running the SAME
+bytes, with the version derived from `__revision__` (never declared twice),
+built by cmru's wheel-publish and tagged `run-gate-v<version>`. The wheel
+NEVER becomes required — no adoption step, lane, or check may assume an
+install; if you have the script you need nothing else.
+
 ## Anti-goals (read before extending)
 
 - NO second parser of `run-gate.toml`, ever. A consumer that wants lane

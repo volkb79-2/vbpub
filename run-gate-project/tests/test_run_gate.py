@@ -14,6 +14,8 @@ import sys
 import textwrap
 import threading
 import time
+import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -2593,3 +2595,121 @@ class TestDoctor:
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "[WARN] mountinfo" in proc.stdout or \
             "[OK] mountinfo" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# RG-14 — wheel as SECOND artifact + version discipline (R-31)
+# ---------------------------------------------------------------------------
+
+def _has_module(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+class TestWheelPackaging:
+    """The wheel never replaces the script; it wraps the SAME bytes.
+
+    Discipline chain (backlog RG-14): the wheel's version must equal the
+    in-file `__revision__` so copies' drift marker stays truthful. Rather
+    than TEST two independently-declared numbers for equality (a test that
+    merely documents a dual-bookkeeping hazard), the pyproject DERIVES the
+    version from `run_gate.__revision__` at build time and these tests pin
+    the derivation structurally — drift is impossible by construction, and
+    anyone re-declaring a static version fails test_pyproject_... below.
+    """
+
+    def test_pyproject_derives_version_from_revision(self):
+        cfg = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
+        proj = cfg["project"]
+        assert cfg["build-system"]["build-backend"] == "setuptools.build_meta"
+        # version comes from the script, never a second declaration:
+        assert "version" not in proj
+        assert "version" in proj["dynamic"]
+        assert cfg["tool"]["setuptools"]["dynamic"]["version"] == {
+            "attr": "run_gate.__revision__"}
+        # console script + module mapping + zero runtime deps:
+        assert proj["scripts"] == {"run-gate": "run_gate:main"}
+        assert cfg["tool"]["setuptools"]["py-modules"] == ["run_gate"]
+        assert proj["dependencies"] == []
+        # the importable name exists and is the SAME bytes as the canonical
+        # script (committed symlink run_gate.py -> run-gate.py):
+        link = RUN_GATE_DIR / "run_gate.py"
+        assert os.path.islink(link)
+        assert os.path.realpath(link) == os.path.realpath(RUN_GATE_DIR / "run-gate.py")
+        assert link.read_bytes() == (RUN_GATE_DIR / "run-gate.py").read_bytes()
+
+    @pytest.fixture(scope="class")
+    def built_wheel(self, tmp_path_factory):
+        """Build the real wheel once, exactly the way cmru's publish flow
+        does (`python -m build`). Lives entirely in tmp: the worktree gains
+        no dist/ or egg-info."""
+        if not (_has_module("setuptools") and _has_module("build")):
+            pytest.skip("wheel toolchain unavailable")
+        import setuptools
+        pyproject = tomllib.loads((RUN_GATE_DIR / "pyproject.toml").read_text())
+        pin = next(r for r in pyproject["build-system"]["requires"]
+                   if r.startswith("setuptools=="))
+        want = pin.split("==")[1]
+        if setuptools.__version__ != want:
+            pytest.skip(
+                f"local setuptools {setuptools.__version__} != pinned {want} "
+                "(python -m build refuses a mismatched --no-isolation closure)")
+        stage = tmp_path_factory.mktemp("wheel-stage")
+        for name in ("run-gate.py", "pyproject.toml", "README.md"):
+            shutil.copy2(RUN_GATE_DIR / name, stage / name)
+        # copy2 FOLLOWS the symlink: the staged tree holds the dereferenced
+        # copy a git-archive/sdist build would see.
+        shutil.copy2(RUN_GATE_DIR / "run_gate.py", stage / "run_gate.py")
+        proc = subprocess.run(
+            [sys.executable, "-m", "build", "--wheel", "--no-isolation", "."],
+            cwd=stage, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout[-1500:] + proc.stderr[-1500:]
+        wheels = list((stage / "dist").glob("*.whl"))
+        assert len(wheels) == 1, wheels
+        return wheels[0]
+
+    def test_built_wheel_ships_identical_module_and_derived_version(
+            self, built_wheel):
+        rev = str(run_gate.__revision__)
+        assert built_wheel.name == f"run_gate-{rev}-py3-none-any.whl"
+        with zipfile.ZipFile(built_wheel) as z:
+            names = z.namelist()
+            assert "run_gate.py" in names
+            top = {n.split("/")[0] for n in names}
+            assert top == {"run_gate.py", f"run_gate-{rev}.dist-info"}, sorted(top)
+            ep = z.read(f"run_gate-{rev}.dist-info/entry_points.txt").decode()
+            assert "[console_scripts]" in ep
+            assert "run-gate = run_gate:main" in ep
+            meta = z.read(f"run_gate-{rev}.dist-info/METADATA").decode()
+            assert f"Version: {rev}" in meta
+            # THE truthfulness core: what pip installs is byte-identical to
+            # the canonical script, so its __revision__ IS the drift marker.
+            assert z.read("run_gate.py") == \
+                (RUN_GATE_DIR / "run-gate.py").read_bytes()
+
+    def test_installed_console_script_matches_script_behavior(
+            self, built_wheel, tmp_path):
+        install = tmp_path / "install"
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "--no-index",
+             "--no-deps", "--target", str(install), str(built_wheel)],
+            check=True, capture_output=True, text=True)
+        bin_gate = install / "bin" / "run-gate"
+        assert bin_gate.exists(), "console script not exposed by the wheel"
+        # An adopting project via CONSUMERS step 1: COPIED canonical script,
+        # no wheel anywhere on its path.
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        shutil.copy2(RUN_GATE_DIR / "run-gate.py", proj / "run-gate.py")
+        (proj / "run-gate.toml").write_text(
+            'schema_version = 1\n'
+            '[lanes.suite]\nkind = "command"\nenvironment = "host"\n'
+            'argv = ["true"]\nclean_tree = false\n')
+        canon = subprocess.run([os.path.join(".", "run-gate.py"), "--list"],
+                               cwd=proj, capture_output=True, text=True)
+        wheeled = subprocess.run(
+            [str(bin_gate), "--list"], cwd=proj, capture_output=True,
+            text=True, env={**os.environ, "PYTHONPATH": str(install)})
+        assert canon.returncode == 0, canon.stderr
+        assert wheeled.returncode == 0, wheeled.stderr
+        assert canon.stdout.strip() != ""
+        assert wheeled.stdout == canon.stdout

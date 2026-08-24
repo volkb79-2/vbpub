@@ -31,7 +31,7 @@ SPEC §9.
 | RG-11 | Uniform exit code 1 for every refusal — scripting cannot distinguish config error / dirty refusal / infrastructure failure | Minor | FIXED 2026-08-24 |
 | RG-12 | Failing-container evidence destroyed: only last stderr line kept, container removed in `finally` | Minor | FIXED 2026-08-24 |
 | RG-13 | Docs gaps: no end-to-end worked example; gitignore obligation unstated; adoption step 4 executed by zero projects; no root-level discovery; budget↔timeout drift unguarded | Minor | OPEN |
-| RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | OPEN |
+| RG-14 | Release model: wheel as second artifact beside the canonical script | Enhancement | FIXED 2026-08-24 |
 | RG-15 | Assay lanes must execute in the selected worktree, not the invoking checkout | Major | FIXED 2026-08-24 |
 | RG-16 | Central configs should be allowed to define shared lanes | Major | FIXED 2026-08-24 |
 | RG-17 | required-env forwarding completeness (schema-oracle credentials silently dropped) | Major | FIXED 2026-08-24 |
@@ -537,6 +537,26 @@ anything the wheel doesn't.
 (script path, unchanged); `pip install`ed wheel exposes `run-gate` console
 script with identical behavior; version-mismatch between wheel and script
 fails the discipline test.
+
+**FIXED 2026-08-24 (rev 20).** `pyproject.toml` wraps the module for
+setuptools (toolchain pinned exactly, assay/ciu precedent). The hyphenated
+filename cannot be a py_module, so a committed symlink
+`run_gate.py -> run-gate.py` gives the build an importable name for the SAME
+bytes (dereferenced at copy time); the wheel ships only that module plus
+dist-info, byte-identical to the canonical script. Console script
+`run-gate = run_gate:main`. Version discipline made structural rather than
+test-compared: `[tool.setuptools.dynamic] version = {attr =
+"run_gate.__revision__"}` DERIVES the wheel version from the script at build
+time — dual bookkeeping (and therefore drift) is impossible by construction,
+and tests/test_run_gate.py::TestWheelPackaging pins the derivation plus
+builds/installs the wheel in-suite asserting identical `--list` output
+between copied script and installed console script. Deliberate deviation:
+the entry's `run-gate-vX.Y.Z` tag shape becomes `run-gate-v<derived>` (e.g.
+`run-gate-v20`) because the script's whole version story is the bare
+revision integer until semver meaning exists; the enforced invariant is
+tag-body == wheel version. CONSUMERS.md gained "Distribution — script first,
+wheel second"; SPEC §7 rewritten + `R-31`. First release: tag `run-gate-v20`
+after merge, publish via cmru's wheel-publish.
 
 ## RG-15 — assay lanes must execute in the selected worktree, not the invoking checkout
 
