@@ -85,7 +85,7 @@ from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequen
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
-from .config import IsolationConfig, Lane
+from .config import IsolationConfig, Lane, parse_duration
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
@@ -1646,6 +1646,9 @@ def _run_prepared_lane(
     kill_signal_artifact = (
         lane.judge.mutation.kill_signal_artifact if r2_declared else None
     )
+    progress_path = (
+        Path(".assay") / f"{lane.name}.progress.jsonl" if r2_declared else None
+    )
 
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
@@ -1912,6 +1915,12 @@ def _run_prepared_lane(
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,
+                    budget_per_candidate_seconds=(
+                        parse_duration(lane.judge.mutation.budget_per_candidate)
+                        if lane.judge.mutation.budget_per_candidate is not None
+                        else None
+                    ),
+                    progress_artifact=progress_path,
                 )
             except AssayError as exc:
                 r2_orchestration_fault = exc
@@ -2395,6 +2404,49 @@ def run_lane(
         deadline = LaneDeadline.start(
             budget_seconds=lane.budget_seconds, monotonic=monotonic
         )
+
+    # (B010) A lane may declare WHERE its command is meaningful. Run the probe
+    # in the INVOKING environment before any repository or snapshot work and
+    # refuse loudly on a nonzero exit, rather than surfacing an unrelated
+    # suite failure from the wrong dependency closure.
+    if lane.environment_command is not None:
+        probe_plan = CommandPlan(
+            argv_declared=tuple(lane.environment_command),
+            argv_appended=(),
+            argv_effective=tuple(lane.environment_command),
+            env_declared=MappingProxyType(dict(lane.env)),
+            env_effective=resolve_command_plan(
+                lane,
+                argv_append=(),
+                passthrough_source=(
+                    os.environ if passthrough_source is None else passthrough_source
+                ),
+            ).env_effective,
+            env_passthrough=lane.env_passthrough,
+            allow_argv_append=False,
+            budget_seconds=min(30.0, deadline.remaining()),
+            project_prefix=None,
+        )
+        probe_result = execute_plan(
+            probe_plan,
+            cwd=project_root,
+            timeout=deadline.remaining(),
+            process_runner=process_runner,
+            clock=clock,
+        )
+        if probe_result.outcome is not Outcome.PASS:
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                assay_version=assay_version,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
 
     # (A-254) The declared-environment precondition, checked BEFORE the
     # higher-rigor delegation below so one insertion point covers both paths.

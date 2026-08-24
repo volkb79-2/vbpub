@@ -27,6 +27,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from importlib.resources import files
 from types import MappingProxyType
 from typing import Mapping
 
@@ -368,8 +369,23 @@ def make_deadline(*, budget_seconds: float = 60.0, monotonic=None):
 #: The shipped schema, resolved as a FILE from the package — never a dict
 #: literal, because A-029's claim is that a consumer validates against a file
 #: without importing assay.
-SCHEMA_PATH = PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json"
-assert SCHEMA_PATH.is_file(), f"the shipped schema is missing at {SCHEMA_PATH}"
+def _shipped_schema_path() -> Path:
+    """The schema actually installed for THIS interpreter when possible.
+
+    Under the self-hosting gate, tests run from the reviewed worktree while
+    ``assay`` comes from the freshly built installed wheel. Prefer that
+    package resource; retain the source path as the explicit fallback for
+    non-installed development use.
+    """
+    try:
+        return Path(str(files("assay").joinpath("schemas/verdict.schema.json")))
+    except (FileNotFoundError, TypeError):
+        source_path = PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json"
+        assert source_path.is_file(), f"the shipped schema is missing at {source_path}"
+        return source_path
+
+
+SCHEMA_PATH = _shipped_schema_path()
 
 VERDICT_FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "verdicts"
 

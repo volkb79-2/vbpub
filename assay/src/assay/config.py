@@ -144,7 +144,13 @@ REQUIRED_LANE_FIELDS: tuple[str, ...] = (
     "allow_argv_append",
 )
 
-_OPTIONAL_LANE_FIELDS: tuple[str, ...] = ("judge", "where", "isolation", "env_required")
+_OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
+    "judge",
+    "where",
+    "isolation",
+    "env_required",
+    "environment_command",
+)
 
 #: (B006a/A-269, §3.2) The closed `isolation.snapshot_selection` vocabulary.
 #: `"repository"` materialises the whole commit; `"repository-minus-unsafe-
@@ -261,6 +267,7 @@ class CoverageConfig:
 
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
+_MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = ("budget_per_candidate",)
 
 #: (P33/A-227/A-230b, narrowed P34/W4) the two v6 artifact fields, legal
 #: ONLY on a ``judge.language = "sql"`` lane. Named separately from
@@ -308,6 +315,10 @@ class MutationConfig:
     #: executions").
     max_mutants: int
     operators: tuple[str, ...]
+    #: (B012) Optional per-candidate wall-clock bound. ``None`` preserves the
+    #: existing lane-wide-only behavior; a declared value bounds each mutant's
+    #: command independently without changing the lane deadline.
+    budget_per_candidate: str | None = None
     #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
     #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
     #: value here is only ever possible on a ``judge.language = "sql"`` lane.
@@ -333,6 +344,8 @@ class MutationConfig:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
         if self.equivalence_artifact is not None:
             payload["equivalence_artifact"] = self.equivalence_artifact
+        if self.budget_per_candidate is not None:
+            payload["budget_per_candidate"] = self.budget_per_candidate
         return payload
 
 
@@ -610,6 +623,10 @@ class Lane:
     #: this field existed is unchanged -- and it is LAST in the field order
     #: because it is the only defaulted field on a positional dataclass.
     env_required: tuple[str, ...] = ()
+    #: (B010) Optional gate-environment probe. ``None`` means the lane is
+    #: meaningful wherever it is invoked; a declared argv is executed in the
+    #: invoking context before the lane command and must exit zero.
+    environment_command: tuple[str, ...] | None = None
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -631,6 +648,8 @@ class Lane:
         }
         if self.env_required:
             declared["env_required"] = list(self.env_required)
+        if self.environment_command is not None:
+            declared["environment_command"] = list(self.environment_command)
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -840,6 +859,22 @@ def _load_lane(
     env_required = _as_str_list(
         table.get("env_required", []), where, "env_required"
     )
+    environment_command = None
+    if "environment_command" in table:
+        environment_command = _as_str_list(
+            table["environment_command"], where, "environment_command"
+        )
+        if not environment_command:
+            raise LaneConfigError(
+                f"{where}: 'environment_command' is empty; omit the field when "
+                f"the lane is meaningful in any invoking environment"
+            )
+        if "/" not in environment_command[0] and "PATH" not in env and "PATH" not in env_passthrough:
+            raise LaneConfigError(
+                f"{where}: 'environment_command[0]' {environment_command[0]!r} is "
+                f"a bare executable name but PATH is declared by neither 'env' "
+                f"nor 'env_passthrough'. Declare PATH or use an executable path."
+            )
     # (A-254) `env_required` must be a SUBSET of `env_passthrough`, because a
     # name outside it is unreachable by construction -- `resolve_command_plan`
     # only ever copies declared passthrough names, so requiring a name the lane
@@ -926,6 +961,7 @@ def _load_lane(
         rigor=tuple(rigor),
         enforcement=enforcement,
         argv=tuple(argv),
+        environment_command=None if environment_command is None else tuple(environment_command),
         env=MappingProxyType(dict(env)),
         env_passthrough=tuple(env_passthrough),
         env_required=tuple(env_required),
@@ -1524,16 +1560,16 @@ def _load_mutation(
                 f"language this build ships a producer for"
             )
     unknown = sorted(set(value) - set(_MUTATION_FIELDS) - set(_MUTATION_SQL_ONLY_FIELDS))
-    if unknown:
-        raise LaneConfigError(
-            f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
-            f"expected only: {', '.join(_MUTATION_FIELDS)}"
-        )
     for field in _MUTATION_FIELDS:
         if field not in value:
             raise LaneConfigError(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
+    if unknown and unknown != ["budget_per_candidate"]:
+        raise LaneConfigError(
+            f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(_MUTATION_FIELDS + _MUTATION_OPTIONAL_FIELDS)}"
+        )
     jobs = value["jobs"]
     if isinstance(jobs, bool) or not isinstance(jobs, int):
         raise LaneConfigError(
@@ -1626,19 +1662,33 @@ def _load_mutation(
             project_root,
             "judge.mutation.equivalence_artifact",
         )
-        if "kill_signal_artifact" in value:
+    if "kill_signal_artifact" in value:
             kill_signal_artifact = _validate_artifact_path(
                 value["kill_signal_artifact"],
                 where,
                 project_root,
                 "judge.mutation.kill_signal_artifact",
             )
+    budget_per_candidate = value.get("budget_per_candidate")
+    if budget_per_candidate is not None:
+        if not isinstance(budget_per_candidate, str) or not budget_per_candidate:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.budget_per_candidate' must be a "
+                f"non-empty string, got {_type_name(budget_per_candidate)}"
+            )
+        try:
+            parse_duration(budget_per_candidate)
+        except ValueError as exc:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
+            ) from exc
     return MutationConfig(
         jobs=jobs,
         max_mutants=max_mutants,
         operators=tuple(operators),
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
+        budget_per_candidate=budget_per_candidate,
     )
 
 

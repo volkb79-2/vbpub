@@ -336,16 +336,16 @@ locally (the container part still needs the operator's four-traps recipe):
 
 ```bash
 # 1. Verify the pinned Assay artifact (fails the gate if it ever drifts)
-sha256sum -c ciu/tools/assay/assay-2.1.0.pyz.sha256
+sha256sum -c ciu/tools/assay/assay-2.2.0.pyz.sha256
 
 # 2. Inspect the declared lane (validates config, runs nothing)
-cd ciu && .venv/bin/python tools/assay/assay-2.1.0.pyz lanes --file assay.toml
+cd ciu && .venv/bin/python tools/assay/assay-2.2.0.pyz lanes --file assay.toml
 
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
 #    line+branch, and judges the changed-line floor on base..HEAD (R1).
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
-  .venv/bin/python tools/assay/assay-2.1.0.pyz run ciu \
+  .venv/bin/python tools/assay/assay-2.2.0.pyz run ciu \
     --file assay.toml --verdict-json .assay/verdict-ciu.json
 ```
 

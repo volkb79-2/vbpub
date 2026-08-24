@@ -191,6 +191,13 @@ change while assay changes when a method is added, so merging couples two
 independent release rhythms; and srdm/netcup-api-filter would have to adopt an
 orchestrator to get a coverage floor.
 
+This boundary remains one-way by construction. A lane may declare an optional
+`environment_command` probe: `assay run` executes that zero-exit argv in the
+invoking environment *before* repository, snapshot, or lane work and refuses
+`ERROR`/`BAD_LANE_CONFIG` on failure. The probe lets a lane name "this command
+is meaningful here" without giving assay container mechanics or letting a wrong
+dependency closure masquerade as a product failure.
+
 Note also that ciu's gate currently reaches into a sibling project's source
 tree — `PYTHONPATH=../nyxloom/src python -m nyxloom.coverage_gate` — which is
 the concrete defect assay's existence deletes.
@@ -1112,6 +1119,17 @@ tracked source in scope. It never silently upgrades itself into a whole-project
 or whole-deployed-schema audit. Language-specific operator catalogues and an
 R2-without-R1 adapter remain explicit product-design questions, not values an
 adapter may invent locally (A-215).
+
+Execution is observable without becoming a second verdict. After the baseline
+and after every candidate completes, R2 appends a compact NDJSON event to
+`.assay/<lane>.progress.jsonl` and records that project-relative path in the
+optional `mutation.progress_artifact` field. An optional
+`judge.mutation.budget_per_candidate` bounds one candidate's command; its
+timeout uses the existing `budget_exceeded` bucket rather than widening the
+closed reason-code vocabulary. The separate `assay plan` command performs the
+same discovery against a private commit snapshot and emits deterministic
+candidate identities and runtime estimates, but never runs the lane command or
+a mutant.
 
 `UNSUPPORTED` is adapter-wide capability absence, never invalid source or an
 unrecognised individual construct. It renders as payload-free

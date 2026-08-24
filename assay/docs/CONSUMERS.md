@@ -398,17 +398,49 @@ ambient Assay version: that would make a consumer's evidence depend on whichever
 to be rebuilt. Instead a consumer pins a wheel in its own gate setup, or vendors the verified
 zipapp as an explicit input. A CMRU project can run the latter through its existing gate:
 
-<!-- assay-doc-example:skip reason="cmru.toml step config, not an assay lane file -- has no schema_version/[lanes] table and is not parsed by assay's loader" -->
+<!-- assay-doc-example:skip reason="run-gate.toml lane config, not an assay lane file -- has no schema_version/[lanes] table and is not parsed by assay's loader" -->
 ```toml
-[steps.run-tests]
-quiet = true
-commands = [
-  { label = "example: assay lane in tester-unified", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz", "run", "unit", "--file", "assay.toml", "--verdict-json", ".assay/verdict-unit.json"], cwd = "." },
-]
+[lanes.assay]
+kind = "assay"
+assay_lane = "unit"
+environment = "tester-unified"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
+budget = "20m"
+
+[lanes.assay.pins.assay]
+version = "<version>"
+sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
 
-The product, not CMRU, owns the `assay.toml` lane, pinned Assay artifact, and verdict retention.
-CMRU only supplies the isolated execution boundary and concise logging.
+The product owns the `assay.toml` lane and the pinned Assay artifact; `run-gate.py` owns the isolated
+execution boundary. A consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
+for orchestration mechanics.
+
+## Size a mutation lane before running it
+
+For any R2 mutation lane, inspect the workload without executing its command or creating mutant
+snapshots:
+
+```bash
+assay plan worker_lane --file assay.toml
+```
+
+The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
+worker concurrency, and runtime estimates. Use those facts to choose an optional per-candidate bound:
+
+<!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.worker_lane.judge.mutation]
+jobs = 4
+max_mutants = 100
+operators = ["python:compare-swap"]
+budget_per_candidate = "300s"
+```
+
+A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
+candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after the baseline and after
+every completed candidate, and the verdict names that file under
+`claims[].mutation.progress_artifact`.
 
 ## Adopting a v2-capable release
 

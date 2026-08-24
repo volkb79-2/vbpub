@@ -1088,6 +1088,11 @@ ciu-P07 vendored the pyz per the cmru precedent:
 ## B010 — `assay run` is unusable when the gate environment is not the invoking environment
 
 **Filed 2026-08-20 (dstdns P111 auth-config-cutover implementer, Mode-B wave).**
+**Status:** **PARTIALLY IMPLEMENTED 2026-08-24.** A lane may declare an optional top-level
+`environment_command`; `assay run` executes that zero-exit probe in the invoking environment before any
+repository/snapshot work and refuses `ERROR`/`BAD_LANE_CONFIG` on failure. This gives consumers an
+explicit fail-fast contract for a wrong dependency closure, but does not bake or orchestrate gate
+images (the B009/run-gate direction remains).
 Provenance: `dstdns/nyxloom-trove/reports/dstdns-P111-REPORT.md` §6 (disclosed
 caveat) + §9 F6. Reproduced, not speculated — and verified at dstdns `main`
 @ `36cb7183` as well as the P111 branch, so it is a standing environment fact,
@@ -1150,6 +1155,9 @@ ciu CIU-40 (gate-layering refactor / run-gate mini-project).
 **Filed 2026-08-22 (vbpub controller session, adversarial review of the
 run-gate estate-wide adoption wave `vbpub@4c6eb2b6..91959b3a`; consumer-UX
 reviewer, finding "stale against the adopted mechanism").**
+**Status:** **FIXED 2026-08-24.** `docs/CONSUMERS.md` now shows the adopted `run-gate.toml`
+`kind = "assay"` lane shape and points to run-gate's adoption guide instead of teaching the retired
+raw CMRU/tester invocation.
 
 ### The observation
 
@@ -1201,6 +1209,11 @@ halves).
 ## B012 — mutation execution observability, planning, resume/sharding, and per-candidate budgets
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from P127 admission mutation lanes and the SQL mutation blocker).**
+**Status:** **PARTIALLY IMPLEMENTED 2026-08-24.** Shipped: baseline/per-candidate progress NDJSON,
+`mutation.progress_artifact` in the v6 payload, `assay plan`, deterministic plan IDs, per-file/operator
+counts and runtime estimates, and optional `budget_per_candidate`. Still open: worker identity,
+resume/checkpointing, native filtering/sharding with merge validation, and the remaining acceptance
+items below.
 
 ### The observation
 
@@ -1223,11 +1236,11 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 
 ### Acceptance
 
-- [ ] progress events emitted and referenced from verdict;
-- [ ] `assay plan` reports deterministic totals/IDs/runtime estimate;
+- [x] progress events emitted and referenced from verdict;
+- [x] `assay plan` reports deterministic totals/IDs/runtime estimate;
 - [ ] interrupted lane resumes without rerunning completed candidates;
 - [ ] shards are provably disjoint and exhaustive;
-- [ ] per-candidate timeouts do not abort unrelated candidates.
+- [x] per-candidate timeouts do not abort unrelated candidates.
 
 ## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
 

@@ -106,8 +106,15 @@ where to run it.**
 - A project's own `assay.toml` **lane** declares *what* exists: which rigor
   levels it claims, what command to run, what coverage/mutation/canary
   configuration backs that claim.
-- An environment tool (in this estate, `ciu`) decides *where* — which
-  container, which host. assay has no opinion about environments.
+- A lane may also declare an optional top-level `environment_command`. When
+  present, `assay run` executes that zero-exit probe in the *invoking*
+  environment before repository or snapshot work and refuses with
+  `ERROR`/`BAD_LANE_CONFIG` when it fails; the lane command itself still runs
+  in the environment assay is given. This makes a wrong dependency closure
+  loud instead of surfacing as an unrelated test import failure.
+- An environment tool (in this estate, `ciu` or `run-gate.py`) decides
+  *where* — which container, which host. The probe names a fact about that
+  environment; it does not give assay container orchestration.
 - assay decides *how to judge* the result of running that one declared
   command, against exactly the rigor the lane declares. It never invents a
   rigor level a lane didn't ask for, and it never silently claims a
@@ -167,6 +174,13 @@ mutant that never actually mutated is recorded `survived`, a false
 statement about your tests) and `kill_signal_artifact` (optional; declaring
 it turns on kill attribution). Both share `judge.coverage.artifact`'s own
 path grammar and must be gitignored, exactly like a coverage artifact.
+
+Every mutation lane may declare optional `budget_per_candidate` with the same
+duration grammar as `budget`. A candidate whose command exceeds it enters the
+existing `budget_exceeded` bucket while unrelated candidates continue.
+Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
+each candidate; the verdict's optional `mutation.progress_artifact` names that
+file.
 
 ## How it works
 
@@ -230,6 +244,9 @@ Two more CLI verbs round out the surface:
 
 - `assay lanes` lists what a project's `assay.toml` actually declares —
   useful for auditing what a project claims before trusting its gate.
+- `assay plan <mutation-lane>` discovers candidates through a private commit
+  snapshot, reports total/per-file/per-operator counts and deterministic IDs,
+  and estimates runtime without running the lane command or any mutant.
 - `assay verify <verdict.json>` independently re-checks that a verdict
   artifact is schema-conformant and internally self-consistent. It never
   re-runs a lane and is never the *sole* witness to a producer's
