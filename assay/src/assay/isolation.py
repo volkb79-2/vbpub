@@ -245,6 +245,52 @@ class _Manifest:
         return {entry.path: entry for entry in self.entries}
 
 
+def _prove_manifest_materialized(manifest: _Manifest, root: Path) -> None:
+    """(B016) Prove every declared leaf matches the manifest, directly on
+    disk -- independent of what Git's own status/tree comparison happens to
+    observe. Module-level and dependency-free (no Git call) so the predicate
+    itself is unit-testable without first defeating the earlier, stronger
+    git-consistency checks in :meth:`SnapshotRepository._verify`, which
+    normally catch the same corruption first.
+    """
+    for omitted_path in manifest.omitted:
+        materialized = root.joinpath(*omitted_path.parts)
+        if os.path.lexists(materialized):
+            raise _git_failed(
+                f"the private snapshot at {root} materialised the "
+                f"declared omission {omitted_path!s}, which must be "
+                f"absent from the worktree"
+            )
+    for entry in manifest.entries:
+        materialized = root.joinpath(*entry.path.parts)
+        if entry.mode == _MODE_SYMLINK:
+            if not materialized.is_symlink():
+                raise _git_failed(
+                    f"the private snapshot at {root} omitted the manifest "
+                    f"symlink leaf {entry.path!s}"
+                )
+            continue
+        try:
+            leaf_mode = os.lstat(materialized).st_mode
+        except OSError:
+            raise _git_failed(
+                f"the private snapshot at {root} omitted the manifest "
+                f"regular-file leaf {entry.path!s}"
+            ) from None
+        if not stat.S_ISREG(leaf_mode):
+            # `Path.is_file()` follows symlinks, so a regular/executable
+            # entry materialised as a symlink to a file with identical
+            # bytes would satisfy it -- exactly what B016's own
+            # DESIGN-GUIDE contract ("must exist as a regular file")
+            # requires this check to refuse. `lstat` never follows.
+            raise _git_failed(
+                f"the private snapshot at {root} materialised the "
+                f"manifest regular-file leaf {entry.path!s} as "
+                f"something other than a regular file (mode "
+                f"{stat.filemode(leaf_mode)})"
+            )
+
+
 class _BatchReader:
     """Incremental parser for ``git cat-file --batch``.
 
@@ -665,28 +711,7 @@ class SnapshotRepository:
                 f"{sorted(skip_paths)!r} but the declared omissions are "
                 f"exactly {sorted(expected_skip)!r}"
             )
-        for omitted_path in self._manifest.omitted:
-            materialized = root.joinpath(*omitted_path.parts)
-            if os.path.lexists(materialized):
-                raise _git_failed(
-                    f"the private snapshot at {root} materialised the "
-                    f"declared omission {omitted_path!s}, which must be "
-                    f"absent from the worktree"
-                )
-        for entry in self._manifest.entries:
-            materialized = root.joinpath(*entry.path.parts)
-            if entry.mode == _MODE_SYMLINK:
-                if not materialized.is_symlink():
-                    raise _git_failed(
-                        f"the private snapshot at {root} omitted the manifest "
-                        f"symlink leaf {entry.path!s}"
-                    )
-                continue
-            if not materialized.is_file():
-                raise _git_failed(
-                    f"the private snapshot at {root} omitted the manifest "
-                    f"regular-file leaf {entry.path!s}"
-                )
+        _prove_manifest_materialized(self._manifest, root)
         if (git_dir / "objects" / "info" / "alternates").exists():
             raise _git_failed(
                 f"the private snapshot at {root} depends on an alternate object store"

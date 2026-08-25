@@ -902,6 +902,105 @@ def test_the_pre_yield_verification_catches_a_damaged_snapshot(
             assert caught.value.reason_code is ReasonCode.GIT_FAILED
 
 
+def _one_regular_leaf_manifest() -> isolation._Manifest:
+    return isolation._Manifest(
+        entries=(
+            isolation._Entry(
+                path=PurePosixPath("leaf.py"),
+                mode=isolation._MODE_REGULAR,
+                oid="0" * 40,
+                size=1,
+            ),
+        ),
+        directories=(),
+        omitted=(),
+    )
+
+
+def test_manifest_materialization_proof_accepts_a_genuine_regular_file(
+    tmp_path: Path,
+) -> None:
+    """(B016) The positive case: a real regular-file leaf never raises.
+
+    Driven directly against `_prove_manifest_materialized` -- per the class
+    above, real git-backed materialization always resolves a mismatch via
+    status/tree first, so this predicate can only be proven right or wrong
+    by calling it on its own, bypassing Git entirely.
+    """
+    (tmp_path / "leaf.py").write_bytes(b"x")
+    isolation._prove_manifest_materialized(_one_regular_leaf_manifest(), tmp_path)
+
+
+def test_manifest_materialization_proof_rejects_a_symlink_standing_in_for_a_regular_leaf(
+    tmp_path: Path,
+) -> None:
+    """(B016/D-5) `Path.is_file()` follows symlinks, so a regular-file entry
+    materialized as a symlink to a file with IDENTICAL bytes elsewhere used
+    to satisfy the old predicate -- this is the exact gap DESIGN-GUIDE.md's
+    "must exist as a regular file" contract requires closed, and the reason
+    the check now reads `lstat`/`S_ISREG` instead of `Path.is_file()`.
+    """
+    target = tmp_path / "elsewhere.py"
+    target.write_bytes(b"x")
+    (tmp_path / "leaf.py").symlink_to(target)
+    with pytest.raises(AssayError, match="something other than a regular file") as caught:
+        isolation._prove_manifest_materialized(_one_regular_leaf_manifest(), tmp_path)
+    assert caught.value.reason_code is ReasonCode.GIT_FAILED
+
+
+def test_manifest_materialization_proof_rejects_a_directory_standing_in_for_a_regular_leaf(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "leaf.py").mkdir()
+    with pytest.raises(AssayError, match="something other than a regular file"):
+        isolation._prove_manifest_materialized(_one_regular_leaf_manifest(), tmp_path)
+
+
+def test_manifest_materialization_proof_rejects_a_missing_regular_leaf(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AssayError, match="omitted the manifest regular-file leaf"):
+        isolation._prove_manifest_materialized(_one_regular_leaf_manifest(), tmp_path)
+
+
+def test_manifest_materialization_proof_rejects_a_missing_symlink_leaf(
+    tmp_path: Path,
+) -> None:
+    """Pre-existing symlink-leaf check (unchanged by B016), covered here for
+    the first time as a side effect of extracting the function it lives in
+    -- the same coverage gap the regular-file half of this check had before
+    B016's remediation."""
+    manifest = isolation._Manifest(
+        entries=(
+            isolation._Entry(
+                path=PurePosixPath("link.py"),
+                mode=isolation._MODE_SYMLINK,
+                oid="0" * 40,
+                size=1,
+                target="leaf.py",
+            ),
+        ),
+        directories=(),
+        omitted=(),
+    )
+    with pytest.raises(AssayError, match="omitted the manifest symlink leaf"):
+        isolation._prove_manifest_materialized(manifest, tmp_path)
+    (tmp_path / "leaf.py").write_bytes(b"x")
+    (tmp_path / "link.py").symlink_to(tmp_path / "leaf.py")
+    isolation._prove_manifest_materialized(manifest, tmp_path)
+
+
+def test_manifest_materialization_proof_rejects_a_materialized_omission(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "should-be-absent.py").write_bytes(b"x")
+    manifest = isolation._Manifest(
+        entries=(), directories=(), omitted=(PurePosixPath("should-be-absent.py"),)
+    )
+    with pytest.raises(AssayError, match="materialised the declared omission"):
+        isolation._prove_manifest_materialized(manifest, tmp_path)
+
+
 def test_a_bounded_stdout_ceiling_refuses_an_oversized_child(tmp_path: Path) -> None:
     """P20's fail-closed output bound still applies to P22's new seam."""
     repo, commit = _root_repo(tmp_path)

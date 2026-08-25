@@ -989,16 +989,6 @@
             "minLength": 1
           }
         }
-        ,
-        "progress_artifact": {
-          "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
-          "type": "string",
-          "minLength": 1
-        },
-        "candidate_ids": {
-          "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
-          "$ref": "#/$defs/mutation_candidate_ids"
-        }
       },
       "additionalProperties": false
     },
@@ -1288,6 +1278,15 @@
               }
             ]
           }
+        },
+        "progress_artifact": {
+          "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_ids": {
+          "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+          "$ref": "#/$defs/mutation_candidate_ids"
         }
       },
       "additionalProperties": false
@@ -1659,13 +1658,6 @@
         },
         "mutation": {
           "$ref": "#/$defs/mutation"
-        }
-        ,
-        "progress_artifact": {
-          "$ref": "#/$defs/repo_tree_path"
-        },
-        "candidate_ids": {
-          "$ref": "#/$defs/mutation_candidate_ids"
         }
       },
       "allOf": [

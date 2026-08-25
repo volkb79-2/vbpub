@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import sys
 import tempfile
@@ -63,7 +64,7 @@ from .adapters.base import LanguageAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS
@@ -389,8 +390,14 @@ def _run_reserved(
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
-    infrastructure_source = None
-    infrastructure_environment = os.environ if lane.infrastructure else None
+    # B013: `derived:` facts read rendered CIU state at the project root
+    # (A-293); ciu itself gitignores `ciu.global.toml` and only ever renders
+    # it there (ciu/README.md, ciu/src/ciu/scaffold.py). A lane without any
+    # `derived:` declaration never opens this path -- resolve_command_plan's
+    # own `has_derived` check is what refuses a *used* but unreadable source.
+    infrastructure_source = (
+        lane_file.project_root / "ciu.global.toml" if lane.infrastructure else None
+    )
     infrastructure_environment = os.environ if lane.infrastructure else None
     commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
 
@@ -529,7 +536,13 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             shard_count = int(raw_count)
         except ValueError as exc:
             raise LaneConfigError("--shard must have the form INDEX/COUNT") from exc
-        mutation.select_mutation_shard((), index=shard_index - 1, count=shard_count)
+        try:
+            # Zero-based, matching config.py/the verdict schema/CONSUMERS.md
+            # -- never `- 1`. This is a dry bounds check only (an empty
+            # candidate tuple); its return value is discarded.
+            mutation.select_mutation_shard((), index=shard_index, count=shard_count)
+        except ValueError as exc:
+            raise LaneConfigError(f"--shard {args.shard!r}: {exc}") from exc
 
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
@@ -616,7 +629,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             count=1,
         ) if shard_index is None else mutation.select_mutation_shard(
             [mutation.candidate_id(job) for job in jobs],
-            index=shard_index - 1,
+            index=shard_index,
             count=shard_count,
         )
         jobs = tuple(jobs[index] for index in selected_indices)

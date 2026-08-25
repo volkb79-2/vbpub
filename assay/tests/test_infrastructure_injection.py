@@ -117,6 +117,21 @@ def test_lane_without_infrastructure_ignores_the_source(tmp_path):
     assert plan.env_effective == {}
 
 
+def test_a_derived_fact_with_no_infrastructure_source_refuses(tmp_path):
+    """(B013 remediation) A lane declaring `derived:` must be paired with a
+    source to resolve it against. Refused as an `AssayError`/`BAD_LANE_
+    CONFIG`, not the bare `ValueError` this used to be -- every other
+    refusal in `resolve_command_plan` is already a typed `AssayError`, and
+    an untyped one is invisible to any caller catching the documented
+    contract, `cli.py`'s own `main()` included."""
+    lane = make_lane(infrastructure={"image": "derived:deploy.image"})
+    from assay.errors import AssayError
+
+    with pytest.raises(AssayError) as caught:
+        resolve_command_plan(lane, passthrough_source={}, infrastructure_source=None)
+    assert "infrastructure_source" in str(caught.value)
+
+
 def _run_r0(repo: Path, *, infrastructure_environment={"NETWORK_SOURCE": "network"}) -> tuple[int, str]:
     (repo / "assay.toml").write_text(
         """

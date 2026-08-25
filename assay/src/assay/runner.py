@@ -82,7 +82,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Callable, ContextManager, Iterator, Mapping, Protocol, Sequence, TextIO
+from typing import Any, Callable, ContextManager, Iterator, Mapping, Protocol, Sequence, TextIO
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
@@ -345,8 +345,11 @@ def resolve_command_plan(
             for declaration in lane.infrastructure.values()
         )
         if has_derived and infrastructure_source is None:
-            raise ValueError(
-                "lane declares infrastructure facts but no infrastructure_source"
+            raise AssayError(
+                "lane declares a derived infrastructure fact but no "
+                "infrastructure_source was supplied to resolve it against",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
         for name, declaration in lane.infrastructure.items():
             source_name, separator, expression = declaration.partition(":")
@@ -2052,7 +2055,7 @@ def _run_prepared_lane(
                     progress_artifact=progress_path,
                     state_project_root=project_root if resume else None,
                     resume=resume,
-                    shard_index=None if shard_index is None else shard_index - 1,
+                    shard_index=shard_index,
                     shard_count=shard_count,
                 )
             except AssayError as exc:
@@ -2070,10 +2073,14 @@ def _run_prepared_lane(
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
+                    # The EXECUTED shard, from the `--shard` CLI argument
+                    # (this function's own parameter) -- not the lane's
+                    # declared config, which selects nothing and would let a
+                    # verdict claim a shard identity it never enforced.
                     judgment_r2 = _build_judgment_r2(
                         lane,
-                        shard_index=lane.judge.mutation.shard_index,
-                        shard_count=lane.judge.mutation.shard_count,
+                        shard_index=shard_index,
+                        shard_count=shard_count,
                     )
         ended = iso_utc(clock())
 
@@ -2319,6 +2326,20 @@ def _run_higher_rigor_lane(
     """
     repo_top = git.repo_top(repo, remaining=deadline.remaining)
     project_prefix = _resolved_project_prefix(repo_top, project_root)
+    # NOTE (B013 remediation, filed as a new backlog item rather than fixed
+    # here): an `AssayError` from an unresolvable infrastructure declaration
+    # propagates uncaught past this point to `main()`'s outer handler, which
+    # prints a clean one-line message and exits non-zero but writes NO
+    # verdict artifact even when one was reserved -- unlike every other
+    # post-HEAD-resolution refusal in this module (`missing_required`, the
+    # bad-`--shard` refusal, adapter resolution), which all route through
+    # `refuse_lane`. It cannot simply be wrapped the same way here:
+    # `refuse_lane` itself calls `resolve_command_plan` a second time to
+    # record the attempted plan (A-036), which hits the identical
+    # infrastructure failure and raises again from inside `refuse_lane`.
+    # Resolving this needs a real verdict-shape decision (can a refusal
+    # honestly omit `argv_effective` when the plan itself could not be
+    # built?), not a quick catch here.
     plan = resolve_command_plan(
         lane,
         argv_append=argv_append,
@@ -2663,13 +2684,29 @@ def run_lane(
             raw_index, raw_count = shard.split("/", 1)
             shard_index = int(raw_index)
             shard_count = int(raw_count)
-        except (ValueError, AttributeError) as exc:
-            raise AssayError(
-                f"invalid mutation shard spelling {shard!r}; expected INDEX/COUNT",
-                outcome=Outcome.ERROR,
+            # Zero-based, matching config.py/the verdict schema/CONSUMERS.md
+            # -- never `- 1`. Dry bounds check only (empty candidate tuple);
+            # the real selection happens inside `mutation.run_mutation`.
+            mutation.select_mutation_shard((), index=shard_index, count=shard_count)
+        except (ValueError, AttributeError):
+            # A-139: HEAD is already resolved above (this function's own
+            # *commit* parameter) -- a bad `--shard` refusal here is one of
+            # work item 3's "later terminal paths" and MUST emit a complete
+            # artifact exactly like the `missing_required` refusal just
+            # above, never an uncaught exception that reaches `main()` with
+            # nothing to write.
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
-            ) from exc
-        mutation.select_mutation_shard((), index=shard_index - 1, count=shard_count)
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                assay_version=assay_version,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
 
     if r1_declared or r2_declared or r3_declared:
         # A-189: exact R0 alone stays on the direct live-tree path below;

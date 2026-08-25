@@ -1210,12 +1210,20 @@ halves).
 ## B012 — mutation execution observability, planning, resume/sharding, and per-candidate budgets
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from P127 admission mutation lanes and the SQL mutation blocker).**
-**Status:** **IMPLEMENTED 2026-08-25 (worker identity remains executor-internal).** Shipped: baseline/per-candidate progress NDJSON,
+**Status:** **IMPLEMENTED 2026-08-25, REMEDIATED 2026-08-25.** Shipped: baseline/per-candidate progress NDJSON,
 `mutation.progress_artifact` in the v6 payload, `assay plan`, deterministic plan IDs, per-file/operator
 counts and runtime estimates, optional `budget_per_candidate`, bounded state records under
-`.assay/mutation-state/`, stale-record refusal, CLI operator filtering, zero-based deterministic
-sharding, and manifest merge validation. Worker identity is supplied by the executor boundary when
-present; it is not invented as a public lane option.
+`.assay/mutation-state/`, CLI operator filtering, zero-based deterministic sharding, and manifest merge
+validation. Worker identity is supplied by the executor boundary when present; it is not invented as a
+public lane option. **The initial 2026-08-25 implementation was self-reviewed only and shipped four real
+defects an independent adversarial review (round 1, same day) found and this remediation fixed:** two
+unimported names (`LaneConfigError`, `os`) crashed every `--operators`/`--shard` refusal path with
+`NameError`; the CLI's `--shard` was 1-based against the 0-based contract everywhere else and entirely
+untested; a sharded verdict recorded the lane's static declaration instead of the executed `--shard`
+value, making it indistinguishable from a complete run; and `merge_mutation_shards` accepted
+cross-assigned candidates and all-empty shards as valid coverage. See A-296 in `decisions.md` for the
+full citations. A genuine design gap the review also found — stale-record disposition is inverted, see
+below — is filed separately as **B021**, not fixed in the remediation pass.
 
 ### The observation
 
@@ -1243,18 +1251,46 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 - [x] interrupted lane resumes without rerunning completed candidates;
 - [x] shards are provably disjoint and exhaustive;
 - [x] per-candidate timeouts do not abort unrelated candidates.
-- [x] stale mutation-state records are refused when source hashes change;
-- [x] shard manifests refuse duplicate or missing coverage.
+- [x] a stale mutation-state record is detected and does not silently reuse
+      wrong evidence — correction 2026-08-25: a stale `source_sha256` reruns
+      the candidate silently rather than "refusing" (see B021 for why the
+      current disposition is itself backwards and filed separately);
+- [x] shard manifests refuse duplicate, missing, cross-assigned, or
+      all-empty coverage (assignment-domain check added 2026-08-25 remediation;
+      still no shipped producer/consumer for a real shard-summary document —
+      see B023).
 
 ## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
 
 **Filed 2026-08-23 (dstdns SQL mutation blocker; consumer evidence from `dstdns-SQL-MUTATION-LANE-BLOCKER.md`).**
-**Status:** **IMPLEMENTED 2026-08-25.** Lanes may declare
+**Status:** **IMPLEMENTED 2026-08-25, REMEDIATED 2026-08-25.** Lanes may declare
 `[lanes.<name>.infrastructure]`; sources are `required-env:NAME` and
 `derived:dotted.path`. Resolution happens in the invoking process at plan
 construction, before Git or snapshot work. Missing, empty, malformed, or
 colliding names refuse loudly. Resolved values are injected as environment
-variables only; snapshots remain free of runtime state.
+variables only; snapshots remain free of runtime state. **The initial
+2026-08-25 implementation was self-reviewed only and was completely
+non-functional: `cli.py` never imported `os` (used unconditionally to read
+`os.environ`), so `assay run` crashed with `NameError` on any lane declaring
+this table at all, and `infrastructure_source` was hardcoded `None` with no
+wiring, so the `derived:` half could not be reached even with the import
+fixed.** An independent adversarial review (round 1, same day) found both
+gaps by driving the shipped CLI — the merged tests call
+`resolve_command_plan`/`run_lane` directly and never exercise `cli`, so
+neither was visible to the suite. This remediation adds the missing import
+and wires `infrastructure_source` to `lane_file.project_root / "ciu.global.toml"`,
+the exact path ciu itself renders and gitignores. The review's three seeded
+attacks against the resolution logic itself (dotted-path traversal, malformed
+TOML, non-scalar resolution) were all refuted — that logic was correct;
+only the CLI plumbing around it was missing. See A-297 in `decisions.md` for
+full citations, and **B022** for non-blocking hardening items the same review
+found (no dangerous-ambient-env denylist, a passthrough/infrastructure
+collision that only the loader — not the runtime — currently refuses). **A
+narrower residual gap found while wiring this fix, filed separately as
+B025:** an unresolvable infrastructure declaration now refuses cleanly (no
+crash) but writes no verdict artifact even when `--verdict-json` is reserved,
+because `refuse_lane`'s own internal plan-resolution snapshot hits the
+identical failure and cannot be used here without a verdict-shape decision.
 
 ### The observation
 
@@ -1424,14 +1460,29 @@ discipline.
 ## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
 
 **Filed 2026-08-24 (dstdns P128 R1 blocker; consumer evidence from P128 debugging session).**
-**Status:** **NOT REPRODUCIBLE at current HEAD; hardened 2026-08-25.** A literal
-tracked-source/untracked-sibling-cache fixture passes, and the existing
-index-tree/clean-status verification already rejects the described omission.
-The required post-materialization manifest-presence check is now explicit,
-so a future writer regression fails closed even if Git status were unable to
-observe it. The historical dstdns end-to-end acceptance is obsolete as proof
-of the filed defect; re-run that consumer lane against its current dependency
-if the symptom recurs.
+**Status:** **NOT REPRODUCIBLE at current HEAD; hardened 2026-08-25, corrected
+2026-08-25.** A literal tracked-source/untracked-sibling-cache fixture passes,
+and the existing index-tree/clean-status verification already rejects the
+described omission. The required post-materialization manifest-presence check
+is now explicit, so a future writer regression fails closed even if Git
+status were unable to observe it. **The check as first shipped (self-reviewed
+only) used `Path.is_file()`, which follows symlinks — a regular-file entry
+materialized as a symlink to a byte-identical file would have satisfied it,
+the opposite of the "must exist as a regular file" contract it documents. An
+independent adversarial review (round 1, same day) found this, along with the
+fact that neither the shipped test nor deleting the whole check changed the
+test suite's result (0 failures either way) — the check had no demonstrated
+reachable failure mode.** This remediation fixes the predicate (`lstat`/
+`S_ISREG`, matching every other symlink-vs-regular-file check in this module)
+and extracts it into a standalone `_prove_manifest_materialized` function so
+it is directly unit-testable without first defeating the stronger
+Git-consistency checks that run before it — which, per the same review, is
+structurally guaranteed to always happen first in the current architecture,
+making this check permanently a defence-in-depth measure rather than a
+reachable one, kept for the reason A-291 gives. See A-295 in `decisions.md`.
+The historical dstdns end-to-end acceptance is obsolete as proof of the filed
+defect; re-run that consumer lane against its current dependency if the
+symptom recurs.
 
 ### The observation
 
@@ -1474,10 +1525,20 @@ materialization rather than written.
 
 ## B017: Assay dirty-tree check ignores committed .gitignore for coverage artifacts
 
-**Status:** **IMPLEMENTED 2026-08-25.** `dirty_paths()` now combines tracked-file
-status with `git ls-files --others --exclude-standard`. Standard exclusion policy
-can hide disposable artifact directories, while every tracked file remains visible;
-this supersedes A-177's narrower exclusion-source restriction.
+**Status:** **NOT REPRODUCIBLE; REVERTED 2026-08-25 (A-290).** Item 2 below does
+not reproduce: measured on a repository with a **committed** `.gitignore`
+containing `/.assay/`, `dirty_paths()` returns the identical (empty) result
+under both `--exclude-per-directory=.gitignore` and `--exclude-standard` — a
+committed per-directory ignore was already fully honored under A-177, so
+switching flags fixed nothing. An initial attempt shipped `--exclude-standard`
+anyway (2026-08-25, self-reviewed); an independent adversarial review found it
+introduced a real regression instead — `--exclude-standard` also honors
+`.git/info/exclude`, a repository-local file reported by nothing else, letting
+a personal ignore rule there hide a brand-new untracked source file with no
+self-reporting trail, and it broke the pre-existing regression test
+`test_git_info_exclude_cannot_hide_untracked_dirt`. Reverted; A-177's
+`--exclude-per-directory=.gitignore` stands. If a real reproduction of items 2
+or 3 below turns up, it needs a repro attached before any further attempt.
 
 **Filed by:** dstdns controller (2026-08-25)
 
@@ -1587,3 +1648,238 @@ future decision explicitly reverses it.
 - [ ] written design decision reviewed against snapshot isolation and budget
       rules;
 - [ ] no implementation lands until the above five decisions are recorded.
+
+---
+
+## B021 — mutation resume: stale-record disposition is inverted
+
+**Filed 2026-08-25 from an independent adversarial review of B012 (round 1).**
+
+### Problem
+
+`_load_validated_state_record` (`mutation.py`) validates a persisted
+`.assay/mutation-state/<candidate_id>.json` record against six required keys.
+A mismatched `source_sha256` is treated as an absent record and silently
+re-executed (`return None`). Every other mismatched key — `schema_version`,
+`candidate_id`, `path`, `operator`, `replacement_sha256` — raises
+`MutationStateError`, which fails the **entire lane** as
+`ERROR`/`UNREADABLE_ARTIFACT`, not just the one candidate.
+
+This is backwards for the two cases that actually matter in practice:
+
+1. **`source_sha256` reaching the stale branch at all requires the record to
+   already contradict its own filename** — the candidate id (and therefore
+   the record's path) is itself derived from `path ‖ sha256(source) ‖
+   start_byte ‖ end_byte ‖ sha256(replacement) ‖ operator`, so a genuine
+   source edit produces a different id and a different path; resume simply
+   finds no record there. A record whose `source_sha256` disagrees with its
+   own filename is evidence of a corrupted or hand-edited state file, and
+   silently re-running it discards that evidence rather than surfacing it.
+2. **`schema_version` is the one required key NOT folded into the candidate
+   id**, so it is the one field that can legitimately differ without the
+   record being corrupt — specifically, a routine bump of
+   `MUTATION_STATE_SCHEMA_VERSION`. Today that bump fails every consumer's
+   next `--resume` with a lane-wide `ERROR`/`UNREADABLE_ARTIFACT` until they
+   manually delete `.assay/mutation-state/`, rather than treating old-format
+   records as pending and re-running them like a cache miss.
+
+### Suggested fix
+
+Raise `MutationStateError` on a stale `source_sha256` (tampering evidence);
+return `None` (treat as absent, silently rerun) on a stale `schema_version`
+(routine upgrade). The other four keys are already correctly folded into the
+candidate id and their current "raise" disposition needs no change.
+
+### Acceptance
+
+- [ ] a tampered `source_sha256` on an otherwise-valid record raises
+      `MutationStateError`, not a silent rerun;
+- [ ] a `schema_version` mismatch treats the record as absent and reruns the
+      candidate, without failing the lane;
+- [ ] `decisions.md`/`README.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md`
+      are updated to state the corrected disposition.
+
+---
+
+## B022 — B013 infrastructure injection: hardening items found by adversarial review, none blocking
+
+**Filed 2026-08-25 from an independent adversarial review of B013 (round 1).**
+None of these are exploitable beyond what a trusted, committed lane file can
+already reach via `env_passthrough`; they are filed for hardening, not
+because B013 is unsafe as shipped.
+
+1. **No dangerous-ambient-name denylist.** The collision check
+   (`config.py`, `_check_infrastructure_declarations` or equivalent) only
+   refuses a name already declared in `env` or `env_passthrough` — there is
+   no refusal for a lane declaring an infrastructure fact named e.g.
+   `LD_PRELOAD` or `PYTHONPATH`. A trusted lane file could already reach the
+   same injection via `env_passthrough`, so this widens *where* a value can
+   be sourced from (an external `required-env`/`derived` source instead of
+   the reviewed lane file itself), not *whether* it can be injected.
+2. **Passthrough can silently win a collision at runtime.**
+   `resolve_command_plan` applies the `env_passthrough` loop after the
+   infrastructure loop and unconditionally overwrites `env_effective[name]`.
+   This is unreachable today only because the loader
+   (`config.py`) already refuses that name collision at load time; the
+   runtime has no defence of its own, so a future loader change could
+   silently reopen it. Suggested: make the runtime loop refuse an already-set
+   name instead of overwriting.
+3. **A TOML integer or boolean `derived:` value cannot be injected at all** —
+   `resolve_command_plan` requires the resolved node to be a non-empty
+   `str`, so a numeric CIU fact (a port, a limit) refuses rather than being
+   stringified. Likely the right call (avoids silently coercing an unintended
+   type into an env string), but undocumented; needs a doc line or an
+   explicit decision either way.
+4. **No bound on a resolved infrastructure value's length** —
+   `MAX_INFRASTRUCTURE_FACTS` bounds the *count* of declared facts, not the
+   byte length of any one resolved value. A multi-MB string surfacing from
+   `ciu.global.toml` would only fail late, at `E2BIG` on exec.
+
+### Acceptance
+
+- [ ] a decision recorded on whether to add a dangerous-ambient-name
+      denylist, or explicitly accept the `env_passthrough`-equivalence
+      argument above;
+- [ ] runtime passthrough-vs-infrastructure collision refuses instead of
+      silently overwriting;
+- [ ] numeric/boolean `derived:` handling is either documented as refused or
+      given an explicit, tested coercion;
+- [ ] a bound (or an explicit decision not to bound) resolved infrastructure
+      value length.
+
+---
+
+## B023 — mutation shard merging has no producer or consumer
+
+**Filed 2026-08-25 from an independent adversarial review of B012 (round 1).**
+
+### Problem
+
+`merge_mutation_shards` (`mutation.py`) is exported and its assignment-domain
+proof is now correct (B021's sibling fix, round-1 remediation), but nothing
+in the shipped CLI produces the shard-summary documents it expects
+(`schema_version`, `lane`, `commit`, `shard_index`, `shard_count`,
+`candidate_ids`) or consumes its output. `assay plan --shard`'s own output
+keys do not match `_SHARD_REQUIRED_KEYS`. A consumer who actually shards a
+long lane across workers — B012's stated motivating case — has no shipped way
+to combine the resulting per-shard verdicts back into one merged evidence
+set; they would have to hand-build the summary documents themselves against
+undocumented internal key names.
+
+### Suggested scope
+
+A CLI surface (new subcommand or a `run`/`plan` flag) that emits a
+shard-summary document alongside a sharded run's verdict, and a consumer
+(subcommand or library function) that merges N summary documents through
+`merge_mutation_shards` and reports the result. Also needs: what a caller
+does with a merged candidate-id set (is there a further verdict-merge step,
+or is the summary itself the deliverable?) — a design question, not just
+plumbing.
+
+### Acceptance
+
+- [ ] `assay run --shard I/N` emits a shard-summary document `assay
+      merge-shards` (or equivalent) can consume directly, no hand-building;
+- [ ] a real dstdns-shaped multi-shard lane merges end-to-end through the
+      shipped CLI, verified by driving it, not by reading the diff;
+- [ ] `merge_mutation_shards`'s remaining honest limit is documented: it
+      proves internal consistency and correct assignment among the documents
+      it is given, never that a candidate id came from a real plan rather
+      than a well-formed fabrication, absent a signed/attested plan artifact.
+
+---
+
+## B024 — wire pyflakes/ruff into the registered gate; sweep pre-existing findings first
+
+**Filed 2026-08-25 from an independent adversarial review of B012/B013/B016/B017
+(round 1).** `pyflakes src/assay/cli.py` found two unimported names
+(`LaneConfigError`, `os`) that made every use of two shipped B012/B013 code
+paths crash with `NameError` — a defect a one-second lint pass would have
+caught before merge, and did not, because nothing in `tools/tester-unified-gate.sh`
+runs a linter at all.
+
+### Why this isn't wired in directly by the same remediation
+
+A first full sweep of `src/assay/` (`python -m pyflakes src/assay/*.py`)
+turns up roughly twenty pre-existing "undefined name" findings in
+`canary.py` and `mutation.py` (annotation-only references to names like
+`LanguageAdapter`, `CommandResult`, `SnapshotRepository`, `LaneDeadline`,
+`ProcessRunner` that are never imported — harmless at runtime only because
+`from __future__ import annotations` defers all annotation evaluation, but
+still a real gap the moment anything calls `typing.get_type_hints` on them),
+plus a couple of unused imports (`canary.py`'s `dataclasses.replace`,
+`cli.py`'s `hashlib`), all pre-dating this wave (oldest from 2026-08-08).
+Wiring an enforcing gate today would immediately fail on unrelated code.
+
+### Suggested approach
+
+Either (a) sweep and fix the pre-existing findings first, then wire pyflakes
+(or ruff, which subsumes it) into `tester-unified-gate.sh` as a real phase, or
+(b) wire the gate with a checked-in, dated baseline of the current findings
+that only fails on anything NEW — a ratchet, not a rewrite. Either way, this
+should land before the next wave of packages, not be deferred indefinitely:
+H2 (this filing's own trigger) shipped through two full self-review cycles
+undetected.
+
+### Acceptance
+
+- [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
+      phase, failing the gate on any finding not in an explicit, dated
+      baseline (if the ratchet approach is chosen);
+- [ ] the pre-existing findings above are either fixed or explicitly listed
+      in that baseline with a reason each stays open.
+
+---
+
+## B025 — an infrastructure-resolution refusal (B013) writes no verdict artifact
+
+**Filed 2026-08-25, found while remediating B013's D-11 crash (round 1
+adversarial review).** Not itself a crash — the refusal is a clean, typed
+`AssayError` that reaches `main()`'s handler and prints a one-line message —
+but unlike every other post-HEAD-resolution refusal in `runner.py`
+(`missing_required`, a bad `--shard`, adapter resolution), it writes **no**
+verdict artifact even when `--verdict-json` was reserved.
+
+### Problem
+
+`refuse_lane` (A-036) always calls `resolve_command_plan` a second time
+internally, to record the attempted plan in the refusal verdict. Before
+B013, `resolve_command_plan` could never raise, so this was always safe. Now
+it can: an unresolvable `[lanes.<name>.infrastructure]` declaration raises
+`AssayError` from inside `resolve_command_plan`. If the *caller's* reason for
+refusing is that same infrastructure failure, calling `refuse_lane` re-runs
+the identical failing resolution and raises again, this time from inside the
+refusal path itself, uncaught. `_run_higher_rigor_lane` (`runner.py`, right
+after resolving `project_prefix`) therefore cannot simply wrap its
+`resolve_command_plan` call in a catch that calls `refuse_lane` — verified by
+trying exactly that and reproducing the same crash one level deeper, through
+the installed CLI, before reverting it.
+
+### Why this needs a design decision, not a quick patch
+
+A-036's own stated invariant is "the command's own `CommandPlan` is still
+resolved and recorded... a refused run is not an unrecorded one." An
+infrastructure-resolution failure is the one case where that invariant is
+impossible to satisfy literally — the plan cannot be resolved because the
+declaration is the thing that's wrong. Candidate resolutions, none obviously
+correct without review:
+
+1. Let a refusal verdict honestly omit `argv_effective`/`env_effective` when
+   the plan could not be built at all — needs a schema change and a decision
+   on whether that is ever otherwise true today.
+2. Have `refuse_lane` retry plan resolution treating the lane as if it
+   declared no infrastructure table, so the refusal at least records the
+   argv/env that *would* apply absent the failed facts — arguably misleading
+   (it is not what would actually have run).
+3. Give infrastructure-declaration errors their own dedicated refusal helper
+   that never attempts plan resolution, parallel to but distinct from
+   `refuse_lane`.
+
+### Acceptance
+
+- [ ] a decision recorded on which shape a plan-unresolvable refusal takes;
+- [ ] `assay run` on a lane with an unresolvable `[lanes.<name>.infrastructure]`
+      declaration writes a verdict artifact to a reserved `--verdict-json`,
+      not just a stderr message;
+- [ ] a test drives this through the installed CLI (not `resolve_command_plan`
+      directly) and asserts the artifact exists and is schema-valid.

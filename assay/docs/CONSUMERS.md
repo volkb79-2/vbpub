@@ -124,6 +124,18 @@ format = "coverage-py-json"
 artifact = ".assay/coverage.json"
 ```
 
+Run it exactly like any other lane — `assay run redirect_chain --verdict-json .assay/verdict.json`
+— from a clean tree on any commit, `main` included. The resulting verdict's `judgment.r1` records
+`mode: "whole_target"`, `targets: ["libs/common/src/common/redirect_chain.py"]`, and
+`require_branch: true`: the effective policy that actually judged, not merely what the lane file
+declared. The coverage payload's `covered`/`executable`/`branches_covered`/`branches_total` cover
+every line and arc of `redirect_chain.py` as reported by the artifact — not the diff — so a
+docstring-only commit still measures the whole module, and a method whose body regresses below
+`fail_under` fails the gate even though nothing about it "changed" in `base..HEAD`. If the target
+is absent from the coverage artifact, or present with zero executable lines (the `--cov=` typo /
+never-imported-module failure mode), the lane refuses `NO_MEASUREMENT`/`TARGET_NOT_MEASURED`
+naming the target, rather than silently passing 0/0.
+
 **Before running it, gitignore what your test tooling writes, not only the declared artifact.**
 `coverage.py` writes its own `.coverage` data file into the working directory even when
 `--cov-report` sends the rendered report elsewhere — inside the snapshot that file is untracked
@@ -143,9 +155,13 @@ __pycache__/
 
 Commit that `.gitignore` in the same change that adds the lane, before the first `assay run`.
 
-Assay honors Git's complete standard exclusion policy for untracked output, so
-the blanket `.assay/` entry above is sufficient; you do not need one narrow
-pattern per new artifact type. Modified and staged tracked files remain dirty.
+Assay honors a **committed, per-directory** `.gitignore` for untracked output,
+so the blanket `.assay/` entry above is sufficient — you do not need one
+narrow pattern per artifact type. It deliberately does not honor
+`.git/info/exclude` or any global/system/configured exclude source: those
+live outside the committed tree, so a personal ignore rule there could hide
+real untracked source with nothing else reporting it. Modified and staged
+tracked files remain dirty regardless of any exclude source.
 
 ## Resume and shard a long mutation lane
 
@@ -163,24 +179,20 @@ assay run <lane> --resume --shard 1/3 --verdict-json .assay/shard-1.json
 assay run <lane> --resume --shard 2/3 --verdict-json .assay/shard-2.json
 ```
 
-Completed candidates persist under `.assay/mutation-state/`; `--resume` skips
-valid records and refuses a stale source hash. To combine shard manifests, every
-manifest must declare the same schema version, lane, commit, and shard count,
-cover every zero-based index exactly once, and contain disjoint candidate IDs.
-
-Run it exactly like any other lane — `assay run redirect_chain --verdict-json .assay/verdict.json`
-— from a clean tree on any commit, `main` included. The resulting verdict's `judgment.r1` records
-`mode: "whole_target"`, `targets: ["libs/common/src/common/redirect_chain.py"]`, and
-`require_branch: true`: the effective policy that actually judged, not merely what the lane file
-declared. The coverage payload's `covered`/`executable`/`branches_covered`/`branches_total` cover
-every line and arc of `redirect_chain.py` as reported by the artifact — not the diff — so a
-docstring-only commit still measures the whole module, and a method whose body regresses below
-`fail_under` fails the gate even though nothing about it "changed" in `base..HEAD`. If the target
-is absent from the coverage artifact, or present with zero executable lines (the `--cov=` typo /
-never-imported-module failure mode), the lane refuses `NO_MEASUREMENT`/`TARGET_NOT_MEASURED`
-naming the target, rather than silently passing 0/0.
-
-## A monorepo lane: omitting declared unsafe symlinks
+Completed candidates persist under `.assay/mutation-state/`, keyed by a
+deterministic candidate id derived from the mutated file's path, its exact
+source bytes, the mutated byte span, the replacement bytes, and the operator.
+A real source change therefore produces a different id: `--resume` finds no
+record under it and re-executes that candidate silently, rather than
+detecting or reporting that the source moved on. A record that contradicts
+the identity it is filed under — a mismatched operator, byte span,
+replacement, or candidate id, not the source itself — fails the whole lane as
+`ERROR`/`UNREADABLE_ARTIFACT` rather than being silently skipped; this is a
+signal of a corrupted or hand-edited state file, not an expected outcome of
+normal use. To combine shard manifests, every manifest must declare the same
+schema version, lane, commit, and shard count, cover every zero-based index
+exactly once, and contain disjoint candidate IDs whose deterministic
+assignment is independently re-verified against the claimed shard index.
 
 ## Inject infrastructure facts into an isolated lane
 
@@ -208,23 +220,7 @@ or malformed facts refuse before any snapshot or command runs; resolved values
 are injected as environment variables named exactly by the table key. The
 snapshot itself never receives caller state.
 
-## Resume and shard a long mutation lane
-
-Run `assay plan <lane> --operators python:compare-swap --shard 1/3` before
-execution to preview the exact deterministic candidate set. Execute each shard:
-
-```sh
-assay run <lane> --resume --shard 1/3 --verdict-json .assay/shard-1.json
-assay run <lane> --resume --shard 2/3 --verdict-json .assay/shard-2.json
-assay run <lane> --resume --shard 3/3 --verdict-json .assay/shard-3.json
-```
-
-`--shard` is zero-based (`0/3` through `2/3`). Completed candidate records are
-stored under `.assay/mutation-state/<candidate-id>.json`; `--resume` skips those
-records and refuses a stale source hash instead of reusing it. To combine shard
-summaries, supply every manifest with the same schema version, lane, commit,
-count, and disjoint candidate IDs; the merge refuses a missing or duplicate
-shard rather than producing partial evidence.
+## A monorepo lane: omitting declared unsafe symlinks
 
 A monorepo lane's snapshot walks the **whole** resolved commit, not just its own source roots —
 so one tracked symlink anywhere in a sibling project, with a target that is absolute or escapes

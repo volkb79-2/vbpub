@@ -912,6 +912,24 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
                 normalized_path = mutation_state_record_path(candidate)
             except ValueError as exc:
                 raise MutationStateError(str(exc)) from exc
+            # Recompute the SAME deterministic assignment `select_mutation_
+            # shard` uses, against the candidate's OWN id -- a document
+            # cannot claim a shard index its listed candidates do not
+            # actually hash to. Without this, one shard's document could
+            # list another shard's real candidates (or any well-formed id)
+            # and merge as if it had done that work.
+            assigned = (
+                int.from_bytes(
+                    hashlib.blake2b(candidate.encode("ascii"), digest_size=4).digest(),
+                    "big",
+                )
+                % shard_count
+            )
+            if assigned != shard_index:
+                raise MutationStateError(
+                    f"candidate {candidate!r} hashes to shard {assigned}/{shard_count}, "
+                    f"not the claimed {shard_index}/{shard_count}"
+                )
             if normalized_path in seen_candidates:
                 raise MutationStateError(
                     f"non-disjoint shard input repeats candidate {normalized_path}"
@@ -935,6 +953,15 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
     extra_pairs = sorted(covered_pairs - required_pairs)
     if extra_pairs:
         raise MutationStateError(f"inconsistent shard pairs present: {extra_pairs}")
+    if not merged_candidates:
+        # A-278: a check with nothing to check is not a passing check. Every
+        # required (index, count) pair being present says only that a
+        # document was filed for each slot, never that any of them did work
+        # -- three empty shards must not merge into "complete coverage of
+        # zero candidates".
+        raise MutationStateError(
+            "shard merge covers zero candidates across all required shards"
+        )
     return tuple(merged_candidates)
 
 

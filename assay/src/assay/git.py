@@ -627,13 +627,24 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     filesystem path rather than by string, and is where the distinction
     actually needs to be correct.
 
-    **B017 supersedes A-177's exclusion-source restriction.** Porcelain status
-    catches tracked-file changes, including a missing tracked file, while
-    ``ls-files --others --exclude-standard`` applies git's complete standard
-    policy: committed per-directory ignore files plus repository-local,
-    global, and configured excludes. A blanket ``/.assay/`` rule can therefore
-    hide disposable measurement output without masking an uncommitted source
-    change; hostile or mistaken exclusion rules cannot hide a tracked file.
+    **P20 routed-review correction (A-177).** Porcelain status still consults
+    ``.git/info/exclude``. Union it with ``ls-files --others`` configured with
+    ONLY ``--exclude-per-directory=.gitignore``. A clean committed
+    ``.gitignore`` is repository policy and may exempt the declared coverage
+    artifact; info/global/system/configured excludes are not. A dirty or
+    untracked ``.gitignore`` is itself returned by one of these queries. Do not
+    use ``--exclude-standard`` (it re-enables the hostile sources), and do not
+    report every ignored path then subtract one artifact (that discards the
+    repository's committed ignore policy).
+
+    **B017 tried ``--exclude-standard`` and was reverted (A-290, corrected).**
+    The filed premise (a committed blanket ``/.assay/`` rule "also hides it")
+    did not reproduce — measured identical under both flag choices. The
+    change did open a real hole: ``--exclude-standard`` also honors
+    ``.git/info/exclude``, which is repository-local, unversioned, and
+    reported by nothing else, so a personal ignore rule there could hide a
+    brand-new untracked source file from this function with no self-reporting
+    trail. A-177's restriction stands.
     """
     raw = _run_bytes(repo, "status", "--porcelain=v1", "-z", remaining=remaining)
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real
@@ -663,7 +674,7 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
         repo,
         "ls-files",
         "--others",
-        "--exclude-standard",
+        "--exclude-per-directory=.gitignore",
         "-z",
         "--",
         remaining=remaining,

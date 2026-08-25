@@ -161,3 +161,52 @@ def test_manifest_merge_refuses_duplicate_and_missing_shards():
         merge_mutation_shards(duplicate)
     with pytest.raises(MutationStateError):
         merge_mutation_shards([documents[0]])
+
+
+def test_manifest_merge_refuses_a_candidate_assigned_to_the_wrong_shard():
+    """(B012/B023 remediation) A document cannot claim a shard index its own
+    listed candidates do not actually hash to -- `"a" * 64` deterministically
+    assigns to shard 0/2 (asserted above), so filing it under shard 1/2 must
+    be refused rather than silently merged, even though the two documents
+    together still satisfy every OTHER check (exact index coverage, one
+    schema/lane/commit, no repeated id)."""
+    documents = [
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": 0,
+            "shard_count": 2,
+            "candidate_ids": [],
+        },
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": 1,
+            "shard_count": 2,
+            "candidate_ids": ["a" * 64],
+        },
+    ]
+    with pytest.raises(MutationStateError, match="hashes to shard 0/2"):
+        merge_mutation_shards(documents)
+
+
+def test_manifest_merge_refuses_all_empty_shards():
+    """(B012/B023 remediation) Every required (shard_index, shard_count) pair
+    being present says only that a document was filed for each slot, never
+    that any of them did work -- three empty shards must not merge into
+    'complete coverage of zero candidates' (A-278's lesson)."""
+    documents = [
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": index,
+            "shard_count": 3,
+            "candidate_ids": [],
+        }
+        for index in range(3)
+    ]
+    with pytest.raises(MutationStateError, match="zero candidates"):
+        merge_mutation_shards(documents)

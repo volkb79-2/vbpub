@@ -294,7 +294,11 @@ def _shard_summary(index: int, count: int, candidate_ids: list[str]):
 
 
 def test_shard_merge_accepts_exact_disjoint_exhaustive_coverage():
-    ids = ["1" * 64, "2" * 64]
+    # These specific digests are not arbitrary: `merge_mutation_shards` now
+    # (B012/B023 remediation) recomputes each candidate's own deterministic
+    # shard assignment and refuses a document that claims the wrong one, so
+    # "4" * 64 must actually assign to shard 0/2 and "1" * 64 to shard 1/2.
+    ids = ["4" * 64, "1" * 64]
     merged = mutation_module.merge_mutation_shards(
         [_shard_summary(0, 2, ids[:1]), _shard_summary(1, 2, ids[1:])]
     )
@@ -471,6 +475,116 @@ budget_per_candidate = "30s"
     assert payload["estimated_serial_seconds"] == 0.0
     assert payload["estimated_wall_seconds"] == 0.0
     assert payload["candidates"] == []
+
+
+def _write_plan_fixture(tmp_path: Path) -> Path:
+    """Same fixture as `test_plan_reports_candidates_without_executing`,
+    factored out so the `--shard`/`--operators` CLI-level tests below don't
+    duplicate its setup."""
+    project = Project(root=tmp_path / "proj")
+    project.root.mkdir()
+    (project.root / "pkg").mkdir()
+    (project.root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+    repo = GitRepo(path=project.root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write(
+        "assay.toml",
+        """
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "-q"]
+env = { MOCK_MODE = "true" }
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "base"
+
+[lanes.package.judge.mutation]
+jobs = 2
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+budget_per_candidate = "30s"
+""",
+    )
+    repo.write("pkg/flags.py", _TEXT)
+    repo.commit_all("add flags")
+    repo.git("checkout", "-q", "-b", "base")
+    repo.write("pkg/flags.py", _TEXT.replace("a = True", "a = False"))
+    repo.commit_all("base flag")
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.write("pkg/flags.py", _TEXT)
+    repo.write("pkg/extra.py", "value = 1\n")
+    repo.commit_all("restore flag and add extra")
+    return project.root / "assay.toml"
+
+
+def test_plan_accepts_a_valid_shard(tmp_path):
+    """(B012 remediation) `assay plan --shard` has its own dry bounds-check
+    block, independent of `assay run`'s -- exercised here through the
+    installed CLI at the zero-based index the config/schema/docs all use."""
+    from assay.cli import main
+
+    path = _write_plan_fixture(tmp_path)
+    out = io.StringIO()
+    exit_code = main(["plan", "package", "--shard", "0/2", "--file", str(path)], stdout=out)
+    payload = json.loads(out.getvalue())
+    assert exit_code == 0
+    assert payload["shard"] == "0/2"
+
+
+def test_plan_refuses_an_out_of_range_shard_with_a_clean_exit_not_a_crash(tmp_path):
+    """(B012 remediation, D-6) The dry bounds-check call in `_cmd_plan` used
+    to sit outside any try/except, so an out-of-range `--shard` raised a
+    bare `ValueError` uncaught by `main()`'s `except AssayError` -- a
+    traceback, not an exit code."""
+    from assay.cli import main
+
+    path = _write_plan_fixture(tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    exit_code = main(["plan", "package", "--shard", "5/2", "--file", str(path)], stdout=out, stderr=err)
+    assert exit_code != 0
+    assert "shard index 5 is outside" in err.getvalue()
+    assert out.getvalue() == ""
+
+
+def test_plan_refuses_a_malformed_shard_spelling(tmp_path):
+    from assay.cli import main
+
+    path = _write_plan_fixture(tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    exit_code = main(["plan", "package", "--shard", "not-a-shard", "--file", str(path)], stdout=out, stderr=err)
+    assert exit_code != 0
+    assert "--shard must have the form INDEX/COUNT" in err.getvalue()
+
+
+def test_plan_refuses_an_unknown_operator_with_a_clean_exit_not_a_crash(tmp_path):
+    """(B012 remediation, D-6) `_cmd_plan`'s own `--operators` validation
+    raises `LaneConfigError` too -- confirming the missing import fix covers
+    both `_cmd_run` and `_cmd_plan`, which validate independently."""
+    from assay.cli import main
+
+    path = _write_plan_fixture(tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    exit_code = main(
+        ["plan", "package", "--operators", "bogus:does-not-exist", "--file", str(path)],
+        stdout=out,
+        stderr=err,
+    )
+    assert exit_code != 0
+    assert "unknown mutation operators" in err.getvalue()
 
 
 def test_plan_config_requires_a_duration(tmp_path):

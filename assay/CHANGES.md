@@ -8,9 +8,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
 - feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
+- feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
+- feat(assay): infrastructure fact injection (`required-env:`/`derived:`) for isolated lanes (B013)
 
 ### Fixed
 - fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
+- fix(assay): snapshot manifest leaf verification now rejects a symlink standing in for a
+  declared regular-file entry, using `lstat`/`S_ISREG` instead of `Path.is_file()` (B016)
+- fix(assay): `assay run`/`assay plan` crashed with `NameError` on an `--operators`/`--shard`
+  refusal, and on any lane declaring `[lanes.<name>.infrastructure]`, from two missing imports
+  (B012/B013)
+- fix(assay): `--shard` was 1-based against the 0-based contract in config/schema/docs; a
+  sharded verdict now records the executed shard instead of the lane's static declaration (B012)
+- fix(assay): mutation shard-merge validation now verifies each candidate's assignment against
+  its claimed shard and refuses an all-empty merge, instead of trusting the caller (B012)
+- fix(assay): verdict schema placed `mutation.candidate_ids`/`progress_artifact` on the wrong
+  `$defs` entries; a populated shard verdict violated its own published schema (B012)
 
 _Nothing else yet._
 
@@ -453,7 +466,3 @@ _Nothing else yet._
 - test(assay): bind gate receipts to checked driver (cfd340cc)
 - test(assay): P10 -- pin A-110's remap independently of the outer catch (911af565)
 - test(assay): close the last untested rejection paths in the loader (c9119092)
-# [Unreleased]
-
-### Added
-- feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)

@@ -343,6 +343,194 @@ operators = ["python:compare-swap"]
     assert "helpers" not in document
 
 
+def _r2_lane_with_two_candidates(git_repo: GitRepo) -> str:
+    """A base commit plus two independent compare-swap sites, one per
+    function, so `--shard 0/2`/`--shard 1/2` each own exactly one real
+    candidate through the installed CLI -- never a hand-built claim."""
+    (git_repo.path / "src").mkdir()
+    git_repo.write("src/mod.py", "def f(x):\n    return 0\n\ndef g(y):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write(
+        "src/mod.py", "def f(x):\n    return x > 0\n\ndef g(y):\n    return y > 0\n"
+    )
+    git_repo.commit_all("introduce two compare-swap sites")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "grep -q 'x > 0' src/mod.py"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 50
+operators = ["python:compare-swap"]
+"""
+    return lane
+
+
+def _r2_lane_single_site(git_repo: GitRepo) -> str:
+    """The exact single-candidate fixture `test_run_evaluates_a_real_r2_pass_
+    end_to_end` uses -- one real, fully-killed compare-swap site, so a lane
+    built from this reliably PASSes regardless of what else it declares."""
+    (git_repo.path / "src").mkdir()
+    git_repo.write("src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add mod.py")
+    git_repo.write("src/mod.py", "def f(x):\n    return x > 0\n")
+    git_repo.commit_all("introduce a compare-swap site")
+    return f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "grep -q 'x > 0' src/mod.py"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 50
+operators = ["python:compare-swap"]
+"""
+
+
+def test_run_refuses_an_out_of_range_shard_with_a_clean_verdict_not_a_crash(
+    git_repo: GitRepo,
+):
+    """(B012 remediation, D-6) `select_mutation_shard`'s bounds check used to
+    sit outside any try/except in `run_lane`, so an out-of-range `--shard`
+    raised a bare `ValueError` that reached `main()` uncaught -- no verdict,
+    a traceback instead of an exit code. It must now behave like every other
+    post-HEAD-resolution refusal: a clean `BAD_LANE_CONFIG` verdict."""
+    path = _write_and_commit_lane(git_repo, _r2_lane_with_two_candidates(git_repo))
+    code, out, err = run(
+        ["run", "package", "--shard", "5/2", "--file", str(path), "--verdict-json", "-"]
+    )
+    assert code != 0
+    document = json.loads(out)
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+
+
+def test_run_refuses_an_unknown_operator_with_a_clean_verdict_not_a_crash(
+    git_repo: GitRepo,
+):
+    """(B012 remediation, D-6) The unimported `LaneConfigError` made every
+    `--operators` refusal a `NameError` instead of a typed, catchable
+    error."""
+    path = _write_and_commit_lane(git_repo, _r2_lane_with_two_candidates(git_repo))
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--operators",
+            "bogus:does-not-exist",
+            "--file",
+            str(path),
+            "--verdict-json",
+            "-",
+        ]
+    )
+    assert code != 0
+    assert "unknown mutation operators" in err
+    assert out == ""  # A-181: refused before output reservation, so nothing is written
+
+
+def test_run_records_the_executed_shard_not_the_lane_declaration(git_repo: GitRepo):
+    """(B012 remediation, D-8) `judgment.r2.shard_index`/`shard_count` used
+    to come from `lane.judge.mutation.shard_index`/`shard_count` -- the
+    lane's static declaration, which this lane never sets and which selects
+    nothing -- instead of the function's own parameters carrying the
+    executed `--shard` value. A sharded verdict was therefore
+    indistinguishable from a complete run."""
+    path = _write_and_commit_lane(git_repo, _r2_lane_with_two_candidates(git_repo))
+    code, out, err = run(
+        ["run", "package", "--shard", "0/2", "--resume", "--file", str(path), "--verdict-json", "-"]
+    )
+    # PASS/FAIL depends on which of the two real sites this shard's
+    # deterministic assignment happens to own (the oracle only greps for
+    # `f`'s comparison) -- irrelevant to what this test proves. `code` in
+    # {0, 1} is a real verdict either way; anything else is a crash.
+    assert code in (0, 1), err
+    document = json.loads(out)
+    r2 = document["judgment"]["r2"]
+    assert r2["shard_index"] == 0
+    assert r2["shard_count"] == 2
+    r2_claim = document["claims"][1]
+    assert r2_claim["mutation"]["candidate_count"] == 1
+
+
+def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
+    git_repo: GitRepo,
+):
+    """(B013 remediation, D-11) `cli.py` never imported `os`, so any lane
+    declaring `[lanes.<name>.infrastructure]` crashed with an uncaught
+    `NameError` before running at all -- proven fixed here through the
+    installed CLI, not by calling `resolve_command_plan` directly the way
+    the feature's own tests do: the refusal is now a clean, typed
+    `AssayError` reaching `main()`'s handler, not a traceback.
+
+    It still writes NO verdict artifact despite `--verdict-json` being
+    reserved (unlike `--shard`/`--operators` refusals, which do) -- that gap
+    is real and is filed separately (see the NOTE at its origin in
+    `runner._run_higher_rigor_lane` and the corresponding backlog entry):
+    `refuse_lane` itself calls `resolve_command_plan` a second time to
+    record the attempted plan, which hits the identical infrastructure
+    failure and would raise again from inside the refusal path itself."""
+    lane = _r2_lane_single_site(git_repo) + (
+        "\n[lanes.package.infrastructure]\n"
+        'mynet = "required-env:MISSING_NETWORK_VAR_FOR_TEST"\n'
+    )
+    path = _write_and_commit_lane(git_repo, lane)
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+    assert code != 0
+    assert "assay: ERROR/BAD_LANE_CONFIG" in err
+    assert "MISSING_NETWORK_VAR_FOR_TEST" in err
+    assert "Traceback" not in err
+
+
+def test_run_injects_a_resolved_required_env_infrastructure_fact(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """(B013 remediation, D-11) The positive case: with the fact resolvable,
+    the lane runs through the real installed CLI exactly like any other."""
+    lane = _r2_lane_single_site(git_repo) + (
+        "\n[lanes.package.infrastructure]\n" 'mynet = "required-env:MY_NETWORK_FOR_TEST"\n'
+    )
+    path = _write_and_commit_lane(git_repo, lane)
+    monkeypatch.setenv("MY_NETWORK_FOR_TEST", "test-network")
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["outcome"] == "PASS"
+
+
 def test_run_refuses_an_r2_lane_for_an_unregistered_language(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):

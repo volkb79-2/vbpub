@@ -188,11 +188,6 @@ Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
 each candidate; the verdict's optional `mutation.progress_artifact` names that
 file.
 
-`assay plan` accepts `--operators name,name` and zero-based `--shard INDEX/COUNT`;
-`assay run` adds `--resume`. Shard summaries merge only through a manifest that
-proves exact shard coverage, one lane/commit/schema version, and no repeated
-candidate.
-
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any
 snapshot work and injects the values into the isolated command.
