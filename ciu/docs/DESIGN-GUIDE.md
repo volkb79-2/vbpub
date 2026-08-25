@@ -134,6 +134,47 @@ S8.7 migration guard still catches the collision on the next tagged `up`.
 The S16.1 shared-infra join refusal fell out as dead code — it existed
 because the fallback's name was unknowable, and now nothing is.
 
+## Why bare `hostname:` / `internal_host` defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)
+
+Docker independently registers **two** network-resolvable DNS aliases for a
+container: the compose service KEY (always, automatically — CIU-51, a
+separate, v8-scale item this section does NOT eliminate) and whatever value a
+`hostname:` line sets. Both are looked up the same way by anything on the
+network. When two CIU-deployed instances of the *same stack shape* coexist on
+a shared/joined network — the exact `ciu worktree` + `--shared-infra`
+scenario S16.1 exists to support — a **bare** value on either axis (a
+`hostname:` literally set to the plain service name, or an
+`internal_host` config default rendering the plain service name) resolves to
+*whichever* instance's container Docker's resolver happens to answer with:
+non-deterministic from the caller's perspective, and silent — no error, no
+warning, just occasionally the wrong instance's data. This is the §3.6
+cockpit-alias-ambiguity hazard (matching the dstdns filing's own term), named
+here so a reader can find the same term in `KNOWN_ISSUES_TODO_BACKLOG.md`'s
+CIU-48/CIU-49 history.
+
+```
+# before — bare, ambiguous once a second instance joins the network
+hostname: vault
+
+# after — qualified with the SAME identity facts container_name() already
+# uses, unique per (project, environment_tag) pair
+hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault
+```
+
+Both `hostname:` (a compose template's own declared value, CIU-48) and
+`topology.services.<name>.internal_host` (an application-config default,
+CIU-49) are values CIU's render layer already has the qualifying identity
+facts (`deploy.project_name`/`deploy.environment_tag`) to derive uniformly —
+exactly the facts `container_name()` (`src/ciu/deploy.py:138-151`) already
+uses, so qualifying them is not a new derivation, only reusing the existing
+one instead of leaving the field bare. **What this does NOT cover:** Compose's
+automatic bare service-key alias is a mechanism Compose itself creates with
+no documented per-network suppression (CIU-51) — nothing in this package
+removes it. Qualifying `hostname:`/`internal_host` closes the two
+consumer-controllable value defaults; the service-key alias remains available
+regardless (so intra-stack bare-name reachability is not lost), and closing
+it fully is out of scope here.
+
 ## Why provenance declares vendor images by reference, not digest (CIU-39)
 
 `ciu provenance` compared every running image's OCI revision label against

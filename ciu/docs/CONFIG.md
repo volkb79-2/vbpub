@@ -373,12 +373,23 @@ Used by CIU to reach Vault and (informatively) by other tooling:
 
 ```toml
 [topology.services.vault]
-internal_host = "ciudemo-dev-vault"
+internal_host = "ciudemo-dev-vault"   # project="ciudemo", environment_tag="dev", service="vault"
 internal_port = 8200
 ```
 
 `topology_overrides` in a host profile deep-merges over this for cross-host
 addressing [S7.4].
+
+**`internal_host` values SHOULD be qualified**, not a bare service name:
+`{{ deploy.project_name }}-{{ deploy.environment_tag }}-<service>` — the same
+derivation `container_name()` (`src/ciu/deploy.py:138-151`) already computes
+for every deployment. A bare value (`internal_host = "vault"`) is ambiguous
+the moment a second same-shaped CIU instance shares the network — see
+[DESIGN-GUIDE.md](DESIGN-GUIDE.md)'s "Why bare `hostname:` / `internal_host`
+defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)" section
+for why. CIU has no default of its own for this key (S4.16/S7.4 is entirely
+consumer-declared) — the worked example above already demonstrates the
+qualified shape; the annotation makes explicit which segment is which.
 
 ### `[registry.*]` — service bootstrap registries
 

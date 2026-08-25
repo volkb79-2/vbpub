@@ -5,6 +5,7 @@ services:
   app:
     image: {{ @@ROOT_KEY@@.app.image_name }}:{{ @@ROOT_KEY@@.app.image_tag }}
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ @@ROOT_KEY@@.app.name }}
+    hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ @@ROOT_KEY@@.app.name }}
     secrets:
       - api_key   # file wiring arrives via CIU's overlay (S4.17)
     command: ["python", "-m", "http.server", "{{ @@ROOT_KEY@@.app.internal_port }}"]

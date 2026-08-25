@@ -189,6 +189,39 @@ Docker-canonical spellings) reports status `match`→commit or
 in every document. Provenance documents are emitted at `schema_version: 2`
 — strict consumers refuse unknown members rather than guess.
 
+## 5e. Qualify a stack's `hostname:` and `internal_host` defaults (avoid the §3.6 cockpit-alias hazard)
+
+When you author your own compose template's service and your own
+`topology.services.<name>` declaration, qualify BOTH the same way
+`container_name:` already is — a bare value resolves to whichever
+same-shaped CIU instance's container Docker's resolver happens to answer
+with once a second instance joins the network. See
+[DESIGN-GUIDE.md](DESIGN-GUIDE.md)'s "Why bare `hostname:` / `internal_host`
+defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)" section
+for why; this is the paste-able "what to write."
+
+Your own `ciu.compose.yml.j2`:
+
+```yaml
+services:
+  vault:
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault
+    hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault   # same variables as container_name:
+```
+
+Your own `ciu.global.defaults.toml.j2` (or per-stack defaults):
+
+```toml
+[topology.services.vault]
+internal_host = "{{ deploy.project_name }}-{{ deploy.environment_tag }}-vault"
+internal_port = 8200
+```
+
+A stack freshly scaffolded via `ciu init` already writes the qualified
+`hostname:` form (S19); this is the pattern to carry into any compose
+template or `topology.services` declaration you author by hand yourself,
+including ones that predate this default.
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console

@@ -79,6 +79,18 @@ gate runs; the commit subjects remain the traceable source of detail.
   longer masks a fast, genuinely broken service's failure behind it (nor
   does a short shared timeout spuriously fail the slow one) (CIU-QOL-8,
   SPEC S7.7)
+- feat(ciu): `ciu init`'s scaffolded stack compose template now sets
+  `hostname:` to the same qualified expression `container_name:` already
+  uses, plus DESIGN-GUIDE/CONFIG.md/CONSUMERS.md guidance naming the §3.6
+  cockpit-alias-ambiguity hazard and prescribing the qualified pattern for
+  both `hostname:` and `topology.services.<name>.internal_host` (CIU-48,
+  CIU-49). **Scope, stated plainly:** ciu ships no default for either value
+  anywhere in its own templates (`internal_host`/`hostname:` are entirely
+  consumer-declared) — this closes the ciu-actionable half only. Propagating
+  the corrected pattern into an existing consumer's own already-authored
+  templates (e.g. dstdns's 31 compose templates and its hand-maintained
+  `internal_host` override) is that consumer's own follow-up, not something
+  a ciu release can do on its own. Backlog disposition: PARTIAL, not FIXED.
 
 ### Fixed
 - fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
