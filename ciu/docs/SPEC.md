@@ -1264,9 +1264,17 @@ feature; the underlying checks are unchanged, only their reach is widened.
 Generation parameters (`length`, `charset`), `transform`, additional secret
 providers (`ASK_SOPS`, `ASK_AWS`, ...), per-profile compose-file additions,
 `governance.cpu_limit` / `governance.cpu_reservation`,
-`deploy.layouts.<name>.hosts.<host>.environment_tag` override,
-`ciu.instance.shared_infra.services[*].aliases`.
+`deploy.layouts.<name>.hosts.<host>.environment_tag` override.
 Parsers reject unknown options today (S4.7).
+
+The former reservation `ciu.instance.shared_infra.services[*].aliases` is
+**withdrawn, not implemented as reserved** (CIU-52). Its premise — that a
+reference-side service could be named as a property of an entry in
+`shared_infra.services` — does not hold: `services` names the JOINING
+instance's own diverging containers, so an `aliases` sub-key there could only
+ever have addressed the joiner's own copy of a service. Reference-service
+addressing ships instead as the independent, alias-keyed
+`ciu.instance.shared_infra.ref_services` table — see S16.1.
 
 ## S13 — Provisioning model (`requires` / `provides`)
 
@@ -2726,7 +2734,8 @@ reverse-proxy). `REF` is resolved by the same basename-or-absolute-path
 grammar `find_worktree` already uses. The three shared-infra flags and a
 non-empty `--profile` are an ALL-OR-NOTHING group — no mode may infer a
 tier from a compose file, and a partial group is an add-time refusal before
-any side effect.
+any side effect. The OPTIONAL fourth flag `--shared-infra-ref-services`
+(S16.1a) joins that same group: optional, but never standalone.
 
 **Validation happens at `add` time; joining happens at `ciu up` time.** `add`
 never deploys (S16's existing rule, unchanged): it resolves REF, reads its
@@ -2792,6 +2801,83 @@ that cannot produce the identity name refuses earlier (`[S8.7]`), so no
 unscoped case remains. The `[S16.1]` cannot-derive refusal is withdrawn as
 unreachable; an unmatched filter still just finds zero containers and fails
 the existing "no running container" check harmlessly.
+
+#### S16.1a — Reference-service addressing: `shared_infra.ref_services` (CIU-52)
+
+**`services` and `ref_projects` describe DIFFERENT instances and are NOT
+paired.** This is normative and load-bearing, because reading it backwards
+produces a plausible-looking configuration that is actively wrong:
+`--shared-infra-services` names THIS (joining) instance's OWN diverging-tier
+containers — the ones that gain a second network membership — while
+`--shared-infra-ref-projects` names the REFERENCE's compose projects and is
+consulted only for AND-combined liveness. Neither is a per-entry property of
+the other; the two lists may differ in length and have no index
+correspondence. Consequently NEITHER can name a REFERENCE-side service, and
+an address for one MUST NOT be inferred from either — inferring an alias from
+`services` would point this instance's own copy of a service at the
+reference's copy of it.
+
+A reference-side service is therefore a THIRD, independent axis, declared by
+the OPTIONAL `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE,...]` flag
+and recorded as an alias-keyed table:
+
+```toml
+[ciu.instance.shared_infra.ref_services.vault]
+service = "vault"                  # the REFERENCE's compose/service key
+container = "dstdns-98535c-vault"  # CIU-derived; never hand-typed
+port = 8200                        # only when the reference declares one
+```
+
+The alias is the value's identity — it becomes `topology.services.<alias>` in
+THIS instance's own configuration — and a TOML table key enforces its
+uniqueness structurally. A bare flag item means "alias equals the reference's
+service key"; `alias=ref_service` is the rename form. Two aliases MAY name one
+reference service. The flag is optional but NOT standalone: it joins the
+existing all-or-nothing group, and omitting it reproduces the pre-CIU-52
+behavior exactly — byte-identical overlay text and not one additional Docker
+call at either verb.
+
+**The container name is DERIVED, then AUTHENTICATED, at `add` time — once.**
+CIU renders the REFERENCE's own global config chain read-only
+(`write_rendered=False`, so nothing is ever written into a checkout CIU does
+not own) and under the REFERENCE's own `ciu.env` (`environ=<ref env>`, so the
+calling process's ambient environment never reaches the reference's
+templates), then applies the same `container_name()` derivation
+(`{project}-{env_tag}-{service}`, S7.7/S7.8) every deployment uses. The
+derivation source is the reference's own configuration and nothing else —
+never string surgery on `ref_projects`, which names projects rather than
+services. The derived name is then proven to be a container RUNNING right now
+on the reference's network under that service label; only then is it written
+into this instance's `[topology.services.<alias>]` block (`internal_host`, and
+`internal_port` only when the reference declares one — CIU invents neither).
+That query is deliberately NOT additionally scoped by
+`com.docker.compose.project`: the container NAME already carries the
+reference's `project_name`/`environment_tag`, which IS the authenticating
+fact, and a reference may legitimately run a shared service under a project
+the operator never needed to declare for liveness.
+
+Authentication is what makes the derivation trustworthy rather than merely
+plausible, and it MUST distinguish three outcomes, never two: the container is
+live (proceed), the container is absent (a staleness refusal naming both the
+computed name and the names actually found), or the question could not be
+ANSWERED — an unreachable daemon, a missing binary, a non-zero `docker ps` —
+which is its OWN loud failure and MUST NOT collapse into an empty result. An
+empty live-set reported for an unanswerable query would state a determination
+CIU never made.
+
+**The record is write-once, so `ciu up` re-verifies it.** The join re-runs the
+identical live-name query for every recorded entry, inside the
+every-precondition-before-any-side-effect region — after the reference
+liveness check, BEFORE this instance's own target discovery, and before any
+`docker network connect` — so a reference re-created under a new identity
+between verbs is caught rather than silently addressed. Nothing has been
+connected at that point, so a refusal has nothing to roll back.
+
+Because the emitted block lands in the worktree overlay, which merges LAST
+(S3.1b), it overrides any committed `internal_host` default of the same key
+while a committed `internal_port` the overlay does not write survives — and it
+is read through the ordinary `topology.services.<name>` consumer path
+(S4.16/S7.4), so no separate lookup mechanism exists.
 
 ### S16.3 — Worktree instance concurrency budget (CIU-24)
 

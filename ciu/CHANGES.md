@@ -10,6 +10,31 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu worktree add|create|ensure|adopt` gain an OPTIONAL fourth
+  shared-infra flag, `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`
+  (SPEC S16.1a, CIU-52) — a CIU-managed NAME for a service belonging to the
+  shared-infra REFERENCE instance. At `add` time CIU renders the reference's
+  own global config **read-only and under the reference's own `ciu.env`**
+  (never writing `ciu.global.toml` into a checkout it does not own, never
+  leaking the calling process's ambient environment into the reference's
+  templates), derives that service's qualified container name with the same
+  `container_name()` derivation every deployment uses, **authenticates it
+  against live Docker state**, and records it as this instance's own
+  `[topology.services.<alias>]` block — so existing `topology.services`
+  consumers (including CIU's Vault addressing, S4.16) read it with no new
+  mechanism. The record is write-once and re-verified before any
+  `docker network connect` at `ciu up`. A query that cannot be ANSWERED
+  (daemon unreachable, missing binary, non-zero `docker ps`) is its own loud
+  failure, never an empty live-set. **Purely additive:** the new
+  `ciu.instance.shared_infra.ref_services` key widens that closed shape by
+  exactly one optional key — an unknown key is still named and refused — and
+  omitting the flag reproduces the previous behavior byte-for-byte, including
+  zero additional Docker calls at both verbs. Note for readers of the CIU-52
+  filing: its illustrative TOML paired `shared_infra.services` with
+  `ref_projects`; they are NOT paired (`services` are the JOINER's own
+  containers, `ref_projects` the REFERENCE's projects), which is why this
+  ships as an independent alias-keyed table rather than the reserved
+  `services[*].aliases` sub-key, now withdrawn from SPEC S12.
 - feat(ciu): `ciu check` now walks the WHOLE config pipeline in memory and
   side-effect-free, not just the provisioning graph — stack shape (S3.5/S3.7),
   secret directive grammar and placement (S4), the requires/provides graph

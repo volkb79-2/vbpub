@@ -1114,6 +1114,8 @@ def _worktree(rest: list[str]) -> int:
                        default=None, metavar="S1,S2")
     p_add.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                        default=None, metavar="R1,R2")
+    p_add.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                       default=None, metavar="A1,A2=S2")
     p_add.add_argument("--json", action="store_true", default=False)
 
     def add_create_options(parser) -> None:
@@ -1131,6 +1133,8 @@ def _worktree(rest: list[str]) -> int:
                             default=None, metavar="S1,S2")
         parser.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                             default=None, metavar="R1,R2")
+        parser.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                            default=None, metavar="A1,A2=S2")
         parser.add_argument("--json", action="store_true", default=False)
 
     p_create = sub.add_parser("create", add_help=False)
@@ -1150,6 +1154,8 @@ def _worktree(rest: list[str]) -> int:
                          default=None, metavar="S1,S2")
     p_adopt.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                          default=None, metavar="R1,R2")
+    p_adopt.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                         default=None, metavar="A1,A2=S2")
     p_adopt.add_argument("--json", action="store_true", default=False)
 
     p_rm = sub.add_parser("rm", add_help=False)
@@ -1211,6 +1217,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             if getattr(opts, "json", False):
                 record = wt_mod.find_instance_record(repo_root, opts.name)
@@ -1233,6 +1240,7 @@ def _worktree(rest: list[str]) -> int:
                 path=opts.path, shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record(opts.action, record)
             return 0
@@ -1243,6 +1251,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record("adopt", record)
             return 0

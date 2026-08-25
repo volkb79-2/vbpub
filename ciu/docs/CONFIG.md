@@ -724,9 +724,28 @@ service_profiles = ["core", "db"]
 [ciu.instance.shared_infra]
 ref_path = "/repo/.worktrees/primary-ref"
 network = "repo-ab12cd-network"
-services = ["api", "worker"]
-ref_projects = ["idp-dev-idp", "vault-dev-vault"]
+services = ["api", "worker"]              # THIS instance's own containers
+ref_projects = ["idp-dev-idp", "vault-dev-vault"]   # the REFERENCE's projects
+
+# OPTIONAL (S16.1a/CIU-52) — one sub-table per local alias.
+[ciu.instance.shared_infra.ref_services.vault]
+service = "vault"                         # the REFERENCE's service key
+container = "dstdns-98535c-vault"         # CIU-derived and authenticated
+port = 8200
+
+# ... and the block CIU emits from it, in the same file:
+[topology.services.vault]
+internal_host = "dstdns-98535c-vault"
+internal_port = 8200
 ```
+
+> **`services` and `ref_projects` are about two different instances and are
+> NOT paired.** `services` names the containers *this* (joining) instance
+> starts and wants attached to the reference network; `ref_projects` names
+> *the reference's* Compose projects, used only to prove the reference is
+> live. They may differ in length and have no index correspondence — so
+> neither can name a reference-side service. That is what `ref_services`
+> (below) is for; never infer one from the other.
 
 ```console
 # Reference instance already up, on network repo-ab12cd-network, with the
@@ -735,7 +754,8 @@ $ ciu worktree create pkg-under-test --prefix myapp --feature pkg-under-test \
     --profile core,db \
     --shared-infra primary \
     --shared-infra-services api,worker \
-    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault
+    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault \
+    --shared-infra-ref-services vault
 worktree ready: /repo/.worktrees/myapp-20260817_123456-pkg-under-test
   CIU root: /repo/.worktrees/myapp-20260817_123456-pkg-under-test
   next: ciu worktree up pkg-under-test
@@ -749,6 +769,35 @@ after that succeeds — connects `api` and `worker` to `repo-ab12cd-network`
 too, so they can reach the reference instance's `idp`/`vault`. Every other
 container in `pkg-under-test` (anything not named in
 `--shared-infra-services`) stays on its own network only.
+
+#### `--shared-infra-ref-services` — addressing the reference's services [S16.1a]
+
+Joining a network gets you reachability; it does not give you a NAME to reach
+the reference's service by. `--shared-infra-ref-services ALIAS[,ALIAS=SERVICE]`
+supplies that name. It is optional, but not standalone — supplying it without
+the rest of the shared-infra group is a refusal.
+
+For each item CIU renders the REFERENCE's own global config (read-only, under
+the reference's own `ciu.env` — never this process's ambient environment),
+derives the reference's qualified container name with the same
+`container_name()` derivation used everywhere else, **proves that container is
+actually running on the reference's network right now**, and only then records
+it — both as the `ref_services` sub-table above and as this instance's own
+`[topology.services.<alias>]` block. Because that block is an ordinary
+`topology.services` declaration, existing consumers (including CIU's own Vault
+addressing, S4.16) read it with no new mechanism, and because the worktree
+overlay merges last it overrides a committed bare default while leaving an
+`internal_port` the reference does not declare to survive from that default.
+
+- Bare item (`vault`) — the alias equals the reference's service key.
+- Rename form (`secrets=vault`) — address the reference's `vault` as
+  `topology.services.secrets` locally. Two aliases may share one service.
+- `internal_port` is written only when the reference itself declares one; CIU
+  never invents a port.
+- Never hand-edit the recorded `container`. It is re-verified against live
+  Docker at every `ciu up`, so a reference re-created under a new identity
+  fails loudly there rather than being silently addressed; re-run
+  `ciu worktree add --shared-infra ...` to refresh it.
 
 ### Machine-facing worktree facts [S16.4]
 

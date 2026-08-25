@@ -11,12 +11,29 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-25 — **CIU-48 and CIU-49 PARTIAL** (ciu-P30): both
+Last updated: 2026-08-25 — **CIU-52 FIXED** (ciu-P31): reference-service
+addressing ships as SPEC S16.1a's OPTIONAL, alias-keyed
+`[ciu.instance.shared_infra.ref_services.<alias>]` table plus
+`--shared-infra-ref-services`, CIU-deriving the reference's qualified
+container name from the REFERENCE's own rendered config and authenticating it
+against live Docker before recording it as this instance's
+`topology.services.<alias>.internal_host`. The filing's own illustrative TOML
+misread the shipped schema (it paired `services` with `ref_projects`); the
+corrected understanding — `services` are the JOINER's own containers,
+`ref_projects` the REFERENCE's projects, two independent lists about two
+different instances — is recorded in that entry's disposition below, and S12's
+`services[*].aliases` reservation is withdrawn rather than implemented. The
+filed text is brought over from `main` in the same commit (this branch's copy
+of this file predates `vbpub@4ccf7d4d`), so the row reads "filed, then fixed"
+rather than ever appearing OPEN.
+
+Previously, 2026-08-25 — **CIU-48 and CIU-49 PARTIAL** (ciu-P30): both
 filed 2026-08-25 (`vbpub@4ccf7d4d`, from dstdns's §3.6 cockpit
 multi-instance DNS-alias-ambiguity investigation,
-`dstdns/nyxloom-trove/GUIDE.md` §3.6) alongside three siblings (CIU-50/51/52,
-tracked on `main`, not duplicated in this branch's copy of this file pending
-merge). Investigation found ciu ships NO default for either Compose
+`dstdns/nyxloom-trove/GUIDE.md` §3.6) alongside three siblings (CIU-50/51
+still tracked on `main` only, not duplicated in this branch's copy of this
+file pending merge; CIU-52 brought over and closed by ciu-P31 above).
+Investigation found ciu ships NO default for either Compose
 `hostname:` or `topology.services.*.internal_host` — both are entirely
 consumer-declared (grep confirms `src/`'s templates set neither); the
 filing's "31 dstdns templates + one hand-maintained override" fix is
@@ -129,6 +146,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | FIXED — S2.7 refined precedence extended to PUBLIC_FQDN: derived from THIS workspace's own inputs first (config entry → reverse DNS of the detected IP); ambient adopted only when equal or when detection yields no sourced value (offline host keeps the operator override silently); on mismatch the derived value is written and a warning names the ignored one; PUBLIC_FQDN joins GENERATED_IDENTITY_KEYS so post-generate steps act on the written record. PUBLIC_IP/PUBLIC_TLS_* stay plain pre-set-wins (out of scope). Controlled wrong: restoring the bare fallback fails oracle 1 (2026-08-22) |
 | CIU-48 | Compose's `hostname:` field independently registers a bare, network-resolvable DNS alias — a second source of the §3.6 cockpit multi-instance ambiguity, separate from the automatic service-key alias (CIU-51) | High | PARTIAL — ciu-P30 shipped a correctly-qualified `hostname:` default in ciu's own `ciu init` scaffold + DESIGN-GUIDE/CONFIG.md/CONSUMERS.md guidance; propagating the pattern into dstdns's 31 already-authored templates remains dstdns's own follow-up (see detail) |
 | CIU-49 | App-config `topology.services.*.internal_host`-style Jinja defaults render the bare service name instead of the already-computed qualified `{project}-{instance_id}-{service}` form, forcing consumers to hand-maintain per-worktree overrides (dstdns's `dstdns-mstest` template) | High | PARTIAL — ciu-P30 shipped CONFIG.md's `[topology.services.<name>]` section a SHOULD-level qualified-form prescription + CONSUMERS.md worked example; ciu ships no `internal_host` default of its own to change (S4.16/S7.4 is entirely consumer-declared), so dstdns's hand-maintained override is dstdns's own follow-up (see detail) |
+| CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -1123,6 +1141,94 @@ block at all — confirmed by grep) — there is no ciu-shipped default to
 change. dstdns's hand-maintained `dstdns-mstest` override remains
 unmodified; removing it in favor of the prescribed qualified pattern is
 dstdns's own follow-up, out of reach from this repo. PARTIAL, not FIXED.
+
+## CIU-52 — Implement S12's reserved `shared_infra.services[*].aliases`
+
+**Filed by:** dstdns controller session, 2026-08-25, same investigation —
+the naming half of the operator's "pass the existing instance's container
+names to the new instance" proposal. `docs/SPEC.md:1152-1159` (S12) already
+reserves `ciu.instance.shared_infra.services[*].aliases` as
+not-yet-implemented. The join mechanism itself IS shipped and appears
+production-hardened: `docs/SPEC.md:2482-2560` (S16.1/CIU-22),
+`ciu worktree add NAME --shared-infra REF --shared-infra-services S1[,S2]
+--shared-infra-ref-projects R1[,R2]` — concurrency-safe liveness
+re-validation, Docker-state idempotency, scoped rollback. What's missing:
+after joining a reference instance's network, the joining instance has no
+CIU-declared name to call the shared service by.
+
+### Why CIU owns it
+
+Additive to an already-shipped mechanism (S16.1) — implementing a reserved
+field, not new architecture.
+
+### Proposed contract
+
+```toml
+# worktree B's config, joining worktree A's vault
+[[shared_infra.services]]
+name = "vault"
+ref_project = "dstdns"
+ref_instance_id = "98535c"          # A's instance_id — derived, not hand-typed
+aliases = ["vault"]                 # what B's own templates may call it
+```
+
+CIU resolves `aliases` into B's own `topology.services.vault.internal_host`
+(CIU-49's field) automatically at join time, pointing at A's already-
+qualified `container_name` output — B's config keeps a short local name
+while the underlying resolution is CIU-managed, not a bare Docker DNS alias
+subject to CIU-51's ambiguity at all.
+
+### Oracles
+
+- After `ciu worktree add ... --shared-infra-services vault`, the joining
+  instance's rendered `internal_host` resolves to the reference instance's
+  qualified `container_name`, with no hand-written override needed (contrast
+  dstdns's current hand-maintained `dstdns-mstest` override for the
+  non-shared case, CIU-49).
+- Controlled wrong implementation: injecting the reference instance's BARE
+  service name instead of its qualified `container_name` — reproduces the
+  exact bug this closes, relocated to the shared-infra path.
+- Fixture: instance A (reference) + instance B (diverging, shared-infra
+  join) + instance C (unrelated, own vault) coexisting — B's resolution is
+  scoped to A specifically, unaffected by C.
+
+**SPEC ownership:** `docs/SPEC.md` S12 (declares the field) + S16.1/CIU-22
+(the join mechanism this attaches to).
+
+### Disposition (ciu-P31, 2026-08-25) — FIXED
+
+Shipped as SPEC **S16.1a**: a new OPTIONAL, alias-keyed
+`[ciu.instance.shared_infra.ref_services.<alias>]` table
+(`{service, container, port?}`), the `--shared-infra-ref-services
+ALIAS[,ALIAS=REF_SERVICE]` flag on `add`/`create`/`ensure`/`adopt`, add-time
+derivation from the REFERENCE's OWN rendered config (`write_rendered=False`,
+`environ=<the reference's ciu.env>`) through the same
+`deploy.container_name()` used everywhere else, authentication of that
+derived name against live Docker state before it is written, an emitted
+`[topology.services.<alias>]` block in the joining instance's worktree
+overlay, and join-time re-verification before any `docker network connect`.
+All three filed oracles are covered as real tests, including the
+controlled-wrong (bare-name) mutant and the adversarial three-instance
+fixture where C is connected to A's network carrying the identical
+`com.docker.compose.service=vault` label.
+
+**Shipped shape differs from the filing's illustrative TOML, deliberately —
+the filing misread the shipped schema.** It assumed `shared_infra.services`
+and `shared_infra.ref_projects` are paired (one service entry carrying its
+owning reference project, with `aliases` hanging off it). They are not, and
+never were: **`services` names THIS (joining) instance's OWN diverging-tier
+containers** — `connect_shared_infra_after_up`'s target-discovery loop filters
+on `com.docker.compose.project=<THIS instance's compose project>` — while
+**`ref_projects` names the REFERENCE's compose projects**, consulted only by
+`_check_reference_network_and_projects` for AND-combined liveness. They are
+two independent lists about two different instances (the shipped fixture uses
+two services against one ref project), so neither can name a reference-side
+service, and `services[*].aliases` could only ever have addressed the
+joiner's own copy of a service — pointing this instance's `vault` at the
+reference's `vault` would have been actively wrong. Hence the third,
+independent `ref_services` axis; the S12 reservation is withdrawn rather than
+implemented. Recorded here explicitly so a future reader does not repeat the
+filing's own misreading.
 
 ## Compact resolved index
 
