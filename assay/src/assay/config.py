@@ -156,6 +156,15 @@ _OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
 INFRASTRUCTURE_SOURCES: frozenset[str] = frozenset({"required-env", "derived"})
 MAX_INFRASTRUCTURE_FACTS = 64
 
+#: (B022 item 4) bounds a single RESOLVED infrastructure value at runtime, not
+#: the declared fact count above -- `resolve_command_plan` enforces this one,
+#: since the value is only known once `required-env`/`derived` resolves. Keeps
+#: a malformed or oversized source (e.g. a `derived:` path landing on a whole
+#: file's content instead of one field) from failing late and opaquely at
+#: `E2BIG` on exec; comfortably above any real fact (ports, hosts, tokens,
+#: small JSON blobs) and comfortably below typical Linux `ARG_MAX`.
+MAX_INFRASTRUCTURE_VALUE_BYTES = 65536
+
 #: (B006a/A-269, §3.2) The closed `isolation.snapshot_selection` vocabulary.
 #: `"repository"` materialises the whole commit; `"repository-minus-unsafe-
 #: symlinks"` additionally omits exactly the declared, commit-validated
@@ -300,6 +309,18 @@ _MUTATION_SQL_ONLY_FIELDS: tuple[str, ...] = (
 MIN_MAX_MUTANTS = 1
 MAX_MAX_MUTANTS = 10_000
 
+#: (B026 N-5 round-3 note) `judge.mutation.shard_count`'s own bound below used
+#: to reuse `MAX_MAX_MUTANTS` -- a DIFFERENT ceiling that happens to equal the
+#: same 10,000 today, for its own unrelated reason (the discovery-limit
+#: sentinel, `MAX_CANDIDATE_CEILING`, is `max_mutants + 1`). A shard count has
+#: no relationship to a mutant-count ceiling; this constant is the one a
+#: shard count should actually be checked against. Deliberately duplicated
+#: from `verdict.py`'s identically-named, identically-valued constant rather
+#: than imported (`verdict.py` already imports FROM this module, so the
+#: reverse import would be circular) -- the same tradeoff `COMMAND_TAIL_BYTES`
+#: already makes between these two modules, for the same reason.
+MAX_SHARD_COUNT = 10_000
+
 
 @dataclass(frozen=True)
 class MutationConfig:
@@ -341,8 +362,22 @@ class MutationConfig:
     equivalence_artifact: str | None = None
     #: (B012) The declared zero-based shard position. ``None`` means the
     #: whole declared workload.
+    #:
+    #: (B026 N-5, decided 2026-08-25) **Reserved for future use -- read by
+    #: nothing in `runner.py`/`mutation.py` today.** The lane declaration is
+    #: validated and echoed back by `as_declared()` (round-tripping what a
+    #: consumer wrote), but the shard actually EXECUTED and recorded in
+    #: `judgment.r2.shard_index`/`shard_count` always comes from the `--shard`
+    #: CLI flag alone, never from here. Declaring these two fields with no
+    #: `--shard` flag on the invocation runs the WHOLE workload, silently --
+    #: this is not a bug to fix by wiring them as a `--shard` default (that
+    #: would be a real behavior change, decided against here) so much as a
+    #: capability this build has not built yet; kept declared/validated
+    #: rather than removed so a future package can wire them without a lane
+    #: schema migration.
     shard_index: int | None = None
     #: (B012) The declared shard cardinality; required with ``shard_index``.
+    #: See the B026 N-5 note on ``shard_index`` above -- identically inert.
     shard_count: int | None = None
 
     def as_declared(self) -> dict[str, Any]:
@@ -1781,10 +1816,10 @@ def _load_mutation(
                 raise LaneConfigError(
                     f"{where}: 'judge.mutation.{field}' must be an integer, got {_type_name(number)}"
                 )
-        if not 1 <= shard_count <= MAX_MAX_MUTANTS:
+        if not 1 <= shard_count <= MAX_SHARD_COUNT:
             raise LaneConfigError(
                 f"{where}: 'judge.mutation.shard_count' must be in "
-                f"{MIN_MAX_MUTANTS}..{MAX_MAX_MUTANTS:,}, got {shard_count}"
+                f"1..{MAX_SHARD_COUNT:,}, got {shard_count}"
             )
         if not 0 <= shard_index < shard_count:
             raise LaneConfigError(

@@ -120,6 +120,7 @@
     },
     "resolved": {
       "base": "@BASE_OID@",
+      "base_resolution": "merge-base",
       "language": "sql",
       "source_roots": [
         "infra/db-init/init-scripts"

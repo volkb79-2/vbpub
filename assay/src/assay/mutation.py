@@ -113,11 +113,12 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 from . import git, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
+from .isolation import SnapshotRepository
 from .verdict import (
     MUTATION_BUCKETS,
     MAX_CANDIDATE_CEILING,
@@ -127,6 +128,16 @@ from .verdict import (
     MutantOutcome,
 )
 from .vocabulary import MUTATION_OPERATORS
+
+if TYPE_CHECKING:
+    # Annotation-only: `.adapters.base` imports `MutationSite` from this
+    # module and `.runner` imports this module for command execution, so
+    # importing either back at runtime would be circular. `from __future__
+    # import annotations` (above) already defers every annotation's
+    # evaluation; this block exists only so a type checker (and pyflakes)
+    # can resolve these names, never runs.
+    from .adapters.base import LanguageAdapter
+    from .runner import CommandPlan, CommandResult, LaneDeadline, ProcessRunner
 
 __all__ = [
     "MAX_CANDIDATE_CEILING",
@@ -775,10 +786,28 @@ def _load_validated_state_record(
     for key, expected in required.items():
         if key not in payload:
             raise MutationStateError(f"mutation-state record {identity} is missing {key}")
-        if key == "source_sha256" and payload[key] != expected:
+        if payload[key] == expected:
+            continue
+        if key == "schema_version":
+            # (B021) `schema_version` is the ONE required key not folded
+            # into `identity` (mutation.py's own filename derivation hashes
+            # path/source/span/replacement/operator, never the schema
+            # version) -- so it is the only key that can legitimately
+            # mismatch without the record being corrupt: a routine bump of
+            # MUTATION_STATE_SCHEMA_VERSION. Treating it as absent (silent
+            # rerun) instead of failing the whole lane means an old-format
+            # cache is a cache miss, not an outage, for every consumer's
+            # next `--resume` after an upgrade.
             return None
-        if payload[key] != expected:
-            raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+        # Every OTHER key (candidate_id, path, operator, replacement_sha256,
+        # source_sha256) IS folded into `identity`, and therefore into this
+        # record's own filename -- a mismatch here means the record on disk
+        # contradicts the identity it is filed under, which is evidence of
+        # corruption or hand-editing, not a routine cache event. Silently
+        # treating that as "absent" (the pre-B021 disposition for
+        # source_sha256 specifically) would discard exactly the evidence
+        # this check exists to surface.
+        raise MutationStateError(f"mutation-state record {identity} has stale {key}")
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
@@ -1538,7 +1567,6 @@ def _execute_mutation_jobs(
     results: list[_MutantRun | None] = [None] * total
     budget_exceeded_mask = [False] * total
     fatal: AssayError | None = None
-    per_candidate_timeout_positions: set[int] = set()
 
     with executor_factory(jobs) as pool:
         index = 0

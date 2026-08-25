@@ -24,8 +24,45 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   its claimed shard and refuses an all-empty merge, instead of trusting the caller (B012)
 - fix(assay): verdict schema placed `mutation.candidate_ids`/`progress_artifact` on the wrong
   `$defs` entries; a populated shard verdict violated its own published schema (B012)
+- fix(assay): a routine pre-gate merge silently narrowed R1/R2's changed-line scope to
+  first-parent instead of the declared merge-base, with no record of which fired; a new
+  additive `judgment.resolved.base_resolution` field (`"merge-base"`/`"first-parent"`) makes it
+  auditable (B008)
+- fix(assay): mutation-state resume's stale-record disposition was inverted — a tampered
+  `source_sha256` (folded into the record's own filename) silently reran instead of raising, and
+  a routine `schema_version` bump (the one field NOT folded in) raised instead of silently
+  rerunning; both now correct (B021)
+- fix(assay): `env_passthrough` could silently overwrite a declared infrastructure fact at
+  runtime with no defence beyond the lane loader; `resolve_command_plan` now refuses the
+  collision itself, and a resolved infrastructure value is now bounded at 64 KiB instead of
+  failing late and opaquely at `E2BIG` on exec (B022)
+- fix(assay): an unresolvable infrastructure declaration could crash a refusal uncaught, with no
+  verdict artifact, at four independent `resolve_command_plan` call sites (the direct R0-only
+  path, the `environment_command` probe, `_run_higher_rigor_lane`'s primary resolution, and
+  `refuse_lane`'s own recording call) — all four now degrade to a real, schema-valid verdict; a
+  new additive `env_effective_incomplete` field marks the one case where `env_effective` is a
+  fallback (`lane.env` alone) rather than the real resolved environment (B025)
+- fix(assay): a mutant-induced pytest timeout crashed `execute_plan` instead of reaching
+  `BUDGET_EXCEEDED`/`LANE_TIMEOUT` — `subprocess.TimeoutExpired.stdout`/`.stderr` is `bytes` even
+  under `text=True`, the one path CPython does not text-decode for you; the SAME undecodable-bytes
+  crash was also live on the normal completion path (`default_process_runner` had no `errors=`) —
+  both now tolerantly decode instead of raising (B027)
+- fix(assay): `judge.mutation.shard_count`'s bound accidentally reused a DIFFERENT ceiling
+  (`MAX_MAX_MUTANTS`) that only happened to equal the same value; a dedicated `MAX_SHARD_COUNT`
+  decouples the two so a future change to either cannot silently drift the other (B026)
 
-_Nothing else yet._
+### Changed
+- docs(assay): pyflakes sweep of `src/assay/` (recursive) to zero findings — four unused imports,
+  one needless `f"..."` prefix, one dead local variable, and 24 annotation-only undefined names
+  now resolved with real or `TYPE_CHECKING`-guarded imports; wiring a lint phase into the shared
+  `tester-unified` gate is deliberately deferred (cross-project Docker image change, out of scope
+  for this pass) (B024)
+- docs(assay): `judge.mutation.shard_index`/`shard_count` (lane-declared, never consumed at
+  runtime) documented explicitly as reserved-for-future-use, not wired or removed (B026)
+- docs(assay): a bad `--shard`/`--operators` refusal's three-way stderr-diagnostic asymmetry
+  (`run`+shard writes an artifact and no message; `run`+operators writes a message and no
+  artifact; `plan`'s own refusal is a third shape again) is now documented as an accepted,
+  understood tradeoff rather than left implicit (B026)
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

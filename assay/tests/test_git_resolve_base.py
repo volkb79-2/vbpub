@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.git import head_rev, repo_top, resolve_base, run
+from assay.git import base_resolution_mode, head_rev, repo_top, resolve_base, run
 
 
 def test_normal_head_resolves_to_merge_base_of_base_and_head(git_repo):
@@ -42,6 +42,7 @@ def test_normal_head_resolves_to_merge_base_of_base_and_head(git_repo):
     resolved = resolve_base(git_repo.path, "main-line")
 
     assert resolved == expected
+    assert base_resolution_mode(git_repo.path) == "merge-base"
 
 
 def test_merge_commit_head_resolves_to_its_first_parent_not_merge_base(git_repo):
@@ -62,6 +63,9 @@ def test_merge_commit_head_resolves_to_its_first_parent_not_merge_base(git_repo)
     assert git_repo.head() == merge_commit
     assert resolved == main_tip  # the first parent, i.e. main's pre-merge tip
     assert resolved != fork_point  # proves the merge-base branch was NOT taken
+    # (B008) The narrowing is now auditable: a consumer reading the verdict
+    # can tell `resolved` is the branch's pre-merge tip, not a fork point.
+    assert base_resolution_mode(git_repo.path) == "first-parent"
 
 
 def test_a_failing_git_command_raises_git_failed(git_repo):

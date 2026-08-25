@@ -146,6 +146,64 @@ def test_budget_expiry_is_budget_exceeded_lane_timeout_via_injection(tmp_path: P
     assert result.returncode is None
 
 
+def _raise_timeout_with_bytes_output(argv, *, env, cwd, timeout):
+    # (B027) Reproduces the EXACT object CPython hands back on this path:
+    # `TimeoutExpired.stdout`/`.stderr` are `bytes`, never decoded, even
+    # though the real `default_process_runner` passes `text=True` --
+    # CPython's timeout path does not run through the same text-decode step
+    # a normal `CompletedProcess` return does.
+    raise subprocess.TimeoutExpired(
+        cmd=list(argv),
+        timeout=timeout,
+        output=b"partial stdout before the hang\n",
+        stderr=b"partial stderr\n",
+    )
+
+
+def test_budget_expiry_with_bytes_output_does_not_crash(tmp_path: Path):
+    """(B027) A mutant-induced timeout used to crash with `AttributeError:
+    'bytes' object has no attribute 'encode'` inside `_bounded_tail`, because
+    `TimeoutExpired.stdout`/`.stderr` are `bytes` on this path -- no verdict
+    was ever produced, and a stale artifact from a prior run could be
+    mistaken for the current one. Reverting the fix (decoding
+    `exc.stdout`/`exc.stderr` before `_bounded_tail`) must make this test
+    raise `AttributeError` again, not just pass against the fix."""
+    lane = make_lane(budget="5m", budget_seconds=300.0)
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        process_runner=_raise_timeout_with_bytes_output,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+    )
+
+    assert result.outcome is Outcome.BUDGET_EXCEEDED
+    assert result.reason_code is ReasonCode.LANE_TIMEOUT
+    assert result.returncode is None
+    assert result.stdout_tail == "partial stdout before the hang\n"
+    assert result.stderr_tail == "partial stderr\n"
+
+
+def test_default_process_runner_tolerates_undecodable_child_output(tmp_path: Path):
+    """(B027 round 2, N-W2) `_bounded_tail`'s own docstring claims undecodable
+    child bytes have "already become U+FFFD" by the time they reach it --
+    true only if the boundary that produces `str` actually replaces instead
+    of raising. `default_process_runner`'s `subprocess.run(text=True)` had no
+    `errors=`, so `subprocess`'s own strict decoder raised `UnicodeDecodeError`
+    on the NORMAL completion path -- the one path B027's own new
+    `_decode_timeout_stream` claims to match ("so a hung mutant's tail reads
+    the same way a completed one's does"). Reverting `errors="replace"` must
+    make this raise `UnicodeDecodeError` again."""
+    result = runner.default_process_runner(
+        ["/bin/sh", "-c", "printf '\\377\\376'"],
+        env={},
+        cwd=tmp_path,
+        timeout=5.0,
+    )
+    assert result.returncode == 0
+    assert "�" in result.stdout
+
+
 def test_the_declared_budget_seconds_is_what_is_passed_as_the_timeout(tmp_path: Path):
     lane = make_lane(budget="90s", budget_seconds=90.0)
     seen: dict[str, float] = {}

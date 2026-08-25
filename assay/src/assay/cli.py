@@ -46,7 +46,6 @@ code *is* the verdict (§6), and stdout is for humans.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex

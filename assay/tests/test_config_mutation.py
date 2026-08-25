@@ -12,6 +12,8 @@ from __future__ import annotations
 import pytest
 from conftest import R0_LANE, Project, set_key
 
+from assay import config as config_module
+from assay import verdict as verdict_module
 from assay.config import load_lane_file
 from assay.errors import LaneConfigError
 from assay.mutation import MUTATION_OPERATORS
@@ -378,3 +380,15 @@ def test_sql_mutation_as_declared_round_trips_both_artifact_keys(project: Projec
         "equivalence_artifact": ".assay/schema-dump.sql",
         "kill_signal_artifact": ".assay/kill-signal.txt",
     }
+
+
+def test_config_and_verdict_shard_count_bounds_stay_equal():
+    """(B026 N-5 round-3/round-2 note) `MAX_SHARD_COUNT` is deliberately
+    duplicated between `config.py` (bounds a DECLARED `judge.mutation.
+    shard_count`) and `verdict.py` (bounds an EXECUTED `judgment.r2.
+    shard_count`) rather than imported -- the two modules import each other
+    in the direction that makes a real import circular (`verdict.py`
+    already imports FROM `config.py`). A hand-duplicated pair with no
+    equality guard is exactly the drift risk this constant exists to close;
+    this is that guard."""
+    assert config_module.MAX_SHARD_COUNT == verdict_module.MAX_SHARD_COUNT
