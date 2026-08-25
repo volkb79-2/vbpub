@@ -7,6 +7,37 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [7.3.0] - 2026-08-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=142143a44468818f20c0ef5a45d5891dbaa59739 -->
+
+### Added
+- feat(ciu): V8-PREP-7 -- optional env_required = [...] declaration + collective presence check (60c0dddf)
+- feat(ciu)!: ciu-P24 -- V8-PREP-6 unified `instances = N` fan-out (e26d08f7)
+- feat(ciu): ciu-P23 -- V8-PREP-5 one-shot completion semantics (additive) (9b731c78)
+- feat(ciu): ciu-P22 -- declaration-only [service.<name>] registry + WARN-only ciu check lint (V8-PREP-3 narrowed) (133747db)
+- feat(ciu): ciu-P21 -- ciu.user_tables declaration + local_stack root key (V8-PREP-1/4 groundwork) (665da550)
+- feat(ciu): ciu-P20 -- hook template library mechanism + post_compose_db reference template (CIU-QOL-13) (0ac92992)
+
+### Fixed
+- fix(ciu): ciu-P21 review fix -- add infrastructure to RESERVED_GLOBAL_TABLES/NAMESPACES (d604a568)
+
+### Changed
+- Merge branch 'feat/ciu-qol-v8prep-wave' (P25 checkpoint: V8-PREP additive groundwork complete) (f7a188d4)
+
+### Documentation
+- docs(ciu): ciu-P25 LOG -- record V8-PREP-7 env_required implementation (6f80e2cf)
+- docs(ciu): ciu-P24 LOG -- record review fix (4ecd206c) (27e2cd91)
+- docs(ciu): ciu-P24 LOG -- V8-PREP-6 unified instances fan-out (1ddfdfba)
+- docs(ciu): carve ciu-P35 -- consolidated optional-extras install table (8995bcc3)
+- docs(ciu): amend ciu-P24 -- widen scope for a real silent-upgrade hazard (2c842ba0)
+- docs(ciu): carve ciu-P34 -- CONSUMERS.md ref_services migration note (8e0f355c)
+- docs(ciu): file CIU-55 — per-lane gate invocation timing to inform provisional-merge rigor tradeoffs (3e16419d)
+- docs(ciu): carve ciu-P33 -- generated identity facts overlay, env print, clean --vanilla (c625567c)
+
+### Testing
+- test(ciu): ciu-P24 review fix -- pin the fresh-assignment half of the ciu_context leak-guard (4ecd206c)
+
 ## [7.2.0] - 2026-08-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=e85520a856fc4fa68b4f19d0d3588954f35546fa -->
