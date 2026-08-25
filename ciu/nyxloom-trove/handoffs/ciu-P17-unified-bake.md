@@ -15,6 +15,8 @@ scope:
     - "src/ciu/cli.py"
     - "src/ciu/deploy.py"
     - "tests/tests/test_ciu_cli_bake.py"
+    - "tests/tests/test_ciu_deploy_actions_remaining.py"
+    - "tests/tests/test_ciu_deploy_deeper8.py"
     - "docs/SPEC.md"
     - "docs/FEATURES.md"
     - "CHANGES.md"
