@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -24,13 +25,23 @@ allow_argv_append = false
 """
 
 
-def _run(repo: GitRepo, tmp_path: Path, *, probe: str) -> tuple[int, dict]:
+def _run(
+    repo: GitRepo,
+    tmp_path: Path,
+    *,
+    probe: str,
+    budget: str = "1m",
+    stderr: "io.StringIO | None" = None,
+) -> tuple[int, dict]:
     repo.write(".gitignore", "*.json\nciu.global.toml\n")
-    lane = _LANE.format(probe=probe)
+    lane = _LANE.format(probe=probe).replace('budget = "1m"', f'budget = "{budget}"')
     repo.write("assay.toml", lane)
     repo.commit_all("lane")
     target = tmp_path / "verdict.json"
-    code = main(["run", "real", "--file", str(repo.path / "assay.toml"), "--verdict-json", str(target)])
+    code = main(
+        ["run", "real", "--file", str(repo.path / "assay.toml"), "--verdict-json", str(target)],
+        stderr=stderr,
+    )
     return code, json.loads(target.read_text(encoding="utf-8"))
 
 
@@ -109,3 +120,218 @@ def test_environment_probe_refuses_cleanly_when_infrastructure_is_unresolvable(
         "BAD_LANE_CONFIG",
     )
     assert document["env_effective_incomplete"] is True
+
+
+def test_a_probe_that_exhausts_its_budget_reports_a_timeout_not_a_config_error(
+    git_repo: GitRepo, tmp_path
+):
+    """B032/A-321. `8a2a4731` discarded `execute_plan`'s own classification
+    and hardcoded `ERROR`/`BAD_LANE_CONFIG` for EVERY probe failure, so a
+    probe that genuinely exhausted its budget -- which `execute_plan`
+    classifies correctly as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` -- was recorded
+    as an operator config error at exit 2 instead of exit 4.
+
+    A gate that retries `BUDGET_EXCEEDED` but hard-fails `BAD_LANE_CONFIG`
+    (the estate's own run-gate shape) then does exactly the wrong thing on a
+    real timeout. This is the one distinction A-321 rules must not collapse.
+
+    Reproduced through the installed CLI before the fix:
+      `budget = "30s"`, `environment_command = sleep 45`
+      -> `ERROR`/`BAD_LANE_CONFIG`, exit 2.
+    """
+    err = io.StringIO()
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        probe='environment_command = ["/bin/sh", "-c", "sleep 45"]',
+        budget="2s",
+        stderr=err,
+    )
+
+    assert (code, document["outcome"], document["reason_code"]) == (
+        4,
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert "LANE_TIMEOUT" in err.getvalue()
+    assert "the lane's own command never started" in err.getvalue()
+
+
+def test_a_probe_refusal_writes_b010s_clear_message_to_stderr(
+    git_repo: GitRepo, tmp_path
+):
+    """B032/A-322. B010's ask, verbatim: refuse with "this lane's declared
+    environment does not match the invoking one; run via `<declared
+    wrapper>`" *instead of surfacing the suite's raw traceback*.
+
+    What `8a2a4731` shipped wrote **0 bytes** to stderr (measured) and
+    emitted a generic `BAD_LANE_CONFIG` whose `argv_effective` names the
+    LANE's own command -- which never ran -- so the message actively
+    misleads. The verdict stays as closed as it was (no free-text field,
+    A-138/A-170); the diagnosis goes to the caller's stream.
+    """
+    err = io.StringIO()
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        probe='environment_command = ["/bin/sh", "-c", "exit 7"]',
+        stderr=err,
+    )
+
+    assert (code, document["outcome"], document["reason_code"]) == (
+        2,
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    message = err.getvalue()
+    assert message, "B010's entire ask was a clear message; 0 bytes is not one"
+    assert "declared environment does not match the invoking one" in message
+    assert "the probe exited 7" in message
+    # The DECLARED WRAPPER, not the lane argv the old refusal pointed at.
+    assert "Run via the declared wrapper: /bin/sh -c 'exit 7'" in message
+
+
+def test_a_probe_that_cannot_be_executed_says_so_and_stays_bad_lane_config(
+    git_repo: GitRepo, tmp_path
+):
+    """A-321's collapse half: a missing binary (`ERROR`/`EXEC_FAILED` from
+    `execute_plan`) keeps rendering as `ERROR`/`BAD_LANE_CONFIG` -- it means
+    the same actionable thing to a consumer as a nonzero exit -- but what
+    separates the two is now carried as text, not by widening the closed
+    reason-code vocabulary."""
+    err = io.StringIO()
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        probe='environment_command = ["/nonexistent/probe-binary"]',
+        stderr=err,
+    )
+
+    assert (code, document["outcome"], document["reason_code"]) == (
+        2,
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert "the probe command could not be executed" in err.getvalue()
+
+
+def test_the_probe_cap_is_enforced_where_execute_plan_actually_reads_it():
+    """B032/A-322's dead-cap half, at the seam rather than by elapsed time.
+
+    `runner.py` set `budget_seconds=min(30.0, deadline.remaining())` on the
+    probe plan and then passed `timeout=deadline.remaining()` -- the FULL
+    lane budget -- to `execute_plan`, which reads its `timeout=` ARGUMENT and
+    ignores `plan.budget_seconds` entirely. Measured on `main`: an
+    `environment_command` of `sleep 45` under `budget = "5m"` ran the whole
+    45 s and then PASSED. Both values now come from the same expression.
+    """
+    from assay import runner
+
+    assert runner.PROBE_BUDGET_SECONDS == 30.0
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+    assert "probe_timeout = min(PROBE_BUDGET_SECONDS, deadline.remaining())" in source
+    assert source.count("budget_seconds=probe_timeout") == 1
+    assert source.count("timeout=probe_timeout") == 1
+
+
+_R2_LANE = """\
+schema_version = 2
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.unit.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "base"
+
+[lanes.unit.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+"""
+
+
+def _r2_repo(repo: GitRepo) -> None:
+    repo.write("assay.toml", _R2_LANE)
+    repo.write("pkg/flags.py", "a = True\n")
+    repo.commit_all("lane")
+    repo.git("checkout", "-q", "-b", "base")
+    repo.write("pkg/flags.py", "a = False\n")
+    repo.commit_all("base flag")
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.write("pkg/flags.py", "a = True\n")
+    repo.commit_all("restore flag")
+
+
+def test_an_r2_lane_run_twice_with_nothing_changed_passes_both_times(
+    git_repo: GitRepo, tmp_path
+):
+    """B031/A-320's headline regression, through the installed CLI.
+
+    `8a2a4731` wrote `.assay/<lane>.progress.jsonl` unconditionally for every
+    R2 lane into `Path(".assay")` -- the CONSUMER's live worktree. Measured on
+    `main`: run 1 PASSes and leaves `.assay/unit.progress.jsonl` untracked;
+    run 2, with the consumer having changed nothing at all, fails
+    `NO_MEASUREMENT`/`DIRTY_TREE` because `git.dirty_paths()` now returns that
+    path. An R2 lane passed once and then refused forever.
+
+    Progress is opt-in and consumer-directed now, so the default writes
+    nothing and the lane's own second run is clean.
+    """
+    _r2_repo(git_repo)
+    lane_file = str(git_repo.path / "assay.toml")
+
+    first = main(["run", "unit", "--file", lane_file])
+    assert not (git_repo.path / ".assay").exists(), (
+        "assay must not create anything in the consumer's live worktree"
+    )
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+    second = main(["run", "unit", "--file", lane_file])
+    assert first == second, (first, second)
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_progress_goes_exactly_where_the_consumer_asked_and_nowhere_else(
+    git_repo: GitRepo, tmp_path
+):
+    """B031/A-320: `--progress PATH` is the only way a progress artifact is
+    written, and PATH is the consumer's, resolved against the invoking CWD --
+    never `.assay/<lane>.progress.jsonl` derived by interpolating an
+    unvalidated lane name (a lane named `"../../../pwned/esc"` is a legal
+    quoted TOML key, and that spelling wrote NDJSON three directories above
+    the project root while still reporting PASS)."""
+    _r2_repo(git_repo)
+    destination = tmp_path / "elsewhere" / "progress.jsonl"
+
+    main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--progress",
+            str(destination),
+        ]
+    )
+
+    assert not (git_repo.path / ".assay").exists()
+    assert git_repo.git("status", "--porcelain").strip() == ""
+    events = [
+        json.loads(line)
+        for line in destination.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[0]["event"] == "run"
+    assert len(events[0]["commit"]) == 40
+    assert [event["event"] for event in events[:2]] == ["run", "baseline"]

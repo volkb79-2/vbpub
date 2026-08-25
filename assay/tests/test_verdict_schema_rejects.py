@@ -494,6 +494,12 @@ def test_a_populated_shard_verdict_validates_against_the_shipped_schema(
     proven only by hand-rolling a schema fragment during remediation, never
     by an actual test against the real, shipped schema. This is that test:
     reverting the `$defs/mutation` move must turn it red.
+
+    B031/A-320 removed `progress_artifact` from the schema outright (it never
+    had a producer, and its only legal spelling named the consumer worktree
+    location A-292 forbids), so this now asserts BOTH halves: `candidate_ids`
+    -- which does have a producer, on the shard path -- validates, and
+    `progress_artifact` is refused rather than silently tolerated.
     """
     document = _verdict_document("r2_fail_mutants_survived.json")
     assert why_invalid(validator, document) == [], "the canonical form must validate"
@@ -503,9 +509,14 @@ def test_a_populated_shard_verdict_validates_against_the_shipped_schema(
         "a" * 64,
         "b" * 64,
     ]
-    claim["mutation"]["progress_artifact"] = ".assay/package.progress.jsonl"
 
     assert why_invalid(validator, document) == [], (
-        "a populated shard verdict (candidate_ids + progress_artifact) must "
-        "validate against the shipped schema"
+        "a populated shard verdict (candidate_ids) must validate against the "
+        "shipped schema"
+    )
+
+    claim["mutation"]["progress_artifact"] = ".assay/package.progress.jsonl"
+    assert why_invalid(validator, document) != [], (
+        "mutation.progress_artifact was removed by B031/A-320 and must be "
+        "refused, not silently accepted"
     )

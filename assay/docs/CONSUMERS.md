@@ -541,9 +541,16 @@ such as `Color.RED`. Both flip only `==`/`!=`; generic ordering swaps remain the
 jurisdiction of `python:compare-swap`.
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
-candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after the baseline and after
-every completed candidate, and the verdict names that file under
-`claims[].mutation.progress_artifact`.
+candidates.
+
+Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
+JSON object per line -- a `run` header naming the commit and start time, then one event after the
+baseline and one after every completed candidate, each flushed as it is written, so a monitor can
+tail it live. Without the flag no progress file is written at all, and assay never chooses the
+location itself. Choose a path OUTSIDE the repository (or a gitignored one): assay's own clean-tree
+precondition refuses `NO_MEASUREMENT`/`DIRTY_TREE` on the next run of that lane if the progress file
+lands in the work tree. The verdict does not name the destination -- the caller already chose it,
+the same way it does for `--verdict-json`.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.

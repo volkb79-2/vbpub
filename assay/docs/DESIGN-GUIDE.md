@@ -193,10 +193,24 @@ orchestrator to get a coverage floor.
 
 This boundary remains one-way by construction. A lane may declare an optional
 `environment_command` probe: `assay run` executes that zero-exit argv in the
-invoking environment *before* repository, snapshot, or lane work and refuses
-`ERROR`/`BAD_LANE_CONFIG` on failure. The probe lets a lane name "this command
-is meaningful here" without giving assay container mechanics or letting a wrong
-dependency closure masquerade as a product failure.
+invoking environment *before* repository, snapshot, or lane work and refuses on
+failure. The probe lets a lane name "this command is meaningful here" without
+giving assay container mechanics or letting a wrong dependency closure
+masquerade as a product failure.
+
+The refusal keeps ONE distinction (B032/A-321): a probe that exhausts its own
+preflight cap reports `BUDGET_EXCEEDED`/`LANE_TIMEOUT` (exit 4), because gates
+routinely retry a timeout and hard-fail a config error, and collapsing the two
+makes them do the wrong thing on a real timeout. Every other probe failure -- a
+missing binary, a nonzero exit, a signal death -- means the same actionable
+thing and keeps rendering `ERROR`/`BAD_LANE_CONFIG` (exit 2). What separates
+those is written to stderr as free text rather than widening the closed
+reason-code vocabulary (A-138/A-170): the refusal names the lane, the cause, and
+the declared wrapper to run via, which is what B010 asked for and what
+`8a2a4731` shipped as 0 bytes. The cap itself is `runner.PROBE_BUDGET_SECONDS`
+(30 s), applied as `execute_plan`'s `timeout=` argument -- the value it actually
+reads -- so a hung probe can no longer spend the lane's whole declared budget
+before the lane's own command starts.
 
 Note also that ciu's gate currently reaches into a sibling project's source
 tree — `PYTHONPATH=../nyxloom/src python -m nyxloom.coverage_gate` — which is
@@ -1220,10 +1234,17 @@ or whole-deployed-schema audit. Language-specific operator catalogues and an
 R2-without-R1 adapter remain explicit product-design questions, not values an
 adapter may invent locally (A-215).
 
-Execution is observable without becoming a second verdict. After the baseline
-and after every candidate completes, R2 appends a compact NDJSON event to
-`.assay/<lane>.progress.jsonl` and records that project-relative path in the
-optional `mutation.progress_artifact` field. An optional
+Execution is observable without becoming a second verdict. When the caller asks
+for it with `assay run --progress PATH` (B031/A-320), R2 appends a compact
+NDJSON event to PATH after the baseline and after every candidate completes.
+The destination is the CONSUMER's, never derived: `8a2a4731` wrote
+`.assay/<lane>.progress.jsonl` into the live worktree unconditionally, which
+broke assay's own clean-tree precondition on the very next run of the same
+lane, and interpolated an unvalidated lane name while doing it. Nor does the
+verdict name the destination back: the caller chose it, the same way it chooses
+`--verdict-json`'s, and the one grammar a verdict path field can carry
+(repo-tree-relative) can only express the location this design forbids. An
+optional
 `judge.mutation.budget_per_candidate` bounds one candidate's command; its
 timeout uses the existing `budget_exceeded` bucket rather than widening the
 closed reason-code vocabulary. The separate `assay plan` command performs the

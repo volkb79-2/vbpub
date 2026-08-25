@@ -88,6 +88,14 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert result is not None and not isinstance(result, str)
     lines = progress_path.read_text(encoding="utf-8").splitlines()
     events = [json.loads(line) for line in lines]
+    # B031/A-320: a `run` header opens the stream. The file is opened for
+    # APPEND and never truncated, so without a per-run commit/timestamp a
+    # tailing monitor cannot attribute a `candidate_index: 0` to a run.
+    assert events[0]["event"] == "run"
+    assert len(events[0]["commit"]) == 40
+    assert events[0]["started"].startswith("20")
+    assert events[0]["candidate_total"] == 2
+    events = events[1:]
     assert [event["candidate_index"] for event in events] == [-1, 0, 1]
     assert all(event["candidate_total"] == 2 for event in events[1:])
     assert events[0]["event"] == "baseline"
@@ -95,7 +103,11 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
         assert event["path"] == "pkg/flags.py"
         assert len(event["candidate_id"]) == 64
         assert event["operator"] == "python:bool-const-flip"
-        assert event["replacement_sha256"]
+        # B031/A-320: this is the WHOLE MUTATED FILE's digest, and is named
+        # for what it is. Under `replacement_sha256` it collided with the
+        # verdict's own same-named field, which digests the replacement TEXT.
+        assert event["mutated_file_sha256"]
+        assert "replacement_sha256" not in event
         assert isinstance(event["elapsed_seconds"], float)
     assert events[1]["outcome_bucket"] == "killed"
     assert events[2]["outcome_bucket"] == "survived"
@@ -397,7 +409,22 @@ def test_shard_merge_refuses_duplicate_or_missing_input(documents):
         mutation_module.merge_mutation_shards(documents())
 
 
-def test_progress_artifact_path_is_constrained_in_verdict_model():
+def test_mutation_carries_no_progress_artifact_field_anywhere(tmp_path):
+    """B031/A-320: `mutation.progress_artifact` is GONE -- dataclass, wire
+    payload and JSON Schema together, not left as an inert field.
+
+    `8a2a4731` added it to the dataclass and the schema and never wrote a
+    single producer for it, so every real verdict this build has ever emitted
+    omitted it while `.assay/<lane>.progress.jsonl` sat on disk unreferenced.
+    Its only schema-legal spelling was a repo-tree-relative path -- i.e.
+    exactly the consumer-worktree location B006(b)/A-292 forbid and B031(a)
+    reproduced as a live `DIRTY_TREE` defect. The progress destination is now
+    named by the consumer (`assay run --progress PATH`), the way
+    `--verdict-json`'s destination already is, and assay does not record a
+    destination its caller chose.
+    """
+    import json as _json
+
     outcome = MutantOutcome(
         path="pkg/mod.py",
         lineno=1,
@@ -407,8 +434,21 @@ def test_progress_artifact_path_is_constrained_in_verdict_model():
         operator="python:bool-const-flip",
         description="True->False",
     )
-    with pytest.raises(ValueError, match="progress_artifact"):
-        Mutation(candidate_count=1, total=1, killed=(outcome,), progress_artifact="../escape.jsonl")
+    assert "progress_artifact" not in Mutation.__dataclass_fields__
+    with pytest.raises(TypeError):
+        Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(outcome,),
+            progress_artifact="../escape.jsonl",
+        )
+    payload = Mutation(candidate_count=1, total=1, killed=(outcome,)).to_dict()
+    assert "progress_artifact" not in payload
+
+    from conftest import SCHEMA_PATH
+
+    assert "progress_artifact" not in SCHEMA_PATH.read_text(encoding="utf-8")
+    del _json
 
 
 def test_shard_candidate_ids_are_validated_for_disjointness_and_shape():

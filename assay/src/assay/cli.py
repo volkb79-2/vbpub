@@ -158,6 +158,22 @@ def build_parser() -> argparse.ArgumentParser:
             "(A-028); omit to skip artifact emission entirely"
         ),
     )
+    run.add_argument(
+        "--progress",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "append the R2 mutation progress NDJSON stream to PATH, one "
+            "compact JSON object per line, flushed per event (B031/A-320). "
+            "Opt-in and consumer-directed, exactly like --verdict-json: "
+            "assay never chooses this location itself, and omitting the flag "
+            "writes no progress file at all. Point it OUTSIDE the repository "
+            "(or at a gitignored path) -- a progress file inside the work "
+            "tree makes the next run of the same lane refuse "
+            "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
+        ),
+    )
 
     build_verify_parser(subparsers)
 
@@ -482,6 +498,20 @@ def _run_reserved(
             shard=getattr(args, "shard", None),
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
+            # B031/A-320: opt-in, consumer-named, absent by default. Resolved
+            # against the invoking CWD (like every other CLI path argument),
+            # never against the project root, and never derived from the lane
+            # name.
+            progress_artifact=(
+                Path(progress_arg).expanduser()
+                if (progress_arg := getattr(args, "progress", None)) is not None
+                else None
+            ),
+            # B032/A-322: where the `environment_command` probe's refusal
+            # message goes. `run_lane` returns a Verdict and carries no
+            # free-text field for a cause (A-138/A-170), so B010's "refuse
+            # with a clear message" needs a stream, not a reason code.
+            diagnostics=err,
         )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:

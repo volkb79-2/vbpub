@@ -1206,6 +1206,15 @@ text quoted above. The consumer gets neither the original raw traceback nor
 the promised clear message. Filed separately as **B032**, which also covers
 the same probe's budget/outcome misclassification.
 
+**Follow-up 2026-08-25 (B032 remediation, A-321/A-322):** the clear-message
+deliverable now ships. A probe refusal writes the lane name, the specific cause
+(nonzero exit and its code, an unexecutable command, or a preflight-cap
+timeout), and `Run via the declared wrapper: <argv>` to stderr, verified
+non-empty through the installed CLI. B010's own status stays **PARTIALLY
+IMPLEMENTED**: the image-baking/orchestration half (B009/run-gate) is still
+unaddressed and always was a separate direction; what is closed is the
+fail-fast probe plus its diagnosis.
+
 ## B011 — CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration
 
 **Filed 2026-08-22 (vbpub controller session, adversarial review of the
@@ -1307,11 +1316,24 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
       reconstruction layer (a real verdict carrying it fails `assay verify`
       as an unknown field), and the NDJSON it writes lands in the consumer's
       live worktree, poisoning the dirty-tree precondition on the next run —
-      see **B031**;
+      see **B031**. **Resolved 2026-08-25 (B031/A-320), NARROWED:** progress
+      events are emitted, opt-in, to a consumer-named path
+      (`assay run --progress PATH`) and are NOT referenced from the verdict —
+      `mutation.progress_artifact` was removed rather than wired, because its
+      only legal spelling named the worktree location A-292 forbids and the
+      `--verdict-json` precedent is that assay does not record back a
+      destination its caller chose. This half of requirement 1 is deliberately
+      unmet, not met;
 - [x] `assay plan` reports deterministic totals/IDs/runtime estimate —
       **correction 2026-08-25 (review-gap audit): false.** `assay plan`
       returns `candidate_count: 0` for every lane unconditionally (a source-
-      root relocation bug), and its own test asserts the bug — see **B030**;
+      root relocation bug), and its own test asserts the bug — see **B030**.
+      **Re-verified true 2026-08-25 (B030/A-319)** by driving the installed
+      CLI against a real lane: `plan`'s `candidate_count` and candidate id
+      now equal `assay run`'s own, on the same commit. The runtime estimate
+      remains a declaration-derived upper bound, never a measured baseline —
+      now documented as such in `docs/CONSUMERS.md` rather than implied to be
+      a measurement;
 - [x] interrupted lane resumes without rerunning completed candidates;
 - [x] shards are provably disjoint and exhaustive;
 - [x] per-candidate timeouts do not abort unrelated candidates.
@@ -2530,7 +2552,14 @@ than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, finding 8a-A) — the first
 independent review of `8a2a4731` (shipped in assay-v2.2.0 as part of B012).**
-**Status:** open, not fixed. **LIVE ON MAIN.**
+**Status:** RESOLVED 2026-08-25 (A-319). Fixed by deleting `_cmd_plan`'s
+`_relocate_source_roots` call outright -- `plan` never materializes a snapshot,
+so there is no snapshot project root to relocate against. Verified through the
+installed CLI on a real repository: `plan` `candidate_count` `0` -> `1`,
+matching `assay run`'s own count and its candidate id byte-for-byte, and a
+`mode = "whole_target"` lane plans instead of failing. The frozen test
+assertion is corrected to the true count. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
 
 ### Problem
 
@@ -2596,8 +2625,19 @@ as the "estimate" when the key is declared, which is not what B012 requirement
 **Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-B/8a-C/8a-F) —
 `8a2a4731` (assay-v2.2.0, part of B012).**
-**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects on
-one feature (`mutation.progress_artifact`).
+**Status:** RESOLVED 2026-08-25 (A-320, plus A-323 for a fourth instance of
+the same registration drift found while verifying the fix). Progress is now
+opt-in and consumer-directed (`assay run --progress PATH`), absent by default;
+`mutation.progress_artifact` is REMOVED from the dataclass, the wire payload
+and the JSON Schema together (it never had a producer, and its only legal
+grammar could name nothing but the forbidden worktree location);
+`candidate_ids` is registered in `verify.py` AND given its first real producer
+on the `--shard` path; `judgment.r2.shard_index`/`shard_count` were found to
+have the identical `verify.py` gap and are registered too. The lane-name
+traversal gap closes by construction. Verified through the installed CLI: an
+R2 lane runs twice in a row clean, and a real sharded verdict round-trips
+`assay run` -> `assay verify` green. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
 
 ### Problem
 
@@ -2675,7 +2715,14 @@ since nothing populates it today.
 (`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-D/8a-E) —
 `8a2a4731` (assay-v2.2.0, B010's `environment_command` mechanism + part of
 B012).**
-**Status:** open, not fixed. **LIVE ON MAIN.**
+**Status:** RESOLVED 2026-08-25 (A-321 scope, A-322 fix). A probe that
+exhausts its cap now reports `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, exit 4; every
+other probe failure keeps `ERROR`/`BAD_LANE_CONFIG`, exit 2, with the cause on
+stderr rather than in a widened reason-code vocabulary. The 30 s cap is applied
+as `execute_plan`'s `timeout=` argument -- the value it actually reads -- and a
+probe refusal writes B010's clear message (lane, cause, declared wrapper) to
+stderr, non-empty. All three verified through the installed CLI. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
 
 ### Problem
 

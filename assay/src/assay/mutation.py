@@ -110,7 +110,7 @@ import tempfile
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
@@ -126,6 +126,7 @@ from .verdict import (
     Claim,
     Mutation,
     MutantOutcome,
+    iso_utc,
 )
 from .vocabulary import MUTATION_OPERATORS
 
@@ -710,7 +711,13 @@ def _progress_event(
         "operator": job.site.operator,
         "start_byte": job.site.start_byte,
         "end_byte": job.site.end_byte,
-        "replacement_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
+        # B031/A-320: `replacement_bytes` here is `site.apply(original)` --
+        # the WHOLE mutated file -- while the verdict's
+        # `MutantOutcome.replacement_sha256` is the digest of the replacement
+        # TEXT alone. Two different digests under one field name, for the
+        # same candidate, defeats the one thing a progress artifact is for.
+        # The progress stream names what it actually hashes.
+        "mutated_file_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
     }
 
 
@@ -1398,6 +1405,19 @@ def run_mutation(
             pending_jobs = selected_jobs
 
         if write_progress is not None:
+            # B031/A-320: the stream is opened for APPEND and never
+            # truncated, so successive runs share one file. Without this
+            # header a tailing monitor cannot tell which run a
+            # `candidate_index: 0` belongs to -- there was no run id, commit
+            # or timestamp anywhere in the artifact.
+            write_progress(
+                {
+                    "candidate_total": total,
+                    "commit": prepared.spec.commit,
+                    "event": "run",
+                    "started": iso_utc(clock()),
+                }
+            )
             write_progress(
                 {
                     "candidate_index": -1,
@@ -1407,7 +1427,7 @@ def run_mutation(
                     "operator": "baseline",
                     "start_byte": 0,
                     "end_byte": 0,
-                    "replacement_sha256": "",
+                    "mutated_file_sha256": "",
                 }
             )
 
@@ -1435,6 +1455,20 @@ def run_mutation(
             result_payload = merge_mutations(result_payload, resumed_records)
         if write_progress is not None and resumed_records:
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
+        if shard_specified:
+            # B031/A-320: `mutation.candidate_ids` has existed in the
+            # dataclass and the schema since `7a4f6333` with NO producer --
+            # a sharded verdict recorded `shard_index`/`shard_count` and
+            # nothing about WHICH candidates that shard actually covered, so
+            # "this shard was clean" and "this shard selected nothing it
+            # should have" were indistinguishable from the artifact alone.
+            # `selected_jobs` is exactly the shard's assignment domain
+            # (resumed candidates included), which is what
+            # `merge_mutation_shards`' own manifest proof compares.
+            result_payload = _dataclass_replace(
+                result_payload,
+                candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
+            )
         return result_payload
 
 
