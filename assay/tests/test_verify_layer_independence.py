@@ -681,6 +681,33 @@ def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
     assert failures and any("neither r2 nor r1" in f for f in failures), failures
 
 
+def test_verify_document_accepts_a_real_base_resolution_value():
+    """(B008 round 3, found by the registered release gate, not by any test
+    in this file) `_reconstruct_judgment_resolved` built a `JudgmentResolved`
+    without passing `base_resolution` through, so `verify_document` on a
+    REAL producer artifact carrying it (`"merge-base"`/`"first-parent"`)
+    rejected it as `"unknown judgment.resolved field(s): ['base_resolution']"`
+    -- the field round-tripped fine through the JSON Schema (optional,
+    additive) but not through this hand-written reconstruction layer, which
+    only `assay verify`/`verify_document` exercises. Every other test that
+    proved `base_resolution` schema-valid used the JSON Schema validator
+    alone, never this one."""
+    document = _sql_r2_document()
+    document["judgment"]["resolved"]["base_resolution"] = "merge-base"
+    assert verify.verify_document(document) == []
+
+
+def test_verify_document_accepts_a_real_env_effective_incomplete_value():
+    """(B025 round 3, same class of gap as base_resolution above)
+    `_reconstruct_verdict`'s `lane_kwargs` never forwarded
+    `env_effective_incomplete`, so a real degraded-refusal artifact carrying
+    it was rejected as an unknown top-level field by this same
+    reconstruction layer."""
+    document = _sql_r2_document()
+    document["env_effective_incomplete"] = True
+    assert verify.verify_document(document) == []
+
+
 def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():
     """Invariant 2, and its control: the SAME payload with the declaration
     present raises nothing."""

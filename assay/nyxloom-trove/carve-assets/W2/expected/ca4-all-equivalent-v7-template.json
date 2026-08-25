@@ -88,7 +88,8 @@
       "source_roots": [
         "schema"
       ],
-      "base": "93c31eebd233b2aa9eb95f5533695a29e7c11516"
+      "base": "93c31eebd233b2aa9eb95f5533695a29e7c11516",
+      "base_resolution": "merge-base"
     },
     "r2": {
       "jobs": 1,

@@ -1052,6 +1052,7 @@ def _reconstruct_judgment_resolved(raw: dict) -> JudgmentResolved:
         language=raw["language"],
         source_roots=tuple(raw["source_roots"]),
         base=raw.get("base"),
+        base_resolution=raw.get("base_resolution"),
     )
     _reject_unknown_keys(raw, resolved.to_dict(), "judgment.resolved")
     return resolved
@@ -1229,6 +1230,8 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             scope=document["scope"],
             enforcement=document["enforcement"],
         )
+        if document.get("env_effective_incomplete"):
+            lane_kwargs["env_effective_incomplete"] = True
 
     judgment_kwargs: dict[str, Any] = {}
     if "judgment" in document:
