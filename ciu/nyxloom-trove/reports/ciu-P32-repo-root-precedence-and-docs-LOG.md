@@ -1,13 +1,18 @@
 # ciu-P32 — `dev.resolve_repo_root` precedence fix + docs/usage() clarification — LOG
 
-**Status: BLOCKED (blast-radius, not an `escalate_if` trigger) — implementation,
-tests, and docs are all COMPLETE and verified correct; the package cannot be
-declared 0-failures/100%-coverage without touching ONE test file outside
-`scope.touch`. Per the controller's standing instruction for this wave ("if
-you discover a real blast-radius issue outside scope.touch... stop, document
-evidence and options in the LOG, don't ship red or silently widen scope"),
-this is written up here for controller review/authorization rather than
-resolved unilaterally.**
+**Status: RESOLVED — controller authorized widening `scope.touch` by exactly
+one file (commit `72135a8f`, amending the handoff), matching this wave's
+established pattern from ciu-P15/P17 for an internal-behavior test pinning
+old buggy behavior rather than a public contract. `tests/tests/
+test_ciu_workspace_dev_remaining_boundaries.py::TestDevProfileAndExecutionBoundaries::
+test_repo_root_precedence_and_marker_walk` updated to assert the corrected
+S1.1 contract (commit `3913afe9`). Full gate is now GREEN: 2786 passed, 0
+failed, 100.00% line+branch coverage (§12). §9 below is left intact as the
+as-discovered record of the blast-radius finding and the options presented;
+it is no longer the live blocker.**
+
+Sections 0-11 below are the original write-up, preserved verbatim as the
+as-discovered record. §12 records the resolution.
 
 HEAD at start: `9a859545a4d4a6b0a3d6b1b71a434fb67d7d8967` (confirmed via
 `git log -1` before starting, matched the handoff).
@@ -429,3 +434,71 @@ Two commits on this branch (`feat/ciu-qol-v8prep-wave`):
 
 Exact hashes are in this package's final report (read back via
 `git log --format=%H`, not predicted ahead of the actual commit).
+
+## 12. Resolution — controller authorized the widen, test updated, gate green
+
+The controller reviewed §9 independently (read the test at lines 109-110
+directly, confirmed the same diagnosis: ambient `REPO_ROOT=explicit` set
+while cwd is inside a DIFFERENT, real ciu-managed tree `marker_root`, then
+asserting the ambient value wins — exactly the defect this package fixes),
+identified it as the same class of internal-behavior-pinning test as this
+wave's own ciu-P15/P17 scope-widening episodes (not a public API test), and
+authorized **Option A** from §9: widen `scope.touch` by exactly this one
+file. The authorization itself is commit `72135a8f` (amends the handoff's
+`scope.touch` list to add `tests/tests/test_ciu_workspace_dev_remaining_boundaries.py`).
+
+### What changed in the test
+
+`TestDevProfileAndExecutionBoundaries::test_repo_root_precedence_and_marker_walk`
+(`tests/tests/test_ciu_workspace_dev_remaining_boundaries.py`): the first
+scenario (ambient `REPO_ROOT=explicit` set, cwd nested inside `marker_root`
+which derives cleanly) now wraps the call in `pytest.raises(ValueError)` and
+asserts on the caught message — `"[S1.1]"` is present, and BOTH paths
+(`explicit.resolve()` and `marker_root.resolve()`) are named in the message —
+matching the style already used in `test_ciu_dev.py`'s
+`test_live_scenario_refuses_conflicting_ambient_repo_root` for the same kind
+of refusal (catch, then assert on message content, rather than a bare
+`match=` regex). The other two assertions in the same test method are
+**unchanged**: `REPO_ROOT` absent → walk-up derives `marker_root` (still
+correct under the new contract); `resolve_repo_root(explicit, nested)` with
+an explicit `define_root` → `explicit` wins outright (still correct — that's
+step 1 of the new precedence too). No other test in that file was touched.
+
+### Full gate output (verbatim, post-fix)
+
+```
+$ .venv/bin/python run-ciu-tests.py
+...
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.14.6-final-0 ________________
+
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+... (every module 100%) ...
+--------------------------------------------------------------------------------------------
+TOTAL                                             8693      0   3472      0   100%
+Coverage JSON written to file coverage.json
+Required test coverage of 100% reached. Total coverage: 100.00%
+====================== 2786 passed, 8 warnings in 26.16s =======================
+```
+
+**0 failures, 2786 passed (one more than the pre-fix 2785+1 total, since the
+previously-failing test now passes instead), 100.00% line+branch coverage
+across every source module.** Also re-ran
+`tests/tests/test_ciu_workspace_dev_remaining_boundaries.py` in isolation
+first (11 passed) before the full-suite confirmation.
+
+### Commits (this resolution)
+
+1. `3913afe9` — `test(ciu): update test_repo_root_precedence_and_marker_walk
+   to the corrected S1.1 contract` — the test fix described above, as its own
+   commit (not an amend of either prior ciu-P32 commit).
+2. This LOG update (docs(ciu) prefix), committed separately.
+
+### Final oracle-by-oracle status (supersedes §7 where it differs)
+
+All of O1-O6 remain DONE exactly as §7 recorded — nothing about the fix
+itself changed, only a downstream, previously-out-of-scope test was brought
+into line with the now-authorized contract. The package is now genuinely
+green and mergeable, not merely "everything but one file" as in §9's
+snapshot.
