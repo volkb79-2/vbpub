@@ -1450,3 +1450,35 @@ materialization rather than written.
       both `.py` sources and `__pycache__` siblings;
 - [ ] all manifest entries are materialized after the fix;
 - [ ] dstdns P128 R1 lane passes end-to-end against the fixed build.
+
+---
+
+## B017: Assay dirty-tree check ignores committed .gitignore for coverage artifacts
+
+**Filed by:** dstdns controller (2026-08-25)
+
+**Problem.** `assay/git.py:dirty_paths()` uses
+`git ls-files --others --exclude-per-directory=.gitignore` instead of
+`--exclude-standard`. This means:
+
+1. Only **committed** `.gitignore` files are honored — not `.git/info/exclude`,
+   global config, or `$GIT_CONFIG_GLOBAL`.
+2. A blanket pattern like `/.assay/` correctly hides measurement output from
+   git, BUT the same pattern also hides it from `dirty_paths()`, which means
+   assay's own dirty-tree check cannot distinguish "coverage artifact written"
+   from "uncommitted source change".
+3. Consumers are forced to use narrow per-artifact-type patterns
+   (`/.assay/verdict-*`, `/assay/coverage-*`) instead of a simple directory
+   ignore, which is fragile and requires updating every time a new artifact
+   type is added.
+
+**Suggested fix.** Use `--exclude-standard` in `dirty_paths()` so all standard
+exclusion sources (`.gitignore`, `.git/info/exclude`, global config) are
+honored. The security rationale for the narrower flag (A-177) should be
+revisited: the threat model (a hostile repo adding `*` to its own `.gitignore`
+to hide changes) is better addressed by checking whether any **tracked** file
+is missing from the working tree, rather than by restricting which exclusion
+sources git consults.
+
+**Impact.** dstdns had to split one clean pattern into four narrow patterns,
+and still hit issues when new artifact types appeared.
