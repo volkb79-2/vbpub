@@ -52,6 +52,7 @@ import shlex
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from collections import Counter
 from typing import Any, Sequence, TextIO
@@ -65,6 +66,7 @@ from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_durati
 from .errors import AssayError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output
 from .verdict import Evidence, EvidenceDeclaration, Verdict
+from .vocabulary import MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
@@ -119,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
             "current directory"
         ),
     )
+    run.add_argument("--resume", action="store_true")
+    run.add_argument("--operators", default=None)
+    run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
 
     plan = subparsers.add_parser(
         "plan",
@@ -131,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
+    plan.add_argument("--operators", default=None)
+    plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
     plan.add_argument(
         "--file",
         type=Path,
@@ -299,6 +306,16 @@ def _cmd_run(
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
+    if getattr(args, "operators", None):
+        requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
+        mutation_config = replace(
+            lane.judge.mutation, operators=requested
+        )
+        judge_config = replace(lane.judge, mutation=mutation_config)
+        lane = replace(lane, judge=judge_config)
     # P21 work item 8 / A-181. The order is the contract:
     #
     #   lane config -> OUTPUT RESERVATION -> HEAD -> adapter -> command
@@ -448,6 +465,8 @@ def _run_reserved(
             evidence=evidence,
             declared_evidence=declared_evidence,
             deadline=deadline,
+            resume=getattr(args, "resume", False),
+            shard=getattr(args, "shard", None),
         )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:
@@ -471,22 +490,16 @@ def _print_run_summary(verdict: Verdict, out: TextIO) -> None:
 
 
 def _plan_candidate_id(job: mutation.MutantJob) -> str:
-    original_bytes = job.original_text.encode("utf-8")
-    replacement_bytes = job.site.apply(original_bytes)
-    identity = "\0".join(
-        (
-            job.path,
-            hashlib.sha256(original_bytes).hexdigest(),
-            str(job.site.start_byte),
-            str(job.site.end_byte),
-            hashlib.sha256(replacement_bytes).hexdigest(),
-            job.site.operator,
-        )
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return mutation.candidate_id(job)
 
 
 def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
+    """Report a mutation lane's plan without executing it.
+
+    ``--operators`` and ``--shard`` are planning-only selections. They do not
+    change the lane declaration, so the same file can be planned and run with
+    the matching run flag without inventing a second config surface.
+    """
     lane_file = _resolve_lane_file(args.file)
     lane = lane_file.lane(args.lane)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
@@ -494,6 +507,24 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     adapter = _resolve_declared_adapters(lane)
     if adapter is None:
         raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
+
+    operators = lane.judge.mutation.operators
+    shard_index: int | None = None
+    shard_count: int | None = None
+    if args.operators:
+        requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
+        operators = requested
+    if args.shard:
+        try:
+            raw_index, raw_count = args.shard.split("/", 1)
+            shard_index = int(raw_index)
+            shard_count = int(raw_count)
+        except ValueError as exc:
+            raise LaneConfigError("--shard must have the form INDEX/COUNT") from exc
+        mutation.select_mutation_shard((), index=shard_index - 1, count=shard_count)
 
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
@@ -564,7 +595,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             jobs = mutation.collect_mutation_sites(
                 targets,
                 adapter=adapter,
-                operators=lane.judge.mutation.operators,
+                operators=operators,
                 limit=lane.judge.mutation.max_mutants + 1,
             )
 
@@ -574,6 +605,16 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             "reason_code": "MUTATION_UNSUPPORTED",
         }
     else:
+        selected_indices = mutation.select_mutation_shard(
+            [mutation.candidate_id(job) for job in jobs],
+            index=0,
+            count=1,
+        ) if shard_index is None else mutation.select_mutation_shard(
+            [mutation.candidate_id(job) for job in jobs],
+            index=shard_index - 1,
+            count=shard_count,
+        )
+        jobs = tuple(jobs[index] for index in selected_indices)
         by_operator = Counter(job.site.operator for job in jobs)
         by_file = Counter(job.path for job in jobs)
         per_candidate = lane.judge.mutation.budget_per_candidate
@@ -585,6 +626,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             "candidate_count": len(jobs),
             "max_mutants": lane.judge.mutation.max_mutants,
             "jobs": lane.judge.mutation.jobs,
+            "shard": None if shard_index is None else f"{shard_index}/{shard_count}",
             "budget_per_candidate": per_candidate,
             "estimated_serial_seconds": round(serial_estimate, 3),
             "estimated_wall_seconds": round(wall_estimate, 3),

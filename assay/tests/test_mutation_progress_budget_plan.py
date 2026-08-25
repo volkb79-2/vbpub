@@ -14,7 +14,16 @@ from assay.adapters.python import PythonAdapter
 from assay.config import LaneConfigError, parse_duration
 from assay.errors import Outcome
 from assay.verify import verify_document
-from assay.mutation import Mutation, MutantOutcome, MutationTarget, run_mutation
+from assay import mutation
+from assay.mutation import (
+    Mutation,
+    MutantOutcome,
+    MutationTarget,
+    collect_mutation_sites,
+    run_mutation,
+)
+from assay import mutation as mutation_module
+from assay.mutation import collect_mutation_sites
 from assay.runner import execute_command
 
 
@@ -84,11 +93,225 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert events[0]["event"] == "baseline"
     for index, event in enumerate(events[1:], start=0):
         assert event["path"] == "pkg/flags.py"
+        assert len(event["candidate_id"]) == 64
         assert event["operator"] == "python:bool-const-flip"
         assert event["replacement_sha256"]
         assert isinstance(event["elapsed_seconds"], float)
     assert events[1]["outcome_bucket"] == "killed"
     assert events[2]["outcome_bucket"] == "survived"
+
+
+def test_resume_reuses_completed_records_without_rerunning(tmp_path):
+    repo = _repo(tmp_path)
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    lane = make_lane(argv=("pytest", "-q"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    calls: list[str] = []
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        calls.append(text)
+        if "a = False" in text:
+            return subprocess.CompletedProcess(list(argv), returncode=1)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        first = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            state_project_root=state_root,
+            resume=True,
+        )
+    assert first.total == 2
+    assert len(list((state_root / ".assay" / "mutation-state").glob("*.json"))) == 2
+    assert len(calls) == 2
+
+    calls.clear()
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        resumed = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("completed candidates must not run again")
+            ),
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=None,
+            state_project_root=state_root,
+            resume=True,
+        )
+
+    assert calls == []
+    assert resumed.total == 2
+    assert {item.identity for item in first.killed} == {
+        item.identity for item in resumed.killed
+    }
+    assert {item.identity for item in first.survived} == {
+        item.identity for item in resumed.survived
+    }
+
+
+def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
+    repo = _repo(tmp_path)
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    lane = make_lane(argv=("pytest", "-q"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in text:
+            return subprocess.CompletedProcess(list(argv), returncode=1)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            state_project_root=state_root,
+            resume=True,
+        )
+
+    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale = json.loads(stale_path.read_text(encoding="utf-8"))
+    stale["source_sha256"] = "0" * 64
+    stale_path.write_text(json.dumps(stale), encoding="utf-8")
+
+    calls: list[str] = []
+
+    def deciding_recorder(*args, **kwargs):
+        text = (Path(kwargs["cwd"]) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        calls.append(text)
+        return decide(*args, **kwargs)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=deciding_recorder,
+            clock=lambda: datetime.now(timezone.utc),
+            state_project_root=state_root,
+            resume=True,
+        )
+
+    assert calls != [], "a stale source hash must be rerun, never trusted"
+    assert result.total == 2
+
+
+def test_operator_and_shard_selection_are_deterministic_and_disjoint(tmp_path):
+    text = (
+        "def f(x, y):\n"
+        "    a = True\n"
+        "    if not x:\n"
+        "        c = x > y\n"
+        "    d = bool(y)\n"
+    )
+    target = MutationTarget(path="pkg/mixed.py", text=text, lines=frozenset({2, 3, 4, 5, 6}))
+    both = collect_mutation_sites(
+        (target,),
+            adapter=PythonAdapter(),
+            operators=(
+                "python:compare-swap",
+                "python:bool-const-flip",
+                "python:falsy-swap",
+        ),
+        limit=10,
+    )
+    assert isinstance(both, tuple) and len(both) >= 2
+    filtered_only = collect_mutation_sites(
+        (target,),
+        adapter=PythonAdapter(),
+        operators=("python:compare-swap",),
+        limit=10,
+    )
+    assert {job.site.operator for job in filtered_only} == {"python:compare-swap"}
+
+    identities = [mutation.candidate_id(job) for job in both]
+    selected = {
+        index: mutation.select_mutation_shard(identities, index=index, count=2)
+        for index in range(2)
+    }
+    assert set(selected[0]).isdisjoint(selected[1])
+    assert sorted(selected[0] + selected[1]) == list(range(len(both)))
+    assert selected == {
+        index: mutation_module.select_mutation_shard(identities, index=index, count=2)
+        for index in range(2)
+    }
+
+
+def _shard_summary(index: int, count: int, candidate_ids: list[str]):
+    return {
+        "schema_version": 1,
+        "lane": "package",
+        "commit": "a" * 40,
+        "shard_index": index,
+        "shard_count": count,
+        "candidate_ids": candidate_ids,
+    }
+
+
+def test_shard_merge_accepts_exact_disjoint_exhaustive_coverage():
+    ids = ["1" * 64, "2" * 64]
+    merged = mutation_module.merge_mutation_shards(
+        [_shard_summary(0, 2, ids[:1]), _shard_summary(1, 2, ids[1:])]
+    )
+    assert merged == tuple(ids)
+
+
+@pytest.mark.parametrize(
+    "documents",
+    [
+        lambda: [_shard_summary(0, 2, ["1" * 64]), _shard_summary(1, 2, ["1" * 64])],
+        lambda: [_shard_summary(0, 2, ["1" * 64]), _shard_summary(1, 2, ["1" * 64]), _shard_summary(0, 2, [])],
+        lambda: [_shard_summary(0, 2, ["1" * 64])],
+    ],
+)
+def test_shard_merge_refuses_duplicate_or_missing_input(documents):
+    with pytest.raises(mutation.MutationStateError):
+        mutation_module.merge_mutation_shards(documents())
 
 
 def test_progress_artifact_path_is_constrained_in_verdict_model():
@@ -103,6 +326,48 @@ def test_progress_artifact_path_is_constrained_in_verdict_model():
     )
     with pytest.raises(ValueError, match="progress_artifact"):
         Mutation(candidate_count=1, total=1, killed=(outcome,), progress_artifact="../escape.jsonl")
+
+
+def test_shard_candidate_ids_are_validated_for_disjointness_and_shape():
+    candidate = mutation_module.candidate_id(
+        collect_mutation_sites(
+            _TARGETS,
+            adapter=PythonAdapter(),
+            operators=("python:bool-const-flip",),
+            limit=1,
+        )[0]
+    )
+    outcome = MutantOutcome(
+        path="pkg/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="0" * 64,
+        operator="python:bool-const-flip",
+        description="True->False",
+    )
+    payload = Mutation(
+        candidate_count=1,
+        total=1,
+        killed=(outcome,),
+        candidate_ids=(candidate,),
+    )
+    assert payload.to_dict()["candidate_ids"] == [candidate]
+
+    with pytest.raises(ValueError, match="candidate_ids contains a duplicate"):
+        Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(outcome,),
+            candidate_ids=(candidate, candidate),
+        )
+    with pytest.raises(ValueError, match="candidate_ids entry must be"):
+        Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(outcome,),
+            candidate_ids=("short",),
+        )
 
 
 def test_per_candidate_budget_marks_one_mutant_and_continues(tmp_path):

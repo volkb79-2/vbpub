@@ -994,6 +994,10 @@
           "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
           "type": "string",
           "minLength": 1
+        },
+        "candidate_ids": {
+          "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+          "$ref": "#/$defs/mutation_candidate_ids"
         }
       },
       "additionalProperties": false
@@ -1130,6 +1134,16 @@
           ]
         }
       ]
+    },
+    "mutation_candidate_ids": {
+      "description": "B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
     },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
@@ -1398,6 +1412,18 @@
           "description": "A project-relative path the declared command writes, naming the mechanism that refused. Required when kill_attribution is 'declared'; forbidden when it is 'unattributed'.",
           "type": "string",
           "minLength": 1
+        },
+        "shard_index": {
+          "description": "Optional B012 zero-based shard position. Required together with shard_count.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "shard_count": {
+          "description": "Optional B012 shard cardinality. Required together with shard_index.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
         }
       },
       "additionalProperties": false,
@@ -1437,6 +1463,18 @@
                 "kill_signal_artifact"
               ]
             }
+          }
+        },
+        {
+          "description": "B012: shard position and cardinality are an all-or-nothing pair.",
+          "if": {
+            "anyOf": [
+              {"required": ["shard_index"]},
+              {"required": ["shard_count"]}
+            ]
+          },
+          "then": {
+            "required": ["shard_index", "shard_count"]
           }
         }
       ]
@@ -1625,6 +1663,9 @@
         ,
         "progress_artifact": {
           "$ref": "#/$defs/repo_tree_path"
+        },
+        "candidate_ids": {
+          "$ref": "#/$defs/mutation_candidate_ids"
         }
       },
       "allOf": [

@@ -267,7 +267,11 @@ class CoverageConfig:
 
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
-_MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = ("budget_per_candidate",)
+_MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "budget_per_candidate",
+    "shard_index",
+    "shard_count",
+)
 
 #: (P33/A-227/A-230b, narrowed P34/W4) the two v6 artifact fields, legal
 #: ONLY on a ``judge.language = "sql"`` lane. Named separately from
@@ -331,6 +335,11 @@ class MutationConfig:
     #: than ``equivalent`` -- a false statement about the consumer's tests
     #: (§4.3 of the P34 carve). ``None`` for every other language.
     equivalence_artifact: str | None = None
+    #: (B012) The declared zero-based shard position. ``None`` means the
+    #: whole declared workload.
+    shard_index: int | None = None
+    #: (B012) The declared shard cardinality; required with ``shard_index``.
+    shard_count: int | None = None
 
     def as_declared(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -346,6 +355,9 @@ class MutationConfig:
             payload["equivalence_artifact"] = self.equivalence_artifact
         if self.budget_per_candidate is not None:
             payload["budget_per_candidate"] = self.budget_per_candidate
+        if self.shard_index is not None and self.shard_count is not None:
+            payload["shard_index"] = self.shard_index
+            payload["shard_count"] = self.shard_count
         return payload
 
 
@@ -1559,16 +1571,21 @@ def _load_mutation(
                 f"carries these fields only for a sql lane, the only "
                 f"language this build ships a producer for"
             )
-    unknown = sorted(set(value) - set(_MUTATION_FIELDS) - set(_MUTATION_SQL_ONLY_FIELDS))
+    unknown = sorted(
+        set(value)
+        - set(_MUTATION_FIELDS)
+        - set(_MUTATION_OPTIONAL_FIELDS)
+        - set(_MUTATION_SQL_ONLY_FIELDS)
+    )
     for field in _MUTATION_FIELDS:
         if field not in value:
             raise LaneConfigError(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
-    if unknown and unknown != ["budget_per_candidate"]:
+    if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
-            f"expected only: {', '.join(_MUTATION_FIELDS + _MUTATION_OPTIONAL_FIELDS)}"
+            f"expected only: {', '.join((*_MUTATION_FIELDS, *_MUTATION_OPTIONAL_FIELDS, *_MUTATION_SQL_ONLY_FIELDS))}"
         )
     jobs = value["jobs"]
     if isinstance(jobs, bool) or not isinstance(jobs, int):
@@ -1682,6 +1699,33 @@ def _load_mutation(
             raise LaneConfigError(
                 f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
             ) from exc
+    shard_index = value.get("shard_index")
+    shard_count = value.get("shard_count")
+    shard_specified = "shard_index" in value or "shard_count" in value
+    if shard_specified and (shard_index is None or shard_count is None):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.shard_index' and "
+            f"'judge.mutation.shard_count' must be declared together"
+        )
+    if shard_specified:
+        for field, number in (
+            ("shard_index", shard_index),
+            ("shard_count", shard_count),
+        ):
+            if isinstance(number, bool) or not isinstance(number, int):
+                raise LaneConfigError(
+                    f"{where}: 'judge.mutation.{field}' must be an integer, got {_type_name(number)}"
+                )
+        if not 1 <= shard_count <= MAX_MAX_MUTANTS:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.shard_count' must be in "
+                f"{MIN_MAX_MUTANTS}..{MAX_MAX_MUTANTS:,}, got {shard_count}"
+            )
+        if not 0 <= shard_index < shard_count:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.shard_index' {shard_index} is outside "
+                f"0..{shard_count - 1}"
+            )
     return MutationConfig(
         jobs=jobs,
         max_mutants=max_mutants,
@@ -1689,6 +1733,8 @@ def _load_mutation(
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
         budget_per_candidate=budget_per_candidate,
+        shard_index=shard_index,
+        shard_count=shard_count,
     )
 
 

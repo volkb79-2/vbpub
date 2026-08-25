@@ -147,6 +147,27 @@ Assay honors Git's complete standard exclusion policy for untracked output, so
 the blanket `.assay/` entry above is sufficient; you do not need one narrow
 pattern per new artifact type. Modified and staged tracked files remain dirty.
 
+## Resume and shard a long mutation lane
+
+Preview a subset without executing it:
+
+```sh
+assay plan <lane> --operators python:compare-swap --shard 0/3
+```
+
+Run each shard with resume:
+
+```sh
+assay run <lane> --resume --shard 0/3 --verdict-json .assay/shard-0.json
+assay run <lane> --resume --shard 1/3 --verdict-json .assay/shard-1.json
+assay run <lane> --resume --shard 2/3 --verdict-json .assay/shard-2.json
+```
+
+Completed candidates persist under `.assay/mutation-state/`; `--resume` skips
+valid records and refuses a stale source hash. To combine shard manifests, every
+manifest must declare the same schema version, lane, commit, and shard count,
+cover every zero-based index exactly once, and contain disjoint candidate IDs.
+
 Run it exactly like any other lane — `assay run redirect_chain --verdict-json .assay/verdict.json`
 — from a clean tree on any commit, `main` included. The resulting verdict's `judgment.r1` records
 `mode: "whole_target"`, `targets: ["libs/common/src/common/redirect_chain.py"]`, and
@@ -160,6 +181,23 @@ never-imported-module failure mode), the lane refuses `NO_MEASUREMENT`/`TARGET_N
 naming the target, rather than silently passing 0/0.
 
 ## A monorepo lane: omitting declared unsafe symlinks
+## Resume and shard a long mutation lane
+
+Run `assay plan <lane> --operators python:compare-swap --shard 1/3` before
+execution to preview the exact deterministic candidate set. Execute each shard:
+
+```sh
+assay run <lane> --resume --shard 1/3 --verdict-json .assay/shard-1.json
+assay run <lane> --resume --shard 2/3 --verdict-json .assay/shard-2.json
+assay run <lane> --resume --shard 3/3 --verdict-json .assay/shard-3.json
+```
+
+`--shard` is zero-based (`0/3` through `2/3`). Completed candidate records are
+stored under `.assay/mutation-state/<candidate-id>.json`; `--resume` skips those
+records and refuses a stale source hash instead of reusing it. To combine shard
+summaries, supply every manifest with the same schema version, lane, commit,
+count, and disjoint candidate IDs; the merge refuses a missing or duplicate
+shard rather than producing partial evidence.
 
 A monorepo lane's snapshot walks the **whole** resolved commit, not just its own source roots —
 so one tracked symlink anywhere in a sibling project, with a target that is absolute or escapes

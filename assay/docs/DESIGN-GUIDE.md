@@ -470,6 +470,16 @@ regression even for a path Git status could not report. Untracked caller residue
 such as `__pycache__/` is not part of the commit and therefore never enters the
 snapshot.
 
+### Mutation resume and sharding (B012)
+
+Mutation state lives outside each ephemeral replacement snapshot. One bounded
+JSON record per completed candidate is keyed by the same deterministic digest as
+the plan; resume treats an absent record as pending and refuses a stale source
+identity rather than sampling changed source with an old result. Shards assign
+by keyed digest of the candidate ID. Their merge is a manifest-level set proof:
+exact index coverage, one schema/lane/commit/count, and duplicate-free IDs—not
+bucket-count arithmetic.
+
 ### Rollup precedence
 
 `ERROR > NO_MEASUREMENT > BUDGET_EXCEEDED > FAIL > INCONCLUSIVE`, and `PASS`
