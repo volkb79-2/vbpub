@@ -86,6 +86,11 @@
     "env_effective": {
       "$ref": "#/$defs/env"
     },
+    "env_effective_incomplete": {
+      "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
+      "type": "boolean",
+      "const": true
+    },
     "scope": {
       "$ref": "#/$defs/scope"
     },
@@ -280,6 +285,18 @@
       "env_declared",
       "env_effective",
       "scope"
+    ],
+    "env_effective_incomplete": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
     ]
   },
   "allOf": [
@@ -989,12 +1006,6 @@
             "minLength": 1
           }
         }
-        ,
-        "progress_artifact": {
-          "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
-          "type": "string",
-          "minLength": 1
-        }
       },
       "additionalProperties": false
     },
@@ -1130,6 +1141,16 @@
           ]
         }
       ]
+    },
+    "mutation_candidate_ids": {
+      "description": "B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
     },
     "mutant_outcome": {
       "description": "One attempted mutant's SITE identity (A-180): (path, start_byte, end_byte, replacement_sha256, operator). Byte offsets are zero-based half-open UTF-8 offsets into the source at the recorded commit; the hash covers the replacement bytes ONLY and is built from the validated site, never by diffing two full texts. lineno and description are diagnosis, never identity. Deliberately WITHOUT the full mutated text -- retaining one per candidate is exactly what made the cap untrue. NOTE: start_byte < end_byte relates two fields and therefore lives in the model and the raw verifier, not here.",
@@ -1274,6 +1295,15 @@
               }
             ]
           }
+        },
+        "progress_artifact": {
+          "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_ids": {
+          "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
+          "$ref": "#/$defs/mutation_candidate_ids"
         }
       },
       "additionalProperties": false
@@ -1398,6 +1428,18 @@
           "description": "A project-relative path the declared command writes, naming the mechanism that refused. Required when kill_attribution is 'declared'; forbidden when it is 'unattributed'.",
           "type": "string",
           "minLength": 1
+        },
+        "shard_index": {
+          "description": "Optional B012 zero-based shard position. Required together with shard_count.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "shard_count": {
+          "description": "Optional B012 shard cardinality. Required together with shard_index.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
         }
       },
       "additionalProperties": false,
@@ -1437,6 +1479,18 @@
                 "kill_signal_artifact"
               ]
             }
+          }
+        },
+        {
+          "description": "B012: shard position and cardinality are an all-or-nothing pair.",
+          "if": {
+            "anyOf": [
+              {"required": ["shard_index"]},
+              {"required": ["shard_count"]}
+            ]
+          },
+          "then": {
+            "required": ["shard_index", "shard_count"]
           }
         }
       ]
@@ -1621,10 +1675,6 @@
         },
         "mutation": {
           "$ref": "#/$defs/mutation"
-        }
-        ,
-        "progress_artifact": {
-          "$ref": "#/$defs/repo_tree_path"
         }
       },
       "allOf": [
@@ -2250,6 +2300,13 @@
           "description": "The full resolved comparison commit, never a symbolic ref.",
           "type": "string",
           "minLength": 1
+        },
+        "base_resolution": {
+          "description": "(B008) Which of resolve_base's two branches produced base: first-parent on a merge-commit HEAD (the branch's own pre-merge tip -- silently narrows the changed-line floor/any R2 lane to the merge's own payload), or merge-base otherwise. Optional for v7 compatibility; never present without base.",
+          "enum": [
+            "merge-base",
+            "first-parent"
+          ]
         }
       },
       "additionalProperties": false
