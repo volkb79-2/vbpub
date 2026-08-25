@@ -89,6 +89,31 @@ def test_multiple_dirty_categories_and_an_unusual_rename_are_all_reported_togeth
     }
 
 
+def test_a_committed_blanket_ignore_hides_an_artifact_but_not_tracked_work(git_repo):
+    git_repo.write(".gitignore", "/.assay/\n")
+    git_repo.write("source.py", "x = 1\n")
+    git_repo.commit_all("commit blanket artifact ignore")
+
+    (git_repo.path / ".assay").mkdir()
+    (git_repo.path / ".assay" / "coverage.json").write_text("{}\n")
+
+    assert dirty_paths(git_repo.path) == ()
+
+    git_repo.write("source.py", "x = 2\n")
+
+    assert dirty_paths(git_repo.path) == ("source.py",)
+
+
+def test_a_deleted_staged_file_is_not_hidden_by_ignore_rules(git_repo):
+    git_repo.write(".gitignore", "*\n!/.gitignore\n")
+    git_repo.commit_all("commit hostile ignore")
+    git_repo.write("tracked.py", "x = 1\n")
+    git_repo.git("add", "--force", "tracked.py")
+    (git_repo.path / "tracked.py").unlink()
+
+    assert dirty_paths(git_repo.path) == ("tracked.py",)
+
+
 def test_a_failing_git_status_invocation_raises_git_failed(tmp_path):
     # tmp_path is a real directory but NOT a git repository -- a genuine
     # non-zero exit from the underlying `git status`, proving `dirty_paths`

@@ -627,15 +627,13 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
     filesystem path rather than by string, and is where the distinction
     actually needs to be correct.
 
-    **P20 routed-review correction (A-177).** Porcelain status still consults
-    ``.git/info/exclude``. Union it with ``ls-files --others`` configured with
-    ONLY ``--exclude-per-directory=.gitignore``. A clean committed
-    ``.gitignore`` is repository policy and may exempt the declared coverage
-    artifact; info/global/system/configured excludes are not. A dirty or
-    untracked ``.gitignore`` is itself returned by one of these queries. Do not
-    use ``--exclude-standard`` (it re-enables the hostile sources), and do not
-    report every ignored path then subtract one artifact (that discards the
-    repository's committed ignore policy).
+    **B017 supersedes A-177's exclusion-source restriction.** Porcelain status
+    catches tracked-file changes, including a missing tracked file, while
+    ``ls-files --others --exclude-standard`` applies git's complete standard
+    policy: committed per-directory ignore files plus repository-local,
+    global, and configured excludes. A blanket ``/.assay/`` rule can therefore
+    hide disposable measurement output without masking an uncommitted source
+    change; hostile or mistaken exclusion rules cannot hide a tracked file.
     """
     raw = _run_bytes(repo, "status", "--porcelain=v1", "-z", remaining=remaining)
     # ``-z`` NUL-TERMINATES every record rather than separating them, so real
@@ -665,7 +663,7 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
         repo,
         "ls-files",
         "--others",
-        "--exclude-per-directory=.gitignore",
+        "--exclude-standard",
         "-z",
         "--",
         remaining=remaining,

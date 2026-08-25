@@ -143,6 +143,10 @@ __pycache__/
 
 Commit that `.gitignore` in the same change that adds the lane, before the first `assay run`.
 
+Assay honors Git's complete standard exclusion policy for untracked output, so
+the blanket `.assay/` entry above is sufficient; you do not need one narrow
+pattern per new artifact type. Modified and staged tracked files remain dirty.
+
 Run it exactly like any other lane — `assay run redirect_chain --verdict-json .assay/verdict.json`
 — from a clean tree on any commit, `main` included. The resulting verdict's `judgment.r1` records
 `mode: "whole_target"`, `targets: ["libs/common/src/common/redirect_chain.py"]`, and

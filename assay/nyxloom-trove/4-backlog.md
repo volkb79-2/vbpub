@@ -1455,6 +1455,11 @@ materialization rather than written.
 
 ## B017: Assay dirty-tree check ignores committed .gitignore for coverage artifacts
 
+**Status:** **IMPLEMENTED 2026-08-25.** `dirty_paths()` now combines tracked-file
+status with `git ls-files --others --exclude-standard`. Standard exclusion policy
+can hide disposable artifact directories, while every tracked file remains visible;
+this supersedes A-177's narrower exclusion-source restriction.
+
 **Filed by:** dstdns controller (2026-08-25)
 
 **Problem.** `assay/git.py:dirty_paths()` uses
