@@ -76,6 +76,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -316,8 +317,10 @@ def resolve_command_plan(
     argv_append: Sequence[str] = (),
     passthrough_source: Mapping[str, str] | None = None,
     project_prefix: PurePosixPath | None = None,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
 ) -> CommandPlan:
-    """Resolve what will run. Pure: never raises, never launches anything.
+    """Resolve what will run. Never launches anything.
 
     *passthrough_source* is the ambient environment to read
     ``lane.env_passthrough`` names FROM -- ``os.environ`` by default, but
@@ -326,9 +329,75 @@ def resolve_command_plan(
     declared in ``env_passthrough`` AND that are present in the source are
     carried into ``env_effective``; everything else in the source is invisible
     to the child, matching A-019's "declared-only" env contract.
+
+    **B013:** when *lane* declares ``infrastructure``, those facts are resolved
+    HERE, in the invoking process, before any snapshot or command exists.
+    ``required-env`` reads only *infrastructure_environment*, and ``derived``
+    reads only the rendered TOML at *infrastructure_source*. Missing, empty, or
+    malformed values refuse with the named fact; resolution never reads inside
+    a snapshot and never invents a default.
     """
     source = os.environ if passthrough_source is None else passthrough_source
     env_effective: dict[str, str] = dict(lane.env)
+    if lane.infrastructure:
+        has_derived = any(
+            declaration.startswith("derived:")
+            for declaration in lane.infrastructure.values()
+        )
+        if has_derived and infrastructure_source is None:
+            raise ValueError(
+                "lane declares infrastructure facts but no infrastructure_source"
+            )
+        for name, declaration in lane.infrastructure.items():
+            source_name, separator, expression = declaration.partition(":")
+            if not separator or source_name not in ("required-env", "derived"):
+                raise AssayError(
+                    f"infrastructure fact {name!r} has invalid declaration {declaration!r}",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            if source_name == "required-env":
+                ambient = (
+                    os.environ
+                    if infrastructure_environment is None
+                    else infrastructure_environment
+                )
+                value = ambient.get(expression)
+                if value is None or not value:
+                    raise AssayError(
+                        f"infrastructure fact {name!r} requires non-empty "
+                        f"environment variable {expression!r}",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.BAD_LANE_CONFIG,
+                    )
+            else:
+                assert source_name == "derived"
+                path = infrastructure_source
+                try:
+                    with path.open("rb") as stream:
+                        document = tomllib.load(stream)
+                except (OSError, tomllib.TOMLDecodeError) as exc:
+                    raise AssayError(
+                        f"infrastructure fact {name!r} could not read rendered CIU state "
+                        f"{path}: {exc}",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.BAD_LANE_CONFIG,
+                    ) from exc
+                node: Any = document
+                for part in expression.split("."):
+                    if not isinstance(node, Mapping) or part not in node:
+                        node = None
+                        break
+                    node = node[part]
+                if not isinstance(node, str) or not node:
+                    raise AssayError(
+                        f"infrastructure fact {name!r} derived {expression!r} is absent, "
+                        f"not a string, or empty",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.BAD_LANE_CONFIG,
+                    )
+                value = node
+            env_effective[name] = value
     for name in lane.env_passthrough:
         if name in source:
             env_effective[name] = source[name]
@@ -976,6 +1045,8 @@ def refuse_lane(
     argv_append: Sequence[str] = (),
     passthrough_source: Mapping[str, str] | None = None,
     project_prefix: PurePosixPath | None = None,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     assay_version: str,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
@@ -1023,6 +1094,8 @@ def refuse_lane(
         argv_append=argv_append,
         passthrough_source=passthrough_source,
         project_prefix=project_prefix,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
     )
     return _refuse_lane_with_plan(
         lane,
@@ -2225,6 +2298,8 @@ def _run_higher_rigor_lane(
     shard_count: int | None = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
     R1, R2, or R3 reaches here instead of the direct live-tree path in
@@ -2249,6 +2324,8 @@ def _run_higher_rigor_lane(
         argv_append=argv_append,
         passthrough_source=passthrough_source,
         project_prefix=project_prefix,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
     )
     rigor_levels = tuple(lane.rigor)
 
@@ -2382,6 +2459,8 @@ def run_lane(
     deadline: LaneDeadline | None = None,
     resume: bool = False,
     shard: str | None = None,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -2616,6 +2695,8 @@ def run_lane(
             r2_declared=r2_declared,
             r3_declared=r3_declared,
             snapshot_policy=snapshot_policy,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
             resume=resume,
             shard_index=shard_index,
             shard_count=shard_count,
@@ -2647,6 +2728,8 @@ def run_lane(
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
             evidence=evidence,
             declared_evidence=declared_evidence,
@@ -2661,6 +2744,8 @@ def run_lane(
         argv_append=argv_append,
         passthrough_source=passthrough_source,
         project_prefix=direct_prefix,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
     )
     result = execute_plan(
         plan,

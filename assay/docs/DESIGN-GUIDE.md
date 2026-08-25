@@ -480,6 +480,15 @@ by keyed digest of the candidate ID. Their merge is a manifest-level set proof:
 exact index coverage, one schema/lane/commit/count, and duplicate-free IDs—not
 bucket-count arithmetic.
 
+### Infrastructure fact injection (B013)
+
+Infrastructure declarations are resolved at the plan boundary, in the invoking
+process, before repository or snapshot work. The two closed sources are the
+ambient environment and rendered CIU state; both are explicit, bounded, and fail
+loudly on absence, emptiness, or a malformed dotted path. Injection is
+declared-only: an injected name cannot collide with fixed or passthrough names,
+and no ambient value reaches the child unless the infrastructure table names it.
+
 ### Rollup precedence
 
 `ERROR > NO_MEASUREMENT > BUDGET_EXCEEDED > FAIL > INCONCLUSIVE`, and `PASS`

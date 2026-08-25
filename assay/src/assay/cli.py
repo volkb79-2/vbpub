@@ -389,6 +389,9 @@ def _run_reserved(
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
+    infrastructure_source = None
+    infrastructure_environment = os.environ if lane.infrastructure else None
+    infrastructure_environment = os.environ if lane.infrastructure else None
     commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
 
     declared_evidence = _declared_evidence(lane)
@@ -467,6 +470,8 @@ def _run_reserved(
             deadline=deadline,
             resume=getattr(args, "resume", False),
             shard=getattr(args, "shard", None),
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
         )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:

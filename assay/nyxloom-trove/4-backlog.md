@@ -1249,6 +1249,12 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 ## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
 
 **Filed 2026-08-23 (dstdns SQL mutation blocker; consumer evidence from `dstdns-SQL-MUTATION-LANE-BLOCKER.md`).**
+**Status:** **IMPLEMENTED 2026-08-25.** Lanes may declare
+`[lanes.<name>.infrastructure]`; sources are `required-env:NAME` and
+`derived:dotted.path`. Resolution happens in the invoking process at plan
+construction, before Git or snapshot work. Missing, empty, malformed, or
+colliding names refuse loudly. Resolved values are injected as environment
+variables only; snapshots remain free of runtime state.
 
 ### The observation
 
@@ -1278,10 +1284,10 @@ Disposable server lease/fact files, owner-checked cleanup on exit/interrupt, per
 
 ### Acceptance
 
-- [ ] declared infrastructure inputs resolve before snapshot execution;
-- [ ] missing/unresolvable inputs refuse loudly with named keys;
-- [ ] isolated commands receive only injected values, no host paths;
-- [ ] SQL lanes can complete full mutant scope without reading caller state.
+- [x] declared infrastructure inputs resolve before snapshot execution;
+- [x] missing/unresolvable inputs refuse loudly with named keys;
+- [x] isolated commands receive only injected values, no host paths;
+- [x] SQL lanes can complete full mutant scope without reading caller state.
 
 ## B014 — persist bounded subprocess stdout/stderr in verdicts on COMMAND_FAILED
 

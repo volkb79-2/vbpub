@@ -181,6 +181,33 @@ never-imported-module failure mode), the lane refuses `NO_MEASUREMENT`/`TARGET_N
 naming the target, rather than silently passing 0/0.
 
 ## A monorepo lane: omitting declared unsafe symlinks
+
+## Inject infrastructure facts into an isolated lane
+
+```toml
+schema_version = 2
+
+[lanes.sql_example]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "run-sql-lane"]
+env = { }
+env_passthrough = []
+budget = "10m"
+allow_argv_append = false
+
+[lanes.sql_example.infrastructure]
+network = "required-env:CIU_NETWORK"
+cgroup_parent = "derived:deploy.cgroup_parent"
+```
+
+`required-env:` reads only the invoking process environment. `derived:` reads
+only rendered CIU state at the project root (`ciu.global.toml`). Missing, empty,
+or malformed facts refuse before any snapshot or command runs; resolved values
+are injected as environment variables named exactly by the table key. The
+snapshot itself never receives caller state.
+
 ## Resume and shard a long mutation lane
 
 Run `assay plan <lane> --operators python:compare-swap --shard 1/3` before

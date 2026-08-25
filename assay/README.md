@@ -193,6 +193,10 @@ file.
 proves exact shard coverage, one lane/commit/schema version, and no repeated
 candidate.
 
+Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
+`derived:` sources. Assay resolves them in the invoking context before any
+snapshot work and injects the values into the isolated command.
+
 `assay plan` accepts `--operators name,name` and `--shard INDEX/COUNT`; `assay
 run` accepts `--resume` plus the same filters. Shards use zero-based indexes,
 assign candidates by deterministic digest, and require a manifest merge that
