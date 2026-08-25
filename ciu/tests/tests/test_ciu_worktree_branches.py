@@ -15,6 +15,8 @@ Oracles:
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -186,7 +188,8 @@ def test_survey_without_yes_has_no_side_effects_and_hints(repo):
 def test_branches_document_is_versioned_envelope(repo):
     _branch(repo, "feature/z")
     doc = worktree.branch_hygiene(repo)
-    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 1
+    # 2 as of ciu-P28: the closed category vocabulary widened (managed-instance)
+    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 2
     assert doc["operation"] == "branches"
     assert set(doc["counts"]) == set(worktree.BRANCH_CATEGORIES)
     assert {b["category"] for b in doc["branches"]} <= set(worktree.BRANCH_CATEGORIES)
@@ -213,8 +216,6 @@ def test_ciu_instance_linkage_surfaces_in_survey(repo, tmp_path, monkeypatch):
         "runtime": {"instance_id": "abc123", "network": "repo-abc123-network"},
         "recovery_status": None,
     }
-    import json
-
     (wt_path / worktree.WORKTREE_INSTANCE_RECORD).write_text(
         json.dumps(record), encoding="utf-8"
     )
@@ -364,7 +365,7 @@ def test_cli_branches_json_dispatch(repo, monkeypatch, capsys):
 
     assert cli._worktree(["branches", "--json", "--define-root", str(repo)]) == 0
     doc = _json.loads(capsys.readouterr().out)
-    assert doc["schema_version"] == 1
+    assert doc["schema_version"] == 2
     assert doc["operation"] == "branches"
     assert doc["status"] == "survey"
     assert {b["name"] for b in doc["branches"]} >= {"main", "fix/merged-cli"}
@@ -591,3 +592,311 @@ def test_yes_safety_includes_origin_head_target(repo, tmp_path):
 
     # survey against hub-main must NOT refuse: hub-main IS origin/HEAD's target
     worktree.prune_branches(repo, base="hub-main", yes=True)
+
+
+# ---------------------------------------------------------------------------
+# ciu-P28 HOTFIX regressions — each reproduces, end-to-end on a real scratch
+# repo with real worktrees, one of the four defects two independent
+# retrospective adversarial reviews found in already-released code.
+# ---------------------------------------------------------------------------
+
+_SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
+
+
+def _write_instance_record(
+    repo: Path, wt_path: Path, logical: str, branch: str, *, state: str = "ready"
+) -> None:
+    """Fabricate the managed-instance record `worktree create` would write,
+    AND locally exclude it exactly as `worktree create` does — otherwise the
+    record file itself dirties the checkout and the branch never reaches the
+    `prunable` classification whose destruction is the defect under test."""
+    worktree._ensure_record_is_excluded(repo, Path("."))
+    (wt_path / worktree.WORKTREE_INSTANCE_RECORD).write_text(
+        json.dumps({
+            "schema_version": 1,
+            "logical_name": logical,
+            "display_name": logical,
+            "branch": branch,
+            "git_worktree_path": str(wt_path),
+            "ciu_root_offset": ".",
+            "created_at_utc": "2026-08-25T00:00:00+00:00",
+            "base_ref": "main",
+            "state": state,
+            "runtime": {"instance_id": "abc123", "network": "repo-abc123-network"},
+            "recovery_status": None,
+        }),
+        encoding="utf-8",
+    )
+
+
+def _run_ciu(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    """`python -m ciu ...` as a REAL subprocess, so the assertion is on the
+    process exit code itself, not on an in-process return value."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(_SRC_ROOT) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    for leaked in ("REPO_ROOT", "PHYSICAL_REPO_ROOT", "REPO_NAME", "INSTANCE_ID",
+                   "DOCKER_NETWORK_INTERNAL", "PUBLIC_FQDN", "CIU_EXIT_ON"):
+        env.pop(leaked, None)
+    return subprocess.run(
+        [sys.executable, "-m", "ciu", *args],
+        cwd=str(cwd), env=env, capture_output=True, text=True, check=False,
+    )
+
+
+# --- O1: a managed CIU instance is never bare-removed ----------------------
+
+
+def test_managed_instance_branch_is_never_pruned_without_ciu_clean(repo):
+    """REVIEW BLOCKING-1 (found twice, independently): `branches -y` ran a
+    BARE `git worktree remove` on a fully-merged branch whose checkout carried
+    a live managed CIU instance record — destroying the rendered config that
+    tells CIU what to clean, orphaning containers/volumes/networks and
+    stranding root-owned vol-* dirs. The checkout must survive."""
+    _branch(repo, "feat/managed")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    wt_path = repo.parent / "wt-managed"
+    assert _git(["worktree", "add", str(wt_path), "feat/managed"], repo).returncode == 0
+    _write_instance_record(repo, wt_path, "managed", "feat/managed")
+    _merge_into_main(repo, "feat/managed")  # fully merged AND clean → old: prunable
+
+    doc = worktree.branch_hygiene(repo)
+    entry = next(b for b in doc["branches"] if b["name"] == "feat/managed")
+    assert entry["merged"] is True and entry["dirty"] is False
+    assert entry["category"] == "managed-instance"
+    assert entry["ciu_instance"] == {"logical_name": "managed", "state": "ready"}
+    assert "ciu worktree rm" in doc["hint"]
+
+    pruned = worktree.prune_branches(repo, yes=True)
+
+    assert pruned["removed"] == []
+    assert pruned["failed"] == []
+    assert pruned["status"] == "pruned"
+    # the instance and everything that could clean it are still there
+    assert wt_path.is_dir()
+    assert (wt_path / worktree.WORKTREE_INSTANCE_RECORD).is_file()
+    assert _git(["rev-parse", "--verify", "feat/managed"], repo).returncode == 0
+    assert worktree.find_instance_record(repo, "managed") is not None
+
+
+def test_managed_instance_outranks_prunable_in_every_lifecycle_state(repo):
+    """The record having been LOADED is the point — not its lifecycle state.
+    An `allocating`/`recovery-required` instance is if anything MORE fragile."""
+    _branch(repo, "feat/half-built")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    wt_path = repo.parent / "wt-half"
+    assert _git(["worktree", "add", str(wt_path), "feat/half-built"], repo).returncode == 0
+    _write_instance_record(repo, wt_path, "half", "feat/half-built", state="allocating")
+    _merge_into_main(repo, "feat/half-built")
+
+    doc = worktree.prune_branches(repo, yes=True)
+    entry = next(b for b in doc["branches"] if b["name"] == "feat/half-built")
+    assert entry["category"] == "managed-instance"
+    assert doc["removed"] == []
+    assert wt_path.is_dir()
+
+
+def test_managed_instance_category_is_reported_by_the_cli(repo, monkeypatch, capsys):
+    from ciu import cli
+
+    _branch(repo, "feat/managed-cli")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    wt_path = repo.parent / "wt-managed-cli"
+    assert _git(
+        ["worktree", "add", str(wt_path), "feat/managed-cli"], repo
+    ).returncode == 0
+    _write_instance_record(repo, wt_path, "mcli", "feat/managed-cli")
+    _merge_into_main(repo, "feat/managed-cli")
+
+    monkeypatch.chdir(repo)
+    assert cli._worktree(["branches", "--define-root", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "1 managed-instance" in out
+    assert "managed-instance:" in out
+    assert "ciu worktree rm" in out
+
+
+# --- O2: mergedness judged against the PRIMARY HEAD ------------------------
+
+
+def test_prune_from_linked_worktree_judges_mergedness_against_primary_head(repo):
+    """REVIEW BLOCKING-2, reproduced end-to-end: invoked from a LINKED
+    worktree whose own HEAD is behind main, `git branch -d` judged mergedness
+    against THAT checkout's HEAD. Fully-merged branches were reported "not
+    fully merged" (`removed: []`) while their checkouts were destroyed first
+    anyway. The invoking checkout's HEAD must not corrupt the judgement."""
+    # feat/behind forks BEFORE the merges, so its HEAD contains neither.
+    _branch(repo, "feat/behind")
+    assert _git(["checkout", "main"], repo).returncode == 0
+    _branch(repo, "fix/merged-a")
+    _merge_into_main(repo, "fix/merged-a")
+    _branch(repo, "fix/merged-b")
+    _merge_into_main(repo, "fix/merged-b")  # primary back on main
+    wt_a = repo.parent / "wt-a"
+    assert _git(["worktree", "add", str(wt_a), "fix/merged-a"], repo).returncode == 0
+    wt_from = repo.parent / "wt-from"
+    assert _git(["worktree", "add", str(wt_from), "feat/behind"], repo).returncode == 0
+    # The premise of the defect: the invoking HEAD really does NOT contain them.
+    assert _git(
+        ["merge-base", "--is-ancestor", "fix/merged-a", "feat/behind"], repo
+    ).returncode != 0
+
+    doc = worktree.prune_branches(wt_from, yes=True)
+
+    assert doc["failed"] == []
+    assert doc["status"] == "pruned"
+    assert sorted(doc["removed"]) == ["fix/merged-a", "fix/merged-b"]
+    assert _git(["rev-parse", "--verify", "fix/merged-a"], repo).returncode != 0
+    assert _git(["rev-parse", "--verify", "fix/merged-b"], repo).returncode != 0
+    assert not wt_a.exists()
+    # the invoking checkout and its unmerged branch are untouched
+    assert wt_from.is_dir()
+    assert _git(["rev-parse", "--verify", "feat/behind"], repo).returncode == 0
+
+
+def test_candidate_not_contained_in_primary_head_fails_before_destruction(repo, tmp_path):
+    """The other half of the same wrong-HEAD family: base sanity can pass via
+    origin/HEAD alone, while `git branch -d` (which judges against the PRIMARY
+    HEAD) would still refuse — AFTER the checkout was gone. The per-candidate
+    HEAD pre-check reports it while everything is still intact."""
+    bare = tmp_path / "origin.git"
+    assert _git(["init", "--bare", "-b", "main", str(bare)], repo).returncode == 0
+    assert _git(["remote", "add", "origin", str(bare)], repo).returncode == 0
+    # hub-main is origin/HEAD's target and carries work main lacks.
+    assert _git(["checkout", "-b", "hub-main", "main"], repo).returncode == 0
+    (repo / "h.txt").write_text("hub\n", encoding="utf-8")
+    assert _git(["add", "h.txt"], repo).returncode == 0
+    assert _git(["commit", "-m", "hub work"], repo).returncode == 0
+    assert _git(["push", "-u", "origin", "hub-main"], repo).returncode == 0
+    assert _git(
+        ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/hub-main"],
+        repo,
+    ).returncode == 0
+    # fix/on-hub is merged into hub-main only; the PRIMARY stays on main.
+    _branch(repo, "fix/on-hub", file="oh.txt")
+    assert _git(["checkout", "hub-main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/on-hub"], repo).returncode == 0
+    assert _git(["push", "origin", "hub-main"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+    wt_hub = repo.parent / "wt-on-hub"
+    assert _git(["worktree", "add", str(wt_hub), "fix/on-hub"], repo).returncode == 0
+
+    doc = worktree.prune_branches(repo, base="hub-main", yes=True)
+
+    assert doc["status"] == "partial"
+    assert [f["branch"] for f in doc["failed"]] == ["fix/on-hub"]
+    assert "PRIMARY checkout's HEAD" in doc["failed"][0]["reason"]
+    assert doc["removed"] == []
+    assert wt_hub.is_dir()  # nothing was destroyed ahead of the refusal
+    assert _git(["rev-parse", "--verify", "fix/on-hub"], repo).returncode == 0
+
+
+# --- O3: no self-destruct / no unhandled exception mid-prune ---------------
+
+
+def test_prune_from_a_checkout_whose_own_branch_is_prunable_does_not_self_destruct(repo):
+    """REVIEW BLOCKING-3: invoked from a checkout whose own branch was itself
+    prunable, `git worktree remove` deleted the invoking cwd; the very next
+    `git` call raised (cwd gone), the exception escaped mid-loop, NO document
+    was returned and every later prunable branch was silently never processed.
+    `fix/aaa-self` sorts BEFORE `fix/zzz-other`, so the abort happened first."""
+    _branch(repo, "fix/aaa-self")
+    _merge_into_main(repo, "fix/aaa-self")
+    _branch(repo, "fix/zzz-other")
+    _merge_into_main(repo, "fix/zzz-other")  # primary back on main
+    wt_self = repo.parent / "wt-self"
+    assert _git(["worktree", "add", str(wt_self), "fix/aaa-self"], repo).returncode == 0
+
+    survey = worktree.branch_hygiene(wt_self)
+    cats = {b["name"]: b["category"] for b in survey["branches"]}
+    assert cats["fix/aaa-self"] == "current"   # never a candidate THIS run
+    assert cats["fix/zzz-other"] == "prunable"
+
+    doc = worktree.prune_branches(wt_self, yes=True)
+
+    # a document IS returned, and the later branch WAS processed
+    assert doc["removed"] == ["fix/zzz-other"]
+    assert doc["failed"] == []
+    assert doc["status"] == "pruned"
+    assert _git(["rev-parse", "--verify", "fix/zzz-other"], repo).returncode != 0
+    # the operator's own working directory and branch survive
+    assert wt_self.is_dir()
+    assert _git(["rev-parse", "--verify", "fix/aaa-self"], repo).returncode == 0
+    # ...and from the PRIMARY it is an ordinary prunable candidate again
+    assert {
+        b["name"]: b["category"] for b in worktree.branch_hygiene(repo)["branches"]
+    }["fix/aaa-self"] == "prunable"
+
+
+def test_unexpected_git_failure_on_one_branch_never_aborts_the_prune(repo, monkeypatch):
+    """O3's negative, generalised: NO exception escapes the per-branch loop.
+    One branch raising must become a NAMED `failed` entry while the remaining
+    candidates are still processed."""
+    _branch(repo, "fix/aaa-boom")
+    _merge_into_main(repo, "fix/aaa-boom")
+    _branch(repo, "fix/zzz-fine")
+    _merge_into_main(repo, "fix/zzz-fine")
+    real_git = worktree._git
+
+    def exploding(args, cwd):
+        if args[:2] == ["branch", "-d"] and "fix/aaa-boom" in args:
+            raise worktree.WorktreeError("[S16] could not run git: cwd vanished")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", exploding)
+    doc = worktree.prune_branches(repo, yes=True)
+
+    assert doc["status"] == "partial"
+    assert [f["branch"] for f in doc["failed"]] == ["fix/aaa-boom"]
+    assert "remaining branches still processed" in doc["failed"][0]["reason"]
+    assert doc["removed"] == ["fix/zzz-fine"]
+
+
+# --- O4: --json exit code matches the human path ---------------------------
+
+
+def test_cli_json_prune_exits_nonzero_on_partial_real_subprocess(repo, tmp_path):
+    """REVIEW MEDIUM (json-exit): the `status == "partial" -> exit 1` decision
+    lived INSIDE the human/else branch, so `--json` reported success on a
+    partial prune. Asserted on the real process exit code."""
+    bare = tmp_path / "origin.git"
+    assert _git(["init", "--bare", "-b", "main", str(bare)], repo).returncode == 0
+    assert _git(["remote", "add", "origin", str(bare)], repo).returncode == 0
+    _branch(repo, "fix/tracked")
+    assert _git(["push", "-u", "origin", "fix/tracked"], repo).returncode == 0
+    (repo / "f.txt").write_text("second\n", encoding="utf-8")
+    assert _git(["commit", "-am", "second"], repo).returncode == 0
+    assert _git(["checkout", "main"], repo).returncode == 0
+    assert _git(["merge", "--no-ff", "-m", "m", "fix/tracked"], repo).returncode == 0
+
+    res = _run_ciu(
+        ["worktree", "branches", "-y", "--json", "--define-root", str(repo)], repo
+    )
+
+    assert res.returncode == 1, res.stderr
+    doc = json.loads(res.stdout)
+    assert doc["operation"] == "branches-prune"
+    assert doc["status"] == "partial"
+    assert [f["branch"] for f in doc["failed"]] == ["fix/tracked"]
+
+
+def test_cli_json_prune_and_survey_exit_zero_when_not_partial_real_subprocess(repo):
+    """The same shared decision point must still return 0 for a clean prune
+    and for a pure survey, in JSON mode."""
+    _branch(repo, "fix/merged-json")
+    _merge_into_main(repo, "fix/merged-json")
+
+    survey = _run_ciu(
+        ["worktree", "branches", "--json", "--define-root", str(repo)], repo
+    )
+    assert survey.returncode == 0, survey.stderr
+    assert json.loads(survey.stdout)["status"] == "survey"
+
+    pruned = _run_ciu(
+        ["worktree", "branches", "-y", "--json", "--define-root", str(repo)], repo
+    )
+    assert pruned.returncode == 0, pruned.stderr
+    doc = json.loads(pruned.stdout)
+    assert doc["status"] == "pruned"
+    assert doc["removed"] == ["fix/merged-json"]

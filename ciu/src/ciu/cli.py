@@ -61,7 +61,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree branches [--base REF] [-y] [--json]
                                 survey local branches; -y prunes exactly the
-                                fully-merged, clean ones (S16.8)
+                                fully-merged, clean, UNMANAGED ones (S16.8)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -141,7 +141,9 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
   stdout (S16.4). `branches` surveys local branches against a base and `-y`
   prunes exactly the fully-merged, clean ones — never age-based, never the
-  mainline or the primary checkout's branch (S16.8). `up` starts the selected
+  mainline, the primary or invoking checkout's branch, and never a checkout
+  carrying a CIU-managed instance (use `worktree rm`, which cleans first);
+  mergedness is always judged from the PRIMARY worktree (S16.8). `up` starts the selected
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
@@ -1143,6 +1145,13 @@ def _worktree(rest: list[str]) -> int:
             doc = wt_mod.prune_branches(
                 repo_root, base=opts.base, yes=opts.yes
             ) if opts.yes else wt_mod.branch_hygiene(repo_root, base=opts.base)
+            # ONE exit-code decision, decided ABOVE the output-format branch so
+            # every mode shares it: a partial prune is never a silent success.
+            # It used to live inside the human/else arm only, so `--json`
+            # reported exit 0 on the same partial document (review finding);
+            # duplicating the check into both arms would just invite the drift
+            # back, so it is hoisted rather than copied.
+            code = 1 if doc.get("status") == "partial" else 0
             if getattr(opts, "json", False):
                 print(json.dumps(doc, sort_keys=True))
             else:
@@ -1152,6 +1161,7 @@ def _worktree(rest: list[str]) -> int:
                     f"{counts['prunable']} prunable, "
                     f"{counts['merged-dirty']} merged-dirty, "
                     f"{counts['unmerged']} unmerged, "
+                    f"{counts['managed-instance']} managed-instance, "
                     f"{counts['current']} current, {counts['base']} base"
                 )
                 for category in wt_mod.BRANCH_CATEGORIES:
@@ -1177,15 +1187,13 @@ def _worktree(rest: list[str]) -> int:
                 print(f"\n{doc['hint']}")
                 if doc["operation"] == "branches-prune":
                     # The prune's outcome is the headline, not the re-survey:
-                    # removed/failed are named explicitly and a partial prune
-                    # exits non-zero (review: silent partial success).
+                    # removed/failed are named explicitly (the non-zero exit on
+                    # a partial prune is decided once, above).
                     for name in doc.get("removed", []):
                         print(f"removed: {name}")
                     for f in doc.get("failed", []):
                         print(f"FAILED: {f['branch']} — {f['reason']}")
-                    if doc["status"] == "partial":
-                        return 1
-            return 0
+            return code
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).

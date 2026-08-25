@@ -88,36 +88,56 @@ guessing:
 
 ```console
 $ ciu worktree branches
-branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 current, 1 base
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 managed-instance, 1 current, 1 base
 
 prunable:
   fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
+
+managed-instance:
+  feat/api @ /repo/.worktrees/api  ahead 0 behind 2 changed 0 file(s)  last 2026-08-19  ciu:api(ready)
 
 unmerged:
   feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
 ```
 
 Survey only — nothing is removed. `-y` removes exactly the `prunable`
-category, gated twice so it can never half-prune: the base must be contained
-in a checkout's HEAD (or origin/HEAD) or `-y` refuses before touching
-anything, and a branch tracking an upstream that lacks its tip is reported
-`FAILED` before its checkout is touched. Every outcome is printed
-(`removed:` / `FAILED: <branch> — <reason>` lines) and a partial prune exits
-non-zero — never a silent success. Git re-verifies cleanliness and mergedness
-on every step; nothing is ever force-deleted. The categories are closed:
-`base`, `mainline` (the origin/HEAD default branch — never prunable even
-when measured against another ref), `current` (the primary checkout's
-branch), `prunable`, `merged-dirty` (merged but its checkout has uncommitted
-work — decide by hand), and `unmerged`. Every branch carries `ahead`/
-`behind`, `changed_files` vs the merge-base, last-commit date, and its ciu
-instance linkage, so a human can rule on the rest. No age heuristic exists
-anywhere in this command: a branch one minute old that is fully merged is
-prunable, a branch six months old that is not is not.
+category. What the gating actually guarantees: **a candidate's checkout is
+never destroyed by a refusal this command could have foreseen.** Three
+read-only checks run before anything is touched — the base must be contained
+in the primary checkout's HEAD (or origin/HEAD) or `-y` refuses outright; a
+branch tracking an upstream that lacks its tip is reported `FAILED`; and a
+branch not contained in the primary's HEAD (the HEAD `git branch -d` judges
+against) is reported `FAILED`. Git can still refuse a step for a reason only
+Git knows — that branch becomes a `FAILED` line and the prune continues with
+the rest. Every outcome is printed (`removed:` / `FAILED: <branch> —
+<reason>` lines), no failure aborts the run, and a partial prune exits
+non-zero in **both** `--json` and human output — never a silent success. Git
+re-verifies cleanliness and mergedness on every step; nothing is ever
+force-deleted.
+
+Run it from any checkout: every destructive Git command executes from the
+PRIMARY worktree, so a linked checkout that is behind the mainline cannot
+make merged branches look unmerged, and the checkout you are standing in is
+never a candidate in its own run.
+
+The categories are closed: `base`, `mainline` (the origin/HEAD default branch
+— never prunable even when measured against another ref), `current` (the
+primary checkout's branch, or the one you invoked from), `managed-instance`
+(its checkout carries a CIU-managed instance record — **never** pruned here
+at any lifecycle state, because a bare `git worktree remove` would destroy
+the config that tells CIU what to clean; use `ciu worktree rm NAME`, which
+runs `ciu clean` first), `prunable`, `merged-dirty` (merged but its checkout
+has uncommitted work — decide by hand), and `unmerged`. Every branch carries
+`ahead`/`behind`, `changed_files` vs the merge-base, last-commit date, and
+its ciu instance linkage, so a human can rule on the rest. No age heuristic
+exists anywhere in this command: a branch one minute old that is fully merged
+is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
 (`ciu capabilities --json`) instead of inferring the feature from SemVer;
-the `--json` document is versioned (`schema_version: 1`, operations
-`branches`/`branches-prune`, statuses `survey`/`pruned`/`partial`).
+the `--json` document is versioned (`schema_version: 2` — 1 predates the
+`managed-instance` category, operations `branches`/`branches-prune`, statuses
+`survey`/`pruned`/`partial`).
 
 ```bash
 ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'

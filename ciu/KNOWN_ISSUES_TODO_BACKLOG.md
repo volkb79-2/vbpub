@@ -90,7 +90,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
-| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22); Docker-resource detector/reap remains OPEN (see detail) |
+| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22), **HOTFIXED 2026-08-25 (ciu-P28): four reproduced prune-safety defects in the released behaviour, see detail**; Docker-resource detector/reap remains OPEN (see detail) |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
@@ -330,14 +330,34 @@ reachable for all-vendor deployments; B004's remaining blocker is assay-side
 
 **Status:** PARTIAL (2026-08-22) — the GIT half shipped as
 `ciu worktree branches` (SPEC S16.8, capability `worktree.branches.v1`):
-a closed six-category survey (base/mainline/current/prunable/merged-dirty/
-unmerged) with per-branch attributes (#changed files vs the merge-base,
-ahead/behind, last-commit age, dirty, ciu-instance linkage), and `-y`
-removing EXACTLY the Git-provable prunable category (worktree remove +
-`branch -d`, both re-verified by Git itself). No age heuristic, no process
-inference — the constraints below are honored by construction. The
-Docker-resource half (containers/volumes of a crashed instance) remains
-OPEN with the same ownership/lease precondition.
+a closed seven-category survey (base/mainline/current/managed-instance/
+prunable/merged-dirty/unmerged) with per-branch attributes (#changed files
+vs the merge-base, ahead/behind, last-commit age, dirty, ciu-instance
+linkage), and `-y` removing EXACTLY the Git-provable prunable category
+(worktree remove + `branch -d`, both re-verified by Git itself). No age
+heuristic, no process inference — the constraints below are honored by
+construction. The Docker-resource half (containers/volumes of a crashed
+instance) remains OPEN with the same ownership/lease precondition.
+
+**HOTFIX 2026-08-25 (ciu-P28)** — the git half as first shipped (v7.0.0,
+`c92377fb`) violated the "must not destroy resources" constraint above in
+four ways, each reproduced end-to-end by two independent retrospective
+adversarial reviews: `-y` bare-removed the checkout of a LIVE CIU-managed
+instance with no `ciu clean` first (the exact orphaned-container /
+stranded-root-owned-`vol-*` outcome this entry exists to prevent); it judged
+mergedness against the invoking linked worktree's HEAD instead of the
+primary's, falsely reporting merged branches unmerged AFTER destroying their
+checkouts; it self-destructed when invoked from a checkout whose own branch
+was prunable, aborting the whole run with no document and silently skipping
+every later candidate; and `--json` exited 0 on a partial prune. Fixed by
+the new `managed-instance` category (never pruned — use `ciu worktree rm`),
+a primary-worktree-rooted destructive pass with a third read-only
+HEAD pre-check, an invoking-checkout guard plus a no-escape per-branch loop,
+and one hoisted exit-code decision. Document `schema_version` is now `2`.
+See `nyxloom-trove/reports/ciu-P28-hotfix-worktree-branches-prune-safety-LOG.md`.
+**The Docker-resource half must not repeat this shape**: any future reap that
+touches a MANAGED instance goes through clean-then-remove, never a bare
+resource deletion.
 
 `worktree rm` cleans before removing a checkout when it runs, but a crashed
 dispatcher or forgotten teardown can leave containers and volumes running.

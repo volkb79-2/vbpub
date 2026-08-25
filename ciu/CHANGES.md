@@ -81,6 +81,38 @@ gate runs; the commit subjects remain the traceable source of detail.
   SPEC S7.7)
 
 ### Fixed
+- fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
+  defects in ALREADY-RELEASED behaviour, each reproduced end-to-end by two
+  independent retrospective adversarial reviews. `ciu worktree branches`
+  shipped in **v7.0.0** (`c92377fb`, CIU-25 git half) and every 7.x release
+  since is affected — note the reviews reported the origin as v6.3.0/v6.4.0,
+  but CHANGES.md's own history places the feature squarely in v7.0.0.
+  (1) A fully-merged, clean checkout carrying a **live CIU-managed instance
+  record** classified `prunable` and was removed by a BARE `git worktree
+  remove` with no `ciu clean` first — destroying the rendered config that
+  tells CIU what to clean, orphaning containers/volumes/networks and stranding
+  root-owned `vol-*` dirs. Such branches are now their own closed category,
+  `managed-instance`, which `-y` never touches at any lifecycle state; the
+  hint names `ciu worktree rm NAME` (clean-then-remove) as the disposal path.
+  (2) Invoked from a LINKED worktree, `git branch -d` judged mergedness
+  against THAT checkout's HEAD: fully-merged branches were reported "not fully
+  merged" (`removed: []`) after their checkouts had already been destroyed.
+  Every destructive Git command of the `-y` pass now runs from the PRIMARY
+  worktree, and a third read-only pre-check refuses a candidate not contained
+  in the primary's HEAD BEFORE its checkout is touched.
+  (3) Invoked from a checkout whose OWN branch was prunable, the prune removed
+  its own cwd; the next Git call raised on the vanished directory, the
+  exception escaped mid-loop, NO document was returned and every later
+  prunable branch was silently never processed. The invoking checkout's branch
+  is now `current` (never a candidate in its own run), and no failure escapes
+  the per-branch loop — an unexpected raise becomes that branch's named
+  `failed` reason while the rest are still processed.
+  (4) `--json` reported exit 0 on a `partial` prune because the `partial -> 1`
+  decision lived inside the human-output arm; it is now decided once, above
+  the output-format branch, so both modes exit identically.
+  The widened closed category vocabulary bumps the document to
+  `schema_version: 2` (fail-closed, per S17.3's precedent).
+  (SPEC S16.8, CIU-25)
 - fix(ciu): declared layouts/exec-targets/vendor_images now validated
   eagerly on every render path — `engine.main_execution` (single-stack) and
   `deploy.action_check` (profile-mode, including an empty selection) — not

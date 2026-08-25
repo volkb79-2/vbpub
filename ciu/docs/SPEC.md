@@ -3013,7 +3013,7 @@ its checkout behind, and nothing grounded said so. `ciu worktree branches
 *base* MUST name a LOCAL BRANCH — a SHA or remote-tracking ref refuses
 `[S16.8]`: classification and the destructive prune reason about branch
 NAMES, and a SHA anchor once let the anchor branch itself classify prunable
-(adversarial-review finding). Classification is a CLOSED six-value
+(adversarial-review finding). Classification is a CLOSED seven-value
 vocabulary:
 
 - **`base`** — the branch measured against; never touched.
@@ -3022,11 +3022,25 @@ vocabulary:
   (documented policy fallback). Never pruned, even when the survey runs
   against another base and the mainline happens to be fully merged there:
   "clean up merged branches" can never mean deleting a mainline.
-- **`current`** — the PRIMARY checkout's branch: somebody's working context,
-  even when merged.
+- **`current`** — somebody's working context, even when merged: the PRIMARY
+  checkout's branch, **or the branch of the checkout the command was INVOKED
+  FROM**. The invoking checkout is never a candidate in its own run — a
+  self-referential prune once removed the operator's own working directory
+  mid-loop, after which the next Git call failed on a vanished cwd and the
+  whole operation aborted (ciu-P28).
+- **`managed-instance`** — its checkout carries a CIU-managed instance record
+  (S16.2), at ANY lifecycle state. **Never removed by `-y`**, whatever its
+  mergedness: this is the GIT half of CIU-25 and its removal step is a bare
+  `git worktree remove`, so removing a managed checkout without `ciu clean`
+  FIRST destroys the rendered config that tells CIU what to clean — orphaning
+  containers/volumes/networks and stranding root-owned `vol-*` directories no
+  unprivileged operator can delete (ciu-P28; the exact hazard S16.4's
+  clean-then-remove ordering exists to prevent). The survey's hint names the
+  disposal command, `ciu worktree rm NAME`, which runs `ciu clean` first.
 - **`prunable`** — Git PROVES nothing would be lost: zero commits not in
   base (`rev-list --count base...branch`), and either no checkout or a CLEAN,
-  non-primary one. Only this category is ever removed.
+  non-primary, non-invoking, unmanaged one. Only this category is ever
+  removed.
 - **`merged-dirty`** — merged, but its checkout carries uncommitted changes;
   listed with attributes so a human rules on the dirt first.
 - **`unmerged`** — has work not in base; keep.
@@ -3039,25 +3053,48 @@ there). No age heuristic, no process-lifetime inference, no basename
 similarity — the estate rule: removal only on proof, survey otherwise.
 
 Without `-y` there are NO side effects: the survey carries an explicit hint
-naming how many branches `-y` would remove. The destructive pass is gated
-TWICE against the reviewed half-prune failure (destroy a checkout, then have
-Git refuse the deletion — divergent mergedness definitions): (1) **base
-sanity** — `-y` refuses `[S16.8]` unless the base tip IS, or is an ancestor
-of, the primary checkout's HEAD or the origin/HEAD target (surveying any
-base stays allowed; pruning demands one Git agrees with); (2) **per-candidate
-upstream pre-check** — a branch tracking an upstream that does not contain
-it is moved to `failed` BEFORE its checkout is touched, with the reason.
-Then exactly the remaining `prunable` category is removed — per branch,
-`git worktree remove` FIRST (Git re-verifies cleanliness itself) then
-`git branch -d` (Git re-verifies mergedness); any residual refusal moves
-that branch to `failed` WITH Git's reason and the prune continues. The
-document is then RE-SURVEYED so its counts and branches report the
-post-prune truth, never the stale pre-prune snapshot. The human output names
-every `removed:` and `FAILED:` branch and exits non-zero on a `partial`
-prune — a partial success is never silent. The document is versioned
-(`schema_version: 1`, operation `branches` / `branches-prune`, status
-`survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
-id `worktree.branches.v1`.
+naming how many branches `-y` would remove, plus how to dispose of any
+`managed-instance` branches it deliberately refuses.
+
+**Every destructive Git command of the `-y` pass runs from the PRIMARY
+worktree, never from the invoking checkout.** `git branch -d` judges
+mergedness against the HEAD of the worktree it runs in, so invoking
+`branches -y` from a linked checkout that was behind the mainline used to
+report fully-merged branches as "not fully merged" — `removed: []` — while
+their checkouts had already been destroyed (ciu-P28, reproduced end-to-end).
+The primary's HEAD is the anchor the base-sanity guard already validates, so
+the check and the operation now judge against the same HEAD.
+
+The destructive pass is gated THREE times against the half-prune failure
+(destroy a checkout, then have Git refuse the deletion — divergent mergedness
+definitions): (1) **base sanity** — `-y` refuses `[S16.8]` unless the base tip
+IS, or is an ancestor of, the primary checkout's HEAD or the origin/HEAD
+target (surveying any base stays allowed; pruning demands one Git agrees
+with); (2) **per-candidate upstream pre-check** — a branch tracking an
+upstream that does not contain it is moved to `failed` BEFORE its checkout is
+touched, with the reason; (3) **per-candidate HEAD pre-check** — a branch with
+no upstream that is not contained in the PRIMARY checkout's HEAD (reachable
+when base sanity passed via the origin/HEAD target alone) is likewise moved to
+`failed` before its checkout is touched. Then exactly the remaining `prunable`
+category is removed — per branch, `git worktree remove` FIRST (Git re-verifies
+cleanliness itself) then `git branch -d` (Git re-verifies mergedness); any
+residual refusal moves that branch to `failed` WITH Git's reason and the prune
+continues. **No failure escapes the per-branch loop**: an unexpected raise
+becomes that branch's named `failed` reason and the remaining candidates are
+still processed, so a document is always returned — an unhandled mid-loop
+error once returned none at all and silently left later candidates
+unprocessed (ciu-P28). The document is then RE-SURVEYED so its counts and
+branches report the post-prune truth, never the stale pre-prune snapshot.
+
+The output names every `removed:` and `FAILED:` branch, and a `partial` prune
+exits non-zero — a partial success is never silent. **That exit-code decision
+is made once, above the output-format branch, so `--json` and human output
+exit identically** (it previously lived inside the human arm only, and
+`--json` reported exit 0 on the same partial document). The document is
+versioned (`schema_version: 2` — bumped from 1 by the widened category
+vocabulary, the same fail-closed rule S17.3 applies; operation `branches` /
+`branches-prune`, status `survey`/`pruned`/`partial`) under the S16.4 envelope
+conventions; capability id `worktree.branches.v1`.
 
 The Docker-resource half of CIU-25 (containers/volumes of a crashed
 instance) remains OPEN: it needs the ownership/lease contract described in
