@@ -124,8 +124,33 @@ $ PYTHONPATH=$PWD/src python -m pytest tests/ -q -p no:randomly
 
 ## Gate (round 2)
 
-_Pending: the registered gate is run against the round-2 final HEAD (the
-commit that adds this LOG's own Round 2 section), and its real transcript
-replaces this line in the follow-up commit that fills it in -- same
-convention as round 1's `fcdfde92`._
+`bash tools/tester-unified-gate.sh ..` run against round-2 final HEAD
+`235a6f2e`. Exit code captured to a file and read in a separate step (never
+a pipe tail). Result: **exit 0.** All phase markers present through
+`ASSAY_REGISTERED_GATE_COMPLETE=1`:
+
+```
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.45s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 18.71s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.78s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+23 passed in 0.74s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 12.22s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+The self-hosted lane inside this run genuinely executed the new B032
+behavioral timeout test (a real `sleep 45` under a monkeypatched cap,
+observed live via `docker top` during the run, not a mock) and the new
+B031 `--progress` destination tests.
 
