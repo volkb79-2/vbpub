@@ -926,7 +926,12 @@ class TestStructuredControlDocuments:
             "worktree.exec-target.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
+            # ciu-P27: the lease (shipped by ciu-P26) and the reap verb that
+            # reads it are advertised together — a consumer that can reap must
+            # be able to declare a lease first.
+            "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.reap.v1",
             "worktree.up.v1",
         ]
 
@@ -935,7 +940,9 @@ class TestStructuredControlDocuments:
             "worktree.branches.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
+            "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.reap.v1",
             "worktree.up.v1",
             "worktree.exec-local.v1",
             "worktree.exec-target.v1",

@@ -20,6 +20,183 @@ needed if you're shaped like X" from "safe to ignore, additive" — not a
 restatement of the technical detail below it.
 
 <!-- cmru: release history -->
+## [Unreleased]
+
+### Adoption / Migration Notes
+
+- **A new destructive verb exists: `ciu worktree reap`.** It is opt-in per
+  invocation (no existing command's behavior changes, and nothing runs it
+  for you), and without `-y` it is a pure read-only survey. Before first use
+  on a shared host, run `ciu worktree reap` and then `ciu worktree reap -y
+  --dry-run` and read what it proposes. Declare long-lived instances with
+  `ciu worktree lease NAME --perpetual` — that is the supported way to say
+  "this one is deliberate", and CIU has no other way to know.
+- **Safe to ignore, additive:** the worktree-instance record schema v2 lease
+  fields, `ciu.instance`/`ciu.repo-root` ownership labels, and `ciu worktree
+  lease` — none of this changes behavior for an instance with no configured
+  `lease_ttl_hours`.
+- **Gate-integrity fixes (development-only, no runtime behavior change):**
+  `run-ciu-tests.py` now runs `--dist loadfile` and `tests/conftest.py`'s
+  ambient scrub now includes `CIU_KSM` — both fix how ciu's OWN test suite
+  measures itself; neither affects any shipped command.
+
+### Added
+- feat(ciu)!: **CIU-25 COMPLETE — `ciu worktree reap`, a DESTRUCTIVE verb**
+  (SPEC S16.10, ciu-P27, capability `worktree.reap.v1`; builds directly on
+  ciu-P26's lease/label substrate, `worktree.lease.v1`).
+
+  > **UPGRADE NOTE — a new verb that DELETES Docker resources.** `ciu worktree
+  > reap` with `-y` removes containers, volumes and networks. It is opt-in per
+  > invocation (no existing command's behavior changes, and nothing runs it
+  > for you), and without `-y` it is a pure read-only survey. Before first use
+  > on a shared host, run `ciu worktree reap` and then `ciu worktree reap -y
+  > --dry-run` and read what it proposes. Declare long-lived instances with
+  > `ciu worktree lease NAME --perpetual` — that is the supported way to say
+  > "this one is deliberate", and CIU has no other way to know. The `!`
+  > marker is for the new destructive capability, not for a change in
+  > existing behavior: this release changes none.
+
+  - **Closed seven-category survey.** Every Docker resource group (one compose
+    project plus its volumes/networks, plus a known identity's S2.6 identity
+    network) lands in exactly one of `owned`, `lease-expired`,
+    `checkout-missing`, `orphaned`, `partial-cleanup`, `unattributable`,
+    `ambiguous`. Precedence is one first-match-wins chain, ordered so that
+    every un-provable attribution resolves to a never-destroyed category
+    before any destructible one is considered.
+  - **`-y` destroys exactly four of the seven**, and only ever on proof:
+    `lease-expired` (a readable record whose `held` lease's `expires_at_utc`
+    has passed), `checkout-missing` (unclaimed, and its own `ciu.repo-root`
+    label names a directory that is gone), `orphaned` (`ciu.instance=<id>`
+    matching no record and no registered checkout), `partial-cleanup` (the
+    record DECLARES `state: "recovery-required"`).
+  - **`unattributable` and `ambiguous` are structurally unreachable.**
+    `--category` refuses their names (exit 2) rather than selecting them, so
+    no flag combination anywhere destroys a group CIU cannot attribute.
+    `--category` can only narrow; the default is the four destructible
+    categories.
+  - **No heuristics, by construction.** Age, directory-basename similarity
+    and "no process is running" are not inputs to any decision — the CIU-25
+    entry names all three as wrong. A year-old perpetual-lease instance is
+    `owned`; a lease-less schema-v1 record is `owned`; a released lease is
+    `owned` (claims nothing ≠ abandoned); a registered checkout whose own
+    `ciu.env` declares an `INSTANCE_ID` is `owned` even with no record at all.
+  - **A surviving checkout is disposed of by `ciu clean -y` run inside it**,
+    never by a bare docker removal — the ciu-P28 hotfix lesson made binding.
+    A failing clean is reported, never second-guessed. The direct path is
+    reached only when there is no checkout left to run it in.
+  - **Networks are doubly guarded**: never removed while any container this
+    pass did not just remove is still joined (the S16.1 shared-infra case),
+    and never while another surveyed group of the same identity is still
+    standing. A network a concurrent operator already removed is a no-op.
+  - **Identity-completeness interlock.** A registered checkout carrying an
+    unreadable instance record from which no identity can be derived DISARMS
+    the `orphaned` category for that run — a corrupted record on a live
+    instance must never make its own labelled resources look unclaimed. The
+    refusal is loud (`failed`, status `partial`, exit 1), never a silent skip.
+  - **Transactional isolation.** One group's failure lands in `failed` with
+    the real error text; every other targeted group is still processed; the
+    returned document is a post-pass RE-SURVEY, and a partial pass exits 1 in
+    both `--json` and human output.
+  - `survey_instance_records` — a non-raising sibling of the family record
+    scan that collects inconsistencies as `findings`. A survey that dies on
+    one bad record is useless exactly when it is most needed; an inconsistent
+    record surfaces as a finding AND forces its groups to `ambiguous`, because
+    a record Git contradicts can never license destruction.
+  - Document: `schema_version: 1`, `operation: "reap"`, statuses
+    `survey`/`dry-run`/`reaped`/`partial`, `counts` keyed by all seven
+    categories including the zero-valued ones. `-y --dry-run` prints the exact
+    commands and executes none.
+  - **Narrower than the original CIU-25 sketch, deliberately.**
+    `partial-cleanup` was carved as "record in `recovery-required` OR a group
+    with some (not all) of its resources present OR a previously-failed reap".
+    The middle clause is WITHDRAWN: nothing records what "all" would be for a
+    group, and `ciu down` preserves volumes on purpose — so an owned,
+    valid-leased, merely-stopped instance would have qualified and lost its
+    data. The third is not persisted anywhere. Only the record's own declared
+    state remains.
+  - Capabilities now also advertise `worktree.lease.v1` (shipped in ciu-P26,
+    unadvertised until now — reaping is only ever as safe as the ownership
+    signal it consults).
+- feat(ciu): CIU-25 foundation — explicit worktree-instance ownership lease
+  + `ciu.instance`/`ciu.repo-root` resource labels (SPEC S16.9, ciu-P26).
+  **This is the substrate a future `ciu worktree reap` will read, not the
+  reaper**: nothing here detects or destroys anything.
+  - **Record schema v2.** `ciu.worktree-instance.json` gains ONE optional
+    field, `lease`: `{holder, acquired_at_utc, renewed_at_utc,
+    expires_at_utc, mode}` with a closed `mode` vocabulary. `expires_at_utc`
+    is REQUIRED for `mode = "held"` (a bounded claim) and FORBIDDEN for
+    `mode = "perpetual"` (an explicit unbounded one); a mismatch is a tagged
+    `[S16.9]` refusal. Every lease timestamp needs an explicit UTC offset —
+    a naive one is refused, never parsed as local time.
+  - **v1 records keep working forever, and a READ never rewrites one.** A
+    schema-v1 record (no `lease` key) reads as `lease: None` in memory;
+    `worktree inspect`/`list` leave it byte-identical on disk. A record
+    becomes v2 only when an operation that legitimately mutates the lease
+    writes it. The key-set check is schema-dependent: v2 must carry `lease`,
+    v1 must not.
+  - **`[ciu.worktree].lease_ttl_hours`** (positive number) joins the existing
+    closed, primary-root-only table. **Absent means no lease is ever
+    acquired — there is no default TTL**, so a consumer who configures
+    nothing keeps exactly today's behavior and takes on zero new expiry risk.
+  - **`ciu up`**, for a MANAGED worktree instance only and only when a TTL is
+    configured, acquires/renews a `held` lease BEFORE the compose invocation
+    (a crashed run has still created containers). Renewal preserves
+    `acquired_at_utc`. A PRIMARY/unmanaged checkout and every `--dry-run`
+    claim nothing.
+  - **`ciu clean` / `ciu worktree rm` clear the lease ON SUCCESS ONLY.** A
+    failed clean — including a `--force` removal over one — leaves it exactly
+    as it was: a lease over resources that may still be standing is the whole
+    signal, and erasing it would manufacture "unowned" out of "unknown".
+  - **New verb `ciu worktree lease LOGICAL (--extend DURATION | --perpetual
+    | --release) [--json]`.** Touches only the record, runs no Docker query,
+    and therefore works on a stopped instance exactly as on a running one.
+    `--extend` uses CIU's existing duration grammar (`24h`, `90m`, `3600`).
+  - **Ownership labels.** For a managed instance, `ciu up` stamps
+    `ciu.instance=<INSTANCE_ID>` and `ciu.repo-root=<PHYSICAL_REPO_ROOT>` on
+    every container, volume and network it creates, read from THAT
+    workspace's own generated `ciu.env` by exact path — never the ambient
+    process environment (the CIU-41 contamination species). Emitted as a
+    separate `<stack>/.ciu/ciu.compose.ownership.yml` compose fragment
+    (merged as an extra `-f`, removed by `reset_service`) because the main
+    overlay is legitimately absent for a stack with nothing else to wire.
+    `external: true` volumes/networks are not labeled — `ciu up` did not
+    create them — and neither are a PRIMARY checkout's resources.
+  - `ciu up --shipped` (S8.5) acquires/renews the lease too, but is
+    deliberately NOT label-stamped: the labels are a generated compose
+    fragment and `ciu clean` skips `reset_service` for a shipped stack, so
+    the fragment would never be removed from vendored content. Named as an
+    open item in SPEC S16.9.
+  - `deploy.parse_duration_seconds` — the strict, refusing form of the
+    grammar `deploy._seconds` has always accepted leniently; `_seconds` now
+    delegates to it, so there is still exactly ONE duration grammar.
+  - CIU-25 stays **PARTIAL**: the Docker-resource detector/reap verb itself
+    is a separate, later package (ciu-P27).
+
+### Fixed
+- fix(ciu): **gate-integrity: `run-ciu-tests.py` used xdist's default
+  `--dist load`, which can non-deterministically under-measure coverage for
+  any module CIU loads by file path under a synthetic module name** (CIU-56,
+  found while reviewing ciu-P26's own gate output). `hooks_runner
+  ._load_hook_module` loads hook files exactly this way; a worker that never
+  also imports the module normally records zero coverage for it even though
+  another worker executed it, and the merge does not reconcile the two —
+  reproduced deterministically on a clean baseline (2 of 3 runs
+  under-reported `hook_templates/post_compose_db.py` by its exact module
+  size; 0 of 3 did under `--dist loadfile`). Fixed by switching to
+  `--dist loadfile`, which keeps every test file's functions on one worker;
+  verified 100.00% coverage across 5+ consecutive runs with zero flips.
+- fix(ciu): **`tests/conftest.py`'s autouse ambient-env scrub never included
+  `CIU_KSM`** (CIU-57, found while verifying the CIU-56 fix), despite
+  `governance.resolve_ksm_optin` reading it fresh on every call and this
+  project's own history recording multiple prior one-off `CIU_KSM=off`
+  fixture pins as "flake hunt" fixes for exactly this class of leak — local
+  patches on individual symptoms, never a fix of the shared fixture's actual
+  coverage. Live-caught: `test_absolute_governance_ksm_path_is_preserved
+  _in_overlay` intermittently failed `KeyError: 'volumes'` because a
+  contaminated `CIU_KSM` silently changed which branch
+  `composefile.generate_overlay`'s KSM-shim resolution takes. `CIU_KSM`
+  added to `_AMBIENT_ENV_VARS`, matching the existing pattern for the other
+  6 scrubbed vars.
 
 ## [7.3.0] - 2026-08-25
 <!-- cmru: generated -->

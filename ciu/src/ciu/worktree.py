@@ -42,7 +42,7 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,16 @@ from .paths import to_physical_path
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
-WORKTREE_INSTANCE_SCHEMA_VERSION = 1
+# S16.9 (CIU-25 substrate): v2 == "this record carries a `lease` field".
+# v1 records (no lease concept at all) stay readable forever and are NEVER
+# rewritten by a read; only an explicit lease mutation writes v2.
+WORKTREE_INSTANCE_SCHEMA_VERSION = 2
+WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
+WORKTREE_LEASE_KEYS = frozenset(
+    {"holder", "acquired_at_utc", "renewed_at_utc", "expires_at_utc", "mode"}
+)
 WORKTREE_LIFECYCLE_STATES = frozenset(
     {"allocating", "ready", "recovery-required"}
 )
@@ -82,12 +91,57 @@ class WorktreeInfo:
 
 
 @dataclass(frozen=True)
+class WorktreeLease:
+    """S16.9 — one EXPLICIT ownership lease on a managed worktree instance.
+
+    CIU-25's whole point: staleness is never inferred from age, basename or a
+    missing process. It is DECLARED, by this record, or it is not known. The
+    two modes are the closed vocabulary :data:`WORKTREE_LEASE_MODES`:
+
+    ``held``
+        a bounded claim — ``expires_at_utc`` is REQUIRED and is the only fact
+        a future reap may treat as "the operator's claim has lapsed".
+    ``perpetual``
+        an explicit, unbounded claim — ``expires_at_utc`` is FORBIDDEN (must
+        be ``null``). A perpetual lease can never lapse; it is the operator
+        saying "this instance is long-lived on purpose", which the backlog
+        entry names as the exact case an age heuristic gets wrong.
+
+    Every timestamp is ISO-8601 with an EXPLICIT UTC offset, written in
+    :func:`_utc_stamp`'s ``...Z`` form (the same form ``created_at_utc``
+    already uses). A naive, offset-less timestamp is a refusal, never a
+    lenient local-time parse — a lease whose expiry is ambiguous by up to a
+    day is worse than no lease at all when a destructive verb reads it.
+    """
+
+    holder: str
+    acquired_at_utc: str
+    renewed_at_utc: str
+    expires_at_utc: str | None
+    mode: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "holder": self.holder,
+            "acquired_at_utc": self.acquired_at_utc,
+            "renewed_at_utc": self.renewed_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "mode": self.mode,
+        }
+
+
+@dataclass(frozen=True)
 class WorktreeInstanceRecord:
-    """Schema-v1 durable identity for one CIU-managed linked worktree.
+    """Durable identity for one CIU-managed linked worktree (schema v1/v2).
 
     The record deliberately contains no current Git revision (derived during
     inspection) and no secret-bearing values.  It is written at the target
     CIU root, which can be below the Git worktree root in a monorepo.
+
+    ``schema_version`` is 1 until an explicit lease operation touches this
+    record; from then on it is 2 and the serialized form carries a ``lease``
+    key (``null`` after a release). A v1 record read from disk is a v1 record
+    in memory with ``lease=None`` — reading never upgrades it (S16.9).
     """
 
     logical_name: str
@@ -101,7 +155,8 @@ class WorktreeInstanceRecord:
     instance_id: str | None = None
     network: str | None = None
     recovery_status: str | None = None
-    schema_version: int = WORKTREE_INSTANCE_SCHEMA_VERSION
+    lease: WorktreeLease | None = None
+    schema_version: int = WORKTREE_INSTANCE_BASE_SCHEMA_VERSION
 
     @property
     def ciu_root(self) -> Path:
@@ -112,7 +167,7 @@ class WorktreeInstanceRecord:
         return self.ciu_root / WORKTREE_INSTANCE_RECORD
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
             "display_name": self.display_name,
@@ -128,6 +183,13 @@ class WorktreeInstanceRecord:
             },
             "recovery_status": self.recovery_status,
         }
+        # A v1 record serializes EXACTLY as it always did — no `lease` key at
+        # all. That is what makes "a read never rewrites the record" a
+        # structural property rather than a promise: there is no v2 shape to
+        # accidentally emit until a lease operation has set schema_version.
+        if self.schema_version >= 2:
+            doc["lease"] = self.lease.to_dict() if self.lease is not None else None
+        return doc
 
 
 def _validate_name(value: str, *, label: str) -> str:
@@ -139,6 +201,69 @@ def _validate_name(value: str, *, label: str) -> str:
     return value
 
 
+def _parse_utc_timestamp(value: Any, *, label: str, path: Path) -> datetime:
+    """One ISO-8601 instant that MUST carry an explicit UTC offset (S16.9).
+
+    ``datetime.fromisoformat`` happily returns a NAIVE datetime for
+    ``"2026-08-25T12:00:00"``; comparing that against an aware ``now`` raises,
+    and "fixing" it by assuming local time would make a lease expire at a
+    time nobody wrote down. So offset-less input is refused here, at the
+    parse boundary, rather than anywhere a comparison happens.
+    """
+    if not isinstance(value, str) or not value:
+        raise WorktreeError(f"[S16.9] malformed lease {label} in {path}: {value!r}")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} is not an ISO-8601 instant: "
+            f"{value!r} ({exc})"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} has no UTC offset: {value!r} — "
+            "a naive timestamp is refused, never parsed as local time"
+        )
+    return parsed
+
+
+def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
+    if not isinstance(raw, dict) or set(raw) != set(WORKTREE_LEASE_KEYS):
+        raise WorktreeError(
+            f"[S16.9] malformed lease in {path}: expected an object with keys "
+            f"{sorted(WORKTREE_LEASE_KEYS)}"
+        )
+    holder = raw["holder"]
+    if not isinstance(holder, str) or not holder:
+        raise WorktreeError(f"[S16.9] malformed lease holder in {path}: {holder!r}")
+    mode = raw["mode"]
+    if mode not in WORKTREE_LEASE_MODES:
+        raise WorktreeError(
+            f"[S16.9] unknown lease mode {mode!r} in {path}; closed vocabulary: "
+            f"{', '.join(sorted(WORKTREE_LEASE_MODES))}"
+        )
+    _parse_utc_timestamp(raw["acquired_at_utc"], label="acquired_at_utc", path=path)
+    _parse_utc_timestamp(raw["renewed_at_utc"], label="renewed_at_utc", path=path)
+    expires = raw["expires_at_utc"]
+    if mode == "held":
+        if expires is None:
+            raise WorktreeError(
+                f"[S16.9] lease mode 'held' in {path} requires expires_at_utc; "
+                "an unbounded claim must say so explicitly (mode 'perpetual')"
+            )
+        _parse_utc_timestamp(expires, label="expires_at_utc", path=path)
+    elif expires is not None:
+        raise WorktreeError(
+            f"[S16.9] lease mode 'perpetual' in {path} forbids expires_at_utc, "
+            f"got {expires!r} — a perpetual lease can never lapse"
+        )
+    return WorktreeLease(
+        holder=holder, acquired_at_utc=raw["acquired_at_utc"],
+        renewed_at_utc=raw["renewed_at_utc"], expires_at_utc=expires, mode=mode,
+    )
+
+
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     if not isinstance(raw, dict):
         raise WorktreeError(f"[S16] {path} must contain one JSON object")
@@ -147,17 +272,27 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "git_worktree_path", "ciu_root_offset", "created_at_utc", "base_ref",
         "state", "runtime", "recovery_status",
     }
+    # S16.9: the key set is SCHEMA-DEPENDENT — a v2 record must carry `lease`,
+    # a v1 record must NOT. Anything else is checked against the v1 set and
+    # then rejected by the version check below.
+    declared_version = raw.get("schema_version")
+    if declared_version == 2:
+        required = required | {"lease"}
     if set(raw) != required:
         missing = sorted(required - set(raw))
         unknown = sorted(set(raw) - required)
         raise WorktreeError(
-            f"[S16] malformed {path}: missing={missing}, unknown={unknown}"
+            f"[S16] malformed {path} (schema_version {declared_version!r}): "
+            f"missing={missing}, unknown={unknown}"
         )
-    if raw["schema_version"] != WORKTREE_INSTANCE_SCHEMA_VERSION:
+    if declared_version not in WORKTREE_INSTANCE_SCHEMA_VERSIONS:
         raise WorktreeError(
             f"[S16] unsupported worktree record schema_version "
             f"{raw['schema_version']!r} in {path}"
         )
+    lease = None
+    if declared_version == 2 and raw["lease"] is not None:
+        lease = _lease_from_dict(raw["lease"], path)
     runtime = raw["runtime"]
     if not isinstance(runtime, dict) or set(runtime) != {"instance_id", "network"}:
         raise WorktreeError(f"[S16] malformed runtime identity in {path}")
@@ -196,7 +331,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         ciu_root_offset=offset, created_at_utc=raw["created_at_utc"],
         base_ref=raw["base_ref"], state=state,
         instance_id=runtime["instance_id"], network=runtime["network"],
-        recovery_status=recovery,
+        recovery_status=recovery, lease=lease,
+        schema_version=declared_version,
     )
 
 
@@ -230,6 +366,165 @@ def _write_instance_record(record: WorktreeInstanceRecord) -> None:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _utc_stamp(instant: datetime) -> str:
+    """The record's ONE timestamp spelling — exactly what ``created_at_utc``
+    has always been written as (``...Z``), so a lease timestamp and an
+    allocation timestamp in the same file are the same format."""
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# S16.9 — explicit ownership lease (CIU-25 substrate, NOT the reap verb)
+# ---------------------------------------------------------------------------
+
+
+def _host_identity() -> str:
+    """This machine's name for a lease HOLDER string.
+
+    Deliberately not a new identity mechanism: this is the exact expression
+    ``workspace_env.py`` already uses twice (``_detect_host_mdt_tmp``,
+    ``_connect_devcontainer_to_network``) and records into ``ciu.env`` as
+    ``DEVCONTAINER_NAME`` — the devcontainer name when there is one, the
+    container/host ``HOSTNAME`` otherwise. Unlike the INSTANCE_ID half of the
+    holder string, this one is deliberately AMBIENT: it names the machine
+    holding the lease right now, not the workspace being leased.
+    """
+    return (
+        os.environ.get("DEVCONTAINER_NAME")
+        or os.environ.get("HOSTNAME", "")
+        or "unknown-host"
+    )
+
+
+def lease_holder(instance_id: str) -> str:
+    """``ciu@<hostname>:<INSTANCE_ID>`` — who holds a lease (S16.9)."""
+    return f"ciu@{_host_identity()}:{instance_id}"
+
+
+def acquire_lease(
+    record: WorktreeInstanceRecord,
+    *,
+    ttl_hours: float,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with a ``held`` lease acquired or RENEWED (S16.9).
+
+    A renewal preserves ``acquired_at_utc`` (when the claim first started)
+    and moves ``renewed_at_utc``/``expires_at_utc`` — losing the original
+    acquisition instant would erase the only evidence of how long an instance
+    has actually been owned.
+    """
+    if not ttl_hours > 0:
+        raise WorktreeError(
+            f"[S16.9] lease ttl must be a positive number of hours, got {ttl_hours!r}"
+        )
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    expires = _utc_stamp(instant + timedelta(hours=ttl_hours))
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=expires, mode="held",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def make_lease_perpetual(
+    record: WorktreeInstanceRecord,
+    *,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with an explicit unbounded (``perpetual``) lease."""
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=None, mode="perpetual",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def release_lease(record: WorktreeInstanceRecord) -> WorktreeInstanceRecord:
+    """Return *record* with no lease at all (``lease: null``).
+
+    The record STAYS at schema v2: "this instance participates in leasing and
+    currently claims nothing" is a different, more informative fact than "this
+    record predates leasing entirely", and a reader must be able to tell them
+    apart.
+    """
+    return replace(
+        record, lease=None, schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION
+    )
+
+
+def instance_record_path(ciu_root: Path) -> Path:
+    """The record of the checkout AT *ciu_root* — by exact path, never a
+    search that could climb to the PRIMARY checkout's record (S16)."""
+    return Path(ciu_root) / WORKTREE_INSTANCE_RECORD
+
+
+def read_own_instance_record(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """This checkout's OWN record, or ``None`` when it has none.
+
+    ``None`` is the PRIMARY / unmanaged-checkout answer and is what gates
+    every lease and ownership-label behavior in this package: a checkout with
+    no lifecycle record is not a managed worktree instance and is left
+    completely alone.
+    """
+    path = instance_record_path(ciu_root)
+    if not path.is_file():
+        return None
+    return read_instance_record(path)
+
+
+def acquire_own_lease(
+    ciu_root: Path, *, ttl_hours: float, now: datetime | None = None
+) -> WorktreeInstanceRecord | None:
+    """Acquire/renew the ``held`` lease on the checkout at *ciu_root*.
+
+    Returns ``None`` — writing nothing — when that checkout carries no
+    instance record (PRIMARY or unmanaged): `ciu up` there behaves exactly as
+    it did before this package existed.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    instance_id = record.instance_id or _runtime_identity(Path(ciu_root))[0]
+    updated = acquire_lease(
+        record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
+    )
+    _write_instance_record(updated)
+    return updated
+
+
+def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """Clear the lease on the checkout at *ciu_root* (``None`` when unmanaged).
+
+    Callers invoke this ONLY after a teardown they verified succeeded — a
+    failed clean must leave the lease exactly as it was, because the lease is
+    the evidence that something still owns those Docker resources.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    # Nothing claimed => nothing to clear, and in particular a v1 record is
+    # NOT dragged up to v2 by a teardown that had no lease to release.
+    if record.lease is None:
+        return record
+    updated = release_lease(record)
+    _write_instance_record(updated)
+    return updated
 
 
 def generated_worktree_name(prefix: str, feature: str, *, now: datetime | None = None) -> str:
@@ -1047,7 +1342,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 # recovery-required instance additionally carries a closed recovery_status
 # (WORKTREE_RECOVERY_STATUSES).
 WORKTREE_JSON_OPERATIONS = frozenset({
-    "add", "adopt", "create", "ensure", "inspect", "list", "remove",
+    "add", "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
 })
 WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 
@@ -1058,6 +1353,13 @@ WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 # `worktree.exec-target.v1` ships in P06.
 WORKTREE_CAPABILITIES = (
     "worktree.branches.v1",
+    # S16.9/S16.10, ciu-P26 + ciu-P27: the ownership lease (record schema v2 +
+    # `ciu worktree lease`) and the Docker-resource reap survey/transaction
+    # that reads it. Advertised together because a consumer that can reap must
+    # be able to declare a lease first — reaping is only ever as safe as the
+    # ownership signal it consults.
+    "worktree.lease.v1",
+    "worktree.reap.v1",
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
@@ -1184,6 +1486,74 @@ def remove_document(
     if record is not None:
         doc["instance"] = record.to_dict()
     return doc
+
+
+def _lease_duration_hours(text: str) -> float:
+    """Parse one ``--extend`` duration into hours (S16.9).
+
+    Reuses the codebase's ONE duration grammar (``deploy.parse_duration_seconds``,
+    the strict form of what ``deploy._seconds`` has always accepted: ``24h``,
+    ``90m``, ``3600``) rather than inventing a second spelling. The import is
+    lazy because ``deploy`` imports this module.
+    """
+    from . import deploy as deploy_mod
+
+    try:
+        seconds = deploy_mod.parse_duration_seconds(text)
+    except ValueError as exc:
+        raise WorktreeError(f"[S16.9] invalid lease duration {text!r}: {exc}") from exc
+    if seconds <= 0:
+        raise WorktreeError(
+            f"[S16.9] lease duration must be positive, got {text!r}"
+        )
+    return seconds / 3600.0
+
+
+def apply_lease(
+    repo_root: Path,
+    logical_name: str,
+    *,
+    extend: str | None = None,
+    perpetual: bool = False,
+    release: bool = False,
+) -> WorktreeInstanceRecord:
+    """`ciu worktree lease LOGICAL (--extend D | --perpetual | --release)`.
+
+    The explicit operator verb behind S16.9. It touches the RECORD only: it
+    runs no Docker query and does not care whether the instance is currently
+    up. Extending or releasing a claim on a stopped instance is exactly as
+    meaningful as on a running one — the lease describes ownership of the
+    instance's resources, not their current run state.
+    """
+    repo_root = Path(repo_root).resolve()
+    if sum((extend is not None, perpetual, release)) != 1:
+        raise WorktreeError(
+            "[S16.9] `ciu worktree lease` needs exactly one of --extend "
+            "DURATION, --perpetual or --release"
+        )
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16.9] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    if release:
+        # Unconditional, unlike the teardown-driven clear: the operator asked
+        # for "claims nothing", so the record says so even if it said so
+        # already (and a v1 record is normalized to v2 by that statement).
+        updated = release_lease(record)
+    else:
+        instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
+        holder = lease_holder(instance_id)
+        updated = (
+            make_lease_perpetual(record, holder=holder)
+            if perpetual
+            else acquire_lease(
+                record, ttl_hours=_lease_duration_hours(str(extend)), holder=holder
+            )
+        )
+    _write_instance_record(updated)
+    return updated
 
 
 def capabilities_document() -> dict[str, Any]:
@@ -1566,6 +1936,890 @@ def prune_branches(
     survey["operation"] = "branches-prune"
     survey["status"] = "pruned" if not failed else "partial"
     survey["removed"] = removed
+    survey["failed"] = failed
+    return survey
+
+
+# ---------------------------------------------------------------------------
+# S16.10 — Docker-resource REAP (CIU-25, docker half): survey + destroy
+# ---------------------------------------------------------------------------
+#
+# The structural twin of S16.8's branch hygiene, one layer down: a closed
+# survey that classifies EVERY Docker resource group into exactly one
+# category, and a SEPARATE `-y` pass that acts on exactly the categories a
+# fact — never a heuristic — proves safe.
+#
+# The one rule that governs every line below: **CIU destroys only what it can
+# PROVE it owns and PROVE nothing still claims.** Age, directory-basename
+# similarity and "no process is running" appear nowhere in this file, by
+# construction — the backlog entry (CIU-25) names all three as the wrong
+# answer, because a long-lived worktree is a legitimate thing and a stopped
+# instance is not an abandoned one. Ownership is DECLARED, by ciu-P26's lease
+# and `ciu.instance` label, or it is not known; and what is not known is not
+# destroyed.
+
+REAP_SCHEMA_VERSION = 1
+
+# Closed category vocabulary. Every surveyed resource group collapses into
+# exactly one member — never zero, never two (the precedence rule that makes
+# that true is :func:`_classify_reap_group`, read top to bottom):
+#   owned            — attributable to a checkout that still exists and still
+#                      claims it: a record whose lease is held/perpetual/
+#                      unconfigured, OR (no record) a REGISTERED worktree whose
+#                      own ciu.env declares that INSTANCE_ID. Never destroyed
+#   lease-expired    — a readable record whose `held` lease's expires_at_utc is
+#                      in the past at survey time (S16.9). The ONLY grounded
+#                      "the operator's claim has lapsed" signal there is
+#   checkout-missing — unclaimed (as `orphaned`) AND the group's own
+#                      `ciu.repo-root` label names a directory that no longer
+#                      exists. NOTE: this is a REFINEMENT of `orphaned`, not a
+#                      separate licence — a group only reaches either test once
+#                      no record and no checkout claims its id, which is what
+#                      licenses removal; the label only decides which message
+#                      the operator reads. The instance record lives INSIDE the
+#                      checkout, so a vanished checkout takes its record with
+#                      it: `ciu.repo-root` is the only durable, checkout-
+#                      EXTERNAL evidence of where an instance used to live
+#   orphaned         — resources labelled `ciu.instance=<id>` for an id that
+#                      matches NO instance record and NO registered checkout,
+#                      and whose recorded repo root does still exist (or was
+#                      never labelled)
+#   partial-cleanup  — the attributed record DECLARES state
+#                      `recovery-required`: CIU itself wrote down that this
+#                      instance's lifecycle did not complete. Deliberately
+#                      NARROWER than the original carve, which also counted "a
+#                      group with some (not all) of its resources present" —
+#                      undecidable (nothing records what "all" would be) and
+#                      catastrophic (`ciu down` preserves volumes on purpose,
+#                      so a legitimately-stopped owned instance would have
+#                      qualified). See the ciu-P27 handoff amendment
+#   unattributable   — no `ciu.instance` label AND no identity-form compose
+#                      project name: CIU cannot prove whose these are. NEVER
+#                      destroyed, under any flag combination
+#   ambiguous        — the attribution does not resolve to exactly one
+#                      TRUSTWORTHY record: more than one identity claims the
+#                      group, more than one record claims the identity, or the
+#                      one record that does is contradicted by Git. NEVER
+#                      destroyed, under any flag combination
+REAP_CATEGORIES = (
+    "owned", "lease-expired", "checkout-missing", "orphaned",
+    "partial-cleanup", "unattributable", "ambiguous",
+)
+
+# The categories `-y` may act on, and the DEFAULT set when `--category` is
+# absent (they are the same tuple on purpose: there is no category that is
+# destructible-but-off-by-default, because an operator reading `--category`'s
+# help must not have to discover a hidden extra). `owned`, `unattributable`
+# and `ambiguous` are absent STRUCTURALLY, not by policy: `--category` refuses
+# every name outside this tuple, so no flag combination can reach them.
+REAP_DESTRUCTIBLE_CATEGORIES = (
+    "checkout-missing", "lease-expired", "orphaned", "partial-cleanup",
+)
+
+# Closed document-status vocabulary: a side-effect-free survey, a `-y
+# --dry-run` plan, a fully successful pass, and a pass where at least one
+# targeted group was not disposed of (the CLI exits 1 on that last one).
+REAP_STATUSES = frozenset({"survey", "dry-run", "reaped", "partial"})
+
+_IDENTITY_NETWORK_SUFFIX = "-network"
+
+
+def _ownership_label_keys() -> tuple[str, str]:
+    """The ``(ciu.instance, ciu.repo-root)`` label keys ciu-P26 stamps on every
+    managed instance's resources. ``engine`` owns that closed vocabulary
+    (S16.9), and the import is lazy because ``engine`` imports THIS module."""
+    from . import engine as engine_mod
+
+    return (
+        engine_mod.OWNERSHIP_LABEL_INSTANCE,
+        engine_mod.OWNERSHIP_LABEL_REPO_ROOT,
+    )
+
+
+def _reap_docker_rows(args: list[str], *, what: str, fields: int) -> list[list[str]]:
+    """One read-only, tab-separated Docker enumeration.
+
+    Two failure modes, deliberately answered differently:
+
+    * **docker is ABSENT** — a CIU workspace can legitimately be local-only.
+      No Docker means no Docker resources, an empty enumeration is the honest
+      answer, and an empty survey destroys nothing.
+    * **docker is PRESENT and the query FAILED** — a refusal. A survey that
+      silently under-reports is the input to a destructive pass, and the
+      group it failed to see is exactly the one whose absence would let a
+      shared network look unused.
+
+    Every field is pulled with an explicit ``{{.Label "k"}}`` lookup rather
+    than parsed out of the comma-joined ``{{.Labels}}`` blob: a label VALUE
+    containing a comma would split that blob wrong, and a mis-parsed
+    ``ciu.instance`` is a mis-attribution — the one error class this whole
+    module exists to prevent.
+    """
+    try:
+        res = procutil.docker(args, capture=True, check=False)
+    except (FileNotFoundError, OSError):
+        return []
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.10] could not enumerate {what}: "
+            f"{(res.stderr or res.stdout or '').strip()} — refusing rather than "
+            "surveying from an incomplete picture, because a group this query "
+            "failed to see is a group a destructive pass would misjudge."
+        )
+    rows: list[list[str]] = []
+    for line in (res.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != fields:
+            raise WorktreeError(
+                f"[S16.10] unparseable {what} row from docker (expected {fields} "
+                f"tab-separated fields): {line!r}"
+            )
+        rows.append(parts)
+    return rows
+
+
+@dataclass(frozen=True)
+class ReapIdentities:
+    """Everything the survey knows about WHO could own Docker resources.
+
+    ``records`` are the parsed instance records; ``findings`` are the
+    inconsistencies met on the way (never raised — see
+    :func:`survey_instance_records`); ``distrusted`` are the INSTANCE_IDs
+    whose record Git contradicts; ``checkouts``/``networks`` map every
+    registered checkout's INSTANCE_ID to its path and its identity network;
+    ``unresolved`` names checkouts that carry a record FILE whose identity
+    could not be established at all.
+    """
+
+    records: tuple[WorktreeInstanceRecord, ...]
+    findings: tuple[dict[str, str], ...]
+    distrusted: frozenset[str]
+    checkouts: dict[str, str]
+    networks: dict[str, str]
+    unresolved: tuple[str, ...]
+
+
+def _reap_record_inconsistencies(
+    record: WorktreeInstanceRecord,
+    wt: WorktreeInfo,
+    offset: Path,
+    seen_logical: dict[str, str],
+) -> list[str]:
+    """The same four cross-checks :func:`list_instance_records` RAISES on,
+    rendered as strings so a survey can report them and continue."""
+    out: list[str] = []
+    if record.git_worktree_path.resolve() != wt.path.resolve():
+        out.append(
+            f"record claims Git path {record.git_worktree_path}, but Git "
+            f"registers {wt.path}"
+        )
+    if record.ciu_root_offset != offset:
+        out.append(
+            f"record claims CIU-root offset {record.ciu_root_offset}, but this "
+            f"family derives {offset}"
+        )
+    if record.branch != wt.branch:
+        out.append(
+            f"record claims branch {record.branch!r}, but Git registers "
+            f"{wt.branch!r}"
+        )
+    if record.logical_name in seen_logical:
+        out.append(
+            f"duplicate logical worktree identity {record.logical_name!r} within "
+            f"one Git family (also claimed by {seen_logical[record.logical_name]})"
+        )
+    return out
+
+
+def survey_instance_records(repo_root: Path) -> ReapIdentities:
+    """:func:`list_instance_records` for a DESTRUCTIVE reader — never raises.
+
+    ``list_instance_records`` refuses the whole family on the first
+    inconsistency it meets (branch mismatch, offset mismatch, duplicate
+    logical identity, an unreadable file). That is exactly right for
+    ``add``/``rm``/``inspect``, which act on ONE named instance and must not
+    proceed over a contradiction. It is exactly wrong for a reap survey,
+    which is most needed precisely when something is already broken: one bad
+    record would blind the operator to every other instance on the host, and
+    "the survey crashed" is the worst possible answer to "what is safe to
+    delete?".
+
+    So this sibling collects each inconsistency as a FINDING and keeps going.
+    The findings are then load-bearing in two places, both of them in the
+    SAFE direction:
+
+    1. an inconsistent record can never license destruction — every group it
+       would have attributed classifies ``ambiguous`` instead
+       (:func:`_classify_reap_group`);
+    2. a checkout carrying a record FILE whose identity cannot be established
+       at all disarms the ``orphaned`` category outright (:func:`reap_groups`)
+       — a corrupted record on a LIVE instance must never make that
+       instance's labelled resources look unclaimed.
+
+    Identity is also derived per checkout INDEPENDENTLY of the record, from
+    that checkout's own ``ciu.env`` by exact path (:func:`_runtime_identity`,
+    never the ambient environment — the CIU-41 contamination species), so a
+    live checkout whose record was deleted is still recognised as an owner.
+    """
+    repo_root = Path(repo_root).resolve()
+    offset = _ciu_root_offset(repo_root)
+    records: list[WorktreeInstanceRecord] = []
+    findings: list[dict[str, str]] = []
+    distrusted: set[str] = set()
+    checkouts: dict[str, str] = {}
+    networks: dict[str, str] = {}
+    unresolved: list[str] = []
+    seen_logical: dict[str, str] = {}
+
+    for wt in list_worktrees(repo_root):
+        ciu_root = wt.path / offset
+        record_path = ciu_root / WORKTREE_INSTANCE_RECORD
+        record: WorktreeInstanceRecord | None = None
+        has_record_file = record_path.is_file()
+        if has_record_file:
+            try:
+                record = read_instance_record(record_path)
+            except WorktreeError as exc:
+                findings.append({
+                    "kind": "unreadable-record",
+                    "path": str(record_path),
+                    "detail": str(exc),
+                })
+            else:
+                for detail in _reap_record_inconsistencies(
+                    record, wt, offset, seen_logical
+                ):
+                    findings.append({
+                        "kind": "inconsistent-record",
+                        "path": str(record_path),
+                        "detail": detail,
+                    })
+                    if record.instance_id:
+                        distrusted.add(record.instance_id)
+                seen_logical.setdefault(record.logical_name, str(record_path))
+                records.append(record)
+
+        identity: tuple[str, str] | None = None
+        if record is not None and record.instance_id and record.network:
+            identity = (record.instance_id, record.network)
+        else:
+            # No record, or an `allocating` one with no runtime identity yet:
+            # the checkout's OWN generated ciu.env is the authority, read by
+            # exact path. Absent/unreadable is not an error here — a checkout
+            # that never generated an environment never stamped a label.
+            try:
+                identity = _runtime_identity(ciu_root)
+            except WorktreeError:
+                identity = None
+        if identity is not None:
+            checkouts[identity[0]] = str(wt.path)
+            networks[identity[0]] = identity[1]
+        elif has_record_file:
+            # This checkout WAS a managed instance, so it may well have
+            # stamped `ciu.instance` labels — and we cannot say which id.
+            unresolved.append(str(wt.path))
+
+    findings.sort(key=lambda f: (f["kind"], f["path"], f["detail"]))
+    return ReapIdentities(
+        records=tuple(records),
+        findings=tuple(findings),
+        distrusted=frozenset(distrusted),
+        checkouts=checkouts,
+        networks=networks,
+        unresolved=tuple(unresolved),
+    )
+
+
+def _lease_is_expired(record: WorktreeInstanceRecord, instant: datetime) -> bool:
+    """True only for a ``held`` lease whose expiry has PASSED (S16.9).
+
+    Every other shape answers False, and every one of them is the safe
+    direction: no lease at all (a v1 record, or a released v2 one) means the
+    instance never participated in leasing or explicitly claims nothing —
+    neither is evidence of abandonment; ``perpetual`` can never lapse by
+    definition. An unparseable stored expiry is also False: the read path
+    already refuses such a record (:func:`_parse_utc_timestamp`), and if one
+    somehow reaches here, "I cannot read the claim" must never be rounded
+    down to "there is no claim".
+    """
+    lease = record.lease
+    if lease is None or lease.mode != "held" or lease.expires_at_utc is None:
+        return False
+    try:
+        expires = _parse_utc_timestamp(
+            lease.expires_at_utc, label="expires_at_utc", path=record.record_path
+        )
+    except WorktreeError:
+        return False
+    return expires <= instant
+
+
+def _classify_reap_group(
+    ids: set[str],
+    repo_roots: set[str],
+    *,
+    records_by_id: dict[str, WorktreeInstanceRecord],
+    duplicated_ids: set[str],
+    identities: ReapIdentities,
+    instant: datetime,
+) -> tuple[str, str]:
+    """The closed partition, as ONE ordered chain of first-match-wins rules.
+
+    Written as a single function with early returns precisely so the
+    precedence is readable top-to-bottom and a group cannot land in two
+    buckets: the first rule that fires is the answer. The order encodes two
+    policies — every un-provable attribution resolves to a NEVER-destroyed
+    category before any destructible one is considered, and among the
+    destructible ones the most operationally specific fact wins (a checkout
+    that is GONE is a more actionable truth than a lease that lapsed, and
+    `ciu clean` cannot run there either way).
+    """
+    if len(ids) > 1:
+        return "ambiguous", (
+            "more than one CIU identity claims this group ("
+            + ", ".join(sorted(ids))
+            + "); CIU will not guess which one owns it"
+        )
+    if not ids:
+        return "unattributable", (
+            "no `ciu.instance` label and no identity-form compose project name — "
+            "CIU cannot prove whose these resources are, so it will never remove "
+            "them; dispose of them by hand if you know better"
+        )
+    instance_id = next(iter(ids))
+    if instance_id in duplicated_ids:
+        return "ambiguous", (
+            f"more than one instance record claims INSTANCE_ID {instance_id!r}"
+        )
+    if instance_id in identities.distrusted:
+        return "ambiguous", (
+            f"the record claiming INSTANCE_ID {instance_id!r} is contradicted by "
+            "Git (see this document's `findings`); a record CIU cannot trust can "
+            "never license destruction"
+        )
+    record = records_by_id.get(instance_id)
+    if record is None:
+        checkout = identities.checkouts.get(instance_id)
+        if checkout is not None:
+            return "owned", (
+                f"no instance record claims {instance_id!r}, but the registered "
+                f"checkout {checkout} declares that INSTANCE_ID in its own "
+                "ciu.env — a live checkout still owns what it created"
+            )
+        if repo_roots and not any(Path(root).is_dir() for root in repo_roots):
+            return "checkout-missing", (
+                f"labelled ciu.instance={instance_id}, claimed by no record and "
+                "no registered checkout, and its own ciu.repo-root label ("
+                + ", ".join(sorted(repo_roots))
+                + ") names a directory that is not present (deleted, or on a "
+                "currently-unavailable mount — filesystem absence cannot "
+                "distinguish the two) — `ciu clean` cannot run there right "
+                "now. The Docker resources are this verb's half; a stale Git "
+                "registration is `ciu worktree branches`' (or `git worktree "
+                "prune`'s)"
+            )
+        return "orphaned", (
+            f"labelled ciu.instance={instance_id}, which matches no instance "
+            "record and no registered checkout in this Git family"
+        )
+    if record.state == "recovery-required":
+        return "partial-cleanup", (
+            f"instance {record.logical_name!r} DECLARES state "
+            f"'recovery-required' ({record.recovery_status}) — CIU itself "
+            "recorded that this instance's lifecycle did not complete"
+        )
+    if _lease_is_expired(record, instant):
+        return "lease-expired", (
+            f"instance {record.logical_name!r}'s held lease expired at "
+            f"{record.lease.expires_at_utc if record.lease else '?'} "
+            f"(holder {record.lease.holder if record.lease else '?'})"
+        )
+    return "owned", (
+        f"instance {record.logical_name!r} is registered, its checkout exists, "
+        "and nothing says its claim has lapsed"
+    )
+
+
+def _reap_group_documents(
+    repo_root: Path, instant: datetime
+) -> tuple[list[dict[str, Any]], ReapIdentities]:
+    """Enumerate + classify every Docker resource group (the survey's core)."""
+    identities = survey_instance_records(repo_root)
+    instance_label, root_label = _ownership_label_keys()
+    ownership = f'{{{{.Label "{instance_label}"}}}}\t{{{{.Label "{root_label}"}}}}'
+
+    containers = _reap_docker_rows(
+        [
+            "ps", "-a", "--no-trunc", "--format",
+            '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}\t'
+            + ownership,
+        ],
+        what="containers", fields=5,
+    )
+    volumes = _reap_docker_rows(
+        [
+            "volume", "ls", "--format",
+            '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t' + ownership,
+        ],
+        what="volumes", fields=4,
+    )
+    networks = _reap_docker_rows(
+        [
+            "network", "ls", "--format",
+            '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t' + ownership,
+        ],
+        what="networks", fields=4,
+    )
+
+    raw: dict[str, dict[str, Any]] = {}
+
+    def bucket(key: str, project: str | None) -> dict[str, Any]:
+        return raw.setdefault(key, {
+            "key": key, "compose_project": project,
+            "containers": [], "volumes": [], "networks": [],
+            "label_ids": set(), "repo_roots": set(),
+        })
+
+    # A resource with no compose project is not a GROUP member: `ciu up`
+    # always deploys through compose, so anything compose never created is
+    # not this verb's business and is left entirely alone (never surveyed,
+    # therefore never destroyed).
+    def claim(group: dict[str, Any], inst: str, root: str) -> None:
+        if inst:
+            group["label_ids"].add(inst)
+        if root:
+            group["repo_roots"].add(root)
+
+    for cid, cname, project, inst, root in containers:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["containers"].append({"id": cid, "name": cname})
+        claim(group, inst, root)
+    for vname, project, inst, root in volumes:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["volumes"].append(vname)
+        claim(group, inst, root)
+    for nname, project, inst, root in networks:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["networks"].append(nname)
+        claim(group, inst, root)
+
+    # The IDENTITY network (S2.6 `{repo}-{id}-network`) is the one resource
+    # compose never creates: `ciu env generate` makes it and every stack
+    # declares it `external: true`, so it carries no compose project label and
+    # ciu-P26 deliberately never labels it either. It is therefore attached by
+    # NAME, and only ever to an identity CIU already knows — an unrecognised
+    # loose network on the host is not evidence of anything and is ignored.
+    network_owner = {name: iid for iid, name in identities.networks.items()}
+    for nname, project, inst, root in networks:
+        if project:
+            continue
+        owner = inst or network_owner.get(nname)
+        if not owner:
+            continue
+        attached = [
+            group for group in raw.values() if owner in group["label_ids"]
+        ]
+        if not attached:
+            attached = [bucket(nname, None)]
+            claim(attached[0], owner, root)
+        for group in attached:
+            group["networks"].append(nname)
+
+    # Identity-form project-name attribution: `{repo}-{id}-{stack}`
+    # (engine.identity_compose_project_name) for a config-less deployment,
+    # whose containers a pre-P26 `ciu up` never labelled. Derived from the
+    # identity network name, which already carries the same `{repo}-{id}`
+    # prefix, so there is no second spelling of the convention to drift.
+    prefixes = {
+        iid: net[: -len(_IDENTITY_NETWORK_SUFFIX)]
+        for iid, net in identities.networks.items()
+        if net.endswith(_IDENTITY_NETWORK_SUFFIX)
+    }
+    records_by_id: dict[str, WorktreeInstanceRecord] = {}
+    duplicated_ids: set[str] = set()
+    for record in identities.records:
+        if not record.instance_id:
+            continue
+        if record.instance_id in records_by_id:
+            duplicated_ids.add(record.instance_id)
+        records_by_id[record.instance_id] = record
+
+    documents: list[dict[str, Any]] = []
+    for group in raw.values():
+        project = group["compose_project"]
+        name_ids = {
+            iid for iid, prefix in prefixes.items()
+            if project and project.startswith(prefix + "-")
+        }
+        ids = set(group["label_ids"]) | name_ids
+        category, reason = _classify_reap_group(
+            ids, set(group["repo_roots"]), records_by_id=records_by_id,
+            duplicated_ids=duplicated_ids, identities=identities,
+            instant=instant,
+        )
+        instance_id = next(iter(ids)) if len(ids) == 1 else None
+        record = records_by_id.get(instance_id) if instance_id else None
+        documents.append({
+            "key": group["key"],
+            "compose_project": project,
+            "category": category,
+            "reason": reason,
+            "instance_id": instance_id,
+            "repo_roots": sorted(group["repo_roots"]),
+            "logical_name": record.logical_name if record is not None else None,
+            "state": record.state if record is not None else None,
+            "ciu_root": str(record.ciu_root) if record is not None else None,
+            "checkout_exists": (
+                record.ciu_root.is_dir() if record is not None else False
+            ),
+            "lease": (
+                record.lease.to_dict()
+                if record is not None and record.lease is not None else None
+            ),
+            "containers": sorted(group["containers"], key=lambda c: c["id"]),
+            "volumes": sorted(set(group["volumes"])),
+            "networks": sorted(set(group["networks"])),
+        })
+    documents.sort(key=lambda g: (g["category"], g["key"]))
+    return documents, identities
+
+
+def _reap_hint(counts: Mapping[str, int], identity_complete: bool) -> str:
+    destructible = sum(counts[c] for c in REAP_DESTRUCTIBLE_CATEGORIES)
+    if destructible:
+        hint = (
+            f"{destructible} resource group(s) are provably disposable "
+            f"({', '.join(f'{c}={counts[c]}' for c in REAP_DESTRUCTIBLE_CATEGORIES if counts[c])}); "
+            "re-run with -y/--yes to reap them (add --dry-run first to see the "
+            "exact commands)."
+        )
+    else:
+        hint = "nothing provably disposable."
+    if counts["unattributable"]:
+        hint += (
+            f" {counts['unattributable']} group(s) are unattributable and are "
+            "NEVER reaped — CIU cannot prove whose they are. Inspect one with "
+            "`docker ps -a --filter label=com.docker.compose.project=<project>` "
+            "and remove it by hand with "
+            "`docker compose -p <project> down -v` if you know it is yours."
+        )
+    if counts["ambiguous"]:
+        hint += (
+            f" {counts['ambiguous']} group(s) are ambiguous and are NEVER "
+            "reaped — see each group's `reason` (and this document's "
+            "`findings`) for the competing claims, and reconcile them first."
+        )
+    if not identity_complete:
+        hint += (
+            " At least one registered checkout carries an instance record CIU "
+            "could not read an identity from, so the `orphaned` category is "
+            "DISARMED for this run: an id that looks unclaimed might simply be "
+            "the one that could not be read."
+        )
+    return hint
+
+
+def survey_reap_groups(
+    repo_root: Path, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Build the ``ciu worktree reap`` survey document (S16.10 / CIU-25).
+
+    Side-effect-free by construction: every Docker call below is a read-only
+    enumeration, and nothing on disk is written — a v1 instance record is not
+    even re-serialized, let alone upgraded (S16.9 makes that structural).
+
+    *now* is injectable and must be timezone-aware; lease expiry is evaluated
+    against it and nothing else. Tests never call the real clock, and the
+    document carries no timestamp of its own, so two consecutive surveys of an
+    unchanged host are byte-identical.
+    """
+    repo_root = Path(repo_root).resolve()
+    instant = now or _utc_now()
+    if instant.tzinfo is None:
+        raise WorktreeError(
+            "[S16.10] the reap survey clock must be timezone-aware; a naive "
+            "instant would compare against stored UTC expiries by up to a day "
+            "of luck"
+        )
+    groups, identities = _reap_group_documents(repo_root, instant)
+    counts = {c: sum(1 for g in groups if g["category"] == c) for c in REAP_CATEGORIES}
+    identity_complete = not identities.unresolved
+    return {
+        "schema_version": REAP_SCHEMA_VERSION,
+        "operation": "reap",
+        "status": "survey",
+        "identity_complete": identity_complete,
+        "unresolved_checkouts": list(identities.unresolved),
+        "counts": counts,
+        "findings": [dict(f) for f in identities.findings],
+        "hint": _reap_hint(counts, identity_complete),
+        "groups": groups,
+    }
+
+
+def resolve_reap_categories(raw: str | None) -> tuple[str, ...]:
+    """Parse ``--category C[,C...]`` into the closed destructible set.
+
+    Every name outside :data:`REAP_DESTRUCTIBLE_CATEGORIES` is a REFUSAL,
+    including the three real-but-protected categories. That is the whole
+    safety property of this verb stated as code: ``--category unattributable``
+    and ``--category ambiguous`` do not select a protected category, they fail
+    the command, so there is no flag combination anywhere that reaches one.
+    """
+    if raw is None:
+        return REAP_DESTRUCTIBLE_CATEGORIES
+    names = tuple(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+    if not names:
+        raise WorktreeError(
+            "[S16.10] --category needs at least one category name; closed "
+            f"selectable vocabulary: {', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}"
+        )
+    for name in names:
+        if name in REAP_DESTRUCTIBLE_CATEGORIES:
+            continue
+        if name in REAP_CATEGORIES:
+            raise WorktreeError(
+                f"[S16.10] refusing --category {name!r}: that category is never "
+                "acted on by this verb, and there is deliberately no flag that "
+                "forces it. CIU removes a resource group only when a record, a "
+                "lease or an ownership label PROVES what it is; "
+                f"{name!r} means exactly that no such proof exists. Selectable: "
+                f"{', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}."
+            )
+        raise WorktreeError(
+            f"[S16.10] unknown --category {name!r}; selectable vocabulary: "
+            f"{', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}"
+        )
+    return names
+
+
+def _reap_plan(group: Mapping[str, Any]) -> list[str]:
+    """The exact remediation this group would receive, as operator commands."""
+    if _reap_uses_clean(group):
+        return [f"(cd {group['ciu_root']} && ciu clean -y)"]
+    plan: list[str] = []
+    if group["containers"]:
+        plan.append(
+            "docker rm -f " + " ".join(c["id"] for c in group["containers"])
+        )
+    if group["volumes"]:
+        plan.append("docker volume rm " + " ".join(group["volumes"]))
+    for network in group["networks"]:
+        plan.append(
+            f"docker network rm {network}  # only if no container is still joined"
+        )
+    return plan or ["# nothing to remove"]
+
+
+def _reap_uses_clean(group: Mapping[str, Any]) -> bool:
+    """True when this group's checkout can still clean itself.
+
+    `ciu clean` is authoritative: it knows the rendered config, the `vol-*`
+    hostdirs and the root-helper path a bare `docker rm` knows nothing about.
+    The ciu-P28 hotfix lesson binds this — a reap that touches a MANAGED
+    instance goes through clean-then-remove, never a bare resource deletion —
+    so the direct path below is reached ONLY when there is no checkout left to
+    run it in.
+    """
+    ciu_root = group.get("ciu_root")
+    if not ciu_root:
+        return False
+    return (Path(ciu_root) / "ciu.env").is_file()
+
+
+def _docker_reap(args: list[str], *, what: str) -> str:
+    """Run one DESTRUCTIVE docker command; return "" or the real error text."""
+    try:
+        res = procutil.docker(args, capture=True, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        return f"{what}: {exc}"
+    if res.returncode != 0:
+        return f"{what}: {(res.stderr or res.stdout or '').strip()}"
+    return ""
+
+
+def _reap_network(
+    network: str, removed_ids: set[str], blocked_by: list[str]
+) -> tuple[str, str]:
+    """Remove one network, or say why it was left standing. -> (note, failure).
+
+    Two independent guards, either of which alone means "leave it":
+
+    1. any container STILL joined that this pass did not just remove — the
+       shared-infra case (S16.1), where another instance's containers hold a
+       second membership on this network. Tearing it down would break a live
+       instance that never asked to be reaped;
+    2. any OTHER surveyed group of the same identity not yet disposed of —
+       one workspace's several stacks share one identity network, and the last
+       one out turns off the light.
+    """
+    if blocked_by:
+        return (
+            f"network {network} left standing: still needed by "
+            + ", ".join(sorted(blocked_by)),
+            "",
+        )
+    if not _docker_network_exists(network):
+        return f"network {network} was already gone", ""
+    joined = _network_container_ids(network) - removed_ids
+    if joined:
+        return (
+            f"network {network} left standing: {len(joined)} container(s) from "
+            "another instance are still joined to it "
+            f"({', '.join(sorted(joined))})",
+            "",
+        )
+    failure = _docker_reap(["network", "rm", network], what=f"network rm {network}")
+    if failure:
+        return "", failure
+    return f"removed network {network}", ""
+
+
+def _reap_one_group(
+    group: Mapping[str, Any], blocked_networks_by: Mapping[str, list[str]]
+) -> tuple[list[str], str]:
+    """Dispose of exactly one group. -> (notes, failure-reason-or-"").
+
+    Strict order — containers, then volumes, then networks — and the first
+    failure ABORTS this group: a volume still attached to a container we
+    failed to remove cannot be removed either, and reporting the second,
+    derived error would bury the real one.
+    """
+    notes: list[str] = []
+    if _reap_uses_clean(group):
+        try:
+            rc = _clean_in(Path(str(group["ciu_root"])), yes=True)
+        except WorktreeError as exc:
+            return notes, f"`ciu clean` could not run in {group['ciu_root']}: {exc}"
+        if rc != 0:
+            return notes, (
+                f"`ciu clean` failed (exit {rc}) in {group['ciu_root']}; the "
+                "instance's own teardown is authoritative and CIU will not "
+                "second-guess it with a bare docker removal"
+            )
+        return [f"cleaned in {group['ciu_root']}"], ""
+
+    removed_ids = {c["id"] for c in group["containers"]}
+    if group["containers"]:
+        failure = _docker_reap(
+            ["rm", "-f", *sorted(removed_ids)], what="container rm",
+        )
+        if failure:
+            return notes, failure
+        notes.append(f"removed {len(removed_ids)} container(s)")
+    if group["volumes"]:
+        failure = _docker_reap(
+            ["volume", "rm", *group["volumes"]], what="volume rm",
+        )
+        if failure:
+            return notes, failure
+        notes.append(f"removed {len(group['volumes'])} volume(s)")
+    for network in group["networks"]:
+        note, failure = _reap_network(
+            network, removed_ids, blocked_networks_by.get(network, [])
+        )
+        if failure:
+            return notes, failure
+        notes.append(note)
+    return notes, ""
+
+
+def reap_groups(
+    repo_root: Path,
+    *,
+    yes: bool = False,
+    categories: str | None = None,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Survey, and with *yes* reap exactly the provably-disposable groups.
+
+    Without *yes* this is :func:`survey_reap_groups` verbatim — no side
+    effect of any kind, the same contract ``worktree branches`` has.
+
+    With *yes*, one group's failure is never the whole sweep's: it lands in
+    ``failed`` with the real error text and every other targeted group is
+    still processed, so a document is always returned. The returned document
+    is then a RE-SURVEY of the post-state, not the pre-pass plan — what an
+    operator needs after a destructive verb is what is true NOW.
+    """
+    # Validated BEFORE anything is enumerated: `--category ambiguous` must
+    # fail as the refusal it is, not after a Docker error incidentally
+    # produced some other exit code.
+    active = resolve_reap_categories(categories)
+    survey = survey_reap_groups(repo_root, now=now)
+    if not yes:
+        return survey
+
+    targets = [g for g in survey["groups"] if g["category"] in active]
+    if dry_run:
+        survey["status"] = "dry-run"
+        survey["categories"] = list(active)
+        survey["plan"] = [
+            {"group": g["key"], "category": g["category"], "commands": _reap_plan(g)}
+            for g in targets
+        ]
+        return survey
+
+    # A network is shared by every group of one identity; a group is a blocker
+    # for it until that group has been successfully disposed of.
+    # An UNTARGETED group (an `owned` sibling stack, say) never leaves this
+    # map, so it blocks its identity network for the whole pass.
+    pending: dict[str, set[str]] = {}
+    for group in survey["groups"]:
+        for network in group["networks"]:
+            pending.setdefault(network, set()).add(group["key"])
+
+    reaped: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for group in targets:
+        blocked = {
+            network: sorted(pending.get(network, set()) - {group["key"]})
+            for network in group["networks"]
+        }
+        if group["category"] == "orphaned" and not survey["identity_complete"]:
+            failed.append({"group": group["key"], "reason": (
+                "refusing to reap an `orphaned` group while "
+                + ", ".join(survey["unresolved_checkouts"])
+                + " carries an instance record CIU could not read an identity "
+                "from: an id that looks unclaimed may simply be the one that "
+                "could not be read. Repair or remove that record first."
+            )})
+            continue
+        try:
+            notes, failure = _reap_one_group(group, blocked)
+        except WorktreeError as exc:
+            # Nothing escapes this loop: an unexpected refusal mid-sweep must
+            # not leave every later group silently unprocessed (the ciu-P28
+            # defect shape, one layer down).
+            notes, failure = [], (
+                f"unexpected failure, remaining groups still processed: {exc}"
+            )
+        if failure:
+            failed.append({"group": group["key"], "reason": failure})
+            continue
+        for network in group["networks"]:
+            pending.get(network, set()).discard(group["key"])
+        reaped.append({"group": group["key"], "notes": notes})
+
+    fresh = survey_reap_groups(repo_root, now=now)
+    survey["groups"] = fresh["groups"]
+    survey["counts"] = fresh["counts"]
+    survey["findings"] = fresh["findings"]
+    survey["hint"] = fresh["hint"]
+    survey["identity_complete"] = fresh["identity_complete"]
+    survey["unresolved_checkouts"] = fresh["unresolved_checkouts"]
+    survey["status"] = "reaped" if not failed else "partial"
+    survey["categories"] = list(active)
+    survey["reaped"] = reaped
     survey["failed"] = failed
     return survey
 
@@ -2459,6 +3713,15 @@ def remove(
             "problem)."
         )
 
+    # S16.9 — ON SUCCESS ONLY. The lease is the evidence that something still
+    # owns this instance's Docker resources, so it is cleared exactly when the
+    # clean that removed them SUCCEEDED (rc == 0). A failed clean reaching here
+    # means --force was passed: the checkout is about to be destroyed with
+    # resources possibly still standing, which is precisely when the ownership
+    # record must NOT be erased.
+    if rc == 0:
+        release_own_lease(ciu_root)
+
     res = _git(["worktree", "remove", str(wt.path)] + (["--force"] if force else []),
                repo_root)
     if res.returncode != 0:
@@ -2739,6 +4002,27 @@ _MAX_CONCURRENT_ENV = "CIU_MAX_CONCURRENT_WORKTREES"
 _MAX_CONCURRENT_DECIMAL_RE = re.compile(r"^[1-9][0-9]*$")
 _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 
+# The CLOSED key vocabulary of `[ciu.worktree]`. An unknown key here has
+# always been a hard refusal rather than a silent ignore, and stays one:
+# a misspelled capacity or lease policy that quietly does nothing is exactly
+# the "defaults are hazards" shape this estate refuses.
+WORKTREE_TABLE_KEYS = frozenset({"max_concurrent_instances", "lease_ttl_hours"})
+
+
+def _validate_worktree_table(raw: Any) -> None:
+    """Shape + closed-key check for one `[ciu.worktree]` table (S16.3/S16.9)."""
+    if not isinstance(raw, Mapping):
+        raise WorktreeError(
+            f"[S16.3] [ciu.worktree] must be a table, got "
+            f"{type(raw).__name__}: {raw!r}"
+        )
+    unknown = set(raw) - set(WORKTREE_TABLE_KEYS)
+    if unknown:
+        raise WorktreeError(
+            f"[S16.3] unknown key(s) in [ciu.worktree]: "
+            f"{', '.join(sorted(unknown))}"
+        )
+
 
 def primary_worktree_root(repo_root: Path) -> Path:
     """The registered PRIMARY **Git** worktree of *repo_root*'s family (S16.3).
@@ -2835,17 +4119,7 @@ def resolve_max_concurrent_instances(
     """
     file_value: int | None = None
     if raw is not None:
-        if not isinstance(raw, Mapping):
-            raise WorktreeError(
-                f"[S16.3] [ciu.worktree] must be a table, got "
-                f"{type(raw).__name__}: {raw!r}"
-            )
-        unknown = set(raw) - {"max_concurrent_instances"}
-        if unknown:
-            raise WorktreeError(
-                f"[S16.3] unknown key(s) in [ciu.worktree]: "
-                f"{', '.join(sorted(unknown))}"
-            )
+        _validate_worktree_table(raw)
         if "max_concurrent_instances" in raw:
             value = raw["max_concurrent_instances"]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -2884,20 +4158,61 @@ def resolve_worktree_cap(repo_root: Path) -> int | None:
     moment it tries to enumerate worktrees for a non-``None`` cap it cannot
     actually honour.
     """
+    return resolve_max_concurrent_instances(_primary_worktree_table(repo_root))
+
+
+def _primary_worktree_table(repo_root: Path) -> Any:
+    """The PRIMARY CIU root's raw ``[ciu.worktree]`` table, or ``None``.
+
+    One reader for the whole table, shared by the capacity cap (S16.3) and
+    the lease TTL (S16.9), so the two policies can never disagree about WHICH
+    checkout's configuration is authoritative.
+    """
     repo_root = Path(repo_root).resolve()
-    raw: Any = None
-    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode == 0:
-        root = primary_ciu_root(repo_root)
-        try:
-            root_global = config_model.render_global_chain(
-                root, root, write_rendered=False
-            )
-        except ValueError as exc:
-            if not str(exc).startswith("[ERROR] No global configuration found."):
-                raise
-            root_global = {}
-        raw = root_global.get("ciu", {}).get("worktree")
-    return resolve_max_concurrent_instances(raw)
+    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode != 0:
+        return None
+    root = primary_ciu_root(repo_root)
+    try:
+        root_global = config_model.render_global_chain(
+            root, root, write_rendered=False
+        )
+    except ValueError as exc:
+        if not str(exc).startswith("[ERROR] No global configuration found."):
+            raise
+        root_global = {}
+    return root_global.get("ciu", {}).get("worktree")
+
+
+def resolve_lease_ttl_hours(raw: Mapping[str, Any] | None) -> float | None:
+    """S16.9 — the declared ``[ciu.worktree].lease_ttl_hours``, or ``None``.
+
+    ``None`` (the key absent) means NO lease is ever acquired by ``ciu up``
+    for this project. That absence is the whole additive-safety story: a
+    consumer who configures nothing keeps exactly today's behavior and takes
+    on zero new expiry risk for anything already running. There is
+    deliberately no non-zero default — a default TTL would start silently
+    expiring leases on instances whose operators never opted in.
+    """
+    if raw is None:
+        return None
+    _validate_worktree_table(raw)
+    if "lease_ttl_hours" not in raw:
+        return None
+    value = raw["lease_ttl_hours"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        raise WorktreeError(
+            "[S16.9] [ciu.worktree] lease_ttl_hours must be a positive "
+            f"number of hours, got {value!r}"
+        )
+    return float(value)
+
+
+def resolve_worktree_lease_ttl(repo_root: Path) -> float | None:
+    """S16.9 — this family's lease TTL, from the PRIMARY CIU root's own
+    ``[ciu.worktree]`` table (same authority as the capacity cap). There is
+    no ambient override: a lease's lifetime is a repository policy, not
+    something a single shell can quietly shorten for one `ciu up`."""
+    return resolve_lease_ttl_hours(_primary_worktree_table(repo_root))
 
 
 @dataclass(frozen=True)

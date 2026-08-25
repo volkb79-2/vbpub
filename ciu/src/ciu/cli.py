@@ -70,9 +70,14 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
     worktree branches [--base REF] [-y] [--json]
                                 survey local branches; -y prunes exactly the
                                 fully-merged, clean, UNMANAGED ones (S16.8)
+    worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
+                                survey Docker resource groups; -y DESTROYS
+                                exactly the record/lease/label-provable ones
+                                (S16.10)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -142,7 +147,9 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
 ciu worktree branches [--base REF] [-y] [--json]
+ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
@@ -154,7 +161,20 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   prunes exactly the fully-merged, clean ones — never age-based, never the
   mainline, the primary or invoking checkout's branch, and never a checkout
   carrying a CIU-managed instance (use `worktree rm`, which cleans first);
-  mergedness is always judged from the PRIMARY worktree (S16.8). `up` starts the selected
+  mergedness is always judged from the PRIMARY worktree (S16.8). `lease` sets
+  this instance's EXPLICIT ownership claim (S16.9): --extend DURATION (e.g.
+  24h) renews a bounded `held` lease, --perpetual declares an unbounded one,
+  --release drops the claim. It reads no Docker state, so it works on a
+  stopped instance exactly as on a running one. `reap` is the DOCKER half of
+  the same survey-then-act shape (S16.10): it sorts every Docker resource
+  group into seven closed categories and, with -y, destroys exactly the four
+  a record, a lease or a `ciu.instance` label PROVES are disposable
+  (checkout-missing, lease-expired, orphaned, partial-cleanup). Age, name
+  similarity and "no process is running" are never consulted; `unattributable`
+  and `ambiguous` groups are never destroyed and cannot be selected with
+  --category at all. A group whose checkout survives is disposed of by running
+  `ciu clean` there, never by a bare docker removal. Run it without -y (or
+  with -y --dry-run) first: that is a pure survey. `up` starts the selected
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
@@ -1205,6 +1225,18 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    # S16.9 — the explicit operator verb over the ownership lease. The three
+    # modes are mutually exclusive AND required: there is no "default" lease
+    # operation, because every one of them is a deliberate statement about
+    # who owns this instance's resources.
+    p_lease = sub.add_parser("lease", add_help=False)
+    p_lease.add_argument("logical_name")
+    p_lease_mode = p_lease.add_mutually_exclusive_group(required=True)
+    p_lease_mode.add_argument("--extend", default=None, metavar="DURATION")
+    p_lease_mode.add_argument("--perpetual", action="store_true", default=False)
+    p_lease_mode.add_argument("--release", action="store_true", default=False)
+    p_lease.add_argument("--json", action="store_true", default=False)
+
     p_branches = sub.add_parser("branches", add_help=False)
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
@@ -1212,6 +1244,22 @@ def _worktree(rest: list[str]) -> int:
         help="remove the fully merged, clean branches (default: survey only)",
     )
     p_branches.add_argument("--json", action="store_true", default=False)
+
+    # S16.10 — the Docker half of CIU-25. Survey-only unless -y is given, and
+    # --category can only ever NARROW what -y acts on: the two never-reaped
+    # categories are not selectable at all (worktree.resolve_reap_categories
+    # refuses them), so no flag combination reaches them.
+    p_reap = sub.add_parser("reap", add_help=False)
+    p_reap.add_argument(
+        "-y", "--yes", action="store_true", default=False,
+        help="reap the provably disposable groups (default: survey only)",
+    )
+    p_reap.add_argument("--category", default=None, metavar="C1,C2")
+    p_reap.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="with -y: print the exact commands instead of running them",
+    )
+    p_reap.add_argument("--json", action="store_true", default=False)
 
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
@@ -1222,7 +1270,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up, p_branches,
+        p_lease, p_up, p_branches, p_reap,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -1319,6 +1367,28 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  dirty: {git['dirty']}")
             return 0
 
+        if opts.action == "lease":
+            record = wt_mod.apply_lease(
+                repo_root, opts.logical_name, extend=opts.extend,
+                perpetual=opts.perpetual, release=opts.release,
+            )
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.build_instance_document("lease", record),
+                    sort_keys=True,
+                ))
+            else:
+                lease = record.lease
+                print(f"worktree lease: {record.logical_name}")
+                if lease is None:
+                    print("  lease: none (released)")
+                else:
+                    print(f"  mode: {lease.mode}")
+                    print(f"  holder: {lease.holder}")
+                    print(f"  renewed: {lease.renewed_at_utc}")
+                    print(f"  expires: {lease.expires_at_utc or 'never (perpetual)'}")
+            return 0
+
         if opts.action == "up":
             return wt_mod.up_instance(repo_root, opts.logical_name)
 
@@ -1374,6 +1444,53 @@ def _worktree(rest: list[str]) -> int:
                         print(f"removed: {name}")
                     for f in doc.get("failed", []):
                         print(f"FAILED: {f['branch']} — {f['reason']}")
+            return code
+
+        if opts.action == "reap":
+            doc = wt_mod.reap_groups(
+                repo_root, yes=opts.yes, categories=opts.category,
+                dry_run=opts.dry_run,
+            )
+            # ONE exit-code decision, hoisted above the output-format branch
+            # for the same reason `branches` hoists its own (ciu-P28): a
+            # partial destructive pass must never report success in ANY output
+            # mode, and duplicating the check into both arms invites the drift
+            # straight back.
+            code = 1 if doc["status"] == "partial" else 0
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+                return code
+            counts = doc["counts"]
+            print(
+                "docker resource reap — "
+                + ", ".join(f"{c} {counts[c]}" for c in wt_mod.REAP_CATEGORIES)
+            )
+            for category in wt_mod.REAP_CATEGORIES:
+                rows = [g for g in doc["groups"] if g["category"] == category]
+                if not rows:
+                    continue
+                print(f"\n{category}:")
+                for g in rows:
+                    print(
+                        f"  {g['key']}  {len(g['containers'])} container(s) "
+                        f"{len(g['volumes'])} volume(s) "
+                        f"{len(g['networks'])} network(s)"
+                    )
+                    print(f"      {g['reason']}")
+            for finding in doc["findings"]:
+                print(f"\nFINDING [{finding['kind']}] {finding['path']}")
+                print(f"  {finding['detail']}")
+            for entry in doc.get("plan", []):
+                print(f"\nwould reap {entry['group']} ({entry['category']}):")
+                for command in entry["commands"]:
+                    print(f"  {command}")
+            for entry in doc.get("reaped", []):
+                print(f"reaped: {entry['group']}")
+                for note in entry["notes"]:
+                    print(f"    {note}")
+            for entry in doc.get("failed", []):
+                print(f"FAILED: {entry['group']} — {entry['reason']}")
+            print(f"\n{doc['hint']}")
             return code
 
         # Every action above returned; the only remaining action is "list"

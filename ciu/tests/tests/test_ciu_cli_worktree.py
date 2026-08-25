@@ -356,7 +356,12 @@ class TestCapabilitiesDispatch:
             "worktree.exec-target.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
+            # ciu-P27: shipped together — reaping is only ever as safe as the
+            # ownership signal it consults, so a consumer that allowlists one
+            # needs the other.
+            "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.reap.v1",
             "worktree.up.v1",
         ]
 
