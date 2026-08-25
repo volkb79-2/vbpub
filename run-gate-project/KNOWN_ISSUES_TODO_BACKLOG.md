@@ -40,6 +40,7 @@ SPEC §9.
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
 | RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
+| RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
 
 ---
 
@@ -1018,3 +1019,94 @@ as `test_safe_directory_write_survives_preexisting_entries`, which
 pre-populates the real isolated gitconfig with two entries and runs the built
 inner command as a live subprocess (fails pre-fix with "cannot overwrite
 multiple values", passes after).
+
+## RG-23 — exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE`
+
+**Filed:** 2026-08-25, from the vbpub controller's assay 2.1.0→2.3.0
+review-gap audit (`vbpub/assay/nyxloom-trove/reports/assay-review-gap-audit-2026-08-25.md`
+§5, finding ba-D — filed against assay's commit `ba8908d6` because that
+commit's SQL/infrastructure-forwarding work is what motivated this change,
+but the defect itself is entirely inside `run-gate.py`).
+
+### The bug
+
+`run_exec_lane` (`run-gate.py:1394`, at `ba8908d6`) replaced a hardcoded
+allowlist with a declaration-driven one:
+
+```diff
+-for key in ("MOCK_MODE", "RUN_LIVE_TESTS", CGROUP_ENV_VAR):
++for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
+```
+
+No consumer `.toml` was migrated to add `RUN_LIVE_TESTS`/`MOCK_MODE` to its
+`forward_env` list, and neither `SPEC.md` nor `CONSUMERS.md` records the
+removal as a breaking change requiring migration. Still live on `main` today
+— unchanged since `ba8908d6`.
+
+### Confirmed consumer impact (dstdns)
+
+`/workspaces/dstdns/run-gate.toml`'s `[environments.test-runner]`
+`forward_env` (line 12) lists 13 names; `RUN_LIVE_TESTS` is not among them.
+`[lanes.release]`'s own comment (line 189) still reads "Consumer must set
+RUN_LIVE_TESTS=1 (forwarded by run-gate exec-mode)" — true before this
+commit, false since. Reproduced by replaying the exec-lane env-forwarding
+logic against the real dstdns `run-gate.toml`: `RUN_LIVE_TESTS` is not among
+the `-e` flags the container actually receives.
+
+**Failure scenario:** an operator exports `RUN_LIVE_TESTS=1` as the lane's
+own comment instructs and runs `release`
+(`pytest -m 'integration or observability or e2e or infra'`). The variable
+never enters the container; dstdns's `tests/conftest.py` (`:588`, `:611-613`)
+skips every selected test on its absence; an all-skipped pytest run exits 0.
+**The lane reports GREEN having executed no live test** — a silent false
+green on the exact class of test the lane exists to run.
+
+Neither of run-gate's own safety nets catches it: the `release` lane
+declares no `required_env` (so `preflight_required_env` never fires), and
+`--check-env`'s `ENV_REF_RE` needs a string literal inside `getenv(...)`,
+while dstdns reads the flag through `os.getenv(name, "")` wrapped in a
+helper (`_env_flag_enabled(name)`), which the regex does not match.
+
+### Why this is run-gate's bug, not (only) a consumer config gap
+
+The allowlist→declaration change is a breaking API change for every exec-mode
+consumer that relied on the two implicit names, shipped with no migration
+pass across consumers and no CONSUMERS.md/SPEC.md note that `forward_env`
+must now explicitly list them. A silent false-green on a live-test lane is
+exactly the failure class run-gate's own `--check-env`/`required_env`
+machinery exists to catch, and it does not catch this one.
+
+### Fix
+
+Two independent halves:
+1. **run-gate-project (this repo):** document the breaking change in
+   `SPEC.md`/`CONSUMERS.md` explicitly (the two names are no longer
+   implicit — every consumer relying on them must add them to its own
+   `forward_env`), and consider whether `--check-env` should be extended to
+   catch the `os.getenv(name, ...)`-wrapped-in-a-helper shape dstdns uses
+   (or document that limitation explicitly so consumers know a bare-regex
+   check will not see the flag).
+2. **dstdns (separate repo, not fixed here):** add `RUN_LIVE_TESTS` to
+   `[environments.test-runner]`'s `forward_env`, and preferably add it to
+   `[lanes.release]`'s `required_env` so a missing value refuses loudly
+   instead of silently skipping every selected test.
+
+### Oracle
+
+A real exec-mode lane, driven through the installed `run-gate.py`, whose
+declared `environment_command`/test suite asserts a forwarded env var is
+present — before this fix: absent when relying on the old implicit names;
+after: present once `forward_env` is corrected, refused loudly by
+`required_env` if omitted.
+
+### Acceptance
+
+- [ ] `SPEC.md`/`CONSUMERS.md` document the breaking change and the
+      migration every exec-mode consumer must make;
+- [ ] a decision recorded on whether `--check-env` should be extended to
+      catch helper-wrapped `getenv` reads, or documented as a known
+      limitation;
+- [ ] every vbpub-estate exec-mode consumer's `forward_env` audited for
+      env vars it relied on implicitly before `ba8908d6`;
+- [ ] dstdns's own fix (see above) tracked and confirmed landed — cross-repo
+      pointer, not owned here.

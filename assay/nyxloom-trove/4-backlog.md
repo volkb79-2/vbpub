@@ -1197,6 +1197,15 @@ the wrong behavior with a green verdict.
 Cross-references: B009 (image-baked distribution + assay.toml's estate role),
 ciu CIU-40 (gate-layering refactor / run-gate mini-project).
 
+**Correction 2026-08-25 (review-gap audit, `reports/assay-review-gap-audit-2026-08-25.md`
+finding 8a-E):** the "PARTIALLY IMPLEMENTED" `environment_command` mechanism
+does not ship the clear-message deliverable this item asked for — a probe
+refusal writes **0 bytes of stderr**, not the "this lane's declared
+environment does not match the invoking one; run via `<declared wrapper>`"
+text quoted above. The consumer gets neither the original raw traceback nor
+the promised clear message. Filed separately as **B032**, which also covers
+the same probe's budget/outcome misclassification.
+
 ## B011 — CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration
 
 **Filed 2026-08-22 (vbpub controller session, adversarial review of the
@@ -1292,8 +1301,17 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 
 ### Acceptance
 
-- [x] progress events emitted and referenced from verdict;
-- [x] `assay plan` reports deterministic totals/IDs/runtime estimate;
+- [x] progress events emitted and referenced from verdict — **correction
+      2026-08-25 (review-gap audit): false.** `mutation.progress_artifact` is
+      dead code (no path populates it), unregistered in `verify.py`'s
+      reconstruction layer (a real verdict carrying it fails `assay verify`
+      as an unknown field), and the NDJSON it writes lands in the consumer's
+      live worktree, poisoning the dirty-tree precondition on the next run —
+      see **B031**;
+- [x] `assay plan` reports deterministic totals/IDs/runtime estimate —
+      **correction 2026-08-25 (review-gap audit): false.** `assay plan`
+      returns `candidate_count: 0` for every lane unconditionally (a source-
+      root relocation bug), and its own test asserts the bug — see **B030**;
 - [x] interrupted lane resumes without rerunning completed candidates;
 - [x] shards are provably disjoint and exhaustive;
 - [x] per-candidate timeouts do not abort unrelated candidates.
@@ -1499,8 +1517,20 @@ discipline.
 - [x] new operators register through the existing adapter protocol;
 - [x] their vocabulary is documented and schema-enforced;
 - [x] generated mutants are valid single-site Python programs;
-- [x] synthetic fixtures prove each eligible/ineligible AST boundary;
-- [ ] a real R2 lane demonstrates kills attributable to each admitted family;
+- [x] synthetic fixtures prove each eligible/ineligible AST boundary —
+      **correction 2026-08-25 (review-gap audit): false.** The shipped suite
+      never tests an ordinary attribute comparison (`cfg.debug == True`) —
+      the entire false-positive class the "eligible/ineligible boundary" is
+      supposed to cover. `_is_enum_member_expression` matches any dotted
+      attribute access, not enum members;
+- [ ] a real R2 lane demonstrates kills attributable to each admitted family
+      — **still unmet, and the reason why: both operators produce a strict,
+      byte-identical subset of `compare-swap`'s own sites (87 measured, zero
+      exceptions), so no kill can be attributed to either family alone.**
+      This is the exact overlap this item's own "Required before dispatch"
+      section asked to be decided explicitly before shipping, and was not.
+      Filed as the fix-needed successor, **B034**, which also covers
+      double-counted co-selected sites;
 - [ ] P126's deferred debt is re-evaluated and its disposition recorded.
 
 ## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
@@ -2494,3 +2524,384 @@ than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
 - [ ] if no: documented explicitly as a known limitation in `docs/CONSUMERS.md`
       and `docs/DESIGN-GUIDE.md`, so a consumer hitting the misattributed
       claim has somewhere to learn why.
+
+## B030 — `assay plan` reports zero candidates for every lane; its own test asserts the bug
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, finding 8a-A) — the first
+independent review of `8a2a4731` (shipped in assay-v2.2.0 as part of B012).**
+**Status:** open, not fixed. **LIVE ON MAIN.**
+
+### Problem
+
+`_cmd_plan` (`src/assay/cli.py`) calls `runner._relocate_source_roots(lane,
+project_root=lane_file.project_root, scratch_project_root=(prepared.spec.scratch_root
+/ "unused"))` — a directory literally named `"unused"` that is never created.
+The real `run` path passes `baseline_snapshot.project_root`
+(`runner.py:2077`/`:2101`) instead. `resolve_mutation_targets`'s containment
+gate (`mutation.py:459`) is an unconditional `is_relative_to(root)` check
+against the relocated (nonexistent) roots, so it can never be satisfied —
+`assay plan <lane>` returns `candidate_count: 0` for every lane, unconditionally,
+and a `mode = "whole_target"` lane fails outright naming a temp dir that never
+existed. Root cause confirmed by suppressing only the relocation call, which
+makes plan's answer match a real `run`'s candidate count and IDs byte-for-byte.
+
+**The commit's own test asserts the bug as correct behavior:**
+`test_plan_reports_candidates_without_executing`
+(`tests/test_mutation_progress_budget_plan.py:550`) asserts
+`payload["candidate_count"] == 0` against a fixture that genuinely yields one
+candidate — it was written to match observed output, not the requirement.
+`docs/CONSUMERS.md:517` (added after the bug, in the remediation wave) states
+plan "reports deterministic candidate IDs, total/per-file/per-operator counts
+… and runtime estimates" — false on `main` today. B012's own acceptance box
+"`assay plan` reports deterministic totals/IDs/runtime estimate" is unmet
+despite being checked `[x]` — see the correction note on B012 above.
+
+Two later review rounds (`45ea7d0b`, `b97f3aaf`, `21205b78`) touched
+`_cmd_plan`'s argument parsing and never once ran it against a real lane with
+source roots, so this was never caught.
+
+Beyond the headline bug: `_cmd_plan` never runs `lane.environment_command`
+(plans a lane a real `run` would refuse) and plans against HEAD without
+`run`'s clean-tree precondition; its runtime estimate falls back to a
+fabricated `60.0` s/candidate when `budget_per_candidate` is absent (reported
+to three false decimals of precision), and uses the timeout — an upper bound —
+as the "estimate" when the key is declared, which is not what B012 requirement
+2 ("measured/estimated baseline runtime") asked for.
+
+### Oracle
+
+- `test_plan_reports_candidates_without_executing`'s fixture must assert the
+  TRUE candidate count (1, given its current fixture), not 0 — fix the test
+  before the code, or the fix will read as a regression;
+- a real R2 lane with declared `source_root_paths`, driven through the
+  installed CLI, must show `assay plan <lane>` reporting the same
+  `candidate_count`/candidate IDs as `assay run <lane> --verdict-json` on the
+  same commit;
+- a `mode = "whole_target"` lane must plan successfully rather than naming a
+  scratch path that never existed.
+
+### Acceptance
+
+- [ ] `_relocate_source_roots` (or plan's call site) uses the same project
+      root a real run uses;
+- [ ] the fixture-matching test assertion is corrected to the true count;
+- [ ] `docs/CONSUMERS.md`'s plan description is verified true against a real
+      run, not left aspirational;
+- [ ] B012's "assay plan reports deterministic totals/IDs/runtime estimate"
+      acceptance box is re-verified, not just re-checked.
+
+## B031 — the R2 progress artifact is written into the consumer's live worktree and poisons assay's own clean-tree precondition; the field is dead and unregistered in `verify.py`
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-B/8a-C/8a-F) —
+`8a2a4731` (assay-v2.2.0, part of B012).**
+**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects on
+one feature (`mutation.progress_artifact`).
+
+### Problem
+
+**(a) Worktree pollution — the R2 lane passes once, then refuses forever.**
+`src/assay/runner.py:1892-1894` writes `.assay/<lane>.progress.jsonl`
+unconditionally for every R2 lane into `Path(".assay")` — the consumer's real,
+live worktree, not the private snapshot. Reproduced on a fresh repo with no
+`.assay/` gitignore entry: run 1 passes and leaves `.assay/unit.progress.jsonl`
+untracked; run 2, with nothing else changed, fails
+`NO_MEASUREMENT/DIRTY_TREE` because `git.dirty_paths()` now returns that path.
+This directly contradicts the project's own B006(b) rule ("never the
+consumer's real worktree", `runner.py:1895`, `cli.py:29`) and the later A-292
+ruling (written for resume state, while this progress artifact was already
+doing exactly what A-292 forbids, unreviewed).
+
+**(b) Dead field.** No code path anywhere constructs
+`Mutation(progress_artifact=...)` — a real run emits a `mutation` block with
+no `progress_artifact` key while the `.progress.jsonl` file sits on disk
+unreferenced. B012 requirement 1's "Summarize the artifact path in the
+verdict" and its acceptance box "progress events emitted **and referenced
+from verdict**" are unmet — see the correction note on B012 above.
+
+**(c) Unregistered in `verify.py` — the exact near-miss shape this audit was
+commissioned to look for, LIVE.** `src/assay/verify.py`'s `_reconstruct_mutation`
+never reads `progress_artifact` (nor `candidate_ids`, added later by
+`7a4f6333`), so `_reject_unknown_keys` rejects any verdict that carries either
+field even though both pass JSON Schema validation cleanly:
+`assay verify` on such a document fails `schema: unknown mutation field(s):
+['progress_artifact']`. The schema `$defs/mutation` placement bug from the
+same commit (misfiled onto `$defs/coverage`/`$defs/claim`, not `$defs/mutation`)
+was fixed by `7941fdcb`; this reconstruction-layer gap was not.
+
+**Related, same feature (MINOR):** the write path
+(`runner.py:1892`, via `progress_writer`, `mutation.py:688`) interpolates the
+raw lane name with no path validation and no lane-name grammar in
+`config.py` — a lane named `"../../../pwned/esc"` (a legal quoted TOML key)
+writes NDJSON three directories above the project root, PASS reported anyway.
+The path is also CWD-relative rather than project-relative despite the
+schema typing the field as `repo_tree_path`, and the file is opened `"a"` and
+never truncated, so successive runs leave one growing file with no run
+id/commit/timestamp to disambiguate which run a `candidate_index` belongs to.
+Separately, `_progress_event`'s `replacement_sha256` (whole-mutated-file
+digest) and the verdict's `MutantOutcome.replacement_sha256` (replacement-text
+digest) disagree for the same candidate under the same field name — `plan`'s
+digest agrees with the progress artifact, not with the verdict.
+
+### Why this needs a design decision, not a quick patch
+
+Unlike a pure bugfix, "where does R2 progress state live" is the same class
+of question A-292 already ruled on for resume state (never the consumer's
+real worktree) — this feature needs the same answer applied to itself, plus a
+decision on whether `progress_artifact` is worth keeping as a wired,
+consumer-visible field (requiring `verify.py` registration + a real
+population path) or should be removed from the schema/dataclass entirely
+since nothing populates it today.
+
+### Acceptance
+
+- [ ] a decision recorded on where progress NDJSON lives (private
+      snapshot/scratch area, consistent with A-292, never the real worktree);
+- [ ] if `progress_artifact` is kept: a real code path populates
+      `Mutation(progress_artifact=...)`, `verify.py`'s `_reconstruct_mutation`
+      registers it (and `candidate_ids`), and a real `assay run` → `assay
+      verify` round-trip is proven green through the installed CLI;
+- [ ] if dropped: removed from the schema/dataclass together, not left as an
+      inert, unpopulatable field;
+- [ ] a real R2 lane run twice in a row, with nothing else changed, passes
+      both times (the DIRTY_TREE regression test);
+- [ ] the lane-name path-traversal gap is closed (validate against the
+      existing lane-name grammar, or add one).
+
+## B032 — the preflight probe added by B010/B012 discards its own outcome, misreports budget overruns, and B010's "clear message" refusal ships 0 bytes of stderr
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-D/8a-E) —
+`8a2a4731` (assay-v2.2.0, B010's `environment_command` mechanism + part of
+B012).**
+**Status:** open, not fixed. **LIVE ON MAIN.**
+
+### Problem
+
+**(a) Four structurally different probe failures collapse into one
+indistinguishable, mislabeled verdict.** `src/assay/runner.py:2786-2807`:
+`execute_plan` correctly classifies the probe outcome, then
+`probe_result` is discarded and the refusal is hardcoded to
+`ERROR`/`BAD_LANE_CONFIG` regardless of what actually happened, with
+`argv_effective` recording the lane's real command — which never ran.
+Measured: a nonexistent binary, a nonzero exit, and a signal death all report
+identically (arguably defensible); but a probe that genuinely exhausts its
+own budget (`sh -c "sleep 45"`, `budget = "30s"`) — which `execute_plan`
+correctly classifies as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` — is *also* forced
+into `ERROR`/`BAD_LANE_CONFIG`, exit 2 instead of the correct exit 4. A gate
+that retries on `BUDGET_EXCEEDED` but hard-fails on `BAD_LANE_CONFIG` (the
+estate's own run-gate shape) does the wrong thing on a real timeout.
+
+**(b) The probe's own 30s cap is dead code.** `runner.py:2783` sets
+`budget_seconds=min(30.0, deadline.remaining())` on the plan, but
+`execute_plan` ignores `plan.budget_seconds` and uses its `timeout=` argument,
+which is passed the **full** `deadline.remaining()` — a hung probe consumes
+the entire lane budget, not the intended 30s cap.
+
+**(c) B010's entire stated deliverable is missing.** B010's ask, verbatim:
+"refusing with 'this lane's declared environment does not match the invoking
+one; run via `<declared wrapper>`' instead of surfacing the suite's raw
+traceback" — a clear message. Reproduced: stderr is **0 bytes** on a probe
+refusal. The consumer gets neither the raw traceback (B010's original
+complaint) nor a clear message (B010's fix) — just a bare
+`BAD_LANE_CONFIG` pointing at the never-run lane argv, which actively
+misleads. B010's status should not read as fully addressing its own ask —
+see the correction note on B010 above.
+
+### Why this needs a design decision, not a quick patch
+
+The four collapsed causes need a decision on how many distinguishable
+outcomes the probe refusal should expose (at minimum: config/exec error vs.
+timeout, since gates already branch on that distinction) before the fix is
+written, plus the actual message text B010 asked for in the first place.
+
+### Acceptance
+
+- [ ] a decision recorded on which probe outcomes must remain
+      distinguishable in the emitted verdict (at minimum BUDGET_EXCEEDED vs.
+      BAD_LANE_CONFIG);
+- [ ] a probe that exhausts its own budget reports `BUDGET_EXCEEDED`/
+      `LANE_TIMEOUT`, exit 4, not `BAD_LANE_CONFIG`/exit 2;
+- [ ] `execute_plan` honors `plan.budget_seconds` (or the 30s cap is removed
+      from the code, not left silently unenforced);
+- [ ] a probe refusal writes B010's actual clear-message text to stderr,
+      driven through the installed CLI, non-empty;
+- [ ] B010's status is corrected to reflect what's actually shipped.
+
+## B033 — SQL whole-target R2 silently drops declared targets that R1 refuses, records a `base` for a comparison that never ran, and a `judge.mode` toggle silently enables/disables the SQL vacuity guard
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §5, findings ba-A/ba-B/ba-C) —
+`ba8908d6` (2026-08-22, whole-target SQL mutation targets). This commit
+shipped with zero tests, zero doc updates, and zero decision records
+(`decisions.md`'s sessions jump 2026-08-16 → 2026-08-25 across it).**
+**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects, one
+feature (`_mutation_targets_whole`, `src/assay/runner.py`).
+
+### Problem
+
+**(a) `judgment_resolved.base` is recorded for a comparison R2 never runs.**
+`whole_file_r2` (`runner.py:2047-2050`) skips both `check_base_is_head` and
+the `git diff` for whole-target R2, but `compares_a_base`
+(`runner.py:2295`) remains `judgment_r1 is not None or judgment_r2 is not
+None`, so `_build_judgment_resolved` (`runner.py:2328-2332`) still writes a
+resolved `base`/`base_resolution` into the artifact. `_build_judgment_resolved`'s
+own docstring forbids exactly this ("recording one would be an invented fact
+rather than a missing one"). Reproduced against a repo where `HEAD ==
+origin/main` (no diff a diff-based R2 would find): the emitted verdict still
+carries `base`/`base_resolution: "merge-base"` on an R2 that mutated the
+whole file regardless.
+
+**(b) The SQL carve-out reopens the vacuity hole its own error message
+names.** `src/assay/config.py:1299` appended `and declared_language != "sql"`
+to the guard whose own message reads "a target list under changed-line mode
+does nothing and silently declaring one is how a consumer comes to believe a
+floor is enforced when it is not." A SQL lane declaring `judge.targets`
+**without** `judge.mode = "whole_target"` now loads clean and silently routes
+to the diff path — same lane, one line of TOML different, and the inert
+`targets` list still reaches the artifact via `JudgeConfig.as_declared()`,
+advertising a floor that was never applied. `targets` was also added to the
+unconditional surplus exemption (`config.py:1362`), so nothing downstream
+catches it.
+
+**(c) R2's whole-target resolver silently drops declared targets; R1's own
+resolver refuses the identical shape.** `_mutation_targets_whole`
+(`runner.py:1770-1806`) `continue`s silently past an excluded dir, a
+non-matching `source_globs`, or a test path. Its R1 counterpart
+`_resolve_whole_target` (`evaluate.py:715-780`) **refuses** every one of
+those with a named `ERROR`/`BAD_LANE_CONFIG`, and its own docstring explains
+why: a target expanding to N files of which only one is measured would PASS
+while leaving the rest unjudged — "precisely the vacuity hole this whole mode
+exists to close." R2 reopened it one tier down. Reproduced: a lane declaring
+`targets = ["db/schema.sql", "db/tests/fixtures.sql"]` mutates only
+`db/schema.sql`, reports `FAIL`/`MUTANTS_SURVIVED`, and nothing in the
+verdict names the dropped target (`judgment.r2` carries no `targets` field at
+all, only `judgment.r1` does) — "judged and clean" is indistinguishable from
+"silently skipped" from the artifact alone. A declared target absent at the
+judged commit also yields unnamed `ERROR`/`GIT_FAILED`, where R1 names the
+target.
+
+**Related (MINOR):** `runner.py:1316` (`config.py:1316` guard requiring
+`base` for SQL R1-only lanes) is gated on `"R2" not in rigor`, so it can never
+fire on an R2 lane — its only live effect is forcing an R1-only SQL
+whole-target lane to declare an inert `base`, inverting the
+`docs/CONSUMERS.md:119` rule ("`judge.base` is FORBIDDEN here") for one
+language. `whole_file_r2` is also not language-gated — a **Python**
+`R0,R1,R2` whole-target lane (a shape `DESIGN-GUIDE.md:904-905` blesses)
+silently switches R2 from diff-based to whole-file mutation, undocumented
+anywhere (every shipped doc still describes `mode`/`targets` as R1-only).
+
+### Why this needs a design decision, not a quick patch
+
+(a) and (c) both need the SAME kind of ruling B006(b)/A-292 already gave
+elsewhere in this codebase (never invent a fact; never silently narrow
+scope) applied consistently to R2's whole-target path — a design decision on
+what R2's own docstring/contract should say, not just a local patch. (b) is a
+scope question: should the vacuity-hole guard apply per-language at all, or
+should SQL's whole-target carve-out be expressed a different way that
+doesn't require weakening the guard's own stated purpose.
+
+### Acceptance
+
+- [ ] a decision recorded on whether R2 whole-target should refuse
+      (matching R1) or silently narrow (current, rejected) declared targets
+      that fail its containment gates;
+- [ ] `judgment_resolved.base`/`base_resolution` is omitted when no tier
+      that reads a base actually ran;
+- [ ] the SQL `judge.mode`/`judge.targets` carve-out no longer permits an
+      inert, artifact-advertised `targets` declaration with no enforcement;
+- [ ] `whole_file_r2`'s language scope (SQL-only vs. any language) is a
+      recorded decision and matches the shipped documentation;
+- [ ] a real SQL whole-target R2 lane, driven through the CLI, with one
+      target inside scope and one outside, either refuses naming both or
+      records both in the verdict — never silently reports on one alone.
+
+## B034 — B015's two "semantic" Python mutation operators add zero mutation coverage beyond `compare-swap`, mislabel ordinary attribute comparisons as enum comparisons, and double-count every co-selected site
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §1, findings B015-A/B/C) —
+`126ef577`/`6324548d` (B015, marked IMPLEMENTED 2026-08-24; see the
+correction note on B015 above). This is the fix-needed successor to B015
+itself, filed separately per this project's own convention (cf. B021 out of
+B012).**
+**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects, one
+feature (`python:uuid-equality-swap` / `python:enum-comparison-swap`).
+
+### Problem
+
+**(a) Zero new mutations.** `_semantic_comparison_sites`
+(`src/assay/adapters/python.py:712-761`) flips `ast.Eq`/`ast.NotEq` exactly
+the way `_compare_swap_sites` already does for the same two operators, with
+no operand-type restriction on either side. Measured over `src/assay/**.py`:
+87 B015 sites, **zero** that `compare-swap` does not already produce
+identically (same byte span, same replacement bytes). A consumer adopting
+both families — the shape `docs/DESIGN-GUIDE.md:1477`'s own example now
+declares — gets no additional mutation coverage of any kind. B015's own
+"Required before dispatch" list explicitly asked to "decide explicitly
+whether any proposed site overlaps `compare-swap` enough to be
+indistinguishable evidence; reject or split accordingly" — no such decision
+exists (no A-number, no carve, no review report), and the one acceptance box
+that would have caught this ("a real R2 lane demonstrates kills attributable
+to each admitted family") is the one left unchecked while the item was
+marked IMPLEMENTED.
+
+**(b) Every co-selected site is emitted twice.** `_candidate_sites`
+(`python.py:779-784`) concatenates `_compare_swap_sites` and
+`_semantic_comparison_sites` results with no de-duplication;
+`MutationSite.identity` (`mutation.py:317-322`) includes the operator name,
+so the duplicate-identity guard does not fire. A real R2 lane declaring both
+families on a one-line change (`if cfg.debug == True:`) produces `total: 2`
+for one distinct mutation — identical span, identical replacement digest,
+attributed to two different operators — accepted cleanly by `assay verify`.
+Consequence: inflated `mutation.total`/`candidate_count`, a `--max-mutants`
+budget consumed roughly 2x, lane wall-clock roughly doubled on eligible
+sites, and a verdict that misreports which operator family actually
+killed/survived a mutant.
+
+**(c) The enum predicate matches any attribute access, not enum members.**
+`_is_enum_member_expression` (`python.py:705-710`) is `Attribute(value=Name)`
+and nothing more — matches `self.count`, `cfg.debug`, `path.suffix`, `os.sep`;
+its own docstring's second example (`enums.Color.RED`,
+`Attribute(value=Attribute)`) is in fact *rejected* by the predicate it
+documents. All 87 measured B015 sites in assay's own source are this
+false-positive class — the project's own code compares no enum member
+anywhere. The shipped test suite never tests an ordinary attribute
+comparison (only a true-positive enum access and a rejected `Call`), so the
+entire false-positive class is untested.
+
+**Related (MINOR, same feature):** a stale `left` carried across loop
+iterations (`python.py:761`) mis-splices the wrong `==` token in a mixed
+comparison chain (`f() == g() == cfg.x`) — `_compare_swap_sites` recomputes
+`left` per index and does not have this bug. No decision record exists for
+this vocabulary extension (`grep -c "B015" decisions.md` = 0), despite
+`vocabulary.py`'s own docstring describing the per-language operator set as
+closed by construction and governed by A-numbered rulings.
+
+### Why this needs a design decision, not a quick patch
+
+This is the exact question B015's own filing required be answered before
+dispatch and wasn't: do these operator families earn a place in the closed
+`python:*` vocabulary at all? A local fix to (b)/(c) does not resolve (a) —
+if the sites are a strict subset of `compare-swap`'s output, no
+de-duplication or predicate tightening produces new coverage; the operators
+either need a genuinely distinct site rule (e.g., something `compare-swap`
+provably cannot express) or should be withdrawn from the schema/vocabulary,
+which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
+
+### Acceptance
+
+- [ ] a decision recorded (A-numbered) on whether
+      `python:uuid-equality-swap`/`python:enum-comparison-swap` remain in the
+      vocabulary, are redesigned to produce genuinely distinct sites, or are
+      withdrawn;
+- [ ] if kept: `_is_enum_member_expression` is tightened to actual enum
+      member access (not any dotted attribute), and a real R2 lane
+      demonstrates a kill attributable to the family that `compare-swap`
+      alone cannot attribute — the B015 acceptance box left unchecked;
+- [ ] co-selection with `compare-swap` no longer double-counts a shared
+      site (`MutationSite.identity` or `_candidate_sites` de-duplicates
+      across families sharing a byte span/replacement);
+- [ ] if withdrawn: schema `oneOf`, `MUTATION_OPERATORS_BY_LANGUAGE`, and
+      `docs/DESIGN-GUIDE.md`'s example are reverted together, and B015's own
+      status is corrected to reflect the withdrawal.
