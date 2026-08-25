@@ -150,9 +150,20 @@ gate runs; the commit subjects remain the traceable source of detail.
   cleanly and ran a **LOCAL** deploy of the active profile while the operator
   believed they had pushed to a remote host — again exit 0, no warning.
   `--layout`, `--host` and `--dir` now route identically in both forms.
-  Dispatch stays exact-or-`=` rather than abbreviation-aware on purpose: it
-  chooses a code path, and an abbreviation still fails loudly at whichever
-  parser it reaches, so it can never deploy the wrong thing.
+  (3) **`--host`'s ABBREVIATIONS had the same silent fall-through**, and
+  fixing only the `=` form left it live — `ciu up --hos=edge-a`,
+  `--ho=edge-a`, `--hos edge-a` and `--ho edge-a` all still parsed cleanly
+  downstream, had the host discarded, and ran a local deploy: 16 of the 20
+  verb × spelling combinations across `up`/`down`/`health`/`render` returned
+  exit 0 having contacted **zero** remote hosts. `--host` dispatch is now
+  abbreviation-aware, resolved by argparse itself rather than by string
+  matching. `--layout` and `--dir` are deliberately NOT abbreviation-aware,
+  and the asymmetry is the point: `ciu-deploy` has no `--layout` or `--dir` at
+  all, so `--lay x` / `--di=/srv` are `unrecognized arguments` and `--d /srv`
+  is genuinely ambiguous there against `--define-root PATH` — all fail loudly
+  with exit 2 and nothing deployed. Widening those would invent a divergence
+  rather than close one. The premise is pinned by a test that asserts it
+  against the REAL `ciu-deploy` parser, so it cannot go stale silently.
   (SPEC S7.5c + S10.4, CIU-34)
 - fix(ciu): declared layouts/exec-targets/vendor_images now validated
   eagerly on every render path — `engine.main_execution` (single-stack) and

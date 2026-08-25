@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import ciu.deploy as REAL_DEPLOY  # captured BEFORE any fixture stubs sys.modules
 from ciu import cli
 
 GLOBAL = {
@@ -486,31 +487,182 @@ def test_up_dir_equals_form_matches_the_space_form(remote, monkeypatch):
     assert calls[0] == calls[1]
 
 
-def test_flag_given_rejects_a_bare_prefix_and_a_different_flag():
-    """`_flag_given` is deliberately exact-or-`=`, NOT abbreviation-aware: it
-    picks a CODE PATH, and widening it would make `ciu up --d /srv` mean
-    `--dir` locally while `--d` stays ambiguous on deploy.py's own parser.
-    Abbreviations still fail loudly at the parser they reach, so they cannot
-    deploy the wrong thing; the abbreviation-aware check is the layout guard."""
+def test_flag_given_matches_space_and_equals_forms():
     assert cli._flag_given(["--host", "web"], "--host") is True
     assert cli._flag_given(["--host=web"], "--host") is True
-    assert cli._flag_given(["--hos", "web"], "--host") is False
     assert cli._flag_given(["--hostile"], "--host") is False
     assert cli._flag_given([], "--host") is False
+    assert cli._flag_given(["--layout=prod"], "--layout") is True
+    assert cli._flag_given(["--dir=/srv"], "--dir") is True
 
 
-def test_up_layout_abbreviation_does_not_dispatch_but_cannot_deploy(remote, monkeypatch, capsys):
-    """The counterpart to the test above, stated as behavior: `ciu up --lay
-    three-host --prof core` does NOT reach the layout branch (dispatch is
-    exact-or-`=`), and therefore must fail LOUDLY at deploy.py's parser with
-    zero transport — never a silent partial deploy."""
+# ---------------------------------------------------------------------------
+# ciu-P29 second pass (adversarial review REJECT). The first pass made dispatch
+# exact-or-`=` and documented "an abbreviation still fails loudly at whichever
+# parser it reaches, so it can never deploy the wrong thing". That claim was
+# FALSE for `--host`: deploy.py declares `--host` (line 3592) for its help text
+# and reads it NOWHERE, so `ciu up --hos=edge-a` parsed cleanly downstream, had
+# the host silently discarded, and ran a LOCAL deploy of the active profile —
+# exit 0, zero hosts contacted. `--host` dispatch is now abbreviation-aware.
+#
+# These tests wrap the REAL deploy.main / deploy.parse_args. A probe that stubs
+# them is VACUOUS here: a dispatch regression would raise ImportError or hit a
+# lambda instead of doing the actual wrong thing, masking both the bug and the
+# fix. That is the whole point of the `real_deploy` fixture below.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_deploy(remote, monkeypatch):
+    """Restore the GENUINE `ciu.deploy` and spy on it instead of stubbing it.
+
+    The `remote` fixture replaces `ciu.deploy` with a SimpleNamespace. Here the
+    real module is put back, `load_global_config` is redirected at this file's
+    GLOBAL, and `main`/`parse_args` are wrapped in recording spies that run the
+    REAL parser — so a fall-through is observable as what it really is: a local
+    deploy, with the real parser's own verdict on the argv recorded next to it.
+    """
+    # NOT `import ciu.deploy` — `remote` has already put a SimpleNamespace in
+    # sys.modules, and an import here would just hand that stub back.
+    real = REAL_DEPLOY
+    monkeypatch.setitem(sys.modules, "ciu.deploy", real)
+    monkeypatch.setattr(real, "load_global_config", lambda _root: GLOBAL)
+    calls = {"main": [], "parse_args": []}
+    real_parse_args = real.parse_args
+
+    def spy_main(argv=None):
+        argv = list(argv or [])
+        try:
+            parsed = f"host={getattr(real_parse_args(argv), 'host', None)!r}"
+        except SystemExit as exc:  # the loud-failure arm (--lay/--di fall-through)
+            calls["main"].append((argv, f"SystemExit({exc.code})"))
+            raise
+        calls["main"].append((argv, parsed))
+        return 0
+
+    def spy_parse_args(argv=None):
+        calls["parse_args"].append(list(argv or []))
+        return real_parse_args(argv)
+
+    monkeypatch.setattr(real, "main", spy_main)
+    monkeypatch.setattr(real, "parse_args", spy_parse_args)
+    return calls
+
+
+_HOST_ABBREVIATIONS = ["--hos=edge-a", "--ho=edge-a", "--hos edge-a",
+                       "--ho edge-a", "--h edge-a", "--host=edge-a"]
+
+
+@pytest.mark.parametrize("verb", ["up", "down", "health", "render"])
+@pytest.mark.parametrize("spelling", _HOST_ABBREVIATIONS)
+def test_abbreviated_host_dispatches_and_never_becomes_a_local_deploy(
+    remote, real_deploy, monkeypatch, verb, spelling
+):
+    """The review's exact matrix, against the REAL parser chain. Before this
+    fix every one of these returned exit 0 having run a LOCAL deploy of the
+    active profile and contacted ZERO remote hosts."""
     seen = remote
-    monkeypatch.setitem(
-        sys.modules, "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: GLOBAL,
-                        main=lambda argv: 2),
-    )
+    assert _run(monkeypatch, [verb, *spelling.split()]) == 0
+    # It reached the remote push path...
+    assert [h[1] for h in seen["hosts"]] == ["edge-a"]
+    assert len(seen["exec"]) == 1
+    assert len(seen["sync"]) == (1 if verb == "up" else 0)
+    # ...and never fell through to the local deploy. This is the blocker's
+    # assertion: `deploy.main` must not be reached at all.
+    assert real_deploy["main"] == []
+
+
+@pytest.mark.parametrize("verb", ["up", "down", "health", "render"])
+def test_abbreviated_host_matches_the_full_spelling_exactly(
+    remote, real_deploy, monkeypatch, verb
+):
+    """`--hos=edge-a` must produce the same remote argv as `--host edge-a` —
+    the same branch, not a lookalike."""
+    seen = remote
+    assert _run(monkeypatch, [verb, "--hos=edge-a"]) == 0
+    abbreviated = list(seen["exec"])
+    seen["exec"].clear()
+    seen["sync"].clear()
+    assert _run(monkeypatch, [verb, "--host", "edge-a"]) == 0
+    assert seen["exec"] == abbreviated
+    assert real_deploy["main"] == []
+
+
+def test_bare_abbreviated_host_still_errors_in_the_branchs_own_parser(
+    remote, real_deploy, monkeypatch
+):
+    """`nargs="?"` in the dispatch predicate must not swallow the missing-value
+    error: `ciu up --hos` dispatches, then the branch's own parser rejects it,
+    exactly as `ciu up --host` always did."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--hos"]) == 2
+    assert seen["exec"] == [] and seen["sync"] == []
+    assert real_deploy["main"] == []
+
+
+def test_dispatch_abbreviation_premise_against_the_real_deploy_parser(capsys):
+    """Pins the ASYMMETRY `_flag_given` encodes, against the real parser.
+
+    `--host` is abbreviation-aware at dispatch only because deploy.py accepts
+    (and silently ignores) its abbreviations; `--layout`/`--dir` are not,
+    because deploy.py rejects theirs loudly. If deploy.py ever grows a `--dir`
+    or `--layout`, or stops accepting `--hos`, this fails — rather than the
+    docstring quietly going stale and the hazard reopening."""
+    real = REAL_DEPLOY
+
+    # --host EXISTS downstream and is discarded, so a fall-through is SILENT.
+    for argv in (["--hos=edge-a"], ["--ho", "edge-a"], ["--host=edge-a"]):
+        assert real.parse_args(argv).host == "edge-a"
+    assert "--host" in cli._ABBREV_DISPATCH_FLAGS
+
+    # --layout / --dir do NOT exist downstream: every abbreviation fails LOUDLY,
+    # so dispatch for them stays exact-or-`=` and no hazard is left open.
+    for argv in (["--lay", "x"], ["--layout=x"], ["--di=/srv"],
+                 ["--dir=/srv"], ["--d", "/srv"]):
+        with pytest.raises(SystemExit) as exc:
+            real.parse_args(argv)
+        assert exc.value.code == 2
+    assert "--layout" not in cli._ABBREV_DISPATCH_FLAGS
+    assert "--dir" not in cli._ABBREV_DISPATCH_FLAGS
+    capsys.readouterr()  # swallow argparse's usage dumps
+
+    assert set(cli._ABBREV_DISPATCH_FLAGS) <= set(cli._DISPATCH_FLAGS)
+
+
+def test_dispatch_flags_have_distinct_second_characters():
+    """Residual guard suggested by the review. Both argparse-resolution sites
+    register several long flags on one parser and rely on none being a prefix
+    of another. A future flag colliding with an existing one (say `--hub`
+    beside `--host`) must fail HERE, at authoring time, rather than as an
+    `ambiguous option` at a user's terminal."""
+    for group in (cli._DISPATCH_FLAGS, ("--layout",) + cli._LAYOUT_FORBIDDEN):
+        seconds = [flag[2] for flag in group]
+        assert len(set(seconds)) == len(seconds), group
+    assert len(set(cli._DISPATCH_FLAGS)) == len(cli._DISPATCH_FLAGS)
+
+
+def test_up_layout_abbreviation_does_not_dispatch_but_cannot_deploy(
+    remote, real_deploy, monkeypatch
+):
+    """`ciu up --lay three-host --prof core` does NOT reach the layout branch
+    (dispatch stays exact-or-`=` for --layout), and must therefore fail LOUDLY
+    at the REAL deploy parser with zero transport — never a silent deploy. The
+    real parser is wrapped here precisely so "fails loudly" is a measured
+    outcome and not, as in the first pass, an assumption."""
+    seen = remote
     assert _run(monkeypatch, ["up", "--lay", "three-host", "--prof", "core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == [] and seen["hosts"] == []
+
+
+def test_up_dir_abbreviation_does_not_dispatch_but_cannot_deploy(
+    remote, real_deploy, monkeypatch
+):
+    """Same for `--dir`: `--di=/srv` is `unrecognized arguments` downstream and
+    `--d /srv` is genuinely ambiguous there against `--define-root PATH`, so
+    both must fail loudly rather than be silently claimed as `--dir`."""
+    seen = remote
+    for spelling in (["--di=/srv"], ["--d", "/srv"]):
+        assert _run(monkeypatch, ["up", *spelling]) == 2
     assert seen["sync"] == [] and seen["exec"] == [] and seen["hosts"] == []
 
 

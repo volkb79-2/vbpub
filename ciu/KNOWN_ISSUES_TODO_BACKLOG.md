@@ -243,17 +243,62 @@ landing before any inventory lookup (zero transport). Separately, the
 `ciu up --host=web` (and `down`/`health`/`render`) parsed cleanly and ran a
 LOCAL deploy of the active profile instead of the intended SPEC-J push, exit 0
 and silent. Dispatch is now exact-or-`=` on `--layout`/`--host`/`--dir` via
-one shared `_flag_given` predicate; it is deliberately NOT abbreviation-aware,
-since it selects a code path and an abbreviation still fails loudly at
-whichever parser it reaches. Evidence: `_flag_given` / `_parse_layout_argv` in
-`src/ciu/cli.py`; 64 added tests in `tests/tests/test_ciu_cli_layouts.py`
-(19 → **83** in that file, superseding the "19 CLI tests" count stated in the
-checkpoint-C paragraph above), including the review's exact 3-host reproduction
+one shared `_flag_given` predicate, **plus argparse-resolved abbreviations for
+`--host`** — see the round-2 correction immediately below. Evidence:
+`_flag_given` / `_parse_layout_argv` in
+`src/ciu/cli.py`; 96 added tests in `tests/tests/test_ciu_cli_layouts.py`
+(19 → **115** in that file across both rounds, superseding the "19 CLI tests"
+count stated in the checkpoint-C paragraph above), including the review's exact
+3-host reproduction
 asserting ZERO transport calls, every abbreviation length of all six forbidden
 flags in both forms, and `--layout=`/`--host=`/`--dir=` producing push
 sequences identical to their space forms; venv run
-(`.venv/bin/python run-ciu-tests.py`), 2682 passed, 100% line+branch — the
+(`.venv/bin/python run-ciu-tests.py`), 2714 passed, 100% line+branch — the
 iteration signal, not the ship gate. Docs: SPEC S7.5c + S10.4, CHANGES.md.
+
+**CIU-34 hotfix, round 2 (adversarial review REJECT, same day).** The round-1
+fix above made dispatch exact-or-`=` and documented the claim *"an abbreviation
+still fails loudly at whichever parser it reaches, so it can never deploy the
+wrong thing."* **That claim was FALSE for `--host`, and this entry corrects
+it.** Because `deploy.py` declares `--host` and reads it nowhere, `--hos=edge-a`
+/ `--ho=edge-a` / `--hos edge-a` / `--ho edge-a` all parsed CLEANLY downstream,
+had the host silently discarded, and ran a LOCAL deploy — **16 of the 20
+verb × spelling combinations across `up`/`down`/`health`/`render` returned exit
+0 having contacted zero remote hosts.** The `=`-only fix did not close the
+hazard, it narrowed it. `--host` dispatch is now abbreviation-aware, resolved
+by argparse (registering all three dispatch modifiers on one parser, so an
+abbreviation ambiguous BETWEEN them would stay loudly ambiguous rather than be
+claimed by whichever branch is tested first). `--layout`/`--dir` remain
+exact-or-`=` **deliberately, and this is the corrected rule**: the question is
+never "is an abbreviation possible" but "what does the fall-through parser DO
+with it" — `ciu-deploy` has no `--layout`/`--dir`, so `--lay x` and `--di=/srv`
+are `unrecognized arguments` and `--d /srv` is genuinely ambiguous there
+against `--define-root PATH`; all fail loudly, and widening them would invent a
+divergence rather than close one. That premise is pinned against the REAL
+`deploy.parse_args` by
+`test_dispatch_abbreviation_premise_against_the_real_deploy_parser`, plus a
+distinct-second-character invariant test so a future colliding flag fails at
+authoring time. The round-2 tests wrap the genuine `deploy.main`/`parse_args`
+rather than a stub — a stubbed probe is vacuous here, since a dispatch
+regression would hit the stub instead of performing the real local deploy, and
+would mask both the bug and the fix.
+
+**Follow-up filed by the round-2 review — `deploy.py` declares a flag it never
+reads (root cause of the above), OPEN.** `deploy.py:3592` registers
+`--host NAME` with the help text "Remote host name (from hosts inventory):
+push-deploy via SSH (SPEC J)", and **nothing in the file ever reads
+`args.host`** (grep confirms zero consumers). It exists only so the flag shows
+up in `ciu-deploy --help`. That is what turned every `--host` dispatch miss
+from a loud error into a silent local deploy: a "lying" flag that documents a
+behaviour it does not implement. Fixing the DISPATCH layer in `cli.py` closes
+the hazard for the real invocation surface — the `ciu` verb CLI — which is why
+ciu-P29 stopped there (`deploy.py` was `scope.forbid` for that package). The
+dead flag itself remains, and anyone invoking `ciu-deploy` directly still gets
+a silently-ignored `--host`. A small future cleanup package should either make
+`ciu-deploy --host` do what its help says or remove the declaration and point
+at `ciu up --host`; it should NOT simply be deleted without checking S10.2's
+help-surface contract. Lower urgency than the dispatch hazard, but it is the
+root cause and should not be lost.
 
 **Follow-up spotted, NOT fixed here (candidate for its own entry).** `ciu
 bake`'s `--profile`-vs-positional-targets mutual exclusion (`_bake` in

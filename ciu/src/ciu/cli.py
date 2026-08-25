@@ -484,37 +484,84 @@ _LAYOUT_FORBIDDEN = (
 )
 
 
-def _forbidden_dest(flag: str) -> str:
-    """argparse dest for a `_LAYOUT_FORBIDDEN` entry, namespaced away from `layout`."""
-    return "forbidden_" + flag[2:].replace("-", "_")
+# ciu-P29 (hotfix) — the modifiers that SELECT a verb's code path (S10.4):
+# `--layout` and `--dir` on `up`, `--host` on `up`/`down`/`health`/`render`.
+# No entry may be an argparse prefix of another (they have distinct second
+# characters), or an abbreviation would be claimed by whichever branch happens
+# to be tested first instead of being reported as ambiguous — pinned by
+# test_dispatch_flags_have_distinct_second_characters.
+_DISPATCH_FLAGS = ("--layout", "--host", "--dir")
+
+# Of those, the ones whose ABBREVIATIONS must dispatch too. See _flag_given:
+# this is exactly the set that `deploy.py`'s parser would ALSO accept, i.e.
+# where a fall-through is silent rather than loud.
+_ABBREV_DISPATCH_FLAGS = ("--host",)
+
+
+def _flag_dest(flag: str) -> str:
+    """argparse dest for a long flag, namespaced so registrations never collide."""
+    return "flag_" + flag[2:].replace("-", "_")
 
 
 def _flag_given(argv: list[str], flag: str) -> bool:
-    """True when *flag* is in *argv* as `--flag VALUE` **or** `--flag=VALUE`.
+    """True when *flag* selects this verb's code path (S10.4).
 
-    ciu-P29 (hotfix): every verb-dispatch site below used a plain
-    ``flag in argv`` membership test, which sees the space form but not the
-    ``=`` form, so the `=` form silently took a DIFFERENT code path. That was
-    not cosmetic in either place it happened:
+    Always matches `--flag VALUE` and `--flag=VALUE`. For a flag in
+    `_ABBREV_DISPATCH_FLAGS` it ALSO matches every unambiguous argparse
+    abbreviation, resolved by argparse itself rather than by prefix arithmetic
+    — the same technique :func:`_parse_layout_argv` uses for the layout guard.
 
-    * `ciu up --layout=prod` skipped the layout path entirely and fell through
-      to the local profile deploy, dying on an unrelated argparse error.
-    * `ciu up --host=web` (and `down`/`health`/`render`) fell through to
-      `deploy.py`'s parser, which DECLARES `--host` for its help text but never
-      reads it (S10.2) — so the SPEC-J push was silently downgraded to a LOCAL
-      deploy of the active profile, with exit 0 and no warning.
+    ciu-P29, first pass: every dispatch site was a plain ``flag in argv``
+    membership test, which sees the space form but not the ``=`` form, so
+    `--flag=value` silently took a DIFFERENT code path.
 
-    Deliberately exact-or-`=` only, NOT argparse abbreviation: this predicate
-    decides WHICH CODE PATH runs, and widening dispatch to abbreviations would
-    make `ciu up --d /srv` mean `--dir` locally while `--d` stays ambiguous on
-    `deploy.py`'s own parser — a new divergence, not a closed one. An
-    abbreviation still fails loudly at whichever parser it reaches, so it
-    cannot deploy the wrong thing. The abbreviation-awareness that matters for
-    SAFETY is the `--layout` mutual-exclusion guard (:func:`_parse_layout_argv`),
-    which runs once the layout path has already been entered and whose flags
-    would otherwise be FORWARDED to a remote parser that does resolve them.
+    ciu-P29, second pass (review REJECT): exact-or-`=` was still not enough,
+    and the reason is worth stating because it is NOT symmetric across the
+    three dispatch modifiers. What a fall-through COSTS depends entirely on
+    what `deploy.py`'s parser does with the leftover token:
+
+    * `--layout` and `--dir` do not exist there at all. `--lay x` and
+      `--di=/srv` are `unrecognized arguments`; `--d /srv` is `ambiguous
+      option: --d could match --deploy, --dry-run, --define-root`. Every
+      abbreviation fails LOUDLY, exit 2, nothing deployed.
+    * `--host` DOES exist there — declared at deploy.py:3592 for the help text
+      and read by NOTHING. So `--hos=edge-a` and `--ho edge-a` parse CLEANLY,
+      `args.host` is silently discarded, and the run becomes a LOCAL deploy of
+      the active profile while the operator believes they pushed to a remote
+      host. Exit 0, no warning, zero hosts contacted.
+
+    Hence `--host` alone is abbreviation-aware here. `--layout`/`--dir` stay
+    exact-or-`=` deliberately: they have no such gap, and widening them would
+    INVENT a divergence rather than close one — locally `--d /srv` would become
+    `--dir`, while downstream `--d` is genuinely ambiguous against
+    `--define-root PATH`, a different path-taking flag. A loud error is the
+    correct answer there, and it is what already happens.
+
+    The premise this asymmetry rests on is not left to a comment:
+    `test_dispatch_abbreviation_premise_against_the_real_deploy_parser` pins it
+    against the REAL `deploy.parse_args`, so if `deploy.py` ever grows a
+    `--dir`/`--layout`, or stops accepting `--hos`, that test fails rather than
+    this docstring quietly going stale.
     """
-    return any(a == flag or a.startswith(flag + "=") for a in argv)
+    if any(a == flag or a.startswith(flag + "=") for a in argv):
+        return True
+    if flag not in _ABBREV_DISPATCH_FLAGS:
+        return False
+    import argparse as _ap
+
+    # Register ALL the dispatch modifiers, not just *flag*: an abbreviation
+    # that is ambiguous BETWEEN modifiers then stays ambiguous (argparse exits
+    # 2, loudly) instead of being silently claimed by whichever branch is
+    # tested first. None is ambiguous today — see _DISPATCH_FLAGS.
+    # nargs="?"/const=True keeps a bare `--host` from raising `expected one
+    # argument` HERE; the branch's own parser still owns that error, exactly as
+    # it did before this predicate existed.
+    p = _ap.ArgumentParser(add_help=False)
+    for candidate in _DISPATCH_FLAGS:
+        p.add_argument(candidate, dest=_flag_dest(candidate),
+                       nargs="?", const=True, default=None)
+    opts, _remaining = p.parse_known_args(argv)
+    return getattr(opts, _flag_dest(flag)) is not None
 
 
 def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str]]:
@@ -555,12 +602,12 @@ def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str
     p = _ap.ArgumentParser(add_help=False)
     p.add_argument("--layout", dest="layout", default=None)
     for flag in _LAYOUT_FORBIDDEN:
-        p.add_argument(flag, dest=_forbidden_dest(flag),
+        p.add_argument(flag, dest=_flag_dest(flag),
                        nargs="?", const=True, default=None)
     opts, remaining = p.parse_known_args(rest)
     forbidden = [
         flag for flag in _LAYOUT_FORBIDDEN
-        if getattr(opts, _forbidden_dest(flag)) is not None
+        if getattr(opts, _flag_dest(flag)) is not None
     ]
     return opts.layout, remaining, forbidden
 

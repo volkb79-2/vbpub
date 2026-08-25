@@ -1158,11 +1158,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `health` (S14.6). `up --host --thin` also accepts `--bootstrap`/`--rollback`.
   The modifiers that SELECT a verb's code path — `--host` on `up`/`down`/
   `health`/`render`, `--dir` and `--layout` (S7.5c) on `up` — MUST route
-  identically whether written `--flag value` or `--flag=value`. A `=`-form
-  modifier that fails to route is a defect, not a syntax error: `--host=NAME`
-  once fell through to `ciu-deploy`'s parser, which declares `--host` for its
-  help text but never reads it (S10.2), silently turning an intended SPEC-J
-  push into a LOCAL deploy of the active profile.
+  identically whether written `--flag value` or `--flag=value`, **and MUST
+  additionally route every abbreviation that the parser they would otherwise
+  fall through to would itself accept**. A modifier spelling that fails to
+  route is a defect, not a syntax error, whenever the fall-through is silent:
+  `ciu-deploy` declares `--host` for its help text but never reads it (S10.2),
+  so `--host=NAME` — and equally `--hos NAME` or `--ho=NAME` — once parsed
+  cleanly downstream with the host discarded, turning an intended SPEC-J push
+  into a LOCAL deploy of the active profile at exit 0. `--layout` and `--dir`
+  do not exist in that parser at all, so every abbreviation of them already
+  fails loudly (exit 2, nothing deployed) and they route on the exact and `=`
+  forms only — widening them would resolve, in CIU, an abbreviation that
+  `ciu-deploy` itself treats as ambiguous (`--d` against `--define-root`).
+  This asymmetry is normative and MUST be pinned by a test against the real
+  `ciu-deploy` parser rather than asserted in prose.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
   `--log-prefix-time-short` is a global presentation flag accepted before or after the
   verb (before a `--` passthrough boundary): it prefixes CIU's existing `[INFO]`, `[WARN]`,
