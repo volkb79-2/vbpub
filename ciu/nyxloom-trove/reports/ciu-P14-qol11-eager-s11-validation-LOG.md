@@ -4,12 +4,66 @@
 - Worktree: `/workspaces/vbpub/.worktrees/ciu-qol-v8prep-wave/ciu`
 - Branch: `feat/ciu-qol-v8prep-wave`
 - Handoff `input_revision`: `3d2531ab`
-- Status: **COMPLETE — O1-O5 all done, 0 failures, 100% line+branch coverage**
+- Status: **COMPLETE — O1-O5 all done, adversarial-review blocker fixed,
+  0 failures, 100% line+branch coverage**
 - Code commits:
   - `d2578430974c71ced9dde0e3c32f1a83311b1833` — the package itself (O1-O5)
   - `cc269db5993bee1530a844e769662ba297c24b69` — follow-up: corrected an
     overclaim in `validate_declared_features`'s own docstring after
     empirically re-checking it (see O1 below)
+  - `be19501854e382862bce2ba90aa75d591b959bb4` — LOG for the above two
+  - `84b763927aab4d7cd6dab759618e1ca09081b51c` — adversarial-review fix
+    (see "Adversarial review fix" section below)
+
+## Adversarial review fix (post-initial-submission)
+
+Independent review REJECTed the initial submission on one blocker:
+`engine.py`'s Step-5 call to `validate_declared_features` did not catch
+`worktree.WorktreeError` the way `deploy.py:1719`'s call to the same
+function does, so a malformed `[ciu.worktree.exec_targets]` table raised
+`WorktreeError` uncaught by name on the `engine.main_execution` path,
+falling through to the generic `except BaseException` handler that maps to
+exit **1** — while the identical defect through `deploy.action_check`
+already correctly exits **2**. Neither of my original integration tests
+drove a bad exec_targets table (only a bad layout, the `ValueError` path),
+so the gap wasn't caught by my own suite.
+
+Reviewer named the exact fix and I applied it verbatim (controller-approved,
+not re-litigated): wrapped the Step-5 call in `src/ciu/engine.py` so a
+caught `worktree.WorktreeError` is re-raised as `ValueError`, matching its
+Step-5 siblings (`validate_stack_shape`/`validate_stack_provisioning`, both
+`ValueError`) and matching what `action_check` already chose for the same
+input.
+
+Verified the actual before/after exit-code mapping directly (not just that
+an exception is raised):
+
+```
+ValueError exit code: 2
+bare WorktreeError exit code (what it WOULD have been without the fix): 1
+```
+
+Added one integration test,
+`test_main_execution_translates_exec_targets_worktree_error_to_valueerror_exit_2`,
+mirroring the existing bad-layout O2 test but with a malformed
+`exec_targets` fixture (`{"ciu": {"worktree": {"exec_targets": {"tester":
+"nope"}}}}`), asserting `pytest.raises(ValueError, match=r"\[S16\.7\]")`
+against `main_execution` — this pins the exit-code fix itself, not just
+"no exception type check fails".
+
+Re-ran the full gate after the fix: 2435 passed (one more than the
+original 2434, the new test), 0 failures, 100% line+branch coverage —
+pasted output below (this LOG's main "Gate output" section further down is
+the pre-fix run; this is the post-fix confirmation):
+
+```
+============================ 2435 passed in 13.56s =============================
+Required test coverage of 100% reached. Total coverage: 100.00%
+```
+
+Full coverage table re-checked module-by-module after the fix — every
+module still 100%, `src/ciu/engine.py` grew from 884 to 887 statements
+(the new try/except) and stayed 292 branches / 0 partial / 100%.
 
 ## Environment note
 
@@ -364,6 +418,17 @@ Follow-up commit `cc269db5993bee1530a844e769662ba297c24b69`:
   docstring after empirically re-checking the `worktree` half of its
   import-cycle claim and finding it did not reproduce (see O1 above); no
   behavior change, comment-only.
+
+LOG commit `be19501854e382862bce2ba90aa75d591b959bb4`: this file, first
+version.
+
+Adversarial-review fix commit `84b763927aab4d7cd6dab759618e1ca09081b51c`:
+
+- `src/ciu/engine.py` — Step-5 call to `validate_declared_features` now
+  catches `worktree.WorktreeError` and re-raises as `ValueError`, matching
+  `deploy.action_check`'s existing handling of the same input.
+- `tests/tests/test_ciu_config_model_layouts_eager.py` — new integration
+  test for the exec_targets/`WorktreeError` path through `main_execution`.
 
 No `scope.forbid` file was touched. No `escalate_if` condition fired —
 nothing BLOCKED.
