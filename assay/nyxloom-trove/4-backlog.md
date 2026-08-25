@@ -1506,3 +1506,84 @@ sources git consults.
 
 **Impact.** dstdns had to split one clean pattern into four narrow patterns,
 and still hit issues when new artifact types appeared.
+
+---
+
+## B018 — CIU V8 preparation: judge provenance in every verdict
+
+**Filed 2026-08-25 from `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §11.3.**
+
+### Required contract
+
+Every verdict MUST record the producing judge identity, not merely an Assay
+version string. Minimum fields are the resolved judge name, exact semantic
+version, artifact digest algorithm (`sha256`), and lowercase artifact digest.
+For a source-tree invocation these identify the built wheel/zipapp actually
+used; a bare source checkout without an identifiable build artifact refuses
+rather than inventing a digest.
+
+CIU V8 depends on this to bind LaneResult evidence to the verified judge it
+resolved from `[testing.judge]`; without it, central tool resolution can verify
+a download but cannot prove which binary emitted the verdict.
+
+### Acceptance
+
+- [ ] verdict schema/model records judge name, version, digest algorithm, and
+      digest;
+- [ ] distribution invocation records the installed artifact's actual SHA-256;
+- [ ] unidentifiable invocation fails loudly rather than emitting a partial
+      identity;
+- [ ] existing v7 consumers tolerate the optional fields before V8 requires
+      them.
+
+## B019 — CIU V8 preparation: gate-request-supplied comparison base
+
+**Filed 2026-08-25 from proposal §10.10 and dstdns P128 evidence.**
+
+### Required contract
+
+A lane may declare that changed-line judging is required while delegating the
+actual base identity to the invoking gate request, instead of hardcoding
+`judge.base` per worktree/branch workflow. The request supplies either a ref or
+an already-resolved full commit; Assay still performs merge-base resolution and
+records the effective base in the verdict. A missing request base is a
+configuration refusal, never a fallback to HEAD or another invented value.
+
+This keeps static lane policy portable across branches/worktrees while letting
+CIU V8 own branch-aware orchestration and execution manifests.
+
+### Acceptance
+
+- [ ] lanes can distinguish declared local base versus requested base policy;
+- [ ] request-provided refs resolve through the same merge-base contract as
+      `judge.base`;
+- [ ] absent request base for a required changed-line lane refuses loudly;
+- [ ] verdicts continue to record the effective resolved base exactly once.
+
+## B020 — CIU V8 preparation: SQL mutation template/reset hooks (design first)
+
+**Filed 2026-08-25 from proposal §10.2.**
+
+### Scope boundary
+
+Assay must not become a database provisioner. The ask is a narrow declaration
+and lifecycle hook so a CIU-owned prepare step can publish a verified template
+or reset strategy and each isolated mutant can consume its own clone without
+re-applying schema. Native executor ownership remains out of scope unless a
+future decision explicitly reverses it.
+
+### Required design decisions before implementation
+
+- template artifact identity and verification contract;
+- per-mutant clone naming/isolation and cleanup ownership;
+- savepoint/container reset strategies as declared contracts, not implicit
+  behavior;
+- failure semantics when a prepare artifact is stale, unverifiable, or already
+  consumed;
+- relationship to B013 infrastructure facts and existing equivalence artifacts.
+
+### Acceptance
+
+- [ ] written design decision reviewed against snapshot isolation and budget
+      rules;
+- [ ] no implementation lands until the above five decisions are recorded.
