@@ -5,3 +5,4 @@
 | ID | Title | Status | Type | Priority | Provenance |
 |---|---|---|---|---|---|
 | [NL-1](NL-1-assay-backed-implementation-gate-pinned-pyz-judge-replaces-cove.md) | assay-backed implementation gate: pinned pyz judge replaces coverage_gate/mutation_gate self-judgment | open | feature | 2 | controller session 2026-08-21; evidence: nyxloom-trove/reports/backlog-entries-test-evidence-2026-08-21.md |
+| [NL-2](NL-2-authoring-md-s-tier-worked-example-implement-2-and-prose-are-un.md) | AUTHORING.md's tier worked example ('implement-2') and prose are unroutable against live routes.toml — no mechanical check exists | open | bugfix |  | dstdns P130/P132/P133 carve-reviews, decisions.md D-187 |
