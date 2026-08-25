@@ -149,7 +149,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
-| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22), **HOTFIXED 2026-08-25 (ciu-P28): four reproduced prune-safety defects in the released behaviour, see detail**; **Docker-resource SUBSTRATE shipped 2026-08-25 (ciu-P26): the explicit ownership lease (record schema v2) + `ciu.instance`/`ciu.repo-root` labels, S16.9** — the DETECTOR and the REAP verb themselves remain OPEN, carved as ciu-P27 (see detail) |
+| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | FIXED 2026-08-25 across THREE packages that are jointly the evidence — **ciu-P26** (the ownership lease, record schema v2, + `ciu.instance`/`ciu.repo-root` labels, S16.9) supplies the ownership signal; **ciu-P27** (`ciu worktree reap`, S16.10 + `worktree.reap.v1`/`worktree.lease.v1`) is the detector and the reap transaction; the git half shipped earlier as `ciu worktree branches` (S16.8 + `worktree.branches.v1`, 2026-08-22, **HOTFIXED by ciu-P28**). Reading ciu-P27 alone is not enough to reconstruct the substrate it depends on — see detail |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
@@ -491,7 +491,11 @@ reachable for all-vendor deployments; B004's remaining blocker is assay-side
 
 ## CIU-25 — stale worktree/stack detection and reap
 
-**Status:** PARTIAL (2026-08-22) — the GIT half shipped as
+**Status:** FIXED (2026-08-25, ciu-P26 + ciu-P27; git half 2026-08-22,
+hotfixed by ciu-P28). Read the two 2026-08-25 sections below together — the
+substrate and the verb are one answer, filed as two packages.
+
+Originally PARTIAL (2026-08-22) — the GIT half shipped as
 `ciu worktree branches` (SPEC S16.8, capability `worktree.branches.v1`):
 a closed seven-category survey (base/mainline/current/managed-instance/
 prunable/merged-dirty/unmerged) with per-branch attributes (#changed files
@@ -565,20 +569,65 @@ works on a stopped instance. Ownership labels `ciu.instance` /
 (never ambient — CIU-41). See
 `nyxloom-trove/reports/ciu-P26-ciu25-lease-schema-and-labels-LOG.md`.
 
-**STILL OPEN — carved as ciu-P27:** the detector and the reap transaction
-themselves, plus one named substrate gap — `ciu up --shipped` leases but is
-not label-stamped (a generated fragment under a vendored stack would survive
-every `clean`, which skips `reset_service` for shipped stacks; closing it
-needs a shipped-stack artifact lifecycle). S16.9 supplies the substrate for
-exactly two of the five states above (owned-with-lease, lease-expired);
-checkout-missing,
-Docker-resources-without-a-CIU-identity and partially-failed-cleanup are
-untouched. Nothing shipped in ciu-P26 detects or destroys anything, and the
-ciu-P28 hotfix lesson binds the successor: a reap that touches a MANAGED
-instance goes through clean-then-remove, never a bare resource deletion.
+**REAP VERB SHIPPED 2026-08-25 (ciu-P27, SPEC S16.10)** — `ciu worktree reap
+[-y] [--category C1,C2] [--dry-run] [--json]`, capability
+`worktree.reap.v1` (shipped alongside `worktree.lease.v1`, which ciu-P26
+implemented but left unadvertised). **This entry is only FIXED when read
+together with ciu-P26**: the reap verb is exactly as safe as the lease/label
+substrate it consults, and a reader following ciu-P27's evidence alone could
+not reconstruct where its proof comes from.
 
-**SPEC ownership:** S16.9 (lease + labels, shipped); the reap verb's own
-section after ciu-P27.
+The five states this entry demanded now map onto a closed SEVEN-category
+partition, every group landing in exactly one:
+
+| Demanded state | Shipped category | Destroyed by `-y`? |
+|---|---|---|
+| registered and operator-owned | `owned` | never |
+| registered with an expired explicit lease | `lease-expired` | yes |
+| Git registration present but checkout path missing | `checkout-missing` | yes |
+| Docker resources present but no CIU identity record | `orphaned` / `unattributable` | `orphaned` yes; `unattributable` **never** |
+| a partially failed earlier cleanup | `partial-cleanup` | yes |
+| *(added)* attribution unresolvable | `ambiguous` | **never** |
+
+The constraint "must not destroy resources based only on age, basename
+similarity, or a missing local process" is honored BY CONSTRUCTION: none of
+those three is an input to any decision in the module. Proven negatively by
+test — a year-old lease-less instance, a fully-stopped instance, and two
+worktrees with the IDENTICAL directory basename and one-character-apart
+instance ids all survive `-y` untouched.
+
+`unattributable` and `ambiguous` are not merely off by default, they are
+**structurally unreachable**: `--category` refuses their names (exit 2)
+rather than selecting them, so no flag combination destroys a group CIU
+cannot attribute. The ciu-P28 lesson is binding: a group whose checkout
+survives is disposed of by `ciu clean -y` run inside it, never by a bare
+resource deletion, and a clean that fails is reported rather than
+second-guessed.
+
+**Two named narrowings from the carve, both deliberate.**
+`partial-cleanup` was carved as "recovery-required OR a group with some (not
+all) of its resources present OR a previously-failed reap". The middle clause
+is WITHDRAWN as undecidable and unsafe — nothing records what "all" would be
+for a group, and `ciu down` preserves volumes on purpose, so an owned,
+valid-leased, merely-stopped instance would have qualified and lost its
+data; the third is not persisted anywhere. Only the record's own DECLARED
+`state: "recovery-required"` remains. Separately, `checkout-missing` is
+decided from the group's `ciu.repo-root` label rather than from a record,
+because the instance record lives INSIDE the checkout and a vanished checkout
+takes its record with it.
+
+**Still open (small, named).** `ciu up --shipped` leases but is not
+label-stamped — a generated fragment under a vendored stack would survive
+every `clean`, which skips `reset_service` for shipped stacks; closing it
+needs a shipped-stack artifact lifecycle. Consequence for reap: a shipped
+stack's resources are attributed by identity-form compose project name only,
+and fall to `unattributable` when the project is config-derived. Also by
+design: the identity network of an instance whose checkout AND record are
+both gone carries no label (created by `ciu env generate`, outside compose)
+and is out of reap's reach — remove it by hand.
+
+**SPEC ownership:** S16.8 (branch hygiene), S16.9 (lease + labels), S16.10
+(the reap verb).
 
 ## CIU-26 — deferred PostgreSQL proof
 

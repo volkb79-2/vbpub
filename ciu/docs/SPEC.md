@@ -3334,8 +3334,8 @@ allowlist** of shipped machine contracts (`schema_version: 1`,
 instead of inferring features from SemVer. An identifier is added only when
 its code path ships in the same release. Shipped identifiers:
 `worktree.branches.v1`, `worktree.identity.v1`, `worktree.inspect.v1`,
-`worktree.lifecycle-json.v1`, `worktree.up.v1`, `worktree.exec-local.v1`,
-and `worktree.exec-target.v1`.
+`worktree.lease.v1`, `worktree.lifecycle-json.v1`, `worktree.reap.v1`,
+`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1`.
 
 ### S16.6 — Exact selected-worktree control (`worktree up` / `worktree exec`)
 
@@ -3634,13 +3634,136 @@ maintainer-owned, S8.5/S8.6), so a fragment written under a vendored stack's
 `.ciu/` would never be removed. Closing this needs a shipped-stack artifact
 lifecycle, not a one-line addition here.
 
-**Detection and destruction.** A future `ciu worktree reap` must still
-distinguish the five states the CIU-25 backlog entry enumerates; this section
-supplies the substrate for exactly two of them (owned-with-lease,
-lease-expired). Checkout-missing, Docker-resources-without-a-CIU-identity and
-partially-failed-cleanup are untouched here. Per that entry's own hotfix
-lesson: any future reap that touches a MANAGED instance goes through
-clean-then-remove, never a bare resource deletion.
+**Detection and destruction.** Shipped in **S16.10** (`ciu worktree reap`),
+which consumes exactly the substrate above.
+
+### S16.10 — Docker-resource reap (`ciu worktree reap`, CIU-25 docker half)
+
+`ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]` is the
+Docker-side twin of S16.8's branch hygiene, and it is the only CIU verb that
+deletes resources it did not create in the same command. One rule governs the
+whole section: **CIU destroys only what it can PROVE it owns and PROVE
+nothing still claims.** Age, directory-basename similarity and "no process is
+running" are not inputs to any decision here — the CIU-25 backlog entry names
+all three as wrong, because a long-lived worktree is legitimate and a stopped
+instance is not an abandoned one. Ownership is DECLARED, by S16.9's lease and
+`ciu.instance`/`ciu.repo-root` labels, or it is not known; what is not known
+is not destroyed.
+
+#### The closed category vocabulary
+
+A *resource group* is one compose project plus its volumes and networks (plus,
+for a known identity, its S2.6 identity network, which compose never creates).
+Every group collapses into **exactly one** of seven categories — never zero,
+never two:
+
+| Category | Proof | Does `-y` act on it? |
+|---|---|---|
+| `owned` | a record claims it and its lease is held/perpetual/unconfigured — OR no record does, but a REGISTERED checkout's own `ciu.env` declares that `INSTANCE_ID` | **never** |
+| `lease-expired` | a readable record whose `held` lease's `expires_at_utc` is in the past at survey time (S16.9) | yes |
+| `checkout-missing` | unclaimed as `orphaned`, AND the group's own `ciu.repo-root` label names a directory that no longer exists | yes |
+| `orphaned` | labelled `ciu.instance=<id>` for an id matching no record and no registered checkout | yes |
+| `partial-cleanup` | the attributed record DECLARES `state: "recovery-required"` | yes |
+| `unattributable` | no `ciu.instance` label and no identity-form compose project name | **never** |
+| `ambiguous` | the attribution does not resolve to exactly one TRUSTWORTHY record: several identities claim the group, several records claim the identity, or the one record that does is contradicted by Git | **never** |
+
+Precedence is a single first-match-wins chain, and its order encodes two
+policies: every un-provable attribution resolves to a never-destroyed
+category *before* any destructible one is considered, and among the
+destructible ones the most operationally specific fact wins.
+
+`partial-cleanup` is deliberately narrower than the original CIU-25 sketch,
+which also counted "a group with some (not all) of its resources present".
+That clause is **withdrawn** as both undecidable and unsafe: nothing anywhere
+records what "all" would be for a group (a stack that declares no volumes and
+an instance that ran `ciu env generate` but never `ciu up` both read as "some,
+not all"), and `ciu down` preserves volumes on purpose — so an owned,
+valid-leased, merely-stopped instance would have qualified and lost its data.
+
+`checkout-missing` is a *refinement* of `orphaned`, not a separate licence:
+a group reaches either test only once no record and no checkout claims its
+id, which is what licenses removal; the label only decides which message the
+operator reads. The instance record lives INSIDE the checkout, so a vanished
+checkout takes its record with it — `ciu.repo-root` is the only durable,
+checkout-external evidence of where an instance used to live. In a
+devcontainer that label is a HOST path this container may not be able to see;
+the classification is safety-neutral for exactly the reason above.
+
+Two resource classes are deliberately **not surveyed at all**, so no flag
+combination can name them: anything compose did not create (no
+`com.docker.compose.project` label), and any loose network that matches
+neither a `ciu.instance` label nor a known identity's network name. A
+consequence, stated plainly: the identity network of an instance whose
+checkout AND record are both gone carries no label (it is created by
+`ciu env generate`, outside compose) and is therefore out of reap's reach by
+design — remove it by hand.
+
+#### The CLI surface
+
+Without `-y` the verb is a **pure survey** — every Docker call is a read-only
+enumeration, nothing on disk is written, and a schema-v1 record is not even
+re-serialized. The document carries no timestamp of its own, so two
+consecutive surveys of an unchanged host are byte-identical.
+
+`--category` can only ever NARROW what `-y` acts on. Its selectable
+vocabulary is exactly `checkout-missing,lease-expired,orphaned,partial-cleanup`
+— which is also the default. `--category owned`, `--category unattributable`
+and `--category ambiguous` are **refusals (exit 2)**, not selections: there is
+deliberately no flag anywhere that forces a protected category, because those
+three categories mean precisely that no proof of ownership exists.
+
+`-y --dry-run` prints the exact remediation commands and executes none of them.
+
+#### The reap transaction
+
+Per group, in strict order, aborting that group on the first failure:
+
+1. **If the checkout still exists and its `ciu.env` is readable, delegate to
+   `ciu clean -y` in that checkout** and stop there. `clean` is authoritative:
+   it knows the rendered config, the `vol-*` hostdirs and the privileged
+   removal helper a bare `docker rm` knows nothing about. This is the ciu-P28
+   hotfix lesson made binding — a reap that touches a MANAGED instance goes
+   through clean-then-remove, never a bare resource deletion. A clean that
+   FAILS is reported; CIU never second-guesses it with a direct removal.
+2. **Otherwise** remove the exact resources the survey enumerated (full
+   container IDs, exact volume and network names), containers → volumes →
+   networks.
+3. **Before removing any network**, two independent guards, either of which
+   alone means "leave it standing": any container still joined that this pass
+   did not just remove (the S16.1 shared-infra case — another instance holds a
+   second membership), or any other surveyed group of the same identity not
+   yet disposed of (one workspace's several stacks share one identity network;
+   the last one out turns off the light). A network already removed by a
+   concurrent operator is a no-op, not a failure.
+
+One group's failure is never the whole sweep's: it lands in `failed` with the
+real error text, every other targeted group is still processed, and a document
+is always returned. **The returned document is a post-pass RE-SURVEY**, not
+the pre-pass plan.
+
+**The identity-completeness interlock.** A registered checkout that carries an
+instance record file but from which CIU can read no identity — neither from
+the record nor from its `ciu.env` — makes the survey `identity_complete:
+false`. While that holds, the `orphaned` category is DISARMED: an id that
+looks unclaimed may simply be the one that could not be read, and a corrupted
+record on a live instance must never make that instance's own labelled
+resources look reapable. The refusal is loud (that group lands in `failed`,
+status `partial`, exit 1), never a silent skip. Only `orphaned` is disarmed —
+the record-backed categories never depended on that premise.
+
+#### Document and exit codes
+
+`schema_version: 1`, `operation: "reap"`, `status` from the closed vocabulary
+`survey` / `dry-run` / `reaped` / `partial`. `counts` is keyed by **all seven**
+categories including the zero-valued ones. `findings` carries every record
+inconsistency the survey met (`ciu worktree reap` uses a non-raising sibling of
+the family record scan — a survey that dies on one bad record is useless
+exactly when it is most needed). The CLI exits 0 on `survey`/`dry-run`/
+`reaped`, **1 on `partial`** (decided once, above the output-format branch, so
+`--json` can never disagree with the human output), and 2 on a refusal.
+
+Capability id: `worktree.reap.v1` (shipped alongside `worktree.lease.v1` —
+reaping is only ever as safe as the ownership signal it consults).
 
 ## S17 — Image provenance
 

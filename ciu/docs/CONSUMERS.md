@@ -144,6 +144,97 @@ ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
 ```
 
 
+## 5b-2. Reclaim a crashed dispatcher's Docker resources (`worktree reap`, S16.10)
+
+`branches` is the Git half of the cleanup. `ciu worktree reap` is the Docker
+half — containers, volumes and networks a crashed dispatcher or a forgotten
+teardown left running. It is the only CIU verb that deletes resources it did
+not create in the same command, so read what it will and will not touch
+before you use `-y`.
+
+**Survey first — it is a pure read.**
+
+```
+$ ciu worktree reap
+docker resource reap — owned 2, lease-expired 1, checkout-missing 1, orphaned 0, partial-cleanup 0, unattributable 1, ambiguous 0
+
+owned:
+  myrepo-a1b2c3-api  3 container(s) 2 volume(s) 1 network(s)
+      instance 'api' is registered, its checkout exists, and nothing says its claim has lapsed
+
+lease-expired:
+  myrepo-d4e5f6-api  3 container(s) 2 volume(s) 1 network(s)
+      instance 'nightly-run' s held lease expired at 2026-08-24T02:00:00Z (holder ciu@builder:d4e5f6)
+
+checkout-missing:
+  myrepo-9f8e7d-api  2 container(s) 1 volume(s) 1 network(s)
+      labelled ciu.instance=9f8e7d, claimed by no record and no registered checkout, and its own
+      ciu.repo-root label (/repo/.worktrees/crashed) names a directory that no longer exists
+
+unattributable:
+  postgres-shared  1 container(s) 1 volume(s) 0 network(s)
+      no `ciu.instance` label and no identity-form compose project name — CIU cannot prove whose
+      these resources are, so it will never remove them
+
+2 resource group(s) are provably disposable (checkout-missing=1, lease-expired=1); re-run with
+-y/--yes to reap them (add --dry-run first to see the exact commands). 1 group(s) are
+unattributable and are NEVER reaped ...
+```
+
+**See the exact commands, then run them.**
+
+```bash
+ciu worktree reap -y --dry-run          # prints, executes nothing
+ciu worktree reap -y                    # reaps the four provable categories
+ciu worktree reap -y --category orphaned  # narrow it further
+```
+
+What the categories guarantee:
+
+- **`owned` is never reaped**, and it is deliberately generous: a valid or
+  perpetual lease, *no* lease at all (a pre-lease schema-v1 record, or one
+  that explicitly released its claim), or simply a registered checkout whose
+  own `ciu.env` declares that `INSTANCE_ID` with no record at all. Age never
+  moves anything out of it — a year-old instance with a perpetual lease is
+  owned, and a five-minute-old one whose lease lapsed is not.
+- **`unattributable` and `ambiguous` are never reaped and cannot be
+  selected.** `--category unattributable` is a refusal (exit 2), not a
+  selection. There is no flag anywhere that forces them, because those
+  categories mean exactly that no proof of ownership exists. Your unrelated
+  compose projects on the same host land here and are safe.
+- **A surviving checkout is disposed of by `ciu clean -y` run inside it**,
+  never by a bare `docker rm`: `clean` knows the rendered config, the `vol-*`
+  host directories and the privileged removal helper. If that clean fails,
+  reap reports it and stops — it does not second-guess it.
+- **A shared network is never torn out from under a live instance.** If any
+  container this pass did not just remove is still joined (the S16.1
+  shared-infra case), the network is left standing and the result says so.
+
+One group's failure never aborts the sweep: it becomes a `FAILED` line with
+the real error, every other targeted group is still processed, and a partial
+pass exits **1** in both `--json` and human output. The returned document is a
+re-survey of the post-state, not the plan.
+
+Automation allowlists `worktree.reap.v1` (and `worktree.lease.v1`, which it
+consults) via `ciu capabilities --json`. The reap document is separately
+versioned (`schema_version: 1`, operation `reap`, statuses
+`survey`/`dry-run`/`reaped`/`partial`), and `counts` always carries all seven
+categories including the zero-valued ones, so a consumer can key on them
+without probing.
+
+```bash
+ciu worktree reap --json | jq '.groups[] | select(.category=="lease-expired") | .key'
+```
+
+Declare ownership explicitly rather than letting a TTL decide for you:
+
+```bash
+ciu worktree lease nightly-run --extend 48h   # bounded claim
+ciu worktree lease bench-rig  --perpetual     # long-lived ON PURPOSE
+ciu worktree lease scratch    --release       # claims nothing (still never reaped)
+```
+
+
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
 
 When ONE profile's provisioning writes the Vault path another stack reads,
