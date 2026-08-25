@@ -172,6 +172,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 | CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
 | CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
+| CIU-55 | No per-lane gate invocation timing is measured or persisted anywhere — a controller deciding whether to run full R1+R2 rigor before merging, or defer R2 and merge provisionally, has no data and must guess | Medium | OPEN — filed by dstdns operator directive, 2026-08-25; v8-timed (see detail) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -1531,6 +1532,113 @@ rather than trusting this list to stay current.
 **SPEC ownership:** S1.1 (repo-root resolution) — extending, not
 contradicting, CIU-53's corrected precedence to these sites' actual proposed
 contract, once designed.
+
+## CIU-55 — No per-lane gate invocation timing is measured, so provisional-merge
+rigor tradeoffs are guesses, not decisions
+
+**Filed by:** dstdns operator directive, 2026-08-25, during a controller
+handoff-mandate interview (`dstdns/nyxloom-trove/decisions.md` D-204). The
+mandate under discussion proposed a lighter merge policy — merge on R0+R1 +
+adversarial review, defer R2 to a sidetrack, "good enough" provisional merge
+to unblock dependent packages, higher rigor run async later. Asked to adopt
+it, the operator declined to decide blind: *"we need estimates/last
+measurements how long a specific rigor for each lane [takes]. something ciu
+could handle in v8 when managing lane invocation and persist measurement
+results to a table in `ciu.global.toml` or a separate file? then we can make
+smarter choices, e.g. skip a long rigor, do a provisional merge ... and run
+higher rigor async on remote host."*
+
+### Observed mechanism (the gap, not a defect)
+
+Per the current dstdns gate-layering split (`run-gate` owns invocation
+mechanics, `assay` owns judgment policy, CIU owns runner lifecycle —
+`vbpub@4c6eb2b6`, CIU-40), lane duration is currently informal: a controller
+or implementer notices a gate command took "a while" from wall-clock
+observation while waiting on it, and that observation is lost the moment the
+terminal scrolls past it. Nothing durable records:
+
+- how long lane X took THIS run, on THIS worktree/instance, for THIS commit
+- how that compares to lane X's typical/historical duration
+- which lanes are cheap-to-always-run vs. expensive-enough-to-consider-
+  deferring
+
+Without this, "defer R2, run it async" is not a measured tradeoff — it is a
+guess dressed as a policy, and the dstdns core-workflow track explicitly
+declined to adopt it blind on 2026-08-25 (D-204) for exactly this reason: the
+just-completed wave's full-R1+R2 discipline caught two real defects (a
+silently-reintroduced fix, a vacuous test oracle) that a deferred-R2 policy
+would have let ship.
+
+### Concrete shape (illustrative, not a commitment)
+
+```toml
+# ciu.global.toml (or a sibling, e.g. ciu.lane-timing.toml) — per CIU instance
+[lane_timing."gate.schema"]
+last_duration_s = 41.2
+last_run_at = "2026-08-25T14:03:11Z"
+last_worktree = "p132-worker-io-execution-repair"
+last_commit = "9b334adf"
+last_outcome = "pass"
+p50_duration_s = 38.7      # rolling stat across N most recent invocations
+p95_duration_s = 52.0
+sample_count = 14
+
+[lane_timing."gate.assay-dlq"]
+last_duration_s = 612.4    # an R2-class lane, visibly the expensive one
+...
+```
+
+A controller could then ask CIU (or a thin CLI: `ciu lane-timing show
+<lane>`) "what does this lane typically cost" BEFORE deciding whether to
+gate synchronously or dispatch it async and merge provisionally pending its
+result — an informed skip, not a blind one.
+
+### Why CIU owns it, not run-gate or assay
+
+`run-gate` invokes lanes but is deliberately mechanics-only per CIU-40's own
+layering (argv/docker/cgroup/pin-verify — no judgment, no persisted state
+across runs). `assay` owns mutation-judgment policy, not timing. CIU already
+owns runner LIFECYCLE (the worktree/instance a gate runs inside,
+`ciu.global.toml`/`ciu.env` as the existing per-instance persisted-state
+surface) — it is the only layer with both (a) a stable per-instance identity
+to key measurements against and (b) a config file already treated as the
+place durable CIU-instance facts live. Timing capture itself could be a thin
+wrapper CIU hands `run-gate` (start/stop timestamps around the invocation it
+already shells out to) rather than CIU parsing lane semantics.
+
+### Proposed contract (not yet designed — this entry makes the ask findable)
+
+- CIU records start/end wall-clock time + outcome (pass/fail/error) for
+  every lane invocation it launches, keyed by lane name + instance identity
+  + commit.
+- Persisted to a CIU-owned file (`ciu.global.toml` lane-timing table, or a
+  sibling file if commingling with deployment identity config is
+  undesirable — needs a design call).
+- A query surface (`ciu lane-timing show <lane>` at minimum) so a controller
+  can read recent/typical duration before deciding sync-vs-async/defer.
+- Explicitly OUT of scope for this entry: CIU does not decide the
+  rigor/defer POLICY itself — that stays a consumer (dstdns controller)
+  decision informed by the data CIU now provides. CIU's job stops at
+  measuring and persisting.
+
+### Oracles
+
+Not yet written — needs a design pass first (file location, retention/rollup
+policy — unbounded history vs. rolling window, concurrent-instance write
+safety if two worktrees' gates run simultaneously against the same
+`ciu.global.toml`).
+
+- Controlled wrong implementation to watch for once built: recording only
+  the LAST invocation with no rolling stat — a single slow outlier run (host
+  under load from an unrelated process) would then look like the lane's
+  permanent cost, defeating the entire point of informed decision-making.
+
+**SPEC ownership:** new surface — no existing SPEC.md section owns
+invocation-timing telemetry; nearest neighbor is CIU-40's runner-lifecycle
+split. v8-timed: this is new persisted state and a new query surface, not a
+same-day patch on current CIU, and dstdns's own merge-rigor decision (D-204)
+does not block on it — it explicitly deferred adopting any lighter policy
+until this kind of data exists.
 
 ## Compact resolved index
 
