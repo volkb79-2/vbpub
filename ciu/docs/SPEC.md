@@ -3661,7 +3661,7 @@ never two:
 |---|---|---|
 | `owned` | a record claims it and its lease is held/perpetual/unconfigured — OR no record does, but a REGISTERED checkout's own `ciu.env` declares that `INSTANCE_ID` | **never** |
 | `lease-expired` | a readable record whose `held` lease's `expires_at_utc` is in the past at survey time (S16.9) | yes |
-| `checkout-missing` | unclaimed as `orphaned`, AND the group's own `ciu.repo-root` label names a directory that no longer exists | yes |
+| `checkout-missing` | unclaimed as `orphaned`, AND the group's own `ciu.repo-root` label names a directory that is not currently present | yes |
 | `orphaned` | labelled `ciu.instance=<id>` for an id matching no record and no registered checkout | yes |
 | `partial-cleanup` | the attributed record DECLARES `state: "recovery-required"` | yes |
 | `unattributable` | no `ciu.instance` label and no identity-form compose project name | **never** |
@@ -3679,6 +3679,20 @@ records what "all" would be for a group (a stack that declares no volumes and
 an instance that ran `ciu env generate` but never `ciu up` both read as "some,
 not all"), and `ciu down` preserves volumes on purpose — so an owned,
 valid-leased, merely-stopped instance would have qualified and lost its data.
+
+**Known limitation, `checkout-missing`'s proof:** filesystem absence
+(`Path(root).is_dir()` returning False) cannot distinguish a genuinely
+deleted checkout from one on a currently-unavailable mount (network
+filesystem down, disk not yet attached). Either reads identically — no
+record, no registered checkout, an absent path — and `checkout-missing`
+routes to direct Docker removal rather than `ciu clean` (S16.10's own
+routing table), since no surviving checkout exists to run `clean` in. A
+checkout on a mount that is merely temporarily down would misclassify this
+way; a `--perpetual` lease does not protect it, because the lease lives
+inside the same now-unreadable record. This is inherent to filesystem
+evidence, not a gap this verb can close by itself — mitigated by `reap`
+being opt-in, defaulting to a read-only survey, and `--dry-run` being the
+documented first step before any `-y`.
 
 `checkout-missing` is a *refinement* of `orphaned`, not a separate licence:
 a group reaches either test only once no record and no checkout claims its

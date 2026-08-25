@@ -2313,10 +2313,12 @@ def _classify_reap_group(
                 f"labelled ciu.instance={instance_id}, claimed by no record and "
                 "no registered checkout, and its own ciu.repo-root label ("
                 + ", ".join(sorted(repo_roots))
-                + ") names a directory that no longer exists — `ciu clean` can "
-                "never run there again. The Docker resources are this verb's "
-                "half; a stale Git registration is `ciu worktree branches`' "
-                "(or `git worktree prune`'s)"
+                + ") names a directory that is not present (deleted, or on a "
+                "currently-unavailable mount — filesystem absence cannot "
+                "distinguish the two) — `ciu clean` cannot run there right "
+                "now. The Docker resources are this verb's half; a stale Git "
+                "registration is `ciu worktree branches`' (or `git worktree "
+                "prune`'s)"
             )
         return "orphaned", (
             f"labelled ciu.instance={instance_id}, which matches no instance "
