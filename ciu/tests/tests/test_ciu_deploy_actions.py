@@ -1105,36 +1105,13 @@ def _governance_selection_rendered_mem_min(cgroup_parent: str, mem_min: str, *, 
     return selection, rendered
 
 
-def test_governance_slice_preflight_raises_when_mem_min_inadequate(monkeypatch, tmp_path):
-    import pytest
-
-    profile = Profile(name=None, phase_keys=None, config=_plain_config())
-    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
-
-    monkeypatch.setattr(
-        deploy.governance_mod, "check_slice_unit",
-        lambda name: (True, f"{name}: LoadState=loaded"),
-    )
-    monkeypatch.setattr(
-        deploy.governance_mod, "check_slice_memory_min",
-        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
-    )
-    with pytest.raises(ValueError) as exc_info:
-        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
-    assert "[S15.16]" in str(exc_info.value)
-    assert "nyxloom-daemon.slice" in str(exc_info.value)
-    assert "applications/app" in str(exc_info.value)
-
-
-def test_governance_slice_preflight_mem_min_inadequate_logs_only_when_warnings_opted_out(
+def test_governance_slice_preflight_mem_min_inadequate_warns_by_default(
     monkeypatch, tmp_path, capsys,
 ):
-    """S10.6: CIU_WARNINGS_AS_ERRORS=0 turns the same S15.16 finding into a
-    logged [WARN] that does not stop the deploy — the default (unset/"1")
-    stays fail-first per test_..._raises_when_mem_min_inadequate above."""
-    from ciu import warn_policy
-
-    monkeypatch.setenv(warn_policy.WARNINGS_AS_ERRORS_ENV_VAR, "0")
+    """deploy.py:1128-1134 (S10.7): the DEFAULT ciu.exit_on (ERROR, i.e. no
+    ciu.exit_on set at all) means an [S15.16] mem_min-inadequate finding is a
+    logged [WARN] that does NOT stop the deploy; the test below shows
+    ciu.exit_on="WARN" restores the fail-fast behavior."""
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
@@ -1151,6 +1128,32 @@ def test_governance_slice_preflight_mem_min_inadequate_logs_only_when_warnings_o
     assert "[WARN]" in out
     assert "[S15.16]" in out
     assert "nyxloom-daemon.slice" in out
+
+
+def test_governance_slice_preflight_raises_when_mem_min_inadequate_and_exit_on_warn(
+    monkeypatch, tmp_path,
+):
+    """S10.7: setting ciu.exit_on = "WARN" in config makes the same [S15.16]
+    mem_min-inadequate finding fail-fast (raise), unlike the DEFAULT
+    (exit_on=ERROR) case in test_..._warns_by_default above."""
+    config = _plain_config()
+    config["ciu"] = {"exit_on": "WARN"}
+    profile = Profile(name=None, phase_keys=None, config=config)
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "[S15.16]" in str(exc_info.value)
+    assert "nyxloom-daemon.slice" in str(exc_info.value)
+    assert "applications/app" in str(exc_info.value)
 
 
 def test_governance_slice_preflight_passes_when_mem_min_adequate(monkeypatch, tmp_path):

@@ -87,17 +87,6 @@ def should_exit_on(severity: str, *, config: dict | None = None) -> bool:
     return severity.upper() == "ERROR"
 
 
-# Backward-compat aliases used by existing call sites until they are migrated.
-def warnings_as_errors_enabled() -> bool:
-    """Legacy shim: True when exit_on resolves to WARN (the old 'enabled' posture).
-
-    Existing call sites use warn_or_raise() which now delegates to should_exit_on().
-    This function remains so external code importing it doesn't break during
-    the transition; new code should use _resolve_exit_on() directly.
-    """
-    return _resolve_exit_on() == "WARN"
-
-
 def warn_or_raise(message: str, *, severity: str = "WARN", config: dict | None = None) -> None:
     """Print a message tagged by *severity*; then exit per the exit_on policy.
 
