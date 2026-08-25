@@ -456,7 +456,9 @@ coverage or starting R1/R2/R3, Assay checks the whole Git-visible repository.
 If it is dirty, the real R0 command claim remains when higher rigors exist and
 all declared higher claims become `NO_MEASUREMENT/DIRTY_TREE`; an R0-only lane
 uses that terminal on R0 itself. Assay never cleans the consumer tree to make a
-claim true. P22 lands the committed-object snapshot substrate those executions
+claim true. B017 supersedes A-177's narrow untracked-exclusion rule: standard
+Git excludes may hide a disposable artifact directory such as `/.assay/`, while
+status still reports modified and staged tracked work. P22 lands the committed-object snapshot substrate those executions
 run on (below); P23 moves baseline/repeated execution onto it, which is the
 boundary that also removes ignored/untracked inputs from those executions.
 
