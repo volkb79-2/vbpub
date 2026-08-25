@@ -25,6 +25,7 @@ from ciu.hooks_runner import (  # noqa: E402
     HookContext,
     HookExecutionError,
     load_hook,
+    load_hook_for_check,
     run_hooks,
     set_nested,
 )
@@ -655,3 +656,196 @@ class TestRunHooksRelativePath:
             ctx,
             tmp_path / "ciu.toml",
         )
+
+
+# ---------------------------------------------------------------------------
+# load_hook_for_check — ONE import, both entry points (S9.5, ciu-P18)
+# ---------------------------------------------------------------------------
+
+
+def _write_hook(tmp_path: Path, name: str, body: str) -> Path:
+    path = tmp_path / name
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+    return path
+
+
+class TestLoadHookForCheck:
+    def test_returns_run_and_validate_config_from_a_module(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "both.py", """\
+            def run(config, ctx):
+                return {}
+
+            def validate_config(config, ctx):
+                return ["nope"]
+        """)
+
+        run, validate = load_hook_for_check(hook)
+
+        assert run.__name__ == "run"
+        assert validate is not None
+        assert validate({}, None) == ["nope"]
+
+    def test_validate_config_is_none_when_undefined(self, tmp_path: Path) -> None:
+        """A hook without a preflight is the normal case — None, never an error."""
+        hook = _write_hook(tmp_path, "run_only.py", """\
+            def run(config, ctx):
+                return {}
+        """)
+
+        run, validate = load_hook_for_check(hook)
+
+        assert callable(run)
+        assert validate is None
+
+    def test_hook_class_carries_its_own_validate_config(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "class_hook.py", """\
+            class Hook:
+                def run(self, config, ctx):
+                    return {}
+
+                def validate_config(self, config, ctx):
+                    return ["from-method"]
+        """)
+
+        run, validate = load_hook_for_check(hook)
+
+        assert run.__self__.__class__.__name__ == "Hook"
+        assert validate is not None
+        assert validate({}, None) == ["from-method"]
+
+    def test_hook_class_without_validate_config_yields_none(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "class_run_only.py", """\
+            class Hook:
+                def run(self, config, ctx):
+                    return {}
+        """)
+
+        _run, validate = load_hook_for_check(hook)
+
+        assert validate is None
+
+    def test_module_level_validate_config_wins_over_hook_class_method(
+        self, tmp_path: Path
+    ) -> None:
+        """Module-level `run` short-circuits the Hook branch; so does its preflight."""
+        hook = _write_hook(tmp_path, "both_forms.py", """\
+            def run(config, ctx):
+                return {}
+
+            def validate_config(config, ctx):
+                return ["module-level"]
+
+            class Hook:
+                def run(self, config, ctx):
+                    return {}
+
+                def validate_config(self, config, ctx):
+                    return ["method"]
+        """)
+
+        _run, validate = load_hook_for_check(hook)
+
+        assert validate({}, None) == ["module-level"]
+
+    def test_non_callable_validate_config_is_treated_as_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """`validate_config = 3` is not part of the S9.1 contract — not an error."""
+        hook = _write_hook(tmp_path, "not_callable.py", """\
+            validate_config = 3
+
+            def run(config, ctx):
+                return {}
+        """)
+
+        _run, validate = load_hook_for_check(hook)
+
+        assert validate is None
+
+    def test_missing_file_keeps_the_s9_2_error(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match=r"\[S9\.2\]"):
+            load_hook_for_check(tmp_path / "absent.py")
+
+    def test_module_without_run_keeps_the_s9_1_error(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "empty.py", """\
+            X = 1
+        """)
+
+        with pytest.raises(AttributeError, match="does not define a 'run' function"):
+            load_hook_for_check(hook)
+
+    def test_v1_name_migration_hint_still_fires(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "v1.py", """\
+            def pre_compose_hook(config, ctx):
+                return {}
+        """)
+
+        with pytest.raises(AttributeError, match=r"\[S9\.1\]"):
+            load_hook_for_check(hook)
+
+    def test_hook_class_without_run_method_still_errors(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "class_no_run.py", """\
+            class Hook:
+                pass
+        """)
+
+        with pytest.raises(AttributeError, match="has no run\\(\\) method"):
+            load_hook_for_check(hook)
+
+    def test_imports_the_file_exactly_once_per_call(self, tmp_path: Path) -> None:
+        """O3: one module load yields BOTH callables — import-time code runs once.
+
+        The hook counts its own module-level executions in a sibling file, so a
+        second import (e.g. one call for `run` and another for
+        `validate_config`) would be directly visible as a second line.
+        """
+        counter = tmp_path / "import-count"
+        hook = _write_hook(tmp_path, "counting.py", """\
+            from pathlib import Path
+
+            with Path(__file__).with_name("import-count").open("a") as fh:
+                fh.write("import\\n")
+
+            def run(config, ctx):
+                raise AssertionError("run() must never be called by the check path")
+
+            def validate_config(config, ctx):
+                return []
+        """)
+
+        run, validate = load_hook_for_check(hook)
+
+        assert counter.read_text(encoding="utf-8") == "import\n"
+        # Neither callable was invoked while locating them.
+        assert callable(run) and validate is not None
+
+    def test_run_is_located_but_never_invoked(self, tmp_path: Path) -> None:
+        hook = _write_hook(tmp_path, "explosive_run.py", """\
+            def run(config, ctx):
+                raise AssertionError("run() must never be called by the check path")
+
+            def validate_config(config, ctx):
+                return []
+        """)
+
+        run, validate = load_hook_for_check(hook)
+
+        assert validate({}, None) == []
+        with pytest.raises(AssertionError):
+            run({}, None)  # proves the double really would have exploded
+
+
+class TestLoadHookSharesTheExtractedLoader:
+    def test_load_hook_still_returns_only_the_run_callable(self, tmp_path: Path) -> None:
+        """The refactor must not change `load_hook`'s own contract."""
+        hook = _write_hook(tmp_path, "shared.py", """\
+            def run(config, ctx):
+                return {"ok": {"value": 1}}
+
+            def validate_config(config, ctx):
+                return []
+        """)
+
+        fn = load_hook(hook)
+
+        assert fn({}, None) == {"ok": {"value": 1}}

@@ -9,6 +9,10 @@ Public API
 HOOK_POINTS          tuple of the three valid point names
 HookContext          dataclass passed to every hook callable
 load_hook(path)      load a module and return its callable
+load_hook_for_check(path)
+                     load a module ONCE and return ``(run, validate_config)``
+                     for ``ciu check``'s hook preflight (S9.5) — never runs
+                     either callable
 run_hooks(...)       validate + run a list of hooks for one point
 set_nested(d, dotted, value)  helper shared with the engine
 """
@@ -21,6 +25,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Callable
 
 import tomli_w
@@ -108,6 +113,96 @@ class HookContext:
 # ---------------------------------------------------------------------------
 
 
+def _load_hook_module(path: Path) -> ModuleType:
+    """Import the hook file at *path* EXACTLY ONCE and return its module.
+
+    The import/exec_module machinery formerly inlined in :func:`load_hook`,
+    extracted (ciu-P18) so ``ciu check`` can pull BOTH ``run`` and the
+    optional ``validate_config`` (S9.5) out of a SINGLE module load. Importing
+    the same file twice in one invocation would re-execute its module-level
+    code — a hook author's import-time statements are their own business, but
+    CIU must not double-run them behind their back.
+
+    Missing file → ``FileNotFoundError`` with the ``[S9.2]`` marker (the
+    contract every caller, including the check path, still relies on).
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"[S9.2] Hook file not found: {path}")
+
+    module_name = f"_ciu_hook_{path.stem}_{id(path)}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create module spec for hook: {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def _resolve_hook_callables(
+    module: ModuleType, path: Path
+) -> tuple[Callable, Callable | None]:
+    """Return ``(run, validate_config | None)`` for an ALREADY-loaded *module*.
+
+    ``run`` resolution is exactly S9.1's existing order (module-level ``run``
+    first, then a no-arg ``Hook`` instance's ``run``, then the v1
+    migration-hint / not-a-hook errors). ``validate_config`` (S9.5) is
+    OPTIONAL: a module-level ``validate_config`` wins; otherwise, when ``run``
+    came from a ``Hook`` instance, that instance's ``validate_config`` method
+    is used, so class-style hooks can carry a preflight the same way
+    function-style ones do. A non-callable attribute of that name is treated
+    as absent rather than as an error — it is not part of the S9.1 contract a
+    hook must satisfy.
+
+    Neither callable is invoked here.
+    """
+    owner: object | None = None
+
+    # Preferred: module-level `run` function
+    if hasattr(module, "run") and callable(module.run):
+        run: Callable = module.run
+    else:
+        # Preferred: `Hook` class with a `run` method
+        hook_cls = getattr(module, "Hook", None)
+        if hook_cls is not None:
+            instance = hook_cls()
+            if not hasattr(instance, "run"):
+                raise AttributeError(
+                    f"Hook class 'Hook' in {path} has no run() method"
+                )
+            run = instance.run
+            owner = instance
+        else:
+            # Detect v1 withdrawn names and give a migration hint (S9.1)
+            found_v1: list[str] = []
+            for name in _V1_FUNCTION_NAMES:
+                if hasattr(module, name):
+                    found_v1.append(name)
+            for name in _V1_CLASS_NAMES:
+                if hasattr(module, name):
+                    found_v1.append(name)
+
+            if found_v1:
+                raise AttributeError(
+                    f"[S9.1] Hook module {path} defines v1 per-point name(s) "
+                    f"{found_v1!r} which are withdrawn in v2. "
+                    "Rename to a module-level 'run(config, ctx) -> dict' function "
+                    "or a 'Hook' class with a 'run' method (S9.1)."
+                )
+
+            raise AttributeError(
+                f"Hook module {path} does not define a 'run' function or 'Hook' class"
+            )
+
+    validate = getattr(module, "validate_config", None)
+    if validate is None and owner is not None:
+        validate = getattr(owner, "validate_config", None)
+    if not callable(validate):
+        validate = None
+    return run, validate
+
+
 def load_hook(path: Path) -> Callable:
     """Load a hook module from *path* and return its callable.
 
@@ -122,52 +217,28 @@ def load_hook(path: Path) -> Callable:
 
     Missing file → ``FileNotFoundError`` with ``[S9.2]`` marker.
     """
-    if not path.exists():
-        raise FileNotFoundError(f"[S9.2] Hook file not found: {path}")
+    return _resolve_hook_callables(_load_hook_module(path), path)[0]
 
-    module_name = f"_ciu_hook_{path.stem}_{id(path)}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot create module spec for hook: {path}")
 
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
+def load_hook_for_check(path: Path) -> tuple[Callable, Callable | None]:
+    """``(run, validate_config | None)`` from ONE import of *path* — S9.5.
 
-    # Preferred: module-level `run` function
-    if hasattr(module, "run") and callable(module.run):
-        return module.run
+    The ``ciu check`` counterpart of :func:`load_hook` (ciu-P18). It answers
+    both of the preflight's questions about a hook file from a single module
+    load: does it satisfy the S9.1/S9.2 contract at all (stage 8: a missing
+    file still raises the ``[S9.2]`` ``FileNotFoundError``, a module with
+    neither ``run`` nor ``Hook`` still raises the same ``AttributeError``),
+    and does it opt into the optional preflight (stage 9)?
 
-    # Preferred: `Hook` class with a `run` method
-    hook_cls = getattr(module, "Hook", None)
-    if hook_cls is not None:
-        instance = hook_cls()
-        if not hasattr(instance, "run"):
-            raise AttributeError(
-                f"Hook class 'Hook' in {path} has no run() method"
-            )
-        return instance.run
+    ``validate_config`` is ``None`` when the module does not define one — that
+    is the normal case and NOT an error; a hook without one is simply skipped
+    by the preflight stage.
 
-    # Detect v1 withdrawn names and give a migration hint (S9.1)
-    found_v1: list[str] = []
-    for name in _V1_FUNCTION_NAMES:
-        if hasattr(module, name):
-            found_v1.append(name)
-    for name in _V1_CLASS_NAMES:
-        if hasattr(module, name):
-            found_v1.append(name)
-
-    if found_v1:
-        raise AttributeError(
-            f"[S9.1] Hook module {path} defines v1 per-point name(s) "
-            f"{found_v1!r} which are withdrawn in v2. "
-            "Rename to a module-level 'run(config, ctx) -> dict' function "
-            "or a 'Hook' class with a 'run' method (S9.1)."
-        )
-
-    raise AttributeError(
-        f"Hook module {path} does not define a 'run' function or 'Hook' class"
-    )
+    NEITHER returned callable is invoked here. In particular ``run`` is only
+    *located*, never called: `ciu check` must stay side-effect-free.
+    """
+    module = _load_hook_module(path)
+    return _resolve_hook_callables(module, path)
 
 
 # ---------------------------------------------------------------------------

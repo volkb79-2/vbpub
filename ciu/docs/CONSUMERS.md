@@ -414,3 +414,138 @@ any of the above — it exits 2 with `[ERROR] ciu status: <reason>` on
 stderr. A consumer scripting against this surface should treat a non-zero
 exit as "no determination was made" and a `containers: []` row as "checked,
 found nothing running" — the two must never be confused.
+
+## 14. Preflight a config change without deploying (`ciu check`, S13.4a / S9.5)
+
+`ciu check` walks the whole config pipeline **in memory**. It creates no
+hostdir, materializes no secret, writes no rendered compose/overlay/configfile
+(not even a `__pycache__` beside a hook it imports), executes no hook `run()`,
+and never contacts Docker. Use it instead of `ciu up --dry-run` as a
+validation tool: **`--dry-run` still creates hostdirs and still runs your
+`pre_secrets`/`pre_compose`/`post_compose` hooks for real** — it only skips
+`docker compose up`.
+
+```console
+$ ciu check --profile core          # prose, per stage
+$ ciu check --profile core --json   # one versioned object
+$ ciu check --profile core --live   # ALSO probe live provisioning state
+```
+
+Exit codes are S13.4's: `0` clean, `2` any static configuration error
+(including every stage below), `1` **only** a `--live` probe failure. A static
+failure short-circuits before any live probing happens.
+
+### Teach a hook to validate its own config (`validate_config`, S9.5)
+
+Any hook may add an OPTIONAL second entry point beside its `run`. CIU calls it
+during `ciu check` and **never** during `ciu up`:
+
+```python
+# infra/db-core/post_compose_db.py
+
+def run(config: dict, ctx) -> dict:
+    """Normal execution — provisions users, databases."""
+    ...
+
+
+def validate_config(config: dict, ctx) -> list[str]:
+    """Optional preflight. Return one error string per finding; [] = OK.
+
+    Receives the SAME merged, guarded config and HookContext that run() gets,
+    so it validates exactly what run() will consume — before any container
+    exists.
+    """
+    errors: list[str] = []
+    registry = config.get("registry", {})
+    if "database" not in registry:
+        errors.append("registry.database is missing")
+    users = registry.get("postgresql", {}).get("users", {})
+    for user in ("controller", "workerdb"):
+        if user not in users:
+            errors.append(f"registry.postgresql.users.{user} is missing")
+
+    # Secrets appear as SecretGuard objects (S4.21): you can confirm one is
+    # DECLARED by name, and you must never stringify it.
+    if "admin_password" not in config.get("db_core", {}).get("secrets", {}):
+        errors.append("db_core.secrets.admin_password is not declared")
+
+    return errors
+```
+
+Rules worth knowing before you write one:
+
+- **Return `list[str]`, never a bool.** `[]` means valid. A `True`/`False`
+  return is reported as a contract violation, not read as a verdict. `None` is
+  tolerated as "no findings".
+- **`ctx.secret_file(name)` raises `KeyError` for every name.** `ciu check`
+  materializes nothing, so there is no store file to point at. Validate that a
+  secret is *declared* (as above); if your check genuinely needs to read a
+  materialized secret's contents, it cannot run at check time — keep that part
+  in `run()`.
+- **`ctx.wait_healthy` / `ctx.wait_tcp` are `None`** at check time. Nothing is
+  running, and a preflight must not perform I/O anyway.
+- `ctx.stack_dir`, `ctx.repo_root`, `ctx.instance_id`, `ctx.network`,
+  `ctx.selected_profiles` and `ctx.deployed_stacks` are all populated exactly
+  as during a real run.
+- **No side effects.** No Docker, no network, no writes. Like S9.4's
+  env-mutation rule, this is a contract CIU does not sandbox.
+- **An exception is your hook's finding, not everyone's.** If your
+  `validate_config` raises, CIU reports it against that hook and keeps
+  checking every other hook and stack.
+- Defining `validate_config` is entirely optional; a hook without one is
+  skipped with a note, never an error.
+- Your hook file is imported **exactly once** per `ciu check` run, even when
+  it is declared at several hook points or by several stacks.
+
+### The `--json` envelope
+
+```console
+$ ciu check --json
+{
+  "schema_version": 1,
+  "operation": "config-check",
+  "status": "fail",
+  "profile": "core",
+  "stages": [
+    {"stage": "render", "status": "pass", "findings": [],
+     "notes": [{"message": "3 stack config(s) rendered"}]},
+    {"stage": "shape", "status": "pass", "findings": [], "notes": []},
+    {"stage": "secrets", "status": "pass", "findings": [], "notes": []},
+    {"stage": "provisioning", "status": "pass", "findings": [], "notes": []},
+    {"stage": "governance", "status": "pass", "findings": [], "notes": []},
+    {"stage": "configfile", "status": "pass", "findings": [], "notes": []},
+    {"stage": "hooks-load", "status": "pass", "findings": [], "notes": []},
+    {"stage": "hooks-preflight", "status": "fail",
+     "findings": [{"message": "registry.consul.acl.default_policy missing",
+                   "stack": "infra/consul-server",
+                   "hook": "post_compose_consul.py"}],
+     "notes": []},
+    {"stage": "compose-render", "status": "pass", "findings": [], "notes": []},
+    {"stage": "leak-scan", "status": "pass", "findings": [], "notes": []},
+    {"stage": "consumption", "status": "pass", "findings": [],
+     "notes": [{"message": "[S4.20] declared secret 'ca_bundle' is consumed by no channel visible to `ciu check` ...",
+                "stack": "infra/app"}]}
+  ]
+}
+```
+
+`stages` is a **list in pipeline order**, so a consumer can render it as-is.
+`findings` fail the run; `notes` never do. A `--live` run adds a top-level
+`"live": {"status": ..., "unsatisfied": [...]}` — deliberately not a stage,
+because it is the one failure class that exits `1` rather than `2`.
+
+Two behaviours to script against deliberately:
+
+- **A declared-but-unconsumed secret is a note, not a failure.** `ciu up`
+  itself only warns here, and `ciu check` cannot see the S5 configfile
+  consumption channel without rendering — so treating it as red would both
+  contradict the real pipeline and produce false positives.
+- **Registry validation is not implemented yet.** `ciu check` covers stack
+  shape, secrets, provisioning, governance, configfiles, hooks, the compose
+  render, the leak scan and consumption — it does **not** validate your
+  `[registry]` tables against built-in models. Do not read a green `ciu check`
+  as "my registry shape is correct".
+
+Under `--json` the check itself prints only the document, but the
+orchestrator's own `[INFO]` lines still precede it on stdout (as with
+`ciu graph --format json`); read the JSON object at the end of stdout.

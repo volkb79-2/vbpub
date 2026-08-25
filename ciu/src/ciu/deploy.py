@@ -45,8 +45,8 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Optional
 
 from . import config_model
 from . import diagnose
@@ -1706,6 +1706,731 @@ def action_healthcheck_preflight(
     return 0
 
 
+# ===========================================================================
+# `ciu check` — full config-validation pipeline (CIU-QOL-12 / S13.4a)
+# ===========================================================================
+
+CHECK_SCHEMA_VERSION = 1
+
+#: Ordered stage names in ``ciu check``'s report, matching the V8 proposal's
+#: §2.7 stage table (docs/CIU-V8-TESTING-GATE-PROPOSAL.md).
+#:
+#: Proposal stage 7 (registry validation against built-in Pydantic models) is
+#: DELIBERATELY ABSENT, not forgotten: it is a separate unit of work (five
+#: model classes plus a new optional dependency) tracked as ciu-P19, which
+#: will insert a ``"registry"`` entry between ``"configfile"`` and
+#: ``"hooks-load"`` here and a matching pass at the marked insertion point in
+#: :func:`_check_stack_config`. ``ciu check`` therefore implements proposal
+#: stages 1-6 and 8-12 today, and SPEC S13.4a says exactly that.
+CHECK_STAGES: tuple[str, ...] = (
+    "render",
+    "shape",
+    "secrets",
+    "provisioning",
+    "governance",
+    "configfile",
+    "hooks-load",
+    "hooks-preflight",
+    "compose-render",
+    "leak-scan",
+    "consumption",
+)
+
+
+class _CheckReport:
+    """Ordered per-stage accumulator for ``ciu check`` (S13.4a).
+
+    A stage is ``"pass"`` until something is recorded against it with
+    :meth:`fail`; ``notes`` carry non-failing observations (a stage skipped
+    for one stack because its directory is not on disk, a warning that does
+    not change the verdict). The whole report renders to the versioned
+    ``--json`` envelope via :meth:`document`, and the run's exit code is
+    derived from :attr:`failed` alone — every new stage's failure is exit 2
+    (S10.3 configuration/validation), never exit 1, which S13.4 reserves for
+    ``--live``'s live probe failures.
+    """
+
+    def __init__(self) -> None:
+        self._stages: dict[str, dict] = {
+            name: {"stage": name, "status": "pass", "findings": [], "notes": []}
+            for name in CHECK_STAGES
+        }
+
+    def fail(
+        self,
+        stage: str,
+        message: str,
+        *,
+        stack: str | None = None,
+        hook: str | None = None,
+    ) -> None:
+        """Record a failing finding against *stage* (marks the stage failed)."""
+        entry = self._stages[stage]
+        entry["status"] = "fail"
+        finding: dict[str, str] = {"message": message}
+        if stack is not None:
+            finding["stack"] = stack
+        if hook is not None:
+            finding["hook"] = hook
+        entry["findings"].append(finding)
+
+    def note(self, stage: str, message: str, *, stack: str | None = None) -> None:
+        """Record a non-failing observation against *stage*."""
+        note: dict[str, str] = {"message": message}
+        if stack is not None:
+            note["stack"] = stack
+        self._stages[stage]["notes"].append(note)
+
+    @property
+    def failed(self) -> bool:
+        return any(entry["status"] == "fail" for entry in self._stages.values())
+
+    def findings(self) -> list[tuple[str, dict]]:
+        """Every failing finding as ``(stage_name, finding)``, in stage order."""
+        out: list[tuple[str, dict]] = []
+        for name in CHECK_STAGES:
+            for finding in self._stages[name]["findings"]:
+                out.append((name, finding))
+        return out
+
+    def stages(self) -> list[dict]:
+        """Every stage entry, in pipeline order."""
+        return [self._stages[name] for name in CHECK_STAGES]
+
+    def document(self, profile_name: str | None) -> dict:
+        return {
+            "schema_version": CHECK_SCHEMA_VERSION,
+            "operation": "config-check",
+            "status": "fail" if self.failed else "pass",
+            "profile": profile_name,
+            "stages": self.stages(),
+        }
+
+
+def _check_secret_file(name: str) -> Path:
+    """``ctx.secret_file`` during ``ciu check`` — ALWAYS raises ``KeyError``.
+
+    Design decision (ciu-P18, S13.4a): ``ciu check`` never materializes a
+    secret, so no store file exists for ANY name — not even a correctly
+    declared one. Handing back a path anyway would be a lie a hook could act
+    on (it would ``open()`` a file that is not there and get a confusing
+    ``FileNotFoundError`` from inside its own body instead of a clear "not
+    available at check time" signal), so the callback refuses unconditionally
+    rather than distinguishing declared-but-unmaterialized from undeclared.
+
+    ``KeyError`` is deliberately the SAME failure mode S9.3 already documents
+    for this callback ("Raises KeyError for unknown names"), so a hook that
+    already guards ``ctx.secret_file`` with ``try/except KeyError`` degrades
+    gracefully with no change. A ``validate_config`` that needs to know a
+    secret is DECLARED reads the guarded config's secrets table instead — the
+    :class:`~ciu.composefile.SecretGuard` entries are present there by name.
+    """
+    raise KeyError(
+        f"[S9.3/S13.4a] secret_file({name!r}) is unavailable during `ciu check`: "
+        "the check never materializes secrets, so no store file exists to name. "
+        "Check that a secret is DECLARED via the guarded config's secrets table "
+        "(guard objects are present by name); a preflight that needs a real "
+        "materialized path cannot run at check time."
+    )
+
+
+def _workspace_identity(repo_root: Path) -> dict:
+    """This workspace's ``ciu.env`` facts, by exact path — read-only (S3.12).
+
+    The same lookup :func:`engine.main_execution` performs before building a
+    HookContext, so a ``validate_config`` preflight sees the SAME
+    ``ctx.instance_id`` / ``ctx.network`` a real ``run()`` would (CIU-41:
+    hooks read identity from the context, never from ambient environment
+    state). An absent or unreadable ``ciu.env`` yields ``{}`` — the context
+    fields then stay ``None``, exactly as during a real run outside a
+    provisioned workspace.
+    """
+    env_path = repo_root / "ciu.env"
+    if not env_path.is_file():
+        return {}
+    try:
+        return parse_workspace_env(env_path)
+    except (WorkspaceEnvError, OSError):
+        return {}
+
+
+def _resolve_hostdirs_for_render(config: dict, stack_dir: Path, repo_root: Path) -> None:
+    """Rewrite every ``[<...>.hostdir]`` value to its path string — creating NOTHING.
+
+    Why this exists: the real pipeline rewrites these declarations to absolute
+    paths at :func:`engine.create_hostdirs` (Step 8) BEFORE the compose
+    template renders at Step 13, so `{{ svc.hostdir.data }}` emits a path.
+    ``ciu check`` must not run Step 8 (it creates and chowns directories), but
+    skipping the rewrite entirely leaves the raw declaration in the render
+    context — an empty string for the auto form, and a Python dict repr for
+    the ``{path, uid, mode}`` inline-table form (S6.1), which produces compose
+    output that is not even valid YAML. That is a check-time artifact, not a
+    defect in the consumer's config, and reporting it as one would make the
+    render/consumption stages false-positive on most real stacks.
+
+    Deliberate duplication, named (ciu-P18): engine's resolver
+    (``create_hostdirs._resolve_entry`` / ``_scan_section``) is inlined inside
+    the function that CREATES, SEEDS and CHOWNS each directory, and
+    ``engine.py`` is outside this package's scope, so the pure path half could
+    not be extracted for both callers to share. This mirrors that half only:
+    same auto-name rule (``vol-<service.name>-<purpose>``), same
+    relative-to-stack-dir resolution, same S1.4 physical translation.
+    Extracting a shared ``engine.resolve_hostdir_paths`` is filed as
+    CIU-QOL-12a alongside the configfile one.
+
+    Shape violations are NOT reported here: an unusable declaration is left
+    untouched for the real pipeline's own Step-8 error to name (`ciu check`
+    has no S6 stage — hostdir validation is not one of the V8 §2.7 stages).
+    """
+    from .paths import to_physical_path
+
+    def _physical(path: Path) -> str:
+        try:
+            return str(to_physical_path(path, repo_root=repo_root))
+        except ValueError:
+            # No PHYSICAL_REPO_ROOT in scope (S1.4 needs one). The logical path
+            # is a faithful-enough bind source for a render that only has to be
+            # structurally valid — the check never mounts anything.
+            return str(path)
+
+    def _scan(section: dict) -> None:
+        hostdir = section.get("hostdir")
+        if isinstance(hostdir, dict):
+            service_name = section.get("name")
+            for purpose, value in list(hostdir.items()):
+                if isinstance(value, dict):
+                    raw = value.get("path", "")
+                elif isinstance(value, str):
+                    raw = value
+                else:
+                    continue
+                if raw:
+                    path = Path(raw)
+                    if not path.is_absolute():
+                        path = stack_dir / path
+                elif service_name:
+                    path = stack_dir / f"vol-{service_name}-{purpose}"
+                else:
+                    continue
+                hostdir[purpose] = _physical(path.resolve())
+
+        for value in section.values():
+            if isinstance(value, dict):
+                _scan(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _scan(item)
+
+    _scan(config)
+
+
+def _check_configfile_declarations(
+    stack_dir: Path, root_key: str, merged: dict
+) -> list[str]:
+    """Stage 6 — S5 configfile declaration shape + file existence. No render.
+
+    Checks, per ``[<root>.<service>.configfile.<name>]`` table: the entry is a
+    table; ``template`` is a non-empty string naming a file that EXISTS under
+    *stack_dir*; ``target`` is a non-empty ABSOLUTE container path; a declared
+    ``schema`` is a non-empty string naming a file that EXISTS; ``instances``,
+    when present, is a positive integer. Nothing is rendered, read, or
+    written.
+
+    Deliberate duplication, named (ciu-P18): the identical checks already live
+    INSIDE :func:`composefile.render_configfiles`, inlined in its per-entry
+    ``[S5.1]`` validation block. That function cannot be reused here — it
+    renders every template, WRITES each result under ``.ciu/rendered/``
+    (creating directories and deleting stale siblings), and requires a
+    ``secret_value_fn`` returning real MATERIALIZED secret values. All three
+    are exactly what ``ciu check`` must never do (S13.4a / O1), and
+    ``composefile.py`` is outside this package's scope, so the shared block
+    could not be extracted there into a side-effect-free helper both callers
+    share. This walk therefore mirrors that block's existence/shape SUBSET and
+    nothing else. Extracting a common
+    ``composefile.check_configfile_declarations`` and having BOTH callers use
+    it is filed as CIU-QOL-12a.
+    """
+    findings: list[str] = []
+    root = merged.get(root_key)
+    if not isinstance(root, dict):
+        return findings
+
+    for service_name, service_block in root.items():
+        if not isinstance(service_block, dict):
+            continue
+        configfiles = service_block.get("configfile")
+        if not isinstance(configfiles, dict):
+            continue
+        for cfg_name, cfg in configfiles.items():
+            where = f"'{service_name}.{cfg_name}'"
+            if not isinstance(cfg, dict):
+                findings.append(
+                    f"[S5.1] configfile {where} must be a table with "
+                    "`template`/`target` keys"
+                )
+                continue
+
+            template_rel = cfg.get("template")
+            if not isinstance(template_rel, str) or not template_rel:
+                findings.append(
+                    f"[S5.1] configfile {where} is missing a `template` path "
+                    "(relative to the stack dir)"
+                )
+            elif not (stack_dir / template_rel).exists():
+                findings.append(
+                    f"[S5.1] configfile template not found for {where}: "
+                    f"{stack_dir / template_rel}"
+                )
+
+            target = cfg.get("target")
+            if not isinstance(target, str) or not target:
+                findings.append(
+                    f"[S5.1] configfile {where} is missing a `target` container path"
+                )
+            elif not PurePosixPath(target).is_absolute():
+                findings.append(
+                    f"[S5.1] configfile {where} has a non-absolute `target`: {target!r}"
+                )
+
+            schema_rel = cfg.get("schema")
+            if schema_rel is not None:
+                if not isinstance(schema_rel, str) or not schema_rel:
+                    findings.append(
+                        f"[S5.1] configfile {where}: `schema` must be a file path "
+                        "relative to the stack dir"
+                    )
+                elif not (stack_dir / schema_rel).exists():
+                    findings.append(
+                        f"[S5.1] configfile schema file not found for {where}: "
+                        f"{stack_dir / schema_rel}"
+                    )
+
+            instances_raw = cfg.get("instances")
+            if instances_raw is not None and (
+                not isinstance(instances_raw, int)
+                or isinstance(instances_raw, bool)
+                or instances_raw < 1
+            ):
+                findings.append(
+                    f"[S5.1] configfile {where}: 'instances' must be a positive "
+                    f"integer, got {instances_raw!r}"
+                )
+
+    return findings
+
+
+def _load_hook_for_check_cached(
+    path: Path, cache: dict[Path, tuple[Any, str | None]]
+) -> tuple[Any, str | None]:
+    """``(callables, error_message)`` for one hook file, imported AT MOST ONCE.
+
+    *cache* is per-``ciu check``-invocation and keyed by the RESOLVED path, so
+    a hook file declared at two hook points, or by two different stacks, is
+    imported exactly once for the whole run — importing it a second time would
+    re-execute the module's import-time code behind the author's back (O3).
+    Failures are cached too, so a broken hook is not re-imported per reference
+    either.
+
+    A hook module's import-time code can raise ANYTHING, so the catch is
+    deliberately broad: an exploding hook file is that hook's own finding, not
+    grounds to abort the whole check run.
+
+    Bytecode writing is suppressed for the duration of the import (restored
+    afterwards, including on failure). CPython otherwise drops a
+    ``__pycache__/`` directory beside every hook file it imports — a real
+    write into the consumer's tree, and the one thing that kept `ciu check`
+    from being literally side-effect-free (S13.4a / O1). A real `ciu up` still
+    caches bytecode as before; only the read-only check declines to.
+    """
+    if path in cache:
+        return cache[path]
+
+    from . import hooks_runner
+
+    saved_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        entry: tuple[Any, str | None] = (
+            hooks_runner.load_hook_for_check(path),
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        entry = (None, f"{type(exc).__name__}: {exc}")
+    finally:
+        sys.dont_write_bytecode = saved_dont_write_bytecode
+    cache[path] = entry
+    return entry
+
+
+def _check_hooks_for_stack(
+    *,
+    rel: str,
+    stack_dir: Path,
+    repo_root: Path,
+    root_key: str,
+    merged: dict,
+    guarded: dict,
+    ciu_context: dict,
+    identity: dict,
+    report: _CheckReport,
+    cache: dict[Path, tuple[Any, str | None]],
+) -> None:
+    """Stages 8 + 9 — load every declared hook, then call its optional preflight.
+
+    Stage 8 (hooks-load): every path under ``[<root>.hooks].<point>`` is
+    resolved against *stack_dir* exactly as :func:`hooks_runner.run_hooks`
+    resolves it, then imported ONCE via :func:`_load_hook_for_check_cached`.
+    ``load_hook_for_check`` reuses ``load_hook``'s S9.1/S9.2 semantics, so a
+    missing file and a module with neither ``run`` nor ``Hook`` are the same
+    errors here as during a real ``up`` — they just become findings instead of
+    aborting.
+
+    Stage 9 (hooks-preflight): a hook that defines ``validate_config`` (S9.5)
+    is called ONCE per stack with the SAME guarded merged config and a
+    HookContext as ``run()`` would receive, minus materialized secret paths
+    (see :func:`_check_secret_file`). ``run()`` itself is NEVER called.
+    ``validate_config`` returns ``list[str]`` — never a bool — and an
+    exception escaping its body is reported as THAT hook's own preflight
+    failure so one broken hook cannot abort the rest of the run.
+    """
+    from . import hooks_runner
+
+    hooks_table = merged.get(root_key, {}).get("hooks")
+    if not isinstance(hooks_table, dict):
+        return
+
+    validated: set[Path] = set()
+    for point in hooks_runner.HOOK_POINTS:
+        declared = hooks_table.get(point)
+        if not isinstance(declared, list):
+            continue
+        for raw in declared:
+            path = Path(str(raw))
+            if not path.is_absolute():
+                path = stack_dir / path
+            callables, load_error = _load_hook_for_check_cached(path, cache)
+            if load_error is not None:
+                report.fail(
+                    "hooks-load",
+                    f"hook declared at {point} failed to load: {load_error}",
+                    stack=rel,
+                    hook=str(raw),
+                )
+                continue
+            _run_fn, validate_config = callables
+            if validate_config is None:
+                report.note(
+                    "hooks-preflight",
+                    f"{raw}: defines no validate_config — skipped (S9.5, not an error)",
+                    stack=rel,
+                )
+                continue
+            if path in validated:
+                # Same file declared at more than one point in THIS stack: one
+                # config, one verdict — validating twice would only duplicate
+                # findings.
+                continue
+            validated.add(path)
+
+            ctx = hooks_runner.HookContext(
+                point=point,
+                stack_dir=stack_dir,
+                repo_root=repo_root,
+                secret_file=_check_secret_file,
+                selected_profiles=tuple(ciu_context.get("selected_profiles") or []),
+                deployed_stacks=tuple(ciu_context.get("deployed_stacks") or []),
+                instance_id=identity.get("INSTANCE_ID"),
+                network=identity.get("DOCKER_NETWORK_INTERNAL"),
+            )
+            try:
+                result = validate_config(guarded, ctx)
+            except Exception as exc:  # noqa: BLE001 — one hook must not abort the run
+                report.fail(
+                    "hooks-preflight",
+                    f"validate_config raised {type(exc).__name__}: {exc}",
+                    stack=rel,
+                    hook=str(raw),
+                )
+                continue
+
+            if result is None:
+                report.note(
+                    "hooks-preflight",
+                    f"{raw}: validate_config returned None — treated as no findings",
+                    stack=rel,
+                )
+                continue
+            if isinstance(result, (str, bytes)) or not isinstance(result, (list, tuple)):
+                report.fail(
+                    "hooks-preflight",
+                    f"validate_config returned {type(result).__name__}; S9.5 requires "
+                    "a list of error strings (empty = OK)",
+                    stack=rel,
+                    hook=str(raw),
+                )
+                continue
+            for item in result:
+                report.fail("hooks-preflight", str(item), stack=rel, hook=str(raw))
+
+
+def _check_stack_config(
+    *,
+    rel: str,
+    stack_cfg: dict,
+    profile: profiles_pkg.Profile,
+    repo_root: Path,
+    root_key: str,
+    ciu_context: dict,
+    identity: dict,
+    report: _CheckReport,
+    cache: dict[Path, tuple[Any, str | None]],
+) -> None:
+    """Walk V8 §2.7 stages 2, 3, 5, 6, 8-12 for ONE stack, in memory only.
+
+    Every stage calls the SAME function the real pipeline
+    (:func:`engine.main_execution`) delegates to at the corresponding step —
+    never a reimplementation — with the sole, documented exception of the
+    configfile existence walk (see :func:`_check_configfile_declarations`).
+
+    Nothing here creates a hostdir, materializes a secret, writes a rendered
+    compose/overlay/configfile, executes a hook ``run()``, or talks to Docker.
+    ``engine.main_execution(dry_run=True)`` is NOT an implementation option:
+    it still creates hostdirs at its Step 8 and still runs every
+    pre_secrets/pre_compose/post_compose hook for real, skipping only
+    ``docker compose up`` — the exact behaviour CIU-QOL-12 exists to give
+    consumers an alternative to.
+    """
+    from . import composefile
+    from .config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE
+
+    merged = config_model.deep_merge(profile.config, stack_cfg)
+    stack_dir = (repo_root / rel).resolve()
+    on_disk = stack_dir.is_dir()
+
+    # ---- stage 3: secrets grammar/placement (engine Step 5's own calls) ----
+    # discover() enforces S4 directive grammar + S4.6 name uniqueness;
+    # find_misplaced() enforces S4.1/S4.5 placement. Neither materializes.
+    specs: list | None = None
+    try:
+        specs = secret_directives.discover(root_key, merged)
+    except ValueError as exc:
+        report.fail("secrets", str(exc), stack=rel)
+    misplaced = secret_directives.find_misplaced(merged, stack_root_key=root_key)
+    if misplaced:
+        paths = ", ".join(p for p, _ in misplaced)
+        report.fail(
+            "secrets",
+            f"[S4.5/S4.1] secret directive(s) or secrets table(s) found outside the "
+            f"'{root_key}.secrets' scope at: {paths}",
+            stack=rel,
+        )
+
+    # ---- stage 5: governance shape/resolution (engine Step 15's own call) ----
+    # Shape and layering only: no cgroup is created, no slice is probed, no
+    # systemd is consulted (that is governance_slice_preflight's job, and it
+    # is a live-host check, not a config check).
+    try:
+        governance_mod.resolve_stack_governance(
+            merged.get(root_key, {}).get("governance"), profile.config
+        )
+    except (ValueError, TypeError) as exc:
+        report.fail("governance", f"[S15.2] governance shape invalid: {exc}", stack=rel)
+
+    if not on_disk:
+        # Every remaining stage reads files under the stack directory. Report
+        # that plainly rather than inventing failures for a stack that is not
+        # checked out here (mirrors `ciu status`'s "not on disk" row).
+        report.note(
+            "configfile",
+            "stack directory is not present on disk — file-dependent stages skipped",
+            stack=rel,
+        )
+        return
+
+    # ---- stage 6: configfile template/schema existence (S5) ----
+    for finding in _check_configfile_declarations(stack_dir, root_key, merged):
+        report.fail("configfile", finding, stack=rel)
+
+    # ---- stage 7: registry validation (V8 §2.7) — ciu-P19 ----------------
+    # INSERTION POINT, deliberately empty in this package. ciu-P19 adds the
+    # built-in Pydantic registry models and validates merged[root_key]
+    # ["registry"] here, adding a "registry" entry to CHECK_STAGES. It is a
+    # separate package because it brings five model classes and a new optional
+    # dependency; SPEC S13.4a documents the gap explicitly rather than letting
+    # `ciu check` imply it validates all twelve proposal stages today.
+
+    if specs is None:
+        # Secret discovery failed above, so the S4.21 guard cannot be built
+        # reliably. Rendering against an unguarded config could put a raw
+        # directive string into the template context, so stop here for this
+        # stack; the run is already red (exit 2) from the secrets stage.
+        report.note(
+            "compose-render",
+            "skipped: secret discovery failed for this stack (see the secrets stage)",
+            stack=rel,
+        )
+        return
+
+    # ---- render-context fidelity: engine Steps 7 and 8's PURE halves ----
+    # A compose template legitimately reads `auto_generated.*` (Step 7) and
+    # `<svc>.hostdir.<purpose>` (rewritten to a path at Step 8). Neither is
+    # present in a freshly-merged config, so without these two the render
+    # stage would fail on most real stacks for reasons that are artifacts of
+    # the check, not defects in the config.
+    try:
+        engine.auto_generate_values(merged)
+    except ValueError as exc:
+        # Missing CONTAINER_UID/DOCKER_GID is an S2/ENV bootstrap failure
+        # (S10.3 exit 3), already enforced by bootstrap_workspace_env long
+        # before this point — re-reporting it here as a config error (exit 2)
+        # would file it under the wrong taxonomy. Note it and render without.
+        report.note(
+            "compose-render",
+            f"auto_generated values unavailable ({exc}); template references to "
+            "`auto_generated.*` will fail this stack's render",
+            stack=rel,
+        )
+    _resolve_hostdirs_for_render(merged, stack_dir, repo_root)
+
+    # ---- stage 10: compose render, IN MEMORY (S4.21, engine Step 13) ----
+    # guard_config replaces every secrets-table entry with a SecretGuard
+    # BEFORE the render, which is precisely what makes a template render safe
+    # without a single real secret value: a template that tries to stringify
+    # one aborts with SecretLeakError instead of leaking it.
+    guarded = composefile.guard_config(merged, specs)
+
+    template = stack_dir / CIU_COMPOSE_TEMPLATE
+    shipped = stack_dir / SHIPPED_COMPOSE
+    if template.is_file():
+        try:
+            rendered_compose = composefile.render_compose(
+                template, guarded, ciu_context=ciu_context
+            )
+        except Exception as exc:  # noqa: BLE001 — a template can raise anything
+            report.fail(
+                "compose-render",
+                f"{CIU_COMPOSE_TEMPLATE}: {type(exc).__name__}: {exc}",
+                stack=rel,
+            )
+            rendered_compose = None
+    elif shipped.is_file():
+        rendered_compose = shipped.read_text(encoding="utf-8")
+    else:
+        rendered_compose = None
+        report.note(
+            "compose-render",
+            f"skipped: neither {CIU_COMPOSE_TEMPLATE} nor {SHIPPED_COMPOSE} is present",
+            stack=rel,
+        )
+
+    # ---- stages 8 + 9: hooks load + validate_config preflight (S9) ----
+    _check_hooks_for_stack(
+        rel=rel,
+        stack_dir=stack_dir,
+        repo_root=repo_root,
+        root_key=root_key,
+        merged=merged,
+        guarded=guarded,
+        ciu_context=ciu_context,
+        identity=identity,
+        report=report,
+        cache=cache,
+    )
+
+    if rendered_compose is None:
+        return
+
+    # ---- stage 11: leak scan (S4.22, engine Step 14) ----
+    # Called with an EMPTY materialized map because nothing was materialized —
+    # which makes this pass structurally vacuous at check time, and saying so
+    # is the honest report. The leak barrier that DOES bite here is S4.21's
+    # guard inside render_compose above; a template that stringifies a secret
+    # already failed the compose-render stage.
+    composefile.leak_scan(rendered_compose, {})
+
+    # ---- stage 12: declared-vs-consumed cross-check (S4.20, engine Step 14) ----
+    declared_names = {s.name for s in specs}
+    hook_consumed = {
+        spec.name for spec in specs if getattr(spec, "consumed_by", None) == "hook"
+    }
+    try:
+        unconsumed = composefile.validate_consumption(
+            rendered_compose,
+            declared_names,
+            configfile_mounts=(),
+            hook_consumed=hook_consumed,
+        )
+    except ValueError as exc:
+        # A service referencing an UNDECLARED secret is a hard config error in
+        # the real pipeline too (this same call raises there) — exit 2.
+        report.fail("consumption", str(exc), stack=rel)
+        return
+    except Exception as exc:  # noqa: BLE001 — see below
+        # validate_consumption parses the render with yaml.safe_load, which
+        # raises YAMLError (NOT a ValueError) on unparseable output. A compose
+        # file docker itself could not parse is a real finding, but it must
+        # never escape and abort the whole check run.
+        report.fail(
+            "consumption",
+            f"rendered compose is not parseable YAML: {type(exc).__name__}: {exc}",
+            stack=rel,
+        )
+        return
+    for name in unconsumed:
+        # WARNING, not a failure — matching engine.py Step 14's own precedent
+        # (it prints `[WARN] declared secret ... is consumed by no channel`
+        # and keeps going). Two reasons this must not be exit 2 here: making
+        # `ciu check` red where `ciu up` is green would make the check
+        # unusable as a CI gate, and the check cannot render configfiles, so
+        # it cannot see the S5 configfile consumption channel at all and would
+        # report false positives for every configfile-consumed secret.
+        report.note(
+            "consumption",
+            f"[S4.20] declared secret '{name}' is consumed by no channel visible to "
+            "`ciu check` (configfile consumption is not visible without rendering)",
+            stack=rel,
+        )
+
+
+def _emit_check_report(
+    report: _CheckReport,
+    *,
+    json_output: bool,
+    profile_name: str | None,
+    live_failed: list[str] | None,
+) -> None:
+    """Emit the check report — ONE versioned JSON object, or per-stage prose.
+
+    Under ``--json`` the document is the only thing this action writes: a
+    single object with ``schema_version``/``operation``/``status``/``profile``
+    and ``stages`` in pipeline order, each stage carrying ``status`` plus its
+    ``findings`` and ``notes``. When ``--live`` also ran, its verdict is
+    attached as a top-level ``live`` key — deliberately NOT a stage, because
+    it is the one failure class that maps to exit 1 rather than exit 2 (S13.4).
+    """
+    if json_output:
+        document = report.document(profile_name)
+        if live_failed is not None:
+            document["live"] = {
+                "status": "fail" if live_failed else "pass",
+                "unsatisfied": list(live_failed),
+            }
+        print(json.dumps(document, indent=2))
+        return
+
+    for entry in report.stages():
+        mark = "x" if entry["status"] == "fail" else "-"
+        info(f"  [{mark}] {entry['stage']}: {entry['status']}")
+        for note in entry["notes"]:
+            where = f"{note['stack']}: " if "stack" in note else ""
+            info(f"        note: {where}{note['message']}")
+        for finding in entry["findings"]:
+            where = f"{finding['stack']}: " if "stack" in finding else ""
+            hook = f"[{finding['hook']}] " if "hook" in finding else ""
+            error(f"        {where}{hook}{finding['message']}")
+
+
 def action_check(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -1713,17 +2438,52 @@ def action_check(
     rendered: dict[str, dict],
     *,
     live: bool = False,
+    json_output: bool = False,
 ) -> int:
-    """--check: validate the requires/provides dependency graph (no deploy).
+    """--check: walk the whole config-validation pipeline (no deploy) — S13.4a.
 
-    Runs lint_graph and optionally probes live state when --live is set.
-    Exit non-zero on any failure.
+    Runs, per selected+rendered stack and entirely IN MEMORY, the V8 proposal
+    §2.7 stages 1-6 and 8-12: render (already done by the caller), stack shape
+    (S3.5/S3.7), secret directive grammar/placement (S4), the provisioning
+    graph lint (unchanged from this action's original behaviour), governance
+    shape (S15.2), configfile template/schema existence (S5), hook loading
+    (S9.1/S9.2), the optional ``validate_config`` hook preflight (S9.5), the
+    guarded compose render (S4.21), the leak scan (S4.22), and the
+    declared-vs-consumed secret cross-check (S4.20). Stage 7 (registry
+    Pydantic models) is deliberately NOT implemented here — see
+    :data:`CHECK_STAGES` and ciu-P19.
+
+    SIDE-EFFECT-FREE (CIU-QOL-12's whole point): no hostdir is created, no
+    secret is materialized, no compose/overlay/configfile is written, no hook
+    ``run()`` executes, and Docker is never contacted. That is what makes this
+    a usable substitute for `ciu up --dry-run` as a validation tool — the
+    dry-run path still creates hostdirs and still runs hooks for real.
+
+    Exit codes are S13.4's, unchanged: ``0`` clean · ``1`` **live probe
+    failure only** (``--live``) · ``2`` any static configuration error,
+    including every stage added here. ``--live`` is not reached when a static
+    stage already failed.
+
+    With *json_output*, the per-stage report is written to stdout as ONE
+    versioned JSON object (``schema_version``, ``operation``, ``status``,
+    ``profile``, ``stages: [...]`` in pipeline order) and this action prints
+    no prose of its own.
     """
     from . import provisioning as provisioning_pkg
 
-    info("=" * 60)
-    info("CHECK: validating requires/provides dependency graph")
-    info("=" * 60)
+    def say(msg: str) -> None:
+        if not json_output:
+            info(msg)
+
+    def complain(msg: str) -> None:
+        if not json_output:
+            error(msg)
+
+    say("=" * 60)
+    say("CHECK: validating configuration pipeline (S13.4a)")
+    say("=" * 60)
+
+    report = _CheckReport()
 
     # QOL-11: declared layouts/exec-targets/vendor_images are GLOBAL-scope
     # keys (profile.config is the global config, deep-merged with
@@ -1738,8 +2498,25 @@ def action_check(
     except (ValueError, worktree_pkg.WorktreeError) as exc:
         # exec-target shape (S16.7) raises WorktreeError, not ValueError;
         # both are S11 validation-shape failures here, exit 2 either way.
-        error(str(exc))
+        # This one aborts immediately: it is a GLOBAL-config defect, so every
+        # per-stack stage below would be walking a config already known bad.
+        report.fail("shape", str(exc))
+        complain(str(exc))
+        _emit_check_report(
+            report,
+            json_output=json_output,
+            profile_name=profile.name,
+            live_failed=None,
+        )
         return 2
+
+    # Stage 1 (render) already happened in the caller — `rendered` is its
+    # product, and a render failure raised there long before this point.
+    report.note("render", f"{len(rendered)} stack config(s) rendered")
+
+    ciu_context = profiles_pkg.render_ciu_context(profile, selection)
+    identity = _workspace_identity(repo_root)
+    hook_cache: dict[Path, tuple[Any, str | None]] = {}
 
     stacks: dict[str, dict] = {}
     for entry in selection:
@@ -1747,42 +2524,63 @@ def action_check(
         if rel not in rendered:
             continue
         stack_cfg = rendered[rel]
+        # ---- stage 2: single root key (S3.5) + reserved collisions (S3.7) ----
         try:
             root_key = config_model.validate_stack_shape(stack_cfg)
         except ValueError as exc:
-            error(str(exc))
-            return 2
+            report.fail("shape", str(exc), stack=rel)
+            # No root key ⇒ every later stage is unanchored for this stack.
+            continue
+
+        # ---- stage 4: provisioning grammar + graph (unchanged path) ----
         root_section = stack_cfg.get(root_key, {})
         requires = root_section.get("requires", [])
         provides = root_section.get("provides", [])
-        if not (requires or provides):
-            continue
-        # Reject malformed typed refs (spec §2 grammar) before linting.
-        try:
-            config_model.validate_stack_provisioning(stack_cfg, source=rel)
-        except ValueError as exc:
-            error(str(exc))
-            return 2
-        stacks[rel] = {"requires": requires, "provides": provides}
+        if requires or provides:
+            # Reject malformed typed refs (spec §2 grammar) before linting.
+            try:
+                config_model.validate_stack_provisioning(stack_cfg, source=rel)
+            except ValueError as exc:
+                report.fail("provisioning", str(exc), stack=rel)
+            else:
+                stacks[rel] = {"requires": requires, "provides": provides}
 
-    if not stacks:
-        info("No stacks with requires/provides — nothing to check")
-        success("check passed (no provisioning refs)")
-        return 0
+        _check_stack_config(
+            rel=rel,
+            stack_cfg=stack_cfg,
+            profile=profile,
+            repo_root=repo_root,
+            root_key=root_key,
+            ciu_context=ciu_context,
+            identity=identity,
+            report=report,
+            cache=hook_cache,
+        )
 
-    lint_errors = provisioning_pkg.lint_graph(stacks)
-    if lint_errors:
-        for e in lint_errors:
-            error(e)
-        error("Graph lint failed")
+    if stacks:
+        for lint_error in provisioning_pkg.lint_graph(stacks):
+            report.fail("provisioning", lint_error)
+    else:
+        say("No stacks with requires/provides — nothing to check")
+
+    if report.failed:
+        _emit_check_report(
+            report,
+            json_output=json_output,
+            profile_name=profile.name,
+            live_failed=None,
+        )
+        complain(f"check failed: {len(report.findings())} finding(s)")
+        # S13.4: every static/config-shape failure is exit 2. Exit 1 stays
+        # reserved for --live's live PROBE failures below, which are not even
+        # attempted when the static config is already red.
         return 2
 
-    info("Graph lint passed")
-
+    all_failed: list[str] | None = None
     if live:
-        info("Probing live state...")
+        say("Probing live state...")
         config = profile.config
-        all_failed: list[str] = []
+        all_failed = []
         for entry in selection:
             rel = entry["path"]
             if rel not in stacks:
@@ -1790,16 +2588,26 @@ def action_check(
             for ref in stacks[rel].get("requires", []):
                 result = provisioning_pkg.probe_ref(ref, config, repo_root)
                 if result.satisfied:
-                    info(f"  OK  {ref}")
+                    say(f"  OK  {ref}")
                 else:
-                    error(f"  FAIL {ref}: {result.reason}")
+                    complain(f"  FAIL {ref}: {result.reason}")
                     all_failed.append(ref)
-        if all_failed:
-            error(f"Live probe failed: {len(all_failed)} unsatisfied requirement(s)")
-            return 1
-        info("Live probe passed")
 
-    success("check passed")
+    _emit_check_report(
+        report,
+        json_output=json_output,
+        profile_name=profile.name,
+        live_failed=all_failed,
+    )
+
+    if all_failed:
+        complain(f"Live probe failed: {len(all_failed)} unsatisfied requirement(s)")
+        return 1
+    if live:
+        say("Live probe passed")
+
+    if not json_output:
+        success("check passed")
     return 0
 
 
@@ -2752,6 +3560,9 @@ Examples:
                               "the result then describes the OLD artifact")
     control.add_argument("--live", action="store_true",
                          help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
+    control.add_argument("--json", dest="json_output", action="store_true", default=False,
+                         help="With --check: emit the per-stage config-check report as "
+                              "one versioned JSON object (S13.4a)")
     control.add_argument("--format", dest="graph_format", default="mermaid",
                          choices=["mermaid", "dot", "json"],
                          help="With --graph: output format (default: mermaid)")
@@ -2941,6 +3752,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_check(
                 repo_root, profile, selection, rendered,
                 live=getattr(args, 'live', False),
+                json_output=getattr(args, 'json_output', False),
             )
         elif action == "graph":
             if rendered is None:

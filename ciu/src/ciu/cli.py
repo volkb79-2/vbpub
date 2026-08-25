@@ -87,7 +87,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 per-stack compose project, containers, health (read-only)
 
   PROVISIONING (requires/provides graph)
-    check [--profile NAME] [--live]      validate the dependency graph (no deploy)
+    check [--profile NAME] [--live] [--json]
+                                        validate the config pipeline (no deploy)
     graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
 
   DEV-LOOP BUILDS
@@ -354,11 +355,17 @@ ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
   -y, --yes       with --materialize, skip interactive prompts (S4.13)
 """,
     "check": """\
-ciu check [--profile NAME] [--live] [--phases N,M] [--define-root PATH]
-  Validate the requires/provides dependency graph across the selection (no deploy).
+ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
+  Validate the whole config pipeline across the selection (no deploy, S13.4a):
+  stack shape, secret directive grammar/placement, the requires/provides graph,
+  governance shape, configfile template/schema existence, hook loading, each
+  hook's optional validate_config() preflight, the guarded compose render, the
+  leak scan, and the declared-vs-consumed secret cross-check. Entirely in
+  memory: no hostdir, no materialized secret, no rendered file, no hook run().
 
   --profile NAME     restrict to the named host profile (repeatable)
   --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
+  --json             emit the per-stage report as one versioned JSON object
   --define-root PATH override repo root (alias: --root-folder)
   --phases N,M       restrict to the given phase numbers
 """,

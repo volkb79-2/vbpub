@@ -10,6 +10,28 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu check` now walks the WHOLE config pipeline in memory and
+  side-effect-free, not just the provisioning graph — stack shape (S3.5/S3.7),
+  secret directive grammar and placement (S4), the requires/provides graph
+  lint (unchanged), governance shape (S15.2), configfile template/schema
+  existence (S5.1), hook loading (S9.1/S9.2), each hook's new optional
+  `validate_config(config, ctx) -> list[str]` preflight (S9.5), the
+  S4.21-guarded compose render, the S4.22 leak scan, and the S4.20
+  declared-vs-consumed cross-check. It creates no hostdir, materializes no
+  secret, writes no rendered compose/overlay/configfile (nor a `__pycache__`
+  beside an imported hook), executes no hook `run()`, and never contacts
+  Docker — so it replaces `ciu up --dry-run` as a validation tool, which
+  still creates hostdirs and still runs hooks for real. Each hook file is
+  imported exactly once per run. New `ciu check --json` emits one versioned
+  per-stage envelope. Exit codes are unchanged (S13.4): every new stage's
+  failure is exit 2; exit 1 stays reserved for `--live`'s probe failures,
+  which are not attempted once a static stage is red. For render fidelity the
+  check applies the PURE halves of two steps it does not run — Step 7's
+  `auto_generated.*` (S3.9) and Step 8's hostdir-to-path rewrite (S6.2/S1.4),
+  computing paths without creating, seeding or chowning a single directory —
+  so templates reading either still render. Registry (Pydantic-model)
+  validation is deliberately NOT included yet and is documented as absent
+  (CIU-QOL-12, SPEC S13.4a + S9.5)
 - feat(ciu): `ciu bake --profile NAME` — the target list can now be resolved
   via the SAME selection chain `ciu up --profile` uses
   (`load_global_config` → `resolve_profiles` → `build_selection`), so `ciu

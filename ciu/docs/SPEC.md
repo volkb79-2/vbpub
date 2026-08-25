@@ -1089,6 +1089,33 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   updates from hook returns (hook→pipeline communication goes through
   config/state; the v1 `VAULT_TOKEN`-export hook is superseded by the
   S4.16 built-in token source order).
+- **S9.5** **Optional preflight entry point** — a hook module (or `Hook`
+  class) MAY define `validate_config(config, ctx) -> list[str]` beside its
+  `run`. CIU calls it **only** during `ciu check` (S13.4a) and **never**
+  during `ciu up`; `run()` is never called by `ciu check`. Contract:
+  - **Return type is `list[str]`** — one error string per finding, empty
+    list = valid. It is NOT a boolean: a `True`/`False` return is a contract
+    violation and is reported as such, never read as a verdict. A `None`
+    return is tolerated as "no findings"; any other type is a violation.
+  - It receives the **same merged, guarded config** (S4.21 — secrets appear
+    as `SecretGuard` objects, so a preflight can confirm a secret is
+    *declared* by name without ever seeing a value) and a `HookContext` with
+    the same `stack_dir`/`repo_root`/`selected_profiles`/`deployed_stacks`/
+    `instance_id`/`network` fields a real `run()` would receive.
+  - `ctx.secret_file(name)` raises `KeyError` for **every** name during
+    `ciu check` — no secret was materialized, so no store file exists to
+    name (S13.4a). A preflight needing a real materialized secret **path**
+    (not merely the fact that the secret is declared) cannot run at check
+    time; this is a documented limitation, not a defect. `ctx.wait_healthy`
+    / `ctx.wait_tcp` are `None` at check time for the same reason — nothing
+    is running, and a preflight must not perform I/O anyway.
+  - It MUST NOT execute side effects (no Docker, no network, no writes).
+    Like S9.4's env rule this is a contract, not a sandbox.
+  - An exception escaping its body is reported as **that hook's own**
+    preflight failure, naming the exception; it never aborts the rest of the
+    check run.
+  - Defining it is entirely optional. A hook without one is skipped by the
+    preflight stage — that is a note, not an error.
 
 ## S10 — CLI surface (delta to v1)
 
@@ -1306,11 +1333,75 @@ Both checks are skipped under `--dry-run` (nothing is running to probe) and
 under `--no-preflight` (break-glass flag). If the full run is `--no-preflight`,
 both checks are bypassed entirely.
 
-- **S13.4** `ciu check [--profile NAME] [--live]` — validates the graph
-  without deploying. Without `--live`: runs only the static lint. With `--live`:
-  additionally probes live state for each `requires` entry. Exit code: `0`
-  clean · `1` live probe failure · `2` graph lint error. Safe to run in CI
-  against a running stack.
+- **S13.4** `ciu check [--profile NAME] [--live] [--json]` — validates the
+  configuration without deploying (see S13.4a for the full stage list; the
+  provisioning graph is one of its stages). Without `--live`: static checks
+  only. With `--live`: additionally probes live state for each `requires`
+  entry. Exit code: `0` clean · `1` **live probe failure only** · `2` any
+  static configuration/validation error. Safe to run in CI against a running
+  stack.
+
+### S13.4a — `ciu check`'s config-validation pipeline
+
+`ciu check` walks the whole config pipeline **in memory and side-effect-free**.
+It creates no hostdir, materializes no secret, writes no rendered
+compose/overlay/configfile, executes no hook `run()`, writes no `__pycache__`
+beside an imported hook, and never contacts Docker. This is what makes it a
+substitute for using `ciu up --dry-run` as a validation tool: **`--dry-run`
+still creates hostdirs and still runs `pre_secrets`/`pre_compose`/
+`post_compose` hooks for real**, skipping only `docker compose up`.
+
+Stages, in order, each reusing the same function the real pipeline
+(`engine.main_execution`) calls at the corresponding step:
+
+| Stage | Validates | Failure |
+|---|---|---|
+| `render` | Jinja2 + `$VAR` + TOML parse of the global chain and every selected stack (already performed to produce the check's input) | 2 |
+| `shape` | single root key (S3.5), reserved-namespace collision (S3.7), plus the global declared-feature check (S11) | 2 |
+| `secrets` | directive grammar and name uniqueness (S4/S4.6), placement (S4.1/S4.5) | 2 |
+| `provisioning` | `requires`/`provides` grammar (S13), graph lint, cycles | 2 |
+| `governance` | governance table shape and layering (S15.2/S15.10). Resolution only — no cgroup is created and no systemd slice is probed | 2 |
+| `configfile` | per-configfile declaration shape, template file existence, absolute `target`, declared `schema` file existence (S5.1). **Existence only — nothing is rendered** | 2 |
+| `hooks-load` | every declared hook file exists and exports `run` or a `Hook` class with `run` (S9.1/S9.2). Each file is imported **exactly once per run**, and `run` is located but never called | 2 |
+| `hooks-preflight` | each hook's optional `validate_config(config, ctx)` (S9.5) | 2 |
+| `compose-render` | full compose-template render against the S4.21-guarded config, in memory. A template that stringifies a secret aborts here | 2 |
+| `leak-scan` | S4.22 scan of the rendered text. **Structurally vacuous at check time** — nothing was materialized, so there are no values to search for; the barrier that actually bites here is S4.21's guard in `compose-render` | 2 |
+| `consumption` | declared-vs-consumed secret cross-check (S4.20). An undeclared reference is a failure; a declared-but-unconsumed secret is a **warning**, matching the real pipeline's own Step-14 behaviour — and the check cannot see the S5 configfile consumption channel without rendering | 2 (undeclared) / warn (unconsumed) |
+
+**Render fidelity.** Two pipeline steps `ciu check` does not run nevertheless
+supply values a compose template legitimately reads, so their *pure* halves
+are applied to the in-memory config before the render: Step 7's
+`auto_generated.*` (S3.9 — build metadata and UID/GID), and Step 8's rewrite
+of each `[<…>.hostdir]` declaration to its absolute path (S6.1/S6.2/S1.4).
+**No directory is created, seeded, chowned or chmod'ed** — only the path
+string is computed. Without this the render stage would fail on most real
+stacks for reasons that are artifacts of the check rather than defects in the
+config. When `CONTAINER_UID`/`DOCKER_GID` are absent the `auto_generated`
+values are skipped with a **note**, not a failure: that is an S2 bootstrap
+condition (exit 3), already enforced by `bootstrap_workspace_env`, and does
+not belong in the exit-2 configuration taxonomy. A hostdir declaration whose
+shape is unusable is left untouched for the real pipeline's own Step-8 error
+to name — `ciu check` has no S6 stage.
+
+**Not yet implemented:** the V8 proposal's stage 7 (registry validation
+against built-in Pydantic models) is **deliberately absent**. `ciu check`
+today implements proposal stages 1-6 and 8-12 only; it does **not** validate
+registry shapes. That stage is a separate unit of work and will be added by
+its own package.
+
+Every stage failure above is exit `2`. Exit `1` is reserved for `--live`'s
+live probe failures and is never produced by a static stage; when a static
+stage has already failed, the live probe is not attempted at all.
+
+`--json` writes ONE versioned object: `schema_version`, `operation`
+(`"config-check"`), `status` (`"pass"`/`"fail"`), `profile`, and `stages` — a
+**list** in pipeline order, each entry `{stage, status, findings, notes}`,
+where a finding carries `message` plus `stack`/`hook` when scoped to one. A
+`--live` run additionally carries a top-level `live` key
+(`{status, unsatisfied}`) — deliberately not a stage, because it is the one
+failure class that maps to exit 1. Under `--json` the action emits no prose
+of its own; the orchestrator's own `[INFO]` lines still precede the document
+on stdout, exactly as for `ciu graph --format json`.
 
 - **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
   — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
