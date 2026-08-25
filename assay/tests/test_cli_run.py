@@ -438,6 +438,36 @@ def test_run_refuses_an_out_of_range_shard_with_a_clean_verdict_not_a_crash(
     assert document["reason_code"] == "BAD_LANE_CONFIG"
 
 
+def test_run_refuses_an_out_of_range_shard_even_with_unresolvable_infrastructure(
+    git_repo: GitRepo, validator: Draft202012Validator,
+):
+    """(B025) The bad-`--shard` refusal above is decided BEFORE
+    `refuse_lane` ever touches infrastructure -- but `refuse_lane` always
+    calls `resolve_command_plan` a second time to record the attempted plan
+    (A-036), and a lane whose OWN infrastructure declaration is itself
+    unresolvable makes that second call raise too, from inside the refusal
+    path. This is the two-unrelated-causes case B025's own filing
+    distinguished from the single-cause case above: the shard refusal (not
+    the infrastructure failure) is still the recorded cause, and the
+    artifact is written, degraded rather than absent."""
+    lane = _r2_lane_with_two_candidates(git_repo) + (
+        "\n[lanes.package.infrastructure]\n"
+        'mynet = "required-env:MISSING_NETWORK_VAR_FOR_TEST"\n'
+    )
+    path = _write_and_commit_lane(git_repo, lane)
+    code, out, err = run(
+        ["run", "package", "--shard", "5/2", "--file", str(path), "--verdict-json", "-"]
+    )
+    assert code != 0
+    assert "Traceback" not in err
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert document["env_effective"] == {}
+    assert document["env_effective_incomplete"] is True
+
+
 def test_run_refuses_an_unknown_operator_with_a_clean_verdict_not_a_crash(
     git_repo: GitRepo,
 ):
@@ -487,7 +517,7 @@ def test_run_records_the_executed_shard_not_the_lane_declaration(git_repo: GitRe
 
 
 def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
-    git_repo: GitRepo,
+    git_repo: GitRepo, validator: Draft202012Validator,
 ):
     """(B013 remediation, D-11) `cli.py` never imported `os`, so any lane
     declaring `[lanes.<name>.infrastructure]` crashed with an uncaught
@@ -496,23 +526,32 @@ def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
     the feature's own tests do: the refusal is now a clean, typed
     `AssayError` reaching `main()`'s handler, not a traceback.
 
-    It still writes NO verdict artifact despite `--verdict-json` being
-    reserved (unlike `--shard`/`--operators` refusals, which do) -- that gap
-    is real and is filed separately (see the NOTE at its origin in
-    `runner._run_higher_rigor_lane` and the corresponding backlog entry):
-    `refuse_lane` itself calls `resolve_command_plan` a second time to
-    record the attempted plan, which hits the identical infrastructure
-    failure and would raise again from inside the refusal path itself."""
+    **B025, since fixed too:** this is the exact case that used to write NO
+    verdict artifact despite `--verdict-json` being reserved --
+    `_run_higher_rigor_lane`'s own primary `resolve_command_plan` call raised
+    uncaught past `main()`'s outer handler. It now refuses through
+    `refuse_lane` like every other post-HEAD-resolution refusal in this
+    module, which writes a real, schema-valid artifact -- `env_effective`
+    honestly `{}` and `env_effective_incomplete: true`, since the thing
+    that's broken is the infrastructure declaration itself. This case joins
+    the same silent-on-stderr bucket the `--shard`/`--operators` refusals
+    already occupy (a normal, non-exception `Verdict` return prints no `err`
+    message; see B026 N-4) -- it did NOT gain a stderr message of its own."""
     lane = _r2_lane_single_site(git_repo) + (
         "\n[lanes.package.infrastructure]\n"
         'mynet = "required-env:MISSING_NETWORK_VAR_FOR_TEST"\n'
     )
     path = _write_and_commit_lane(git_repo, lane)
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
-    assert code != 0
-    assert "assay: ERROR/BAD_LANE_CONFIG" in err
-    assert "MISSING_NETWORK_VAR_FOR_TEST" in err
+    assert err == ""
     assert "Traceback" not in err
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert document["env_effective"] == {}
+    assert document["env_effective_incomplete"] is True
+    assert code == document["exit_code"] != 0
 
 
 def test_run_injects_a_resolved_required_env_infrastructure_fact(
@@ -1030,6 +1069,87 @@ base = "{base_rev}"
         "mode",
         "require_branch",
     }
+
+
+def test_run_records_base_resolution_mode_on_a_merge_commit_head(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """(B008) The exact reported scenario: a feature branch merges its
+    declared base back in before gating (`git merge origin/main`, a routine
+    pre-gate sync), making HEAD a merge commit. `resolve_base` then resolves
+    to the branch's own PRE-merge tip (first-parent), not a fork point --
+    silently narrowing the changed-line floor to "what did the merge itself
+    change" (usually nothing) instead of the branch's real accumulated work.
+    This does not change that resolution; it proves the narrowing is now
+    RECORDED (`judgment.resolved.base_resolution`), not silent."""
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.git("checkout", "-q", "-b", "feature")
+    git_repo.write("src/mod.py", "def f():\n    return 1\n")
+    git_repo.commit_all("add mod.py on feature")
+
+    cov_json = json.dumps(
+        {
+            "files": {
+                "src/mod.py": {
+                    "executed_lines": [1, 2],
+                    "missing_lines": [],
+                    "excluded_lines": [],
+                }
+            }
+        }
+    )
+    write_cov = f"cat > cov.json <<'EOF'\n{cov_json}\nEOF"
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(write_cov)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+coverage = {{ format = "coverage-py-json", artifact = "cov.json" }}
+base = "main"
+"""
+    # assay.toml is committed on `feature` BEFORE the merge, so the merge
+    # commit itself -- not a later commit on top of it -- is the final HEAD
+    # `assay run` sees, exactly matching the reported scenario.
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+    feature_pre_merge_tip = git_repo.head()
+
+    git_repo.git("checkout", "-q", "main")
+    git_repo.write("on_main.py", "m = 1\n")
+    base_tip = git_repo.commit_all("advance main")
+
+    git_repo.git("checkout", "-q", "feature")
+    git_repo.git("merge", "-q", "--no-edit", "main")
+    merge_commit = git_repo.head()
+    assert merge_commit != feature_pre_merge_tip  # a real merge commit exists
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 0, err
+    document = json.loads(out)
+    resolved = document["judgment"]["resolved"]
+    # The narrowing itself, unchanged: base resolves to the branch's own
+    # pre-merge tip, not base_tip and not a merge-base fork point.
+    assert resolved["base"] == feature_pre_merge_tip
+    assert resolved["base"] != base_tip
+    # (B008) ...but it is now auditable rather than silent.
+    assert resolved["base_resolution"] == "first-parent"
 
 
 # --- structural failures: no verdict can even be built -----------------------

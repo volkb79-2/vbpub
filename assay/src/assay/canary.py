@@ -79,7 +79,6 @@ runs against comes from *prepared*.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -92,9 +91,13 @@ from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
+from .isolation import SnapshotRepository
 from .runner import (
     Clock,
+    CommandPlan,
+    LaneDeadline,
     ProcessRunner,
+    SnapshotUnitResult,
     build_r0_claim,
     default_process_runner,
     evaluate_r1,

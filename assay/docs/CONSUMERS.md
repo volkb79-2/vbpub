@@ -183,13 +183,17 @@ Completed candidates persist under `.assay/mutation-state/`, keyed by a
 deterministic candidate id derived from the mutated file's path, its exact
 source bytes, the mutated byte span, the replacement bytes, and the operator.
 A real source change therefore produces a different id: `--resume` finds no
-record under it and re-executes that candidate silently, rather than
-detecting or reporting that the source moved on. A record that contradicts
-the identity it is filed under — a mismatched operator, byte span,
-replacement, or candidate id, not the source itself — fails the whole lane as
-`ERROR`/`UNREADABLE_ARTIFACT` rather than being silently skipped; this is a
-signal of a corrupted or hand-edited state file, not an expected outcome of
-normal use. To combine shard manifests, every manifest must declare the same
+record under it and re-executes that candidate, rather than detecting or
+reporting that the source moved on. A record that contradicts the identity
+it is filed under — a mismatched path, source hash, byte span, replacement,
+operator, or candidate id, every field folded into the id above — fails the
+whole lane as `ERROR`/`UNREADABLE_ARTIFACT` rather than being silently
+skipped; this is a signal of a corrupted or hand-edited state file, not an
+expected outcome of normal use. `schema_version` is the one required field
+NOT folded into the candidate id, so it alone gets the opposite disposition:
+a mismatch there is a routine format bump, not corruption, and is treated as
+an absent record — silently rerun, without failing the lane. To combine shard
+manifests, every manifest must declare the same
 schema version, lane, commit, and shard count, cover every zero-based index
 exactly once, and contain disjoint candidate IDs whose deterministic
 assignment is independently re-verified against the claimed shard index.

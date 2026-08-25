@@ -26,7 +26,6 @@ independently — see :meth:`FileCoverage.__post_init__`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Mapping
 
 __all__ = ["BranchCoverage", "CoverageProfile", "FileCoverage"]

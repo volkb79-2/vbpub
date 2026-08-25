@@ -1414,6 +1414,13 @@ class JudgmentResolved:
     #: the full resolved comparison commit, never a symbolic ref; absent on a
     #: judgment that carries neither r1 nor r2
     base: str | None = None
+    #: (B008) which of `resolve_base`'s two branches produced `base`:
+    #: `"first-parent"` on a merge-commit HEAD (the branch's own pre-merge
+    #: tip -- a common pre-gate `git merge <base>` silently narrows the
+    #: changed-line floor and any R2 lane to "what did the merge itself
+    #: change"), or `"merge-base"` otherwise. Optional for v7 compatibility;
+    #: never present without `base`.
+    base_resolution: str | None = None
 
     def __post_init__(self) -> None:
         _check_nonempty(self.language, "judgment.resolved.language")
@@ -1426,6 +1433,16 @@ class JudgmentResolved:
             _check_nonempty(root, "judgment.resolved.source_roots entry")
         if self.base is not None:
             _check_nonempty(self.base, "judgment.resolved.base")
+        if self.base_resolution is not None:
+            if self.base is None:
+                raise ValueError(
+                    "judgment.resolved.base_resolution requires judgment.resolved.base"
+                )
+            if self.base_resolution not in ("merge-base", "first-parent"):
+                raise ValueError(
+                    f"judgment.resolved.base_resolution must be 'merge-base' or "
+                    f"'first-parent', got {self.base_resolution!r}"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1434,6 +1451,8 @@ class JudgmentResolved:
         }
         if self.base is not None:
             payload["base"] = self.base
+        if self.base_resolution is not None:
+            payload["base_resolution"] = self.base_resolution
         return payload
 
 
@@ -2368,6 +2387,15 @@ class Verdict:
     argv_effective: tuple[str, ...] | None = None
     env_declared: Mapping[str, str] | None = None
     env_effective: Mapping[str, str] | None = None
+    #: (B025) True exactly when `env_effective` above is NOT the real
+    #: resolved environment -- a refusal whose own infrastructure
+    #: declaration was itself unresolvable falls back to `lane.env` alone
+    #: (never infrastructure or `env_passthrough` values, since neither
+    #: could be safely completed) rather than leaving the whole refusal an
+    #: uncaught exception with no artifact at all. `False` (the default)
+    #: means `env_effective` is the real, fully-resolved environment, as
+    #: every verdict before this field existed already implied.
+    env_effective_incomplete: bool = False
     #: (P16) the lane's own declared scope/enforcement — join the
     #: lane-resolved group (:data:`LANE_RESOLVED_FIELDS`), always known the
     #: moment a lane loads.
@@ -2420,6 +2448,11 @@ class Verdict:
             raise ValueError(
                 f"schema_version must be {VERDICT_SCHEMA_VERSION}, got "
                 f"{self.schema_version!r}"
+            )
+        if self.env_effective_incomplete and self.declared_rigor is None:
+            raise ValueError(
+                "env_effective_incomplete requires the lane-resolved group "
+                "(declared_rigor and friends) to be present"
             )
         if self.scope is not None and self.scope not in SCOPES:
             raise ValueError(f"scope must be one of {sorted(SCOPES)}, got {self.scope!r}")
@@ -3002,6 +3035,8 @@ class Verdict:
             payload["argv_modified"] = bool(self.argv_modified)
             payload["env_declared"] = dict(self.env_declared or {})
             payload["env_effective"] = dict(self.env_effective or {})
+            if self.env_effective_incomplete:
+                payload["env_effective_incomplete"] = True
             payload["scope"] = self.scope
             payload["enforcement"] = self.enforcement
         if self.judgment is not None:

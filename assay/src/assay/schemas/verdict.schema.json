@@ -86,6 +86,11 @@
     "env_effective": {
       "$ref": "#/$defs/env"
     },
+    "env_effective_incomplete": {
+      "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
+      "type": "boolean",
+      "const": true
+    },
     "scope": {
       "$ref": "#/$defs/scope"
     },
@@ -280,6 +285,18 @@
       "env_declared",
       "env_effective",
       "scope"
+    ],
+    "env_effective_incomplete": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
     ]
   },
   "allOf": [
@@ -2283,6 +2300,13 @@
           "description": "The full resolved comparison commit, never a symbolic ref.",
           "type": "string",
           "minLength": 1
+        },
+        "base_resolution": {
+          "description": "(B008) Which of resolve_base's two branches produced base: first-parent on a merge-commit HEAD (the branch's own pre-merge tip -- silently narrows the changed-line floor/any R2 lane to the merge's own payload), or merge-base otherwise. Optional for v7 compatibility; never present without base.",
+          "enum": [
+            "merge-base",
+            "first-parent"
+          ]
         }
       },
       "additionalProperties": false

@@ -119,7 +119,17 @@ def test_completed_candidates_are_resumed_without_reexecution(tmp_path):
     assert len(resumed.killed) == 1
 
 
-def test_a_changed_source_invalidates_the_old_record(tmp_path):
+def test_a_record_whose_source_hash_contradicts_its_own_filename_raises(tmp_path):
+    """(B021) The record's OWN filename is `candidate_id(job)`, which already
+    hashes in `source_sha256` among other fields (mutation.py's own
+    derivation) -- so a record found at that path whose `source_sha256`
+    disagrees with the path it's filed under is not "the source changed"
+    (that would produce a DIFFERENT candidate id and this record simply
+    would not be found at all); it is the record contradicting its own
+    identity, evidence of corruption or hand-editing, which
+    `_load_validated_state_record` now raises on rather than silently
+    treating as absent -- the corrected disposition, the reverse of what
+    this test asserted before B021."""
     repo = _repo(tmp_path)
     state_root = tmp_path / "state"
     _run(repo, tmp_path, state_root=state_root)
@@ -128,9 +138,8 @@ def test_a_changed_source_invalidates_the_old_record(tmp_path):
     payload["source_sha256"] = "0" * 64
     record.write_text(json.dumps(payload), encoding="utf-8")
 
-    result = _run(repo, tmp_path, state_root=state_root)
-    assert not isinstance(result, str)
-    assert result.total == 2
+    with pytest.raises(MutationStateError, match="stale source_sha256"):
+        _run(repo, tmp_path, state_root=state_root)
 
 
 def test_shards_partition_candidate_ids_exactly():

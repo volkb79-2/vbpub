@@ -365,6 +365,34 @@ must stop and ask, never invent one:
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
+**(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
+alone — never a free-text field — and that is deliberate, not an
+oversight, even though it produces a three-way asymmetry a consumer must
+know about:**
+
+- `assay run` refused **before** output reservation (a bad `--operators`
+  value) prints a one-line diagnostic to stderr and writes **no** artifact
+  (A-181).
+- `assay run` refused **after** output reservation but before the command
+  runs (a bad `--shard`, an unresolvable infrastructure declaration) writes
+  a real, schema-valid artifact and prints **nothing** to stderr — the
+  artifact's `reason_code` is the only cause a consumer gets.
+- `assay plan`'s equivalent refusals still raise `LaneConfigError`, printed
+  via `main()`'s own handler — a third shape again.
+
+No single invocation gives a consumer both the exit code and a free-text
+cause. Closing this would mean either widening the closed `ReasonCode`
+enum above (a **deliberate**, non-quick decision per A-138/A-170 — every
+consumer's own schema copy would have to accept the new member) or
+plumbing a detail string out of `run_lane`, whose public return type is
+`Verdict` alone, through every caller that treats it as such. Both are real
+API commitments, not one-line fixes; a consumer that needs the cause
+today already has it — the reason vocabulary above is closed precisely so
+every member is a real, previously-decided fact, and `BAD_LANE_CONFIG`
+already says enough to know which lane-declaration class of problem this
+is even without the free-text string a `LaneConfigError` would have
+carried.
+
 ### Bounded command-output tails
 
 A non-PASS terminal that captured process output may carry four optional
@@ -375,6 +403,19 @@ applies. The bound is measured after decoding because `subprocess.run(text=True)
 is the production boundary; undecodable bytes are already replacement characters
 by then. This is diagnosis, not proof: claim status still comes from exit status,
 declared artifacts, and the existing rigor pipeline.
+
+**(B027) The one path `text=True` does not decode for you is a timeout.**
+`subprocess.TimeoutExpired.stdout`/`.stderr` is `bytes`, not `str`, even under
+`text=True` — CPython does not run the exception path through the same
+text-decode step a normal `communicate()` return gets. The timeout handler
+tolerantly decodes (`errors="replace"`, matching the policy above) before
+building the tail, so a mutant-induced timeout reaches `BUDGET_EXCEEDED`/
+`LANE_TIMEOUT` with a real verdict artifact rather than an uncaught
+`AttributeError`. A caller reserving `--verdict-json` must still check the
+invoking `assay` process's own exit status, not artifact presence alone, to
+tell a fresh terminal from a stale one left by an earlier run at the same
+path — a non-zero exit means whatever is on disk did not come from this
+invocation.
 
 **(A-277) `ALL_MUTANTS_EQUIVALENT` was missing from this table from the moment
 v5 introduced it (A-223d) until wave 2 found it.** It fires when `killed +
@@ -473,10 +514,13 @@ snapshot.
 Mutation state lives outside each ephemeral replacement snapshot. One bounded
 JSON record per completed candidate is keyed by the same deterministic digest as
 the plan; resume treats an absent record as pending and refuses a stale source
-identity rather than sampling changed source with an old result. Shards assign
-by keyed digest of the candidate ID. Their merge is a manifest-level set proof:
-exact index coverage, one schema/lane/commit/count, and duplicate-free IDs—not
-bucket-count arithmetic.
+identity rather than sampling changed source with an old result. A stale
+`schema_version` is the one required field NOT folded into that digest, so it
+gets the opposite disposition (B021): treated as absent and silently rerun, a
+routine format bump never fails the whole lane the way a genuinely tampered
+record does. Shards assign by keyed digest of the candidate ID. Their merge is
+a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
+and duplicate-free IDs—not bucket-count arithmetic.
 
 ### Infrastructure fact injection (B013)
 
@@ -484,8 +528,13 @@ Infrastructure declarations are resolved at the plan boundary, in the invoking
 process, before repository or snapshot work. The two closed sources are the
 ambient environment and rendered CIU state; both are explicit, bounded, and fail
 loudly on absence, emptiness, or a malformed dotted path. Injection is
-declared-only: an injected name cannot collide with fixed or passthrough names,
-and no ambient value reaches the child unless the infrastructure table names it.
+declared-only: an injected name cannot collide with fixed or passthrough names
+— enforced both at lane-load time and, since B022, again at plan-resolution
+time, so a `Lane` built without going through the loader cannot reach the
+runtime unprotected — and no ambient value reaches the child unless the
+infrastructure table names it. A resolved value is also bounded in length
+(`MAX_INFRASTRUCTURE_VALUE_BYTES`, B022): a value this large would otherwise
+fail late and opaquely at `E2BIG` on exec instead of refusing by name.
 
 ### Rollup precedence
 

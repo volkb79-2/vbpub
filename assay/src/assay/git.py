@@ -97,6 +97,7 @@ from .errors import AssayError, Outcome, ReasonCode
 
 __all__ = [
     "Remaining",
+    "base_resolution_mode",
     "dirty_paths",
     "head_rev",
     "is_ancestor",
@@ -597,6 +598,21 @@ def resolve_base(repo: Path, base: str, *, remaining: Remaining | None = None) -
     return run(
         repo, "merge-base", "--end-of-options", resolved_base, "HEAD", remaining=remaining
     ).strip()
+
+
+def base_resolution_mode(repo: Path, *, remaining: Remaining | None = None) -> str:
+    """(B008) Which of :func:`resolve_base`'s two branches fired for the
+    CURRENT ``HEAD`` -- ``"first-parent"`` on a merge commit, ``"merge-base"``
+    otherwise. A caller merging the declared base INTO a feature branch (the
+    common pre-gate sync) hits ``"first-parent"``, whose resolved commit is
+    the branch's OWN pre-merge tip: the changed-line floor and any R2 lane
+    both silently narrow to "what did the merge itself change" -- often
+    nothing -- rather than the branch's real accumulated work. Recording this
+    makes that narrowing auditable instead of silent; it does not change
+    which commit :func:`resolve_base` resolves to.
+    """
+    tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD", remaining=remaining).split()
+    return "first-parent" if len(tokens) >= 3 else "merge-base"
 
 
 def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str, ...]:

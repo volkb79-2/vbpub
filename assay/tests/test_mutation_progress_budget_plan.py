@@ -174,7 +174,20 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
     }
 
 
-def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
+def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_filename(
+    tmp_path,
+):
+    """(B021) The record's filename IS its candidate id, which is itself
+    derived from (among other things) the source hash -- so a record whose
+    own `source_sha256` field disagrees with what its filename encodes is
+    contradicting the identity it is filed under, which is corruption or
+    hand-editing, never a routine event. A GENUINE source change never
+    reaches this code path at all: it produces a different candidate id,
+    hence a different filename, hence the old record is simply absent
+    (silently reruns, as it always has). This test hand-tampers a record's
+    `source_sha256` field while keeping its filename -- the exact shape of
+    corruption, and the pre-B021 disposition here was backwards: it treated
+    this as a silent rerun and, in doing so, was blind to tampering."""
     repo = _repo(tmp_path)
     state_root = tmp_path / "state-root"
     state_root.mkdir()
@@ -213,6 +226,72 @@ def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
     stale["source_sha256"] = "0" * 64
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
 
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(mutation.MutationStateError, match="stale source_sha256"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=2,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                state_project_root=state_root,
+                resume=True,
+            )
+
+
+def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_path):
+    """(B021) The other half of the corrected disposition: `schema_version`
+    is the one required key NOT folded into the candidate id, so it is the
+    only one that can legitimately mismatch without the record being
+    corrupt -- a routine bump of `MUTATION_STATE_SCHEMA_VERSION`. That must
+    be a silent rerun (a cache miss), never a lane-wide failure -- the
+    pre-B021 disposition raised here, which meant every consumer's existing
+    `.assay/mutation-state/` became `ERROR`/`UNREADABLE_ARTIFACT` on their
+    very next `--resume` after an upgrade, until they manually deleted it."""
+    repo = _repo(tmp_path)
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    lane = make_lane(argv=("pytest", "-q"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in text:
+            return subprocess.CompletedProcess(list(argv), returncode=1)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            state_project_root=state_root,
+            resume=True,
+        )
+
+    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale = json.loads(stale_path.read_text(encoding="utf-8"))
+    stale["schema_version"] = stale["schema_version"] + 1000
+    stale_path.write_text(json.dumps(stale), encoding="utf-8")
+
     calls: list[str] = []
 
     def deciding_recorder(*args, **kwargs):
@@ -237,7 +316,7 @@ def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
             resume=True,
         )
 
-    assert calls != [], "a stale source hash must be rerun, never trusted"
+    assert calls != [], "a schema_version bump must rerun, never fail the whole lane"
     assert result.total == 2
 
 

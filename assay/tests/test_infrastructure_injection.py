@@ -81,6 +81,43 @@ NETWORK = "required-env:SOURCE"
         load_lane_file(path)
 
 
+def test_env_passthrough_refuses_rather_than_silently_overwriting_infrastructure(tmp_path):
+    """(B022) `config.py`'s loader already refuses this exact collision at
+    load time (the test above) -- but the RUNTIME had no defence of its
+    own: `resolve_command_plan`'s `env_passthrough` loop ran AFTER the
+    infrastructure loop and unconditionally overwrote, so if the loader
+    check were ever weakened, a passthrough value would silently win over
+    an infrastructure-injected one, the opposite of A-293's "every injected
+    fact has exactly one owner". Constructing the `Lane` directly (bypassing
+    the loader, which is the whole point of `make_lane`) reaches the runtime
+    path on its own."""
+    lane = make_lane(
+        infrastructure={"NETWORK": "required-env:SOURCE_VAR"},
+        env_passthrough=("NETWORK",),
+    )
+    with pytest.raises(AssayError, match="env_passthrough.*NETWORK.*collides"):
+        resolve_command_plan(
+            lane,
+            passthrough_source={"NETWORK": "from-passthrough"},
+            infrastructure_source=None,
+            infrastructure_environment={"SOURCE_VAR": "from-infrastructure"},
+        )
+
+
+def test_an_oversized_resolved_value_refuses_rather_than_failing_late_at_exec(tmp_path):
+    """(B022 item 4) A `derived:` value landing on something far larger than
+    any real infrastructure fact -- a whole file's content instead of one
+    field, say -- used to reach `env_effective` unbounded and fail only much
+    later, opaquely, at `E2BIG` on exec. `resolve_command_plan` now refuses
+    it directly, by name, with the byte count that tripped the bound."""
+    facts = tmp_path / "ciu.global.toml"
+    oversized = "x" * (65536 + 1)
+    facts.write_text(f"[deploy]\nimage = '{oversized}'\n", encoding="utf-8")
+    lane = make_lane(infrastructure={"image": "derived:deploy.image"})
+    with pytest.raises(AssayError, match=r"image.*65537 bytes"):
+        resolve_command_plan(lane, passthrough_source={}, infrastructure_source=facts)
+
+
 def test_required_env_resolves_and_missing_or_empty_refuses_named_key(tmp_path):
     lane = make_lane(infrastructure={"network": "required-env:NETWORK_SOURCE"})
     plan = resolve_command_plan(

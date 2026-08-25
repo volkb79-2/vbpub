@@ -1079,6 +1079,16 @@ first parent, restoring a real diff), but real evidence quietly went from
 on a source tree that hadn't actually lost any coverage. Provenance:
 `dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md` §1a/§1b/§2/§2a.
 
+**Status: RESOLVED 2026-08-25 (stabilization wave), by transparency not by
+changing `resolve_base`.** The first-parent-on-merge-commit behavior is
+documented, deliberate design in `resolve_base`'s own docstring, not an
+oversight — so the ask's second option ("surface it loudly") is what shipped:
+a new `git.base_resolution_mode(repo)` and an additive `base_resolution:
+"merge-base" | "first-parent"` field on `JudgmentResolved`, present exactly
+when `base` is. A consumer can now tell which branch fired instead of having
+to re-derive it from `git rev-list --parents` themselves. See A-301. The
+frozen W3 witness was re-witnessed for the new field (A-304).
+
 ## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
 
 Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
@@ -1796,12 +1806,15 @@ candidate id and their current "raise" disposition needs no change.
 
 ### Acceptance
 
-- [ ] a tampered `source_sha256` on an otherwise-valid record raises
+- [x] a tampered `source_sha256` on an otherwise-valid record raises
       `MutationStateError`, not a silent rerun;
-- [ ] a `schema_version` mismatch treats the record as absent and reruns the
+- [x] a `schema_version` mismatch treats the record as absent and reruns the
       candidate, without failing the lane;
-- [ ] `decisions.md`/`README.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md`
-      are updated to state the corrected disposition.
+- [x] `decisions.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md` are updated
+      to state the corrected disposition (`README.md`'s mutation section is
+      high-level enough to have never asserted the wrong one).
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-302.
 
 ---
 
@@ -1841,15 +1854,19 @@ because B013 is unsafe as shipped.
 
 ### Acceptance
 
-- [ ] a decision recorded on whether to add a dangerous-ambient-name
+- [x] a decision recorded on whether to add a dangerous-ambient-name
       denylist, or explicitly accept the `env_passthrough`-equivalence
-      argument above;
-- [ ] runtime passthrough-vs-infrastructure collision refuses instead of
-      silently overwriting;
-- [ ] numeric/boolean `derived:` handling is either documented as refused or
-      given an explicit, tested coercion;
-- [ ] a bound (or an explicit decision not to bound) resolved infrastructure
-      value length.
+      argument above — decided: no denylist (A-303);
+- [x] runtime passthrough-vs-infrastructure collision refuses instead of
+      silently overwriting (A-303);
+- [x] numeric/boolean `derived:` handling is either documented as refused or
+      given an explicit, tested coercion — decided: stays refused, documented,
+      not coerced (A-305);
+- [x] a bound (or an explicit decision not to bound) resolved infrastructure
+      value length — bounded at `MAX_INFRASTRUCTURE_VALUE_BYTES` (A-306).
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** All four items closed;
+see A-303/A-305/A-306.
 
 ---
 
@@ -1945,8 +1962,48 @@ undetected.
 - [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
       phase, failing the gate on any finding not in an explicit, dated
       baseline (if the ratchet approach is chosen);
-- [ ] the pre-existing findings above are either fixed or explicitly listed
-      in that baseline with a reason each stays open.
+- [x] the pre-existing findings above are either fixed or explicitly listed
+      in that baseline with a reason each stays open — **fixed, all of
+      them**: `python -m pyflakes` over the whole `src/assay/` tree
+      (recursively, not just the top-level `*.py` this filing's own sweep
+      checked — one more finding turned up in `coverage_parsers/model.py`)
+      is clean, 0 findings, as of 2026-08-25.
+
+**Status: PARTIALLY RESOLVED 2026-08-25 (stabilization wave) — sweep done,
+gate-wiring deferred, on purpose, as its own follow-up.** All ~29 pre-existing
+findings fixed: two genuine bugs already covered by their own backlog items
+(B027's crash), the `LaneConfigError`/`os` import gaps from B013 (already
+fixed, see A-297), plus this wave's own sweep — unused imports
+(`dataclasses.replace` in `canary.py`, `hashlib` in `cli.py`,
+`typing.TextIO` in `runner.py`, `types.MappingProxyType` in
+`coverage_parsers/model.py`), a needless `f"..."` prefix with no placeholder
+(`runner.py`), one genuinely dead local variable
+(`per_candidate_timeout_positions` in `mutation.py`, assigned, never read or
+written to again — deleted, not just silenced), and the ~20 annotation-only
+undefined names in `canary.py`/`mutation.py` (real gaps for a type checker,
+harmless at runtime only because `from __future__ import annotations` defers
+evaluation) — resolved with real imports where safe
+(`canary.py`→`.runner`/`.isolation`, no cycle) and `TYPE_CHECKING`-guarded
+imports where not (`mutation.py`↔`.runner`/`.adapters.base` import each
+other already, so a real import would be circular).
+
+**Gate-wiring deliberately NOT done in this wave.** No project here already
+depends on `pyflakes`/`ruff`, so wiring a lint phase into
+`tester-unified-gate.sh` means adding the tool to the **shared**
+`tester-unified` Docker image (`tester-unified/Dockerfile`'s dependency
+closure is currently derived entirely from ciu/cmru/topos/nyxloom/
+cgroup-profiler's own `pyproject.toml` extras — assay contributes nothing to
+it today) and rebuilding + re-validating that image, which every project
+gating through `tester-unified:local` depends on — a cross-project,
+shared-infrastructure change, not a local one, and out of scope for a
+same-day stabilization pass by this project's own risk posture. Filed as a
+narrower, scoped follow-up: add `pyflakes` (zero dependencies itself, matching
+assay's own purity bar) to the image, add a phase to
+`tester-unified-gate.sh` running it over `$worktree/assay/src/assay`
+(static AST analysis — needs no venv, no wheel build, can run early and
+cheaply, before any of the wheel-isolation machinery), and confirm no other
+consuming project's gate regresses. The sweep above means that phase would
+pass clean on day one; nothing here blocks it from landing next.
 
 ---
 
@@ -2033,14 +2090,32 @@ any round. Close this alongside whichever acceptance item below lands next.
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
 - [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
-      (currently unguarded — see "Known gap" above);
-- [ ] a decision recorded on which of options 1-3 handles the remaining case
-      (infrastructure itself unresolvable);
-- [ ] `assay run` on a lane whose OWN infrastructure declaration is
-      unresolvable writes a verdict artifact to a reserved `--verdict-json`,
-      not just a stderr message;
-- [ ] a test drives this through the installed CLI (not `resolve_command_plan`
-      directly) and asserts the artifact exists and is schema-valid.
+      (currently unguarded — see "Known gap" above; still open, needs a real
+      attestation-deadline timeout to trigger, not attempted this wave
+      either — a known, accepted, narrow gap, not a regression);
+- [x] a decision recorded on which of options 1-3 handles the remaining case
+      (infrastructure itself unresolvable) — decided: a refined option 1
+      (A-308) — `env_effective` becomes exactly `lane.env`, paired with a new
+      additive `env_effective_incomplete: true` flag, rather than omitting
+      `env_effective` outright (`LANE_RESOLVED_FIELDS`'s own "all present or
+      all absent" contract rules that out);
+- [x] `assay run` on a lane whose OWN infrastructure declaration is
+      unresolvable writes a verdict artifact to a reserved `--verdict-json`
+      — fixed at BOTH crash sites (A-308): `_run_higher_rigor_lane`'s
+      primary `resolve_command_plan` call (infra is the ONLY thing wrong)
+      and `refuse_lane`'s own second, recording-only call (infra co-occurs
+      with an unrelated refusal cause). Neither gained a stderr message —
+      both join the same silent-on-stderr bucket the `--shard`/`--operators`
+      refusals already occupy (B026 N-4), which is the existing, accepted
+      asymmetry, not a new one;
+- [x] a test drives this through the installed CLI (not `resolve_command_plan`
+      directly) and asserts the artifact exists and is schema-valid — two
+      tests, one per crash site, in `test_cli_run.py`, both verified
+      red-first.
+
+**Status: RESOLVED 2026-08-25 (stabilization wave), except the one known,
+narrow, pre-existing gap noted above (attestation-timeout forward test).**
+See A-308.
 
 ---
 
@@ -2108,14 +2183,24 @@ drift apart the next time either constant changes for its own reason.
 
 ### Acceptance
 
-- [ ] a decision recorded on N-4 (new `ReasonCode` vs. a stderr-only
+- [x] a decision recorded on N-4 (new `ReasonCode` vs. a stderr-only
       diagnostic reusing `cli.py`'s existing print pattern vs. accept and
       document the three-way asymmetry between `run`+operators, `run`+shard,
-      and `plan`);
-- [ ] a decision recorded on N-5 (wire / remove / document reserved), and
-      `config.py`/`CONSUMERS.md` updated to match;
-- [ ] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
-      bound is switched to `MAX_SHARD_COUNT` in the same change.
+      and `plan`) — decided: accept and document (A-309); both alternatives
+      are real API commitments (widening a closed enum, or changing
+      `run_lane`'s `Verdict`-only return contract), not stabilization-wave
+      fixes;
+- [x] a decision recorded on N-5 (wire / remove / document reserved), and
+      `config.py`/`CONSUMERS.md` updated to match — decided: document
+      reserved (A-310), on the `MutationConfig.shard_index`/`shard_count`
+      fields directly in `config.py`; `CONSUMERS.md` never mentioned these
+      fields, so nothing there was stale;
+- [x] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
+      bound is switched to `MAX_SHARD_COUNT` in the same change — done
+      regardless of the wiring decision (A-310): a new `MAX_SHARD_COUNT`
+      constant in `config.py` closes the drift risk either way.
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-309/A-310.
 
 ## B027 — a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
 
@@ -2245,13 +2330,18 @@ from a blind, independent reproduction.
 
 ### Acceptance
 
-- [ ] `_bounded_tail` (or its timeout-path caller) handles `bytes` input
+- [x] `_bounded_tail` (or its timeout-path caller) handles `bytes` input
       without raising;
-- [ ] a mutant-induced timeout reaches `BUDGET_EXCEEDED`/`LANE_TIMEOUT` with
+- [x] a mutant-induced timeout reaches `BUDGET_EXCEEDED`/`LANE_TIMEOUT` with
       a real verdict artifact, never an uncaught exception;
-- [ ] the regression test constructing a `bytes`-carrying `TimeoutExpired`
+- [x] the regression test constructing a `bytes`-carrying `TimeoutExpired`
       is shown red against pre-fix code, green after;
-- [ ] a crashed/refused lane run never leaves an ambiguous stale artifact
+- [x] a crashed/refused lane run never leaves an ambiguous stale artifact
       at its expected output path (or DESIGN-GUIDE.md documents explicitly
       that callers must check the invoking process's own exit status, not
-      artifact presence alone).
+      artifact presence alone) — documented (the softer option; a crashing
+      run's own output path is unchanged, but DESIGN-GUIDE.md's "Bounded
+      command-output tails" section now says explicitly that exit status,
+      not artifact presence, is what a caller must check).
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-300.
