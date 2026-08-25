@@ -5,9 +5,16 @@
 | Package | `ciu-P29-hotfix-layout-mutex-bypass` |
 | Branch | `feat/ciu-qol-v8prep-wave` (worktree `.worktrees/ciu-qol-v8prep-wave`) |
 | Base HEAD | `9fb5d854` (ciu-P28's final commit — confirmed before starting) |
-| Fix commit | `336d4ae5a9ab8d19d1774dd944a2de9509e24f34` |
-| Gate | `.venv/bin/python run-ciu-tests.py` — **2682 passed, 100% line + branch** |
+| Fix commit (round 1) | `336d4ae5a9ab8d19d1774dd944a2de9509e24f34` |
+| Fix commit (round 2) | `fd8bc4eb6b745e4e7c3826dc020eaa281d425bf2` — review REJECT, see §8 |
+| Gate | `.venv/bin/python run-ciu-tests.py` — **2714 passed, 100% line + branch** |
 | Status | **COMPLETE** — no BLOCKED condition hit, `escalate_if` not triggered |
+
+> **Read §8 before §3 and §7.** Round 1 shipped a claim about `--host`
+> abbreviations that was **false**, and the adversarial review REJECTed on it.
+> §3 and §7 are kept as originally written, with correction markers, because
+> the mistake is the useful part of this record — the sections below them are
+> not silently rewritten. §8 has the corrected rule and the evidence.
 
 ---
 
@@ -267,6 +274,13 @@ swap with a comment saying exactly this, not a refactor of that branch.
 
 ### Why dispatch is exact-or-`=` and NOT abbreviation-aware
 
+> ⚠️ **CORRECTED IN ROUND 2 — the reasoning below is wrong for `--host`.** The
+> claim "an abbreviation still fails loudly at whichever parser it reaches" is
+> false precisely because of the unread `--host` stub this same section
+> discovered. See **§8**. The text is preserved as written because the error
+> is instructive: I found the dead-flag fact and then failed to apply it to my
+> own safety argument two paragraphs later.
+
 This is the one place my two checks deliberately differ, so I want it on the
 record for the reviewer.
 
@@ -295,7 +309,7 @@ only distinction the two checks encode.
 | Oracle | Verdict | Evidence |
 |---|---|---|
 | **O1** abbreviation-proof | **MET** | Approach **(a)**: `_parse_layout_argv` (`src/ciu/cli.py`) registers the six forbidden long options on a local parser at argparse's default `allow_abbrev=True` — the setting `deploy.parse_args` runs with (verified at `deploy.py:3517`, no `allow_abbrev=` present) — so argparse resolves the spelling before the check. Not an enumerated denylist: coverage is by construction. Resolved flags are *consumed*, so nothing survives into the forwarded `remaining`. Review's exact reproduction (3-host prod layout, `--prof=core`) refused with `[S7.5c]`, exit 2, `sync == exec == hosts == []`. Both O1 negatives structurally excluded (see §1.4). |
-| **O2** equals-form dispatch | **MET** | One shared `_flag_given` predicate at the *dispatch decision point* for `--layout` (`up`), `--host` (`up`/`down`/`health`/`render`) and `--dir` (`up`). Grepped first per the oracle: 6 sites found, all listed in §3. `--layout=NAME` now enters the **same branch** as `--layout NAME` — asserted by identical push sequences, not by parallel implementation. O2's negative (fixing `--layout=` only) explicitly avoided; `health` included beyond the named three with the reasoning recorded in-code. |
+| **O2** equals-form dispatch | **MET (round 2 — round 1 was incomplete, see §8)** | One shared `_flag_given` predicate at the *dispatch decision point* for `--layout` (`up`), `--host` (`up`/`down`/`health`/`render`) and `--dir` (`up`). Grepped first per the oracle: 6 sites found, all listed in §3. `--layout=NAME` now enters the **same branch** as `--layout NAME` — asserted by identical push sequences, not by parallel implementation. O2's negative (fixing `--layout=` only) explicitly avoided; `health` included beyond the named three with the reasoning recorded in-code. |
 | **O3** tests | **MET** | 64 tests added to `tests/tests/test_ciu_cli_layouts.py` (19 → **83**). (a) `--prof=core` + 18 abbreviations × 2 forms of all six flags, each asserting exit 2, `[S7.5c]`, and **zero** `ssh_sync`/`ssh_exec` calls via the mocked transport — O3's negative (message-only assertion) avoided throughout; the review's 3-host scenario additionally asserts `seen["hosts"] == []`. (b) `--layout=prod` vs `--layout prod` asserted to produce *identical* recorded push sequences and host-resolution sequences. (c) `--host=`/`--dir=` equals-form dispatch tests for all four verbs, each also asserted byte-identical to its space form. |
 | **O4** docs | **MET** | **SPEC S7.5c**: the prior claim — "`--layout` is mutually exclusive with `--host` and `--profile`" — did not name the other four flags and said nothing about spelling; now normatively requires abbreviation-resolved exclusion in both forms, a named refusal, and refusal *before* inventory lookup. **SPEC S10.4**: new rule that path-selecting modifiers route identically in both forms, naming the `--host=` silent-local-deploy consequence. **CHANGES.md** Unreleased/Fixed: `fix(ciu)!:` **HOTFIX** entry, stated plainly as a silent-wrong-deploy in already-released code, naming v6.3.0 as the origin and telling `--layout` operators to audit prior deploys — O4's negative (downplaying) avoided. **KNOWN_ISSUES_TODO_BACKLOG.md**: CIU-34 summary row amended + a new CIU-34 hotfix block that **explicitly names and corrects the prior over-claim** ("prefix-aware, so `--profile=core` is caught too"). |
 
@@ -305,8 +319,8 @@ only distinction the two checks encode.
 
 | File | Change |
 |---|---|
-| `src/ciu/cli.py` | `_LAYOUT_FORBIDDEN` hoisted to module scope; new `_forbidden_dest`, `_flag_given`, `_parse_layout_argv` helpers; layout branch rewritten to use them; 5 dispatch sites switched from plain membership to `_flag_given`. |
-| `tests/tests/test_ciu_cli_layouts.py` | +64 tests (19 → 83). |
+| `src/ciu/cli.py` | `_LAYOUT_FORBIDDEN` hoisted to module scope; new `_flag_dest`, `_flag_given`, `_parse_layout_argv` helpers (+ `_DISPATCH_FLAGS` / `_ABBREV_DISPATCH_FLAGS` in round 2); layout branch rewritten to use them; 5 dispatch sites switched from plain membership to `_flag_given`. |
+| `tests/tests/test_ciu_cli_layouts.py` | +96 tests across both rounds (19 → 115), incl. the `real_deploy` fixture. |
 | `docs/SPEC.md` | S7.5c exclusion rule corrected/strengthened; S10.4 gains the both-forms dispatch rule. |
 | `CHANGES.md` | Unreleased/Fixed hotfix entry. |
 | `KNOWN_ISSUES_TODO_BACKLOG.md` | CIU-34 row + hotfix detail block + follow-up note. |
@@ -319,7 +333,10 @@ untouched. Confirmed by the commit's file list (5 files).
 
 ---
 
-## 6. Gate output (verbatim)
+## 6. Gate output (verbatim) — round 1
+
+> Superseded by §8's round-2 gate (**2714 passed**). Kept for the round-1
+> record.
 
 ```
 $ .venv/bin/python run-ciu-tests.py
@@ -378,10 +395,187 @@ $ .venv/bin/python -m pytest tests/tests/test_ciu_cli_layouts.py -p no:randomly 
    they previously ran a silent local deploy. Anyone who had unknowingly come to
    depend on the broken local behaviour will see a real remote push. That is the
    fix, not a regression, but it is a behaviour change on a released path and is
-   why the CHANGES.md entry is marked `!`.
+   why the CHANGES.md entry is marked `!`. *(Round 2 widens this to every
+   abbreviated `--host` spelling as well — same reasoning, larger surface.)*
 4. **Not touched, deliberately:** `"--ksm"`/`"--no-ksm"` (1233), `"--no-cache"`
    (842) and `"--preflight"` (1499) are also plain membership tests, but all
    three are store-true flags with no `=` form, and none selects between
    local/remote execution. `"--" in rest` (1665) is the `ssh` argv separator,
    not a flag. Widening to those would be the unrelated refactor O2 warned
    against.
+
+---
+
+## 8. Round 2 — the review REJECT, and what I got wrong
+
+Commit `fd8bc4eb6b745e4e7c3826dc020eaa281d425bf2`. Everything else in the
+review PASSED; this was the single blocker, and it was correct.
+
+### The mistake
+
+§3 established, correctly, that `deploy.py:3592` declares `--host` and that
+**nothing reads it**. Two paragraphs later §7/§1 asserted, as the safety
+argument for keeping dispatch exact-or-`=`:
+
+> "An abbreviation still fails loudly at whichever parser it reaches, so it
+> cannot deploy the wrong thing."
+
+**That is false, and it is false for exactly the reason I had just documented.**
+An abbreviated `--host` does not reach a parser that rejects it — it reaches a
+parser that *accepts and discards* it. I found the dead-flag fact, used it to
+justify fixing the `=` form, and then failed to apply it to the abbreviation
+case in the very next sentence. Fixing `--host=` while leaving `--hos=` narrowed
+the hazard rather than closing it.
+
+### Measured on round-1 code, with the REAL parser wrapped
+
+The review specifically warned that a probe stubbing `deploy.main` is vacuous
+here: a dispatch regression would hit the stub rather than perform the real
+local deploy, masking both bug and fix. So the harness restores the genuine
+`ciu.deploy` module and spies on `main`/`parse_args`, recording what the real
+parser makes of the argv. `up`/`down`/`health`/`render` × five spellings:
+
+```
+BEFORE [up     --hos=edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--hos=edge-a'], "host='edge-a'")]
+BEFORE [up     --ho=edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--ho=edge-a'], "host='edge-a'")]
+BEFORE [up     --hos edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--hos', 'edge-a'], "host='edge-a'")]
+BEFORE [up     --ho edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--ho', 'edge-a'], "host='edge-a'")]
+BEFORE [up     --h edge-a    ] rc=2 remote_hosts_contacted=0 deploy.main=[(['--h', 'edge-a'], 'SystemExit(2)')]
+BEFORE [down   --hos=edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--stop', '--hos=edge-a'], "host='edge-a'")]
+BEFORE [down   --ho=edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--stop', '--ho=edge-a'], "host='edge-a'")]
+BEFORE [down   --hos edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--stop', '--hos', 'edge-a'], "host='edge-a'")]
+BEFORE [down   --ho edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--stop', '--ho', 'edge-a'], "host='edge-a'")]
+BEFORE [down   --h edge-a    ] rc=2 remote_hosts_contacted=0 deploy.main=[(['--stop', '--h', 'edge-a'], 'SystemExit(2)')]
+BEFORE [health --hos=edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--healthcheck', '--hos=edge-a'], "host='edge-a'")]
+BEFORE [health --ho=edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--healthcheck', '--ho=edge-a'], "host='edge-a'")]
+BEFORE [health --hos edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--healthcheck', '--hos', 'edge-a'], "host='edge-a'")]
+BEFORE [health --ho edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--healthcheck', '--ho', 'edge-a'], "host='edge-a'")]
+BEFORE [health --h edge-a    ] rc=2 remote_hosts_contacted=0 deploy.main=[(['--healthcheck', '--h', 'edge-a'], 'SystemExit(2)')]
+BEFORE [render --hos=edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--render-toml', '--hos=edge-a'], "host='edge-a'")]
+BEFORE [render --ho=edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--render-toml', '--ho=edge-a'], "host='edge-a'")]
+BEFORE [render --hos edge-a  ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--render-toml', '--hos', 'edge-a'], "host='edge-a'")]
+BEFORE [render --ho edge-a   ] rc=0 remote_hosts_contacted=0 deploy.main=[(['--render-toml', '--ho', 'edge-a'], "host='edge-a'")]
+BEFORE [render --h edge-a    ] rc=2 remote_hosts_contacted=0 deploy.main=[(['--render-toml', '--h', 'edge-a'], 'SystemExit(2)')]
+```
+
+**16 of 20 combinations: exit 0, ZERO remote hosts contacted, and the real
+parser recording `host='edge-a'` immediately before discarding it.** That
+`deploy.main=[(argv, "host='edge-a'")]` column is the proof the fall-through was
+silent rather than loud — the parser *understood* the flag and threw it away.
+Only the four bare `--h` cells failed, because `--h` is ambiguous downstream
+against `--help`/`--healthcheck`/`--host`.
+
+After the fix, all 20:
+
+```
+AFTER  [up     --hos=edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [up     --ho=edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [up     --hos edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [up     --ho edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [up     --h edge-a    ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [down   --hos=edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [down   --ho=edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [down   --hos edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [down   --ho edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [down   --h edge-a    ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [health --hos=edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [health --ho=edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [health --hos edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [health --ho edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [health --h edge-a    ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [render --hos=edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [render --ho=edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [render --hos edge-a  ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [render --ho edge-a   ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+AFTER  [render --h edge-a    ] rc=0 remote_hosts_contacted=1 host=['edge-a'] deploy.main=[]
+```
+
+`deploy.main=[]` on every row: the local-deploy path is never reached.
+
+### The corrected rule
+
+The round-1 rule ("dispatch is exact-or-`=`; abbreviations fail loudly") was
+wrong because it asked the wrong question. **The question is never "is an
+abbreviation possible" but "what does the fall-through parser DO with it."**
+
+| modifier | in `ciu-deploy`'s parser? | abbreviated fall-through | dispatch |
+|---|---|---|---|
+| `--host` | declared, **never read** | **silent**: parses, host discarded, local deploy, exit 0 | **abbreviation-aware** |
+| `--layout` | absent | loud: `unrecognized arguments`, exit 2 | exact-or-`=` |
+| `--dir` | absent | loud: `unrecognized arguments`; `--d` is `ambiguous option: --d could match --deploy, --dry-run, --define-root` | exact-or-`=` |
+
+`--layout`/`--dir` are left alone **deliberately, not by omission**: widening
+them would resolve locally an abbreviation `ciu-deploy` itself calls ambiguous
+— `--d /srv` would become `--dir` in CIU while `--define-root PATH`, a
+different path-taking flag, is an equally good downstream reading. That would
+invent a divergence rather than close one, and a loud error is the correct
+answer. Both are pinned by behavioural tests
+(`test_up_{layout,dir}_abbreviation_does_not_dispatch_but_cannot_deploy`), now
+running against the real parser so "fails loudly" is *measured*, not assumed —
+which is precisely the discipline round 1 lacked.
+
+### Implementation
+
+`_flag_given` gained an abbreviation arm driven by `_ABBREV_DISPATCH_FLAGS`
+(currently `("--host",)`), resolved by argparse rather than prefix arithmetic —
+the same technique `_parse_layout_argv` already used. It registers **all** of
+`_DISPATCH_FLAGS`, not just the flag under test, so an abbreviation ambiguous
+*between* dispatch modifiers stays loudly ambiguous instead of being claimed by
+whichever branch is tested first. `nargs="?"`/`const=True` keeps a bare `--hos`
+from raising in the predicate; the branch's own parser still owns that error, as
+before. `_forbidden_dest` generalised to `_flag_dest`, shared by both sites.
+
+**Accepted widening, stated plainly:** bare `--h edge-a` now dispatches, where
+`ciu-deploy` would have called it ambiguous against `--healthcheck`/`--help`.
+Neither is a modifier of `ciu up`/`down`/`render`, and exact `-h`/`--help` are
+intercepted earlier by `_wants_verb_help`, so within the verb CLI the reading is
+unambiguous. This is a *widening of accepted spellings*, never of effect.
+
+### Tests added (+32; file 19 → 115)
+
+| test | pins |
+|---|---|
+| `test_abbreviated_host_dispatches_and_never_becomes_a_local_deploy` | the review's full 4×6 matrix; host contacted **and** `deploy.main` never reached |
+| `test_abbreviated_host_matches_the_full_spelling_exactly` | `--hos=edge-a` ≡ `--host edge-a`, byte-identical remote argv |
+| `test_bare_abbreviated_host_still_errors_in_the_branchs_own_parser` | `nargs="?"` did not swallow the missing-value error |
+| `test_dispatch_abbreviation_premise_against_the_real_deploy_parser` | the asymmetry itself, against real `deploy.parse_args` — fails if `deploy.py` grows a `--dir`/`--layout` or stops accepting `--hos` |
+| `test_dispatch_flags_have_distinct_second_characters` | the review's suggested residual: a future colliding flag fails at authoring time, not at a user's terminal |
+| `test_up_{layout,dir}_abbreviation_does_not_dispatch_but_cannot_deploy` | the loud-failure arm, now measured against the real parser |
+
+The `real_deploy` fixture restores the genuine module (captured at import time,
+*before* `remote` stubs `sys.modules` — importing inside the fixture would just
+hand the stub back, a trap I hit on the first attempt).
+
+### Root cause: filed, not fixed
+
+`deploy.py:3592` declaring a `--host` it never reads is the reason a dispatch
+miss was silent instead of loud. `deploy.py` is `scope.forbid`, and per the
+controller's decision it stays untouched: fixing the **dispatch** layer closes
+the hazard for the real invocation surface, the `ciu` verb CLI. The dead flag
+itself — and the fact that `ciu-deploy --host` invoked directly *still*
+silently ignores it — is filed as a named OPEN follow-up under CIU-34 in
+`KNOWN_ISSUES_TODO_BACKLOG.md` for a small future cleanup package.
+
+### Gate (verbatim)
+
+```
+$ .venv/bin/python run-ciu-tests.py
+platform linux -- Python 3.14.6, pytest-9.1.1, pluggy-1.6.0
+rootdir: /workspaces/vbpub/.worktrees/ciu-qol-v8prep-wave/ciu
+plugins: xdist-3.8.0, cov-7.1.0
+...
+src/ciu/cli.py                                     750      0    268      0   100%
+...
+TOTAL                                             8565      0   3412      0   100%
+Required test coverage of 100% reached. Total coverage: 100.00%
+============================ 2714 passed in 18.80s =============================
+```
+
+### Docs corrected
+
+The false claim is gone from all three places it appeared: `_flag_given`'s
+docstring, `CHANGES.md`, and `KNOWN_ISSUES_TODO_BACKLOG.md`. SPEC **S10.4** now
+normatively requires dispatch to route every abbreviation the fall-through
+parser would accept, and requires the asymmetry to be pinned by a test against
+the real parser rather than asserted in prose — so the next person cannot
+repeat my mistake by reasoning from a comment.
