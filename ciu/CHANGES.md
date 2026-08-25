@@ -118,7 +118,7 @@ gate runs; the commit subjects remain the traceable source of detail.
   a ciu release can do on its own. Backlog disposition: PARTIAL, not FIXED.
 
 ### Fixed
-- fix(ciu): **`dev.resolve_repo_root` checked ambient `$REPO_ROOT` before
+- fix(ciu)!: **`dev.resolve_repo_root` checked ambient `$REPO_ROOT` before
   `--define-root`, the reverse of SPEC S1.1's own documented order — the CODE
   was violating its own documented contract** (CIU-53). Live-reproduced: an
   operator standing inside a real ciu-managed repo, no `--define-root`, got a
@@ -144,6 +144,14 @@ gate runs; the commit subjects remain the traceable source of detail.
   `os.environ.get("REPO_ROOT", Path.cwd())` with no `--define-root`
   consideration and no walk-up at all — a different resolution strategy,
   touching more verbs, out of this fix's scope.
+  **Upgrade note:** if your shell sources a sibling checkout's `ciu.env` (a
+  common convenience pattern — including this project's own default
+  devcontainer setup), `ciu dev`/`ciu worktree *` commands that PREVIOUSLY
+  silently operated on that sibling checkout while you stood in a different,
+  real ciu-managed repo now REFUSE instead. Nothing that genuinely worked
+  breaks — every refusal was previously silently targeting the wrong repo —
+  but if you relied on that behavior (however inadvertently), pass
+  `--define-root` explicitly or unset the ambient `$REPO_ROOT` first.
 - fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
   defects in ALREADY-RELEASED behaviour, each reproduced end-to-end by two
   independent retrospective adversarial reviews. `ciu worktree branches`
