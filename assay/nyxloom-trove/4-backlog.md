@@ -2116,3 +2116,142 @@ drift apart the next time either constant changes for its own reason.
       `config.py`/`CONSUMERS.md` updated to match;
 - [ ] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
       bound is switched to `MAX_SHARD_COUNT` in the same change.
+
+## B027 — a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
+
+**Filed 2026-08-25 (dstdns P132 phase-1 code review; provenance below).**
+
+### Observed mechanism (live-reproduced, 5×, deterministic — not a fluke)
+
+`assay run <r2-lane>` for a lane whose `judge.mutation.budget_per_candidate`
+elapses on a real mutant (the mutated code genuinely hangs — e.g. an
+off-by-one on a `while` loop's guard condition that never terminates) hits
+`subprocess.TimeoutExpired` inside `execute_plan`'s `default_process_runner`
+call, and assay's OWN handling of that timeout then crashes:
+
+```
+subprocess.TimeoutExpired: Command '[... pytest ...]' timed out after 30.0 seconds
+  (during handling of the above exception)
+AttributeError: 'bytes' object has no attribute 'encode'. Did you mean: 'decode'?
+  at assay/runner.py:239 in _bounded_tail, called from assay/runner.py:386 in execute_plan
+    (deployed assay-2.3.0.pyz line numbers; current vbpub/assay/src/assay/runner.py
+    has the same call at :458 inside `except subprocess.TimeoutExpired as exc:`,
+    calling `_bounded_tail(exc.stdout)`)
+```
+
+`_bounded_tail(raw: str | None)` (`runner.py:229`) is documented and typed to
+receive an already-decoded `str` — its own docstring says *"The input is
+decoded by `subprocess` under `text=True`"* — and DESIGN-GUIDE.md's "Bounded
+command-output tails" section states the same assumption verbatim: *"The
+bound is measured after decoding because `subprocess.run(text=True)` is the
+production boundary."* That assumption holds for the NORMAL completion path
+(`execute_plan:493-494`, `_bounded_tail(proc.stdout)` off a
+`CompletedProcess`) but **not** for the timeout path
+(`execute_plan:457-459`): `subprocess.TimeoutExpired.stdout`/`.stderr`
+carries whatever partial output `Popen._communicate` had buffered at the
+moment the timeout fired, and on that exception path CPython does not run it
+through the same text-decode step `communicate()`'s normal return does —
+so `exc.stdout` is `bytes`, not `str`, even though `text=True` was passed to
+`subprocess.run`. `_bounded_tail` calls `.encode("utf-8")` unconditionally
+(line 239/458), which only exists on `str` — `bytes` has `.decode()`, not
+`.encode()` — hence the `AttributeError`.
+
+**Reproduced 5 times across two independent contexts** (dstdns P132's
+`worker-execution-admission-r2-compare` lane, identically on both unmodified
+`main` and a feature branch — a mutant on `admission.py`'s `while not
+has_capacity():` guard genuinely hangs past the 30 s
+`budget_per_candidate`).
+
+### Consequences (why this is worse than "a lane sometimes reports FAIL")
+
+1. **No verdict is produced.** The process exits 1 (Python's uncaught-exception
+   exit code), indistinguishable on exit code alone from a legitimate
+   `FAIL/MUTANTS_SURVIVED`.
+2. **A stale verdict JSON is left on disk from a PRIOR run**, at the same
+   path the crashed run would have written to. A caller that reads
+   `.assay/verdict-<lane>.json` without separately checking the invoking
+   process's own exit code / stderr will read an old commit's result and
+   believe it is current. In dstdns P132's own case this was caught only
+   because a human/reviewer compared the verdict's embedded `commit` field
+   against the actual `git rev-parse HEAD` and found a mismatch — a
+   consumer that trusts the artifact alone has no such tripwire.
+3. **A real, documented terminal state exists and is bypassed.**
+   DESIGN-GUIDE.md's outcome/reason-code table (the table right above the
+   "Bounded command-output tails" section this bug lives in) already
+   declares `BUDGET_EXCEEDED`/`LANE_TIMEOUT` for exactly this case — a
+   mutant-induced timeout is supposed to be a clean, artifact-producing
+   terminal, not a crash that skips the whole verdict pipeline.
+
+### Why assay owns this (not the dstdns consumer)
+
+The crash is entirely inside `assay/runner.py`'s own exception-handling path,
+triggered by assay's own subprocess invocation and assay's own bounded-tail
+helper — no lane configuration, mutation operator choice, or consumer code
+can avoid it once a mutant happens to hang past budget. `budget_per_candidate`
+existing at all (B012) means a hanging mutant is an EXPECTED, designed-for
+case, not an edge condition a lane author failed to anticipate.
+
+### Proposed contract
+
+1. `_bounded_tail` should accept `str | bytes | None` and decode `bytes`
+   itself (`.decode("utf-8", errors="replace")`, matching the tolerant
+   decode policy the docstring already describes for the normal path),
+   OR the `except subprocess.TimeoutExpired` handler should decode
+   `exc.stdout`/`exc.stderr` before calling `_bounded_tail`, so the
+   function's documented `str`-only contract stays accurate and the fix is
+   localized to the one path that actually receives `bytes`.
+2. A timeout must always reach `BUDGET_EXCEEDED`/`LANE_TIMEOUT` per the
+   already-published reason-code table — never an uncaught exception.
+3. A crashed lane invocation must never leave a verdict artifact from a
+   PRIOR run sitting at the current run's expected output path without at
+   least a companion signal (a non-zero process exit code already exists,
+   but the design-guide should say explicitly that a caller must check it
+   rather than trusting a discovered artifact's mere presence — or,
+   stronger, the artifact could be removed/renamed before the crashing
+   attempt so its absence is unambiguous).
+
+### Behavioral oracle (including a controlled wrong implementation)
+
+A unit test constructing a `subprocess.TimeoutExpired` with a `bytes` `.stdout`/
+`.stderr` (reproducing the exact object CPython hands back on this path) and
+calling `execute_plan`'s timeout branch (or `_bounded_tail` directly with a
+`bytes` argument) must return a `BUDGET_EXCEEDED`/`LANE_TIMEOUT` `Verdict`
+carrying decoded tails — not raise. **Controlled wrong implementation this
+must catch:** reverting the fix (removing the `bytes`-handling branch, or
+re-introducing the bare `.encode("utf-8")` call) must make that exact test
+raise `AttributeError` again — i.e., the test must be shown to fail against
+today's shipped code before the fix, not just pass against the fixed code.
+
+### Spec section that owns this behavior
+
+`docs/DESIGN-GUIDE.md` — the outcome/reason-code table (`BUDGET_EXCEEDED` /
+`LANE_TIMEOUT`) and the immediately-following "Bounded command-output tails"
+section, whose stated assumption ("the production boundary" always decodes)
+this bug violates on exactly the one path — timeout — that section's own
+prose does not carve out an exception for.
+
+### Provenance
+
+Found during dstdns P132 (worker-io execution path repair) phase-1 code
+review, confirmed independently by the reviewer:
+`dstdns/nyxloom-trove/reviews/dstdns-P132-code-review-phase1-r1.md` §F
+("NEW upstream finding — assay 2.3.0 crashes on a mutant-induced pytest
+timeout"), disposition `dstdns/nyxloom-trove/decisions.md` D-201 ("file
+upstream, not this package's problem"). First independently noticed by the
+P132 implementer in an earlier round of the same package
+(`dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md` §1b), then confirmed
+as a real (not implementation-caused) defect by the phase-1 reviewer working
+from a blind, independent reproduction.
+
+### Acceptance
+
+- [ ] `_bounded_tail` (or its timeout-path caller) handles `bytes` input
+      without raising;
+- [ ] a mutant-induced timeout reaches `BUDGET_EXCEEDED`/`LANE_TIMEOUT` with
+      a real verdict artifact, never an uncaught exception;
+- [ ] the regression test constructing a `bytes`-carrying `TimeoutExpired`
+      is shown red against pre-fix code, green after;
+- [ ] a crashed/refused lane run never leaves an ambiguous stale artifact
+      at its expected output path (or DESIGN-GUIDE.md documents explicitly
+      that callers must check the invoking process's own exit status, not
+      artifact presence alone).
