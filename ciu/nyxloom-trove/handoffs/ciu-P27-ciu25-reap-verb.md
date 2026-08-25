@@ -15,6 +15,10 @@ scope:
     - "src/ciu/worktree.py"
     - "src/ciu/cli.py"
     - "tests/tests/test_ciu_worktree_reap.py"
+    # Widened by the controller amendment below (Blocker 1): O4 mandates two
+    # NEW capability identifiers, and this file pins WORKTREE_CAPABILITIES
+    # with two literal-list assertions.
+    - "tests/tests/test_ciu_worktree.py"
     - "docs/SPEC.md"
     - "docs/README.md"
     - "docs/CONSUMERS.md"
@@ -59,6 +63,60 @@ review_focus:
 
 # ciu-P27 — CIU-25 completion: `ciu worktree reap`
 
+## Amendment (controller, before implementation)
+
+The implementer stopped BEFORE writing code with two findings. Both are
+ruled on here; the frontmatter and the category table above already carry
+the corrections.
+
+**Blocker 1 — O4's capability identifiers vs. an out-of-scope test.
+APPROVED, scope widened.** O4 mandates `worktree.reap.v1` and
+`worktree.lease.v1` in `WORKTREE_CAPABILITIES`. Verified against the shipped
+code (not this handoff's citation of it): ciu-P26 added NEITHER — its LOG
+§4.9 records the deliberate deferral. Two assertions in
+`tests/tests/test_ciu_worktree.py`
+(`test_capabilities_document_is_versioned_and_closed` ~919 and
+`test_capabilities_advertise_exactly_the_shipped_contracts` ~933) pin the
+tuple as a literal list. That file is now in `scope.touch`; update both
+assertions. P26's deferral was justified only because P26 shipped no new
+machine contract; this package ships two, and a shipped contract that is not
+advertised is precisely the hole D-009's allowlist exists to close.
+`test_ciu_documentation_contract.py`'s `CLOSED_PUBLIC_VALUES` is a
+required-SUBSET check and needs no change.
+
+**Blocker 2 — `partial-cleanup` as carved was undecidable AND had a
+catastrophic false positive. APPROVED, narrowed to the record's own declared
+state.** The original clause "a resource group with some (not all) of its
+containers/volumes/network still present" cannot be evaluated from provable
+facts, because **nothing anywhere records what "all" should be** for a given
+group: a stack that legitimately declares no volumes, and an instance that
+ran `ciu env generate` but never `ciu up`, both read as "some, not all". The
+criterion therefore decides by guessing at an expectation that was never
+written down — the exact forbidden-workaround shape this handoff's own
+BLOCKED rule names. Worse, it is destructive-by-default: `ciu down`
+deliberately PRESERVES volumes (`cli.py`'s `down` help — "volumes are
+preserved (use `ciu clean` to remove them)"), so any owned, valid-leased
+instance left in a volumes-only state by a hand-run `docker compose down`, a
+`docker system prune` or a reboot over `--rm` containers would classify
+`partial-cleanup`, sit in the default `-y` set, and lose its data. The third
+clause, "a previously-failed reap", is not persisted anywhere and is equally
+unobservable.
+
+Narrowed to: **`partial-cleanup` == the attributed record declares
+`state: "recovery-required"`** (any of the closed
+`WORKTREE_RECOVERY_STATUSES`). CIU itself wrote that state down when a
+lifecycle step failed, so it is DECLARED, not inferred — the same discipline
+that makes the lease, and not an age heuristic, the authority on staleness
+everywhere else in S16.9. Everything the withdrawn clauses meant to catch is
+already covered by `checkout-missing` / `lease-expired` / `orphaned`.
+Work item 5's scenario #8 is still required; its fixture's record carries
+`state: "recovery-required"`.
+
+Documented here for the same reason ciu-P24's migration-safety refusal was:
+a later reader must be able to see that the shipped category is NARROWER
+than the carve on purpose, and why, rather than reading it as an
+implementation shortfall.
+
 ## Context to read first
 
 1. `KNOWN_ISSUES_TODO_BACKLOG.md#CIU-25` and `nyxloom-trove/reports/ciu-P26-ciu25-lease-schema-and-labels-LOG.md` (P26's actual shipped shape — re-verify its real function/field names against the LOG and the live diff, do not assume this handoff's citations of P26 are still exactly right).
@@ -77,7 +135,7 @@ review_focus:
 | `lease-expired` | live record, `expires_at_utc` in the past at survey time | yes |
 | `checkout-missing` | record/registration known but the checkout directory is gone (`ciu clean` can never run there) | yes (Docker-side removal only; git half is `worktree branches`' job, name it in the doc as the remedy) |
 | `orphaned` | resources carry `ciu.instance=<id>` (P26's label) for an id matching NO known record and NO known worktree | yes |
-| `partial-cleanup` | record in `recovery-required`, OR a resource group with some (not all) of its containers/volumes/network still present, OR a previously-failed reap | yes |
+| `partial-cleanup` | **CORRECTED (see Amendment, Blocker 2):** the attributed record's own declared `state == "recovery-required"`. The originally-carved "some (not all) resources present, OR a previously-failed reap" clauses are WITHDRAWN as undecidable and unsafe | yes |
 | `unattributable` | no `ciu.instance` label AND no identity-form compose-project-name match to any known instance | **never**, even with `-y` |
 | `ambiguous` | the resolved project name/prefix matches MORE THAN ONE live record (the historical CIU-19 shape — see `engine.py:813-823`, read-only) | **never** |
 
@@ -95,7 +153,7 @@ review_focus:
    5. Checkout missing -> `checkout-missing`; `-y` removes exactly the labeled Docker resources, leaves git registration untouched, document names the git-half remedy (`worktree branches`).
    6. Unlabeled, no identity match -> `unattributable`; `-y` removes nothing, exit 0, hint carries a copy-pasteable manual docker command; `--category unattributable` exits 2.
    7. Colliding project name across two live records -> `ambiguous`; `-y` removes nothing; hint names both colliding records.
-   8. Partial cleanup (containers gone, volumes remain, record present) -> `partial-cleanup`; `-y` removes the volumes; re-survey shows the group gone.
+   8. Partial cleanup (containers gone, volumes remain, record present **and in `state: "recovery-required"`** — see Amendment/Blocker 2) -> `partial-cleanup`; `-y` removes the volumes; re-survey shows the group gone.
    9. Shared network: instance A reaped while instance B is still joined to the same network -> A's containers removed, network NOT removed, result names why.
    10. Failure isolation: one `volume rm` fails -> that group lands in `failed` with the real error, every OTHER group still gets reaped, overall `status: "partial"`, exit 1.
    11. Envelope contract: `schema_version==1`; every group's category is one of the closed seven; `counts` has all seven keys including zero-valued ones.
