@@ -7,6 +7,73 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [7.1.0] - 2026-08-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=ba7df850797580b0b987bb09516a73f6ca8aa5f9 -->
+
+### Added
+- feat(ciu): validate the two [registry.*] fields CIU reads, as check stage 7 (a3bc88fb)
+- feat(ciu): ciu check walks the full config pipeline in memory (CIU-QOL-12) (4538f57d)
+- feat(ciu): remove dead action_build/--build path, close a real coverage gap (CIU-QOL-7) (11f833ad)
+- feat(ciu): ciu bake --profile NAME resolves via the up --profile chain (CIU-QOL-7) (7696c44d)
+- feat(ciu): add read-only `ciu status [--profile NAME] [--json]` verb (7d3f0e0d)
+- feat(ciu): wire per-service health_timeout into the health gate (ciu-P15, O3) (75a643c1)
+- feat(ciu): add per-target health-gate primitives (ciu-P15, O1+O2 of CIU-QOL-8) (7a1ca22b)
+
+### Fixed
+- fix(ciu)!: HOTFIX round 2 -- abbreviated --host still became a silent LOCAL deploy; dispatch is now abbreviation-aware for --host (fd8bc4eb)
+- fix(ciu)!: HOTFIX -- ciu up --layout mutual-exclusion bypass could silently deploy the wrong profile to every host (336d4ae5)
+- fix(ciu)!: worktree branches -y prune safety -- four reproduced defects (ciu-P28) (6d5afa4c)
+- fix(ciu): main_execution translates exec-target WorktreeError to ValueError, exit 2 (ciu-P14 review fix) (84b76392)
+- fix(ciu): correct validate_declared_features docstring's worktree cycle claim (ciu-P14 follow-up) (cc269db5)
+- fix(ciu): eagerly validate declared layouts/exec-targets/vendor_images on every render path (CIU-QOL-11, ciu-P14) (d2578430)
+- fix(ciu): repair exit_on doc/comment drift, env-scrub test fixture, QOL-9 (ciu-P13) (50f032b9)
+- fix(ciu): repair warn_policy tests for the exit_on migration (ciu-P12) (64d7e359)
+
+### Changed
+- Merge feat/ciu-qol-v8prep-wave: ciu-P12..P19 QOL wave + P28/P29 hotfixes (ba7df850)
+- backlog(ciu): file CIU-48 through CIU-52 — §3.6 cockpit-alias-ambiguity family (4ccf7d4d)
+- update new ciu proposal to include run-gate functionality (e94a151f)
+- chore(consumers): repin assay-v2.3.0 (841d89c8)
+- Merge branch 'main' into run-gate-rg-sweep (72cc1f47)
+- chore(deps): repin consumers to released assay 2.2.0 (42b6a0de)
+
+### Documentation
+- docs(ciu): ciu-P29 LOG round 2 -- the false --host safety claim, corrected with the measured matrix (27d0d32c)
+- docs(ciu): ciu-P29 hotfix LOG -- O1 design choice, before/after evidence, oracle table (4f4ca9cd)
+- docs(ciu): ciu-P28 hotfix LOG -- O1 design choice, before/after evidence, oracle table (9fb5d854)
+- docs(ciu): carve ciu-P28/P29 hotfixes -- BLOCKING retrospective findings (98340362)
+- docs(ciu): ciu-P19 implementation LOG — [registry.*] schema validation (d8b627cb)
+- docs(ciu): ciu-P18 implementation LOG — config-check + hook preflight (b24595f3)
+- docs(ciu): ciu-P17 amendment LOG — record its own commit hash (69c84754)
+- docs(ciu): ciu-P17 LOG amendment — O1 redone and landed, O4 completed (b2ff725e)
+- docs(ciu): amend ciu-P17 — widen scope to authorize action_build deletion's real blast radius (8e2bc813)
+- docs(ciu): ciu-P17 LOG — record both commit hashes (2429509b)
+- docs(ciu): ciu-P17 unified-bake LOG (9f1548b4)
+- docs(assay): ciu-P16 LOG — record both commit hashes (cdf01d5a)
+- docs(assay): ciu-P16 status-verb LOG (758e8324)
+- docs(ciu): ciu-P15 LOG — O3 redone and landed, O4 done, package COMPLETE (3b670c06)
+- docs(ciu): document per-service health_timeout override (ciu-P15, O4) (797e403f)
+- docs(ciu): amend ciu-P15 — widen scope to authorize O3's real blast radius (a255a639)
+- docs(ciu): ciu-P15 LOG — O1/O2 done, O3 BLOCKED (deploy.py wiring breaks 19 out-of-scope tests) (422de38b)
+- docs(ciu): ciu-P14 LOG update — adversarial review fix (5c710f71)
+- docs(ciu): ciu-P14 QOL-11 eager S11 validation LOG (be195018)
+- docs(ciu): carve ciu-P21..P27 — V8-PREP additive subsets + CIU-25 (86f63750)
+- docs(ciu): carve ciu-P15..P20 — QOL-8/6/7/12/registry/13, amend P14 (13c039ac)
+- docs(ciu): add ciu-P13 exit_on doc-drift/env-scrub LOG (1270c020)
+- docs(ciu): carve ciu-P14 — QOL-11 eager S11 validation (9e99cb9b)
+- docs(ciu): carve ciu-P13 — exit_on doc drift, env-scrub fixture, QOL-9 (3d2531ab)
+- docs(ciu): add ciu-P12 warn_policy test repair LOG (f829f61d)
+- docs(ciu): carve ciu-P12 — repair exit_on migration's stale tests (dec40161)
+- docs(ciu): amend V8 proposal rev 1.5 — execution manifest, judge distribution, NOT_RUN semantics, gate contracts (370ea814)
+- docs(ciu): fix V8 service model to two-level stack.service hierarchy (4440c17e)
+- docs(ciu): amend V8 proposal rev 1.4 — realness selection, type enum, local_stack mapping, secrets, adversarial review items (00387551)
+- docs(ciu): reconcile SPEC, implement exit_on + single-stack validation, amend V8 proposal (51d5d4f7)
+- docs(ciu-v8): add ciu exec proposal with reasoning and dstdns cleanup targets (35acc8d9)
+- docs(ciu-v8): add dstdns env-passthrough finding and SQL template-db proposal (df236482)
+- docs(run-gate): RG-13 adoption hygiene + estate budget↔timeout sweep (df5c9c10)
+- docs(proposal): add resource governance per lane/intent (§5.7) (2554fff2)
+
 ## [Unreleased]
 
 ### Added
