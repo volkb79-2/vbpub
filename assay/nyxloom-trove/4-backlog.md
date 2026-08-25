@@ -1910,10 +1910,17 @@ resolutions:
    `refuse_lane`.
 4. ~~Forward the caller's already-resolved `infrastructure_source`/
    `infrastructure_environment` into `refuse_lane`~~ — **done, round 3, all
-   call sites in both `runner.py` and `cli.py`** (round-2-of-round-3 review
-   found two more in `cli.py` the first pass missed — same fix); resolves
-   every case EXCEPT the one this entry is now scoped to (the source itself
-   is the thing that's broken).
+   call sites in both `runner.py` and `cli.py`** (a follow-up review pass on
+   round 3's own fix found two more in `cli.py` the first pass missed — same
+   fix, see A-299); resolves every case EXCEPT the one this entry is now
+   scoped to (the source itself is the thing that's broken).
+
+**Known gap, not yet closed:** `cli.py`'s attestation `LANE_TIMEOUT` refusal
+(the OTHER of the two `cli.py` sites, alongside the adapter-refusal one the
+new test exercises) is forwarded by inspection/symmetry but has **no test**
+— reverting only that site leaves the full `test_cli_run.py` suite green.
+Triggering it needs a real attestation-deadline timeout, not attempted in
+any round. Close this alongside whichever acceptance item below lands next.
 
 ### Acceptance
 
@@ -1921,6 +1928,8 @@ resolutions:
       in `_run_reserved` (`cli.py`, 2 sites) forwards
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
+- [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
+      (currently unguarded — see "Known gap" above);
 - [ ] a decision recorded on which of options 1-3 handles the remaining case
       (infrastructure itself unresolvable);
 - [ ] `assay run` on a lane whose OWN infrastructure declaration is
