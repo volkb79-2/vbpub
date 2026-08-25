@@ -362,3 +362,55 @@ Contract notes for a consumer of the gate:
   (verified `LoadState=loaded` before `docker run`, fail-closed) — see
   vbpub AGENTS.md "Manual tester-unified gate runs — the four traps" for a
   hand-rolled run.
+
+## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
+
+```console
+$ ciu status --profile core --json
+{
+  "schema_version": 1,
+  "profile": "core",
+  "stacks": [
+    {
+      "path": "apps/vault",
+      "name": "vault",
+      "phase_key": "phase_1",
+      "compose_project": "myapp-dev-vault",
+      "containers": [
+        {"name": "myapp-dev-vault-vault-1", "status": "healthy", "image": "hashicorp/vault:1.15"}
+      ]
+    },
+    {
+      "path": "apps/worker",
+      "name": "worker",
+      "phase_key": "phase_2",
+      "compose_project": "myapp-dev-worker",
+      "containers": []
+    },
+    {
+      "path": "apps/not-yet-scaffolded",
+      "name": "not-yet-scaffolded",
+      "phase_key": "phase_3",
+      "compose_project": null,
+      "containers": []
+    }
+  ]
+}
+```
+
+Reading this document: `apps/vault` has one running, healthy container.
+`apps/worker`'s compose project resolved (`compose_project` is a string) but
+`containers` is empty — its stack has not been started yet; that is a
+legitimate result, not an error. `apps/not-yet-scaffolded`'s
+`compose_project` is `null` — its stack directory does not exist on disk at
+all, a DIFFERENT condition from "not started" and distinguished structurally
+by the field, never collapsed into the same shape. `status` is
+`health_pkg.classify`'s closed vocabulary
+(`healthy`/`starting`/`unhealthy`/`no-healthcheck`/`not-found`); `image` is
+the container's `Config.Image` verbatim, unnormalized.
+
+If the Docker daemon itself cannot be reached, `ciu status` does NOT print
+any of the above — it exits 2 with `[ERROR] ciu status: <reason>` on
+stderr. A consumer scripting against this surface should treat a non-zero
+exit as "no determination was made" and a `containers: []` row as "checked,
+found nothing running" — the two must never be confused.

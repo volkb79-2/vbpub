@@ -893,6 +893,28 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   lookup); v1's `docker login --get-credentials` invocation is withdrawn.
   Verification failure aborts before compose runs.
 
+### Status reporting
+
+- **S7.10** `ciu status [--profile NAME] [--json]` (CIU-QOL-6) is a
+  READ-ONLY report over the SAME selection chain `ciu up --profile` uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`). For every
+  selected stack it resolves the compose project using S8.7's exact
+  tags-present/tags-absent branching (per stack — never a bespoke
+  re-derivation), inspects that project's containers, and classifies each
+  container's health via the S7.7 vocabulary
+  (healthy/starting/unhealthy/no-healthcheck/not-found). A stack directory
+  absent on disk MUST be reported with `compose_project: null` and an empty
+  container list — never dropped from the output; a resolved compose
+  project with zero containers is a legitimate "not started" result. A
+  Docker daemon that cannot be reached MUST abort the command with a
+  non-zero exit and a clear message — it MUST NOT render as an empty or
+  healthy-looking report; the two determinations (unreachable daemon vs.
+  nothing running) MUST NOT collapse into the same output. `--json` emits
+  `{schema_version: 1, profile, stacks: [{path, name, phase_key,
+  compose_project, containers: [{name, status, image}]}]}`. `ciu status`
+  never invokes `docker compose up/down/build/exec` — it is read-only by
+  contract, not merely by default.
+
 ## S8 — Compose execution
 
 - **S8.1** Per stack, the compose invocation is

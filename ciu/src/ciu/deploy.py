@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import config_model
+from . import diagnose
 from . import engine
 from . import governance as governance_mod
 from . import hosts as hosts_pkg
@@ -1946,6 +1947,29 @@ def _is_worktree_instance(repo_root: Path) -> bool:
     return (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file()
 
 
+def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> str:
+    """Compose project name (S8.7) for ONE stack directory that exists on disk.
+
+    The single-stack primitive behind :func:`_stack_compose_projects` (S6.4a
+    enumeration) and ``action_status`` (CIU-QOL-6): both need the SAME
+    tags-present/tags-absent branching, at per-entry granularity, and must
+    never drift out of sync with each other — this is the one place the
+    branch is written.
+
+    CIU-46: when ``deploy.project_name``/``environment_tag`` are absent,
+    shipped mode still deploys under the WORKSPACE-IDENTITY compose project
+    derived from THIS checkout's ciu.env (the basename fallback is
+    withdrawn) — ``engine.identity_compose_project_name`` (raises when
+    ciu.env is missing or key-less: a project that cannot be named refuses,
+    never guesses). Tags present keeps the S8.7 scoped name via
+    ``engine.compose_project_name``, unchanged.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        return engine.identity_compose_project_name(repo_root, stack_dir)
+    return engine.compose_project_name(config, stack_dir)
+
+
 def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]) -> list[str]:
     """Compose project names (S8.7) of the selected stacks that exist on disk.
 
@@ -1963,30 +1987,104 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
     ``engine.identity_compose_project_name`` up passed as ``-p`` (a missing
     or key-less ciu.env raises — a teardown that cannot be named refuses,
     never skips); tags present keeps the S8.7 scoped names, unchanged.
+
+    Per-entry resolution is delegated to :func:`_stack_compose_project` so
+    this enumeration and ``action_status`` can never disagree about what a
+    given stack's project name is.
     """
     projects: list[str] = []
-    deploy_cfg = config.get("deploy", {})
-    if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
-        seen: set[str] = set()
-        for entry in selection:
-            stack_dir = (repo_root / entry["path"]).resolve()
-            if not stack_dir.is_dir():
-                continue
-            project = engine.identity_compose_project_name(repo_root, stack_dir)
-            if project not in seen:
-                seen.add(project)
-                projects.append(project)
-        return projects
-    seen = set()
+    seen: set[str] = set()
     for entry in selection:
         stack_dir = (repo_root / entry["path"]).resolve()
         if not stack_dir.is_dir():
             continue
-        project = engine.compose_project_name(config, stack_dir)
+        project = _stack_compose_project(repo_root, config, stack_dir)
         if project not in seen:
             seen.add(project)
             projects.append(project)
     return projects
+
+
+# Plain top-level int, matching every other machine document in this codebase
+# (worktree.py's WORKTREE_JSON_SCHEMA_VERSION/BRANCHES_SCHEMA_VERSION, this
+# module's own ProvenanceResult.schema_version) — not a new numbering scheme.
+STATUS_SCHEMA_VERSION = 1
+
+
+def action_status(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    *,
+    json_output: bool,
+) -> int:
+    """--status: read-only per-stack container health/image report (CIU-QOL-6).
+
+    For every selected stack: resolve its compose project exactly like
+    :func:`_stack_compose_projects` does (:func:`_stack_compose_project`,
+    same per-entry branching, never reimplemented here), then inspect its
+    containers via ``diagnose._inspect`` (already a project-scoped Docker
+    inspect — no second docker ps/inspect round trip) and classify each
+    container's health via ``health_pkg.classify``.
+
+    A stack directory missing on disk gets a row with ``compose_project:
+    None`` and empty ``containers`` — never silently dropped. A compose
+    project that DOES exist but currently has zero containers is a
+    legitimate empty ``containers: []`` (stack not started, not an error);
+    the two cases are distinguished structurally by whether
+    ``compose_project`` is ``None`` (missing on disk) or a resolved string
+    (exists, nothing running).
+
+    A ``RuntimeError`` from ``diagnose._inspect`` (Docker daemon unreachable,
+    per its own docstring) is deliberately NOT caught here — it propagates to
+    the CLI verb's top-level handler, which turns it into a clear `[ERROR]`
+    message and a non-zero exit. Catching and reporting it as an empty result
+    would collapse "Docker itself is unreachable" into "nothing running" —
+    the exact "absence for emptiness" anti-pattern this package's review
+    focus calls out; those are different determinations and must never look
+    the same on stdout.
+    """
+    config = profile.config
+    stacks: list[dict] = []
+    for entry in selection:
+        stack_dir = (repo_root / entry["path"]).resolve()
+        row: dict[str, Any] = {
+            "path": entry["path"],
+            "name": entry["name"],
+            "phase_key": entry["phase_key"],
+            "compose_project": None,
+            "containers": [],
+        }
+        if stack_dir.is_dir():
+            project = _stack_compose_project(repo_root, config, stack_dir)
+            row["compose_project"] = project
+            containers = []
+            for item in diagnose._inspect(project):
+                containers.append({
+                    "name": item["Name"].lstrip("/"),
+                    "status": health_pkg.classify(item.get("State")),
+                    "image": item.get("Config", {}).get("Image"),
+                })
+            row["containers"] = containers
+        stacks.append(row)
+
+    document = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "profile": profile.name,
+        "stacks": stacks,
+    }
+
+    if json_output:
+        print(json.dumps(document, indent=2))
+        return 0
+
+    for row in stacks:
+        project_display = row["compose_project"] if row["compose_project"] is not None else "(not on disk)"
+        containers_display = " ".join(
+            f"{c['name']}={c['status']}" for c in row["containers"]
+        ) if row["containers"] else "(no containers)"
+        info(f"{row['name']}  {project_display}  {containers_display}")
+    return 0
 
 
 def _stack_project_containers(stack_projects: list[str]) -> list[str]:

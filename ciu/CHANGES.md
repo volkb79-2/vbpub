@@ -10,6 +10,14 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): new read-only `ciu status [--profile NAME] [--json]` verb —
+  reports every `--profile`-selected stack's resolved compose project,
+  running containers, per-container health (`classify()`'s closed
+  vocabulary), and image reference in one versioned JSON envelope; a stack
+  not yet deployed reports an empty container list (not an error), and a
+  Docker daemon that cannot be reached aborts with a clear error and exit 2
+  rather than rendering an empty/healthy-looking report (CIU-QOL-6, SPEC
+  S7.10)
 - feat(ciu): optional per-phase-service `health_timeout` override — each
   container in a health gate call is now polled to its OWN deadline within
   one shared poll loop, so a slow-but-legitimate service's timeout no

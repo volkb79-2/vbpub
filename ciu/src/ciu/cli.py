@@ -83,6 +83,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     health --preflight [--strict]        probe images for missing healthcheck tools
     diagnose [--project NAME] [--logs N] [--json]
                                 explain common container failures (read-only)
+    status [--profile NAME] [--json]
+                                per-stack compose project, containers, health (read-only)
 
   PROVISIONING (requires/provides graph)
     check [--profile NAME] [--live]      validate the dependency graph (no deploy)
@@ -279,6 +281,22 @@ ciu diagnose [--project NAME] [--logs N] [--json]
   --project NAME   restrict to one Compose/CIU project label
   --logs N         recent log lines per container to scan (default: 100)
   --json           machine-readable findings
+""",
+    "status": """\
+ciu status [--profile NAME] [--json]
+  Read-only per-stack report: for every stack selected by --profile (same
+  resolution chain as `ciu up`), the resolved Docker Compose project, its
+  running containers, each container's health (classify()'s closed
+  vocabulary: healthy/starting/unhealthy/no-healthcheck/not-found), and
+  image reference. A stack not yet deployed is reported with an empty
+  container list, not an error. A Docker daemon that cannot be reached is
+  reported as a clean error and a non-zero exit — never as an empty/healthy-
+  looking result.
+
+  --profile NAME   restrict to the named host profile (repeatable; default:
+                   active profile — same default as `ciu up`)
+  --json           emit the versioned {schema_version, profile, stacks: [...]}
+                   document instead of one line per stack
 """,
     "bake": """\
 ciu bake [targets ...] [--no-cache]
@@ -722,6 +740,58 @@ def _provenance(rest: list[str]) -> int:
     else:
         print(f"provenance OK — running containers match {result.commit_under_test}")
     return 0
+
+
+def _status(rest: list[str]) -> int:
+    """Handle `ciu status [--profile NAME] [--json]` (CIU-QOL-6).
+
+    Read-only: resolves the selected stacks via the SAME chain `ciu up
+    --profile` uses (`load_global_config` -> `resolve_profiles` ->
+    `build_selection`), then reports each one's compose project, containers,
+    and health via `deploy.action_status`. No compose up/down/build/exec is
+    ever invoked from this path.
+
+    A `RuntimeError` out of `diagnose._inspect` (Docker daemon unreachable)
+    is deliberately NOT swallowed into an empty/successful report here — it
+    is caught ONLY to turn it into a clean one-line `[ERROR]` message and
+    exit 2, never a raw traceback. Any other config/profile-resolution
+    failure (e.g. a project-less workspace with no ciu.env identity to name a
+    stack's compose project with) is reported the same way: a determination
+    failure must be visible, never presented as "nothing running".
+    """
+    import argparse as _ap
+
+    from .deploy import action_status, build_selection, load_global_config, resolve_profiles
+    from .dev import resolve_repo_root
+
+    p = _ap.ArgumentParser(prog="ciu status", add_help=False)
+    p.add_argument("--profile", action="append", default=None, metavar="NAME")
+    p.add_argument("--json", dest="json_output", action="store_true", default=False)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH")
+    opts = p.parse_args(rest)
+
+    raw_profiles = opts.profile
+    if raw_profiles:
+        expanded: list[str] = []
+        for entry in raw_profiles:
+            for part in entry.split(","):
+                part = part.strip()
+                if part:
+                    expanded.append(part)
+        cli_profiles: list[str] | None = expanded if expanded else None
+    else:
+        cli_profiles = None
+
+    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    try:
+        global_cfg = load_global_config(repo_root)
+        profile = resolve_profiles(global_cfg, cli_profiles)
+        selection = build_selection(profile)
+        return action_status(repo_root, profile, selection, json_output=opts.json_output)
+    except (RuntimeError, ValueError) as exc:
+        print(f"[ERROR] ciu status: {exc}", file=sys.stderr)
+        return 2
 
 
 def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
@@ -1356,6 +1426,9 @@ def main() -> None:
 
     elif verb == "provenance":
         raise SystemExit(_provenance(rest))
+
+    elif verb == "status":
+        raise SystemExit(_status(rest))
 
     elif verb == "init":
         from .scaffold import init_main

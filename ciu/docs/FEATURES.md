@@ -35,6 +35,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Hook readiness helpers** | `ctx.wait_healthy(service)` / `ctx.wait_tcp(host, port)` so a `post_compose` hook waits for a service instead of racing `compose up`. | S9.3 |
 | **Fail-fast validation** | Static catalog (S11) + typed exit codes; vault-backed stack aborts if no token resolves. | S10.3, S11, S7.6 |
 | **Read-only runtime diagnosis** | `ciu diagnose` correlates OOM/exit/restart/health evidence, memory+swap configuration, and bounded logs into actionable findings without reading environment/secrets or changing containers. | S10.5 |
+| **Per-stack status report** | `ciu status` resolves every `--profile`-selected stack's compose project, containers, and health in one read-only pass; a stack not yet deployed reports an empty container list (not an error), and a Docker daemon that cannot be reached aborts loudly instead of rendering an empty/healthy-looking report. | S7.10 |
 | **DooD path correctness** | Physical bind paths computed so a stack runs identically in devcontainer / native / CI. | S1.4, S1.9 |
 | **Declarative provisioning graph** | Stacks declare `requires`/`provides` typed refs in their root-key table; CIU lints the graph up-front and probes live state per-phase during `ciu up`. Purely opt-in: stacks without these keys are unaffected. | S13 |
 | **`ciu check` — graph validation** | Validates the requires/provides dependency graph without deploying: static lint + optional `--live` probe. Safe to run in CI. | S13.4 |
@@ -70,6 +71,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
+| `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
 | `ciu bake` | `docker buildx bake --load` (production image) | `[targets …]`, `--no-cache` |
 | `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
