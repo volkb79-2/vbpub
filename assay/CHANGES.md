@@ -13,6 +13,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
+- fix(assay): `assay plan` reported `candidate_count: 0` for every lane, unconditionally, and a
+  `mode = "whole_target"` lane failed outright naming a scratch directory that never existed;
+  `plan`'s candidate discovery now matches a real `assay run`'s candidate count and IDs
+  byte-for-byte (B030)
+- fix(assay): the R2 progress artifact wrote unconditionally into the CONSUMER's live worktree
+  (`.assay/<lane>.progress.jsonl`), so a passing R2 lane refused `NO_MEASUREMENT`/`DIRTY_TREE` on
+  its very next run; progress reporting is now opt-in and consumer-directed
+  (`assay run --progress PATH`), never written unless asked for (B031)
+- fix(assay): removed the unused, never-populated `mutation.progress_artifact` verdict field
+  (schema v7 unchanged — no released `assay verify` ever accepted a document carrying it, so no
+  existing document is invalidated by the removal); `candidate_ids` and
+  `judgment.r2.shard_index`/`shard_count` are registered in `verify.py`'s reconstruction layer,
+  closing a gap where assay's own schema-valid output failed `assay verify` (B031)
+- fix(assay): an `environment_command` preflight probe that genuinely exhausted its own timeout
+  was misreported `ERROR`/`BAD_LANE_CONFIG`, exit 2, instead of `BUDGET_EXCEEDED`/`LANE_TIMEOUT`,
+  exit 4; the probe's cap is now enforced where `execute_plan` actually reads it, and a probe
+  refusal writes a clear cause (lane, cause, declared wrapper) to stderr instead of 0 bytes (B032)
+- fix(assay): a probe-timeout refusal always named the fixed 30s preflight cap even when the
+  lane's own, tighter remaining budget was the bound that actually fired; the message now names
+  whichever bound actually applied (B032, round-2 review)
+- fix(assay): a bad `--progress` destination (an existing directory, or an empty `--progress ""`,
+  which resolves to the invoking directory) ran the whole lane and only then surfaced an unrelated
+  `ERROR`/`GIT_FAILED`; it is now refused before any repository work with the same
+  `ERROR`/`OUTPUT_WRITE_FAILED` `--verdict-json` gives for the identical mistake (B031, round-2
+  review)
 - fix(assay): snapshot manifest leaf verification now rejects a symlink standing in for a
   declared regular-file entry, using `lstat`/`S_ISREG` instead of `Path.is_file()` (B016)
 - fix(assay): `assay run`/`assay plan` crashed with `NameError` on an `--operators`/`--shard`
