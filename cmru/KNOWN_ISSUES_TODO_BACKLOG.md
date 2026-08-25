@@ -735,3 +735,60 @@ itself as evidence via `--evidence`.
   skip shape naming the resolved base.
 - Non-skip run → real campaign payload, unchanged shape.
 - Controlled wrong implementation: today's bare `exit 0` fails oracle 1.
+
+### KI-20 — `status`/`release`'s "ahead of origin" check reads the shared local `main` ref, with no way to target a different one — *open*
+**Status:** open (filed 2026-08-25, live-hit operating vbpub's own shared
+`.git` from the controller session running the ciu-P30/P31/P32 release).
+
+**Mechanism.** `cmru status --project ciu` / `cmru release --project ciu`
+silently compute their diff-since-last-tag and ahead-of-origin refusal
+against the repository's **local branch literally named `main`** —
+regardless of which worktree or ref the invoking shell is actually sitting
+on. Reproduced directly: with `vbpub`'s shared checkout's local `main`
+legitimately 2 commits ahead of `origin/main` (an unrelated, unpushed
+`fix/assay-stabilization-wave` commit sequence from a concurrent session,
+touching nothing under `ciu/`), `cmru release --project ciu` was invoked
+from a **separate, freshly created worktree checked out at a detached HEAD
+exactly equal to `origin/main`** (no divergence at all in that worktree) —
+and still refused: `[ERROR] Local main is 2 commit(s) ahead of origin/main.`
+The check consults the shared repo's `refs/heads/main`, not the worktree's
+own HEAD, not a caller-specified ref. `status`'s "no changes since last
+release" for a project with real, pushed, unreleased commits under its own
+path is the same root cause — the local diff-preview path also reads local
+`main` rather than `origin/main`.
+
+**Why it matters.** This estate's actual daily shape is many concurrent
+sessions sharing one `.git` across dozens of worktrees (`git worktree list`
+in vbpub routinely shows 60+ entries). Any one of them can legitimately
+advance the shared local `main` branch pointer for work on a completely
+different project, without ever intending to affect a `cmru status`/
+`release` run for another project that never touched those commits. Today
+there is no way to tell cmru "evaluate against this exact ref" — the only
+workarounds are waiting for the other session to push, or moving the
+shared `main` ref yourself (itself a shared, blast-radius-y operation
+affecting every other worktree of the repo, since `refs/heads/main` is one
+object-store-wide ref) just to run a release for a project the divergence
+never touched. `ciu worktree add`/`ensure` already has the right shape for
+this — `--base REF` (`src/ciu/cli.py`, `default="main", metavar="REF"`)
+accepts any git-resolvable ref, not only a local branch name — cmru has no
+equivalent.
+
+**Proposed contract.** Add an explicit override — e.g. `--ref REF` on both
+`status` and `release` — that cmru consults INSTEAD OF `refs/heads/main`
+for the ahead-of-origin refusal, the diff-since-last-tag preview, and the
+release snapshot commit. Default stays today's local `main` unchanged (no
+behavior change for the common single-session case). Accepting the literal
+`HEAD` as a value covers "whatever ref this invocation's cwd/worktree
+actually has checked out", which a caller running from an isolated worktree
+cannot express today.
+
+**Oracles.**
+- Shared checkout with local `main` diverged from `origin/main` by a commit
+  that does NOT touch the target project's path, `--ref origin/main`
+  passed → `status`/`release` proceed against `origin/main`'s tip, no false
+  refusal, no false "no changes".
+- Same setup, `--ref` omitted → today's refusal/preview behavior unchanged
+  (regression guard on the default).
+- `--ref` naming something genuinely behind `origin/main` AND touching the
+  target project's path → the refusal still fires, now against the
+  caller-named target instead of the implicit local `main`.
