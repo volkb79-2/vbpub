@@ -1125,14 +1125,13 @@ def governance_slice_preflight(
         )
 
     if inadequate:
-        # S10.6 — warn_or_raise, not a bare raise: a broken mem_min ancestor
+        # S10.7 — exit_on policy, not a bare raise: a broken mem_min ancestor
         # chain is a real, worth-surfacing-loudly gap, but SOME real
         # protection may still be in effect one level down (mem_limit,
         # blkio caps) even though this specific floor is a no-op — an
         # operator who already knows about the host-side gap (S15.16) may
-        # legitimately want to proceed anyway. Fail first, fail early BY
-        # DEFAULT (CIU_WARNINGS_AS_ERRORS=1); CIU_WARNINGS_AS_ERRORS=0 opts
-        # into "log it, keep going" for a specific run.
+        # legitimately want to proceed anyway. Default exit_on=ERROR means
+        # this WARN does NOT abort; ciu.exit_on=WARN makes it fail-fast.
         warn_policy.warn_or_raise(
             "[S15.16] governance declares mem_min (a memory floor) for a stack "
             "whose resolved cgroup slice does not carry a matching MemoryMin= "
@@ -1144,9 +1143,10 @@ def governance_slice_preflight(
             "modern-debian-tools-python-debug's host-setup can provision this, "
             "but CIU never depends on one being present — or lower/remove the "
             "mem_min declaration if no floor is actually required. Set "
-            f"{warn_policy.WARNINGS_AS_ERRORS_ENV_VAR}=0 to proceed anyway (not "
-            "recommended unless you already know about this gap):\n"
+            "Set ciu.exit_on = \"WARN\" to make warnings fatal, or "
+            "\"NEVER\" to always proceed:\n"
             + "\n".join(inadequate)
+            , severity="WARN", config=config,
         )
 
 

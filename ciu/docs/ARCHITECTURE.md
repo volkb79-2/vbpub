@@ -1,7 +1,6 @@
 # CIU — Architecture Reference
 
-For contributors. Normative contract: [SPEC.md](SPEC.md). Work-packet history:
-[docs/plans/V2-PACKETS.md](plans/V2-PACKETS.md).
+For contributors. Normative contract: [SPEC.md](SPEC.md).
 
 ---
 
@@ -22,10 +21,11 @@ For contributors. Normative contract: [SPEC.md](SPEC.md). Work-packet history:
 | `config_constants.py` | **Single source of truth** for every CIU file/dir name (committed/worktree/rendered config, compose, `ciu.env`, `.ciu/` overlay/secrets/rendered/lock, `SHIPPED_COMPOSE`); all modules import from here so a rename is one edit | `get_rendered_config_name`, `get_defaults_template_name`, `is_config_file` | S1.6–S1.8, S3.1, S8.5 | — |
 | `deploy.py` | Multi-stack CLI entry point; action dispatch; Vault/registry preflights; phase execution; health gate | `action_deploy`, `action_stop`, `action_clean`, `action_build`, `vault_preflight`, `registry_preflight`, `run_health_gate` | S7.1–S7.9, S8.2 | `test_ciu_deploy_actions.py`, `test_ciu_deploy_pkg.py` |
 | `governance.py` | Resource-policy resolution, cgroup slice checks, KSM/memory-profile strategy selection | `resolve_stack_governance`, `resolve_ksm_optin`, `check_slice_unit` | S15 | `test_ciu_governance.py` |
-| `ksm.py` | Builds and verifies CIU-shipped KSM shim and exec wrapper caches | `build_shim`, `build_wrapper`, `verify_shim` | S15.17–S15.20 | `test_ciu_ksm.py` |
+| `ksm.py` | Builds and verifies CIU-shipped KSM shim and exec wrapper caches | `build`, `build_wrapper`, `_verify` (internal) | S15.17–S15.20 | `test_ciu_ksm.py` |
 | `worktree.py` | Managed Git-worktree identity/state records, create/adopt/ensure/remove lifecycle, shared infrastructure, cross-instance deployment budget, structured JSON documents + capability allowlist (S16.4/S16.5), exact selected-worktree `up`/`exec` (S16.6), and declared container-target `exec` with worktree-mount proof (S16.7) | `create`, `adopt`, `ensure`, `remove`, `inspect_instance`, `list_instances`, `remove_document`, `capabilities_document`, `up_instance`, `exec_instance`, `exec_target_instance`, `resolve_worktree_cap`, `worktree_budget_slot` | S16 | `test_ciu_worktree.py`, `test_ciu_engine_worktree_budget.py`, `test_ciu_documentation_contract.py` |
-| `diagnose.py` | Read-only runtime diagnosis and structured findings | `diagnose` | S10.5 | `test_ciu_diagnose.py` |
-| `transport_ssh.py` | Host-key-pinned SSH and remote bundle transport | `connect`, `push_bundle` | S14 | `test_ciu_transport_ssh.py` |
+| `diagnose.py` | Read-only runtime diagnosis and structured findings | `collect`, `run` | S10.5 | `test_ciu_diagnose.py` |
+| `transport_ssh.py` | Host-key-pinned SSH transport | `ssh_exec`, `ssh_sync`, `scp_file`, `resolve_key` | S14 | `test_ciu_transport_ssh.py` |
+| `activate.py` | Docker-optional push→activate bundle path | `push_bundle`, `run_activation`, `run_thin_up`, `make_tarball` | S14.6 | `test_ciu_activate.py` |
 | `deploy_pkg/phases.py` | Phase ordering (numeric); `service_enabled`; `service_shipped` (S8.6); `iter_enabled_services` | `ordered_phases`, `service_enabled`, `service_shipped`, `iter_enabled_services` | S7.1–S7.3, S8.6 | `test_ciu_deploy_pkg.py` |
 | `deploy_pkg/profiles.py` | Profile resolution; `[deploy.groups]` rejection; `topology_overrides` merge | `resolve_profile`, `reject_groups`, `Profile` | S7.4–S7.5a | `test_ciu_deploy_pkg.py` |
 | `deploy_pkg/health.py` | Health gate; `starting`/pending classification; anchored filter | `classify`, `evaluate_gate`, `wait_for_gate`, `anchored_name_filter` | S7.7–S7.8 | `test_ciu_deploy_pkg.py` |

@@ -63,6 +63,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |
 | `ciu profiles` | List host profiles | — |
+| `ciu layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | — |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
 | `ciu down` | Stop containers (volumes preserved) | `--profile NAME`, `--host NAME` |
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
@@ -79,6 +80,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 | `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
+| `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
 | `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--define-root PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command

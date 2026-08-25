@@ -1258,6 +1258,7 @@ def main_execution(
         # ---- Step 5: validate (S11) ----
         print("[STEP 5/17] Validating merged configuration (S11)...", flush=True)
         root_key = config_model.validate_stack_shape(stack_config)
+        config_model.validate_stack_provisioning(stack_config, source=str(working_dir))
         specs = secret_directives.discover(root_key, merged)
 
         misplaced = secret_directives.find_misplaced(merged, stack_root_key=root_key)

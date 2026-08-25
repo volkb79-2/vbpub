@@ -145,6 +145,25 @@ is written to `ciu.env` and nothing is exported to the compose env.
 | `require_certs` | `false` | S2.3, S2.4 | `true` to validate TLS cert files |
 | `standalone_root` | absent | S1.2 | `true` to lock REPO_ROOT to this dir — recommended for any independent repo; omit only for a nested-composition sub-tree |
 | `auto_connect_network` | `true` | S2.8 | `false` in demo/CI to skip devcontainer attach |
+| `exit_on` | `"ERROR"` | S10.6 | Closed vocabulary: `"WARN"` \| `"ERROR"` \| `"NEVER"` |
+
+**`ciu.exit_on` semantics (S10.6).** Controls the minimum severity at which
+CIU aborts the run. Default `"ERROR"` means errors abort but warnings are
+logged and the run continues. Set `"WARN"` to also exit on warnings (the old
+"fail-fast" behavior). Set `"NEVER"` to log all findings without ever aborting.
+
+Resolution: config declaration → `$CIU_EXIT_ON` → default `"ERROR"`.
+Config always wins over the env variable.
+
+Other `[ciu]` keys that may appear in consumer configs (`repo_root`,
+`physical_repo_root`, etc.) are informational values exposed to templates via
+Jinja2 context. CIU does not enforce or act on them directly.
+
+Consumer-defined sub-tables under `[ciu.*]` (e.g. `[ciu.ports]`) are passed
+through to templates as ordinary Jinja2 context. They are NOT reserved by CIU
+and are not validated. This allows projects to namespace their own global
+metadata without colliding with future CIU-reserved keys at the top level,
+though top-level reserved namespaces (S3.7) still apply.
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.

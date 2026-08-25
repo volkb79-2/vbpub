@@ -1,22 +1,31 @@
-# CIU v5 Specification
+# CIU Specification
 
 | | |
 |---|---|
 | **Status** | Active |
 | **Version** | 5.0.0 |
-| **Date** | 2026-08-12 |
+| **Date** | 2026-08-24 |
 | **Supersedes** | docs/CONFIG.md + docs/CIU.md + docs/CIU-DEPLOY.md as normative sources (those become non-normative guides) |
 
-This document is the **single normative contract** for CIU v5. Where any other
+This document is the **single normative contract** for CIU. Where any other
 document, example, or code comment conflicts with this specification, this
 specification wins.
 
 **Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
-(`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
-a breaking change to this contract bumps both. CIU **MAJOR bumps to `5.0.0`**
-because CIU-16 removed the top-level `ciu --version` option: `ciu version` is
-now the sole public version query. The matching release tag is
-`ciu-v5.0.0`; historical release detail is in [../CHANGES.md](../CHANGES.md).
+(`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel and this SPEC are
+**independently versioned**: the package ships features faster than the SPEC
+is revised, so a package MAJOR bump does NOT require a corresponding SPEC
+MAJOR bump. The SPEC is revised when the *normative contract* changes (new
+requirement, withdrawn requirement, or behavioral change to an existing one).
+Package releases that add features within an existing contract, fix bugs, or
+improve internals do not require a SPEC revision.
+
+> **Reconciliation note (2026-08-24):** the SPEC was previously at 5.0.0 while
+> the package had advanced to 7.0.0. This was flagged as a drift; after review,
+> the decision is to **decouple** rather than renumber. The SPEC remains at
+> 5.0.0 as the current normative contract. Package versions 6.x–7.x shipped
+> features (worktree lifecycle, branch hygiene, vendor provenance, init
+> scaffolding) that are already documented here under their S-section IDs.
 Untagged commits build as `X.Y.Z.devN+g<sha>`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
@@ -1031,8 +1040,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 
 - **S10.1** `ciu` exposes only the verb dispatcher documented by `ciu --help`:
   `version`, `init`, `env`, `render`, `profiles`, `up`, `down`, `clean`,
-  `health`, `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`, `graph`,
-  `ssh`, `iops-baseline`, `worktree`, and `provenance`. `ciu version` is the sole
+  `health`, `layouts`, `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`,
+  `graph`, `ssh`, `iops-baseline`, `worktree`, `capabilities`, `host-secrets`,
+  and `provenance`. `ciu version` is the sole
   public version query; the former top-level `ciu --version` option is
   withdrawn. Single-stack execution is `ciu up --dir PATH`; this public form forwards the
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
@@ -1049,7 +1059,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
 - **S10.4** Flat verb CLI (`ciu <verb> …`): each verb's `-h`/`--help` MUST
   print that verb's **own** synopsis and options, never a withdrawn flat
   argparse surface. Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
-  `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
+  `profiles`, `layouts` (S7.5c), `up`, `down`, `clean`, `health`, `bake`,
+  `dev` (S5a), `secrets`, `capabilities` (S16.5), `host-secrets` (S14.3a),
   `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9), `ksm`
   (S15.17), `worktree` (S16), `provenance` (S17), and `init` (S19).
   The global modifier `--host <name>`
@@ -1072,20 +1083,34 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   values. Exit `0` means no error-severity findings, `1` means findings were
   reported, and `2` means Docker/argument/decoding failure. `--json` emits a
   stable list of `{severity,container,code,summary,remedy}` objects.
-- **S10.6** Global warnings-as-errors policy (`warn_policy.py`): some
+- **S10.6** Exit-on-severity policy (`warn_policy.py`): some
   conditions CIU detects are configuration SMELLS rather than unconditional
   breakage (first case: S15.16's mem_min ancestor-chain gap) — real, worth
   surfacing loudly, but an operator may already know about and accept the
-  risk for one run. `warn_policy.warn_or_raise(message)` always prints
-  `[WARN] {message}`, then, by default, raises `ValueError(message)`
-  immediately — **fail first, fail early: nothing gets hidden behind a
-  warning line nobody reads.** Set `CIU_WARNINGS_AS_ERRORS=0` to opt into
-  the softer behavior (log the `[WARN]`, keep going) for a specific run; any
-  other value (including unset) keeps the fail-fast default — only the
-  literal string `"0"` opts out, a fail-safe default requiring an explicit,
+  risk for one run. `warn_policy.warn_or_raise(message)` prints the message
+  tagged by severity, then exits per the configured threshold.
+
+  A consumer MAY declare `[ciu].exit_on` as one of three closed values:
+
+  | Value | Behavior |
+  |-------|----------|
+  | `"WARN"` | Exit on any warning OR error (strictest) |
+  | `"ERROR"` | Exit on errors only; warnings logged and run continues (**default**) |
+  | `"NEVER"` | Never abort via this policy; all findings logged |
+
+  Resolution order: config declaration → `$CIU_EXIT_ON` env var → default
+  `"ERROR"`. An explicit config declaration ALWAYS wins over the env variable.
+  Invalid values are a configuration error naming the key and vocabulary.
+
+  The previous boolean `ciu.fail_fast` and env `CIU_WARNINGS_AS_ERRORS`
+  are withdrawn. Existing consumers using `fail_fast = true` should migrate
+  to `exit_on = "WARN"`; those using `fail_fast = false` should migrate to
+  `exit_on = "ERROR"` or `"NEVER"` depending on intent.
+
+  Env-var-only fallback mirrors every other ambient `CIU_*` toggle in
+  this codebase (`CIU_SKIP_DOOD_PREFLIGHT`, `CIU_ADOPT_LEGACY_PROJECT`,
   unambiguous opt-out rather than merely failing to opt in. Env-var-only, no
   dedicated CLI flag: this mirrors every other ambient `CIU_*` toggle in
-  this codebase (`CIU_SKIP_DOOD_PREFLIGHT`, `CIU_ADOPT_LEGACY_PROJECT`,
   `CIU_SSH_INSECURE_TOFU`), none of which have one either — CIU's per-verb
   argparse surface (S10.4) is built as individual small parsers per verb,
   not a shared parent parser, so one flag meant to apply everywhere is
@@ -1094,6 +1119,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `docs/DESIGN-NOTES.md` D6 for the surveyed candidates and why some
   (S15.G9-1's missing-slice abort; S15.13's forward-compat unknown-key
   warning) are deliberately left as-is.
+
+  **Config-driven policy:** when `[ciu].exit_on` is declared in global config,
+  it is the authoritative source — the env variable cannot override it,
+  preventing ambient shell state from silently weakening a project's stated
+  posture. When absent, `$CIU_EXIT_ON` provides a per-invocation override;
+  when neither is set, the default `"ERROR"` applies.
 
 ## S11 — Validation catalog (static, pre-execution)
 
@@ -1110,11 +1141,21 @@ S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
 S8.7 compose-naming refusals (missing/key-less `ciu.env`, non-round-tripping
 stack dirname for config-less naming). Each failure reports the spec ID it
 enforces.
+S7.5c layout shape (`environment` closed vocabulary, non-empty hosts table,
+every host in inventory, every bundle resolves, no empty bundles) ·
+S16.7 exec-target declaration shape (alias Git-safe, exactly
+stack/service/workdir/requires_worktree_mount keys) ·
+S17.5 `[deploy.provenance].vendor_images` type checks (list of non-empty
+strings) · S13 provisioning ref grammar validation on every render path
+(including single-stack `--dir` mode via engine.main_execution).
 
 ## S12 — Extension points (reserved, not implemented)
 
 Generation parameters (`length`, `charset`), `transform`, additional secret
-providers (`ASK_SOPS`, `ASK_AWS`, ...), per-profile compose-file additions.
+providers (`ASK_SOPS`, `ASK_AWS`, ...), per-profile compose-file additions,
+`governance.cpu_limit` / `governance.cpu_reservation`,
+`deploy.layouts.<name>.hosts.<host>.environment_tag` override,
+`ciu.instance.shared_infra.services[*].aliases`.
 Parsers reject unknown options today (S4.7).
 
 ## S13 — Provisioning model (`requires` / `provides`)

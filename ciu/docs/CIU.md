@@ -68,9 +68,14 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 |---|---|
 | `ciu env generate` | `--define-root PATH` (alias: `--root-folder`) |
 | `ciu render` | `--profile NAME`, `--define-root PATH` |
-| `ciu up` | `--profile NAME` **or** `--dir PATH`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors` |
+| `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
 | `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors` |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
+| `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
+| `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
+| `ciu worktree <action>` | `create LOGICAL --prefix P --feature F [--json]`; `adopt LOGICAL PATH [--json]`; `ensure LOGICAL [--json]`; `rm LOGICAL -y [--force] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` |
+| `ciu provenance` | `--ignore-mismatch` (alias `--force`), `--no-preflight`, `--json`, `--define-root PATH` |
+| `ciu capabilities` | `--json` |
 
 For a single-stack dry run use `ciu up --dir <stack> --dry-run`. With that
 public `up --dir` form, CIU forwards the remaining single-stack engine flags,

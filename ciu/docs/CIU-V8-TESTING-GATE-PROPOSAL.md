@@ -5,7 +5,7 @@
 **Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
 **Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
 
-**Proposal revision:** 1.1
+**Proposal revision:** 1.3
 **Updated:** 2026-08-24
 ---
 
@@ -219,6 +219,215 @@ When an assay lane command fails, the verdict says `COMMAND_FAILED` with zero st
 - The sensible boundary: specialized tools generate cases and produce structured evidence; Assay validates thresholds, binds evidence to commit/input, emits verdicts, and fails loudly. This also matches its existing non-goals and avoids reinventing mature tooling.
 - For mutation rigor specifically, finishing B012 resume/checkpointing and provable sharding is higher value than inventing an “R4.” Property/fuzzing can later enter as another evidence tier/provider contract once CIU actually needs a second judge producer.
 
+#### 1.13 Build version management (`[build]` + `ciu refresh`)
+
+The current dstdns config carries `[build] python_version = "3.14"`,
+`python_base_image`, etc. at global scope. These serve two purposes:
+(1) build inputs read by Dockerfiles/bake via Jinja2, and (2) version pinning.
+
+V8 formalizes this into a structured namespace:
+
+```toml
+[build.python]
+version = "3.14"                        # CONSTRAINT — what we accept; never auto-changed
+chosen_version = "3.14.8"              # filled by ciu refresh; the actual resolved version
+possible_version_upstream = "3.15.0"   # always written; informational even when held
+hold = false                             # true = chosen_version NOT updated; upstream still tracked
+base_image = "python:{{ build.python.version }}-slim-trixie"
+
+[build.python.libraries.pydantic]
+version = ">=2.5,<3"                   # constraint (PEP 440 range or exact pin)
+chosen_version = ""                     # resolved by ciu refresh within version constraints
+possible_version_upstream = ""
+hold = false
+
+[build.node]
+version = "22"                         # major-version constraint
+chosen_version = "22.11.0"             # frozen because hold=true
+possible_version_upstream = "24.0.0"   # still tracked so operator can see what's available
+hold = true                              # never auto-bump chosen_version
+```
+
+A new `ciu refresh` verb queries upstream registries for EVERY declared
+component and writes two fields:
+
+| Field | Written by refresh? | When held? | Purpose |
+|-------|--------------------:|-----------:|---------|
+| `version` | NEVER | NEVER changed | The human-declared constraint |
+| `chosen_version` | Yes, non-held only | NOT written (frozen) | Concrete resolved version CIU uses |
+| `possible_version_upstream` | YES, all components including held | ALWAYS written | Best available upstream match — informational |
+
+`hold = true` prevents `chosen_version` from being updated but does NOT
+prevent `possible_version_upstream` from being written. An operator holding
+a component still sees what upstream offers, enabling an informed decision
+to un-hold later.
+
+**Refresh output:**
+
+```
+ciu refresh report:
+  UPDATED: build.python 3.14.7 → 3.14.8
+  HELD: build.node held at 22.11.0; upstream available: 24.0.0
+  UNCHANGED: build.python.libraries.httpx already at ==0.27.0
+  Total: 1 updated · 1 held · 1 unchanged
+```
+
+```toml
+[build]
+min_release_age_days = 14        # default 0; prevents adopting just-released versions
+channel = "stable"               # "stable" | "pre-release" | "all"
+```
+
+Per-component `min_release_age_days` override supported.
+
+#### 1.14 User-declared namespaces (`ciu.user_tables`)
+
+Consumers currently place application-domain tables at global top level
+alongside CIU's reserved namespaces, creating collision risk.
+
+V8 introduces:
+
+```toml
+ciu.user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control", "build"]
+```
+
+- Listed top-level tables are consumer-owned; CIU passes them through to
+  templates unchanged without validating shape.
+- Any top-level table NOT listed AND NOT reserved MUST be absent — unknown
+  tables are validation errors naming the key.
+- The declaration itself is validated (valid TOML bare keys, no duplicates).
+
+#### 1.15 Service identity model refinement
+
+`[service.<name>]` uses a logical identifier, NOT necessarily a filesystem
+path. The `location` field maps logical name → stack directory:
+
+```toml
+[service.geo_location]
+kind = "3rd_party"
+
+[service.geo_location.owned-seeded]
+location = "infra/db-core"       # filesystem path ≠ service name
+port = 5432
+```
+
+Multiple services can share one stack directory. For third-party services
+consumed but never deployed locally (Stripe), `live` has no `location` —
+just connection facts (`endpoint`, secrets).
+
+Mocked external services are expressed naturally:
+
+```toml
+[service.payment-api]
+kind = "3rd_party"
+
+[service.payment-api.live]
+endpoint = "https://api.stripe.com"
+
+[service.payment-api.mock]
+implementation = "tests/mocks/stripe_mock.py"
+```
+
+No additional category split is needed because the existing `kind` field
+carries this information.
+
+#### 1.16 Stack-level service tables (`[local_stack]`)
+
+**Problem.** Each stack directory needs per-service deployment config
+(ports, env vars, hostdirs). Currently dstdns derives a root key from the
+directory name (`infra/db-core` → `[db_core]`). This is implicit and fragile.
+
+**V8 approach:** every stack declares its services under a reserved
+top-level key `[local_stack]` in its own `ciu.defaults.toml.j2`. This is
+NOT the global service registry — it is per-stack deployment wiring:
+
+```toml
+# infra/db-core/ciu.defaults.toml.j2
+[local_stack.postgres]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+health_endpoint = "/ready"
+
+[local_stack.minio]
+port = 9000
+image = "minio/minio:latest"
+```
+
+| Aspect | Global `[service.X]` | Stack `[local_stack.Y]` |
+|--------|----------------------|--------------------------|
+| Purpose | Logical identity + realness variants | Per-stack deployment wiring |
+| Owner | CIU global config | Stack's own ciu.defaults.toml.j2 |
+| Contains | kind, location, init_requires | port, image, env, hostdir, hooks |
+| Realness | Declared here | Not present — realness is a global concern |
+
+Templates access local config as `{{ local_stack.postgres.port }}`;
+cross-stack references still use `{{ topology.services.postgres.internal_host }}`.
+
+#### 1.17 Topology: do we need endpoints/routes?
+
+When everything runs on one internal Docker network, services reach peers
+by container hostname + port. No routing table needed.
+
+When multi-host / VPN / reverse-proxy enters, `[deploy.profiles.<name>.<host>]`
+already answers "where". "How to reach" depends on transport mode:
+
+```toml
+[topology]
+transport = "direct"             # "direct" (same network) | "wireguard" | "proxy"
+
+# Only when transport != "direct":
+[topology.hosts.host-a]
+address = "10.0.0.1"
+```
+
+Optional per-service route overrides (reverse-proxy paths):
+```toml
+[deploy.profiles.two-host.routes.api-handler]
+path_prefix = "/api"
+```
+
+**Decision:** defer full endpoint/route modeling until a second multi-host
+consumer exists. Profile + transport covers the immediate need. Most stacks
+on an internal network never declare routes.
+
+#### 1.18 One-shot completion semantics
+
+Current `stack:<name>:healthy` probes container_name derived from basename,
+which is fragile. The exit_code==0 special case works only when no healthcheck
+exists — a healthcheck that passes before exit gives a false positive.
+
+V8 adds `one_shot = true` on phase service entries. When true, the health
+gate treats exit-0 as satisfied without Docker-health polling. Requires use
+full stack path: `requires = "stack:infra/db-init:completed"` instead of
+basename-only `stack:db-init:completed`.
+
+#### 1.19 Unified configfile fan-out + compose enumeration
+
+Currently dstdns declares separate configfile sections per replica AND
+generates compose services via manual Jinja loops. Using both mechanisms
+produces duplicate mounts.
+
+V8 unifies: root-level `instances = N` on a service drives BOTH configfile
+fan-out AND compose service enumeration. Templates iterate via a provided
+instance-loop context rather than hand-writing `{% for %}` ranges.
+
+#### 1.20 Environment variable declarations
+
+Stacks currently inject `${VAR:-fallback}` or `${VAR:?message}` directly
+into compose templates with no typed declaration of expected vars.
+
+V8 adds an inline list on each local_stack entry:
+
+```toml
+[local_stack.postgres]
+env_required = ["POSTGRES_PASSWORD_FILE", "POSTGRES_USER"]
+```
+
+CIU validates presence of every listed var before render and fails naming
+missing variables. Known machine identity keys are auto-injected into Jinja
+context as `{{ env.CONTAINER_UID }}` instead of raw Compose interpolation,
+making the source explicit.
+
 ---
 
 ## 2. Config model
@@ -251,6 +460,171 @@ Note: We should list used files and rendering on project-level as well to make h
 ### 2.3 Testing declarations live in the same file
 
 No separate `ciu.testing.toml`. Variable substitution works uniformly across services, topology, and testing sections because they share one rendering pass.
+
+### 2.4 User table declaration
+
+See §1.14. `ciu.user_tables` lives in the global config alongside other
+`[ciu]` workspace switches.
+
+### 2.5 Rendered-config validation preflight
+
+V8 introduces a pre-render validation pass that catches silent-empty renders.
+After Jinja2 rendering but before TOML parsing, CIU checks that template
+expressions referencing a key path not present in the context produce an
+error naming the missing path — not a silently empty render. Implemented by
+wrapping Jinja2 `Undefined` to raise on attribute access; templates MUST
+reference keys that exist or use `{% if x is defined %}` explicitly.
+
+### 2.6 Registry schema enforcement — options analysis
+
+`[registry.postgresql]`, `[registry.redis.users.*]`, etc. are free-form TOML
+consumed by hooks with no CIU-level validation. A typo surfaces only at hook
+runtime.
+
+Three approaches:
+
+**Option A: JSON Schema per registry table** — standard tooling, IDE support,
+no Python dependency. Cons: JSON Schema for TOML is awkward; requires a
+schema file per table type; consumers maintain both config and schema.
+
+**Option B: Validated Pydantic models shipped with CIU** — CIU provides
+models for the five built-in provisioning kinds (PostgreSQL, Redis, MinIO,
+Consul, Vault). Hooks receive validated objects. Pros: type-safe,
+self-documenting, errors carry key paths and expected types, fail-fast at
+render time. Cons: couples CIU to specific shapes; new types require CIU
+model updates.
+
+**Option C: Consumer-declared Pydantic models (hook-side)** — hooks import
+their own models from the consumer project's library. CIU passes raw dicts;
+the hook validates on receipt. Pros: zero CIU coupling. Cons: no pre-render
+validation — typos still surface only at hook runtime.
+
+**Recommendation: Option B for well-known types, Option C for custom.**
+CIU ships models for PostgreSQL, Redis, MinIO, Consul, Vault (the five
+built-in provisioning ref kinds). These are stable enough to warrant
+first-class schemas. For anything else, hooks validate on their own. This
+gives fail-fast for the common case without making CIU responsible for
+arbitrary consumer schemas.
+
+### 2.7 `ciu config check` — full config validation with hook preflight
+
+**Problem.** Today, hook-level typos and registry shape errors surface only
+at hook runtime — after containers are already starting. The existing
+`ciu check` verb validates only the provisioning graph (requires/provides).
+It does NOT walk hooks, render configfiles, validate registry shapes, or
+exercise any of the pipeline's later steps. A consumer must run a real
+`ciu up --dry-run` to catch these, which still creates hostdirs and runs
+pre_secrets hooks.
+
+**Proposal: `ciu config check [--profile NAME] [--json]`.**
+
+A read-only, side-effect-free validation pass that walks the ENTIRE config
+pipeline in dry-run mode:
+
+| Stage | What it validates | Side effects |
+|-------|-------------------|-------------|
+| 1. Render | Jinja2 + `$VAR` expansion + TOML parse (global chain, all selected stacks) | None |
+| 2. Shape | Single root key (S3.5), reserved namespace collision (S3.7) | None |
+| 3. Secrets | Directive grammar (S4), placement (S4.1/S4.5), name uniqueness (S4.6), Vault ordering (S7.6) | None |
+| 4. Provisioning | requires/provides grammar (S13), graph lint, cycle detection | None |
+| 5. Governance | Shape checks (S15.2), cgroup parent resolution | None |
+| 6. Configfile | Template existence, target path validity, schema file existence (S5) | None |
+| 7. Registry | Built-in Pydantic model validation (§2.6 Option B); consumer models via optional `validate(config)` callable | None |
+| 8. Hooks — load | Every declared hook file exists and exports `run` or `Hook` with `run` method (S9.2) | None |
+| 9. Hooks — preflight call | Call each hook's `validate_config(config, ctx)` method if it defines one; report errors without executing `run()` | None |
+| 10. Compose render | Full compose template rendering with guarded config (S4.21) | Writes nothing; renders to memory |
+| 11. Overlay | Generate overlay in memory; leak scan (S4.22) | Writes nothing |
+| 12. Consumption | Declared-vs-consumed secret cross-check (S4.20) | None |
+
+**Key design decision: the `validate_config` hook contract.**
+
+Hooks that want preflight testing implement an OPTIONAL second entry point:
+
+```python
+# infra/db-core/post_compose_db.py
+
+def run(config: dict, ctx) -> dict:
+    """Normal execution — provisions users, databases."""
+    ...
+
+def validate_config(config: dict, ctx) -> list[str]:
+    """Optional preflight. Return list of error strings (empty = OK).
+    CIU calls this during `ciu config check` but NEVER during normal up.
+    Accesses the same merged config and context as run(), so it can
+    validate exactly what run() will consume."""
+    errors = []
+    if "database" not in config.get("registry", {}):
+        errors.append("registry.database is missing")
+    for user in ("controller", "workerdb"):
+        if user not in config.get("registry", {}).get("postgresql", {}).get("users", {}):
+            errors.append(f"registry.postgresql.users.{user} is missing")
+    return errors
+```
+
+- `validate_config` is entirely optional. Hooks that don't define it are
+  simply skipped in the hook-preflight stage (stage 9 above). No error.
+- When defined, it receives the SAME merged config and HookContext as
+  `run()`, including SecretGuard objects for secrets (which it can check
+  exist by name without accessing values).
+- It MUST NOT execute side effects (no Docker calls, no network access,
+  no file writes). CIU does not enforce this technically — it is a contract,
+  like "hooks don't mutate os.environ" — but violations would be caught
+  because `config check` runs before any container exists.
+- Return type is `list[str]`: empty = valid; non-empty = one error string
+  per finding. CIU aggregates all findings across all hooks and reports
+  them together.
+
+**Output (prose):**
+```
+ciu config check: 3 stacks, 2 profiles, 14 services
+
+  ✓ global config rendered
+  ✓ infra/db-core shape valid
+  ✓ secrets: 8 directives, all well-formed
+  ✓ provisioning: 5 refs, no cycles
+  ✓ governance: dev-background.slice resolved
+  ✓ configfiles: 2 templates found, schemas present
+  ✓ registry: postgresql validated (6 users)
+  ✓ registry: redis validated (4 ACL entries)
+  ✓ hooks: 3 files loaded, 2 define validate_config
+    ✓ db-core/post_compose_db.py: no issues
+    ✗ consul-server/post_compose_consul.py: registry.consul.acl.default_policy missing
+  ✓ compose render: 3 stacks rendered, no leaks
+
+  RESULT: FAIL (1 error)
+```
+
+**Output (`--json`):**
+```json
+{
+  "schema_version": 1,
+  "operation": "config-check",
+  "status": "fail",
+  "stages": [
+    {"stage": "render", "status": "pass"},
+    {"stage": "shape", "status": "pass", "stacks_checked": 3},
+    {"stage": "registry", "status": "fail",
+     "errors": [
+       {"hook": "consul-server/post_compose_consul.py",
+        "message": "registry.consul.acl.default_policy missing"}
+     ]}
+  ]
+}
+```
+
+Exit codes follow S10.3: 0 = all pass, 1 = findings reported, 2 = config/validation error.
+
+**Relationship to existing verbs:**
+
+| Verb | What it does | What `config check` adds |
+|------|-------------|--------------------------|
+| `ciu check` | Provisioning graph lint + optional live probe | Everything else on this table |
+| `ciu up --dry-run` | Full pipeline except compose up; still creates hostdirs, runs hooks | Zero side effects; no Docker needed |
+| `ciu provenance` | Verifies running images against commit | Orthogonal — post-deployment evidence |
+
+This verb makes `ciu up --dry-run` unnecessary as a validation tool and
+gives CIU agents / CI pipelines a safe way to verify config correctness
+without touching Docker or the filesystem beyond reading templates.
 
 ---
 
@@ -718,6 +1092,16 @@ project_name = "demo-app"
 environment_tag = "{{ INSTANCE_ID }}"
 
 # ------------------------------------------------------------
+# BUILD VERSIONS (see §1.13)
+# ------------------------------------------------------------
+[build.python]
+version = "3.14"
+chosen_version = "3.14.8"
+possible_version_upstream = "3.15.0"
+hold = false
+min_release_age_days = 14
+
+# ------------------------------------------------------------
 # LOGICAL SERVICES
 # ------------------------------------------------------------
 
@@ -783,6 +1167,20 @@ description = "Cache and pub/sub"
 location = "infra/redis-core"
 image = "redis:7-alpine"
 port = 6379
+
+# ------------------------------------------------------------
+# STACK-LEVEL SERVICE WIRING (see §1.16) — in each stack's ciu.defaults.toml.j2,
+# NOT in the global file. Shown here for illustration.
+# ------------------------------------------------------------
+
+# [local_stack.postgres]
+# port = 5432
+# image = "timescale/timescaledb-ha:pg18"
+# env_required = ["POSTGRES_PASSWORD_FILE"]
+#
+# [local_stack.minio]
+# port = 9000
+# image = "minio/minio:latest"
 
 # ------------------------------------------------------------
 # SERVICE GROUPS
