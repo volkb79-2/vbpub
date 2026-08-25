@@ -5,7 +5,7 @@
 **Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
 **Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
 
-**Proposal revision:** 1.3
+**Proposal revision:** 1.4
 **Updated:** 2026-08-24
 ---
 
@@ -120,6 +120,77 @@ Two categories with different vocabularies:
 | `mock` | In-process mock object | Fast unit tests |
 
 **Critical insight:** mocking our own internal components enables integration testing of *other* services even when one component isn't implemented yet. The network is not the issue — the missing implementation is. A mock fills the gap.
+
+#### 1.4a Realness selection semantics (normative)
+
+Realness is resolved at `ciu up` time through a three-layer precedence:
+
+**Layer 1: Config defaults.**
+
+```toml
+[testing.realness_defaults]
+internal = "live"                # default for all internal services
+3rd_party = "owned-seeded"       # default for all third-party services
+```
+
+These are the baseline: unless overridden, every internal service runs its
+`live` variant and every third-party service runs its `owned-seeded` variant.
+Only variants actually declared in `[service.<name>]` are eligible — a service
+with only a `mock` variant cannot be selected as `live`.
+
+**Layer 2: Per-service override in config.**
+
+```toml
+[testing.realness_overrides]
+payment-api = "simulated"        # always simulated regardless of defaults
+notification-service = "mock"   # always mocked
+```
+
+This lets consumers pin specific services to specific variants without
+changing the global default.
+
+**Layer 3: CLI override at up time.**
+
+```bash
+# Override one or more services for THIS invocation:
+ciu up --group full --profile single-host --realness payment-api=live
+
+# Override multiple:
+ciu up --group full --profile two-host --realness payment-api=live,notification-service=mock
+```
+
+CLI overrides take precedence over config overrides, which take precedence
+over defaults. The resolution is deterministic and inspectable via
+`ciu plan` (§5.6) before any container starts.
+
+**Testing intent influence on realness.**
+
+A testing intent MAY carry a realness hint that adjusts Layer 1 defaults:
+
+```toml
+[testing.intents.smoke]
+rigor = ["R0"]
+realness_hint = { internal = "mock", 3rd_party = "mock" }
+
+[testing.intents.trust]
+rigor = ["R0", "R3"]
+realness_hint = { internal = "live", 3rd_party = "live" }
+```
+
+The hint lowers realness toward mocking (faster, no credentials needed) or
+raises it toward live (full integration). It NEVER overrides explicit CLI
+flags or per-service config overrides — it only adjusts the *default* layer.
+If an intent's hint requests `mock` but the service has no mock variant,
+the hint is silently ignored for that service (it falls back to the config
+default).
+
+**Resolution order summary:**
+
+1. CLI `--realness <svc>=<level>` → highest precedence
+2. `[testing.realness_overrides].<svc>` → per-service pinning
+3. Intent `realness_hint` (if intent selected AND variant exists)
+4. `[testing.realness_defaults]` → type-level fallback
+5. Error if no variant exists at any level for the service
 
 ### 1.5 Why named sub-tables for realness variants
 
@@ -299,27 +370,71 @@ ciu.user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control", "b
 
 #### 1.15 Service identity model refinement
 
-`[service.<name>]` uses a logical identifier, NOT necessarily a filesystem
-path. The `location` field maps logical name → stack directory:
+Each logical service declares a `type` from a closed vocabulary that
+determines what CIU does with it:
+
+| Type | Meaning | CIU behavior |
+|------|---------|-------------|
+| `CIU` | A stack managed by CIU (has ciu.defaults.toml.j2) | Full pipeline: render, secrets, hooks, compose |
+| `COMPOSE` | A plain docker-compose project (no CIU config) | Runs docker compose up; no rendering/secrets/hooks |
+| `IN_PROCESS` | Files used to mock or simulate; never deployed as containers | No compose execution; files referenced by test lanes or mock implementations |
+| `EXTERNAL` | Consumed but not deployed here (Stripe API, Cloudflare DNS) | No infrastructure provisioned; connection facts only |
+
+The previous binary `kind = "internal" | "3rd_party"` is replaced by this
+four-way enum. Realness variant availability is derived from type:
+
+| Type | Valid realness variants |
+|------|------------------------|
+| `CIU` | `live`, `mock` |
+| `COMPOSE` | `live`, `mock`, `simulated` |
+| `IN_PROCESS` | `mock` (the files ARE the mock) |
+| `EXTERNAL` | `live`, `owned-seeded`, `simulated`, `mock` |
+
+A `CIU` service has a `location` pointing to its stack directory:
 
 ```toml
 [service.geo_location]
-kind = "3rd_party"
+type = "CIU"
 
 [service.geo_location.owned-seeded]
 location = "infra/db-core"       # filesystem path ≠ service name
 port = 5432
 ```
 
-Multiple services can share one stack directory. For third-party services
-consumed but never deployed locally (Stripe), `live` has no `location` —
-just connection facts (`endpoint`, secrets).
-
-Mocked external services are expressed naturally:
+An `EXTERNAL` service has no `location` and no infrastructure:
 
 ```toml
 [service.payment-api]
-kind = "3rd_party"
+type = "EXTERNAL"
+
+[service.payment-api.live]
+endpoint = "https://api.stripe.com"
+secrets = ["stripe_secret_key"]
+
+[service.payment-api.mock]
+implementation = "tests/mocks/stripe_mock.py"
+```
+
+An `IN_PROCESS` service provides mock/simulation files without deployment:
+
+```toml
+[service.notification-service]
+type = "IN_PROCESS"
+
+[service.notification-service.mock]
+implementation = "tests/mocks/notification_mock.py"
+```
+
+A `COMPOSE` service references an existing docker-compose project:
+
+```toml
+[service.legacy-auth]
+type = "COMPOSE"
+
+[service.legacy-auth.live]
+location = "vendor/legacy-auth"   # contains docker-compose.yml, not ciu.defaults.toml.j2
+```
+type = "CIU"
 
 [service.payment-api.live]
 endpoint = "https://api.stripe.com"
@@ -328,7 +443,7 @@ endpoint = "https://api.stripe.com"
 implementation = "tests/mocks/stripe_mock.py"
 ```
 
-No additional category split is needed because the existing `kind` field
+No additional namespace split is needed because the existing `type` field
 carries this information.
 
 #### 1.16 Stack-level service tables (`[local_stack]`)
@@ -357,11 +472,30 @@ image = "minio/minio:latest"
 |--------|----------------------|--------------------------|
 | Purpose | Logical identity + realness variants | Per-stack deployment wiring |
 | Owner | CIU global config | Stack's own ciu.defaults.toml.j2 |
-| Contains | kind, location, init_requires | port, image, env, hostdir, hooks |
+| Contains | type, location, init_requires | port, image, env, hostdir, hooks |
 | Realness | Declared here | Not present — realness is a global concern |
 
 Templates access local config as `{{ local_stack.postgres.port }}`;
 cross-stack references still use `{{ topology.services.postgres.internal_host }}`.
+
+**Mapping rules (normative):**
+
+1. The `[local_stack.<name>]` key MUST match the logical service name from
+   the global `[service.<name>]` registry exactly. This is the join key:
+   global defines WHO the service is; local_stack defines HOW to run it.
+2. One stack directory MAY declare multiple `[local_stack.*]` entries —
+   this is normal when a stack deploys several services (e.g. db-core runs
+   postgres, minio, and pgadmin).
+3. The global `location` field points to the stack directory. Renaming or
+   moving that directory requires updating only the global `location` value;
+   the stack's own `[local_stack]` content is unchanged.
+4. A `[local_stack.<name>]` entry for a service NOT declared in the global
+   registry is valid — it means "this stack deploys something only it knows
+   about." The global registry exists for cross-stack references and SSOT
+   defaults, not as a gatekeeper for what a stack may run.
+5. Hooks move from the old `[<root>.hooks]` convention to
+   `[local_stack.<svc>.hooks]`, keeping hook declarations co-located with
+   the service they configure.
 
 #### 1.17 Topology: do we need endpoints/routes?
 
@@ -632,12 +766,12 @@ without touching Docker or the filesystem beyond reading templates.
 
 ### 3.1 Declaration
 
-Each logical service declares its kind and available realness variants:
+Each logical service declares its type and available realness variants:
 
 ```toml
 # Metadata (shared across all variants)
 [service.api-handler]
-kind = "internal"                # "internal" | "3rd_party"
+type = "CIU"
 description = "HTTP request handler"
 
 # Variant: live (real implementation)
@@ -658,7 +792,7 @@ For third-party services:
 
 ```toml
 [service.payment-api]
-kind = "3rd_party"
+type = "EXTERNAL"
 description = "External payment processor"
 
 [service.payment-api.live]
@@ -684,7 +818,7 @@ Other idea: differentiate `[service.internal.*]` vs `[service.3rd_party.*]` up f
 
 ### 3.2 Validation rules
 
-- Every sub-table key under `[service.<name>]` (other than `kind`, `description`) MUST match a valid realness level for that service's `kind`.
+- Every sub-table key under `[service.<name>]` (other than `type`, `description`) MUST match a valid realness level for that service's `type`.
 - Internal valid levels: `mock`, `live`
 - Third-party valid levels: `mock`, `simulated`, `owned-seeded`, `live`
 - At least one variant MUST be declared per service.
@@ -1106,7 +1240,7 @@ min_release_age_days = 14
 # ------------------------------------------------------------
 
 [service.api-handler]
-kind = "internal"
+type = "CIU"
 description = "HTTP request handler"
 
 [service.api-handler.live]
@@ -1121,14 +1255,14 @@ allow_degraded_start = true
 implementation = "tests/mocks/api_handler_mock.py"
 
 [service.notification-service]
-kind = "internal"
+type = "IN_PROCESS"
 description = "Sends emails/SMS (not yet implemented)"
 
 [service.notification-service.mock]
 implementation = "tests/mocks/notification_mock.py"
 
 [service.postgres]
-kind = "3rd_party"
+type = "CIU"
 description = "Primary relational database"
 
 [service.postgres.owned-seeded]
@@ -1138,7 +1272,7 @@ port = 5432
 seed_data = "fixtures/seed.sql"
 
 [service.payment-api]
-kind = "3rd_party"
+type = "EXTERNAL"
 description = "External payment processor"
 
 [service.payment-api.live]
@@ -1160,7 +1294,7 @@ stub_mappings = "fixtures/wiremock_stubs/"
 implementation = "tests/mocks/payment_mock.py"
 
 [service.redis]
-kind = "3rd_party"
+type = "CIU"
 description = "Cache and pub/sub"
 
 [service.redis.owned-seeded]
@@ -1376,3 +1510,136 @@ This eliminates the need for consumer projects to hand-roll docker provisioning
 inside wrapper scripts (which is what dstdns currently does in
 `scripts/p128-assay-schema.sh` and `scripts/p129-assay-schema.sh`) and makes
 the pattern reusable across all projects with database-dependent mutation lanes.
+
+### 10.3 Secrets architecture — open design question
+
+**Current state (S4):** six directives (`ASK_VAULT`, `GEN_TO_VAULT`,
+`GEN_LOCAL`, `ASK_EXTERNAL`, `ASK_FILE`, `GEN_EPHEMERAL`) resolve secrets
+into `.ciu/secrets/<name>` store files. Vault-backed directives require a
+running Vault instance.
+
+**V8 introduces `ciu.secrets.toml`** as a sibling of the global config file.
+Its role and relationship to S4 needs explicit definition:
+
+| Deployment mode | Where secrets live | How they reach containers |
+|----------------|-------------------|--------------------------|
+| **With Vault** | Vault KV2 (S4 directives unchanged) | Materialized to `.ciu/secrets/` by CIU, mounted via overlay |
+| **Without Vault** | `ciu.secrets.toml` (gitignored) | Values read directly from this file; materialized to `.ciu/secrets/` |
+| **Mixed** | Vault for infrastructure secrets; `ciu.secrets.toml` for 3rd-party API keys, dev credentials | Both paths feed into the same `.ciu/secrets/` store |
+
+`ciu.secrets.toml` is NOT a replacement for S4 — it is an additional source.
+When Vault is available, S4 directives work unchanged. When it is not,
+`ciu.secrets.toml` fills the gap for projects that cannot run Vault.
+
+**Open questions requiring further design:**
+
+1. **Project-level secrets.** Where does a stack's own secret go?
+   Options:
+   - `<stack>/ciu.secrets.toml` (alongside ciu.defaults.toml.j2)
+   - A `[secrets]` table in `ciu.toml.j2` (the sparse override layer)
+   - Keep using S4 per-stack secret tables with `GEN_LOCAL`
+
+2. **Vault bootstrap.** The Vault service itself needs its own unlock key
+   after initialization. Currently dstdns stores this in the vault stack's
+   `[state]` table. Should v8 formalize this pattern?
+
+3. **Service-level access tokens.** For services that need a Consul token
+   or Vault AppRole credentials at runtime, the current pattern is:
+   hook provisions token → writes to Vault → service reads via ASK_VAULT.
+   In a vaultless deployment, where does this go? Options:
+   - `ciu.secrets.toml` at global level (shared across stacks)
+   - `<stack>/ciu.secrets.toml` (per-stack)
+   - Directly in compose environment (current `expose_env` escape hatch)
+
+4. **Mounting into containers.** The proposal does NOT mount
+   `ciu.secrets.toml` directly into containers — multiple services per
+   stack may need different subsets of its values. Instead, CIU reads it
+   during secret resolution and materializes individual files to
+   `.ciu/secrets/<name>`, which are then mounted selectively per service.
+
+**Status:** OPEN — needs design before v8 becomes normative. The
+`ciu.secrets.toml` file itself is non-controversial; its precedence rules,
+project-level placement, and interaction with existing S4 stores need
+resolution.
+
+---
+
+## 11. Open issues from adversarial review
+
+These findings from the adversarial review remain relevant and must be
+resolved before the proposal becomes normative.
+
+### 11.1 Provenance must gate evidence (was M1)
+
+A passing R0/R1/R2 verdict without provenance verification could describe
+stale images. CIU-v8's gate module MUST either:
+
+a) Require a passing `ciu provenance --json` verdict before running R1+,
+   recording the provenance result in the test verdict JSON; or
+
+b) Run provenance inline as part of the gate pipeline and fail-closed on
+   mismatch unless `--skip-provenance` is explicitly passed.
+
+Option (b) is recommended: it prevents the "I forgot to check" failure mode.
+
+**Status:** OPEN — to be decided before normative.
+
+### 11.2 Rigor provider contracts undefined (was M2)
+
+R0–R6 are vocabulary labels but no contract defines HOW evidence is
+attached to each level. What makes a verdict R1-compliant vs R0-only?
+
+Each rigor level needs a provider interface:
+
+```python
+class RigorProvider(Protocol):
+    level: str                    # "R0", "R1", etc.
+    def execute(self, lane, environment) -> RigorEvidence
+    def validate(self, evidence: RigorEvidence) -> bool
+```
+
+Without this, "R2 mutation testing" is aspirational, not enforceable.
+
+**Status:** OPEN — to be decided before normative.
+
+### 11.3 Assay artifact pinning (was M11)
+
+Current lanes verify pinned assay artifacts by version + SHA256. V8 says
+"de-vendor" but provides no replacement mechanism. Even if CIU manages the
+assay installation, each verdict MUST record which assay version produced it.
+
+Minimum viable solution: add `judge.version` and `judge.sha256` fields to
+the verdict JSON schema. CIU records these from whatever assay binary it
+invoked. This is an Assay backlog item (verdict schema extension).
+
+**Status:** OPEN — filed as Assay upstream ask; CIU-v8 must record the
+producing judge identity in every verdict.
+
+### 11.4 Changed-file scope refinement (was M4)
+
+The current selection model uses glob patterns matched against changed
+files. For monorepos this is underspecified:
+
+```toml
+[testing.selection.api]
+patterns = ["src/api/**/*.py"]
+base_ref = "origin/main"          # default: merge-base with origin/main
+exclude_patterns = [
+    "**/__pycache__/**",
+    "*.pyc",
+    "docs/**",                     # docs changes don't trigger api tests
+]
+scope = ["tests/unit/test_api.py"]
+```
+
+Additional fields worth considering:
+- `min_changed_lines = 5` — skip scope if fewer than N lines changed (noise filter)
+- `requires_services = ["api-handler"]` — only meaningful when these services are deployed
+- Per-package roots for monorepo subprojects with independent test suites
+
+The base diff computation should use Assay's B012 changed-lines mode
+(`base..HEAD`) rather than raw file lists, so whitespace-only changes don't
+trigger full gate runs.
+
+**Status:** OPEN — refine before implementation; coordinate with Assay's
+changed-file detection (B014 bounded output tails).
