@@ -5,7 +5,7 @@
 **Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
 **Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
 
-**Proposal revision:** 1.4
+**Proposal revision:** 1.5
 **Updated:** 2026-08-24
 ---
 
@@ -282,7 +282,7 @@ CIU-specific resource governance belongs in CIU, consistent with Assay’s expli
 
 #### 1.11 subprocess output capture (upstream ask)
 
-When an assay lane command fails, the verdict says `COMMAND_FAILED` with zero stdout/stderr context. This forced five manual reproductions during dstdns P121 debugging. Assay should capture bounded output (≤64KB) from failed commands and persist it in the verdict artifact. Filed separately upstream; independent of this proposal.
+**RESOLVED upstream as Assay B014** (shipped in assay-v2.3.0): bounded final stdout/stderr plus truncation counts for failed/timed-out commands. CIU should NOT duplicate this — lane-command diagnostics belong in the verdict, not in CIU's orchestration log. Consumer repos must verify their pinned Assay artifact includes B014 before relying on it.
 
 #### 1.12 Higher Rigor
 
@@ -1703,3 +1703,251 @@ trigger full gate runs.
 
 **Status:** OPEN — refine before implementation; coordinate with Assay's
 changed-file detection (B014 bounded output tails).
+
+### 10.4 Execution manifest
+
+**Problem.** Today, gate configuration is split across two independently
+authored files (`run-gate.toml` with its `forward_env`, and `assay.toml`
+with its `env_passthrough`). Adding a variable at one layer without updating
+the other causes silent failures (dstdns P129, §10.1). More broadly, the
+facts needed to execute a lane are scattered across config layers, CLI flags,
+and runtime state — nothing captures them as a single resolved snapshot.
+
+**Proposal: CIU compiles an immutable ExecutionManifest per gate run.**
+
+The manifest contains ONLY resolved facts — no templates, no references,
+no env-var placeholders:
+
+| Field | Source |
+|-------|--------|
+| selected worktree path | S16 instance record |
+| effective project root | resolved from worktree + offset |
+| Git common dir | `git rev-parse --git-common-dir` |
+| commit / base_ref / diff scope | gate request + git merge-base |
+| container/service targets | resolved from `[deploy.groups]` + `[deploy.profiles]` |
+| network name | instance identity (S2) |
+| user / cwd / argv / timeout | service config + lane declaration |
+| resource limits | `[testing.resources]` resolution chain |
+| realness map | per-service resolved variant (§1.4a) |
+| credential handles | secret NAMES only (never values) |
+| artifact paths | output directory, verdict path, coverage file |
+| judge identity | version + SHA-256 of resolved assay/judge binary |
+| isolation policy | cgroup parent, network mode, mount exclusions |
+
+Secrets stay out of the manifest. It stores secret NAMES plus a redacted
+audit fingerprint (e.g. SHA-256 of concatenated values). CIU injects actual
+values at execution time via environment variables or mounted files.
+
+This eliminates the dual-allowlist problem because `forward_env` and
+`env_passthrough` become COMPILATION OUTPUTS of the manifest, not
+independently authored contracts. The manifest lists exactly which env vars
+the lane command needs; CIU injects them; no second tool re-filters.
+
+The manifest itself is serialized as JSON at a well-known path inside the
+test-runner container (`.ciu-execution-manifest.json`). Lane commands can
+read it to discover their own identity, endpoints, and scope without
+requiring hash-derived env vars threaded through multiple tools (§10.1
+resolution).
+
+---
+
+### 10.5 Judge distribution
+
+**Problem.** Consumer repos currently vendor assay zipapps
+(`tools/assay/*.pyz`) with SHA sidecars. This couples consumer releases to
+assay releases and creates stale-pin drift.
+
+**Proposal: two-tier delivery model.**
+
+**For non-CIU consumers:** unchanged from today. Ship/install Assay as a
+normal wheel or standalone CLI artifact with explicit version/hash pin.
+No repo-vendoring required; pip install from GitHub Releases works.
+
+**For CIU consumers:** CIU owns a central judge resolution record:
+
+```toml
+[testing.judge]
+name = "assay"
+version = "==2.3.0"              # constraint, like [build.python]
+source = "github-releases"       # trusted source enum
+sha256 = "dbbcf2..."             # expected digest of the resolved artifact
+cache_dir = "~/.ciu/cache/judges"  # shared across worktrees
+```
+
+At gate preparation, CIU:
+1. Resolves the version constraint against available releases
+2. Verifies SHA-256 of the downloaded/cached artifact
+3. Either mounts the verified artifact into the test-runner container,
+   OR requires a runner image already carrying the pinned judge
+4. Records both the judge digest AND the runner image digest in the
+   ExecutionManifest and verdict
+
+Consumer repos declare POLICY (which version, which source, trust
+constraints); CIU materializes the VERIFIED TOOL. No vendored zipapps in
+consumer repos.
+
+This replaces the current model where each repo pins and verifies its own
+copy. Version upgrades happen by changing one line in global config, not
+by repinning files across multiple repos.
+
+### 10.6 Lane realness requirements (demand-driven selection)
+
+§1.4a defines how CIU SELECTS realness variants for deployment. This section
+defines how LANES declare what they REQUIRE. These are complementary:
+
+- §1.4a answers: "when `ciu up` runs, which variant does each service use?"
+- This section answers: "for THIS lane to produce valid evidence, which
+  variant must each service be?"
+
+**Lanes declare capability requirements, not infrastructure recipes:**
+
+```toml
+[testing.lanes.payment-flow]
+rigor = ["R0", "R2"]
+requires_realness = { database = "owned-seeded", payment-api = "simulated" }
+```
+
+CIU validates at feasibility admission:
+1. Is the required variant declared in the service's config?
+2. Does the selected environment actually run that variant?
+3. Are credentials available for that variant?
+
+If any requirement cannot be met, the lane is assigned **NOT_RUN** with a
+reason naming the unsatisfied requirement. The lane is NEVER silently
+downgraded to a different variant — a mock-based test result presented as
+integration evidence is worse than no result.
+
+This means the resolution order from §1.4a gains a validation step after
+selection: lanes check their `requires_realness` against what was actually
+selected and refuse to run on mismatch.
+
+---
+
+### 10.7 NOT_RUN semantics
+
+The gate report must distinguish three outcomes per lane:
+
+| Status | Meaning |
+|--------|---------|
+| **PASS** | Evidence produced and satisfied policy |
+| **FAIL** | Executed but failed; evidence shows the failure |
+| **NOT_RUN** | Selected/admissible-in-principle but not executed, with reason |
+
+Mid-command failures remain FAIL or ERROR — they must never become skips.
+A command that ran and crashed IS evidence.
+
+NOT_RUN reasons are closed vocabulary:
+
+| Reason | Example |
+|--------|---------|
+| `missing-environment` | No running instance for the named environment |
+| `realness-mismatch` | Required variant not deployed (e.g. needs live Stripe but got mock) |
+| `missing-credentials` | Secret referenced by the lane's realness variant unavailable |
+| `unavailable-runner` | Test runner container/image not available |
+| `no-matched-scope` | Changed files don't match any pattern in this scope |
+
+**Ship intents fail closed on any required NOT_RUN.** A release gate with
+a NOT_RUN lane has incomplete evidence and must not pass. Fast-feedback
+intents may surface NOT_RUN as a warning while still passing, because the
+purpose is quick iteration, not certification.
+
+```toml
+[testing.intents.quality]
+rigor = ["R0", "R1", "R2"]
+not_run_policy = "fail"           # default for ship gates
+
+[testing.intents.smoke]
+rigor = ["R0"]
+not_run_policy = "warn"           # fast feedback can tolerate gaps
+```
+
+---
+
+### 10.8 Authored config vs derived state
+
+To prevent ambiguity about where truth lives:
+
+**Authored (SSOT):**
+- `ciu.global.defaults.toml.j2` — repository-authoritative baseline
+- `ciu.global.toml.j2` — intentional committed override
+- `<stack>/ciu.defaults.toml.j2` — stack-authoritative baseline
+- `<stack>/ciu.toml.j2` — optional stack override
+
+**Derived (never authored):**
+- `ciu.global.toml` — rendered output of the chain above
+- `.ciu-execution-manifest.json` — compiled gate plan (§10.4)
+- `.ciu/secrets/*` — materialized secret values
+- `.ciu/ciu.compose.overlay.yml` — machine-derived wiring
+
+The ExecutionManifest is a COMPILATION of the authored config plus runtime
+facts. It is never hand-edited. Changing behavior requires changing the
+authored source, re-rendering, and re-compiling.
+
+This distinction MUST be normative so tooling (and agents) understand that
+modifying the manifest directly is meaningless — it will be overwritten at
+the next gate preparation.
+
+---
+
+### 10.9 Gate contracts and ownership boundaries
+
+CIU-v8 introduces four outer contracts that structure the gate lifecycle:
+
+| Contract | Owner | Purpose |
+|----------|-------|---------|
+| **GateRequest** | CIU | What gate the operator/agent desires: intent, environment name, rigor overrides, scope overrides |
+| **ExecutionManifest** | CIU | The resolved plan: every fact needed to execute (§10.4) |
+| **LaneResult** | CIU + judge | Per-lane orchestration outcome: status, timing, embedded Assay verdict |
+| **GateReport** | CIU | Aggregate: all LaneResults, policy decision (pass/fail), resource usage summary |
+
+Ownership boundaries:
+
+- **CIU owns:** GateRequest schema, ExecutionManifest schema,
+  GateReport schema, and the outer envelope of LaneResult (status, timing,
+  artifact paths).
+- **Assay owns:** verdict internals inside LaneResult (coverage data,
+  mutation results, output tails). CIU embeds the verdict verbatim without
+  parsing or restructuring it.
+- **Shared protocol:** the cross-tool envelope (how CIU invokes assay and
+  receives results) carries explicit semantic versioning. Both sides
+  validate against it.
+
+These schemas initially live normatively in the CIU v8 spec. Once another
+judge or orchestrator appears, they should be extracted into a small
+versioned gate-contract package.
+
+**Assay verdict embedding:** CIU adopts Assay's existing verdict schema as
+the embedded judge record inside LaneResult. It does NOT invent a competing
+format. If Assay extends its verdict schema (e.g. B014 output capture),
+CIU passes it through unchanged.
+
+---
+
+### 10.10 Base commit from gate request, not lane config
+
+**Problem.** dstdns P128 revealed that `assay.toml` hardcodes a base commit
+in its R1 lane configuration. In a worktree-based workflow, the correct
+base depends on WHERE the gate runs (which branch, which merge-base), not
+on a static value in lane config.
+
+**Proposal: the base ref is part of the GateRequest, not lane policy.**
+
+Lane configuration declares only WHETHER changed-line judging is required:
+
+```toml
+[testing.lanes.api-changed-lines]
+changed_line_judging = true       # "judge only lines I changed"
+# NO base_ref here — that comes from the request
+```
+
+The GateRequest supplies the actual base:
+
+```bash
+ciu gate --intent coverage --environment ci-build-42 --base origin/main
+```
+
+CIU resolves it via `git merge-base` and writes the resolved commit into
+the ExecutionManifest. The lane reads it from there, not from its own config.
+
+This makes the same lane definition reusable across branches, PRs, and
+local development without editing config per context.
