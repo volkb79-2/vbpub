@@ -1265,7 +1265,13 @@ def main_execution(
         # stack_config/merged), so a malformed declaration is caught on every
         # single-stack run, not only when this run's own --layout/exec/
         # provenance feature is invoked.
-        config_model.validate_declared_features(global_config, hosts.load_hosts(repo_root))
+        try:
+            config_model.validate_declared_features(global_config, hosts.load_hosts(repo_root))
+        except worktree.WorktreeError as exc:
+            # exec-target shape (S16.7) raises WorktreeError, not ValueError;
+            # it is an S11 validation-shape failure like its Step-5 siblings
+            # (validate_stack_shape/validate_stack_provisioning) — S10.3 exit 2.
+            raise ValueError(str(exc)) from exc
         specs = secret_directives.discover(root_key, merged)
 
         misplaced = secret_directives.find_misplaced(merged, stack_root_key=root_key)

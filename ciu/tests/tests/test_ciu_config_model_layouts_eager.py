@@ -220,6 +220,37 @@ def test_main_execution_surfaces_bad_globally_declared_layout_without_layout_fla
         engine.main_execution(working_dir=tmp_path, define_root=tmp_path)
 
 
+_BAD_GLOBAL_EXEC_TARGETS = {
+    "ciu": {"auto_connect_network": False, "worktree": {"exec_targets": {"tester": "nope"}}},
+}
+
+
+def test_main_execution_translates_exec_targets_worktree_error_to_valueerror_exit_2(
+    tmp_path, monkeypatch
+):
+    """Adversarial-review fix: a malformed globally-declared exec_targets
+    table raises `worktree.WorktreeError` (not `ValueError`) from
+    `resolve_exec_targets_config` — Step 5's OTHER two checks
+    (`validate_stack_shape`/`validate_stack_provisioning`) both raise
+    `ValueError`, and `deploy.action_check` already translates this same
+    input to exit 2. `main_execution` must match: `WorktreeError` from
+    `validate_declared_features` is caught and re-raised as `ValueError` so
+    S10.3's `_exit_code_for` maps it to exit 2, not the generic exit 1 a
+    bare `WorktreeError` would otherwise fall through to.
+    """
+    monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **kwargs: None)
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
+    monkeypatch.setattr(
+        config_model, "render_global_chain", lambda *a, **k: _BAD_GLOBAL_EXEC_TARGETS
+    )
+    monkeypatch.setattr(config_model, "render_stack", lambda *a, **k: dict(_GOOD_STACK))
+    monkeypatch.setattr(engine.hosts, "load_hosts", lambda repo_root: {})
+
+    with pytest.raises(ValueError, match=r"\[S16\.7\]"):
+        engine.main_execution(working_dir=tmp_path, define_root=tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # O3 — wired into deploy.action_check (runs even with an empty selection)
 # ---------------------------------------------------------------------------
