@@ -566,11 +566,22 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             snapshot_policy=snapshot_policy,
         )
         with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
-            relocated = runner._relocate_source_roots(
-                lane,
-                project_root=lane_file.project_root,
-                scratch_project_root=(prepared.spec.scratch_root / "unused"),
-            )
+            # B030/A-319: source roots are NOT relocated here, on purpose.
+            # `_relocate_source_roots` respells `judge.source_root_paths`
+            # against a MATERIALIZED snapshot's own project root, and the two
+            # target resolvers below are handed
+            # `snapshot_repo_top=prepared.spec.repo_top` -- the CONSUMER's
+            # real repository top, since `plan` reads blobs out of the
+            # prepared seed (`_read_prepared_source_text`) and never
+            # materializes a snapshot at all. Relocating against a directory
+            # that does not exist made
+            # `resolve_mutation_targets`'s unconditional
+            # `is_relative_to(root)` containment gate unsatisfiable, so every
+            # lane planned as `candidate_count: 0`; a `whole_target` lane
+            # failed outright naming the phantom path. The roots the gate
+            # must be compared against here are the ones the lane actually
+            # declares.
+            source_root_paths = lane.judge.source_root_paths
             resolved_base = (
                 runner._resolve_declared_base(
                     lane_file.project_root,
@@ -587,7 +598,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                     project_prefix=project_prefix,
                     deadline=deadline,
                     adapter=adapter,
-                    source_root_paths=relocated.judge.source_root_paths,
+                    source_root_paths=source_root_paths,
                     targets=lane.judge.targets or (),
                 )
             else:
@@ -611,7 +622,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                     deadline=deadline,
                     adapter=adapter,
                     snapshot_repo_top=prepared.spec.repo_top,
-                    source_root_paths=relocated.judge.source_root_paths,
+                    source_root_paths=source_root_paths,
                 )
             jobs = mutation.collect_mutation_sites(
                 targets,

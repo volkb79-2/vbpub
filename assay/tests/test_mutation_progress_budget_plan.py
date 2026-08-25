@@ -545,15 +545,121 @@ budget_per_candidate = "30s"
     exit_code = main(["plan", "package", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
+    # B030/A-319. This fixture genuinely yields ONE `python:bool-const-flip`
+    # candidate (`pkg/flags.py`'s `a = True`, restored on `feature` against a
+    # `base` that flipped it) -- the assertions below asserted `0`/`{}`/`[]`
+    # until B030, having been written to match observed output rather than
+    # the requirement, and so froze `_cmd_plan`'s phantom-scratch-root bug as
+    # correct behaviour. The one candidate here is the SAME candidate a real
+    # `assay run` of this lane kills.
     assert exit_code == 0
     assert payload["status"] == "ok"
-    assert payload["candidate_count"] == 0
-    assert payload["by_operator"] == {}
-    assert payload["by_file"] == {}
-    assert payload["estimated_wall_seconds"] == 0.0
-    assert payload["estimated_serial_seconds"] == 0.0
-    assert payload["estimated_wall_seconds"] == 0.0
-    assert payload["candidates"] == []
+    assert payload["candidate_count"] == 1
+    assert payload["by_operator"] == {"python:bool-const-flip": 1}
+    assert payload["by_file"] == {"pkg/flags.py": 1}
+    assert payload["estimated_serial_seconds"] == 30.0
+    assert payload["estimated_wall_seconds"] == 15.0
+    assert [candidate["path"] for candidate in payload["candidates"]] == ["pkg/flags.py"]
+    assert [candidate["operator"] for candidate in payload["candidates"]] == [
+        "python:bool-const-flip"
+    ]
+    assert [candidate["description"] for candidate in payload["candidates"]] == [
+        "True->False"
+    ]
+    assert len(payload["candidates"][0]["id"]) == 64
+    # The SAME identity `assay.mutation.candidate_id` derives for the job a
+    # real run of this lane executes -- plan's answer is the run's answer,
+    # which is the whole point of the verb.
+    from assay import mutation as _mutation
+    from assay.adapters.python import PythonAdapter
+
+    source = (project.root / "pkg" / "flags.py").read_text(encoding="utf-8")
+    target = _mutation.MutationTarget(
+        path="pkg/flags.py",
+        text=source,
+        lines=frozenset(range(1, source.count("\n") + 2)),
+    )
+    jobs = _mutation.collect_mutation_sites(
+        (target,),
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=11,
+    )
+    assert payload["candidates"][0]["id"] == _mutation.candidate_id(jobs[0])
+
+
+def test_plan_whole_target_lane_plans_its_declared_target(tmp_path):
+    """B030/A-319's second oracle: a `mode = "whole_target"` lane must PLAN,
+    not fail naming a scratch directory that never existed.
+
+    Before the fix this refused with `ERROR`/`BAD_LANE_CONFIG`: "mutation
+    target 'pkg/flags.py' is outside judge.source_roots
+    ['/tmp/assay-plan-seed-.../unused/pkg']".
+    """
+    project = Project(root=tmp_path / "proj")
+    project.root.mkdir()
+    (project.root / "pkg").mkdir()
+    (project.root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+    repo = GitRepo(path=project.root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write(
+        "assay.toml",
+        """
+schema_version = 2
+
+[lanes.whole]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = ["pytest", "-q"]
+env = { MOCK_MODE = "true" }
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.whole.isolation]
+snapshot_selection = "repository"
+
+[lanes.whole.judge]
+language = "python"
+source_roots = ["pkg"]
+fail_under = 0.0
+allow_excluded = false
+require_branch = false
+mode = "whole_target"
+base = "base"
+targets = ["pkg/flags.py"]
+
+[lanes.whole.judge.coverage]
+format = "cobertura"
+artifact = "cov.xml"
+
+[lanes.whole.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+""",
+    )
+    repo.write("pkg/flags.py", _TEXT)
+    repo.commit_all("add flags")
+    repo.git("checkout", "-q", "-b", "base")
+    repo.git("checkout", "-q", "-b", "feature")
+
+    from assay.cli import main
+
+    out = io.StringIO()
+    exit_code = main(["plan", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
+    payload = json.loads(out.getvalue())
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    # BOTH of `_TEXT`'s bool constants: whole-target mode judges the whole
+    # declared file, not a diff's changed lines (the diff-mode fixture above
+    # sees only the one restored line).
+    assert payload["candidate_count"] == 2
+    assert payload["by_file"] == {"pkg/flags.py": 2}
 
 
 def _write_plan_fixture(tmp_path: Path) -> Path:

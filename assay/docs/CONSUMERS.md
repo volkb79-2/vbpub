@@ -516,7 +516,15 @@ assay plan worker_lane --file assay.toml
 ```
 
 The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
-worker concurrency, and runtime estimates. Use those facts to choose an optional per-candidate bound:
+worker concurrency, and runtime estimates. The candidate IDs and counts are the SAME ones a real
+`assay run` of that lane executes — plan resolves them against the same declared source roots, the
+same adapter, and the same `max_mutants`/operator selection.
+
+`estimated_serial_seconds`/`estimated_wall_seconds` are a **declaration-derived upper bound, not a
+measurement**: they are `candidate_count x budget_per_candidate` (falling back to 60 s per candidate
+when the lane declares no bound), divided by declared `jobs` for the wall figure. Assay never times a
+baseline to produce them. Treat them as "no longer than", not "about". Use those facts to choose an
+optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
