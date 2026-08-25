@@ -77,6 +77,31 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu worktree add|create|ensure|adopt` gain an OPTIONAL fourth
+  shared-infra flag, `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`
+  (SPEC S16.1a, CIU-52) — a CIU-managed NAME for a service belonging to the
+  shared-infra REFERENCE instance. At `add` time CIU renders the reference's
+  own global config **read-only and under the reference's own `ciu.env`**
+  (never writing `ciu.global.toml` into a checkout it does not own, never
+  leaking the calling process's ambient environment into the reference's
+  templates), derives that service's qualified container name with the same
+  `container_name()` derivation every deployment uses, **authenticates it
+  against live Docker state**, and records it as this instance's own
+  `[topology.services.<alias>]` block — so existing `topology.services`
+  consumers (including CIU's Vault addressing, S4.16) read it with no new
+  mechanism. The record is write-once and re-verified before any
+  `docker network connect` at `ciu up`. A query that cannot be ANSWERED
+  (daemon unreachable, missing binary, non-zero `docker ps`) is its own loud
+  failure, never an empty live-set. **Purely additive:** the new
+  `ciu.instance.shared_infra.ref_services` key widens that closed shape by
+  exactly one optional key — an unknown key is still named and refused — and
+  omitting the flag reproduces the previous behavior byte-for-byte, including
+  zero additional Docker calls at both verbs. Note for readers of the CIU-52
+  filing: its illustrative TOML paired `shared_infra.services` with
+  `ref_projects`; they are NOT paired (`services` are the JOINER's own
+  containers, `ref_projects` the REFERENCE's projects), which is why this
+  ships as an independent alias-keyed table rather than the reserved
+  `services[*].aliases` sub-key, now withdrawn from SPEC S12.
 - feat(ciu): `ciu check` now walks the WHOLE config pipeline in memory and
   side-effect-free, not just the provisioning graph — stack shape (S3.5/S3.7),
   secret directive grammar and placement (S4), the requires/provides graph
@@ -146,8 +171,54 @@ gate runs; the commit subjects remain the traceable source of detail.
   longer masks a fast, genuinely broken service's failure behind it (nor
   does a short shared timeout spuriously fail the slow one) (CIU-QOL-8,
   SPEC S7.7)
+- feat(ciu): `ciu init`'s scaffolded stack compose template now sets
+  `hostname:` to the same qualified expression `container_name:` already
+  uses, plus DESIGN-GUIDE/CONFIG.md/CONSUMERS.md guidance naming the §3.6
+  cockpit-alias-ambiguity hazard and prescribing the qualified pattern for
+  both `hostname:` and `topology.services.<name>.internal_host` (CIU-48,
+  CIU-49). **Scope, stated plainly:** ciu ships no default for either value
+  anywhere in its own templates (`internal_host`/`hostname:` are entirely
+  consumer-declared) — this closes the ciu-actionable half only. Propagating
+  the corrected pattern into an existing consumer's own already-authored
+  templates (e.g. dstdns's 31 compose templates and its hand-maintained
+  `internal_host` override) is that consumer's own follow-up, not something
+  a ciu release can do on its own. Backlog disposition: PARTIAL, not FIXED.
 
 ### Fixed
+- fix(ciu)!: **`dev.resolve_repo_root` checked ambient `$REPO_ROOT` before
+  `--define-root`, the reverse of SPEC S1.1's own documented order — the CODE
+  was violating its own documented contract** (CIU-53). Live-reproduced: an
+  operator standing inside a real ciu-managed repo, no `--define-root`, got a
+  DIFFERENT sibling checkout's worktrees back, because that checkout's
+  ambient `REPO_ROOT` (from its sourced `ciu.env`) silently outranked
+  deriving the root from where they were actually standing — the CIU-41
+  masked-default hazard, one level up, for the resolver that decides WHICH
+  repo `ciu dev`/`ciu worktree *` operate on. Fixed and hardened past the
+  previously-documented order too: `--define-root` now always wins outright
+  (no consistency check); otherwise CIU derives by walking up from cwd, and
+  when that derivation SUCCEEDS, a disagreeing ambient `REPO_ROOT` now
+  REFUSES (a `[S1.1]`-tagged error naming both paths and three remedies)
+  instead of silently preferring either value — this resolver feeds
+  destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked
+  default here is worse than a hard stop. Only when the walk-up finds NOTHING
+  does CIU fall back to ambient `REPO_ROOT`, unchanged from today. All ~8
+  call sites in `cli.py` now surface the refusal as a clean `[ERROR] ...` +
+  non-zero exit. SPEC.md/CONFIG.md/CIU.md corrected to the new precedence;
+  DESIGN-GUIDE.md gains a hazard section; `ciu --help`/`ciu dev --help`/
+  `ciu worktree --help` name the resolution order and the sourced-sibling-
+  ciu.env hazard directly. Follow-up filed, not fixed here (CIU-54): ~8
+  OTHER `cli.py` call sites resolve `repo_root` via a bare
+  `os.environ.get("REPO_ROOT", Path.cwd())` with no `--define-root`
+  consideration and no walk-up at all — a different resolution strategy,
+  touching more verbs, out of this fix's scope.
+  **Upgrade note:** if your shell sources a sibling checkout's `ciu.env` (a
+  common convenience pattern — including this project's own default
+  devcontainer setup), `ciu dev`/`ciu worktree *` commands that PREVIOUSLY
+  silently operated on that sibling checkout while you stood in a different,
+  real ciu-managed repo now REFUSE instead. Nothing that genuinely worked
+  breaks — every refusal was previously silently targeting the wrong repo —
+  but if you relied on that behavior (however inadvertently), pass
+  `--define-root` explicitly or unset the ambient `$REPO_ROOT` first.
 - fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
   defects in ALREADY-RELEASED behaviour, each reproduced end-to-end by two
   independent retrospective adversarial reviews. `ciu worktree branches`

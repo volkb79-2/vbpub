@@ -28,6 +28,14 @@ Run-scoped overrides (never written back to the TOML layer):
   --log-prefix-time-short  prefix severity messages with HH:MM:SS. Interactive
                            terminals colour INFO/WARN/ERROR; pipes and logs stay plain.
 
+REPO_ROOT resolution (`dev`/`worktree` verbs, S1.1): --define-root always
+wins; else CIU derives by walking up from cwd for ciu.global.defaults.toml.j2.
+A stale ambient $REPO_ROOT (e.g. a login shell that sourced ANOTHER
+checkout's ciu.env) that disagrees with a successful derivation REFUSES
+naming both paths -- it is never silently preferred over where you are
+actually standing. Fix: unset REPO_ROOT, pass --define-root, or cd into the
+intended repo.
+
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
             · 3 environment/bootstrap error
@@ -147,6 +155,11 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
+
+  Every worktree verb resolves its repo root per S1.1: --define-root wins
+  outright; else CIU derives by walking up from cwd. A disagreeing ambient
+  $REPO_ROOT (e.g. a sourced sibling checkout's ciu.env) REFUSES rather than
+  silently picking either value -- see `ciu --help` and docs/DESIGN-GUIDE.md.
 """,
     "capabilities": """\
 ciu capabilities [--json]
@@ -329,7 +342,10 @@ ciu dev <stack> [--profile NAME] [--no-prebuild]
   <stack>            stack directory (relative to repo root) carrying [<root>.dev]
   --profile NAME     host profile to render for (default: active profile)
   --no-prebuild      skip the prebuild steps (re-run the dev server only)
-  --define-root PATH override repo root (no parent walking)
+  --define-root PATH override repo root; wins outright over ambient REPO_ROOT.
+                     Without it CIU derives by walking up from cwd (S1.1) and
+                     REFUSES a disagreeing ambient $REPO_ROOT rather than
+                     silently picking one -- see `ciu --help`.
 """,
     "secrets": """\
 ciu secrets list [-d PATH] [--define-root PATH]
@@ -401,6 +417,27 @@ def _print_verb_help(verb: str) -> None:
     else:
         print(f"CIU {get_cli_version()}\n")
         print(block, end="")
+
+
+def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> Path:
+    """Resolve the repo root for a CLI verb, or exit cleanly on refusal (S1.1).
+
+    ``dev.resolve_repo_root`` raises a ``[S1.1]``-tagged ``ValueError`` when an
+    ambient ``$REPO_ROOT`` genuinely disagrees with the root derived by
+    walking up from *start_dir* — this is the ONE place every `dev`/`worktree`
+    call site funnels through, so that refusal always surfaces as this
+    codebase's standard ``[ERROR] ...`` message + a non-zero exit, matching
+    every other CLI-level configuration error, never a raw traceback (O3).
+    Imported late (mirrors every existing call site) so tests that monkeypatch
+    ``dev.resolve_repo_root`` keep working unchanged.
+    """
+    from .dev import resolve_repo_root
+
+    try:
+        return resolve_repo_root(define_root, start_dir)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def _load_remote_config(repo_root: Path) -> dict:
@@ -688,7 +725,6 @@ def _ksm(rest: list[str]) -> int:
     import argparse as _ap
 
     from . import ksm as ksm_mod
-    from .dev import resolve_repo_root
     # CIU-10's reconciliation lives here (a pre-set PHYSICAL_REPO_ROOT wins only
     # when it agrees with mountinfo) — reuse it rather than re-deriving a second,
     # weaker answer to the same question.
@@ -700,7 +736,7 @@ def _ksm(rest: list[str]) -> int:
     p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
     opts = p.parse_args(rest)
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         physical_root = _detect_physical_repo_root(repo_root)
         path = ksm_mod.build(repo_root, physical_root, force=opts.force)
@@ -755,9 +791,8 @@ def _provenance(rest: list[str]) -> int:
         verify_running_provenance,
         warn,
     )
-    from .dev import resolve_repo_root
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         config = load_global_config(repo_root)
     except Exception as exc:
@@ -919,7 +954,6 @@ def _status(rest: list[str]) -> int:
     import argparse as _ap
 
     from .deploy import action_status, build_selection, load_global_config, resolve_profiles
-    from .dev import resolve_repo_root
 
     p = _ap.ArgumentParser(prog="ciu status", add_help=False)
     p.add_argument("--profile", action="append", default=None, metavar="NAME")
@@ -940,7 +974,7 @@ def _status(rest: list[str]) -> int:
     else:
         cli_profiles = None
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         global_cfg = load_global_config(repo_root)
         profile = resolve_profiles(global_cfg, cli_profiles)
@@ -1005,8 +1039,6 @@ def _bake(rest: list[str]) -> int:
             load_global_config,
             resolve_profiles,
         )
-        from .dev import resolve_repo_root
-
         expanded: list[str] = []
         for entry in opts.profile:
             for part in entry.split(","):
@@ -1015,7 +1047,7 @@ def _bake(rest: list[str]) -> int:
                     expanded.append(part)
         cli_profiles: list[str] | None = expanded if expanded else None
 
-        repo_root = resolve_repo_root(None, Path.cwd())
+        repo_root = _resolve_repo_root_cli(None, Path.cwd())
         try:
             global_cfg = load_global_config(repo_root)
             profile = resolve_profiles(global_cfg, cli_profiles)
@@ -1090,11 +1122,10 @@ def _worktree(rest: list[str]) -> int:
     import argparse as _ap
 
     from . import worktree as wt_mod
-    from .dev import resolve_repo_root
 
     if rest and rest[0] == "exec":
         try:
-            return _worktree_exec(rest, resolve_repo_root)
+            return _worktree_exec(rest, _resolve_repo_root_cli)
         except wt_mod.WorktreeError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -1114,6 +1145,8 @@ def _worktree(rest: list[str]) -> int:
                        default=None, metavar="S1,S2")
     p_add.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                        default=None, metavar="R1,R2")
+    p_add.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                       default=None, metavar="A1,A2=S2")
     p_add.add_argument("--json", action="store_true", default=False)
 
     def add_create_options(parser) -> None:
@@ -1131,6 +1164,8 @@ def _worktree(rest: list[str]) -> int:
                             default=None, metavar="S1,S2")
         parser.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                             default=None, metavar="R1,R2")
+        parser.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                            default=None, metavar="A1,A2=S2")
         parser.add_argument("--json", action="store_true", default=False)
 
     p_create = sub.add_parser("create", add_help=False)
@@ -1150,6 +1185,8 @@ def _worktree(rest: list[str]) -> int:
                          default=None, metavar="S1,S2")
     p_adopt.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                          default=None, metavar="R1,R2")
+    p_adopt.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                         default=None, metavar="A1,A2=S2")
     p_adopt.add_argument("--json", action="store_true", default=False)
 
     p_rm = sub.add_parser("rm", add_help=False)
@@ -1190,7 +1227,7 @@ def _worktree(rest: list[str]) -> int:
 
     # The PRIMARY checkout. `git worktree` operations are repo-wide, so they run
     # from here even when the target is another checkout.
-    repo_root = resolve_repo_root(getattr(opts, "define_root", None), Path.cwd())
+    repo_root = _resolve_repo_root_cli(getattr(opts, "define_root", None), Path.cwd())
 
     try:
         def emit_record(operation: str, record) -> None:
@@ -1211,6 +1248,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             if getattr(opts, "json", False):
                 record = wt_mod.find_instance_record(repo_root, opts.name)
@@ -1233,6 +1271,7 @@ def _worktree(rest: list[str]) -> int:
                 path=opts.path, shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record(opts.action, record)
             return 0
@@ -1243,6 +1282,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record("adopt", record)
             return 0
@@ -1685,7 +1725,7 @@ def main() -> None:
 
     elif verb == "dev":
         import argparse as _ap
-        from .dev import run_dev, resolve_repo_root
+        from .dev import run_dev
         p = _ap.ArgumentParser(prog="ciu dev", add_help=False)
         p.add_argument("stack", nargs="?", default=None)
         p.add_argument("--profile", default=None, metavar="NAME")
@@ -1696,7 +1736,7 @@ def main() -> None:
         if not opts.stack:
             print("ciu dev: missing <stack>. Run 'ciu dev --help'.", file=sys.stderr)
             raise SystemExit(2)
-        repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+        repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
         raise SystemExit(run_dev(
             opts.stack,
             repo_root=repo_root,

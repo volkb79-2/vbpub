@@ -288,18 +288,61 @@ def find_worktree(repo_root: Path, name: str) -> WorktreeInfo | None:
 
 
 @dataclass(frozen=True)
+class SharedInfraRefService:
+    """S16.1/CIU-52 — one CIU-resolved address for a service that belongs to
+    the REFERENCE instance, recorded under this (joining) instance's own local
+    alias.
+
+    Deliberately a THIRD axis, independent of both
+    :attr:`SharedInfraIntent.services` (which names THIS instance's own
+    diverging-tier containers to connect) and
+    :attr:`SharedInfraIntent.ref_projects` (which names the REFERENCE's compose
+    projects, used only for AND-combined liveness). Those two are NOT paired
+    with each other and neither can supply a reference-side service name, so
+    an alias is never inferred from either: pointing this instance's OWN copy
+    of a service at the reference's copy of it would be actively wrong.
+
+    *container* is always CIU-derived (``deploy.container_name`` applied to the
+    REFERENCE's own rendered global config) and authenticated against live
+    Docker state before it is written — never hand-typed.
+    """
+
+    alias: str
+    service: str
+    container: str
+    port: int | None = None
+
+
+@dataclass(frozen=True)
 class SharedInfraIntent:
     """S16.1/CIU-22 — a worktree's recorded intent to join a reference
     instance's shared-infra network, resolved and validated once at
     ``worktree add --shared-infra`` time and persisted verbatim into this
     worktree's own global worktree overlay (see
     :func:`parse_shared_infra_config`,
-    :func:`connect_shared_infra_after_up`)."""
+    :func:`connect_shared_infra_after_up`).
+
+    *ref_services* (S16.1/CIU-52) is OPTIONAL and defaults to ``()``: an
+    instance that declares none behaves exactly as it did before that field
+    existed — byte-identical overlay text, and not one extra Docker call at
+    either `add` or join time.
+    """
 
     ref_path: Path
     network: str
     services: tuple[str, ...]
     ref_projects: tuple[str, ...]
+    ref_services: tuple[SharedInfraRefService, ...] = ()
+
+
+# S16.1/CIU-52 grammars. Every recorded value passes through the worktree
+# overlay, which is Jinja-rendered and `$VAR`-expanded (S3.2) and secret-
+# scanned (S3.1a) on every later read — so `$` (and `{`) must be structurally
+# impossible in an alias, a reference service key, or a derived container
+# name, rather than merely unlikely.
+_REF_SERVICE_ALIAS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_REF_SERVICE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+_REF_SERVICE_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _split_unique_list(raw: str, *, label: str) -> tuple[str, ...]:
@@ -332,6 +375,103 @@ def _config_string_list(value: Any, *, label: str) -> tuple[str, ...]:
     return items
 
 
+def _parse_ref_services_arg(raw: str, *, label: str) -> tuple[tuple[str, str], ...]:
+    """S16.1/CIU-52 CLI grammar — parse ``alias[,alias=ref_service,...]`` into
+    ``(alias, reference_service)`` pairs, sorted by alias.
+
+    A bare item means "the alias equals the reference's own service key" (the
+    common case); ``alias=ref_service`` is the rename escape hatch. Splitting
+    reuses :func:`_split_unique_list`, so a blank item, an empty value and a
+    verbatim duplicate are refused with the exact wording the sibling
+    shared-infra flags already use. Alias uniqueness is then enforced on the
+    ALIAS specifically (``vault,vault=vault`` is two distinct items but one
+    alias); two different aliases MAY legitimately name the same reference
+    service.
+    """
+    pairs: dict[str, str] = {}
+    for item in _split_unique_list(raw, label=label):
+        alias, sep, service = item.partition("=")
+        if not sep:
+            service = alias
+        if not _REF_SERVICE_ALIAS_RE.fullmatch(alias):
+            raise WorktreeError(
+                f"[S16.1] {label} alias {alias!r} must match "
+                f"{_REF_SERVICE_ALIAS_RE.pattern!r}; it becomes a "
+                "[topology.services.<alias>] table key in this instance's own "
+                "configuration."
+            )
+        if not _REF_SERVICE_NAME_RE.fullmatch(service):
+            raise WorktreeError(
+                f"[S16.1] {label} reference service {service!r} (alias "
+                f"{alias!r}) must match {_REF_SERVICE_NAME_RE.pattern!r}."
+            )
+        if alias in pairs:
+            raise WorktreeError(
+                f"[S16.1] {label} contains a duplicate alias: {alias!r}"
+            )
+        pairs[alias] = service
+    return tuple(sorted(pairs.items()))
+
+
+def _config_ref_services(
+    value: Any, *, label: str
+) -> tuple[SharedInfraRefService, ...]:
+    """S16.1/CIU-52 stored-TOML grammar — a table of tables keyed by alias,
+    each ``{service, container, port?}``.
+
+    The alias is the value's identity (it becomes ``topology.services.<alias>``
+    in this instance's own config) and must be unique, which a TOML table key
+    enforces structurally — hence a table rather than a flat list. Returns a
+    deterministic tuple sorted by alias, matching the order
+    :func:`_worktree_overlay_text` writes, so the overlay round-trips exactly.
+    """
+    if not isinstance(value, dict) or not value:
+        raise WorktreeError(f"[S16.1] {label} must be a non-empty table of tables")
+    entries: list[SharedInfraRefService] = []
+    for alias in sorted(value):
+        if not _REF_SERVICE_ALIAS_RE.fullmatch(alias):
+            raise WorktreeError(
+                f"[S16.1] {label} alias {alias!r} must match "
+                f"{_REF_SERVICE_ALIAS_RE.pattern!r}"
+            )
+        raw = value[alias]
+        if not isinstance(raw, dict):
+            raise WorktreeError(f"[S16.1] {label}.{alias} must be a table")
+        required = {"service", "container"}
+        optional = {"port"}
+        missing, unknown = required - set(raw), set(raw) - (required | optional)
+        if missing or unknown:
+            raise WorktreeError(
+                f"[S16.1] malformed {label}.{alias}: "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        service = raw["service"]
+        if not isinstance(service, str) or not _REF_SERVICE_NAME_RE.fullmatch(service):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.service must be a string matching "
+                f"{_REF_SERVICE_NAME_RE.pattern!r}; got {service!r}"
+            )
+        container = raw["container"]
+        if not isinstance(container, str) or not _REF_SERVICE_CONTAINER_RE.fullmatch(
+            container
+        ):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.container must be a string matching "
+                f"{_REF_SERVICE_CONTAINER_RE.pattern!r}; got {container!r}"
+            )
+        port = raw.get("port")
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool)):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.port must be an integer; got {port!r}"
+            )
+        entries.append(
+            SharedInfraRefService(
+                alias=alias, service=service, container=container, port=port
+            )
+        )
+    return tuple(entries)
+
+
 def parse_shared_infra_config(global_config: Mapping[str, Any]) -> SharedInfraIntent | None:
     """Read the closed S16.1 intent from the rendered worktree config layer."""
     ciu = global_config.get("ciu", {})
@@ -345,23 +485,33 @@ def parse_shared_infra_config(global_config: Mapping[str, Any]) -> SharedInfraIn
         return None
     if not isinstance(raw, dict):
         raise WorktreeError("[S16.1] [ciu.instance.shared_infra] must be a table")
+    # The shape stays CLOSED; CIU-52 widens it by exactly one OPTIONAL key.
+    # Both halves of the original message survive verbatim, so an unknown key
+    # is still named and a missing required key is still named.
     required = {"ref_path", "network", "services", "ref_projects"}
-    if set(raw) != required:
+    optional = {"ref_services"}
+    missing, unknown = required - set(raw), set(raw) - (required | optional)
+    if missing or unknown:
         raise WorktreeError(
             "[S16.1] malformed [ciu.instance.shared_infra]: "
-            f"missing={sorted(required - set(raw))}, "
-            f"unknown={sorted(set(raw) - required)}"
+            f"missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
     if not isinstance(raw["ref_path"], str) or not raw["ref_path"]:
         raise WorktreeError("[S16.1] shared_infra.ref_path must be a non-empty string")
     if not isinstance(raw["network"], str) or not raw["network"]:
         raise WorktreeError("[S16.1] shared_infra.network must be a non-empty string")
+    ref_services: tuple[SharedInfraRefService, ...] = ()
+    if "ref_services" in raw:
+        ref_services = _config_ref_services(
+            raw["ref_services"], label="shared_infra.ref_services"
+        )
     return SharedInfraIntent(
         ref_path=Path(raw["ref_path"]), network=raw["network"],
         services=_config_string_list(raw["services"], label="shared_infra.services"),
         ref_projects=_config_string_list(
             raw["ref_projects"], label="shared_infra.ref_projects"
         ),
+        ref_services=ref_services,
     )
 
 
@@ -388,6 +538,33 @@ def _worktree_overlay_text(
             f"services = {json.dumps(list(shared_infra.services))}",
             f"ref_projects = {json.dumps(list(shared_infra.ref_projects))}",
         ])
+        # S16.1/CIU-52. Sub-tables of the parent intent FIRST, then the
+        # top-level [topology.*] blocks they feed — the order a human reads
+        # top-to-bottom. Emitted only when ref_services is non-empty, so an
+        # instance that declares none gets byte-identical text to before.
+        for entry in shared_infra.ref_services:
+            lines.extend([
+                "",
+                f"[ciu.instance.shared_infra.ref_services.{entry.alias}]",
+                f"service = {json.dumps(entry.service)}",
+                f"container = {json.dumps(entry.container)}",
+            ])
+            if entry.port is not None:
+                lines.append(f"port = {entry.port}")
+        if shared_infra.ref_services:
+            lines.extend([
+                "",
+                "# S16.1/CIU-52 — CIU-resolved addressing for the reference instance's shared",
+                "# services. Do not hand-edit; re-run `ciu worktree add --shared-infra ...`.",
+            ])
+            for entry in shared_infra.ref_services:
+                lines.extend([
+                    "",
+                    f"[topology.services.{entry.alias}]",
+                    f"internal_host = {json.dumps(entry.container)}",
+                ])
+                if entry.port is not None:
+                    lines.append(f"internal_port = {entry.port}")
     return "\n".join(lines) + "\n"
 
 
@@ -466,12 +643,184 @@ def _check_reference_network_and_projects(network: str, ref_projects: tuple[str,
             )
 
 
+def _live_ref_service_names(network: str, service: str) -> list[str]:
+    """S16.1/CIU-52 — the NAMES of containers currently RUNNING on *network*
+    that carry ``com.docker.compose.service=<service>``.
+
+    Shared verbatim by add-time authentication and join-time re-verification:
+    same query, same failure shape, so the two can never drift into disagreeing
+    about what "live" means.
+
+    A query that cannot be ANSWERED is a loud failure, never an empty result.
+    An unreachable daemon, a missing binary and a non-zero ``docker ps`` all
+    raise — collapsing any of them into ``[]`` would turn "CIU could not
+    determine this" into "CIU determined the container is absent", which for
+    the add-time caller is a silent refusal-for-the-wrong-reason and for the
+    join-time caller would be indistinguishable from real staleness.
+    """
+    try:
+        res = procutil.docker(
+            [
+                "ps", "--no-trunc",
+                "--filter", f"network={network}",
+                "--filter", f"label=com.docker.compose.service={service}",
+                "--format", "{{.Names}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.1] could not query reference service {service!r} on "
+            f"network {network!r}: {exc}"
+        ) from exc
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.1] could not query reference service {service!r} on "
+            f"network {network!r}: "
+            f"{(res.stderr or res.stdout or '').strip()}"
+        )
+    names = {
+        name.strip()
+        for line in (res.stdout or "").splitlines()
+        for name in line.split(",")
+        if name.strip()
+    }
+    return sorted(names)
+
+
+def _authenticate_ref_services(
+    network: str, entries: tuple[SharedInfraRefService, ...], *, recorded: bool
+) -> None:
+    """S16.1/CIU-52 — prove every entry's container name is a container that
+    is ACTUALLY running, right now, on the reference's network under that
+    service label.
+
+    This is what makes the derivation trustworthy rather than merely plausible:
+    a stale recording, a reference that was re-created under a new identity, or
+    a wrong derivation all fail here instead of being written into (or acted
+    on from) this instance's own addressing. The container name itself carries
+    the reference's ``project_name``/``environment_tag``, which IS the
+    authenticating fact — so the query is deliberately NOT additionally scoped
+    by ``com.docker.compose.project``: a reference may legitimately run a
+    shared service under a project the operator never needed to declare via
+    ``--shared-infra-ref-projects`` for liveness, and scoping to those would
+    refuse a correct configuration.
+
+    *recorded* selects add-time ("resolved", nothing written yet) from
+    join-time ("recorded", already persisted) phrasing and remedy.
+    """
+    for entry in entries:
+        live = _live_ref_service_names(network, entry.service)
+        if entry.container in live:
+            continue
+        message = (
+            f"[S16.1] {'recorded' if recorded else 'resolved'} reference "
+            f"container {entry.container!r} for service {entry.service!r} "
+            f"(alias {entry.alias!r}) is not live on network {network!r} "
+            f"(found: {live}). The reference instance may be stopped, or its "
+            "identity may have changed."
+        )
+        if recorded:
+            message += (
+                " Restore it, re-run `ciu worktree add --shared-infra` to "
+                "update the recorded reference, or `ciu down` this instance."
+            )
+        raise WorktreeError(message)
+
+
+def _resolve_ref_services(
+    requested: tuple[tuple[str, str], ...],
+    *,
+    ref_ciu_root: Path,
+    ref_env: Mapping[str, str],
+    network: str,
+) -> tuple[SharedInfraRefService, ...]:
+    """S16.1/CIU-52 — derive each requested reference service's QUALIFIED
+    container name from the REFERENCE's OWN rendered global config, then
+    authenticate it against live Docker state before it is trusted.
+
+    The derivation source is the reference's own configuration and nothing
+    else — never string surgery on ``ref_projects`` (which names compose
+    projects, not services, and is not paired with anything) and never this
+    instance's own config (which would produce this instance's copy of the
+    service, the exact wrong answer).
+
+    ``write_rendered=False`` and ``environ=ref_env`` are both mandatory and
+    both load-bearing, mirroring :func:`resolve_worktree_cap` and
+    :func:`_resolve_budget_candidates`, which read another checkout's policy
+    the same way: the first keeps CIU from writing ``ciu.global.toml`` into a
+    checkout it does not own, the second keeps THIS process's ambient
+    environment (its own ``INSTANCE_ID``, ``REPO_ROOT``, ...) from leaking into
+    the reference's templates and silently producing a name that belongs to
+    neither instance.
+    """
+    if not requested:
+        return ()
+
+    # Lazy import: deploy.py imports engine, which imports worktree, so a
+    # module-level import here would cycle. Same reason as the existing lazy
+    # `from . import engine` in _candidate_project.
+    from . import deploy as deploy_mod
+
+    try:
+        ref_global = config_model.render_global_chain(
+            ref_ciu_root, ref_ciu_root, write_rendered=False, environ=ref_env,
+        )
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.1] could not render the shared-infra reference's own global "
+            f"configuration at {ref_ciu_root}: {exc}"
+        ) from exc
+
+    resolved: list[SharedInfraRefService] = []
+    for alias, service in requested:
+        try:
+            container = deploy_mod.container_name(ref_global, service)
+        except ValueError as exc:
+            raise WorktreeError(
+                f"[S16.1] could not resolve reference service {service!r} "
+                f"(alias {alias!r}) from {ref_ciu_root}: {exc}"
+            ) from exc
+        if not _REF_SERVICE_CONTAINER_RE.fullmatch(container):
+            raise WorktreeError(
+                f"[S16.1] reference service {service!r} (alias {alias!r}) "
+                f"derives container name {container!r}, which is not a legal "
+                f"container name ({_REF_SERVICE_CONTAINER_RE.pattern!r}); the "
+                "reference's deploy.project_name/environment_tag look wrong."
+            )
+        resolved.append(
+            SharedInfraRefService(
+                alias=alias, service=service, container=container,
+                port=_ref_service_port(ref_global, service),
+            )
+        )
+
+    _authenticate_ref_services(network, tuple(resolved), recorded=False)
+    return tuple(resolved)
+
+
+def _ref_service_port(ref_global: Mapping[str, Any], service: str) -> int | None:
+    """The reference's own declared ``topology.services.<service>.internal_port``,
+    or ``None`` when it declares none.
+
+    Never invented: an absent (or non-integer) value stays ``None`` so the
+    overlay writes no ``internal_port`` key at all, leaving any committed
+    default in the joining instance's own chain to survive the merge.
+    """
+    topology = ref_global.get("topology")
+    services = topology.get("services") if isinstance(topology, dict) else None
+    entry = services.get(service) if isinstance(services, dict) else None
+    port = entry.get("internal_port") if isinstance(entry, dict) else None
+    return port if isinstance(port, int) and not isinstance(port, bool) else None
+
+
 def _preflight_shared_infra_for_add(
     repo_root: Path,
     *,
     shared_infra: str,
     shared_infra_services: str,
     shared_infra_ref_projects: str,
+    shared_infra_ref_services: str | None = None,
 ) -> SharedInfraIntent:
     """S16.1 — resolve and validate `worktree add --shared-infra` input
     BEFORE any side effect (no git worktree, no checkout). Read-only Docker
@@ -512,11 +861,26 @@ def _preflight_shared_infra_for_add(
     ref_projects = _split_unique_list(
         shared_infra_ref_projects, label="--shared-infra-ref-projects"
     )
+    # Grammar first, alongside its two siblings: a malformed flag is refused
+    # before CIU asks Docker anything at all.
+    requested_ref_services: tuple[tuple[str, str], ...] = ()
+    if shared_infra_ref_services is not None:
+        requested_ref_services = _parse_ref_services_arg(
+            shared_infra_ref_services, label="--shared-infra-ref-services"
+        )
 
     _check_reference_network_and_projects(network, ref_projects)
 
+    ref_services = _resolve_ref_services(
+        requested_ref_services,
+        ref_ciu_root=ref.path / _ciu_root_offset(repo_root),
+        ref_env=ref_env,
+        network=network,
+    )
+
     return SharedInfraIntent(
-        ref_path=ref.path, network=network, services=services, ref_projects=ref_projects,
+        ref_path=ref.path, network=network, services=services,
+        ref_projects=ref_projects, ref_services=ref_services,
     )
 
 
@@ -1763,6 +2127,7 @@ def create(
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
+    shared_infra_ref_services: str | None = None,
 ) -> WorktreeInstanceRecord:
     """Create a new managed worktree after family-wide collision admission.
 
@@ -1796,6 +2161,14 @@ def create(
     new worktree's own process (see :func:`connect_shared_infra_after_up`).
     This instance keeps its OWN ``DOCKER_NETWORK_INTERNAL`` throughout; only
     the declared diverging services later gain a SECOND membership.
+
+    *shared_infra_ref_services* (S16.1/CIU-52) is OPTIONAL and, unlike the
+    three above, describes the REFERENCE's services rather than this
+    instance's own: ``alias[,alias=ref_service]``. For each, CIU derives the
+    reference's qualified container name from the reference's OWN rendered
+    config, authenticates it against live Docker state, and records it as this
+    instance's ``topology.services.<alias>.internal_host``. Supplying it still
+    requires the rest of the group; omitting it changes nothing.
     """
     repo_root = Path(repo_root).resolve()
     _validate_name(logical_name, label="logical name")
@@ -1809,7 +2182,11 @@ def create(
         raise WorktreeError("[S16] --branch cannot be empty")
 
     shared_infra_intent: SharedInfraIntent | None = None
-    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+    if (
+        shared_infra is not None or shared_infra_services is not None
+        or shared_infra_ref_projects is not None
+        or shared_infra_ref_services is not None
+    ):
         if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
             raise WorktreeError(
                 "[S16.1] --shared-infra requires --shared-infra-services, "
@@ -1822,6 +2199,7 @@ def create(
             shared_infra=shared_infra,
             shared_infra_services=shared_infra_services,
             shared_infra_ref_projects=shared_infra_ref_projects,
+            shared_infra_ref_services=shared_infra_ref_services,
         )
 
     offset = _ciu_root_offset(repo_root)
@@ -1980,12 +2358,17 @@ def adopt(
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
+    shared_infra_ref_services: str | None = None,
 ) -> WorktreeInstanceRecord:
     """Explicitly take ownership of one registered, unmanaged linked checkout."""
     repo_root = Path(repo_root).resolve()
     _validate_name(logical_name, label="logical name")
     shared_infra_intent: SharedInfraIntent | None = None
-    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+    if (
+        shared_infra is not None or shared_infra_services is not None
+        or shared_infra_ref_projects is not None
+        or shared_infra_ref_services is not None
+    ):
         if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
             raise WorktreeError(
                 "[S16.1] adopt shared-infra options and --profile are all-or-nothing"
@@ -1994,6 +2377,7 @@ def adopt(
             repo_root, shared_infra=shared_infra,
             shared_infra_services=shared_infra_services,
             shared_infra_ref_projects=shared_infra_ref_projects,
+            shared_infra_ref_services=shared_infra_ref_services,
         )
     with _allocation_lock(repo_root):
         if find_instance_record(repo_root, logical_name) is not None:
@@ -2175,11 +2559,17 @@ def connect_shared_infra_after_up(
        must belong to the OTHER instance); then re-run the same AND-combined
        reference-liveness check `add` used, so a reference stopped between
        verbs is caught here too.
-    2. For every declared service, require at least one RUNNING container in
+    2. (S16.1/CIU-52) For every recorded *intent.ref_services* entry, re-run
+       the SAME live-name query `add` authenticated the derivation with and
+       require the recorded container to still be present under that service
+       label on the reference network — an `add`-time record is write-once, so
+       a reference re-created under a new identity is caught here rather than
+       silently addressed. A no-op when none is declared.
+    3. For every declared service, require at least one RUNNING container in
        *compose_project* carrying that service's label — a previously joined
        child masquerading as live infra never satisfies this because it
        carries its OWN project's label, not the reference's.
-    3. Only once every precondition above holds does this snapshot the
+    4. Only once every precondition above holds does this snapshot the
        reference network's membership and connect each declared-service
        container ABSENT from that snapshot. On every NON-ZERO connect result,
        re-inspect the network for that SAME container ID (Docker STATE, never
@@ -2232,6 +2622,15 @@ def connect_shared_infra_after_up(
             )
 
     _check_reference_network_and_projects(intent.network, intent.ref_projects)
+
+    # S16.1/CIU-52: every recorded reference-service address is re-proven
+    # against live Docker state HERE, still inside the every-precondition-
+    # before-any-side-effect region — a container name resolved at `add` time
+    # is a write-once record, and the reference may have been re-created under
+    # a new identity since. A no-op (and zero Docker calls) when none is
+    # declared. Nothing has been connected yet, so a refusal here has nothing
+    # to roll back.
+    _authenticate_ref_services(intent.network, intent.ref_services, recorded=True)
 
     targets: list[tuple[str, str]] = []
     for service in intent.services:

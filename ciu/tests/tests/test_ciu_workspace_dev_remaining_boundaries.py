@@ -106,8 +106,19 @@ class TestDevProfileAndExecutionBoundaries:
         explicit = tmp_path / "explicit"
         explicit.mkdir()
 
+        # cwd is inside a REAL ciu-managed tree (marker_root derives cleanly),
+        # but a disagreeing ambient REPO_ROOT is set -- S1.1 REFUSES rather
+        # than silently preferring either value (ciu-P32; this line used to
+        # assert the ambient value won, which was the exact masked-default
+        # defect that fix closes).
         monkeypatch.setenv("REPO_ROOT", str(explicit))
-        assert resolve_repo_root(None, nested) == explicit.resolve()
+        with pytest.raises(ValueError) as exc_info:
+            resolve_repo_root(None, nested)
+        message = str(exc_info.value)
+        assert "[S1.1]" in message
+        assert str(explicit.resolve()) in message
+        assert str(marker_root.resolve()) in message
+
         monkeypatch.delenv("REPO_ROOT", raising=False)
         assert resolve_repo_root(None, nested) == marker_root.resolve()
         assert resolve_repo_root(explicit, nested) == explicit.resolve()

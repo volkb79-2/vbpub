@@ -76,6 +76,43 @@ failing safe, and because the warning text is the teaching moment for
 reusing another instance's infra (per-service selective join with validation),
 not whole-instance network inheritance.
 
+## Why `dev`/`worktree` refuse an ambient REPO_ROOT that disagrees with the derived root (CIU-53)
+
+The section above closes the masked-default hazard for the identity tuple
+`env generate` writes. `REPO_ROOT` itself carries the SAME hazard one level
+up, for a DIFFERENT check: `dev.resolve_repo_root` (consumed by `ciu dev` and
+every `ciu worktree *` verb) decides which repo a command operates on in the
+first place, before any identity is derived or read. The documented
+convenience pattern — a login shell sourcing a checkout's `ciu.env` — means an
+operator's or agent's shell can carry ANOTHER checkout's `REPO_ROOT` while
+they stand inside a completely different, real CIU repo. The pre-fix
+resolver checked that ambient value before even `--define-root`, so it
+silently outranked both an explicit flag AND a successful derivation from
+where the invocation actually happened — this is exactly how an operator
+standing in one repo, with no `--define-root`, had a `ciu worktree list`
+answered with an unrelated sibling checkout's worktrees.
+
+The fix reorders and extends the S2.7 refined-precedence pattern
+(`_compute_network_name` above): `--define-root` always wins outright (no
+consistency check — an explicit flag is not second-guessed); otherwise CIU
+derives by walking up from cwd for `ciu.global.defaults.toml.j2`. Where
+`env generate`'s identity tuple WARNS on a mismatch and proceeds with the
+derived value (the value is about to be freshly written to `ciu.env` anyway),
+`resolve_repo_root` REFUSES instead: it feeds destructive verbs directly
+(`worktree rm`, `branches -y`, `clean`) in the SAME invocation, with no
+freshly-generated file downstream to correct a wrong guess. Silently picking
+either value — the ambient one (today's bug) or the derived one (a new,
+different surprise for an operator who set `REPO_ROOT` on purpose for a
+legitimate reason) — trades one masked default for another. A hard stop
+naming both paths and three remedies (unset `REPO_ROOT`, pass
+`--define-root` explicitly, or `cd` into the intended repo) is the only
+response that never silently operates on the wrong repo. Only when the
+walk-up finds NOTHING at all — cwd is not inside any CIU repo, so there is no
+derived answer to disagree with — does CIU fall back to ambient `REPO_ROOT`,
+unchanged from today: this is the one case where trusting an already-sourced
+`ciu.env` from an unrelated location is a reasonable convenience rather than
+a masked default, since there is no different, correct answer being hidden.
+
 ## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
 
 A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is
@@ -133,6 +170,47 @@ their old-named objects until migrated once by hand (CONSUMERS.md §11); the
 S8.7 migration guard still catches the collision on the next tagged `up`.
 The S16.1 shared-infra join refusal fell out as dead code — it existed
 because the fallback's name was unknowable, and now nothing is.
+
+## Why bare `hostname:` / `internal_host` defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)
+
+Docker independently registers **two** network-resolvable DNS aliases for a
+container: the compose service KEY (always, automatically — CIU-51, a
+separate, v8-scale item this section does NOT eliminate) and whatever value a
+`hostname:` line sets. Both are looked up the same way by anything on the
+network. When two CIU-deployed instances of the *same stack shape* coexist on
+a shared/joined network — the exact `ciu worktree` + `--shared-infra`
+scenario S16.1 exists to support — a **bare** value on either axis (a
+`hostname:` literally set to the plain service name, or an
+`internal_host` config default rendering the plain service name) resolves to
+*whichever* instance's container Docker's resolver happens to answer with:
+non-deterministic from the caller's perspective, and silent — no error, no
+warning, just occasionally the wrong instance's data. This is the §3.6
+cockpit-alias-ambiguity hazard (matching the dstdns filing's own term), named
+here so a reader can find the same term in `KNOWN_ISSUES_TODO_BACKLOG.md`'s
+CIU-48/CIU-49 history.
+
+```
+# before — bare, ambiguous once a second instance joins the network
+hostname: vault
+
+# after — qualified with the SAME identity facts container_name() already
+# uses, unique per (project, environment_tag) pair
+hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault
+```
+
+Both `hostname:` (a compose template's own declared value, CIU-48) and
+`topology.services.<name>.internal_host` (an application-config default,
+CIU-49) are values CIU's render layer already has the qualifying identity
+facts (`deploy.project_name`/`deploy.environment_tag`) to derive uniformly —
+exactly the facts `container_name()` (`src/ciu/deploy.py:138-151`) already
+uses, so qualifying them is not a new derivation, only reusing the existing
+one instead of leaving the field bare. **What this does NOT cover:** Compose's
+automatic bare service-key alias is a mechanism Compose itself creates with
+no documented per-network suppression (CIU-51) — nothing in this package
+removes it. Qualifying `hostname:`/`internal_host` closes the two
+consumer-controllable value defaults; the service-key alias remains available
+regardless (so intra-stack bare-name reachability is not lost), and closing
+it fully is out of scope here.
 
 ## Why provenance declares vendor images by reference, not digest (CIU-39)
 

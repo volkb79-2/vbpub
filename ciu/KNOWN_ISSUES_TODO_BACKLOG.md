@@ -11,20 +11,64 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-25 — **CIU-48 through CIU-52 FILED, OPEN**, all five
-from one investigation (dstdns's §3.6 cockpit-alias-ambiguity hazard,
-`dstdns/nyxloom-trove/GUIDE.md` §3.6): CIU-48 (Compose `hostname:` field
-independently registers a bare, ambiguous DNS alias — empirically confirmed
-live, not assumed) and CIU-49 (app-config `internal_host`-style defaults are
-also bare) are both pure template-default-VALUE changes, zero schema impact,
-proposed as HIGH-priority backports to current CIU rather than deferred to
-v8. CIU-52 (implement the reserved S12 `shared_infra.services[*].aliases`
-field) is likewise an additive, backport-safe HIGH-priority fix attaching to
-the already-shipped S16.1 join mechanism. CIU-50 (rename `environment_tag` →
-`instance_id`, naming-clarity only) and CIU-51 (eliminate Compose's
-automatic bare service-key alias entirely — genuinely v8-scale, touches
-every stack's compose template structure) are lower-urgency / v8-timed;
-CIU-51 in particular is explicitly NOT proposed as a backport and says why.
+Last updated: 2026-08-25 — **CIU-53 FIXED, CIU-54 FILED** (ciu-P32):
+`dev.resolve_repo_root` checked ambient `REPO_ROOT` before `--define-root` —
+the reverse of SPEC S1.1's own documented order, i.e. the CODE was violating
+its own documented contract. Live-reproduced: an operator standing inside a
+real ciu-managed repo, no `--define-root`, got a DIFFERENT sibling checkout's
+worktrees back, because that checkout's ambient `REPO_ROOT` (from its
+sourced `ciu.env`) silently outranked deriving the root from where they were
+actually standing — the CIU-41 masked-default hazard one level up, for the
+resolver that decides WHICH repo `ciu dev`/`ciu worktree *` operate on.
+**CIU-53 FIXED:** `--define-root` now always wins outright; otherwise CIU
+derives by walking up from cwd, and a successful derivation that disagrees
+with a pre-set `REPO_ROOT` now REFUSES (tagged `[S1.1]`, naming both paths
+and three remedies) rather than silently preferring either value — this
+resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so
+a masked default is worse than a hard stop here (unlike `env generate`'s
+identity tuple, which warns-and-proceeds because a fresh file is about to be
+written anyway). Only when the walk-up finds NOTHING does CIU fall back to
+ambient `REPO_ROOT`, unchanged from today. **CIU-54 FILED, OPEN:** ~8 OTHER
+`cli.py` call sites resolve `repo_root` via a bare
+`os.environ.get("REPO_ROOT", Path.cwd())` with no `--define-root`
+consideration and no walk-up at all — a different, larger resolution
+strategy, named but explicitly not touched by ciu-P32.
+
+Previously, 2026-08-25 — **CIU-52 FIXED** (ciu-P31): reference-service
+addressing ships as SPEC S16.1a's OPTIONAL, alias-keyed
+`[ciu.instance.shared_infra.ref_services.<alias>]` table plus
+`--shared-infra-ref-services`, CIU-deriving the reference's qualified
+container name from the REFERENCE's own rendered config and authenticating it
+against live Docker before recording it as this instance's
+`topology.services.<alias>.internal_host`. The filing's own illustrative TOML
+misread the shipped schema (it paired `services` with `ref_projects`); the
+corrected understanding — `services` are the JOINER's own containers,
+`ref_projects` the REFERENCE's projects, two independent lists about two
+different instances — is recorded in that entry's disposition below, and S12's
+`services[*].aliases` reservation is withdrawn rather than implemented. The
+filed text is brought over from `main` in the same commit (this branch's copy
+of this file predates `vbpub@4ccf7d4d`), so the row reads "filed, then fixed"
+rather than ever appearing OPEN.
+
+Previously, 2026-08-25 — **CIU-48 and CIU-49 PARTIAL** (ciu-P30): both
+filed 2026-08-25 (`vbpub@4ccf7d4d`, from dstdns's §3.6 cockpit
+multi-instance DNS-alias-ambiguity investigation,
+`dstdns/nyxloom-trove/GUIDE.md` §3.6) alongside three siblings (CIU-50/51
+still tracked on `main` only, not duplicated in this branch's copy of this
+file pending merge; CIU-52 brought over and closed by ciu-P31 above).
+Investigation found ciu ships NO default for either Compose
+`hostname:` or `topology.services.*.internal_host` — both are entirely
+consumer-declared (grep confirms `src/`'s templates set neither); the
+filing's "31 dstdns templates + one hand-maintained override" fix is
+therefore out of reach from a ciu-only session. **Shipped here:** a
+correctly-qualified `hostname:` line in ciu's own `ciu init` scaffold
+(`stack.compose.yml.j2`), plus DESIGN-GUIDE/CONFIG.md/CONSUMERS.md guidance
+naming the hazard and prescribing the qualified pattern. **Not shipped, and
+not shippable from this repo alone:** propagating the corrected pattern into
+dstdns's own already-authored templates and its hand-maintained override —
+that remains dstdns's own follow-up. Hence PARTIAL, not FIXED. See the CIU-48
+and CIU-49 detail sections below for the full filed text plus this
+disposition.
 
 Previously, 2026-08-22 — backlog wave on
 `feat/ciu-backlog-wave-39-42-46-47` shipped four fixes and CIU-25's git
@@ -123,11 +167,11 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-45 | ~~`requires` PROVISIONS rather than VERIFIES~~ — **misdiagnosis, see disposition below**. The lint rule is a plain `requires`/`provides` completeness check; a `post_compose` hook registering itself as a provider already ships (`infra/consul-server/ciu.defaults.toml.j2:9-17`). The actual dstdns failure was a missing `provides` array in one unrelated stack, fixed declaratively in-repo | — | **WITHDRAWN 2026-08-21** — see `## CIU-45` below for the full disposition; `dstdns/nyxloom-trove/decisions.md` D-170 |
 | CIU-46 | Shipped stacks run under the legacy directory-derived compose project when `deploy.project_name`/`environment_tag` are absent (`engine.py run_shipped`), and clean's S6.4a enumeration then sees no projects at all — legacy-project networks/volumes survive a reported-clean teardown | Low | FIXED — **cutover, BREAKING**: the basename fallback is WITHDRAWN; config-less shipped/reset deployments derive the workspace-identity project `{REPO_NAME}-{INSTANCE_ID}-{stack}` from THIS checkout's ciu.env (`engine.identity_compose_project_name`, exact-path parsed), and clean enumerates the SAME names via the compose-label passes; missing/identity-less ciu.env refuses instead of silently skipping; no `-p`-less compose invocation remains anywhere in ciu; the S16.1 cannot-derive join refusal fell out as unreachable and is withdrawn. One-time migration for pre-existing deployments: CONSUMERS §11 (S6.4a item 7 + S8.7, 2026-08-22). Follow-up candidates named by the adversarial review: (a) non-round-tripping stack dirnames refuse (Vault/vault collision class closed); (b) two DIFFERENT dirs with the SAME normalized basename still collide in config-less mode — documented limit, tagged naming is the escape hatch; a stack-path label stamp at up would close it |
 | CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | FIXED — S2.7 refined precedence extended to PUBLIC_FQDN: derived from THIS workspace's own inputs first (config entry → reverse DNS of the detected IP); ambient adopted only when equal or when detection yields no sourced value (offline host keeps the operator override silently); on mismatch the derived value is written and a warning names the ignored one; PUBLIC_FQDN joins GENERATED_IDENTITY_KEYS so post-generate steps act on the written record. PUBLIC_IP/PUBLIC_TLS_* stay plain pre-set-wins (out of scope). Controlled wrong: restoring the bare fallback fails oracle 1 (2026-08-22) |
-| CIU-48 | Compose's `hostname:` field independently registers a bare, network-resolvable DNS alias — a second source of the §3.6 cockpit multi-instance ambiguity, separate from the automatic service-key alias (CIU-51) | High | OPEN — pure template-default value fix, proposed backport to current CIU (see detail) |
-| CIU-49 | App-config `topology.services.*.internal_host`-style Jinja defaults render the bare service name instead of the already-computed qualified `{project}-{instance_id}-{service}` form, forcing consumers to hand-maintain per-worktree overrides (dstdns's `dstdns-mstest` template) | High | OPEN — pure template-default value fix, proposed backport to current CIU (see detail) |
-| CIU-50 | `deploy.environment_tag` names a per-deployment INSTANCE identifier but reads as a deployment ENVIRONMENT classification — ambiguous naming, cost real investigation time this session to re-derive its actual purpose from source | Medium | OPEN — proposed rename to `instance_id`; schema-key change, v8-timed rather than a live backport (see detail) |
-| CIU-51 | Docker Compose always auto-registers a service's top-level YAML key as a network-scoped DNS alias with no documented suppression mechanism (confirmed against Compose's own docs) — the root cause CIU-48/49 work around but do not eliminate | Medium | OPEN — genuinely v8-scale (every stack's compose template structure changes); explicitly NOT proposed as a backport, see detail for why |
-| CIU-52 | S12's reserved `ciu.instance.shared_infra.services[*].aliases` field is unimplemented, so a diverging-tier instance joining a reference instance's network via S16.1 has no clean, CIU-managed name to reach the shared service by | High | OPEN — additive to the already-shipped S16.1 join mechanism, proposed backport (see detail) |
+| CIU-48 | Compose's `hostname:` field independently registers a bare, network-resolvable DNS alias — a second source of the §3.6 cockpit multi-instance ambiguity, separate from the automatic service-key alias (CIU-51) | High | PARTIAL — ciu-P30 shipped a correctly-qualified `hostname:` default in ciu's own `ciu init` scaffold + DESIGN-GUIDE/CONFIG.md/CONSUMERS.md guidance; propagating the pattern into dstdns's 31 already-authored templates remains dstdns's own follow-up (see detail) |
+| CIU-49 | App-config `topology.services.*.internal_host`-style Jinja defaults render the bare service name instead of the already-computed qualified `{project}-{instance_id}-{service}` form, forcing consumers to hand-maintain per-worktree overrides (dstdns's `dstdns-mstest` template) | High | PARTIAL — ciu-P30 shipped CONFIG.md's `[topology.services.<name>]` section a SHOULD-level qualified-form prescription + CONSUMERS.md worked example; ciu ships no `internal_host` default of its own to change (S4.16/S7.4 is entirely consumer-declared), so dstdns's hand-maintained override is dstdns's own follow-up (see detail) |
+| CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
+| CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
+| CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -1036,6 +1080,19 @@ bare-name reachability is not lost by this change alone.
 supplies `container_name` (same code path, `src/ciu/deploy.py` +
 consumer `*/ciu.compose.yml.j2` templates).
 
+### Disposition (ciu-P30, 2026-08-25) — PARTIAL
+
+Shipped: ciu's own `ciu init`-generated scaffold
+(`src/ciu/templates/stack.compose.yml.j2`) now sets `hostname:` to the exact
+same expression `container_name:` already uses, so a FRESHLY scaffolded
+stack gets a correctly-qualified `hostname:` by default. Plus a new
+DESIGN-GUIDE.md section naming this hazard by its §3.6 term, and a CONSUMERS.md
+worked example showing the qualified pattern to paste into a hand-authored
+template. **Not shipped:** any change to dstdns's 31 already-authored compose
+templates — those live in the dstdns repository, not reachable or editable
+from a ciu session. Propagating the corrected pattern into them is dstdns's
+own follow-up work. This row is PARTIAL, not FIXED, so as not to overclaim
+that a ciu release alone closes dstdns's actual operator pain.
 ## CIU-49 — App-config `internal_host`-style defaults render the bare service name, not the already-qualified form
 
 **Filed by:** dstdns controller session, 2026-08-25, same investigation as
@@ -1095,6 +1152,19 @@ conflated here.
 
 **SPEC ownership:** CIU's global config-default template layer
 (`ciu.global.defaults.toml.j2` and equivalent per-project defaults).
+
+### Disposition (ciu-P30, 2026-08-25) — PARTIAL
+
+Shipped: `docs/CONFIG.md`'s `[topology.services.<name>]` section now carries
+a SHOULD-level prescription to qualify `internal_host` with the same
+`container_name()` derivation, an unambiguous annotation of the existing
+worked example, and a link to the new DESIGN-GUIDE hazard section; plus a
+CONSUMERS.md worked example. **Not shipped:** ciu ships no `internal_host`
+default of its own anywhere (`global.defaults.toml.j2` has no `[topology]`
+block at all — confirmed by grep) — there is no ciu-shipped default to
+change. dstdns's hand-maintained `dstdns-mstest` override remains
+unmodified; removing it in favor of the prescribed qualified pattern is
+dstdns's own follow-up, out of reach from this repo. PARTIAL, not FIXED.
 
 ## CIU-50 — `deploy.environment_tag` should be `deploy.instance_id` (naming clarity, not a defect)
 
@@ -1283,6 +1353,184 @@ subject to CIU-51's ambiguity at all.
 
 **SPEC ownership:** `docs/SPEC.md` S12 (declares the field) + S16.1/CIU-22
 (the join mechanism this attaches to).
+
+### Disposition (ciu-P31, 2026-08-25) — FIXED
+
+Shipped as SPEC **S16.1a**: a new OPTIONAL, alias-keyed
+`[ciu.instance.shared_infra.ref_services.<alias>]` table
+(`{service, container, port?}`), the `--shared-infra-ref-services
+ALIAS[,ALIAS=REF_SERVICE]` flag on `add`/`create`/`ensure`/`adopt`, add-time
+derivation from the REFERENCE's OWN rendered config (`write_rendered=False`,
+`environ=<the reference's ciu.env>`) through the same
+`deploy.container_name()` used everywhere else, authentication of that
+derived name against live Docker state before it is written, an emitted
+`[topology.services.<alias>]` block in the joining instance's worktree
+overlay, and join-time re-verification before any `docker network connect`.
+All three filed oracles are covered as real tests, including the
+controlled-wrong (bare-name) mutant and the adversarial three-instance
+fixture where C is connected to A's network carrying the identical
+`com.docker.compose.service=vault` label.
+
+**Shipped shape differs from the filing's illustrative TOML, deliberately —
+the filing misread the shipped schema.** It assumed `shared_infra.services`
+and `shared_infra.ref_projects` are paired (one service entry carrying its
+owning reference project, with `aliases` hanging off it). They are not, and
+never were: **`services` names THIS (joining) instance's OWN diverging-tier
+containers** — `connect_shared_infra_after_up`'s target-discovery loop filters
+on `com.docker.compose.project=<THIS instance's compose project>` — while
+**`ref_projects` names the REFERENCE's compose projects**, consulted only by
+`_check_reference_network_and_projects` for AND-combined liveness. They are
+two independent lists about two different instances (the shipped fixture uses
+two services against one ref project), so neither can name a reference-side
+service, and `services[*].aliases` could only ever have addressed the
+joiner's own copy of a service — pointing this instance's `vault` at the
+reference's `vault` would have been actively wrong. Hence the third,
+independent `ref_services` axis; the S12 reservation is withdrawn rather than
+implemented. Recorded here explicitly so a future reader does not repeat the
+filing's own misreading.
+
+## CIU-53 — `dev.resolve_repo_root` checked ambient REPO_ROOT before `--define-root`
+
+**Filed by:** operator live reproduction, 2026-08-25, in the vbpub/dstdns
+joint devcontainer. Corroborated by the worktree-identity-wave retrospective
+review's HIGH finding #2 (`dev.py:40-44`, ambient `REPO_ROOT` overriding an
+explicit `--define-root`, contradicting CIU-29 req 8's own oracle).
+
+### Observed mechanism and reproduction
+
+Running `ciu worktree list` (and every `ciu dev`/`ciu worktree *` verb) with
+no `--define-root`, from inside a real ciu-managed repo, while the shell's
+`REPO_ROOT` carried a DIFFERENT, sibling checkout's value (from that
+checkout's sourced `ciu.env` — the documented convenience pattern CIU-41
+already named): the ambient value silently won, so the command operated on
+the WRONG repo. `dev.resolve_repo_root`'s pre-fix body:
+
+```python
+env_root = os.environ.get("REPO_ROOT")
+if env_root:
+    return Path(env_root).resolve()
+if define_root:
+    return Path(define_root).resolve()
+...  # walk-up, only reached when neither is set
+```
+
+`REPO_ROOT` was checked **before** `define_root` — the reverse of SPEC S1.1's
+own documented order (`--define-root` → `REPO_ROOT` env → walk-up). The CODE
+was violating its own documented contract; an explicit `--define-root` did
+not even win over a conflicting ambient value. Separately, the previously
+*documented* order itself still had a masked-default gap: even with
+`--define-root` correctly checked first, an ambient `REPO_ROOT` would still
+silently outrank a successful walk-up derivation whenever `--define-root`
+was omitted — the exact CIU-41 hazard family, one level up, for the resolver
+that decides WHICH repo a command operates on before any identity is even
+read.
+
+### Why CIU owns it
+
+`resolve_repo_root` feeds `ciu dev` and every `ciu worktree *` verb,
+including destructive ones (`worktree rm`, `worktree branches -y`, and by
+extension anything the selected root's `ciu clean` later removes). A
+consumer cannot work around a resolver that silently guesses which repo it
+operates on; the fix has to live in the resolver itself.
+
+### Disposition — FIXED 2026-08-25 (ciu-P32)
+
+`dev.resolve_repo_root`'s precedence is now: `define_root` (explicit) always
+wins outright, no consistency check — an explicit flag is not second-guessed
+by a shell variable. Otherwise CIU walks up from `start_dir` for
+`ciu.global.defaults.toml.j2`. When that walk-up SUCCEEDS: no ambient
+`REPO_ROOT` → use the derived root silently (identical to today); a
+consistent ambient value → silent; a DISAGREEING ambient value → REFUSE with
+a `[S1.1]`-tagged `ValueError` naming both paths and three remedies (unset
+`REPO_ROOT`, pass `--define-root`, or `cd` into the intended repo) — a
+refusal rather than `env generate`'s warn-and-proceed, because this value
+selects a repo for destructive verbs directly, not a value about to be
+freshly written to a generated file. When the walk-up finds NOTHING at all,
+CIU falls back to ambient `REPO_ROOT` if set, else `start_dir` — today's
+ultimate fallback, unchanged (there is no derived answer for an ambient value
+to disagree with in that case). All ~8 real call sites in `cli.py` (`_ksm`,
+`_provenance`, `_status`, `_bake`, `_worktree`'s main body, `_worktree_exec`
+via its injected resolver, and the `dev` verb inline in `main()`) now funnel
+through one `_resolve_repo_root_cli` helper that turns the `ValueError` into
+a clean `[ERROR] ...` message + `SystemExit(2)`, matching this codebase's
+standard CLI error convention — never a raw traceback, never a caller that
+proceeds anyway.
+
+### Oracles
+
+- A real ciu-managed tree, cwd nested inside it, no `--define-root`, ambient
+  `REPO_ROOT` set to a different real path → REFUSE naming both paths.
+- Same tree, no ambient `REPO_ROOT` at all → derive silently, unaffected
+  (the common case never regresses).
+- `--define-root` given, ambient `REPO_ROOT` conflicting → `--define-root`
+  wins outright, no refusal.
+- Walk-up finds nothing, ambient `REPO_ROOT` set → falls back to it
+  (unchanged). Walk-up finds nothing, no ambient → falls back to `start_dir`
+  (unchanged).
+- Every real `cli.py` call site surfaces the refusal as `[ERROR] ...` +
+  non-zero exit, not a raw traceback.
+
+**SPEC ownership:** S1.1 (repo-root resolution).
+
+## CIU-54 — 8 other `cli.py` call sites resolve REPO_ROOT via a bare `os.environ.get` fallback
+
+**Filed by:** ciu-P32, as the explicitly-named follow-up from CIU-53's O6
+oracle (do not silently widen scope to fix these here).
+
+### Observed mechanism
+
+Independent of `dev.resolve_repo_root` (CIU-53), 8 call sites in `cli.py`
+resolve `repo_root` via a bare `Path(os.environ.get("REPO_ROOT", Path.cwd()))`
+with NO `--define-root` consideration and NO walk-up at all:
+
+- the `--host` remote branch of `render` (`elif verb == "render"`, `--host`
+  path)
+- `layouts`
+- the `--layout` and `--host` branches of `up` (two separate sites)
+- the `--host` branch of `down`
+- the `--host` branch of `health`
+- `host-secrets`
+- `ssh`
+
+This is a THIRD resolution strategy in this codebase, alongside
+`dev.resolve_repo_root` (CIU-53, fixed) and `deploy.resolve_repo_root`
+(`src/ciu/deploy.py`, which already refuses on an explicit
+`--define-root`/ambient `REPO_ROOT` disagreement — a useful existing
+precedent, but a different function, in a `scope.forbid` file for ciu-P32).
+None of these 8 sites derive from cwd at all; they trust `REPO_ROOT` (or cwd
+if unset) unconditionally, with no ambient-consistency check and no walk-up
+fallback.
+
+### Why this is a separate ask, not an extension of CIU-53
+
+These sites are all on REMOTE/push-deploy paths (`--host`, `ssh`,
+`host-secrets`) or listing verbs (`layouts`) — a different usage shape from
+`dev`/`worktree`'s local-repo-identity question, closer to `deploy.py`'s own
+resolver than to `dev.resolve_repo_root`. Unifying all of these under one
+resolution strategy touches more verbs and is closer to a `deploy.py`
+refactor — real scope creep beyond CIU-53's `dev.py`/`cli.py` fix.
+
+### Proposed contract
+
+Not yet designed. At minimum, candidates to evaluate: (a) route these
+through `deploy.resolve_repo_root` (already implements a `--define-root`
+refusal-on-disagreement, just needs each site to pass its own `--define-root`
+value where one exists); (b) route through `dev.resolve_repo_root`/
+`_resolve_repo_root_cli` if walk-up-from-cwd is actually desired for these
+verbs too. Needs a design pass naming which of these 8 verbs actually accept
+a `--define-root` flag today (several currently do not) before either is a
+safe change.
+
+### Oracles
+
+Not yet written — this entry exists to make the gap findable, not to commit
+to an implementation. A future package should re-derive the current exact
+call sites (`grep -n 'os.environ.get("REPO_ROOT", Path.cwd())' src/ciu/cli.py`)
+rather than trusting this list to stay current.
+
+**SPEC ownership:** S1.1 (repo-root resolution) — extending, not
+contradicting, CIU-53's corrected precedence to these sites' actual proposed
+contract, once designed.
 
 ## Compact resolved index
 

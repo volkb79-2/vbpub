@@ -528,7 +528,7 @@ Always-required keys [S2.2]:
 
 | Key | Detected from |
 |---|---|
-| `REPO_ROOT` | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` |
+| `REPO_ROOT` | `--define-root` (wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if it disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only if the walk-up finds nothing) → cwd |
 | `PHYSICAL_REPO_ROOT` | pre-set env (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback) → native: `= REPO_ROOT` |
 | `DOCKER_NETWORK_INTERNAL` | `<repo-name>-<instance-id>-network` |
 | `CONTAINER_UID` / `CONTAINER_GID` | current user UID / `DOCKER_GID` |
@@ -547,6 +547,16 @@ when it agrees with this process's own mountinfo-derived physical root for
 `REPO_ROOT`, or when mountinfo yields no match at all (nothing to check
 against). When mountinfo yields a *different* value, CIU trusts mountinfo
 instead and prints a warning to stderr naming the ignored pre-set value.
+
+**Pre-set `REPO_ROOT` disagreement REFUSES, unlike the other keys above
+(2026-08-25, CIU-53):** the same stale-sourced-`ciu.env` scenario applies to
+`REPO_ROOT` itself, used by `ciu dev`/`ciu worktree *`. When walking up from
+cwd finds a `ciu.global.defaults.toml.j2` and a pre-set `REPO_ROOT`
+disagrees with it, CIU does not warn and proceed with the derived value the
+way it does for `PHYSICAL_REPO_ROOT` above — it REFUSES with a `[S1.1]`
+error naming both paths. `REPO_ROOT` decides which repo destructive verbs
+(`worktree rm`, `branches -y`, `clean`) operate on, so a masked default here
+is worse than a hard stop; see `docs/DESIGN-GUIDE.md`.
 
 Add to `.gitignore`:
 
