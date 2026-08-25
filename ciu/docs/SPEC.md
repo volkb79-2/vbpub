@@ -1148,6 +1148,11 @@ stack/service/workdir/requires_worktree_mount keys) ·
 S17.5 `[deploy.provenance].vendor_images` type checks (list of non-empty
 strings) · S13 provisioning ref grammar validation on every render path
 (including single-stack `--dir` mode via engine.main_execution).
+`config_model.validate_declared_features` (QOL-11) runs the layout/
+exec-target/vendor_images checks EAGERLY on every render path — single-stack
+`engine.main_execution` and profile-mode `deploy.action_check` — not only
+when that run's own `--layout`/exec/provenance command invokes the specific
+feature; the underlying checks are unchanged, only their reach is widened.
 
 ## S12 — Extension points (reserved, not implemented)
 

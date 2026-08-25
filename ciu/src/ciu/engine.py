@@ -52,6 +52,7 @@ from . import config_model
 from . import composefile
 from . import governance
 from . import hooks_runner
+from . import hosts
 from . import procutil
 from . import worktree
 from .deploy_pkg import health as _health
@@ -1259,6 +1260,12 @@ def main_execution(
         print("[STEP 5/17] Validating merged configuration (S11)...", flush=True)
         root_key = config_model.validate_stack_shape(stack_config)
         config_model.validate_stack_provisioning(stack_config, source=str(working_dir))
+        # QOL-11: declared layouts/exec-targets/vendor_images are GLOBAL-scope
+        # keys under [deploy]/[ciu] — validate against global_config (never
+        # stack_config/merged), so a malformed declaration is caught on every
+        # single-stack run, not only when this run's own --layout/exec/
+        # provenance feature is invoked.
+        config_model.validate_declared_features(global_config, hosts.load_hosts(repo_root))
         specs = secret_directives.discover(root_key, merged)
 
         misplaced = secret_directives.find_misplaced(merged, stack_root_key=root_key)

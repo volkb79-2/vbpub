@@ -51,6 +51,7 @@ from typing import Any, Optional
 from . import config_model
 from . import engine
 from . import governance as governance_mod
+from . import hosts as hosts_pkg
 from . import procutil
 from . import warn_policy
 from . import worktree as worktree_pkg
@@ -1703,6 +1704,22 @@ def action_check(
     info("=" * 60)
     info("CHECK: validating requires/provides dependency graph")
     info("=" * 60)
+
+    # QOL-11: declared layouts/exec-targets/vendor_images are GLOBAL-scope
+    # keys (profile.config is the global config, deep-merged with
+    # topology_overrides — same accessor used elsewhere in this file, e.g.
+    # auto_connect_network). Runs even when `selection` is empty: a malformed
+    # globally-declared layout is a real defect regardless of what's selected
+    # this run.
+    try:
+        config_model.validate_declared_features(
+            profile.config, hosts_pkg.load_hosts(repo_root)
+        )
+    except (ValueError, worktree_pkg.WorktreeError) as exc:
+        # exec-target shape (S16.7) raises WorktreeError, not ValueError;
+        # both are S11 validation-shape failures here, exit 2 either way.
+        error(str(exc))
+        return 2
 
     stacks: dict[str, dict] = {}
     for entry in selection:

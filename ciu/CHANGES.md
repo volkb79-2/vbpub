@@ -7,6 +7,15 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Fixed
+- fix(ciu): declared layouts/exec-targets/vendor_images now validated
+  eagerly on every render path — `engine.main_execution` (single-stack) and
+  `deploy.action_check` (profile-mode, including an empty selection) — not
+  only when that run's own `--layout`/exec/provenance command invokes the
+  specific feature (CIU-QOL-11, SPEC S7.5c/S16.7/S17.5)
+
 ## [7.0.0] - 2026-08-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=037f858cf2f46b5db13a387273124ef4e3ad6f2d -->
