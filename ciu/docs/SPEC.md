@@ -69,8 +69,32 @@ requirements are marked *(withdrawn)*.
 ## S1 — Project & path model
 
 - **S1.1** CIU MUST resolve the repo root in this order: `--define-root`
-  (alias `--root-folder`) → `REPO_ROOT` from the environment → walk-up from the
+  (alias `--root-folder`), given explicitly, ALWAYS wins outright — returned
+  immediately, with no consistency check against `REPO_ROOT` (explicit intent
+  is not second-guessed by a shell variable). Otherwise CIU walks up from the
   working directory to the nearest dir containing `ciu.global.defaults.toml.j2`.
+  When that walk-up SUCCEEDS: an ambient `REPO_ROOT` that AGREES with the
+  derived root is used silently; one that DISAGREES is a REFUSAL — a
+  `[S1.1]`-tagged error naming both paths and the three remedies (unset
+  `REPO_ROOT`, pass `--define-root` explicitly, or `cd` into the intended
+  repo) — CIU MUST NOT silently prefer either value on a genuine disagreement,
+  since this decides which repo destructive verbs (`worktree rm`,
+  `branches -y`, `clean`) operate on. Only when the walk-up finds **nothing**
+  does CIU fall back to `REPO_ROOT` from the environment, then to the working
+  directory itself (the ultimate fallback).
+
+  **Correction (2026-08-25, CIU-53).** This precedence previously read
+  `--define-root → REPO_ROOT env → walk-up`, and `dev.resolve_repo_root`
+  additionally implemented an even earlier ordering (`REPO_ROOT` env checked
+  *before* `--define-root`) that violated this SPEC's own documented contract.
+  Both are corrected together: the code now matches a walk-up-first order, and
+  that order itself closes a masked-default gap the *previously documented*
+  contract still had — under the old order, an ambient `REPO_ROOT` from an
+  unrelated sourced `ciu.env` silently outranked a successful walk-up
+  derivation from where the operator was actually standing, the same
+  masked-default hazard family S2.7 already closes for the derived identity
+  tuple (CIU-41). See `docs/DESIGN-GUIDE.md` ("Why `dev`/`worktree` refuse an
+  ambient REPO_ROOT that disagrees with the derived root").
 - **S1.2** A repo whose `ciu.global.defaults.toml.j2` sets
   `standalone_root = true` is a standalone root: CIU MUST refuse to run with a
   `REPO_ROOT` that does not match that directory. The guard MUST be evaluated by

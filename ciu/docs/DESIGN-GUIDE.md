@@ -76,6 +76,43 @@ failing safe, and because the warning text is the teaching moment for
 reusing another instance's infra (per-service selective join with validation),
 not whole-instance network inheritance.
 
+## Why `dev`/`worktree` refuse an ambient REPO_ROOT that disagrees with the derived root (CIU-53)
+
+The section above closes the masked-default hazard for the identity tuple
+`env generate` writes. `REPO_ROOT` itself carries the SAME hazard one level
+up, for a DIFFERENT check: `dev.resolve_repo_root` (consumed by `ciu dev` and
+every `ciu worktree *` verb) decides which repo a command operates on in the
+first place, before any identity is derived or read. The documented
+convenience pattern — a login shell sourcing a checkout's `ciu.env` — means an
+operator's or agent's shell can carry ANOTHER checkout's `REPO_ROOT` while
+they stand inside a completely different, real CIU repo. The pre-fix
+resolver checked that ambient value before even `--define-root`, so it
+silently outranked both an explicit flag AND a successful derivation from
+where the invocation actually happened — this is exactly how an operator
+standing in one repo, with no `--define-root`, had a `ciu worktree list`
+answered with an unrelated sibling checkout's worktrees.
+
+The fix reorders and extends the S2.7 refined-precedence pattern
+(`_compute_network_name` above): `--define-root` always wins outright (no
+consistency check — an explicit flag is not second-guessed); otherwise CIU
+derives by walking up from cwd for `ciu.global.defaults.toml.j2`. Where
+`env generate`'s identity tuple WARNS on a mismatch and proceeds with the
+derived value (the value is about to be freshly written to `ciu.env` anyway),
+`resolve_repo_root` REFUSES instead: it feeds destructive verbs directly
+(`worktree rm`, `branches -y`, `clean`) in the SAME invocation, with no
+freshly-generated file downstream to correct a wrong guess. Silently picking
+either value — the ambient one (today's bug) or the derived one (a new,
+different surprise for an operator who set `REPO_ROOT` on purpose for a
+legitimate reason) — trades one masked default for another. A hard stop
+naming both paths and three remedies (unset `REPO_ROOT`, pass
+`--define-root` explicitly, or `cd` into the intended repo) is the only
+response that never silently operates on the wrong repo. Only when the
+walk-up finds NOTHING at all — cwd is not inside any CIU repo, so there is no
+derived answer to disagree with — does CIU fall back to ambient `REPO_ROOT`,
+unchanged from today: this is the one case where trusting an already-sourced
+`ciu.env` from an unrelated location is a reasonable convenience rather than
+a masked default, since there is no different, correct answer being hidden.
+
 ## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
 
 A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is

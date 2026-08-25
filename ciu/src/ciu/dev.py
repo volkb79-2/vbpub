@@ -30,25 +30,72 @@ from .deploy_pkg import health as _health
 
 
 def resolve_repo_root(define_root: Path | str | None, start_dir: Path) -> Path:
-    """Resolve the CIU repo root: ``$REPO_ROOT`` → *define_root* → walk up.
+    """Resolve the CIU repo root (S1.1): *define_root* → walk-up → ``$REPO_ROOT``.
 
-    Walking up looks for the global root marker (``ciu.global.defaults.toml.j2``)
-    so ``ciu dev`` works from any subdirectory; falls back to *start_dir*.
+    ``define_root`` (``--define-root``/``--root-folder``) is explicit operator
+    intent, so it ALWAYS wins outright — returned immediately, with no
+    consistency check against ambient ``$REPO_ROOT`` (an explicit flag is not
+    something a stale shell variable gets to second-guess).
+
+    Otherwise CIU walks up from *start_dir* looking for the global root marker
+    (``ciu.global.defaults.toml.j2``), so ``ciu dev``/``ciu worktree *`` work
+    from any subdirectory of a real CIU repo. When that walk-up SUCCEEDS:
+
+    - no ambient ``$REPO_ROOT`` set → use the derived root, silently (the
+      common, uncontaminated case — identical to today).
+    - ambient ``$REPO_ROOT`` set and CONSISTENT with the derived root →
+      silently use it (nothing to warn about, nothing changes).
+    - ambient ``$REPO_ROOT`` set and it DISAGREES with the derived root →
+      REFUSE with a ``[S1.1]``-tagged ``ValueError`` naming both values,
+      instead of silently preferring either one. This resolver decides WHICH
+      REPO destructive verbs (``worktree rm``, ``branches -y``, ``clean``, …)
+      operate on — masking the disagreement is worse than a hard stop here.
+      This is the refined-precedence pattern S2.7 already applies to the
+      derived identity tuple (``workspace_env._compute_network_name``),
+      applied as a REFUSAL rather than a warn-and-proceed because this value
+      selects a repo for destructive verbs, not a value written to a
+      generated file (see docs/DESIGN-GUIDE.md).
+
+    When the walk-up finds NOTHING at all (no marker anywhere above
+    *start_dir*), there is no derived answer for an ambient value to
+    disagree with, so CIU falls back to ambient ``$REPO_ROOT`` when set,
+    else *start_dir* (today's ultimate fallback, unchanged).
     """
     import os
 
-    env_root = os.environ.get("REPO_ROOT")
-    if env_root:
-        return Path(env_root).resolve()
     if define_root:
         return Path(define_root).resolve()
-    current = Path(start_dir).resolve()
+
+    start = Path(start_dir).resolve()
+    derived: Path | None = None
+    current = start
     while True:
         if (current / GLOBAL_CONFIG_DEFAULTS).exists():
-            return current
+            derived = current
+            break
         if current == current.parent:
-            return Path(start_dir).resolve()
+            break
         current = current.parent
+
+    env_root_raw = os.environ.get("REPO_ROOT")
+    if derived is not None:
+        if env_root_raw:
+            env_root = Path(env_root_raw).resolve()
+            if env_root != derived:
+                raise ValueError(
+                    f"[S1.1] refusing to guess the CIU repo root: ambient "
+                    f"$REPO_ROOT={env_root} disagrees with the root derived by "
+                    f"walking up from {start} ({derived}). This decides which "
+                    "repo destructive verbs (worktree rm/branches -y/clean) "
+                    "operate on, so CIU will not silently pick one. Fix by "
+                    "one of: (1) unset REPO_ROOT in this shell, (2) pass "
+                    "--define-root/--root-folder explicitly, or (3) cd into "
+                    "the repo you intend to operate on."
+                )
+        return derived
+    if env_root_raw:
+        return Path(env_root_raw).resolve()
+    return start
 
 
 # ---------------------------------------------------------------------------

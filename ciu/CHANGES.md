@@ -118,6 +118,32 @@ gate runs; the commit subjects remain the traceable source of detail.
   a ciu release can do on its own. Backlog disposition: PARTIAL, not FIXED.
 
 ### Fixed
+- fix(ciu): **`dev.resolve_repo_root` checked ambient `$REPO_ROOT` before
+  `--define-root`, the reverse of SPEC S1.1's own documented order — the CODE
+  was violating its own documented contract** (CIU-53). Live-reproduced: an
+  operator standing inside a real ciu-managed repo, no `--define-root`, got a
+  DIFFERENT sibling checkout's worktrees back, because that checkout's
+  ambient `REPO_ROOT` (from its sourced `ciu.env`) silently outranked
+  deriving the root from where they were actually standing — the CIU-41
+  masked-default hazard, one level up, for the resolver that decides WHICH
+  repo `ciu dev`/`ciu worktree *` operate on. Fixed and hardened past the
+  previously-documented order too: `--define-root` now always wins outright
+  (no consistency check); otherwise CIU derives by walking up from cwd, and
+  when that derivation SUCCEEDS, a disagreeing ambient `REPO_ROOT` now
+  REFUSES (a `[S1.1]`-tagged error naming both paths and three remedies)
+  instead of silently preferring either value — this resolver feeds
+  destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked
+  default here is worse than a hard stop. Only when the walk-up finds NOTHING
+  does CIU fall back to ambient `REPO_ROOT`, unchanged from today. All ~8
+  call sites in `cli.py` now surface the refusal as a clean `[ERROR] ...` +
+  non-zero exit. SPEC.md/CONFIG.md/CIU.md corrected to the new precedence;
+  DESIGN-GUIDE.md gains a hazard section; `ciu --help`/`ciu dev --help`/
+  `ciu worktree --help` name the resolution order and the sourced-sibling-
+  ciu.env hazard directly. Follow-up filed, not fixed here (CIU-54): ~8
+  OTHER `cli.py` call sites resolve `repo_root` via a bare
+  `os.environ.get("REPO_ROOT", Path.cwd())` with no `--define-root`
+  consideration and no walk-up at all — a different resolution strategy,
+  touching more verbs, out of this fix's scope.
 - fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
   defects in ALREADY-RELEASED behaviour, each reproduced end-to-end by two
   independent retrospective adversarial reviews. `ciu worktree branches`

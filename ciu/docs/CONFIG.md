@@ -667,7 +667,7 @@ as a configuration error even when nothing else would check it. Undeclared
 
 | Key | Always required | Detection (when not pre-set) |
 |---|---|---|
-| `REPO_ROOT` | Yes | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` [S1.1] |
+| `REPO_ROOT` | Yes | `--define-root` (always wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if a successful walk-up disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only when the walk-up finds nothing) → cwd [S1.1, CIU-53] |
 | `PHYSICAL_REPO_ROOT` | Yes | env override (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback); native host: `= REPO_ROOT` [S1.3, S1.4] |
 | `DOCKER_NETWORK_INTERNAL` | Yes | `<repo-name>-<instance-id>-network` (hash of physical path) |
 | `CONTAINER_UID` | Yes | Current user UID |
@@ -702,6 +702,13 @@ refined precedence instead of "pre-set always wins":
   ambient value is adopted only when equal, else the derived value is
   written and a warning names the ignored one (with the `--shared-infra`
   remedy for the network).
+- **`REPO_ROOT`** (2026-08-25, CIU-53) is the one exception that REFUSES
+  instead of warning-and-proceeding: `dev.resolve_repo_root` (consumed by
+  `ciu dev`/`ciu worktree *`) derives by walking up from cwd, and when that
+  derivation succeeds, a disagreeing pre-set `REPO_ROOT` is a hard error
+  naming both values rather than a warning — this value selects WHICH repo
+  destructive verbs (`worktree rm`, `branches -y`, `clean`) operate on, so a
+  masked default here is worse than a stop. See `docs/DESIGN-GUIDE.md`.
 - **`PUBLIC_FQDN`** (CIU-47): during generation the value is derived from
   THIS workspace's own inputs (config entry, else reverse DNS of the
   detected IP); an ambient value is adopted only when equal, or when
