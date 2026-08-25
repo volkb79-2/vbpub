@@ -368,45 +368,62 @@ ciu.user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control", "b
   tables are validation errors naming the key.
 - The declaration itself is validated (valid TOML bare keys, no duplicates).
 
-#### 1.15 Service identity model refinement
+#### 1.15 Service identity model: stacks contain services
 
-Each logical service declares a `type` from a closed vocabulary that
-determines what CIU does with it:
+Services are declared in a **two-level hierarchy**: a logical STACK contains
+one or more logical SERVICES. The compound key `<stack>.<service>` is the
+globally unique service identifier. This mirrors Docker Compose's own naming:
+container names become `<project>-<instance>-<stack>-<service>[-<replica>]`.
 
-| Type | Meaning | CIU behavior |
-|------|---------|-------------|
-| `CIU` | A stack managed by CIU (has ciu.defaults.toml.j2) | Full pipeline: render, secrets, hooks, compose |
-| `COMPOSE` | A plain docker-compose project (no CIU config) | Runs docker compose up; no rendering/secrets/hooks |
-| `IN_PROCESS` | Files used to mock or simulate; never deployed as containers | No compose execution; files referenced by test lanes or mock implementations |
-| `EXTERNAL` | Consumed but not deployed here (Stripe API, Cloudflare DNS) | No infrastructure provisioned; connection facts only |
-
-The previous binary `kind = "internal" | "3rd_party"` is replaced by this
-four-way enum. Realness variant availability is derived from type:
-
-| Type | Valid realness variants |
-|------|------------------------|
-| `CIU` | `live`, `mock` |
-| `COMPOSE` | `live`, `mock`, `simulated` |
-| `IN_PROCESS` | `mock` (the files ARE the mock) |
-| `EXTERNAL` | `live`, `owned-seeded`, `simulated`, `mock` |
-
-A `CIU` service has a `location` pointing to its stack directory:
+**Stack-level declaration** — defines WHAT CIU does with this stack and WHERE
+to find it:
 
 ```toml
-[service.geo_location]
+# A CIU-managed stack containing multiple services
+[service.our_db_stack]
 type = "CIU"
+location = "infra/db-core"       # filesystem path to the stack directory
 
-[service.geo_location.owned-seeded]
-location = "infra/db-core"       # filesystem path ≠ service name
-port = 5432
-```
+# A legacy compose project (no ciu config, pre-created docker-compose.yml)
+[service.legacy_stack]
+type = "COMPOSE"
+location = "/opt/my_legacy_service"
 
-An `EXTERNAL` service has no `location` and no infrastructure:
-
-```toml
+# An external API consumed but never deployed here
 [service.payment-api]
 type = "EXTERNAL"
 
+# Mock/simulation files only; never deployed as containers
+[service.notification-service]
+type = "IN_PROCESS"
+```
+
+**Service-level declaration** — realness variants live INSIDE the stack,
+on each service:
+
+```toml
+# Services within a CIU-type stack
+[service.our_db_stack.postgres.live]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+
+[service.our_db_stack.postgres.mock]
+implementation = "tests/mocks/postgres_mock.py"
+
+[service.our_db_stack.minio.live]
+port = 9000
+image = "minio/minio:latest"
+
+# Services within a COMPOSE-type stack CAN have realness variants —
+# one service might be replaced by a stub while others run live.
+[service.legacy_stack.service1]
+port = 1234                        # live: how we reach the real service
+
+[service.legacy_stack.service1.mock]
+implementation = "tests/mocks/legacy_service1_mock.py"
+
+# EXTERNAL and IN_PROCESS types have no inner stack services;
+# their realness variants sit directly on the entity:
 [service.payment-api.live]
 endpoint = "https://api.stripe.com"
 secrets = ["stripe_secret_key"]
@@ -415,38 +432,26 @@ secrets = ["stripe_secret_key"]
 implementation = "tests/mocks/stripe_mock.py"
 ```
 
-An `IN_PROCESS` service provides mock/simulation files without deployment:
+**Type determines HOW CIU deploys the stack, not what realness variants
+its services can have. Realness is always per-service and orthogonal to
+the deployment mechanism.**
 
-```toml
-[service.notification-service]
-type = "IN_PROCESS"
+| Type | Has inner services? | How CIU deploys | Realness per service |
+|------|--------------------|-----------------|---------------------|
+| `CIU` | Yes | Full pipeline (render, secrets, hooks, compose) | `live`, `mock`, `owned-seeded`, `simulated` |
+| `COMPOSE` | Yes | `docker compose up` on pre-existing file | `live`, `mock`, `simulated` |
+| `EXTERNAL` | No (entity IS the service) | Nothing deployed; connection facts only | `live`, `owned-seeded`, `simulated`, `mock` |
+| `IN_PROCESS` | No (entity IS the mock) | Nothing deployed; files referenced directly | `mock` only |
 
-[service.notification-service.mock]
-implementation = "tests/mocks/notification_mock.py"
-```
+**Service reference format:** always `<stack>.<service>`. This is unique
+because TOML enforces that a given stack name appears only once at the top
+level, and service names within it are unique by TOML table rules.
 
-A `COMPOSE` service references an existing docker-compose project:
+No separate `logical_name` field is needed. If two stacks both have a
+service called `postgres`, they are naturally distinct:
+`our_db_stack.postgres` vs `other_stack.postgres`. Cross-stack references
+in groups, init_requires, and testing selection use the full compound key.
 
-```toml
-[service.legacy-auth]
-type = "COMPOSE"
-
-[service.legacy-auth.live]
-location = "vendor/legacy-auth"   # contains docker-compose.yml, not ciu.defaults.toml.j2
-```
-type = "CIU"
-
-[service.payment-api.live]
-endpoint = "https://api.stripe.com"
-
-[service.payment-api.mock]
-implementation = "tests/mocks/stripe_mock.py"
-```
-
-No additional namespace split is needed because the existing `type` field
-carries this information.
-
-#### 1.16 Stack-level service tables (`[local_stack]`)
 
 **Problem.** Each stack directory needs per-service deployment config
 (ports, env vars, hostdirs). Currently dstdns derives a root key from the
@@ -516,7 +521,7 @@ address = "10.0.0.1"
 
 Optional per-service route overrides (reverse-proxy paths):
 ```toml
-[deploy.profiles.two-host.routes.api-handler]
+[deploy.profiles.two-host.routes.api]
 path_prefix = "/api"
 ```
 
@@ -766,64 +771,121 @@ without touching Docker or the filesystem beyond reading templates.
 
 ### 3.1 Declaration
 
-Each logical service declares its type and available realness variants:
+The global config declares logical stacks and their services. Each stack has
+a `type` that determines CIU behavior. Services within a stack declare
+realness variants.
 
 ```toml
-# Metadata (shared across all variants)
-[service.api-handler]
-type = "CIU"
-description = "HTTP request handler"
+# ────────────────────────────────────────────────────
+# CIU-managed stacks
+# ────────────────────────────────────────────────────
 
-# Variant: live (real implementation)
-[service.api-handler.live]
+[service.our_db_stack]
+type = "CIU"
+location = "infra/db-core"
+
+[service.our_db_stack.postgres.live]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+init_requires = []                  # nothing needed before postgres starts
+provides = ["pg:db/demo", "pg:role/controller"]
+
+[service.our_db_stack.postgres.mock]
+implementation = "tests/mocks/postgres_mock.py"
+
+[service.our_db_stack.minio.live]
+port = 9000
+image = "minio/minio:latest"
+provides = ["minio:user/worker-io"]
+
+[service.our_api_stack]
+type = "CIU"
 location = "applications/api-handler"
+
+[service.our_api_stack.api.live]
 port = 8080
 health = "/health"
-init_requires = ["postgres:db/demo"]
-depends_on = ["redis", "payment-api"]
-allow_degraded_start = true      # default true
+init_requires = [
+    "our_db_stack.postgres",       # reference by compound key
+    "vault:secret/db/postgres/api_password",
+]
+depends_on = ["our_db_stack.redis", "payment-api"]
+allow_degraded_start = true         # default true
 
-# Variant: mock (stub implementation)
-[service.api-handler.mock]
+[service.our_api_stack.api.mock]
 implementation = "tests/mocks/api_handler_mock.py"
-```
 
-For third-party services:
+# ────────────────────────────────────────────────────
+# COMPOSE-type stacks (pre-existing docker-compose.yml)
+# ────────────────────────────────────────────────────
 
-```toml
+[service.legacy_stack]
+type = "COMPOSE"
+location = "/opt/my_legacy_service"
+
+[service.legacy_stack.service1]
+port = 1234                        # live: how we reach the real service
+
+[service.legacy_stack.service1.simulated]
+image = "wiremock/wiremock:latest"
+stub_mappings = "fixtures/legacy_stubs/"
+
+# ────────────────────────────────────────────────────
+# EXTERNAL services (consumed, never deployed)
+# ────────────────────────────────────────────────────
+
 [service.payment-api]
 type = "EXTERNAL"
-description = "External payment processor"
 
 [service.payment-api.live]
-base_url = "https://api.stripe.com"
+endpoint = "https://api.stripe.com"
 secrets = ["stripe_secret_key"]
 
-[service.payment-api.owned-seeded]
-location = "infra/payment-stub"
-port = 8090
-seed_data = "fixtures/payment_responses.json"
-secrets = ["payment_stub_key"]
-
-[service.payment-api.simulated]
-image = "wiremock/wiremock:latest"
-port = 8090
-stub_mappings = "fixtures/wiremock_stubs/"
-
 [service.payment-api.mock]
-implementation = "tests/mocks/payment_mock.py"
+implementation = "tests/mocks/stripe_mock.py"
+
+# ────────────────────────────────────────────────────
+# IN_PROCESS services (mock files only)
+# ────────────────────────────────────────────────────
+
+[service.notification-service]
+type = "IN_PROCESS"
+
+[service.notification-service.mock]
+implementation = "tests/mocks/notification_mock.py"
 ```
 
-Other idea: differentiate `[service.internal.*]` vs `[service.3rd_party.*]` up front for clarity. could there be other types than internal and 3rd party?
+**Key structural rules:**
+
+- Stack-level keys (`type`, `location`, `description`) sit directly under
+  `[service.<stack_name>]`.
+- Service-level realness variants are nested:
+  `[service.<stack>.<svc>.<level>]`.
+- For `EXTERNAL` and `IN_PROCESS` types there is no inner service layer —
+  realness sits directly on the entity because it doesn't live inside a stack.
+- Realness is ALWAYS per-service, regardless of stack type. A COMPOSE-type
+  stack can have one service mocked while others run live. The `type`
+  controls deployment mechanism; realness controls test posture.
+- `init_requires` and `depends_on` reference OTHER services using the full
+  compound key (`<stack>.<service>`) or external typed references
+  (`vault:secret/...`, `pg:db/...`).
 
 ### 3.2 Validation rules
 
-- Every sub-table key under `[service.<name>]` (other than `type`, `description`) MUST match a valid realness level for that service's `type`.
-- Internal valid levels: `mock`, `live`
-- Third-party valid levels: `mock`, `simulated`, `owned-seeded`, `live`
+- Every sub-table key under `[service.<stack>.<svc>]` MUST match a valid
+  realness level. Other key names are validation errors.
+- Valid realness levels:
+  - `CIU` and `COMPOSE` stacks: `live`, `mock`, `owned-seeded`, `simulated`
+    per service
+  - `EXTERNAL`: `live`, `owned-seeded`, `simulated`, `mock`
+    (declared directly on the entity)
+  - `IN_PROCESS`: `mock` (the entity IS a mock)
 - At least one variant MUST be declared per service.
-- `init_requires` references use S13 typed-reference grammar (unchanged).
-- Secrets referenced in a variant MUST have corresponding sections in `ciu.secrets.toml` or Vault paths. Missing credentials fail at config-validation time when that realness level is selected, not at runtime.
+- `init_requires` references use S13 typed-reference grammar. Service-to-service
+  references use the compound `<stack>.<service>` form.
+- Secrets referenced in a variant MUST have corresponding entries in
+  `ciu.secrets.toml` or Vault paths. Missing credentials fail at
+  config-validation time when that realness level is selected.
 
 ### 3.3 Secret preflight
 
@@ -842,11 +904,11 @@ Replace the service-selection half of old profiles:
 ```toml
 [deploy.groups.core]
 description = "Infrastructure foundation"
-services = ["postgres", "redis", "vault"]
+services = ["our_db_stack.postgres", "redis_stack.redis"]
 
 [deploy.groups.app]
 description = "Application layer"
-services = ["api-handler", "notification-service"]
+services = ["our_api_stack.api", "notification-service"]
 
 [deploy.groups.full]
 description = "Everything"
@@ -867,10 +929,10 @@ description = "DB on host-a, app on host-b"
 hosts = ["host-a", "host-b"]
 
 [deploy.profiles.two-host.hosts.host-a]
-services = ["postgres", "redis"]
+services = ["our_db_stack.postgres", "redis_stack.redis"]
 
 [deploy.profiles.two-host.hosts.host-b]
-services = ["api-handler", "notification-service"]
+services = ["our_api_stack.api", "notification-service"]
 
 [topology]
 mode = "wireguard"               # "wireguard" | "proxy" | "direct"
@@ -1001,7 +1063,7 @@ Note: what would "pluggable" mean for `ciu`, what are advantages?
 Selection tables map changed-file patterns to test scopes:
 
 ```toml
-[testing.selection.api-handler]
+[testing.selection.api]
 patterns = ["src/api/**/*.py"]
 scope = ["tests/unit/test_api.py", "tests/integration/test_api_flow.py"]
 
@@ -1239,19 +1301,19 @@ min_release_age_days = 14
 # LOGICAL SERVICES
 # ------------------------------------------------------------
 
-[service.api-handler]
+[service.our_api_stack]
 type = "CIU"
 description = "HTTP request handler"
 
-[service.api-handler.live]
+[service.our_api_stack.api.live]
 location = "applications/api-handler"
 port = 8080
 health = "/health"
 init_requires = ["postgres:db/demo"]
-depends_on = ["redis", "payment-api"]
+depends_on = ["redis_stack.redis", "payment-api"]
 allow_degraded_start = true
 
-[service.api-handler.mock]
+[service.our_api_stack.api.mock]
 implementation = "tests/mocks/api_handler_mock.py"
 
 [service.notification-service]
@@ -1261,12 +1323,11 @@ description = "Sends emails/SMS (not yet implemented)"
 [service.notification-service.mock]
 implementation = "tests/mocks/notification_mock.py"
 
-[service.postgres]
+[service.our_db_stack]
 type = "CIU"
-description = "Primary relational database"
+location = "infra/db-core"
 
-[service.postgres.owned-seeded]
-location = "infra/postgres"
+[service.our_db_stack.postgres.owned-seeded]
 image = "timescale/timescaledb:pg18"
 port = 5432
 seed_data = "fixtures/seed.sql"
@@ -1293,12 +1354,11 @@ stub_mappings = "fixtures/wiremock_stubs/"
 [service.payment-api.mock]
 implementation = "tests/mocks/payment_mock.py"
 
-[service.redis]
+[service.redis_stack]
 type = "CIU"
-description = "Cache and pub/sub"
-
-[service.redis.owned-seeded]
 location = "infra/redis-core"
+
+[service.redis_stack.redis.owned-seeded]
 image = "redis:7-alpine"
 port = 6379
 
@@ -1322,11 +1382,11 @@ port = 6379
 
 [deploy.groups.core]
 description = "Infrastructure foundation"
-services = ["postgres", "redis"]
+services = ["our_db_stack.postgres", "redis_stack.redis"]
 
 [deploy.groups.app]
 description = "Application layer"
-services = ["api-handler", "notification-service"]
+services = ["our_api_stack.api", "notification-service"]
 
 [deploy.groups.full]
 description = "Everything"
@@ -1370,7 +1430,7 @@ trust    = { rigor = ["R0", "R3"] }
 full     = { rigor = ["R0", "R1", "R2", "R3"] }
 property = { rigor = ["R0", "R4"] }
 
-[testing.selection.api-handler]
+[testing.selection.api]
 patterns = ["src/api/**/*.py"]
 scope = ["tests/unit/test_api.py", "tests/integration/test_api_flow.py"]
 
@@ -1396,7 +1456,7 @@ scope = ["tests/unit/test_payment.py", "tests/integration/test_payment_flow.py"]
 
 ```bash
 # Fast feedback: touched src/api/routes.py
-ciu gate --intent smoke --selection api-handler --environment none
+ciu gate --intent smoke --selection api --environment none
 # → all services mocked, R0, seconds
 
 # Standard quality gate
@@ -1634,7 +1694,7 @@ scope = ["tests/unit/test_api.py"]
 
 Additional fields worth considering:
 - `min_changed_lines = 5` — skip scope if fewer than N lines changed (noise filter)
-- `requires_services = ["api-handler"]` — only meaningful when these services are deployed
+- `requires_services = ["our_api_stack.api"]` — only meaningful when these services are deployed
 - Per-package roots for monorepo subprojects with independent test suites
 
 The base diff computation should use Assay's B012 changed-lines mode
