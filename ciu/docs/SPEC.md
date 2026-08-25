@@ -990,6 +990,15 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `health = false` contributes no targets. If every selected service is so
   excluded, CIU reports that no health-enabled containers were selected and
   the gate passes without invoking an empty poll.
+
+  A phase service MAY also set `one_shot = true` (ciu-P23, V8-PREP-5) to
+  DECLARE it as a run-to-completion stack — validated shape only
+  (`deploy_pkg.phases.service_one_shot`, defaults `false`); this package does
+  NOT wire it into the health gate's own polling loop above (a future,
+  larger change once a real caller needs that behavior). The one live
+  consumer today is `provisioning.py`'s `:healthy` probe (S13.2), which reads
+  a target stack's own `one_shot` declaration to warn when it is referenced
+  via `:healthy` instead of the dedicated `:completed` terminal.
 - **S7.8** Container lookups MUST use exact names or anchored name/label filters,
   never substring matches.
 
@@ -1423,6 +1432,7 @@ and `provisioning.parse_ref`):
 | `minio:user/<name>` | MinIO service account exists | `mc admin user info local <name>` |
 | `consul:token/<svc>` | Consul ACL token exists in Vault | Vault read at `registry.consul.token_vault_path` (default `consul/acl/tokens/{svc}`; override via `[registry.consul] token_vault_path = "…"`) |
 | `stack:<name>:healthy` | Another container is up+healthy | `docker inspect .State` |
+| `stack:<name>:completed` | Another container **ran to completion** (exit 0) | `docker inspect .State` — `Running == false` and `ExitCode == 0`; NEVER reads `.State.Health` (V8-PREP-5, ciu-P23) |
 
 **`pg:schema` note.** `information_schema.schemata` is per-database, not
 cluster-global. CIU therefore connects with `psql -d <db>` where `<db>` comes
@@ -1438,11 +1448,57 @@ Override in the global config:
 token_vault_path = "consul/{svc}/token"   # e.g. stores at consul/myapp/token
 ```
 
-**`stack:<name>:healthy` one-shot support.** A container without a Docker
-healthcheck is satisfied when it is *running*. A one-shot container (e.g. a
-`db-init` / `controller_ddl` init-container) that has **exited 0** is also
-treated as satisfied — the probe reads `State.ExitCode == 0` as a clean
-completion. Only a non-zero exit code or a container not found is a failure.
+**`stack:<name>:healthy` one-shot support (DEPRECATED, ciu-P23).** A
+container without a Docker healthcheck is satisfied when it is *running*. A
+one-shot container (e.g. a `db-init` / `controller_ddl` init-container) that
+has **exited 0** is also treated as satisfied — the probe reads
+`State.ExitCode == 0` as a clean completion. Only a non-zero exit code or a
+container not found is a failure. This fallback has a false-positive gap: a
+container WITH a healthcheck that reports `healthy` and only later exits
+still satisfies `:healthy` (the `status == 'healthy'` branch is checked
+first and never re-examines `Running`), so a container that finished
+minutes ago and a container still mid-run can be indistinguishable to a
+`:healthy` probe. Every time this fallback is the reason a probe is
+satisfied, CIU now prints a `[WARN]` naming the ref and suggesting
+`stack:<name>:completed` — the fallback's BEHAVIOR is unchanged (removing it
+is V8's own breaking step, not this one), only the warning is new.
+
+**`stack:<name>:completed` (V8-PREP-5, ciu-P23).** A dedicated terminal for
+run-to-completion (one-shot) stacks: satisfied when `State.Running == false`
+**and** `State.ExitCode == 0`; any other state — still running, or exited
+non-zero — is not satisfied, and a missing container is not satisfied
+exactly like `:healthy`'s missing-container case. Unlike `:healthy`,
+`:completed` NEVER inspects `.State.Health` under any code path, which is
+exactly the false-positive gap described above: it cannot be fooled by a
+healthcheck that reported healthy before the container exited, because it
+never looks at the healthcheck at all. Use `:completed` for any stack whose
+phase entry declares `one_shot = true` (see `deploy.phases.<key>.services[]`
+in CONFIG.md) instead of `:healthy`.
+
+**Slash-bearing selectors now resolve (O4, ciu-P23).** A selector containing
+`/` (e.g. `stack:infra/db-init:healthy`) is resolved against the known set of
+declared stack paths (`deploy.phases.*.services[].path` and
+`deploy.profiles.*.stacks[]`, aggregated across the whole config); when it
+matches a known path, that path's final segment (the same bare-name
+convention every slash-free selector already used) is what is actually
+looked up as a container. Before ciu-P23 this selector form was
+**guaranteed-broken**: the raw slash-bearing string was passed straight into
+the container-name builder, which can never match a real container name. A
+slash-free selector's resolution is unchanged. An UNKNOWN slash-bearing path
+(no declared stack matches it) still resolves to nothing — a genuine typo
+still surfaces as "container not found," it is not silently reinterpreted.
+
+**`one_shot = true` cross-reference (O3, ciu-P23).** When a `:healthy` probe
+targets a stack whose OWN phase entry declares `one_shot = true`
+(`deploy.phases.<key>.services[].one_shot`, see CONFIG.md), CIU prints a
+`[WARN]` suggesting the requiring stack switch that ref to `:completed`. This
+fires during LIVE PROBING (`probe_ref`/`provisioning.probe_ref`, i.e. `ciu up`
+and `ciu check --live`) — it is not a separate static `ciu check` stage
+(unlike ciu-P22's `[service.*]` registry lint), since wiring a new static
+stage requires touching `deploy.py`'s `action_check`, which is out of scope
+for this package. `one_shot` itself is declaration + shape validation only
+in this package (`deploy_pkg.phases.service_one_shot`); it does not change
+the deploy loop's post-up wait behavior (see CONFIG.md for the key's shape).
 
 ### S13.3 — Preflight model (lint-vs-probe split)
 
@@ -1451,8 +1507,22 @@ Two independent checks run at different times:
 1. **Static lint** (`lint=True, probe=False`) — runs **once up-front** for
    the full selection, before any phase starts. Checks: every `requires` entry
    is provided by some stack in the selection; no dependency cycle among
-   `stack:<name>:healthy` references. This is a pure config check — no Docker
-   or Vault I/O. Exit 2 on failure.
+   `stack:<name>:healthy`/`:completed` references. This is a pure config
+   check — no Docker or Vault I/O. Exit 2 on failure.
+
+   **Cycle detection resolves bare selectors to full stack paths (O5,
+   ciu-P23).** `lint_graph`'s dependency graph is keyed by full repo-relative
+   stack path, but the only selector form that has ever resolved to a real
+   container is a bare basename (a slash-bearing selector was
+   guaranteed-broken until O4 above). Before ciu-P23, a `stack:<bare-name>:…`
+   ref never matched a full-path graph key, so a genuine cross-stack cycle
+   declared the ONLY way that actually worked for probing silently passed
+   lint. `lint_graph` now resolves a bare (or slash-bearing) selector to its
+   declared stack path — using the same exact-match-then-unique-basename
+   rule as O4's container-name resolution — before adding the graph edge, so
+   such a cycle is now correctly detected. An ambiguous basename (two
+   declared stacks share it) or a selector matching no declared stack stays
+   exactly as unresolved as before this fix: it is never guessed at.
 
 2. **Live probe** (`lint=False, probe=True`) — runs **per-phase**, immediately
    before that phase deploys, after all earlier phases are already up. CIU

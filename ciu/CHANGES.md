@@ -10,6 +10,41 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): one-shot completion semantics for the `requires`/`provides`
+  provisioning model (SPEC S13.2/S7.7, V8-PREP-5, ciu-P23,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.18) — fully additive, all existing
+  `:healthy` refs parse and behave exactly as before:
+  - New provisioning-ref terminal `stack:<name>:completed` (both grammar
+    copies — `provisioning.py` and `config_model.py` — updated together):
+    satisfied when `State.Running == false` and `State.ExitCode == 0`; NEVER
+    reads `.State.Health` under any code path, closing the false-positive
+    gap `:healthy`'s own exit-0-no-healthcheck fallback has (a healthcheck
+    that reports healthy and only later exits still satisfies `:healthy`).
+  - That existing exit-0-no-healthcheck fallback on `:healthy` now prints a
+    `[WARN]` naming the ref and suggesting `:completed` — behavior is
+    UNCHANGED (removing the fallback is V8's own breaking step), only the
+    warning is new.
+  - New optional phase-entry key `[[deploy.phases.phase_N.services]]
+    one_shot = true` (`deploy_pkg.phases.service_one_shot`, mirrors
+    `service_shipped`/`service_health_enabled`'s exact validation pattern;
+    defaults `false`) — declaration + shape validation only, does NOT wire
+    into the deploy loop's own post-up wait behavior. `provisioning.py`'s
+    `:healthy` probe reads it to warn when another stack's `requires`
+    references a `one_shot = true` stack via `:healthy` instead of
+    `:completed`.
+  - A `stack:` ref selector containing `/` (e.g.
+    `stack:infra/db-init:completed`) now resolves against the declared
+    stack paths (`deploy.phases.*.services[].path` /
+    `deploy.profiles.*.stacks[]`) instead of today's guaranteed-broken
+    passthrough (a slash-bearing selector could never match a real
+    container name before this). A slash-free selector's resolution is
+    byte-identical to before.
+  - `lint_graph`'s stack-to-stack cycle detection now resolves a bare (or
+    slash-bearing) selector to its declared stack path before adding the
+    graph edge — previously the graph was keyed by full path while the only
+    selector form that ever worked for probing was a bare basename, so a
+    real cross-stack cycle declared the ONLY way that actually worked
+    silently passed lint.
 - feat(ciu): global config gains an optional `[service.<stack_name>]`
   identity registry (SPEC S3.14/S3.15, V8-PREP-3 narrowed groundwork) — the
   identity half of the V8 two-level `stack.service` hierarchy

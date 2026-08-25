@@ -35,7 +35,7 @@ _VAULT_RE = re.compile(r'^vault:secret/(.+)$')
 _PG_RE = re.compile(r'^pg:(role|db|schema)/([a-zA-Z0-9_-]+)$')
 _MINIO_RE = re.compile(r'^minio:user/([a-zA-Z0-9_-]+)$')
 _CONSUL_RE = re.compile(r'^consul:token/([a-zA-Z0-9_-]+)$')
-_STACK_RE = re.compile(r'^stack:([a-zA-Z0-9_/-]+):healthy$')
+_STACK_RE = re.compile(r'^stack:([a-zA-Z0-9_/-]+):(healthy|completed)$')
 
 VALID_REF_KINDS = frozenset({"vault", "pg", "minio", "consul", "stack"})
 
@@ -73,7 +73,13 @@ def parse_ref(ref: str) -> ProvisioningRef:
 
     m = _STACK_RE.fullmatch(ref)
     if m:
-        return ProvisioningRef(kind='stack', subkind='', selector=m.group(1))
+        # subkind stays '' for the original ':healthy' terminal — additive,
+        # byte-identical to every ':healthy' ref parsed before this ever
+        # existed (O1, V8-PREP-5) — and becomes 'completed' for the new
+        # exit-0-based terminal so `_probe_stack` can dispatch on it.
+        terminal = m.group(2)
+        subkind = '' if terminal == 'healthy' else terminal
+        return ProvisioningRef(kind='stack', subkind=subkind, selector=m.group(1))
 
     # Give useful error messages
     if ':' not in ref:
@@ -90,8 +96,39 @@ def parse_ref(ref: str) -> ProvisioningRef:
     raise ValueError(
         f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
         f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, pg:schema/myschema, "
-        f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
+        f"minio:user/worker, consul:token/myapp, stack:db-core:healthy, "
+        f"stack:db-core:completed"
     )
+
+
+def _resolve_declared_stack_path(selector: str, known_paths) -> Optional[str]:
+    """Resolve a ``stack:<selector>:healthy|completed`` ref's selector to the
+    declared stack path it refers to, out of *known_paths* (V8-PREP-5,
+    shared by O4 and O5 — the two places a ref's selector must be matched
+    against the known set of declared stack paths).
+
+    An EXACT match wins outright — this covers a genuine full repo-relative
+    path selector (e.g. ``infra/db-init``) and a top-level bare stack with no
+    ``/`` in its declared path at all. Otherwise, when *selector* equals the
+    FINAL path segment of exactly one entry in *known_paths* (e.g. bare
+    ``db-init`` against a declared ``infra/db-init``), that entry resolves —
+    this is the only selector form that ever worked for container-name
+    resolution before this package (``container_name`` only ever sees a bare
+    service name), so it must also be the form ``lint_graph``'s cycle
+    detection recognizes.
+
+    An AMBIGUOUS basename (two or more known paths share it) or a selector
+    matching no known path at all returns ``None``: the caller MUST leave
+    that ref exactly as unresolved as it is today — this fix must never
+    manufacture a false edge, or a container name, out of a selector that
+    does not actually correspond to a known stack.
+    """
+    if selector in known_paths:
+        return selector
+    matches = [p for p in known_paths if p.rsplit("/", 1)[-1] == selector]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def lint_graph(
@@ -119,8 +156,8 @@ def lint_graph(
                     f"[ERROR] Stack '{stack_path}' requires '{ref}' but nobody provides it"
                 )
 
-    # Build stack-level dependency graph from stack:X:healthy refs
-    # stack A depends on stack B if A requires stack:B:healthy
+    # Build stack-level dependency graph from stack:X:healthy|completed refs.
+    # stack A depends on stack B if A requires stack:B:healthy|completed.
     stack_deps: dict[str, set[str]] = {sp: set() for sp in stacks}
 
     for stack_path, stack_info in stacks.items():
@@ -128,7 +165,17 @@ def lint_graph(
             m = _STACK_RE.match(ref)
             if m:
                 dep_stack = m.group(1)
-                stack_deps[stack_path].add(dep_stack)
+                # O5 (V8-PREP-5): `stacks` is keyed by full repo-relative
+                # path, but the only selector form that has ever resolved to
+                # a real container is a bare basename — so a ref written the
+                # only way that actually works today (`stack:db-init:...`
+                # against a stack declared at `infra/db-init`) previously
+                # never matched a `stack_deps` key and was silently dropped
+                # by the WHITE/GRAY/BLACK walk below (`dep not in color`).
+                # Resolve it to the declared path first so the edge lands on
+                # a real graph node.
+                resolved = _resolve_declared_stack_path(dep_stack, stacks.keys())
+                stack_deps[stack_path].add(resolved if resolved is not None else dep_stack)
 
     # Cycle detection using DFS
     # We only detect cycles among the known stacks
@@ -383,17 +430,150 @@ def _probe_consul(ref, parsed, config, repo_root, *, vault_client=None) -> Probe
     return _probe_vault(ref, vault_ref_obj, config, repo_root, vault_client=vault_client)
 
 
-def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
-    """Probe a stack:<name>:healthy ref via docker inspect."""
-    import json
-    from ciu import procutil
+def _declared_stack_paths(config: dict) -> set[str]:
+    """Every repo-relative stack path declared anywhere in *config* (V8-PREP-5,
+    shared source for O4's container-name resolution and O3's one_shot
+    cross-reference): each ``deploy.phases.*.services[].path`` plus every
+    ``deploy.profiles.*.stacks[]`` entry.
+
+    Mirrors :func:`ciu.deploy._producer_profile_stack_paths`'s two sources,
+    but aggregated across ALL phases/profiles rather than one profile at a
+    time: a provisioning probe has no active-profile context of its own — it
+    only ever receives the merged global *config* — so there is no single
+    profile to scope this to. Re-derived here rather than imported because
+    neither `_producer_profile_stack_paths` nor ciu-P22's `action_check`
+    `deployed_paths` enumeration is exposed as a reusable, profile-agnostic
+    helper (`deploy.py` is this package's own forbidden file, so a shared
+    helper cannot be extracted there either).
+    """
+    paths: set[str] = set()
+    deploy_cfg = config.get("deploy", {})
+    if not isinstance(deploy_cfg, dict):
+        return paths
+
+    phases = deploy_cfg.get("phases", {})
+    if isinstance(phases, dict):
+        for phase in phases.values():
+            if not isinstance(phase, dict):
+                continue
+            for svc in phase.get("services", []) or []:
+                if isinstance(svc, dict):
+                    path = svc.get("path")
+                    if isinstance(path, str) and path:
+                        paths.add(path)
+
+    profiles = deploy_cfg.get("profiles", {})
+    if isinstance(profiles, dict):
+        for pdata in profiles.values():
+            if not isinstance(pdata, dict):
+                continue
+            for s in pdata.get("stacks", []) or []:
+                if isinstance(s, str) and s:
+                    paths.add(s)
+
+    return paths
+
+
+def _stack_container_name(config: dict, selector: str) -> str:
+    """Resolve a stack ref's selector to the container name for it (O4,
+    V8-PREP-5).
+
+    A slash-FREE selector is passed straight through to ``container_name``
+    UNCHANGED — byte-identical to every release before this package, which
+    is the regression bar this fix must not cross. A slash-bearing selector
+    (e.g. ``infra/db-init``) is guaranteed-broken today: ``container_name``
+    builds ``{project}-{env_tag}-infra/db-init``, a name no real container
+    can ever have (no test exercises a passing slash-bearing selector,
+    confirming nothing relies on that brokenness). When such a selector
+    matches a KNOWN declared stack path (:func:`_declared_stack_paths`), it
+    is resolved to that path's final segment — the same bare-name convention
+    every slash-free selector already uses — before being handed to
+    ``container_name``. A selector that does not match any known path falls
+    through UNCHANGED: a genuine typo still surfaces as "container not
+    found", exactly as it always has, rather than being silently
+    reinterpreted into some other stack's container.
+    """
+    if "/" in selector:
+        resolved = _resolve_declared_stack_path(selector, _declared_stack_paths(config))
+        if resolved is not None:
+            selector = resolved.rsplit("/", 1)[-1]
 
     try:
         from ciu.deploy import container_name as _container_name
-        # The stack name is used as the service name for container lookup
-        cname = _container_name(config, parsed.selector)
+        return _container_name(config, selector)
     except (ValueError, KeyError):
-        cname = parsed.selector
+        return selector
+
+
+def _one_shot_stack_service(config: dict, selector: str) -> Optional[dict]:
+    """Return the ``deploy.phases.*.services[]`` entry *selector* refers to,
+    or ``None`` (O3's ciu-check cross-reference, V8-PREP-5).
+
+    Matches by declared ``path`` — exact, or by that path's final segment
+    against a bare selector — the same resolution rule O4's
+    :func:`_stack_container_name` uses, so ``stack:db-init:healthy`` and
+    ``stack:infra/db-init:healthy`` both find the same phase entry when
+    ``infra/db-init`` is the declared path.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not isinstance(deploy_cfg, dict):
+        return None
+    phases = deploy_cfg.get("phases", {})
+    if not isinstance(phases, dict):
+        return None
+    for phase in phases.values():
+        if not isinstance(phase, dict):
+            continue
+        for svc in phase.get("services", []) or []:
+            if not isinstance(svc, dict):
+                continue
+            path = svc.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            if path == selector or path.rsplit("/", 1)[-1] == selector:
+                return svc
+    return None
+
+
+def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
+    """Probe a stack:<name>:healthy|completed ref via docker inspect.
+
+    ``parsed.subkind`` carries the terminal: ``''`` for the original
+    ``:healthy`` form (behaviour unchanged, O1) or ``'completed'`` for the
+    new exit-0-based terminal, which NEVER reads ``Health`` under any code
+    path below — it looks only at ``Running``/``ExitCode``. That is the
+    exact false-positive gap ``:healthy``'s own exit-0-no-healthcheck
+    fallback has: a healthcheck that reports healthy and THEN the container
+    exits still satisfies `:healthy` via the ``status == 'healthy'`` branch
+    below, even though the container is no longer running.
+    """
+    import json
+    from ciu import procutil
+
+    is_completed = parsed.subkind == 'completed'
+    cname = _stack_container_name(config, parsed.selector)
+
+    if not is_completed:
+        # O3 (V8-PREP-5): a `:healthy` ref targeting a stack that declares
+        # itself `one_shot = true` in its OWN phase entry is exactly the
+        # situation `:completed` exists to fix — warn every time, regardless
+        # of live outcome, mirroring O2's always-on deprecation warning.
+        matched = _one_shot_stack_service(config, parsed.selector)
+        if matched is not None:
+            from .deploy_pkg import phases as phases_pkg
+            try:
+                declared_one_shot = phases_pkg.service_one_shot(matched)
+            except ValueError:
+                declared_one_shot = False
+            if declared_one_shot:
+                print(
+                    f"[WARN] stack:{parsed.selector}:healthy references a stack "
+                    "declared 'one_shot = true' (a run-to-completion service). "
+                    f"Use 'stack:{parsed.selector}:completed' instead: it checks "
+                    "the same clean-exit signal without depending on the "
+                    "absence of a Docker healthcheck.",
+                    flush=True,
+                )
 
     if docker_exec_fn is not None:
         rc, stdout = docker_exec_fn(cname, ['inspect'])
@@ -422,6 +602,16 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
     except json.JSONDecodeError:
         return ProbeResult(ref=ref, satisfied=False, reason=f"Could not parse container state for '{cname}'")
 
+    if is_completed:
+        # :completed (O1, V8-PREP-5) NEVER reads Health — exit-0-based only.
+        running = state.get('Running', False)
+        exit_code = state.get('ExitCode')
+        if not running and exit_code == 0:
+            return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (exited 0)")
+        if running:
+            return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is still running, not completed")
+        return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' did not complete cleanly (exit code {exit_code})")
+
     health = state.get('Health', {}) or {}
     status = health.get('Status', '') if isinstance(health, dict) else ''
     if status == 'healthy':
@@ -432,9 +622,24 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
         if running:
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' is running (no healthcheck)")
         # One-shot stacks (e.g. db-init) exit 0 when they finish successfully —
-        # treat a clean exit as satisfied rather than "not running".
+        # treat a clean exit as satisfied rather than "not running". This
+        # fallback's BEHAVIOR is unchanged (removing it is V8's own breaking
+        # change, not this package's) but it is now DEPRECATED (O2,
+        # V8-PREP-5): warn every time it is the reason a probe is satisfied,
+        # naming the ref and the `:completed` terminal that checks the same
+        # signal without this fallback's false-positive gap (a healthcheck
+        # that reports healthy and then the container exits still satisfies
+        # `:healthy` via the branch above, even though the container is no
+        # longer running).
         exit_code = state.get('ExitCode')
         if exit_code == 0:
+            print(
+                f"[WARN] stack:{parsed.selector}:healthy was satisfied only via "
+                "the exit-0-no-healthcheck fallback (one-shot semantics). Use "
+                f"'stack:{parsed.selector}:completed' instead — V8 removes "
+                "this fallback.",
+                flush=True,
+            )
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (one-shot, exited 0)")
         return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is not running (exit code {exit_code})")
     return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' health status: {status}")

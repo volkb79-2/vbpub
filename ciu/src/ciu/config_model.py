@@ -1053,7 +1053,7 @@ _REF_RE = re.compile(
     r"|pg:(?:role|db|schema)/[a-zA-Z0-9_-]+"      # pg:role/<n>, pg:db/<n>, or pg:schema/<n>
     r"|minio:user/[a-zA-Z0-9_-]+"                 # minio:user/<name>
     r"|consul:token/[a-zA-Z0-9_-]+"               # consul:token/<svc>
-    r"|stack:[a-zA-Z0-9_/-]+:healthy)"            # stack:<name>:healthy
+    r"|stack:[a-zA-Z0-9_/-]+:(?:healthy|completed))"  # stack:<name>:healthy|completed
 )
 
 
@@ -1081,7 +1081,8 @@ def validate_provisioning_ref(ref: str) -> None:
         raise ValueError(
             f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
             f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, pg:schema/myschema, "
-            f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
+            f"minio:user/worker, consul:token/myapp, stack:db-core:healthy, "
+            f"stack:db-core:completed"
         )
 
 

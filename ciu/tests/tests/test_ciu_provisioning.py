@@ -90,6 +90,38 @@ def test_parse_ref_stack_with_slash():
 
 
 # ---------------------------------------------------------------------------
+# parse_ref — :completed terminal (O1, V8-PREP-5)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ref_stack_completed():
+    ref = parse_ref("stack:db-init:completed")
+    assert ref.kind == "stack"
+    assert ref.subkind == "completed"
+    assert ref.selector == "db-init"
+
+
+def test_parse_ref_stack_completed_with_slash():
+    ref = parse_ref("stack:infra/db-init:completed")
+    assert ref.kind == "stack"
+    assert ref.subkind == "completed"
+    assert ref.selector == "infra/db-init"
+
+
+def test_parse_ref_stack_healthy_subkind_unchanged():
+    # O1's additive contract: an existing ':healthy' ref's parsed subkind is
+    # UNCHANGED by this package (still '', never 'healthy' or anything new).
+    ref = parse_ref("stack:db-core:healthy")
+    assert ref.subkind == ""
+
+
+def test_parse_ref_stack_bad_terminal_raises():
+    import pytest
+    with pytest.raises(ValueError, match="does not match any valid pattern"):
+        parse_ref("stack:db-core:done")
+
+
+# ---------------------------------------------------------------------------
 # parse_ref — error cases
 # ---------------------------------------------------------------------------
 
@@ -260,6 +292,111 @@ def test_lint_graph_two_disjoint_cycles_via_shared_root_no_crash():
     errors = lint_graph(stacks)  # must not raise
     cycle_errors = [e for e in errors if "cycle" in e.lower()]
     assert len(cycle_errors) >= 1
+
+
+# ---------------------------------------------------------------------------
+# lint_graph — O5 fix: bare-selector refs resolve to full stack-path keys
+# ---------------------------------------------------------------------------
+
+
+def test_lint_graph_detects_cycle_via_bare_selector_matching_full_path_keys():
+    # Regression (O5, V8-PREP-5): `stacks` is keyed by full repo-relative
+    # path (exactly how deploy.py's real callers key it), but the ONLY
+    # selector form that has ever resolved to a real container is a bare
+    # basename (a slash-bearing selector was, until O4, guaranteed-broken).
+    # Before this fix, a bare-name ref never matched a full-path key, so a
+    # genuine cross-stack cycle silently passed lint.
+    stacks = {
+        "infra/a": {
+            "requires": ["stack:b:healthy"],  # bare -- must resolve to infra/b
+            "provides": ["stack:a:healthy"],
+        },
+        "infra/b": {
+            "requires": ["stack:a:healthy"],  # bare -- must resolve to infra/a
+            "provides": ["stack:b:healthy"],
+        },
+    }
+    errors = lint_graph(stacks)
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert len(cycle_errors) >= 1
+
+
+def test_lint_graph_bare_selector_via_completed_also_resolves():
+    # The fix applies uniformly to :completed refs too (O1 extends _STACK_RE).
+    stacks = {
+        "infra/a": {
+            "requires": ["stack:b:completed"],
+            "provides": ["stack:a:completed"],
+        },
+        "infra/b": {
+            "requires": ["stack:a:completed"],
+            "provides": ["stack:b:completed"],
+        },
+    }
+    errors = lint_graph(stacks)
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert len(cycle_errors) >= 1
+
+
+def test_lint_graph_ambiguous_bare_selector_stays_unresolved_no_false_cycle():
+    # Two declared stacks share the same basename ('db-init') -- an
+    # ambiguous bare selector must NOT be guessed at; the ref stays
+    # unresolved (today's exact behavior: silently not walked), so no
+    # phantom cycle is manufactured out of ambiguous data.
+    stacks = {
+        "infra/db-init": {"requires": [], "provides": ["stack:db-init:healthy"]},
+        "apps/db-init": {"requires": ["stack:db-init:healthy"], "provides": []},
+    }
+    errors = lint_graph(stacks)
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert cycle_errors == []
+
+
+def test_lint_graph_full_path_selector_still_works_unchanged():
+    # A ref written with the full path (matches a `stacks` key EXACTLY) must
+    # keep working exactly as it did before this package (regression bar).
+    stacks = {
+        "infra/a": {
+            "requires": ["stack:infra/b:healthy"],
+            "provides": ["stack:infra/a:healthy"],
+        },
+        "infra/b": {
+            "requires": ["stack:infra/a:healthy"],
+            "provides": ["stack:infra/b:healthy"],
+        },
+    }
+    errors = lint_graph(stacks)
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert len(cycle_errors) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _resolve_declared_stack_path (O4/O5 shared helper)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_declared_stack_path_exact_match():
+    assert provisioning._resolve_declared_stack_path(
+        "infra/db-init", {"infra/db-init", "infra/vault"}
+    ) == "infra/db-init"
+
+
+def test_resolve_declared_stack_path_unique_basename_match():
+    assert provisioning._resolve_declared_stack_path(
+        "db-init", {"infra/db-init", "infra/vault"}
+    ) == "infra/db-init"
+
+
+def test_resolve_declared_stack_path_ambiguous_basename_returns_none():
+    assert provisioning._resolve_declared_stack_path(
+        "db-init", {"infra/db-init", "apps/db-init"}
+    ) is None
+
+
+def test_resolve_declared_stack_path_unknown_returns_none():
+    assert provisioning._resolve_declared_stack_path(
+        "nope", {"infra/db-init"}
+    ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -965,6 +1102,501 @@ def test_probe_stack_exited_nonzero_is_unsatisfied(monkeypatch):
         repo_root=Path("/tmp"),
     )
     assert result.satisfied is False
+
+
+# ---------------------------------------------------------------------------
+# O2: the exit-0-no-healthcheck fallback now WARNS (behavior unchanged)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stack_healthy_oneshot_fallback_warns_deprecated(monkeypatch, capsys):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    # Behavior is UNCHANGED (O2's negative: this must not become an abort).
+    assert result.satisfied is True
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "stack:db-init:healthy" in out
+    assert "stack:db-init:completed" in out
+
+
+def test_probe_stack_healthy_running_no_healthcheck_does_not_warn(monkeypatch, capsys):
+    # The OTHER no-healthcheck branch (a long-running container) is a
+    # different code path from the exit-0 fallback and must NOT warn.
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": None, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is True
+    assert "[WARN]" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# O1: :completed terminal — exit-0-based, NEVER reads Health
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stack_completed_exited_zero_is_satisfied(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:completed",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is True
+    assert "exited 0" in result.reason or "completed" in result.reason
+
+
+def test_probe_stack_completed_nonzero_exit_is_not_satisfied(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 1, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:completed",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is False
+
+
+def test_probe_stack_completed_still_running_is_not_satisfied(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": None, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:completed",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is False
+
+
+def test_probe_stack_completed_never_reads_health_even_when_healthy(monkeypatch):
+    # The exact false-positive gap O1 closes: a healthcheck that reports
+    # 'healthy' while the container is STILL RUNNING (not yet exited) must
+    # NOT satisfy :completed -- unlike :healthy, which is satisfied by
+    # Health.Status alone regardless of Running/ExitCode (proven below by
+    # probing the identical state via :healthy on the same fixture).
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps(
+            {"Running": True, "ExitCode": None, "Health": {"Status": "healthy"}}
+        )
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+
+    completed_result = probe_ref(
+        "stack:db-init:completed",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert completed_result.satisfied is False
+
+    healthy_result = probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert healthy_result.satisfied is True
+
+
+def test_probe_stack_completed_container_not_found(monkeypatch):
+    from ciu import procutil
+
+    class _R:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:completed",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is False
+    assert "not found" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# O4: slash-bearing selector resolution (+ slash-free regression bar)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stack_slash_free_selector_container_name_byte_identical(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    def fake_docker(args, check=False):
+        captured["args"] = list(args)
+        return _R()
+
+    monkeypatch.setattr(procutil, "docker", fake_docker)
+    probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    # container_name(config, "db-init") == "p-t-db-init" -- exactly the same
+    # call pre-package code made (selector passed straight through, unchanged).
+    assert captured["args"][-1] == "p-t-db-init"
+
+
+def test_probe_stack_slash_bearing_selector_resolves_known_declared_path(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 0, "Health": {}})
+
+    def fake_docker(args, check=False):
+        captured["args"] = list(args)
+        return _R()
+
+    monkeypatch.setattr(procutil, "docker", fake_docker)
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init"}]},
+            },
+        }
+    }
+    result = probe_ref("stack:infra/db-init:completed", config=config, repo_root=Path("/tmp"))
+    # Previously guaranteed-broken (container_name(config, "infra/db-init")
+    # -> "p-t-infra/db-init", matching no real container). Now resolves to
+    # the declared path's basename, exactly like a bare selector always has.
+    assert captured["args"][-1] == "p-t-db-init"
+    assert result.satisfied is True
+
+
+def test_probe_stack_slash_bearing_selector_via_profile_stacks_list(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    def fake_docker(args, check=False):
+        captured["args"] = list(args)
+        return _R()
+
+    monkeypatch.setattr(procutil, "docker", fake_docker)
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "profiles": {"core": {"stacks": ["infra/db-init"]}},
+        }
+    }
+    probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
+    assert captured["args"][-1] == "p-t-db-init"
+
+
+def test_probe_stack_slash_bearing_selector_unknown_path_stays_broken(monkeypatch):
+    # No declared stack matches -- the selector is passed through UNCHANGED,
+    # exactly as today's (guaranteed-broken) behavior, so a genuine typo
+    # still surfaces as "container not found" rather than being silently
+    # reinterpreted.
+    import json as _json
+    from ciu import procutil
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    def fake_docker(args, check=False):
+        captured["args"] = list(args)
+        return _R()
+
+    monkeypatch.setattr(procutil, "docker", fake_docker)
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    probe_ref("stack:some/unknown:healthy", config=config, repo_root=Path("/tmp"))
+    assert captured["args"][-1] == "p-t-some/unknown"
+
+
+# ---------------------------------------------------------------------------
+# _declared_stack_paths / _stack_container_name / _one_shot_stack_service
+# (private helpers, direct unit coverage of defensive branches)
+# ---------------------------------------------------------------------------
+
+
+def test_declared_stack_paths_empty_config():
+    assert provisioning._declared_stack_paths({}) == set()
+
+
+def test_declared_stack_paths_deploy_not_a_dict():
+    assert provisioning._declared_stack_paths({"deploy": "nope"}) == set()
+
+
+def test_declared_stack_paths_skips_non_dict_phase_and_service():
+    config = {
+        "deploy": {
+            "phases": {
+                "phase_1": "not-a-dict",
+                "phase_2": {
+                    "services": [
+                        "not-a-dict-either",
+                        {"path": ""},
+                        {"path": 123},
+                        {},
+                        {"path": "infra/a"},
+                    ]
+                },
+            },
+        }
+    }
+    assert provisioning._declared_stack_paths(config) == {"infra/a"}
+
+
+def test_declared_stack_paths_phases_not_a_dict_still_reads_profiles():
+    config = {
+        "deploy": {
+            "phases": "not-a-dict",
+            "profiles": {"core": {"stacks": ["infra/z"]}},
+        }
+    }
+    assert provisioning._declared_stack_paths(config) == {"infra/z"}
+
+
+def test_declared_stack_paths_from_profiles_skips_non_dict_entries():
+    config = {
+        "deploy": {
+            "profiles": {
+                "core": "not-a-dict",
+                "edge": {"stacks": [123, "", "infra/b"]},
+            },
+        }
+    }
+    assert provisioning._declared_stack_paths(config) == {"infra/b"}
+
+
+def test_declared_stack_paths_profiles_not_a_dict():
+    config = {"deploy": {"profiles": "nope"}}
+    assert provisioning._declared_stack_paths(config) == set()
+
+
+def test_stack_container_name_no_config_no_match_falls_back_to_selector():
+    # A missing deploy.project_name/environment_tag raises inside
+    # container_name; the KeyError/ValueError fallback returns the selector
+    # unchanged -- same fallback contract _probe_stack always had.
+    assert provisioning._stack_container_name({}, "db-init") == "db-init"
+
+
+def test_one_shot_stack_service_no_deploy_table():
+    assert provisioning._one_shot_stack_service({}, "db-init") is None
+
+
+def test_one_shot_stack_service_deploy_not_a_dict():
+    assert provisioning._one_shot_stack_service({"deploy": "nope"}, "db-init") is None
+
+
+def test_one_shot_stack_service_phases_not_a_dict():
+    assert provisioning._one_shot_stack_service({"deploy": {"phases": "nope"}}, "db-init") is None
+
+
+def test_one_shot_stack_service_skips_non_dict_phase_and_service():
+    config = {
+        "deploy": {
+            "phases": {
+                "phase_1": "not-a-dict",
+                "phase_2": {
+                    "services": [
+                        "not-a-dict-either",
+                        {"path": ""},
+                        {"path": 123},
+                        {},
+                        {"path": "infra/a"},
+                    ]
+                },
+            },
+        }
+    }
+    assert provisioning._one_shot_stack_service(config, "nomatch") is None
+    matched = provisioning._one_shot_stack_service(config, "infra/a")
+    assert matched == {"path": "infra/a"}
+
+
+# ---------------------------------------------------------------------------
+# O3: one_shot ciu-check cross-reference warning
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stack_healthy_warns_when_target_declares_one_shot(monkeypatch, capsys):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init", "one_shot": True}]},
+            },
+        }
+    }
+    result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
+    assert result.satisfied is True
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "one_shot" in out
+    assert "stack:infra/db-init:completed" in out
+
+
+def test_probe_stack_healthy_warns_via_bare_selector_matching_one_shot_stack(monkeypatch, capsys):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init", "one_shot": True}]},
+            },
+        }
+    }
+    result = probe_ref("stack:db-init:healthy", config=config, repo_root=Path("/tmp"))
+    assert result.satisfied is True
+    assert "[WARN]" in capsys.readouterr().out
+
+
+def test_probe_stack_healthy_no_warning_when_target_not_one_shot(monkeypatch, capsys):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init"}]},
+            },
+        }
+    }
+    result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
+    assert result.satisfied is True
+    assert "[WARN]" not in capsys.readouterr().out
+
+
+def test_probe_stack_completed_never_emits_one_shot_cross_reference_warning(monkeypatch, capsys):
+    # A :completed ref is already the CORRECT form -- no cross-reference
+    # warning should fire even when the target declares one_shot = true.
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init", "one_shot": True}]},
+            },
+        }
+    }
+    result = probe_ref("stack:infra/db-init:completed", config=config, repo_root=Path("/tmp"))
+    assert result.satisfied is True
+    assert "[WARN]" not in capsys.readouterr().out
+
+
+def test_probe_stack_healthy_one_shot_malformed_does_not_raise(monkeypatch, capsys):
+    # A malformed one_shot on the MATCHED entry must never make a probe
+    # raise (module contract: probe_ref/​_probe_stack always return a
+    # ProbeResult) -- treated as "not declared one_shot", no warning.
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": True, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "phases": {
+                "phase_1": {"services": [{"path": "infra/db-init", "one_shot": "yes"}]},
+            },
+        }
+    }
+    result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
+    assert result.satisfied is True
+    assert "[WARN]" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -276,6 +276,24 @@ health_timeout = "5s"     # workers should be healthy almost immediately;
                           # behind Authentik's 240s ceiling
 ```
 
+Optional `one_shot = true` (ciu-P23, V8-PREP-5, [S7.2]) DECLARES that a
+service is a run-to-completion stack (e.g. a migration/db-init container)
+whose successful **clean exit** — not a Docker healthcheck — is the correct
+completion signal. It is a strict boolean and defaults to `false`. This key
+is declaration + shape validation only: it does **not** change the health
+gate's own polling loop above (a larger, future change once a real caller
+needs that behavior). Its one live consumer today is the `requires`/
+`provides` provisioning probe (`stack:<path>:completed`, see below) — when
+another stack's `requires` references a `one_shot = true` stack via
+`:healthy` instead of `:completed`, `ciu up`/`ciu check --live` prints a
+`[WARN]` suggesting the switch:
+
+```toml
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true    # a migration container that exits 0 when done
+```
+
 `landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
 identity of one deployment landscape and render its Consul KV root
 (`dstdns/<landscape_id>/…`) and mesh ACL tags from it. When present it MUST
@@ -601,7 +619,7 @@ requires = [
   "pg:role/authentik",
   "pg:schema/authentik",
   "vault:secret/db/postgres/authentik_password",
-  "stack:db-init:healthy",      # one-shot exited-0 containers count as satisfied
+  "stack:db-init:healthy",      # DEPRECATED for a one_shot stack -- see below
 ]
 ```
 
@@ -620,6 +638,42 @@ and live-probes each phase's requirements just before that phase deploys.
 | `minio:user/<name>` | `minio:user/worker-io` |
 | `consul:token/<svc>` | `consul:token/myapp` |
 | `stack:<name>:healthy` | `stack:db-init:healthy` |
+| `stack:<name>:completed` | `stack:db-init:completed` |
+
+Either `stack:` selector MAY be a bare name or a repo-relative path
+containing `/` (ciu-P23, V8-PREP-5): a slash-bearing selector (e.g.
+`stack:infra/db-init:completed`) is resolved against the declared stack
+paths in `deploy.phases.*.services[].path`/`deploy.profiles.*.stacks[]`. A
+selector that matches no declared path is left unresolved (a typo still
+fails as "container not found," never silently reinterpreted); a bare
+selector's resolution is unchanged either way.
+
+**`:healthy` vs `:completed` — one-shot / run-to-completion stacks.** A
+service whose phase entry declares `one_shot = true` (see
+`[[deploy.phases.phase_N.services]]` above) is a run-to-completion stack
+(e.g. a DB migration container): the correct completion signal is a clean
+exit, not a Docker healthcheck. Reference it with `:completed`, not
+`:healthy` — `:healthy`'s own exit-0-no-healthcheck fallback still works
+(unchanged) but is now deprecated and prints a `[WARN]`, and — unlike
+`:completed` — it can be fooled by a healthcheck that reports `healthy`
+before the container exits. `ciu up`/`ciu check --live` also warns
+automatically whenever a `:healthy` ref targets a stack that declares
+`one_shot = true`, even before you notice the deprecation warning yourself.
+Worked example — a DB migration container another stack must wait on:
+
+```toml
+# infra/db-init/ciu.defaults.toml.j2
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true
+
+[db_init]
+provides = ["stack:infra/db-init:completed"]
+
+# applications/worker/ciu.defaults.toml.j2
+[worker]
+requires = ["stack:infra/db-init:completed"]   # NOT :healthy -- db-init exits, it never "runs"
+```
 
 ### `[<root>.env]` — stack-scoped env [S3.6]
 

@@ -127,6 +127,34 @@ def service_health_enabled(service: dict) -> bool:
     )
 
 
+def service_one_shot(service: dict) -> bool:
+    """Evaluate the optional 'one_shot' field of a service dict (O3, V8-PREP-5).
+
+    - Absent → False (the default: a normal, long-running service).
+    - bool   → itself.
+    - Any other type → ValueError [S7.2] (a plain per-service toggle, no
+      flag/expression form — mirrors ``shipped``/``health``'s exact pattern).
+
+    ``one_shot = true`` DECLARES that a phase service is a run-to-completion
+    stack (e.g. a migration/db-init container) whose successful clean exit —
+    not a Docker healthcheck — is the correct completion signal; the stack
+    should be referenced via ``stack:<path>:completed``
+    (``provisioning.py``'s O1) rather than ``:healthy``. This accessor ships
+    the declaration + shape validation only: it does NOT wire ``one_shot``
+    into the deploy loop's own post-up wait behaviour (that consumer lives in
+    the forbidden ``deploy.py`` and is a separate, larger change once a real
+    caller needs the polling behaviour — see this package's LOG). The only
+    current consumer is ``provisioning.py``'s ``:healthy`` probe, which reads
+    this to warn when a one_shot-declared stack is referenced the old way.
+    """
+    raw = service.get("one_shot", False)
+    if isinstance(raw, bool):
+        return raw
+    raise ValueError(
+        f"[S7.2] service 'one_shot' must be a bool; got {type(raw).__name__} {raw!r}."
+    )
+
+
 def service_health_timeout(service: dict) -> str | None:
     """Return the optional per-service health-gate timeout override (S7.7).
 
