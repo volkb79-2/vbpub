@@ -2431,3 +2431,66 @@ not been done yet.
       CLI;
 - [ ] a test proving the fix is shown red against pre-fix code (matching
       B025's own red-first discipline).
+
+---
+
+## B029 — R3's canary side-run has no infrastructure wiring at all; a resolvable-elsewhere fact reports a misattributed R3 claim
+
+**Filed 2026-08-25 (round 2 review of the stabilization wave, in the course
+of verifying B025).** Not B025 itself — B025's four sites all crashed
+uncaught with no verdict; this one produces a real, schema-valid verdict
+with the wrong cause, which is arguably worse to leave undiagnosed.
+
+### Problem
+
+`canary.py`'s R3 side-run resolves a **second**, independent `CommandPlan`
+via `runner.execute_command`, which accepts no `infrastructure_source`/
+`infrastructure_environment` parameters at all (`execute_command`'s own
+docstring now says so explicitly, corrected in the stabilization wave's
+round 2 — see `runner.py`'s step-1 note). This is not a missing forward
+the way B025's environment-probe site was; `execute_command` has never had
+anywhere to forward these params TO. Confirmed reachable: nothing in
+`config.py` forbids an `[infrastructure]` table on an R3 lane, and R3 forces
+R1 alongside it, so the lane's MAIN command plan (built through
+`_run_higher_rigor_lane`) resolves its infrastructure facts correctly — only
+the canary's own side-run plan does not.
+
+**The failure mode is a misattributed claim, not a crash.** `_run_higher_rigor_lane`
+already catches `AssayError` from `run_isolated_canary` (`runner.py` around
+`:2262`) and converts it into an R3 `Claim` carrying the exception's own
+`outcome`/`reason_code` — so a lane declaring a `derived:` fact that resolves
+perfectly everywhere else reports `ERROR`/`BAD_LANE_CONFIG` on its R3 claim,
+naming the infrastructure declaration as the cause when nothing about it is
+actually broken. Worse: a `required-env:` fact would silently SUCCEED on
+this path (`resolve_command_plan`'s own default falls back to `os.environ`
+when `infrastructure_environment` is `None`), so the two source kinds behave
+differently on the exact same lane shape — a `derived:` fact fails, a
+`required-env:` fact doesn't, for reasons that have nothing to do with
+either fact's own resolvability.
+
+### Why this needs a design decision, not a quick patch
+
+Unlike B025 (where every crash site needed the SAME fallback shape:
+"forward the params, or refuse cleanly if that fails"), this is a genuine
+missing-feature question: should the canary side-run see the same
+infrastructure world as the lane's main command at all? If yes, threading
+*infrastructure_source*/*infrastructure_environment* through
+`execute_command` into `canary.py`'s two callers needs its own test
+coverage (a real R3 lane with a resolvable `derived:` fact, driven through
+the CLI, asserting the R3 claim is `PASS`/`FAIL` on the actual canary
+outcome, not `ERROR`/`BAD_LANE_CONFIG` on an infrastructure cause that isn't
+real). If no — R3 canaries are documented as infrastructure-blind — that
+needs stating explicitly in `docs/CONSUMERS.md` and `DESIGN-GUIDE.md` rather
+than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
+
+### Acceptance
+
+- [ ] a decision recorded on whether R3's canary side-run should resolve
+      infrastructure facts at all;
+- [ ] if yes: `execute_command`/`canary.py`'s two call sites thread
+      *infrastructure_source*/*infrastructure_environment* through, and a
+      CLI-driven test proves a resolvable `derived:` fact no longer produces
+      a false `ERROR`/`BAD_LANE_CONFIG` R3 claim;
+- [ ] if no: documented explicitly as a known limitation in `docs/CONSUMERS.md`
+      and `docs/DESIGN-GUIDE.md`, so a consumer hitting the misattributed
+      claim has somewhere to learn why.

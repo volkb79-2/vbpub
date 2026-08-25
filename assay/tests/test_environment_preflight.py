@@ -25,7 +25,7 @@ allow_argv_append = false
 
 
 def _run(repo: GitRepo, tmp_path: Path, *, probe: str) -> tuple[int, dict]:
-    repo.write(".gitignore", "*.json\n")
+    repo.write(".gitignore", "*.json\nciu.global.toml\n")
     lane = _LANE.format(probe=probe)
     repo.write("assay.toml", lane)
     repo.commit_all("lane")
@@ -56,6 +56,33 @@ def test_a_failing_environment_probe_refuses_before_the_lane(git_repo: GitRepo, 
         "ERROR",
         "BAD_LANE_CONFIG",
     )
+
+
+def test_environment_probe_runs_normally_with_a_resolvable_infrastructure_fact(
+    git_repo: GitRepo, tmp_path
+):
+    """(B025 round 2, N-W1 follow-up) Round 2 review found the probe's plan
+    resolution never forwarding `infrastructure_source`/`infrastructure_
+    environment` at all was fatal even for a RESOLVABLE `derived:` fact --
+    not just the unresolvable case the sibling test below covers, which
+    would have refused either way and so could not by itself prove the
+    forward actually happened. `ciu.global.toml` is gitignored (`_run`'s own
+    `.gitignore`), matching real ciu usage, so its presence does not trip
+    the pre-run dirty-tree check."""
+    (git_repo.path / "ciu.global.toml").write_text(
+        "[deploy]\nimage = 'postgres:18'\n", encoding="utf-8"
+    )
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        probe=(
+            'environment_command = ["/bin/sh", "-c", "exit 0"]\n\n'
+            "[lanes.real.infrastructure]\n"
+            'image = "derived:deploy.image"\n'
+        ),
+    )
+
+    assert (code, document["outcome"]) == (0, "PASS")
 
 
 def test_environment_probe_refuses_cleanly_when_infrastructure_is_unresolvable(

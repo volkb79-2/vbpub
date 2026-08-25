@@ -583,7 +583,16 @@ def execute_command(
 
     Ordering, all before anything launches:
 
-    1. :func:`resolve_command_plan` -- pure, cannot fail.
+    1. :func:`resolve_command_plan` -- pure, but CAN raise
+       :class:`~assay.errors.AssayError` since B013: this function accepts no
+       *infrastructure_source*/*infrastructure_environment* of its own, so a
+       lane declaring any infrastructure fact reaches :func:`resolve_command_plan`
+       with neither -- a ``derived:`` fact always raises here regardless of
+       whether it is actually resolvable elsewhere (B029, filed rather than
+       fixed: this function's only caller, :mod:`assay.canary`'s R3 side-run,
+       catches the raise and reports a misattributed ``ERROR``/
+       ``BAD_LANE_CONFIG`` R3 claim rather than crashing, but the claim's own
+       cause is wrong on a lane whose infrastructure resolves everywhere else).
     2. the append-permission gate (A-095): if *argv_append* is non-empty and
        ``lane.allow_argv_append`` is false, this returns
        ``ERROR``/``EXEC_FAILED`` WITHOUT calling *process_runner* at all --
