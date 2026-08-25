@@ -172,7 +172,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 | CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
 | CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
-| CIU-55 | The 100% gate's coverage of `src/ciu/hook_templates/post_compose_db.py` is SCHEDULING LUCK, not measurement: a hook module loaded the way CIU actually loads hooks (`hooks_runner._load_hook_module`, `spec_from_file_location` under a synthetic non-`ciu` module name) is not measured by `--cov=ciu` at all unless the SAME file was also imported normally in that worker process. Under `-n auto --dist load`, xdist splits `test_ciu_scaffold_hooks.py` across workers, so the shipped template's `run()` body is sometimes measured and sometimes not — the gate flips to 99.85% on any change to the suite's test COUNT, with zero source changes | High | OPEN — filed by ciu-P26 (reproduced on the CLEAN baseline with a dummy 122-test file; ciu-P26's own +122 tests trip it). Fixing it needs a file outside that package's `scope.touch` — see detail |
+| CIU-55 | The 100% gate's coverage of `src/ciu/hook_templates/post_compose_db.py` is SCHEDULING LUCK, not measurement: a hook module loaded the way CIU actually loads hooks (`hooks_runner._load_hook_module`, `spec_from_file_location` under a synthetic non-`ciu` module name) is not measured by `--cov=ciu` at all unless the SAME file was also imported normally in that worker process. Under `-n auto --dist load`, xdist splits `test_ciu_scaffold_hooks.py` across workers, so the shipped template's `run()` body is sometimes measured and sometimes not — the gate flips to 99.85% on any change to the suite's test COUNT, with zero source changes | High | FIXED — `run-ciu-tests.py` now runs `-n auto --dist loadfile`, keeping every test file's functions on one worker; verified 100.00% coverage across 5 consecutive runs with zero flips. The module-level-import half of the proposed fix was not additionally applied — `--dist loadfile` alone closed it (see detail) |
+| CIU-56 | `tests/conftest.py`'s autouse ambient-env-scrub fixture (ciu-P13) never included `CIU_KSM`, despite CHANGES.md's own history recording multiple prior one-off `CIU_KSM=off` pins scattered across individual test fixtures to work around exactly this class of leak — local patches on individual flakes, never a fix of the shared fixture's actual coverage | Medium | FIXED — `CIU_KSM` added to `_AMBIENT_ENV_VARS`. Live-caught while investigating CIU-55: `test_absolute_governance_ksm_path_is_preserved_in_overlay` (`test_ciu_composefile_branch109.py`) intermittently failed `KeyError: 'volumes'` under `--dist loadfile` because `governance.resolve_ksm_optin` reads `CIU_KSM` fresh on every call and the test never pins it; a contaminated/leftover value silently changes which branch `composefile.generate_overlay` takes. No raw (non-monkeypatch) `os.environ["CIU_KSM"]` assignment or ambient shell value was found as the exact source — the fix closes the class regardless of the precise vector, matching the existing pattern for the other 6 scrubbed vars (see detail) |
+| CIU-57 | Multiple tests build their fixture tree via `shutil.copytree` FROM the real, checked-in `test-repo/` directory (a SHARED, on-disk, non-per-test-isolated source) rather than from a synthetic/generated source — a concurrent xdist worker rendering into (or otherwise mutating) that same shared source directory races the `copytree` read, observed as a `shutil.copytree`/`os.scandir` failure over entries that include unexpected generated artifacts (`ciu.compose.yml`, `__pycache__`) alongside the template files | Medium | OPEN — found live while stress-testing the CIU-55/CIU-56 fixes (2026-08-25), not caused by either; not investigated further — a structurally different, likely broader test-fixture-isolation problem across the suite, out of scope for this wave. A future package should enumerate every `copytree`/direct-read use of `test-repo/` (or any other shared non-tmp_path source) and either isolate a pristine copy once per session (not per test) or generate the fixture tree synthetically per test |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -1508,6 +1510,102 @@ copies) silently unmeasured today?
 
 **SPEC ownership:** none — this is gate/test-infrastructure, not normative
 behavior.
+
+## CIU-56 — `CIU_KSM` missing from the autouse ambient-env scrub fixture
+
+**Filed by:** controller, 2026-08-25, while verifying the CIU-55 fix
+(`--dist loadfile`) by re-running the gate several times in a row.
+
+### Observed mechanism
+
+`tests/conftest.py`'s `_scrub_ambient_identity_env` (ciu-P13) clears a
+closed list of ambient env vars before every test body via
+`monkeypatch.delenv`, specifically so a test's outcome cannot depend on
+whatever the invoking shell (or an earlier test) happened to leave set.
+`CIU_KSM` was never in that list, despite `governance.resolve_ksm_optin`
+reading it fresh on every call and CHANGES.md's own history recording at
+least two prior one-off fixture-level pins
+(`pin CIU_KSM=off in build_repo`, `pin CIU_KSM=off in the S4.12 refresh
+test`) as "flake hunt" fixes for exactly this class of leak — local
+patches on individual symptoms, never a fix of the shared fixture's
+actual coverage.
+
+Live-reproduced while re-running the gate under the new `--dist loadfile`
+(CIU-55's fix): `test_absolute_governance_ksm_path_is_preserved_in_overlay`
+(`test_ciu_composefile_branch109.py`) intermittently failed
+`KeyError: 'volumes'`. Root cause traced to
+`composefile.generate_overlay` (`src/ciu/composefile.py:1227`):
+`ksm_rel = governance_mod.resolve_ksm_optin(str(gov_cfg.get("ksm_optin") or ""))`
+— if `CIU_KSM` is set to anything in `("0", "off", "false", "no", "")` at
+call time, the test's own configured `ksm_optin` (a real shim path) is
+silently overridden to empty, so neither the `BUILTIN_KSM` branch nor the
+`elif ksm_rel:` branch fires, `_ksm_optin_source` is never set, and the
+resulting compose service never gets a `volumes` key at all — exactly the
+observed `KeyError`.
+
+**Exact contamination vector not pinned down**: no raw (non-monkeypatch)
+`os.environ["CIU_KSM"] = ...` assignment exists anywhere in `src/` or
+`tests/` (grepped), the one test that sets it
+(`test_spec_contracts.py:151`) does so via `monkeypatch.setenv` (which
+auto-reverts at that test's own teardown), and the ambient devcontainer
+shell does not have it set either. The fix closes the class regardless of
+the precise vector — the same reasoning already applied to the other 6
+scrubbed vars, none of which needed their leak source individually
+diagnosed before being added.
+
+### Fix
+
+Added `"CIU_KSM"` to `tests/conftest.py`'s `_AMBIENT_ENV_VARS`. Verified:
+5 consecutive full-gate runs green afterward (this specific test did not
+recur as a failure across ~10 total gate runs following the fix).
+
+**SPEC ownership:** none — gate/test-infrastructure.
+
+## CIU-57 — shared, on-disk `test-repo/` fixture source is not test-isolated, races under parallel workers
+
+**Filed by:** controller, 2026-08-25, found live while stress-testing the
+CIU-55/CIU-56 fixes with repeated full gate runs — not caused by either.
+
+### Observed mechanism
+
+`test_ciu_render_selection_context.py::test_engine_threads_selection_into_configfiles_and_hooks`
+failed once (of roughly 10 repeated full-gate runs) inside its own
+`_add_stack` helper's `shutil.copytree(SRC_APP, dst)` call, where `SRC_APP`
+is `test-repo/applications/app-config` — a real, checked-in directory in
+the repository, not a fresh per-test tmp_path. The failing run's captured
+`entries` listing included `ciu.compose.yml` (a rendered, normally-
+gitignored artifact) and `__pycache__` alongside the template's own
+source files, suggesting the shared source directory's on-disk state can
+be mutated (rendered into, executed) by something else running
+concurrently, and `copytree`'s directory-entry enumeration can be
+racing that mutation — a classic TOCTOU between listing entries and
+copying each one.
+
+This is a **structurally different** problem from CIU-56 (no shared env
+var involved) and was not investigated further: pinning down which OTHER
+test, fixture, or process actually mutates `test-repo/applications/
+app-config` — and whether it is another test in a sibling worker, a
+leftover artifact from an interactively-run `ciu` command against this
+same tree (this repo's own `test-repo/` is also used for manual smoke
+testing), or something else — needs a dedicated investigation, not a
+guess.
+
+### Why not fixed now
+
+Out of scope for this wave (identity-facts/CIU-25 groundwork), and
+genuinely rare in this run (1 of ~10). Filing it rather than letting it be
+rediscovered from scratch, per this backlog's own established practice.
+
+### Proposed direction (not designed)
+
+Enumerate every test that reads `test-repo/` (or any other shared,
+non-`tmp_path` source) via `copytree`/direct read, and either: (a) isolate
+one pristine copy of the needed subtree once per test SESSION (not per
+test) into a location nothing else touches, or (b) generate the fixture
+tree synthetically per test instead of copying from a shared, mutable,
+checked-in directory at all.
+
+**SPEC ownership:** none — gate/test-infrastructure.
 
 ## Compact resolved index
 

@@ -355,6 +355,30 @@ gate runs; the commit subjects remain the traceable source of detail.
   a ciu release can do on its own. Backlog disposition: PARTIAL, not FIXED.
 
 ### Fixed
+- fix(ciu): **gate-integrity: `run-ciu-tests.py` used xdist's default
+  `--dist load`, which can non-deterministically under-measure coverage for
+  any module CIU loads by file path under a synthetic module name** (CIU-55,
+  found while reviewing ciu-P26's own gate output). `hooks_runner
+  ._load_hook_module` loads hook files exactly this way; a worker that never
+  also imports the module normally records zero coverage for it even though
+  another worker executed it, and the merge does not reconcile the two —
+  reproduced deterministically on a clean baseline (2 of 3 runs
+  under-reported `hook_templates/post_compose_db.py` by its exact module
+  size; 0 of 3 did under `--dist loadfile`). Fixed by switching to
+  `--dist loadfile`, which keeps every test file's functions on one worker;
+  verified 100.00% coverage across 5+ consecutive runs with zero flips.
+- fix(ciu): **`tests/conftest.py`'s autouse ambient-env scrub never included
+  `CIU_KSM`** (CIU-56, found while verifying the CIU-55 fix), despite
+  `governance.resolve_ksm_optin` reading it fresh on every call and this
+  project's own history recording multiple prior one-off `CIU_KSM=off`
+  fixture pins as "flake hunt" fixes for exactly this class of leak — local
+  patches on individual symptoms, never a fix of the shared fixture's actual
+  coverage. Live-caught: `test_absolute_governance_ksm_path_is_preserved
+  _in_overlay` intermittently failed `KeyError: 'volumes'` because a
+  contaminated `CIU_KSM` silently changed which branch
+  `composefile.generate_overlay`'s KSM-shim resolution takes. `CIU_KSM`
+  added to `_AMBIENT_ENV_VARS`, matching the existing pattern for the other
+  6 scrubbed vars.
 - fix(ciu)!: **`dev.resolve_repo_root` checked ambient `$REPO_ROOT` before
   `--define-root`, the reverse of SPEC S1.1's own documented order — the CODE
   was violating its own documented contract** (CIU-53). Live-reproduced: an
