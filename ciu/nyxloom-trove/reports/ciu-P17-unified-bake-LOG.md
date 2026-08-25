@@ -363,7 +363,6 @@ predicted):
   — `src/ciu/cli.py`, `tests/tests/test_ciu_cli_bake.py` (new),
   `docs/FEATURES.md`, `docs/SPEC.md`, `CHANGES.md`,
   `docs/BACKLOG-2026-08-24.md`.
-- LOG commit: committed next; see repository history (this file's own
-  commit hash is not knowable from inside itself, per the ciu-P16
-  precedent — read it back with `git log -1 --format=%H` after committing
-  if a complete self-contained record is needed).
+- LOG commit: `9f1548b4af0a3fed06414de5ab7ce869f7e1cb13` (recorded in this
+  follow-up edit, per the ciu-P16 precedent — the LOG's own hash isn't
+  knowable until after it's committed).
