@@ -10,6 +10,29 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): global config gains an optional `[service.<stack_name>]`
+  identity registry (SPEC S3.14/S3.15, V8-PREP-3 narrowed groundwork) — the
+  identity half of the V8 two-level `stack.service` hierarchy
+  (docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1, rev 1.4, commit
+  `4440c17e`). Absence of `[service.*]` (or an empty table) is a complete
+  no-op. When present, each entry MUST contain only `type` (required,
+  closed vocabulary `CIU`\|`COMPOSE`\|`EXTERNAL`\|`IN_PROCESS`), `location`
+  (required for `CIU`/`COMPOSE` — must name a directory containing
+  `ciu.defaults.toml.j2`/`docker-compose.yml` respectively; FORBIDDEN, not
+  silently ignored, for `EXTERNAL`/`IN_PROCESS`), and `description`
+  (optional string). **Any other key — including a nested table, which is
+  exactly the shape the deferred per-service realness layer (proposal §3.2)
+  would take — is REJECTED**, naming the stack and the offending key, so V8
+  can define that layer later without a silent-acceptance migration trap.
+  Validated once on the FINAL merged global config (same timing as
+  `[deploy].landscape_id`/`ciu.user_tables`). Additionally, `ciu check`
+  gains a registry-declaration-gated, WARN-only (never a refusal, never
+  exit 2) two-directional consistency lint (new stage `service-registry`,
+  appended after the V8 proposal's own §2.7 stage numbering): a registered
+  `location` no selected profile/phase deploys, and a deployed stack path
+  with no registry entry, are each named in a separate `[WARN]` — both
+  legitimate transitional states per the proposal's own §1.16 mapping rule
+  1, not defects.
 - feat(ciu): global config gains an optional `ciu.user_tables = [...]`
   declaration (SPEC S3.13, V8-PREP-1 groundwork) — a consumer opt-in list of
   top-level global-config tables it owns. Absence is a complete no-op; once

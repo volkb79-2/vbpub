@@ -12,6 +12,9 @@ Implements SPEC S3 (configuration model):
         (also recognizes `local_stack` as a preferred root key name, V8-PREP-4)
   S3.11 [deploy].landscape_id validated on the final merged global config (CIU-36)
   S3.13 ciu.user_tables validated on the final merged global config (V8-PREP-1)
+  S3.14 [service.<name>] identity registry shape validated at global scope
+        (V8-PREP-3, narrowed: declaration-only — type/location/description,
+        no per-service realness sub-tables)
 
 This module is standalone: it does NOT import from engine.py or deploy.py.
 Engine.py / deploy.py will import this module in the Wave-3 cutover.
@@ -33,6 +36,8 @@ render_stack(working_dir, global_config, preserve_state=True) -> dict
 RESERVED_GLOBAL_NAMESPACES       frozenset[str]   (S3.7 — forbidden stack root keys)
 RESERVED_GLOBAL_TABLES           frozenset[str]   (S3.13 — tables CIU reads at global scope)
 validate_user_tables(merged)     -> None           (S3.13)
+VALID_SERVICE_TYPES              frozenset[str]   (S3.14 — closed [service.<name>].type vocabulary)
+validate_service_registry(merged, repo_root) -> None  (S3.14)
 validate_stack_shape(stack_config) -> str          (S3.5 + S3.7)
 """
 
@@ -49,6 +54,7 @@ from .config_constants import (
     GLOBAL_CONFIG_OVERRIDES,
     GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
+    SHIPPED_COMPOSE,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
     STACK_CONFIG_RENDERED,
@@ -122,6 +128,11 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
 #                  render context; there is no per-key Python `.get()` for
 #                  it (it is pass-through, not interpreted), but it is a
 #                  real, currently-shipped global table, not an invented one.
+#                  ciu-P22 (S3.14, V8-PREP-3 narrowed) adds the FIRST actual
+#                  Python-side shape check of this table's own top-level
+#                  entries (`validate_service_registry`); the per-service
+#                  values nested underneath a `[service.<stack>]` entry
+#                  remain pure pass-through, unread and unvalidated by CIU.
 #   - "auto_generated" S3.9: build_version/build_time/uid/gid/docker_gid are
 #                  computed by CIU (`engine.auto_generate_values`) and written
 #                  onto the merged config every run — a consumer's OWN
@@ -612,6 +623,13 @@ def render_global_chain(
     # once, on the FINAL merged config, so a later layer (or the worktree
     # overlay) can correct an earlier layer's declaration.
     validate_user_tables(merged)
+    # S3.14 (V8-PREP-3 narrowed): same timing/reasoning again — the global
+    # `[service.<name>]` identity registry is validated once, on the FINAL
+    # merged config, so a later layer can correct an earlier declaration.
+    # Needs *repo_root* (unlike the two checks above) to confirm a CIU/COMPOSE
+    # entry's `location` names a real directory containing the right marker
+    # file — a purely in-memory shape check cannot see that.
+    validate_service_registry(merged, repo_root)
 
     if write_rendered:
         output_path = repo_root / GLOBAL_CONFIG_RENDERED
@@ -736,6 +754,142 @@ def validate_user_tables(merged: dict) -> None:
             + ". Every top-level table must be a CIU-reserved global table "
             "(RESERVED_GLOBAL_TABLES) or declared in ciu.user_tables."
         )
+
+
+# ---------------------------------------------------------------------------
+# S3.14 (V8-PREP-3 narrowed groundwork) – [service.<name>] identity registry
+# ---------------------------------------------------------------------------
+#
+# Declaration-only, per docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1
+# (rev 1.4, commit 4440c17e — the two-level stack.service hierarchy). This
+# validates ONLY the stack-level identity fields (`type`/`location`/
+# `description`) sitting directly under `[service.<stack_name>]`. The
+# per-service REALNESS sub-table layer described in §3.2
+# (`[service.<stack>.<svc>.<level>]`: live/mock/owned-seeded/simulated) is
+# deliberately NOT accepted here — see the "any other key... REJECTED"
+# branch below. Accepting-and-ignoring that layer now would let a consumer
+# ship configs the real V8 rewrite could not safely reinterpret without a
+# silent-migration trap; refusing it instead keeps that layer free for V8
+# to define on its own terms.
+
+#: S3.14 — the only three keys accepted directly under `[service.<name>]`.
+_SERVICE_ALLOWED_KEYS: frozenset[str] = frozenset({"type", "location", "description"})
+
+#: S3.14 — stack types whose `location` is REQUIRED, and the marker file
+#: `location` must contain for each (reusing config_constants.py's existing
+#: filename constants rather than re-hardcoding the strings, per the
+#: handoff's escalate_if).
+_SERVICE_TYPE_REQUIRED_FILE: dict[str, str] = {
+    "CIU": STACK_CONFIG_DEFAULTS,
+    "COMPOSE": SHIPPED_COMPOSE,
+}
+
+#: S3.14 — stack types whose `location` is FORBIDDEN (the entity IS the
+#: service; there is nothing on disk for CIU to deploy).
+_SERVICE_TYPES_FORBIDDING_LOCATION: frozenset[str] = frozenset({"EXTERNAL", "IN_PROCESS"})
+
+#: S3.14 — the closed `[service.<name>].type` vocabulary (proposal §1.15).
+VALID_SERVICE_TYPES: frozenset[str] = frozenset(
+    set(_SERVICE_TYPE_REQUIRED_FILE) | _SERVICE_TYPES_FORBIDDING_LOCATION
+)
+
+
+def validate_service_registry(merged: dict, repo_root: Path) -> None:
+    """S3.14 (V8-PREP-3 narrowed) — validate the global `[service.<name>]`
+    identity registry on the FINAL merged global config, once (same timing/
+    reasoning as :func:`validate_user_tables` immediately above).
+
+    ``[service.*]`` is consumer opt-in: absence (or an empty table) is a
+    complete no-op — this function's body is not entered at all, so a
+    config that never declares a `[service.<name>]` entry sees ZERO
+    behavior change.
+
+    When present, each `[service.<stack_name>]` entry MUST be a TOML table
+    containing ONLY the keys in :data:`_SERVICE_ALLOWED_KEYS`
+    (``type``, ``location``, ``description``). Any other key — including a
+    nested table, which is exactly how the deferred per-service realness
+    layer (§3.2) would appear — is REJECTED naming the stack and the
+    offending key(s); this deliberately does NOT accept-and-ignore that
+    layer (see the module comment above :data:`_SERVICE_ALLOWED_KEYS`).
+
+    - ``type`` is REQUIRED and MUST be one of :data:`VALID_SERVICE_TYPES`
+      (``CIU``, ``COMPOSE``, ``EXTERNAL``, ``IN_PROCESS``).
+    - ``location`` is REQUIRED for ``CIU``/``COMPOSE`` and MUST name a
+      repo-relative directory containing that type's marker file
+      (:data:`_SERVICE_TYPE_REQUIRED_FILE`) — ``ciu.defaults.toml.j2`` for
+      ``CIU``, ``docker-compose.yml`` for ``COMPOSE``. ``location`` is
+      FORBIDDEN (a config error, not silently ignored) for
+      ``EXTERNAL``/``IN_PROCESS`` — those types have no stack directory;
+      the entity itself IS the service.
+    - ``description``, when present, MUST be a string.
+
+    Each malformed condition raises its own tagged ``ValueError`` naming the
+    offending stack (mirrors :func:`validate_user_tables`'s per-condition,
+    collective-error style — one clear failure per stack entry, not a single
+    error covering the whole table, since each stack's shape is independent).
+    """
+    service_table = merged.get("service")
+    if not isinstance(service_table, dict) or not service_table:
+        return
+
+    for stack_name, entry in service_table.items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}] must be a TOML table; "
+                f"got {type(entry).__name__}."
+            )
+
+        unknown = sorted(k for k in entry if k not in _SERVICE_ALLOWED_KEYS)
+        if unknown:
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}] has unrecognized key(s): "
+                + ", ".join(unknown)
+                + ". Only 'type', 'location', and 'description' are accepted "
+                "at this scope — the per-service realness sub-table layer "
+                "(V8 proposal §3.2) is deliberately reserved, not accepted, "
+                "so V8 can define it later without a silent-acceptance "
+                "migration trap."
+            )
+
+        service_type = entry.get("type")
+        # isinstance-guarded BEFORE the membership test: an inline-table or
+        # array `type` value (e.g. `type = ["CIU"]`) is unhashable, and
+        # `x not in a_frozenset` hashes `x` — an unguarded membership test
+        # would raise a bare TypeError instead of this function's own
+        # tagged ValueError.
+        if not isinstance(service_type, str) or service_type not in VALID_SERVICE_TYPES:
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}].type must be one of "
+                f"{sorted(VALID_SERVICE_TYPES)}; got {service_type!r}."
+            )
+
+        location = entry.get("location")
+        if service_type in _SERVICE_TYPES_FORBIDDING_LOCATION:
+            if location is not None:
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location is FORBIDDEN "
+                    f"for type {service_type!r}; got {location!r}."
+                )
+        else:
+            if not isinstance(location, str) or not location:
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location is required "
+                    f"for type {service_type!r}; got {location!r}."
+                )
+            required_file = _SERVICE_TYPE_REQUIRED_FILE[service_type]
+            if not (Path(repo_root) / location / required_file).is_file():
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location {location!r} "
+                    f"must name a directory containing {required_file!r} "
+                    f"(type {service_type!r})."
+                )
+
+        description = entry.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}].description must be a "
+                f"string; got {type(description).__name__}."
+            )
 
 
 # ---------------------------------------------------------------------------

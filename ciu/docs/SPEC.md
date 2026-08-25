@@ -403,6 +403,41 @@ requirements are marked *(withdrawn)*.
   only; the eventual V8 breaking step (deferred, not shipped here) is
   defaulting `ciu.user_tables` to empty so an undeclared table is ALWAYS an
   error.
+- **S3.14** (V8-PREP-3 narrowed groundwork, additive) A consumer MAY declare
+  a global `[service.<stack_name>]` identity registry entry per stack — the
+  identity half of the V8 two-level `stack.service` hierarchy
+  ([CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1](CIU-V8-TESTING-GATE-PROPOSAL.md),
+  rev 1.4, commit `4440c17e`). Absence of `[service.*]` entirely (or an empty
+  table) is a complete no-op. When present, each `[service.<stack_name>]`
+  entry MUST be a TOML table containing ONLY `type` (required, closed
+  vocabulary `CIU` \| `COMPOSE` \| `EXTERNAL` \| `IN_PROCESS`), `location`
+  (a repo-relative directory path; REQUIRED for `CIU`/`COMPOSE`, FORBIDDEN —
+  a configuration error, not silently ignored — for `EXTERNAL`/
+  `IN_PROCESS`), and `description` (optional string). For `CIU`, `location`
+  MUST name a directory containing `ciu.defaults.toml.j2`; for `COMPOSE`, a
+  directory containing `docker-compose.yml`. **Any other key at
+  `[service.<stack_name>]` scope, and any nested table under it — which is
+  exactly the shape the deferred per-service realness sub-table layer
+  (proposal §3.2: `[service.<stack>.<svc>.<level>]`) would take — is
+  REJECTED**, naming the stack and the offending key. This is deliberate:
+  accepting-and-ignoring that layer now would let a consumer ship configs
+  the real V8 rewrite could not safely reinterpret without a
+  silent-acceptance migration trap; refusing it instead keeps that layer
+  free for V8 to define on its own terms. Validated once, on the FINAL
+  merged global config (same timing as S3.11/S3.13).
+- **S3.15** (V8-PREP-3 narrowed groundwork) When `[service.*]` (S3.14) is
+  non-empty, `ciu check` MUST additionally run a WARN-only, two-directional
+  consistency lint — NEVER a refusal, NEVER exit 2 — comparing every
+  registry entry's `location` against what the currently-selected
+  profile/phase actually deploys: (1) a registered `location` that no
+  selected profile/phase deploys is named in a warning; (2) a deployed
+  stack path with no corresponding `[service.*]` entry is named in a
+  SEPARATE warning. Both directions are advisory transitional states, not
+  defects — per the proposal's own §1.16 mapping rule 1, an entry with no
+  live consumer, or a live stack with no registry entry, are both
+  legitimate while a repo migrates toward the full V8 model. This lint is
+  itself registry-declaration-gated: when `[service.*]` is absent or empty,
+  its code path is not entered at all.
 
 ## S4 — Secrets
 
@@ -1464,6 +1499,7 @@ Stages, in order, each reusing the same function the real pipeline
 | `compose-render` | full compose-template render against the S4.21-guarded config, in memory. A template that stringifies a secret aborts here | 2 |
 | `leak-scan` | S4.22 scan of the rendered text. **Structurally vacuous at check time** — nothing was materialized, so there are no values to search for; the barrier that actually bites here is S4.21's guard in `compose-render` | 2 |
 | `consumption` | declared-vs-consumed secret cross-check (S4.20). An undeclared reference is a failure; a declared-but-unconsumed secret is a **warning**, matching the real pipeline's own Step-14 behaviour — and the check cannot see the S5 configfile consumption channel without rendering | 2 (undeclared) / warn (unconsumed) |
+| `service-registry` | (ciu-P22, not part of the V8 proposal's own stage numbering — appended last) `[service.*]` identity registry (S3.14) two-directional consistency lint against the selected profile/phase's actual deployment (S3.15). **Registry-declaration-gated**: skipped entirely when `[service.*]` is absent/empty | warn only, both directions |
 
 **Render fidelity.** Two pipeline steps `ciu check` does not run nevertheless
 supply values a compose template legitimately reads, so their *pure* halves

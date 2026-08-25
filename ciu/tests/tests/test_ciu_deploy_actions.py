@@ -2381,6 +2381,189 @@ def test_check_stage12_counts_the_hook_consumption_marker(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# O2/O3 — `[service.*]` identity registry consistency lint (S3.15, ciu-P22)
+# ---------------------------------------------------------------------------
+
+
+def _service_check(repo_root, config, selection, capsys, **kwargs):
+    """Run `action_check` in JSON mode against a hand-built config's
+    `[service.*]` table and *selection* — decoupled from `rendered`
+    (this lint reads only `profile.config['service']` and `selection`'s
+    paths, per S3.15), returning ``(rc, document)``.
+    """
+    profile = _check_profile(config)
+    rc = deploy.action_check(repo_root, profile, selection, {}, json_output=True, **kwargs)
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def test_service_registry_lint_absent_registry_stage_not_entered(tmp_path, capsys):
+    """O3: absent `[service.*]` -> the lint code path is not entered at all."""
+    config = {"deploy": dict(_CHECK_GLOBAL["deploy"])}
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["notes"] == []
+    assert stage["findings"] == []
+
+
+def test_service_registry_lint_empty_registry_is_a_no_op(tmp_path, capsys):
+    config = {"deploy": dict(_CHECK_GLOBAL["deploy"]), "service": {}}
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    assert _stage(doc, "service-registry")["notes"] == []
+
+
+def test_service_registry_lint_registered_entry_not_deployed_warns(tmp_path, capsys):
+    """Isolates direction 1 only: a SECOND, consistent registry entry
+    ('consistent' / 'infra/other') absorbs the one deployed path so it
+    cannot also trigger direction 2 ("deployed but unregistered") —
+    proving direction 1 fires independently of direction 2."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "our_db_stack": {"type": "CIU", "location": "infra/db-core"},
+            "consistent": {"type": "CIU", "location": "infra/other"},
+        },
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/other"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["findings"] == []
+    assert len(stage["notes"]) == 1
+    message = stage["notes"][0]["message"]
+    assert "[WARN]" in message
+    assert "our_db_stack" in message
+    assert "infra/db-core" in message
+    assert "consistent" not in message
+
+
+def test_service_registry_lint_deployed_stack_not_registered_warns(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/db-core"}, {"path": "infra/unregistered"}],
+        capsys,
+    )
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["findings"] == []
+    assert len(stage["notes"]) == 1
+    message = stage["notes"][0]["message"]
+    assert "[WARN]" in message
+    assert "infra/unregistered" in message
+
+
+def test_service_registry_lint_consistent_registry_and_deployment_no_warn(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/db-core"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["notes"] == []
+
+
+def test_service_registry_lint_both_directions_independently(tmp_path, capsys):
+    """Negative guard (O3): both directions must be checked and asserted
+    independently, not merely 'some [WARN] substring appeared somewhere in
+    stdout'."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "our_db_stack": {"type": "CIU", "location": "infra/db-core"},
+            "orphan_registration": {"type": "CIU", "location": "infra/never-deployed"},
+        },
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/db-core"}, {"path": "infra/unregistered"}],
+        capsys,
+    )
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["findings"] == []
+    messages = [n["message"] for n in stage["notes"]]
+    assert len(messages) == 2
+    assert any(
+        "orphan_registration" in m and "infra/never-deployed" in m for m in messages
+    )
+    assert any("infra/unregistered" in m for m in messages)
+    # The consistent pair (our_db_stack / infra/db-core) must NOT appear in
+    # either warning — proving this is a genuine two-directional diff, not
+    # "every registered location and every deployed path, unconditionally".
+    assert not any("our_db_stack" in m for m in messages)
+    assert not any("infra/db-core" in m for m in messages)
+
+
+def test_service_registry_lint_never_fails_the_check(tmp_path, capsys):
+    """O2 negative: never a refusal, never exit 2, even with two orphaned
+    registrations and two unregistered deployments at once."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "orphan_a": {"type": "CIU", "location": "infra/orphan-a"},
+            "orphan_b": {"type": "EXTERNAL"},
+        },
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/unregistered_a"}, {"path": "infra/unregistered_b"}],
+        capsys,
+    )
+
+    assert rc == 0
+    assert doc["status"] == "pass"
+    assert _stage(doc, "service-registry")["status"] == "pass"
+
+
+def test_service_registry_lint_external_entry_without_location_never_warns(tmp_path, capsys):
+    """EXTERNAL/IN_PROCESS entries have no `location` (S3.14 forbids it) —
+    they must never participate in the "registered but not deployed"
+    direction, since they were never eligible to be deployed at all."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"payment_api": {"type": "EXTERNAL"}},
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    # Only the "deployed but unregistered" direction fires for infra/app;
+    # payment_api (no location) never appears in it.
+    assert len(stage["notes"]) == 1
+    assert "payment_api" not in stage["notes"][0]["message"]
+    assert "infra/app" in stage["notes"][0]["message"]
+
+
+def test_service_registry_lint_prose_output_carries_the_warn_tag(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    profile = _check_profile(config)
+
+    rc = deploy.action_check(tmp_path, profile, [{"path": "infra/other"}], {})
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[WARN]" in out
+    assert "our_db_stack" in out
+
+
+# ---------------------------------------------------------------------------
 # O4 — CLI surface, JSON envelope, exit-code discipline
 # ---------------------------------------------------------------------------
 

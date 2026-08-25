@@ -499,6 +499,54 @@ the check stays side-effect-free; a missing file, an import-time exception, a
 missing `validate_registry`, or a non-list return are each reported as a
 finding rather than aborting the run.
 
+### `[service.<name>]` — global service identity registry [S3.14, S3.15]
+
+**V8-PREP-3 narrowed groundwork (additive; opt-in).** Declares WHAT a stack
+is and WHERE to find it — the identity half of the V8 two-level
+`stack.service` hierarchy
+([CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1](CIU-V8-TESTING-GATE-PROPOSAL.md)).
+
+```toml
+[service.our_db_stack]
+type = "CIU"                        # CIU | COMPOSE | EXTERNAL | IN_PROCESS
+location = "infra/db-core"          # repo-relative dir; must contain ciu.defaults.toml.j2
+description = "Postgres + minio core infra"
+
+[service.payment-api]
+type = "EXTERNAL"                   # consumed, never deployed by this repo
+description = "Stripe payment gateway"
+```
+
+| Key | Required | Constraint |
+|---|---|---|
+| `type` | Yes | one of `CIU` \| `COMPOSE` \| `EXTERNAL` \| `IN_PROCESS` |
+| `location` | `CIU`/`COMPOSE` only | repo-relative directory; `CIU` requires `ciu.defaults.toml.j2` inside it, `COMPOSE` requires `docker-compose.yml`. **FORBIDDEN** (a configuration error, not silently ignored) for `EXTERNAL`/`IN_PROCESS` |
+| `description` | No | free-form string |
+
+- Absence of `[service.*]` entirely (or an empty table) is a **complete
+  no-op** — zero behavior change, the same additive contract as
+  `ciu.user_tables` (S3.13) and `[deploy].landscape_id` (S3.11).
+- Any key other than `type`/`location`/`description` at `[service.<name>]`
+  scope — including a nested table, which is exactly the shape the
+  deferred per-service **realness** layer would take
+  (`[service.<stack>.<svc>.<level>]`: `live`/`mock`/`owned-seeded`/
+  `simulated`, proposal §3.2) — is REJECTED naming the stack and the
+  offending key. This is deliberate: accepting-and-ignoring that layer now
+  would leave the real V8 rewrite unable to define it safely later without
+  a silent-acceptance migration trap.
+- `ciu check` cross-checks a non-empty registry against what the
+  currently-selected profile/phase actually deploys, in both directions,
+  and WARNS — never fails, never exit 2 — on either a registered-but-
+  undeployed entry or a deployed-but-unregistered stack (S3.15). This is
+  advisory: per the V8 proposal's own §1.16 mapping rule 1, an entry with
+  no live consumer, or a live stack with no registry entry, are both
+  legitimate transitional states while a repo migrates toward the full V8
+  model, not defects.
+- **Not shipped** (the eventual V8 breaking step, still deferred): the
+  per-service realness sub-table layer itself, `[local_stack]`-to-registry
+  join-key enforcement (V8-PREP-4's mapping rule 1), and topology/group
+  references by compound `<stack>.<service>` key.
+
 ---
 
 ## Stack Configuration Sections
