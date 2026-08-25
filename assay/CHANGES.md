@@ -74,6 +74,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.4.0] - 2026-08-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=f0f063e642abb88dc7d349b93d373029f42f25c1 -->
+
+### Added
+- feat(assay): inject declared infrastructure facts before lane execution (11b20645)
+- feat(assay): add mutation resume, deterministic sharding, merge proof (7a4f6333)
+
+### Fixed
+- fix(assay): assay.verify never learned base_resolution/env_effective_incomplete (f0f063e6)
+- fix(assay): re-witness the W2 locked v7 schema drift-guard (c31ffd12)
+- fix(assay): stabilization wave GO fold-ins — positive probe test + docstring fix (21205b78)
+- fix(assay): stabilization wave round 2 — close review findings on e2169d46 (b97f3aaf)
+- fix(assay): stabilization wave — B008, B021, B022, B024, B025, B026, B027 (e2169d46)
+- fix(assay): close N-6 — cli.py's refuse_lane sites also needed infrastructure forwarding (869235a8)
+- fix(assay): round-3 remediation — close N-1..N-4 and a merge-proof gap from round-2 review (45ea7d0b)
+- fix(assay): remediate B012/B013/B016/B017 defects found by independent adversarial review (7941fdcb)
+- fix(assay): prove every snapshot manifest leaf before yield (00da6510)
+- fix(assay): honor standard excludes without masking tracked dirt (18debcae)
+
+### Changed
+- backlog(assay): B008 second reproduction — also collapses R2 mutation lanes (9328f69f)
+- backlog(assay): B017 new reproduction — dirty_paths() false-positive on every ciu worktree (2669ef9d)
+- backlog(assay): B017 — dirty_paths uses narrow exclude flag, forcing brittle consumer patterns (6d1eea84)
+
+### Documentation
+- docs(backlog): B027 — mutant-timeout crash in execute_plan's _bounded_tail (0ab258f5)
+- docs(assay): resolve the new B017 worktree-dirty reproduction — no assay bug (6c28153c)
+- docs(assay): fix A-298 round-label slip, note the untested LANE_TIMEOUT forward (6e8a51fb)
+- docs(assay): file CIU V8 preparation backlog B018-B020 (4644a464)
+- docs(assay): file B016 — snapshot omits source files when __pycache__ exists (acc82d86)
+
 ## [2.3.0] - 2026-08-24
 <!-- cmru: generated -->
 <!-- cmru: source-end=ab87caade1dfb8ebfbe1002db493b41d9a51f555 -->
