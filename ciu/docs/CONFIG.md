@@ -198,7 +198,7 @@ Subsections:
 | Section | Purpose | Spec |
 |---|---|---|
 | `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
-| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`) | S7.7 |
+| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`); `timeout` is the default, overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |
 | `[deploy.control]` | Named boolean flags for phase `enabled` fields | S7.2 |
@@ -215,6 +215,30 @@ stack's rendered Compose model, not from the display label. Optional
 `health = false` excludes an ephemeral stack from orchestration health while
 still deploying it; the field is a strict boolean and defaults to `true`
 [S7.2, S7.7].
+
+Optional `health_timeout = "<duration>"` (CIU-QOL-8, [S7.2, S7.7]) overrides
+`[deploy.health].timeout` for this entry's own container(s) only — a duration
+string like every other timeout in this codebase (`"300s"`, `"5s"`; NOT a bare
+number). Each container in a health gate call is polled to its own deadline
+within one shared poll loop, so a slow-but-legitimate service's override does
+not force every other container in the same call to wait behind it, and a
+short override on a genuinely broken service is not masked behind a slower
+service's ceiling — the broken one fails at its own, shorter deadline. A
+selection where no entry sets `health_timeout` is unaffected: every container
+shares `[deploy.health].timeout`, exactly as before this key existed. Worked
+example — a slow identity provider next to fast worker stacks:
+
+```toml
+[[deploy.phases.phase_3.services]]
+path = "infra/authentik"
+health_timeout = "240s"   # Authentik's own startup migrations are slow
+
+[[deploy.phases.phase_3.services]]
+path = "applications/worker"
+health_timeout = "5s"     # workers should be healthy almost immediately;
+                          # a broken worker should fail fast, not hide
+                          # behind Authentik's 240s ceiling
+```
 
 `landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
 identity of one deployment landscape and render its Consul KV root

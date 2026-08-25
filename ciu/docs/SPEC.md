@@ -851,7 +851,23 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `healthy`. `starting`/pending counts as **not passed**; the gate polls
   until `--health-timeout` then fails (exit 1). Services without a
   healthcheck are reported as `no-healthcheck` (warning), not as passing
-  silently. `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
+  silently. A phase service entry MAY set an optional `health_timeout =
+  "<duration>"` key (e.g. `"300s"`, same duration-string convention as
+  `[deploy.health].timeout`) to override that shared default for its own
+  container(s) (CIU-QOL-8). This is not merely a per-service number: every
+  container in a health gate call is polled to **its own deadline** within
+  one shared poll loop, not a single deadline shared by the whole call. A
+  container whose (short) `health_timeout` elapses without ever reporting
+  `healthy` is locked into its final status and reported failed at that
+  deadline — it does NOT keep waiting behind another, unrelated container's
+  longer (legitimately slow) deadline in the same call. Symmetrically, a
+  genuinely slow container with a longer override is polled all the way to
+  its own deadline and is not spuriously failed by a shorter timeout meant
+  for other containers. A selection where no entry declares `health_timeout`
+  is unaffected: every container shares `[deploy.health].timeout`, byte-for-
+  byte the same behavior as before this key existed.
+
+  `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
   probes only external executables in the declared image. Shell builtins,
   control-flow tokens, numeric arguments, and quoted `python -c`/`node -e`
   source MUST NOT be treated as executable names; `--strict` exits 1 only for

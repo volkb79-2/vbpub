@@ -9,6 +9,14 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 ## [Unreleased]
 
+### Added
+- feat(ciu): optional per-phase-service `health_timeout` override — each
+  container in a health gate call is now polled to its OWN deadline within
+  one shared poll loop, so a slow-but-legitimate service's timeout no
+  longer masks a fast, genuinely broken service's failure behind it (nor
+  does a short shared timeout spuriously fail the slow one) (CIU-QOL-8,
+  SPEC S7.7)
+
 ### Fixed
 - fix(ciu): declared layouts/exec-targets/vendor_images now validated
   eagerly on every render path — `engine.main_execution` (single-stack) and
