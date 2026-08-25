@@ -569,4 +569,6 @@ attempts) — confirmed by `git status --short` before each commit.
 not predicted)
 
 - Dead-code removal + test updates + docs commit: `11f833ad933dad13341117e0d65e56c8b4103240`
-- LOG commit (this update): committed next, see repository history.
+- LOG commit (this update): `b2ff725e9aafb9e4f421cf872147db7f7dad5c29`
+  (recorded in this small follow-up, per the ciu-P16 precedent — the LOG's
+  own hash isn't knowable until after it's committed).
