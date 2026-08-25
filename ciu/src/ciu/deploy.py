@@ -1143,7 +1143,7 @@ def governance_slice_preflight(
             "modern-debian-tools-python-debug's host-setup can provision this, "
             "but CIU never depends on one being present — or lower/remove the "
             "mem_min declaration if no floor is actually required. Set "
-            "Set ciu.exit_on = \"WARN\" to make warnings fatal, or "
+            "ciu.exit_on = \"WARN\" to make warnings fatal, or "
             "\"NEVER\" to always proceed:\n"
             + "\n".join(inadequate)
             , severity="WARN", config=config,

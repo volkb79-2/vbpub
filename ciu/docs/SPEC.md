@@ -2175,9 +2175,11 @@ Outcomes mirror S15.12's shape exactly:
   bytes anywhere in the ancestor chain** — `[S15.16]` naming every
   under-provisioned slice, the stacks that declared a floor for it, and the
   required byte count, via `warn_policy.warn_or_raise` (S10.6): always
-  logged as `[WARN]`, and by default also raised (`ValueError`, S10.3 exit
-  2) — `CIU_WARNINGS_AS_ERRORS=0` downgrades this specific finding to
-  log-only for an operator who already knows about the gap. `infinity` and
+  logged as `[WARN]`; by DEFAULT (`ciu.exit_on` = `"ERROR"`) it does NOT
+  raise. `ciu.exit_on = "WARN"` makes it raise (`ValueError`, S10.3 exit
+  2) for an operator who wants this fail-fast; `"NEVER"` suppresses even
+  the WARN-level abort entirely for this and every other S10.6 site.
+  `infinity` and
   `0` are both treated as "no floor" — systemd reports `0` for both an
   explicit "no protection" and a genuinely unset property, and there is no
   way to tell those apart from outside the unit, so this fails toward the
