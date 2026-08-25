@@ -1455,7 +1455,13 @@ def run_mutation(
             result_payload = merge_mutations(result_payload, resumed_records)
         if write_progress is not None and resumed_records:
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
-        if shard_specified:
+        if shard_specified and selected_jobs:
+            # `and selected_jobs`: a shard index that legitimately draws no
+            # candidate (4 shards over 2 candidates) must leave the field
+            # ABSENT -- `Mutation.__post_init__` refuses an empty tuple
+            # outright ("must be omitted when empty"), so constructing one
+            # here would turn an honest empty shard into a crash.
+            #
             # B031/A-320: `mutation.candidate_ids` has existed in the
             # dataclass and the schema since `7a4f6333` with NO producer --
             # a sharded verdict recorded `shard_index`/`shard_count` and
