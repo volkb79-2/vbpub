@@ -20,6 +20,28 @@ needed if you're shaped like X" from "safe to ignore, additive" — not a
 restatement of the technical detail below it.
 
 <!-- cmru: release history -->
+
+## [7.4.0] - 2026-08-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=3532966a00ce98954e1ad9536c592c58bfa6a4f0 -->
+
+### Added
+- feat(ciu)!: CIU-25 complete -- `ciu worktree reap`, a destructive verb (S16.10) (60e8a597)
+- feat(ciu): CIU-25 foundation -- worktree instance lease (schema v2) + ownership labels (ed14397b)
+
+### Fixed
+- fix(ciu): gate-integrity -- --dist loadfile (CIU-55) + CIU_KSM ambient scrub (CIU-56) (e83a8b44)
+
+### Changed
+- Merge branch 'feat/ciu-qol-v8prep-wave' (CIU-25 checkpoint: lease substrate + destructive reap verb complete) (50479565)
+
+### Documentation
+- docs(ciu): renumber P26/P27 LOG references for the CIU-55 collision (3532966a)
+- docs(ciu): ciu-P27 review fix -- checkout-missing wording admits mount-unavailable ambiguity (8ad920a9)
+- docs(ciu): ciu-P27 LOG -- record the CIU-25 reap verb implementation (b51b7cef)
+- docs(ciu): ciu-P27 carve amendment -- widen scope.touch, narrow partial-cleanup (56b711fc)
+- docs(ciu): file CIU-58 (DEVCONTAINER_NAME helper), enrich CIU-57 with reviewer's measured facts (32f3a0f9)
+- docs(ciu): ciu-P26 LOG -- record the CIU-25 lease/label substrate implementation (44ab56d2)
 ## [Unreleased]
 
 ### Adoption / Migration Notes
