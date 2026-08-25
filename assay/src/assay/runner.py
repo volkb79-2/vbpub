@@ -217,6 +217,14 @@ def default_process_runner(
     never merges a non-``None`` ``env`` with the parent's -- which is what
     makes "the child receives exactly lane env plus declared passthrough, and
     no ambient sentinel" true by construction rather than by convention (O2).
+
+    ``errors="replace"`` (B027 round 2 finding N-W2): without it, undecodable
+    child output raised an uncaught ``UnicodeDecodeError`` here -- on the
+    NORMAL completion path, not the timeout path B027 fixed -- contradicting
+    ``_bounded_tail``'s own docstring ("undecodable bytes have already
+    become U+FFFD by then") and the claim B027's ``_decode_timeout_stream``
+    makes about matching this path's policy. Tolerant decoding here is what
+    makes both of those true instead of aspirational.
     """
     return subprocess.run(
         list(argv),
@@ -225,6 +233,7 @@ def default_process_runner(
         timeout=timeout,
         capture_output=True,
         text=True,
+        errors="replace",
     )
 
 
@@ -2717,18 +2726,49 @@ def run_lane(
     # refuse loudly on a nonzero exit, rather than surfacing an unrelated
     # suite failure from the wrong dependency closure.
     if lane.environment_command is not None:
-        probe_plan = CommandPlan(
-            argv_declared=tuple(lane.environment_command),
-            argv_appended=(),
-            argv_effective=tuple(lane.environment_command),
-            env_declared=MappingProxyType(dict(lane.env)),
-            env_effective=resolve_command_plan(
+        # (B025) This resolution used to never forward *infrastructure_source*/
+        # *infrastructure_environment* at all -- unconditionally crashing on
+        # any lane pairing `environment_command` with a `derived:` fact,
+        # resolvable or not (the one call site in this function that was
+        # broken by a missing forward, not just a missing refusal). Both are
+        # in scope here already; there is no reason for the probe's own plan
+        # to see a different infrastructure world than the real command's.
+        try:
+            probe_env_effective = resolve_command_plan(
                 lane,
                 argv_append=(),
                 passthrough_source=(
                     os.environ if passthrough_source is None else passthrough_source
                 ),
-            ).env_effective,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+            ).env_effective
+        except AssayError as exc:
+            # An unresolvable infrastructure declaration, refused the same
+            # way every other post-HEAD-resolution refusal in this function
+            # is -- `project_prefix` stays `None`, matching the
+            # MISSING_EXTERNAL_TOOL refusal just above, which resolves no
+            # repository identity at this point either.
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
+        probe_plan = CommandPlan(
+            argv_declared=tuple(lane.environment_command),
+            argv_appended=(),
+            argv_effective=tuple(lane.environment_command),
+            env_declared=MappingProxyType(dict(lane.env)),
+            env_effective=probe_env_effective,
             env_passthrough=lane.env_passthrough,
             allow_argv_append=False,
             budget_seconds=min(30.0, deadline.remaining()),
@@ -2913,14 +2953,38 @@ def run_lane(
     # P26/A-212: direct R0 executes the already-resolved plan with the
     # deadline's CURRENT remainder, never a fresh `lane.budget_seconds` --
     # evidence/HEAD/dirt work already spent from the same singular budget.
-    plan = resolve_command_plan(
-        lane,
-        argv_append=argv_append,
-        passthrough_source=passthrough_source,
-        project_prefix=direct_prefix,
-        infrastructure_source=infrastructure_source,
-        infrastructure_environment=infrastructure_environment,
-    )
+    try:
+        plan = resolve_command_plan(
+            lane,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+        )
+    except AssayError as exc:
+        # (B025) The direct R0-only path's own plan resolution -- the third
+        # of the sites an unresolvable infrastructure declaration could
+        # crash from, alongside `_run_higher_rigor_lane`'s and
+        # `refuse_lane`'s own (see those two sites' identical comments).
+        # `docs/CONSUMERS.md`'s own B013 example lane declares `rigor =
+        # ["R0"]`, so this is not a rare corner of the dispatch -- it is the
+        # documented shape for the feature.
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
     result = execute_plan(
         plan,
         cwd=project_root,

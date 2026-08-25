@@ -293,6 +293,15 @@ asserted by whoever ran it. Two caveats that matter:
 * **Pass identities through, never secrets.** Everything in `env_passthrough`
   that is present lands in the artifact in cleartext. That is the point for an
   instance id and a disaster for a token.
+* **(B025) One exception, flagged rather than silent.** A refusal whose OWN
+  cause is an unresolvable infrastructure declaration cannot safely record
+  the real `env_effective` — neither the infrastructure fact nor any
+  `env_passthrough` name could be completed — so it falls back to exactly
+  `lane.env` (a true, if partial, subset) and sets a sibling top-level
+  `env_effective_incomplete: true`. Every other verdict, including every
+  other refusal, implicitly means `false`; this is the one case where
+  "every outcome where the lane resolved" is honest about `env_effective`
+  only alongside that flag.
 
 ### A whole-target `target` names a regular file, never a directory (A-260)
 
@@ -565,7 +574,11 @@ the first real integration adds its payload and registry behavior.
 ### Transparency of what actually ran
 
 The verdict records `argv_declared`, `argv_appended`, `argv_effective`,
-`env_declared` and `env_effective` on **every** outcome. A run with a non-empty
+`env_declared` and `env_effective` on **every** outcome — with one flagged
+exception (B025, §"Inject infrastructure facts" above): a refusal whose OWN
+cause is an unresolvable infrastructure declaration records `env_effective`
+as `lane.env` alone, paired with `env_effective_incomplete: true`, since
+the real value could not be safely completed. A run with a non-empty
 `argv_appended` sets `argv_modified: true`, and the lane must carry
 `allow_argv_append` explicitly for appending to be permitted at all. **assay
 never derives flags** — they come from the lane or the caller, never from assay

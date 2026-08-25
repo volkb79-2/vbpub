@@ -224,6 +224,27 @@ or malformed facts refuse before any snapshot or command runs; resolved values
 are injected as environment variables named exactly by the table key. The
 snapshot itself never receives caller state.
 
+A resolved value must be a non-empty **string** — a `derived:` dotted path
+landing on a TOML integer, float, boolean, array, or table refuses rather than
+being silently coerced to text (a source's own type choice, e.g. a port
+declared as an integer, should not become an env-string fact with no record
+that a coercion happened); a consumer wanting a numeric fact as an env var
+renders it as a string at the source instead. A resolved value is also bounded
+at 64 KiB — well above any real infrastructure fact (ports, hostnames, tokens,
+small rendered JSON blobs) and well below where an oversized value would fail
+late and opaquely at `E2BIG` on exec. An infrastructure name colliding with a
+declared `env` or `env_passthrough` name refuses at load time; the same
+collision is refused again at run time as defence-in-depth, so a `Lane`
+constructed directly (bypassing the loader) cannot reach it unprotected.
+
+**If the infrastructure declaration itself is what's unresolvable**, a refusal
+that was ALREADY going to happen for some other reason (a bad `--shard`, an
+unrelated adapter refusal) still writes a real, schema-valid verdict — but
+`env_effective` in that one case is only `lane.env` (never infrastructure or
+passthrough values, since neither could be safely completed), and the verdict
+carries a sibling `env_effective_incomplete: true` so a consumer never
+mistakes that partial value for the real one.
+
 ## A monorepo lane: omitting declared unsafe symlinks
 
 A monorepo lane's snapshot walks the **whole** resolved commit, not just its own source roots —
@@ -606,6 +627,21 @@ fails loudly rather than degrading quietly.
 | `BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED` | discovery hit `max_mutants` and **stopped before submitting** | a refusal, not a truncated sample. Raise the cap or narrow the change |
 | `NO_MEASUREMENT`/… | assay declined to claim anything | fix the environment; re-running unchanged will refuse again |
 | `ERROR`/`EXEC_FAILED` | your command failed in a way that is not a kill | read the command's own output; a crashed mutant outranks every other bucket |
+
+### Check `judgment.resolved.base_resolution` after a pre-gate merge
+
+If your workflow merges the base branch into a feature branch before gating
+(a routine pre-merge sync), an R1 or R2 lane's `HEAD` is a merge commit.
+`judgment.resolved.base_resolution` says which of two ways `judge.base` was
+resolved against that HEAD: `"merge-base"` (the usual case — `git merge-base
+<declared-base> HEAD`) or `"first-parent"` (HEAD's own pre-merge tip, when
+HEAD is itself a merge commit). The two can differ enormously: a lane judged
+right after merging main in can see its changed-line/mutation scope narrow to
+"whatever the merge itself touched" rather than the branch's own accumulated
+work, with no other signal that anything unusual happened. `base_resolution`
+is present only when `judgment.resolved.base` is (a lane with no `judge.base`
+declared has nothing to classify); a consumer that gates on "did R1/R2 see the
+whole change" should check it rather than assume `base` alone tells the story.
 
 ### A green run over an empty subject is not a pass
 

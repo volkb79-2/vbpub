@@ -516,6 +516,33 @@ def test_run_records_the_executed_shard_not_the_lane_declaration(git_repo: GitRe
     assert r2_claim["mutation"]["candidate_count"] == 1
 
 
+def test_run_refuses_an_unresolvable_derived_fact_on_an_r0_only_lane(
+    git_repo: GitRepo, validator: Draft202012Validator,
+):
+    """(B025 round 2, N-W1) `run_lane`'s direct R0-only path has its OWN
+    `resolve_command_plan` call, independent of `_run_higher_rigor_lane`'s
+    and `refuse_lane`'s own (the two round-1 sites) -- an unresolvable
+    infrastructure declaration crashed uncaught here too, with no verdict
+    artifact, until this round's fix. This exact lane shape --
+    `docs/CONSUMERS.md`'s own "Inject infrastructure facts into an isolated
+    lane" example declares `rigor = ["R0"]` -- is the DOCUMENTED shape for
+    the feature, not a corner case; round 1's two tests both used R2 lanes
+    and never exercised it."""
+    lane = R0_LANE + (
+        "\n[lanes.package.infrastructure]\n"
+        'image = "derived:deploy.image"\n'
+    )
+    path = _write_and_commit_lane(git_repo, lane)
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+    assert code != 0
+    assert "Traceback" not in err
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert document["env_effective_incomplete"] is True
+
+
 def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
     git_repo: GitRepo, validator: Draft202012Validator,
 ):

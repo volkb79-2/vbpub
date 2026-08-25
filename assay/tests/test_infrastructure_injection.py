@@ -224,9 +224,17 @@ def test_direct_r0_lane_resolves_declared_facts_in_invoking_context(tmp_path):
 
 
 def test_missing_fact_refuses_before_command_execution(tmp_path):
+    """(B025) `run_lane`'s direct R0-only path used to let this raise
+    uncaught -- the third of three sites an unresolvable infrastructure
+    declaration could crash a refusal from (see `runner.py`'s own comment at
+    this exact call site). It now refuses cleanly instead, matching every
+    other post-HEAD-resolution refusal: `ERROR`/`BAD_LANE_CONFIG`, no
+    traceback. The specific missing variable name is not recoverable from
+    `(outcome, reason_code)` alone -- the same reason-code-only diagnosis
+    every `run` refusal gives (B026 N-4's own accepted asymmetry), not new
+    information loss this fix introduced."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
-    with pytest.raises(AssayError) as caught:
-        _run_r0(repo, infrastructure_environment={})
-    assert "INFRA_NETWORK" in str(caught.value)
+    outcome, reason = _run_r0(repo, infrastructure_environment={})
+    assert (outcome, reason) == (Outcome.ERROR, "BAD_LANE_CONFIG")

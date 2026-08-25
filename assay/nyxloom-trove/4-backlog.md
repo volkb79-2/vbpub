@@ -1089,6 +1089,20 @@ when `base` is. A consumer can now tell which branch fired instead of having
 to re-derive it from `git rev-list --parents` themselves. See A-301. The
 frozen W3 witness was re-witnessed for the new field (A-304).
 
+**The ask's own wording was "a `base_resolution` field + a WARN"; only the
+field shipped, and this is a deliberate scope decision, not an oversight —
+recorded here after round 2 review flagged the gap.** This project's outcome
+vocabulary has no severity channel between a decided `(outcome, reason_code)`
+and silence; a literal "WARN" would mean either a new `Outcome`/`ReasonCode`
+(the same "deliberate, not a quick add" bar B026 N-4's closed-enum reasoning
+already applies) or a free-text field this project's refusals deliberately
+don't carry (B026 N-4, again). `docs/CONSUMERS.md`'s new "Check
+`judgment.resolved.base_resolution` after a pre-gate merge" section is the
+substitute: not a runtime alert, but the loud, explicit, worked-example
+documentation a human reader needs to know to check the field at all — which
+is what was actually missing before this round (`base_resolution` appeared in
+no consumer-facing doc, only the schema).
+
 ## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
 
 Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
@@ -1811,8 +1825,12 @@ candidate id and their current "raise" disposition needs no change.
 - [x] a `schema_version` mismatch treats the record as absent and reruns the
       candidate, without failing the lane;
 - [x] `decisions.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md` are updated
-      to state the corrected disposition (`README.md`'s mutation section is
-      high-level enough to have never asserted the wrong one).
+      to state the corrected disposition. **Narrowed from the original
+      filing, which also named `README.md`** (flagged, not silently
+      dropped, by round 2 review of this wave): `README.md`'s mutation
+      section is high-level enough to have never asserted the wrong
+      disposition, so there was nothing there to correct — checked
+      separately, not assumed.
 
 **Status: RESOLVED 2026-08-25 (stabilization wave).** See A-302.
 
@@ -1970,16 +1988,15 @@ undetected.
       is clean, 0 findings, as of 2026-08-25.
 
 **Status: PARTIALLY RESOLVED 2026-08-25 (stabilization wave) — sweep done,
-gate-wiring deferred, on purpose, as its own follow-up.** All ~29 pre-existing
-findings fixed: two genuine bugs already covered by their own backlog items
-(B027's crash), the `LaneConfigError`/`os` import gaps from B013 (already
-fixed, see A-297), plus this wave's own sweep — unused imports
+gate-wiring deferred, on purpose, as its own follow-up.** All 30 pre-existing
+findings fixed (round 2 review independently recounted the parent commit and
+confirmed 30 — the exact figure, not an approximation): four unused imports
 (`dataclasses.replace` in `canary.py`, `hashlib` in `cli.py`,
 `typing.TextIO` in `runner.py`, `types.MappingProxyType` in
-`coverage_parsers/model.py`), a needless `f"..."` prefix with no placeholder
+`coverage_parsers/model.py`), one needless `f"..."` prefix with no placeholder
 (`runner.py`), one genuinely dead local variable
 (`per_candidate_timeout_positions` in `mutation.py`, assigned, never read or
-written to again — deleted, not just silenced), and the ~20 annotation-only
+written to again — deleted, not just silenced), and 24 annotation-only
 undefined names in `canary.py`/`mutation.py` (real gaps for a type checker,
 harmless at runtime only because `from __future__ import annotations` defers
 evaluation) — resolved with real imports where safe
@@ -2101,20 +2118,28 @@ any round. Close this alongside whichever acceptance item below lands next.
       all absent" contract rules that out);
 - [x] `assay run` on a lane whose OWN infrastructure declaration is
       unresolvable writes a verdict artifact to a reserved `--verdict-json`
-      — fixed at BOTH crash sites (A-308): `_run_higher_rigor_lane`'s
-      primary `resolve_command_plan` call (infra is the ONLY thing wrong)
-      and `refuse_lane`'s own second, recording-only call (infra co-occurs
-      with an unrelated refusal cause). Neither gained a stderr message —
-      both join the same silent-on-stderr bucket the `--shard`/`--operators`
-      refusals already occupy (B026 N-4), which is the existing, accepted
-      asymmetry, not a new one;
+      — fixed at all FOUR crash sites found across two rounds (round 1,
+      A-308: `_run_higher_rigor_lane`'s primary `resolve_command_plan` call,
+      infra is the ONLY thing wrong; `refuse_lane`'s own second,
+      recording-only call, infra co-occurs with an unrelated refusal cause
+      — round 1's own "BOTH places" claim was wrong, round 2 review found
+      two more: `run_lane`'s direct R0-only path, and the `environment_command`
+      probe's plan resolution, which never even forwarded infrastructure
+      params at all, unconditionally broken for a `derived:` fact regardless
+      of resolvability). None gained a stderr message — all four join the
+      same silent-on-stderr bucket the `--shard`/`--operators` refusals
+      already occupy (B026 N-4), the existing, accepted asymmetry, not a
+      new one;
 - [x] a test drives this through the installed CLI (not `resolve_command_plan`
-      directly) and asserts the artifact exists and is schema-valid — two
-      tests, one per crash site, in `test_cli_run.py`, both verified
+      directly) and asserts the artifact exists and is schema-valid — one
+      test per crash site (four total, two per round), all verified
       red-first.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave), except the one known,
-narrow, pre-existing gap noted above (attestation-timeout forward test).**
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
+one known, narrow, pre-existing gap noted above (attestation-timeout
+forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
+writes no verdict" gap round 2 review found and filed separately as
+B028 (same family, bigger blast radius, needs its own design pass).**
 See A-308.
 
 ---
@@ -2200,7 +2225,16 @@ drift apart the next time either constant changes for its own reason.
       regardless of the wiring decision (A-310): a new `MAX_SHARD_COUNT`
       constant in `config.py` closes the drift risk either way.
 
-**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-309/A-310.
+**Status: PARTIALLY RESOLVED 2026-08-25 (stabilization wave), matching
+B024's own precedent for a decided-but-not-eliminated defect.** N-4's own
+heading names two defects — "a bad `--shard` refusal names no cause" and
+"`shard_index`/`shard_count` are dead config" — and BOTH remain true by
+design after A-309/A-310: N-4 was decided as an accepted, documented
+asymmetry rather than closed, and N-5 was decided as accepted-and-documented
+reserved config rather than wired or removed. Only the coincidental
+`MAX_MAX_MUTANTS`/`MAX_SHARD_COUNT` ceiling coupling round 3 flagged is an
+actual code fix (A-310). Marking this `RESOLVED` outright would overstate
+what changed; round 2 review of this wave caught the overstatement.
 
 ## B027 — a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
 
@@ -2345,3 +2379,55 @@ from a blind, independent reproduction.
       not artifact presence, is what a caller must check).
 
 **Status: RESOLVED 2026-08-25 (stabilization wave).** See A-300.
+
+---
+
+## B028 — a lane-wide `LANE_TIMEOUT` also writes no verdict artifact
+
+**Filed 2026-08-25 (round 2 review of the stabilization wave, finding
+N-W3).** Same family as B025 ("a post-HEAD-resolution terminal path emits
+no artifact"), a different trigger — filed separately rather than folded
+into B025 because the mechanism and the blast radius are both different.
+
+### Problem
+
+`LaneDeadline.remaining()` (`runner.py`) raises a bare `AssayError`/
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT` directly whenever the lane-wide deadline
+has expired — it is the ONE seam every higher-rigor timing check in this
+codebase reads through. Measured: a lane whose command simply runs past
+`budget_seconds` (a plain `sleep 30` against a 1s budget, no mutation, no
+infrastructure, nothing B025 touches) exits non-zero with **no verdict
+artifact** even when one was reserved — identical before and after this
+wave's B025 fix, confirmed by driving both trees.
+
+**Wider blast radius than B025's fix reaches.** B025 wrapped four specific
+`resolve_command_plan` call sites. `deadline.remaining()` itself is called
+from roughly 16 separate sites across `runner.py` (7), `mutation.py` (6),
+and `canary.py` (3) — every one of them a place the SAME uncaught-`AssayError`
+crash could fire, not just the plan-resolution moment. A general fix likely
+means catching `AssayError`/`LANE_TIMEOUT` at ONE outer boundary per
+higher-rigor entry point (`_run_higher_rigor_lane`, direct R0's own loop)
+rather than wrapping every individual call site the way B025 did for a
+narrower, single-cause failure.
+
+### Why this needs its own design pass, not a quick patch
+
+Unlike B025 (where every `resolve_command_plan` raise is knowably
+`BAD_LANE_CONFIG`, always the same shape), a `LaneDeadline.remaining()`
+raise can fire from inside a Git call, a subprocess wait, or a snapshot
+operation already partway through side effects (a materialized snapshot, a
+half-written mutation-state record) — an outer catch-and-refuse needs to
+reason about what state exists at the moment of the timeout, not just build
+a degraded `CommandPlan` the way B025's fallback does. That reasoning has
+not been done yet.
+
+### Acceptance
+
+- [ ] a decision recorded on where the outer catch boundary belongs (one
+      per higher-rigor entry point vs. per call site);
+- [ ] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
+      and a genuinely slow command) writes a real, schema-valid verdict
+      artifact to a reserved `--verdict-json`, driven through the installed
+      CLI;
+- [ ] a test proving the fix is shown red against pre-fix code (matching
+      B025's own red-first discipline).

@@ -56,3 +56,29 @@ def test_a_failing_environment_probe_refuses_before_the_lane(git_repo: GitRepo, 
         "ERROR",
         "BAD_LANE_CONFIG",
     )
+
+
+def test_environment_probe_refuses_cleanly_when_infrastructure_is_unresolvable(
+    git_repo: GitRepo, tmp_path
+):
+    """(B025 round 2, N-W1) The probe's own plan resolution never forwarded
+    `infrastructure_source`/`infrastructure_environment` at all -- a lane
+    pairing `environment_command` with a `derived:` fact crashed
+    unconditionally, resolvable or not, unlike every other call site in this
+    module. Now forwarded, and wrapped in the same refuse-cleanly pattern."""
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        probe=(
+            'environment_command = ["/bin/sh", "-c", "exit 0"]\n\n'
+            "[lanes.real.infrastructure]\n"
+            'image = "derived:deploy.image"\n'
+        ),
+    )
+
+    assert (code, document["outcome"], document["reason_code"]) == (
+        2,
+        "ERROR",
+        "BAD_LANE_CONFIG",
+    )
+    assert document["env_effective_incomplete"] is True
