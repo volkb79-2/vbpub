@@ -113,6 +113,47 @@ gate runs; the commit subjects remain the traceable source of detail.
   The widened closed category vocabulary bumps the document to
   `schema_version: 2` (fail-closed, per S17.3's precedent).
   (SPEC S16.8, CIU-25)
+- fix(ciu)!: **HOTFIX — `ciu up --layout` could silently deploy the WRONG
+  PROFILE to every host in the plan.** A defect in ALREADY-RELEASED
+  behaviour, reproduced end-to-end by a retrospective adversarial review.
+  Layouts shipped in **v6.3.0** (ciu-P10, S7.5c) and every release since is
+  affected. **Operators who use `--layout` should assume prior versions had
+  this gap and audit any layout deploy that passed a companion flag.**
+  (1) `--layout`'s mutual-exclusion guard against
+  `--profile`/`--host`/`--dir`/`--thin`/`--bootstrap`/`--rollback` compared
+  each leftover token against a denylist of EXACT spellings. But the guard's
+  whole job is to stop those flags reaching the REMOTE `ciu up`, and
+  `ciu-deploy`'s parser is built without `allow_abbrev=False` — i.e. with
+  argparse's default `allow_abbrev=True`. So an abbreviated spelling
+  (`--prof=core`, `--pro core`, `--hos edge-a`, `--th`, `--boot`, `--roll`)
+  walked straight past the local guard, was forwarded verbatim in the remote
+  argv AFTER the layout's own `export CIU_SERVICES_PROFILE=...`, and was
+  resolved remotely — silently overriding each host's declared bundles with
+  one CLI profile value. The review's reproduction: a 3-host prod layout run
+  as `ciu up --layout prod --prof=core` exited **0** having pushed to all
+  three hosts, with the `backend` host — whose bundles are `db,worker-io` —
+  deploying `core` instead. No error, no warning, exit 0. The guard no longer
+  hand-rolls the match: the forbidden long options are registered on a local
+  parser carrying the SAME `allow_abbrev` semantics the remote uses, so
+  argparse itself resolves the spelling before the check looks, every
+  abbreviation length is covered by construction rather than enumeration, and
+  the resolved flags are consumed rather than left to be forwarded. A refusal
+  now names the flag the abbreviation resolved to, exits 2, and happens
+  before any host is resolved from the inventory — zero transport opened.
+  (2) The verb-dispatch tests that route `ciu <verb>` to a code path were
+  plain `"--flag" in argv` membership checks, which see `--flag value` but not
+  `--flag=value`. `ciu up --layout=NAME` therefore never entered the layout
+  path at all, falling through to the local profile deploy and dying on an
+  unrelated raw argparse error. The same bug on `--host` was worse and
+  silent: `ciu-deploy` DECLARES `--host` for its help text but never reads it
+  (S10.2), so `ciu up --host=web` (and `down`/`health`/`render`) parsed
+  cleanly and ran a **LOCAL** deploy of the active profile while the operator
+  believed they had pushed to a remote host — again exit 0, no warning.
+  `--layout`, `--host` and `--dir` now route identically in both forms.
+  Dispatch stays exact-or-`=` rather than abbreviation-aware on purpose: it
+  chooses a code path, and an abbreviation still fails loudly at whichever
+  parser it reaches, so it can never deploy the wrong thing.
+  (SPEC S7.5c + S10.4, CIU-34)
 - fix(ciu): declared layouts/exec-targets/vendor_images now validated
   eagerly on every render path — `engine.main_execution` (single-stack) and
   `deploy.action_check` (profile-mode, including an empty selection) — not

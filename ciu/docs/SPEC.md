@@ -834,12 +834,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   bundle (naming layout+host+bundle); unknown host (naming layout+host);
   an empty or non-table `hosts`. A host failure **aborts** the sequence (no
   continue-on-error in v1), naming the failed host and the not-yet-deployed
-  remainder. `--layout` is mutually exclusive with `--host` and `--profile`
-  (the layout owns host order and bundles; a passthrough `--profile` would
-  silently override the exported `CIU_SERVICES_PROFILE` under S7.5 CLI
-  precedence). `ciu layouts` lists declared layouts (name, environment,
-  ordered hosts) without validating them — `ciu up --layout` is the
-  validating consumer.
+  remainder. `--layout` is mutually exclusive with `--host`, `--profile`,
+  `--dir`, `--thin`, `--bootstrap` and `--rollback` (the layout owns host
+  order and bundles; a passthrough `--profile` would silently override the
+  exported `CIU_SERVICES_PROFILE` under S7.5 CLI precedence, and the other
+  four have no meaning without a local `--host` push). This exclusion MUST be
+  resolved the way the REMOTE parser resolves it — `deploy.parse_args` runs
+  with argparse's default `allow_abbrev=True`, so **any unambiguous
+  abbreviation of a forbidden flag, in either the `--flag value` or
+  `--flag=value` form, is the same flag and MUST be refused identically**
+  (`--prof=core` is `--profile`). A refusal names the resolved flag, exits 2,
+  and MUST happen before any host is resolved from the inventory, so no
+  transport is opened. `ciu layouts` lists declared layouts (name,
+  environment, ordered hosts) without validating them — `ciu up --layout` is
+  the validating consumer.
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —
@@ -1148,6 +1156,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
   (with `--host`) selects the docker-optional push→activate path on `up` and
   `health` (S14.6). `up --host --thin` also accepts `--bootstrap`/`--rollback`.
+  The modifiers that SELECT a verb's code path — `--host` on `up`/`down`/
+  `health`/`render`, `--dir` and `--layout` (S7.5c) on `up` — MUST route
+  identically whether written `--flag value` or `--flag=value`. A `=`-form
+  modifier that fails to route is a defect, not a syntax error: `--host=NAME`
+  once fell through to `ciu-deploy`'s parser, which declares `--host` for its
+  help text but never reads it (S10.2), silently turning an intended SPEC-J
+  push into a LOCAL deploy of the active profile.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
   `--log-prefix-time-short` is a global presentation flag accepted before or after the
   verb (before a `--` passthrough boundary): it prefixes CIU's existing `[INFO]`, `[WARN]`,

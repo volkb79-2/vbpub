@@ -94,7 +94,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
-| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c) |
+| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c); **HOTFIXED 2026-08-25 (ciu-P29)** — the mutual-exclusion guard was abbreviation-blind and could silently deploy the wrong profile to every host, see the CIU-34 detail below |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | FIXED — `[deploy.hosts.<h>.secrets]` + `ciu host-secrets` (ciu-P11, S14.3a) |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
@@ -215,6 +215,56 @@ was 16 model / 12 CLI tests, not the 14 model tests this row previously
 claimed (the P10 LOG's own count of 13 CLI tests was also off by one — see
 its appended correction note); the 18/19 above are current-tree totals after
 checkpoint C's added tests.
+
+**CIU-34 hotfix (ciu-P29, 2026-08-25) — the mutual-exclusion guard was
+abbreviation-blind; `--layout=NAME` never dispatched.** A retrospective
+adversarial review reproduced a **silent wrong-profile production deploy** in
+already-released behaviour (layouts shipped v6.3.0; every release since is
+affected). **The claim this row made above — "`--layout` is mutually exclusive
+with `--host`/`--profile`/`--dir`/`--thin`/`--bootstrap`/`--rollback`
+(prefix-aware, so `--profile=core` is caught too)" — was true only for exact
+and `=` spellings and is corrected here.** Checkpoint C made the guard
+prefix-aware for the `=` form but left it a denylist of EXACT flag names,
+while the remote parser it exists to protect (`deploy.parse_args`) is built
+without `allow_abbrev=False`, i.e. with argparse's default
+`allow_abbrev=True`. An abbreviation therefore passed the local guard, was
+forwarded verbatim after the layout's own `export CIU_SERVICES_PROFILE=...`,
+and resolved on the remote: `ciu up --layout prod --prof=core` against a
+3-host prod layout exited **0** having pushed to all three hosts, with
+`backend` (bundles `db,worker-io`) deploying `core`. The guard now registers
+the forbidden long options on a local parser with the SAME `allow_abbrev`
+semantics the remote uses and lets argparse resolve the spelling before the
+check runs — every abbreviation length covered by construction, the resolved
+flags consumed rather than forwarded, the refusal naming the resolved flag and
+landing before any inventory lookup (zero transport). Separately, the
+`"--flag" in argv` verb-dispatch tests missed every `=` form:
+`ciu up --layout=NAME` skipped the layout path entirely, and — worse, because
+`ciu-deploy` declares `--host` for its help text but never reads it (S10.2) —
+`ciu up --host=web` (and `down`/`health`/`render`) parsed cleanly and ran a
+LOCAL deploy of the active profile instead of the intended SPEC-J push, exit 0
+and silent. Dispatch is now exact-or-`=` on `--layout`/`--host`/`--dir` via
+one shared `_flag_given` predicate; it is deliberately NOT abbreviation-aware,
+since it selects a code path and an abbreviation still fails loudly at
+whichever parser it reaches. Evidence: `_flag_given` / `_parse_layout_argv` in
+`src/ciu/cli.py`; 64 added tests in `tests/tests/test_ciu_cli_layouts.py`
+(19 → **83** in that file, superseding the "19 CLI tests" count stated in the
+checkpoint-C paragraph above), including the review's exact 3-host reproduction
+asserting ZERO transport calls, every abbreviation length of all six forbidden
+flags in both forms, and `--layout=`/`--host=`/`--dir=` producing push
+sequences identical to their space forms; venv run
+(`.venv/bin/python run-ciu-tests.py`), 2682 passed, 100% line+branch — the
+iteration signal, not the ship gate. Docs: SPEC S7.5c + S10.4, CHANGES.md.
+
+**Follow-up spotted, NOT fixed here (candidate for its own entry).** `ciu
+bake`'s `--profile`-vs-positional-targets mutual exclusion (`_bake` in
+`src/ciu/cli.py`) uses the same exact-or-`=` predicate this hotfix just
+replaced in the layout guard: `any(a == "--profile" or
+a.startswith("--profile=") ...)`. `ciu bake --prof=core web` therefore does
+NOT trip the conflict; `--prof=core` is instead treated as a positional build
+TARGET and handed to `docker buildx bake`. That is a loud failure rather than
+a silent wrong deploy, and `bake` is outside ciu-P29's scope, so it was left
+alone — but it is the same latent class and should be closed with the same
+argparse-resolution approach.
 
 **CIU-35 — host-scoped local secrets.** **FIXED** on 2026-08-19 (ciu-P11):
 `[deploy.hosts.<h>.secrets]` now holds `ASK_EXTERNAL`/`GEN_LOCAL` entries

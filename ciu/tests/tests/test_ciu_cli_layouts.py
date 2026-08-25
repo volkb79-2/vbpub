@@ -284,6 +284,236 @@ def test_up_layout_mutually_exclusive_with_host_only_flags(remote, monkeypatch, 
     assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
 
 
+# ---------------------------------------------------------------------------
+# ciu-P29 (hotfix) — the mutual-exclusion guard above was a denylist of EXACT
+# flag spellings, while the remote parser it forwards into (deploy.parse_args)
+# builds its ArgumentParser without allow_abbrev=False, i.e. with argparse's
+# default allow_abbrev=True. An ABBREVIATED forbidden flag therefore walked
+# past the local guard, was forwarded verbatim, and resolved remotely — so one
+# CLI `--prof=core` silently overrode the layout's per-host bundles on EVERY
+# host in the plan. The `--host=`/`--dir=` dispatch tests live here too because
+# they are the same equals-form dispatch bug class this package closes.
+# ---------------------------------------------------------------------------
+
+# Every abbreviation length of every forbidden flag, plus the `=` variants. The
+# point is not the individual spellings: it is that argparse's own resolution
+# now backs the guard, so no length is special.
+_ABBREVIATIONS = [
+    # --profile
+    "--p", "--pr", "--pro", "--prof", "--profi", "--profil",
+    # --host / --dir
+    "--h", "--ho", "--hos", "--d", "--di",
+    # --thin / --bootstrap / --rollback
+    "--t", "--th", "--thi", "--b", "--boot", "--bootstra", "--r", "--roll",
+]
+
+
+@pytest.mark.parametrize("abbrev", _ABBREVIATIONS)
+def test_up_layout_refuses_every_abbreviated_forbidden_flag_space_form(
+    remote, monkeypatch, capsys, abbrev
+):
+    """ciu-P29 O1: `--prof core` etc. is the SAME flag to the remote parser."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", abbrev, "x"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("abbrev", _ABBREVIATIONS)
+def test_up_layout_refuses_every_abbreviated_forbidden_flag_equals_form(
+    remote, monkeypatch, capsys, abbrev
+):
+    """ciu-P29 O1: `--prof=core` — the exact spelling the review reproduced."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", f"{abbrev}=x"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c] --layout is mutually exclusive with --host and --profile" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "abbrev,resolved",
+    [
+        ("--prof=core", "--profile"),
+        ("--pro", "--profile"),
+        ("--hos=edge-a", "--host"),
+        ("--di=.", "--dir"),
+        ("--th", "--thin"),
+        ("--boot", "--bootstrap"),
+        ("--roll", "--rollback"),
+    ],
+)
+def test_up_layout_refusal_names_the_resolved_flag(remote, monkeypatch, capsys, abbrev, resolved):
+    """The refusal tells the operator WHICH flag the abbreviation resolved to,
+    so `--prof=core` does not read as an unexplained rejection of a flag the
+    operator never typed."""
+    remote  # transport asserted zero in the sibling tests
+    assert _run(monkeypatch, ["up", "--layout", "three-host", abbrev]) == 2
+    assert f"Refused: {resolved}" in capsys.readouterr().err
+
+
+def test_up_layout_three_host_prod_abbreviated_profile_pushes_to_nobody(remote, monkeypatch, capsys):
+    """ciu-P29 O1, the review's EXACT reproduction: a 3-host prod layout invoked
+    with `--prof=core`. Before the fix this exited 0 having pushed to all three
+    hosts, each remote argv carrying `ciu up --prof=core` after the layout's own
+    `export CIU_SERVICES_PROFILE=...` — so backend, whose bundles are
+    `db,worker-io`, silently deployed `core`. The assertion that matters is the
+    transport call COUNT, not the message: no host may be contacted at all."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", "--prof=core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert seen["hosts"] == []  # not even resolved from the inventory
+    assert "[S7.5c]" in capsys.readouterr().err
+
+
+def test_up_layout_forbidden_flag_with_no_value_is_refused_not_argparse_error(
+    remote, monkeypatch, capsys
+):
+    """A value-taking forbidden flag given LAST with no value must still reach
+    the `[S7.5c]` guard: `nargs="?"`/`const=True` in _parse_layout_argv keeps
+    argparse from failing first with a raw `expected one argument`."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", "--profile"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    err = capsys.readouterr().err
+    assert "[S7.5c]" in err and "Refused: --profile" in err
+    assert "expected one argument" not in err
+
+
+def test_up_layout_store_true_forbidden_flag_with_value_is_refused(remote, monkeypatch, capsys):
+    """Mirror of the above for a store-true-shaped flag given a value
+    (`--thin=1`), which argparse would otherwise reject with a raw
+    `ignored explicit argument` before the guard could run."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", "--thin=1"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    err = capsys.readouterr().err
+    assert "[S7.5c]" in err and "Refused: --thin" in err
+    assert "ignored explicit argument" not in err
+
+
+def test_up_layout_refusal_names_every_forbidden_flag_supplied(remote, monkeypatch, capsys):
+    """More than one forbidden flag: all are named, in declaration order."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "three-host", "--hos=w", "--prof=core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "Refused: --profile, --host" in capsys.readouterr().err
+
+
+def test_up_layout_clean_argv_still_forwards_unrelated_flags(remote, monkeypatch):
+    """The guard must not become a general allowlist: a flag that is NOT
+    forbidden still rides along in the remote argv exactly as before."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout", "dev-local", "--dry-run"]) == 0
+    remote_cmd = seen["exec"][0][1][0]
+    assert remote_cmd == _env_prefix("dev-local", "devbox", ["core", "db"], "dev") + _remote_suffix(
+        "/opt/app", ["--dry-run"]
+    )
+
+
+def test_up_layout_equals_form_dispatches_through_the_same_path(remote, monkeypatch):
+    """ciu-P29 O2: `--layout=NAME` previously failed the `"--layout" in rest`
+    membership test, skipped the layout branch entirely, and fell through to the
+    local profile deploy with a raw `unrecognized arguments: --layout=three-host`
+    argparse error. It must now produce the IDENTICAL push sequence as the space
+    form — same branch, not a parallel reimplementation."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout=three-host"]) == 0
+    equals_form = list(seen["exec"])
+    equals_hosts = list(seen["hosts"])
+    seen["exec"].clear()
+    seen["sync"].clear()
+    seen["hosts"].clear()
+    assert _run(monkeypatch, ["up", "--layout", "three-host"]) == 0
+    assert seen["exec"] == equals_form
+    assert seen["hosts"] == equals_hosts
+    assert len(equals_form) == 3
+
+
+def test_up_layout_equals_form_is_guarded_too(remote, monkeypatch, capsys):
+    """The equals-form dispatch must land inside the guard, not around it."""
+    seen = remote
+    assert _run(monkeypatch, ["up", "--layout=three-host", "--prof=core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    assert "[S7.5c]" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("verb", ["up", "down", "health", "render"])
+def test_host_equals_form_dispatches_to_the_push_path(remote, monkeypatch, verb):
+    """ciu-P29 O2 extension: `--host=NAME` hit the same plain-membership
+    dispatch bug on every verb that accepts the S10.4 `--host` modifier. This
+    one was WORSE than the layout case: `deploy.py` declares `--host` for its
+    help text but never reads it, so the fall-through parsed cleanly and ran a
+    LOCAL deploy of the active profile while the operator believed they had
+    pushed to a remote host — exit 0, no warning."""
+    seen = remote
+    assert _run(monkeypatch, [verb, "--host=edge-a"]) == 0
+    assert [h[1] for h in seen["hosts"]] == ["edge-a"]
+    assert len(seen["exec"]) == 1
+    # `up` syncs the bundle first; the read-only verbs exec directly.
+    assert len(seen["sync"]) == (1 if verb == "up" else 0)
+
+
+@pytest.mark.parametrize("verb", ["up", "down", "health", "render"])
+def test_host_equals_form_matches_the_space_form(remote, monkeypatch, verb):
+    """Same branch, so the remote argv must be byte-identical between forms."""
+    seen = remote
+    assert _run(monkeypatch, [verb, "--host=edge-a"]) == 0
+    equals_form = list(seen["exec"])
+    seen["exec"].clear()
+    seen["sync"].clear()
+    assert _run(monkeypatch, [verb, "--host", "edge-a"]) == 0
+    assert seen["exec"] == equals_form
+
+
+def test_up_dir_equals_form_dispatches_to_the_engine_path(remote, monkeypatch):
+    """ciu-P29 O2 extension: `ciu up --dir=/srv` fell through to deploy.py,
+    which has no `--dir`, and died on `unrecognized arguments`."""
+    seen = remote
+    calls = []
+    monkeypatch.setitem(sys.modules, "ciu.engine",
+                        SimpleNamespace(main=lambda argv: calls.append(argv) or 0))
+    assert _run(monkeypatch, ["up", "--dir=/srv/app", "--dry-run"]) == 0
+    assert calls == [["-d", "/srv/app", "--dry-run"]]
+    assert seen["exec"] == [] and seen["sync"] == []
+
+
+def test_up_dir_equals_form_matches_the_space_form(remote, monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "ciu.engine",
+                        SimpleNamespace(main=lambda argv: calls.append(argv) or 0))
+    assert _run(monkeypatch, ["up", "--dir=/srv/app"]) == 0
+    assert _run(monkeypatch, ["up", "--dir", "/srv/app"]) == 0
+    assert calls[0] == calls[1]
+
+
+def test_flag_given_rejects_a_bare_prefix_and_a_different_flag():
+    """`_flag_given` is deliberately exact-or-`=`, NOT abbreviation-aware: it
+    picks a CODE PATH, and widening it would make `ciu up --d /srv` mean
+    `--dir` locally while `--d` stays ambiguous on deploy.py's own parser.
+    Abbreviations still fail loudly at the parser they reach, so they cannot
+    deploy the wrong thing; the abbreviation-aware check is the layout guard."""
+    assert cli._flag_given(["--host", "web"], "--host") is True
+    assert cli._flag_given(["--host=web"], "--host") is True
+    assert cli._flag_given(["--hos", "web"], "--host") is False
+    assert cli._flag_given(["--hostile"], "--host") is False
+    assert cli._flag_given([], "--host") is False
+
+
+def test_up_layout_abbreviation_does_not_dispatch_but_cannot_deploy(remote, monkeypatch, capsys):
+    """The counterpart to the test above, stated as behavior: `ciu up --lay
+    three-host --prof core` does NOT reach the layout branch (dispatch is
+    exact-or-`=`), and therefore must fail LOUDLY at deploy.py's parser with
+    zero transport — never a silent partial deploy."""
+    seen = remote
+    monkeypatch.setitem(
+        sys.modules, "ciu.deploy",
+        SimpleNamespace(load_global_config=lambda _root: GLOBAL,
+                        main=lambda argv: 2),
+    )
+    assert _run(monkeypatch, ["up", "--lay", "three-host", "--prof", "core"]) == 2
+    assert seen["sync"] == [] and seen["exec"] == [] and seen["hosts"] == []
+
+
 def test_layouts_verb_lists_declared_layouts(remote, monkeypatch, capsys):
     assert _run(monkeypatch, ["layouts"]) == 0
     out = capsys.readouterr().out

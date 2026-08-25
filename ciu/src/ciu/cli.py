@@ -474,6 +474,97 @@ def _push_host(
     return "exec", rc
 
 
+# ciu-P29 (hotfix) — the flags `ciu up --layout` refuses to accept. The layout
+# owns host order and bundles, so a companion `--profile` would silently
+# override the exported CIU_SERVICES_PROFILE (S7.5 CLI precedence) on EVERY
+# host in the plan, and `--dir`/`--thin`/`--bootstrap`/`--rollback` have no
+# meaning without a local `--host` push.
+_LAYOUT_FORBIDDEN = (
+    "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
+)
+
+
+def _forbidden_dest(flag: str) -> str:
+    """argparse dest for a `_LAYOUT_FORBIDDEN` entry, namespaced away from `layout`."""
+    return "forbidden_" + flag[2:].replace("-", "_")
+
+
+def _flag_given(argv: list[str], flag: str) -> bool:
+    """True when *flag* is in *argv* as `--flag VALUE` **or** `--flag=VALUE`.
+
+    ciu-P29 (hotfix): every verb-dispatch site below used a plain
+    ``flag in argv`` membership test, which sees the space form but not the
+    ``=`` form, so the `=` form silently took a DIFFERENT code path. That was
+    not cosmetic in either place it happened:
+
+    * `ciu up --layout=prod` skipped the layout path entirely and fell through
+      to the local profile deploy, dying on an unrelated argparse error.
+    * `ciu up --host=web` (and `down`/`health`/`render`) fell through to
+      `deploy.py`'s parser, which DECLARES `--host` for its help text but never
+      reads it (S10.2) — so the SPEC-J push was silently downgraded to a LOCAL
+      deploy of the active profile, with exit 0 and no warning.
+
+    Deliberately exact-or-`=` only, NOT argparse abbreviation: this predicate
+    decides WHICH CODE PATH runs, and widening dispatch to abbreviations would
+    make `ciu up --d /srv` mean `--dir` locally while `--d` stays ambiguous on
+    `deploy.py`'s own parser — a new divergence, not a closed one. An
+    abbreviation still fails loudly at whichever parser it reaches, so it
+    cannot deploy the wrong thing. The abbreviation-awareness that matters for
+    SAFETY is the `--layout` mutual-exclusion guard (:func:`_parse_layout_argv`),
+    which runs once the layout path has already been entered and whose flags
+    would otherwise be FORWARDED to a remote parser that does resolve them.
+    """
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
+
+
+def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str]]:
+    """Resolve `ciu up --layout`'s argv the way the REMOTE parser will.
+
+    Returns ``(layout, remaining, forbidden)`` where *forbidden* names the
+    resolved `_LAYOUT_FORBIDDEN` flags the operator actually supplied.
+
+    ciu-P29 (hotfix): the previous guard compared each leftover token against a
+    denylist of EXACT spellings (``a == flag or a.startswith(flag + "=")``).
+    ``deploy.parse_args`` builds its ``ArgumentParser`` without passing
+    ``allow_abbrev=False``, i.e. with argparse's default ``allow_abbrev=True``,
+    so the REMOTE parser happily resolves ``--prof=core`` to ``--profile``.
+    An abbreviated spelling therefore walked past the local denylist, was
+    forwarded verbatim in the remote argv, and silently overrode the layout's
+    per-host ``CIU_SERVICES_PROFILE`` with one CLI profile on every host.
+
+    The fix is to stop hand-rolling the match: register the forbidden long
+    options on a local parser with the SAME ``allow_abbrev`` semantics the
+    remote uses and let argparse itself resolve the spelling before the guard
+    looks. Every abbreviation length is covered by construction, not by
+    enumeration, and the resolved flags are CONSUMED here rather than left in
+    *remaining*, so nothing survives to be forwarded even in principle.
+
+    ``nargs="?"`` + ``const=True`` on each forbidden flag is what makes the
+    guard total: a value-taking flag supplied with no value (``--profile`` last
+    in argv) and a store-true-style flag supplied with one (``--thin=1``) both
+    reach the guard instead of dying first inside argparse with a raw
+    ``expected one argument`` / ``ignored explicit argument`` message.
+    """
+    import argparse as _ap
+
+    # allow_abbrev is left at argparse's default (True) ON PURPOSE: it is the
+    # setting deploy.parse_args runs with, so an abbreviation resolves here
+    # exactly as it would on the remote. The six forbidden flags plus --layout
+    # have distinct second characters (l/p/h/d/t/b/r), so no abbreviation of
+    # one is ambiguous against another.
+    p = _ap.ArgumentParser(add_help=False)
+    p.add_argument("--layout", dest="layout", default=None)
+    for flag in _LAYOUT_FORBIDDEN:
+        p.add_argument(flag, dest=_forbidden_dest(flag),
+                       nargs="?", const=True, default=None)
+    opts, remaining = p.parse_known_args(rest)
+    forbidden = [
+        flag for flag in _LAYOUT_FORBIDDEN
+        if getattr(opts, _forbidden_dest(flag)) is not None
+    ]
+    return opts.layout, remaining, forbidden
+
+
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
     """True when `-h`/`--help` should print the verb's own help.
 
@@ -1253,7 +1344,7 @@ def main() -> None:
         raise SystemExit(_iops_baseline(rest))
 
     elif verb == "render":
-        if "--host" in rest:
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
@@ -1293,38 +1384,30 @@ def main() -> None:
         raise SystemExit(0)
 
     elif verb == "up":
-        if "--layout" in rest:
+        if _flag_given(rest, "--layout"):
             # S7.5c — push-deploy a named host→bundles plan. The layout owns
             # host order and bundles, so --host/--profile are excluded: a
             # passthrough --profile would silently override the exported
             # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
-            import argparse as _ap
-            p = _ap.ArgumentParser(add_help=False)
-            p.add_argument("--layout", dest="layout", default=None)
-            opts, remaining = p.parse_known_args(rest)
-            # B2 (review): a plain `"--host" in rest` membership check misses
-            # the `--profile=core` equals form (argparse leaves it in
-            # `remaining` untouched since only --layout is registered here),
-            # and did not guard --dir/--thin/--bootstrap/--rollback at all —
-            # all of which forward into the remote `ciu up` argv and either
-            # silently override the layout's exported CIU_SERVICES_PROFILE
-            # (--profile, S7.5 CLI precedence) or die opaquely on the remote
-            # (--dir/--thin/--bootstrap/--rollback have no meaning without a
-            # local --host push). Prefix-aware so both `--flag value` and
-            # `--flag=value` forms are caught.
-            _LAYOUT_FORBIDDEN = (
-                "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
-            )
-            if any(
-                a == flag or a.startswith(flag + "=")
-                for a in remaining
-                for flag in _LAYOUT_FORBIDDEN
-            ):
+            #
+            # B2 (review, ciu-P10 checkpoint C) fixed the `--profile=core`
+            # equals form and added the four unguarded flags. ciu-P29 closes
+            # the level BELOW that: the denylist still compared EXACT
+            # spellings, while the remote parser it forwards into runs with
+            # argparse's default allow_abbrev=True, so `--prof=core` resolved
+            # remotely and silently overrode every host's bundles. The check
+            # is now argparse's own resolution rather than a hand-rolled
+            # string match — see _parse_layout_argv.
+            layout_name, remaining, forbidden = _parse_layout_argv(rest)
+            if forbidden:
                 print(
                     "[S7.5c] --layout is mutually exclusive with --host and "
                     "--profile (and with --dir/--thin/--bootstrap/--rollback, "
                     "which only apply to the --host push path) — the layout "
-                    "owns the host order and the bundles.",
+                    "owns the host order and the bundles. Refused: "
+                    + ", ".join(forbidden)
+                    + " (abbreviated and `=` spellings resolve to the same "
+                      "flag on the remote, so they are refused here too).",
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
@@ -1333,7 +1416,7 @@ def main() -> None:
             from .deploy_pkg.layouts import resolve_layout
             from .hosts import get_host, load_hosts
             try:
-                layout = resolve_layout(config, load_hosts(repo_root), opts.layout)
+                layout = resolve_layout(config, load_hosts(repo_root), layout_name)
             except ValueError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 raise SystemExit(2)
@@ -1373,7 +1456,7 @@ def main() -> None:
                     )
                     raise SystemExit(rc)
             raise SystemExit(0)
-        elif "--host" in rest:
+        elif _flag_given(rest, "--host"):
             # Remote push-deploy path
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
@@ -1425,7 +1508,7 @@ def main() -> None:
                 repo_root=repo_root, config=config, remaining=remaining,
             )
             raise SystemExit(rc)
-        elif "--dir" in rest:
+        elif _flag_given(rest, "--dir"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--dir", dest="dir", default=None)
@@ -1439,7 +1522,7 @@ def main() -> None:
             raise SystemExit(deploy_main(rest))
 
     elif verb == "down":
-        if "--host" in rest:
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
@@ -1463,7 +1546,12 @@ def main() -> None:
         raise SystemExit(deploy_main(["--clean"] + rest))
 
     elif verb == "health":
-        if "--host" in rest:
+        # `health` is not named in ciu-P29's O2 (which lists up/down/render),
+        # but it carries the IDENTICAL plain-membership dispatch on the same
+        # `--host` modifier (S10.4) with the identical consequence — deploy.py
+        # accepts and ignores --host — so leaving it would leave the bug class
+        # half-closed. Same predicate, no other change to this branch.
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
