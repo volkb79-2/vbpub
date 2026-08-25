@@ -359,6 +359,7 @@ defects hid.
 | **A-321** | B032 scope: **timeout vs. everything else** is the only probe distinction that survives into the verdict. | Gates branch on exactly that (retry `BUDGET_EXCEEDED`, hard-fail `BAD_LANE_CONFIG`). Separating the other three would cost a closed-enum widening every consumer's schema copy would then reject. |
 | **A-322** | B032 fix: the 30 s cap is applied where `execute_plan` reads it, and B010's clear message ships on a caller-supplied `diagnostics` stream. | The message needed a channel decision — a verdict free-text field was rejected (A-138/A-170/A-309), so it is a stream the CLI already owns. |
 | **A-323** | `verify.py`'s `_reconstruct_judgment_r2` never read `shard_index`/`shard_count`; `assay verify` rejected assay's own sharded output. | Found during verification of A-320, unfiled anywhere. Its own number because it is a different field group, object and origin commit — and because the count is itself evidence about the review process. |
+| **A-324** | Round 2: A-320's no-bump justification restated with the load-bearing fact — no released `assay verify` ever accepted a `progress_artifact`-bearing document EITHER, not merely that no producer ever emitted one. Appended (this file's own convention is append-only); A-320's row is left as shipped. | Round-2 review found "no producer emitted it" alone does not license a no-bump removal (a hand-authored v7 document could still have carried it, schema-legally); the verifier-rejection fact does, because nothing that ever successfully verified stops verifying. Also records the cross-repo pointer: `progress_artifact` was requested by name in `dstdns/docs/proposals/tools/assay-mutation-requirements.md:58`. |
 
 ## Known, deliberately out of scope
 
@@ -376,3 +377,142 @@ defects hid.
   untouched.
 - **`config.py:1782-1788`'s misindented `kill_signal_artifact` block** (audit
   8a-H) — behaviourally a no-op, left alone.
+- **N4 (round 2 review):** `argv_effective` on a probe refusal still names
+  the LANE's own command, which never ran, rather than the probe command
+  that actually did. Confirmed correct-shape-but-imprecise by round 2's
+  reviewer: the message text (`_report_probe_refusal`) already names the
+  right thing, and this is a display artifact of the verdict's frozen
+  `CommandPlan` shape rather than a new refusal-cause defect. Not fixed
+  here; non-blocking.
+
+---
+
+## Round 2 — fix-forward review response (2026-08-25)
+
+A fresh adversarial reviewer independently reproduced every headline claim
+above (including on fixtures never tried in round 1 — nested source roots, a
+monorepo subdirectory project) and returned **ACCEPT-conditional** on two
+blockers, one decision-record condition (D1, on A-320's no-bump reasoning —
+see A-324 above), and two cheap non-blockers. This section records what
+changed. Commits, LOG entries, and the gate transcript below are all new;
+round 1's content above is left as shipped, per this file's own append
+convention.
+
+### Blocker 1 — the probe-timeout message named a cap that did not fire
+
+`_report_probe_refusal` hardcoded `PROBE_BUDGET_SECONDS` (30) into the
+rendered timeout message even when the LANE's own remaining budget — not the
+fixed cap — was the bound that actually fired (`probe_timeout =
+min(PROBE_BUDGET_SECONDS, deadline.remaining())`, A-322). A false claim about
+which bound applied. `_report_probe_refusal` now takes the effective
+`probe_timeout` as a parameter and renders it, naming both candidate bounds:
+
+```
+$ cat >> shortbudget.toml <<'EOF'
+[lanes.shortbudget]
+...
+budget = "10s"
+environment_command = ["sh", "-c", "sleep 45"]
+EOF
+$ assay run shortbudget --file shortbudget.toml
+assay: BUDGET_EXCEEDED/LANE_TIMEOUT: lane 'shortbudget': its declared
+environment_command did not finish within its 9.99477s preflight window (the
+lesser of the 30s probe cap and the lane's remaining budget), so the lane's
+own command never started. Run via the declared wrapper: sh -c 'sleep 45'
+shortbudget: BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4)
+```
+
+`9.99477s`, not `30s` — the number now matches what actually enforced the
+refusal. Two new behavioral tests in `tests/test_environment_preflight.py`
+drive a real subprocess (not a source-text grep, see N1) under each bound: a
+lane budget well below the cap (extends the existing
+`test_a_probe_that_exhausts_its_budget_reports_a_timeout_not_a_config_error`,
+`budget="2s"`) and the cap itself as the binding constraint with the lane
+budget patched far above it
+(`test_the_probe_cap_is_enforced_where_execute_plan_actually_reads_it`,
+rewritten — see N1).
+
+### Blocker 2 — a bad `--progress` destination was laundered into `ERROR`/`GIT_FAILED`
+
+`progress_writer`'s `path.open("a")` (and its own `path.parent.mkdir(...)`)
+raised a bare `IsADirectoryError`/`OSError` for a directory destination or an
+empty `--progress ""` (which resolves to `.`, the invoking CWD — itself a
+directory). Uncaught, it escaped `run_mutation` and was caught by
+`runner.run_lane`'s broad `except OSError:`, which relabels ANY escaped
+OSError `ERROR`/`GIT_FAILED` — the exact mislabelled-cause class B032 was
+filed to close, reopened on the new `--progress` flag. A-320 claimed
+`--progress` behaves "exactly like `--verdict-json`'s" destination handling;
+it did not.
+
+Two changes make that claim true. First, `progress_writer` (`mutation.py`)
+now wraps its own `mkdir`/`open`/`write`/close and raises the same typed
+`AssayError(ERROR, OUTPUT_WRITE_FAILED)` `--verdict-json` raises for the
+identical mistake, naming the path — defence in depth for any caller that
+reaches it without going through the CLI. Second, and primarily, a new
+`output.validate_progress_destination` runs in `cli.py` at the SAME
+OUTPUT-RESERVATION step as `--verdict-json`'s own reservation, before HEAD is
+even resolved — catching the two mistakes visible without opening anything
+(an existing non-regular destination, an unparseable empty spelling)
+immediately, with a real message, rather than after the whole lane has run.
+It is deliberately NOT a full `reserve_verdict_output`-style reservation: a
+progress destination is opened once, later, only if the lane reaches R2, and
+its own writer creates missing parent directories on demand — a behavior
+`--verdict-json`'s reservation does not have and must not gain by accident.
+
+```
+$ assay run nested --file assay.toml --progress ""
+assay: ERROR/OUTPUT_WRITE_FAILED: the progress destination '' exists and is
+not an ordinary regular file; assay only appends to a file it can account for
+
+$ assay run nested --file assay.toml --progress /tmp
+assay: ERROR/OUTPUT_WRITE_FAILED: the progress destination '/tmp' exists and
+is not an ordinary regular file; assay only appends to a file it can account
+for
+```
+
+Both now `ERROR`/`OUTPUT_WRITE_FAILED` with a named cause, before any
+repository work — reproduced on a real `R0+R2` lane (`nested`), matching the
+review's exact repro commands. A regression check confirms the auto-created-
+parent-directory behavior survives: a `--progress` destination whose parent
+does not yet exist is still created and written to
+(`test_a_progress_destination_whose_parent_does_not_yet_exist_is_still_created`).
+Four new tests total, two in `tests/test_environment_preflight.py` (CLI
+level, the two exact repro cases plus the auto-mkdir regression check) and
+two in `tests/test_mutation_progress_budget_plan.py` (unit level, directly
+against `progress_writer`, covering both its `mkdir` and `open` OSError
+sites).
+
+### N1 — the 30s-cap test was a text oracle
+
+`test_the_probe_cap_is_enforced_where_execute_plan_actually_reads_it` used to
+grep `runner.py`'s own source text for three literals — green on a fix that
+is correct in text but wrong in effect, the exact "test written to match
+observed output rather than the requirement" shape the original audit report
+named as a genuinely new lesson. Rewritten to drive a real subprocess:
+`PROBE_BUDGET_SECONDS` is monkeypatched down (to keep the test fast — real
+elapsed time is still asserted, just against a smaller real cap) so the CAP,
+not the lane's much larger declared budget, is unambiguously the binding
+constraint; both the exit code/reason code and the rendered message are
+asserted against the real, measured outcome.
+
+### N3 — the on-disk state-record shape changed, undocumented
+
+The `mutated_file_sha256` rename (A-320, closing the `replacement_sha256`
+collision with the verdict's own field) splats a new key into every on-disk
+`.assay/mutation-state/*.json` record going forward. Harmless —
+`_load_validated_state_record` tolerates extra keys — but unrecorded until
+now: noted here so a future reader is not surprised finding it.
+
+### Gate, at the new HEAD
+
+The registered gate is run against the round-2 final HEAD by a follow-up
+commit, same convention round 1 used (`fcdfde92`): exit code captured
+separately from the run and read in a separate step, never a pipe tail. See
+`assay-B030-B032-remediation-LOG.md`'s "Gate (round 2)" section for the real
+transcript.
+
+### Cleared without action
+
+N2 (progress-path traversal) reconfirmed correct, matching `--verdict-json`.
+N6/N7 confirmed non-blocking, already correctly deferred/explained. The four
+pre-existing deliberately-out-of-scope items above all still hold.

@@ -43,7 +43,35 @@ This LOG and `assay-B030-B032-remediation-REPORT.md` themselves. Documentation o
 **entry-sha256:** `963ab4383a7a5d01c0c17e9717b4ccbbe9d6caa0d38f2b05666957429bec1804`
 (over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
 
-## Gate
+## Round 2 -- fix-forward review response (2026-08-25)
+
+A fresh adversarial reviewer independently reproduced round 1's claims above
+(including on fixtures round 1 never tried) and returned ACCEPT-conditional
+on two blockers, one decision-record condition (D1), and two cheap
+non-blockers. Round 1's commits and gate transcript above are left as-is,
+per this file's own append convention.
+
+### `3f47d5fa`
+
+Round 2 (fix-forward review response). Blocker 1: `_report_probe_refusal` hardcoded the fixed 30s `PROBE_BUDGET_SECONDS` into a timeout refusal's message even when the lane's own remaining budget -- not the cap -- was the bound that actually fired. `probe_timeout` is now threaded into the function and rendered; measured, a `budget = "10s"` lane with a `sleep 45` probe now says "within its 9.99477s preflight window", not "the 30s preflight cap". Blocker 2: a bad `--progress` destination (an existing directory, or an empty `--progress ""`, which resolves to `.`) ran the whole lane and only then surfaced an unrelated `ERROR`/`GIT_FAILED`. `output.validate_progress_destination` now runs in `cli.py` at the same OUTPUT-RESERVATION step as `--verdict-json`'s own reservation, before HEAD is resolved; `progress_writer` itself also wraps its own mkdir/open/write/close and raises the same typed `AssayError(ERROR, OUTPUT_WRITE_FAILED)` as defence in depth. N1: the 30s-cap test, previously a source-text grep, is rewritten to drive a real subprocess (`PROBE_BUDGET_SECONDS` monkeypatched down to stay fast) and assert real elapsed time and exit code. Six new/rewritten tests.
+
+**entry-sha256:** `9e21bb335c284583eaf425cb57077a970b849d82c15b6ca9ac9fabcb002f1022`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### `7cf34c2f`
+
+Blocker 3: all fifteen B030/B031/B032 acceptance boxes were still unchecked under `Status: RESOLVED`; ticked to `[x]` with evidence pointers, including B032's box 3 via its own escape hatch (the cap is enforced through the shared `timeout=`/`budget_seconds=` expression, not by `execute_plan` reading `plan.budget_seconds` directly). D1: A-320's no-bump argument for removing `mutation.progress_artifact` restated as A-324 (append-only file; A-320 itself left as shipped) on its actually load-bearing fact -- no released `assay verify` ever accepted a `progress_artifact`-bearing document either -- and records the cross-repo pointer to `dstdns/docs/proposals/tools/assay-mutation-requirements.md:58`, where the field was originally requested by name. `CHANGES.md` gained its first `[Unreleased]` entries for the whole B030-B032 wave, round 1 and round 2 together, including the specific schema-removal line D1 asked for.
+
+**entry-sha256:** `155c4ba0c57f745b781e29a04dd72e889b05a881ceb9017ec37f584c300b1472`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+**N3 note (on-disk state-record shape, requested to be recorded here or on
+A-320):** the `mutated_file_sha256` rename (A-320, round 1) splats a new key
+into every on-disk `.assay/mutation-state/*.json` record going forward.
+Harmless -- `_load_validated_state_record` tolerates extra keys -- but was
+unrecorded until this round; also noted in the REPORT's Round 2 section.
+
+## Gate (round 1)
 
 The REAL registered gate, run from the assay project root against the final
 HEAD (`0e6cab39`), with its exit code captured separately from the run and read
@@ -93,4 +121,11 @@ $ PYTHONPATH=$PWD/src python -m pytest tests/ -q -p no:randomly
 
 (necessary but NOT sufficient on its own -- it never reaches
 `nyxloom-trove/carve-assets/`, which is where B010/B012's original defects hid.)
+
+## Gate (round 2)
+
+_Pending: the registered gate is run against the round-2 final HEAD (the
+commit that adds this LOG's own Round 2 section), and its real transcript
+replaces this line in the follow-up commit that fills it in -- same
+convention as round 1's `fcdfde92`._
 
