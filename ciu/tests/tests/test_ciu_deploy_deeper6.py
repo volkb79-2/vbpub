@@ -53,7 +53,9 @@ def test_health_target_resolution_requires_rendered_compose_model(tmp_path):
     profile = _profile()
 
     with pytest.raises(ValueError, match=r"\[S7\.7\].*no rendered ciu\.compose\.yml"):
-        deploy.resolve_selection_health_containers(tmp_path, profile, _selection(profile))
+        deploy.resolve_selection_health_containers(
+            tmp_path, profile, _selection(profile), default_timeout_s=30.0,
+        )
 
 
 def test_health_target_resolution_rejects_invalid_profile_declaration(tmp_path):
@@ -65,7 +67,9 @@ def test_health_target_resolution_rejects_invalid_profile_declaration(tmp_path):
     )
 
     with pytest.raises(ValueError, match=r"\[S7\.7\].*invalid profiles.*list of strings"):
-        deploy.resolve_selection_health_containers(tmp_path, profile, _selection(profile))
+        deploy.resolve_selection_health_containers(
+            tmp_path, profile, _selection(profile), default_timeout_s=30.0,
+        )
 
 
 def test_health_target_resolution_rejects_stack_with_no_active_services(tmp_path):
@@ -77,7 +81,9 @@ def test_health_target_resolution_rejects_stack_with_no_active_services(tmp_path
     )
 
     with pytest.raises(ValueError, match=r"\[S7\.7\].*no services active.*\['ops'\]"):
-        deploy.resolve_selection_health_containers(tmp_path, profile, _selection(profile))
+        deploy.resolve_selection_health_containers(
+            tmp_path, profile, _selection(profile), default_timeout_s=30.0,
+        )
 
 
 def test_health_target_resolution_rejects_unreadable_yaml_model(tmp_path):
@@ -86,4 +92,6 @@ def test_health_target_resolution_rejects_unreadable_yaml_model(tmp_path):
     _write_compose(tmp_path, "services:\n  api: [unterminated\n")
 
     with pytest.raises(ValueError, match=r"\[S7\.7\].*Cannot read Compose model"):
-        deploy.resolve_selection_health_containers(tmp_path, profile, _selection(profile))
+        deploy.resolve_selection_health_containers(
+            tmp_path, profile, _selection(profile), default_timeout_s=30.0,
+        )

@@ -160,10 +160,10 @@ services:
     profile = Profile(name=None, phase_keys=None, config=config)
 
     targets = deploy.resolve_selection_health_containers(
-        tmp_path, profile, deploy.build_selection(profile)
+        tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
     )
 
-    assert targets == ["p-t-postgres", "p-t-minio"]
+    assert targets == {"p-t-postgres": 30.0, "p-t-minio": 30.0}
     assert all("Database Core" not in target for target in targets)
 
 
@@ -207,10 +207,10 @@ services:
     )
 
     targets = deploy.resolve_selection_health_containers(
-        tmp_path, profile, deploy.build_selection(profile)
+        tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
     )
 
-    assert targets == ["p-t-always", "p-t-debug", "p-t-metrics"]
+    assert targets == {"p-t-always": 30.0, "p-t-debug": 30.0, "p-t-metrics": 30.0}
 
 
 def test_health_target_resolution_fails_for_ambiguous_compose_identity(tmp_path):
@@ -235,7 +235,7 @@ services:
 
     with pytest.raises(ValueError, match="set a concrete container_name") as exc:
         deploy.resolve_selection_health_containers(
-            tmp_path, profile, deploy.build_selection(profile)
+            tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
         )
 
     assert "infra/cache" in str(exc.value)
@@ -506,13 +506,14 @@ def test_deploy_health_failure_stops_later_phase_after_reporting_summary(monkeyp
         events.append(("deploy", (stack_dir.name,)))
         return True
 
-    def fake_targets(_root, _profile, entries):
+    def fake_targets(_root, _profile, entries, *, default_timeout_s):
         names = tuple(f"project-prod-{entry['name']}" for entry in entries)
         events.append(("targets", names))
-        return list(names)
+        return {name: default_timeout_s for name in names}
 
-    def fake_gate(names, **_kwargs):
-        events.append(("health", tuple(names)))
+    def fake_gate(container_timeouts, **_kwargs):
+        names = tuple(container_timeouts)
+        events.append(("health", names))
         return False, _unhealthy_summary(names[0])
 
     monkeypatch.setattr(deploy, "_run_stack", fake_run)
@@ -548,15 +549,16 @@ def test_deploy_ignore_errors_continues_after_health_failure_but_returns_1(monke
         events.append(("deploy", (stack_dir.name,)))
         return True
 
-    def fake_targets(_root, _profile, entries):
+    def fake_targets(_root, _profile, entries, *, default_timeout_s):
         names = tuple(f"project-prod-{entry['name']}" for entry in entries)
         events.append(("targets", names))
-        return list(names)
+        return {name: default_timeout_s for name in names}
 
     gate_results = iter([False, True])
 
-    def fake_gate(names, **_kwargs):
-        events.append(("health", tuple(names)))
+    def fake_gate(container_timeouts, **_kwargs):
+        names = tuple(container_timeouts)
+        events.append(("health", names))
         passed = next(gate_results)
         return passed, (
             {"healthy": list(names), "pending": [], "unhealthy": [], "no_healthcheck": [], "not_found": []}

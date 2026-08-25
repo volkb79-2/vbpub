@@ -1196,18 +1196,22 @@ def run_health_gate(
     """
     names = {name: container_name(config, name) for name in service_names}
 
-    return run_container_health_gate(
-        list(names.values()), timeout_s=timeout_s, interval_s=interval_s
-    )
+    container_timeouts = {cname: timeout_s for cname in names.values()}
+    return run_container_health_gate(container_timeouts, interval_s=interval_s)
 
 
 def run_container_health_gate(
-    container_names: list[str],
+    container_timeouts: dict[str, float],
     *,
-    timeout_s: float,
     interval_s: float = 5.0,
 ) -> tuple[bool, dict]:
-    """Poll exact Docker *container_names* and return the S7.7 gate result.
+    """Poll exact Docker containers and return the S7.7 gate result.
+
+    *container_timeouts* maps each container name to its OWN timeout in
+    seconds (CIU-QOL-8): each target is polled up to its own deadline within
+    one shared poll loop, so one slow-but-legitimate service's deadline can
+    no longer mask a fast, genuinely broken service's failure (nor can a
+    short global timeout spuriously fail the slow one).
 
     Orchestration actions resolve these names from the rendered Compose model;
     they must not infer a runtime identity from a phase's human-readable
@@ -1217,18 +1221,22 @@ def run_container_health_gate(
 
     def check_fn() -> dict[str, str]:
         statuses: dict[str, str] = {}
-        for cname in container_names:
+        for cname in container_timeouts:
             statuses[cname] = health_pkg.classify(_inspect_state(cname))
         return statuses
 
-    return health_pkg.wait_for_gate(check_fn, timeout_s=timeout_s, interval_s=interval_s)
+    return health_pkg.wait_for_gate_per_target(
+        check_fn, container_timeouts, interval_s=interval_s
+    )
 
 
 def resolve_selection_health_containers(
     repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
-) -> list[str]:
+    *,
+    default_timeout_s: float,
+) -> dict[str, float]:
     """Resolve exact health-gate targets from selected stacks' Compose models.
 
     A phase service ``name`` is presentation text for operator output, not a
@@ -1240,12 +1248,19 @@ def resolve_selection_health_containers(
     profile intersects the profiles active for that phase entry.  Ambiguous or
     missing identities fail closed with an authoring error instead of polling
     a fabricated container name until timeout.
+
+    Returns a ``{container_name: timeout_s}`` mapping (CIU-QOL-8): each phase
+    entry's containers get its own resolved timeout — either its declared
+    ``health_timeout`` override (parsed via the existing ``_seconds()``
+    duration parser) or *default_timeout_s* when no override is declared. A
+    selection where no entry declares an override yields the same
+    *default_timeout_s* for every container, matching pre-package behavior.
     """
     import yaml
 
     from .config_constants import CIU_COMPOSE_OUTPUT, SHIPPED_COMPOSE
 
-    resolved: list[str] = []
+    resolved: dict[str, float] = {}
     seen: set[str] = set()
 
     for entry in selection:
@@ -1253,6 +1268,12 @@ def resolve_selection_health_containers(
         service_cfg = entry["service"]
         if not phases_pkg.service_health_enabled(service_cfg):
             continue
+        raw_override = phases_pkg.service_health_timeout(service_cfg)
+        entry_timeout_s = (
+            _seconds(raw_override, default=default_timeout_s)
+            if raw_override is not None
+            else default_timeout_s
+        )
         shipped = phases_pkg.service_shipped(service_cfg)
         compose_name = SHIPPED_COMPOSE if shipped else CIU_COMPOSE_OUTPUT
         compose_path = stack_dir / compose_name
@@ -1314,7 +1335,7 @@ def resolve_selection_health_containers(
             cname = cname.strip()
             if cname not in seen:
                 seen.add(cname)
-                resolved.append(cname)
+                resolved[cname] = entry_timeout_s
 
         if active_count == 0:
             raise ValueError(
@@ -1406,7 +1427,7 @@ def action_deploy(
     # this deploy — the FULL selected set, not per-stack slices.
     ciu_ctx = profiles_pkg.render_ciu_context(profile, selection)
     health_cfg = profile.config.get("deploy", {}).get("health", {})
-    timeout_s = _seconds(health_cfg.get("timeout", "30s"))
+    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
 
     deployed: list[str] = []
     failed: list[str] = []
@@ -1484,10 +1505,11 @@ def action_deploy(
 
         # Health gate after a successfully-started phase (S7.7).
         if health_after_phase and started_in_phase and not dry_run and not phase_failed:
-            container_names = resolve_selection_health_containers(
-                repo_root, profile, started_in_phase
+            container_timeouts = resolve_selection_health_containers(
+                repo_root, profile, started_in_phase,
+                default_timeout_s=default_timeout_s,
             )
-            if not container_names:
+            if not container_timeouts:
                 info(
                     f">>> Health gate for phase {phase_key}: no health-enabled "
                     "containers selected; passing"
@@ -1496,11 +1518,9 @@ def action_deploy(
             else:
                 info(
                     f">>> Health gate for phase {phase_key} "
-                    f"({len(container_names)} container(s))"
+                    f"({len(container_timeouts)} container(s))"
                 )
-                passed, summary = run_container_health_gate(
-                    container_names, timeout_s=timeout_s
-                )
+                passed, summary = run_container_health_gate(container_timeouts)
                 _print_health_summary(summary)
             if not passed:
                 error(f"[S7.7] health gate FAILED for phase {phase_key}")
@@ -1613,17 +1633,16 @@ def action_healthcheck(
     if not selection:
         warn("No services selected to check")
         return 0
-    container_names = resolve_selection_health_containers(
-        repo_root, profile, selection
+    health_cfg = profile.config.get("deploy", {}).get("health", {})
+    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
+    container_timeouts = resolve_selection_health_containers(
+        repo_root, profile, selection,
+        default_timeout_s=default_timeout_s,
     )
-    if not container_names:
+    if not container_timeouts:
         info("No health-enabled containers selected; health gate passes")
         return 0
-    health_cfg = profile.config.get("deploy", {}).get("health", {})
-    timeout_s = _seconds(health_cfg.get("timeout", "30s"))
-    passed, summary = run_container_health_gate(
-        container_names, timeout_s=timeout_s
-    )
+    passed, summary = run_container_health_gate(container_timeouts)
     _print_health_summary(summary)
     if passed:
         success("health gate passed")

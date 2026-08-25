@@ -51,7 +51,7 @@ def test_health_gate_inspects_exact_resolved_container_names(monkeypatch):
 
     monkeypatch.setattr(deploy, "_inspect_state", inspect)
     passed, summary = deploy.run_container_health_gate(
-        ["project-prod-cache", "project-prod-worker"], timeout_s=0, interval_s=0
+        {"project-prod-cache": 0, "project-prod-worker": 0}, interval_s=0
     )
 
     assert passed is True
@@ -67,13 +67,13 @@ def test_health_gate_pending_then_healthy_uses_deterministic_polling(monkeypatch
     monkeypatch.setattr(deploy, "_inspect_state", lambda _name: next(states))
     ticks = iter([0.0, 0.0, 1.0])
     slept: list[float] = []
-    real_wait_for_gate = health.wait_for_gate
+    real_wait_for_gate_per_target = health.wait_for_gate_per_target
     monkeypatch.setattr(
         deploy.health_pkg,
-        "wait_for_gate",
-        lambda check_fn, **_kw: real_wait_for_gate(
+        "wait_for_gate_per_target",
+        lambda check_fn, target_timeouts, **_kw: real_wait_for_gate_per_target(
             check_fn,
-            timeout_s=5,
+            target_timeouts,
             interval_s=1,
             clock=lambda: next(ticks),
             sleep_fn=slept.append,
@@ -81,7 +81,7 @@ def test_health_gate_pending_then_healthy_uses_deterministic_polling(monkeypatch
     )
 
     passed, summary = deploy.run_container_health_gate(
-        ["project-prod-cache"], timeout_s=5, interval_s=1
+        {"project-prod-cache": 5}, interval_s=1
     )
 
     assert passed is True
@@ -94,7 +94,7 @@ def test_health_gate_timeout_preserves_pending_summary(monkeypatch):
         deploy, "_inspect_state", lambda _name: {"Health": {"Status": "starting"}}
     )
     passed, summary = deploy.run_container_health_gate(
-        ["project-prod-cache"], timeout_s=0, interval_s=0
+        {"project-prod-cache": 0}, interval_s=0
     )
 
     assert passed is False
@@ -124,7 +124,7 @@ def test_malformed_compose_health_model_is_authoring_error(tmp_path, contents):
 
     with pytest.raises(ValueError, match=r"\[S7\.7\].*(must be a mapping|has no services)"):
         deploy.resolve_selection_health_containers(
-            tmp_path, profile, deploy.build_selection(profile)
+            tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
         )
 
 
