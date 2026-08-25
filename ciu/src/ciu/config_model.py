@@ -597,6 +597,13 @@ def render_global_chain(
             )
             merged = deep_merge(merged, overrides_config)
 
+    # S3.1b — the gitignored per-checkout overlay, merged LAST. Read
+    # unconditionally by exact path, with NO S16 instance-record gating, so the
+    # primary/main checkout is covered identically to a worktree instance. This
+    # is also the whole read side of S3.1b's `[ciu.instance.generated]` table
+    # (CIU-60): `ciu env generate` writes the identity facts here, and they
+    # reach templates through this ordinary merge — there is deliberately no
+    # bespoke Jinja context injection for them anywhere.
     worktree_overrides_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
     if worktree_overrides_path.exists():
         raw_override = worktree_overrides_path.read_text(encoding="utf-8")

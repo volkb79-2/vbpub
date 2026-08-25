@@ -10,6 +10,84 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): **CIU-60 — identity facts reach TEMPLATES through a real file,
+  not ambient environment** (SPEC S3.1b, ciu-P33). `ciu env generate` now
+  additionally upserts a CIU-owned `[ciu.instance.generated]` table into this
+  checkout's gitignored `ciu.global.worktree.toml.j2`, carrying the six
+  identity facts — `repo_name`, `instance_id`, `network`,
+  `physical_repo_root`, `repo_root`, `public_fqdn` — from the SAME in-memory
+  values that same invocation writes into `ciu.env`. Nothing is re-derived and
+  `ciu.env` is never read back, so the two records cannot disagree.
+
+  **Additive and non-breaking: no existing behavior changes.** Nothing that
+  worked before renders differently, and no existing key moves. What is NEW is
+  that a template can now say
+  `{{ ciu.instance.generated.physical_repo_root }}` and read a fact about
+  THIS workspace, instead of `{{ env.PHYSICAL_REPO_ROOT }}` — which is the raw
+  process environment (S3.2) and therefore carries a sibling checkout's paths
+  whenever the invoking shell once sourced that checkout's `ciu.env`, a
+  documented convenience. Hooks stopped trusting ambient state in S9.3;
+  templates never did. This closes that asymmetry, at the level of facts
+  ABOUT an already-discovered workspace (CIU-53 closed the level above it:
+  which workspace).
+
+  - **The facts flow through the EXISTING merge**, the one
+    `render_global_chain` already performs on this file for every `repo_root`.
+    There is deliberately no bespoke Jinja global and no new context-building
+    code: an earlier proposal to inject `ciu.physical_repo_root` per render
+    was rejected for reintroducing exactly the "variable that appears from
+    nowhere, backed by no file" hazard. Every value here is `cat`-able.
+  - **The primary/main checkout is covered, not just worktree instances.** The
+    write is not gated on an S16 lifecycle record, because the read side is
+    not either.
+  - **Your own content in that file is preserved byte for byte.** The write is
+    a surgical text replace of the `[ciu.instance.generated]` block alone —
+    not a parse-and-re-serialize of the whole file, which would carry every
+    value across correctly while destroying every comment and reformatting
+    every table in a file S3.1b explicitly invites you to edit. Comments,
+    blank lines, key ordering and unrelated tables before, between and after
+    the block all survive. A second `env generate` over an unchanged workspace
+    produces a byte-identical file.
+  - **Hand-edits INSIDE `[ciu.instance.generated]` are silently overwritten**
+    on the next `env generate` — the block says so inline, mirroring
+    CIU-52's own do-not-hand-edit precedent. That is the only part of the file
+    CIU owns.
+  - **Check your `.gitignore` for `ciu.global.worktree.toml.j2`.** This file
+    has always been declared gitignored (S3.1b, and CIU's own
+    `.gitignored.ciu` sample rules list it), but until now it only appeared
+    in checkouts a managed worktree command created. It is now written in
+    every checkout, on every `ciu env generate`, and it carries
+    machine-specific values (`physical_repo_root`, `instance_id`,
+    `public_fqdn`). `ciu init`'s scaffolded `.gitignore` does not yet include
+    it — filed as CIU-61; add the entry by hand for now.
+- feat(ciu): **`ciu env print`** (SPEC S10.1, ciu-P33) — prints the
+  already-written `ciu.env` as shell `export KEY='value'` lines and nothing
+  else, for `eval "$(ciu env print)"`. Read-only: it generates nothing and
+  refuses loudly, naming `ciu env generate`, when `ciu.env` is absent.
+  Accepts `--define-root PATH`.
+
+  It is named `print`, not `apply` or `source`, on purpose: **a subprocess
+  cannot mutate its parent shell's environment.** That is an OS-level fact,
+  not a CIU limitation, and a verb named `apply` would document a capability
+  no implementation can provide. The `eval` around it is where the change to
+  your shell actually happens; `ciu env print` composes with it so nobody has
+  to hand-write the `source` call.
+- feat(ciu): **`ciu clean --vanilla`** (SPEC S6.4b, ciu-P33) — additionally
+  removes this workspace's `ciu.global.toml` (rendered), `ciu.env` and
+  `ciu.global.worktree.toml.j2`, for a full reset to freshly-CLONED state.
+  Committed inputs are never in scope; an already-absent file is a silent
+  no-op, so `--vanilla` over an already-vanilla workspace succeeds.
+
+  **Purely additive — plain `ciu clean` is unchanged and still leaves all
+  three files completely untouched.** That default is regression-guarded by
+  its own tests: quietly starting to delete an operator's `ciu.env` on every
+  ordinary teardown is precisely the destructive-default hazard this work
+  exists to prevent. `--vanilla` also runs only when the teardown above
+  succeeded — a failed clean keeps the three files and says so, because
+  `ciu.env` is the workspace identity a retry resolves from. Note that a
+  `--vanilla` DOES discard any hand-authored content in
+  `ciu.global.worktree.toml.j2`; `env generate` regenerates only the CIU-owned
+  table, not your edits.
 - feat(ciu)!: **CIU-25 COMPLETE — `ciu worktree reap`, a DESTRUCTIVE verb**
   (SPEC S16.10, ciu-P27, capability `worktree.reap.v1`; builds directly on
   ciu-P26's lease/label substrate, `worktree.lease.v1`).

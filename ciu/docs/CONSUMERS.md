@@ -472,6 +472,59 @@ tear the old-named objects down manually once
 `ciu.env` with `REPO_NAME`/`INSTANCE_ID` must exist for a config-less
 shipped `up` or `clean` to name the project — `ciu env generate` writes it.
 
+**What clean does NOT remove, and the `--vanilla` opt-in (S6.4b, CIU-60).**
+Ordinary `ciu clean` leaves your rendered `ciu.global.toml`, your `ciu.env`,
+and your `ciu.global.worktree.toml.j2` exactly where they are — that has
+always been true and does not change. When you want a workspace back at
+freshly-CLONED state, ask for it explicitly:
+
+```console
+$ ciu clean --vanilla -y
+[SUCCESS] clean complete
+[INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.worktree.toml.j2
+```
+
+Only those three, only on an explicit `--vanilla`, and only when the teardown
+above actually succeeded (a failed clean keeps them — `ciu.env` is the
+identity your retry resolves from). Committed inputs are never touched. An
+already-absent file is fine. **Note that this deletes any hand-authored
+content in `ciu.global.worktree.toml.j2`** — service profiles, a shared-infra
+join, your own sparse overrides. `ciu env generate` regenerates only the
+CIU-owned `[ciu.instance.generated]` table, not your edits.
+
+## 11a. Reading workspace identity in templates and shells (S3.1b, CIU-60)
+
+In a **template**, read identity facts from the config chain, not from `env`:
+
+```jinja
+volumes = ["{{ ciu.instance.generated.physical_repo_root }}:/repo:ro"]
+```
+
+`{{ env.PHYSICAL_REPO_ROOT }}` is the raw process environment (S3.2). If the
+shell running `ciu` once sourced a sibling checkout's `ciu.env` — a documented
+convenience — that is the path it renders, silently, into your bind mount.
+`ciu.instance.generated.*` comes from `ciu.global.worktree.toml.j2`, which
+`ciu env generate` writes for THIS repo root; the six keys are `repo_name`,
+`instance_id`, `network`, `physical_repo_root`, `repo_root`, `public_fqdn`.
+
+You may keep your own tables and comments in that same file. CIU rewrites
+only its own `[ciu.instance.generated]` table and preserves every other byte —
+so hand-edits INSIDE that table are silently overwritten on the next
+`env generate`, and hand-edits anywhere else are safe forever.
+
+In a **shell**, `ciu env print` prints the existing `ciu.env` as `export`
+lines:
+
+```console
+$ eval "$(ciu env print)"
+$ echo "$DOCKER_NETWORK_INTERNAL"
+myapp-abc123-network
+```
+
+It prints; it cannot change your shell by itself (no subprocess can), which is
+why it is `print` and not `apply`/`source`. It generates nothing — if
+`ciu.env` is missing it says so and names `ciu env generate`.
+
 ## 12. The implementation gate (Assay-backed, S18)
 
 CIU's gate is judged by the **released Assay CLI**, pinned and vendored in the

@@ -9,6 +9,7 @@ and exposes the values as process environment variables.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -19,7 +20,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Mapping, Optional
 
 import re
 
@@ -27,6 +28,7 @@ from . import governance as governance_mod
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_RENDERED,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     WORKSPACE_ENV,
 )
 
@@ -59,6 +61,45 @@ REQUIRED_KEYS_CORE: tuple[str, ...] = (
     "DOCKER_NETWORK_INTERNAL",
     "CONTAINER_UID",
     "DOCKER_GID",
+)
+
+# S3.1b (CIU-60) — the CIU-owned table `ciu env generate` upserts into this
+# checkout's `ciu.global.worktree.toml.j2`, so the identity facts a TEMPLATE
+# needs reach it through the ordinary merged-config chain instead of through
+# ambient `os.environ` (S3.2's `env` context is still raw process environment;
+# hooks got the safe treatment in S9.3, templates never did).
+#
+# The key names are snake_case to match this file's existing key-naming
+# convention (`ref_path`, `network`, `ref_projects`), NOT the SCREAMING_CASE
+# shell-env names they are derived from.
+GENERATED_FACTS_TABLE = "ciu.instance.generated"
+GENERATED_FACTS_HEADER = f"[{GENERATED_FACTS_TABLE}]"
+GENERATED_FACTS_KEYS: tuple[str, ...] = (
+    "repo_name",
+    "instance_id",
+    "network",
+    "physical_repo_root",
+    "repo_root",
+    "public_fqdn",
+)
+
+# Written once, at the top of a file this function had to create from nothing.
+# Mirrors `worktree._worktree_overlay_text`'s own header-comment style so a
+# CIU-created overlay looks the same whichever code path created it.
+_OVERLAY_FRESH_HEADER: tuple[str, ...] = (
+    "# Worktree-local sparse global override (S3.1b / S16).",
+    "# Durable configuration: preserved by `ciu clean` and `ciu env generate`.",
+)
+
+# These live INSIDE the owned block (below the table header, above the keys)
+# rather than above the header on purpose: the upsert owns exactly the region
+# from the header line to the next table, so a comment placed above the header
+# would survive the replace and be re-emitted on every run, growing a duplicate
+# banner per `env generate`. Below it, the block is byte-idempotent.
+_GENERATED_FACTS_BANNER: tuple[str, ...] = (
+    "# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.",
+    "# Do NOT hand-edit keys in THIS table — edits here are silently",
+    "# overwritten. Every OTHER byte of this file is yours and is preserved.",
 )
 
 
@@ -889,13 +930,156 @@ def ensure_workspace_network(
         _connect_devcontainer_to_network(resolved)
 
 
+def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
+    """Render the `[ciu.instance.generated]` block as a list of TOML lines.
+
+    Values are emitted with ``json.dumps`` exactly as
+    ``worktree._worktree_overlay_text`` already does for its own tables — TOML
+    basic strings and JSON strings share an escape grammar for the characters
+    a filesystem path or a hostname can contain.
+
+    Key ORDER is :data:`GENERATED_FACTS_KEYS`, never ``facts``' iteration
+    order, so the rendered block is byte-identical across runs regardless of
+    how the caller built the mapping.
+    """
+    missing = [key for key in GENERATED_FACTS_KEYS if key not in facts]
+    if missing:
+        raise WorkspaceEnvError(
+            f"[S3.1b] generated identity facts incomplete: missing {missing}"
+        )
+    lines = [GENERATED_FACTS_HEADER, *_GENERATED_FACTS_BANNER]
+    lines.extend(f"{key} = {json.dumps(facts[key])}" for key in GENERATED_FACTS_KEYS)
+    return lines
+
+
+def upsert_generated_facts(repo_root: Path, facts: Mapping[str, str]) -> Path:
+    """S3.1b (CIU-60) — write *facts* into ``ciu.global.worktree.toml.j2``.
+
+    This is a TEXT-LEVEL surgical block replace, deliberately NOT a
+    ``tomllib`` parse + ``tomli_w`` dump round-trip. The overlay is documented
+    operator-editable (S3.1b): a full-file round-trip would round-trip every
+    VALUE correctly while silently discarding every comment and reformatting
+    every table an operator hand-authored. The bytes CIU owns are exactly the
+    region from the ``[ciu.instance.generated]`` header line up to (not
+    including) the next line beginning a table at column 0 — nothing else in
+    the file is read, rewritten, or reordered.
+
+    Behaviour:
+
+    * file absent → created, carrying the same header comment
+      ``worktree._worktree_overlay_text`` writes, then the block;
+    * table absent → block appended at EOF, one blank line after whatever was
+      already there;
+    * table present → its region replaced in place, keeping the blank-line
+      separator when another table follows, so a second run over an unchanged
+      workspace produces a byte-identical file.
+
+    Unlike ``worktree._write_worktree_overlay`` — which correctly REFUSES an
+    existing file, because its only call site is worktree creation on day zero
+    — this runs on every ``ciu env generate``, possibly the tenth one over a
+    file the operator has since added their own tables and comments to. Hence
+    upsert, not refuse-if-exists and not blind append. That refusal is left
+    exactly as it is; its other callers still need it.
+
+    Known and accepted limit of text scanning: a line reading exactly
+    ``[ciu.instance.generated]`` *inside a multi-line TOML string elsewhere in
+    the file* would be mistaken for the table header. That construct cannot
+    occur in a sparse override of the shape S3.1b describes, and the
+    alternative (a full-file round-trip) fails the far more likely case of an
+    operator comment.
+
+    Returns the overlay path.
+    """
+    path = Path(repo_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    block = render_generated_facts_block(facts)
+
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise WorkspaceEnvError(f"[S3.1b] could not read {path}: {exc}") from exc
+
+    if existing:
+        lines = existing.splitlines()
+    else:
+        lines = list(_OVERLAY_FRESH_HEADER)
+
+    start = next(
+        (i for i, line in enumerate(lines) if line.strip() == GENERATED_FACTS_HEADER),
+        None,
+    )
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(block)
+    else:
+        end = next(
+            (i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
+            len(lines),
+        )
+        # The region's TRAILING run of blank/comment lines is never ours — the
+        # last line this writer emits is always a `key = value` — so it is
+        # either the blank separator before the next table or, in TOML's
+        # ordinary reading, a hand-authored comment that belongs to that next
+        # table. Carrying it across keeps O2's promise for a comment written
+        # immediately BELOW the generated block, and is idempotent: the same
+        # run is re-detected and re-emitted unchanged on every later run.
+        keep = end
+        while keep > start + 1 and (
+            not lines[keep - 1].strip() or lines[keep - 1].lstrip().startswith("#")
+        ):
+            keep -= 1
+        tail = lines[keep:end]
+        # Only manufacture a separator when the region carried none at all.
+        if not tail and end < len(lines):
+            tail = [""]
+        lines[start:end] = [*block, *tail]
+
+    _atomic_write_text(path, "\n".join(lines) + "\n")
+    return path
+
+
+def _atomic_write_text(path: Path, payload: str) -> None:
+    """Temp-file + fsync + ``os.replace`` (S16 durability), as
+    ``worktree._write_worktree_overlay`` does.
+
+    Uses ``"w"`` rather than that function's ``"x"``: this writer runs on every
+    `env generate`, so a temp file left behind by a crash under the same PID
+    must not wedge every future generate.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise WorkspaceEnvError(f"[S3.1b] could not write {path}: {exc}") from exc
+
+
 def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Path:
     """Generate ciu.env with autodetected values.
 
-    Side-effect: writes the ciu.env file only (network/TLS steps belong in
-    bootstrap_env_init so tests stay simple — S2.8).
+    Side-effects: writes the ciu.env file, and upserts the identity facts it
+    just derived into this checkout's `ciu.global.worktree.toml.j2` under
+    `[ciu.instance.generated]` (S3.1b / CIU-60) so TEMPLATES can read them from
+    the merged config chain instead of ambient `os.environ`. Both writes come
+    from the SAME in-memory values — the facts are never re-derived, and
+    `ciu.env` is never re-read to produce them. Network/TLS steps still belong
+    in bootstrap_env_init so tests stay simple (S2.8).
 
-    Returns the path to the generated file.
+    The overlay write is NOT gated on an S16 worktree instance record: the
+    primary/main checkout reads the same file through the same unconditional
+    `render_global_chain` step, and gating would leave exactly that checkout
+    on the old ambient-env path.
+
+    Returns the path to the generated ciu.env file.
     """
     repo_root = repo_root.resolve()
     output_path = output_path or repo_root / ENV_FILE_NAME
@@ -1026,6 +1210,22 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     ))
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # S3.1b (CIU-60). Same values, same invocation, second destination: the
+    # merged-config chain, which is what a Jinja TEMPLATE can actually see.
+    # Deriving them a second time (or reading them back out of ciu.env) would
+    # admit a disagreement between the two records that nothing would catch.
+    upsert_generated_facts(
+        repo_root,
+        {
+            "repo_name": network_values["REPO_NAME"],
+            "instance_id": network_values["INSTANCE_ID"],
+            "network": network_values["DOCKER_NETWORK_INTERNAL"],
+            "physical_repo_root": str(physical_root),
+            "repo_root": str(repo_root),
+            "public_fqdn": public_values["PUBLIC_FQDN"],
+        },
+    )
     return output_path
 
 

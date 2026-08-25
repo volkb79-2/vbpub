@@ -113,6 +113,70 @@ unchanged from today: this is the one case where trusting an already-sourced
 `ciu.env` from an unrelated location is a reasonable convenience rather than
 a masked default, since there is no different, correct answer being hidden.
 
+## Why identity facts moved into a real, gitignored FILE — not a Jinja global (CIU-60)
+
+The two sections above close the ambient-trust hazard for the values
+`env generate` DERIVES and for the resolver that decides WHICH repo a verb
+operates on. This one closes it for the facts a TEMPLATE consumes about the
+workspace that was already discovered — the last leg of the same question an
+operator asked directly: *should the `env` / `ciu.global.defaults.toml.j2`
+usage be reconsidered for every `ciu` verb?*
+
+The gap was real and asymmetric. Hooks stopped trusting ambient environment in
+S9.3: a hook receives `ctx.instance_id`/`ctx.network` read from THIS
+workspace's own `ciu.env` by exact path. Jinja template rendering never got
+that treatment — S3.2's `env` context is still raw `os.environ`. So the exact
+scenario CIU-41 and CIU-53 were filed over (a login shell that once sourced a
+sibling checkout's `ciu.env`, which is a *documented* convenience) renders a
+template's `{{ env.PHYSICAL_REPO_ROOT }}` as the OTHER checkout's host path —
+silently, into a bind mount, with no error anywhere.
+
+The obvious fix was to inject the facts into the render context as fresh Jinja
+globals (`ciu.physical_repo_root` and friends, computed per render). That was
+proposed and **rejected**, correctly: it manufactures a variable that appears
+from nowhere, backed by no file, that an operator cannot inspect, diff, or
+`cat` — the "magically available var" hazard this whole line of work exists to
+remove. Trading an ambient value for an invisible one is not a fix; it just
+moves where the surprise lives.
+
+What shipped instead reuses a mechanism that was already there, already
+gitignored, already merged into every render, and already proven out by CIU-52
+for a different field: the per-checkout overlay
+`ciu.global.worktree.toml.j2`. `ciu env generate` upserts one CIU-owned table
+into it, `[ciu.instance.generated]`, carrying the same six values it just
+wrote to `ciu.env`, from the same in-memory tuple. Templates then read them
+the way they read every other config value, through the ordinary merge chain,
+with no new context-building code anywhere. Three properties fall out of that
+choice rather than having to be engineered:
+
+- **Every value is backed by a file.** `cat ciu.global.worktree.toml.j2` shows
+  exactly what CIU derived for this checkout. A wrong render is now diffable.
+- **The primary checkout is covered for free.** `render_global_chain` reads
+  this file unconditionally by exact path, with no S16 instance-record gating,
+  so the write side does not gate either — which matters, because the main
+  workspace is where the operator was standing when they hit the bug, and a
+  worktree-only fix would have left exactly that case broken.
+- **`ciu clean` already preserves it** (S3.1b), so the facts survive a
+  teardown; a full reset is the explicit `--vanilla` opt-in.
+
+The rendered `ciu.global.toml` was considered as the destination and rejected
+on a mechanical fact, not taste: it has no state preservation. Only a stack's
+own `ciu.toml` preserves a `[state]` table across re-render (S3.4); the global
+rendered file is regenerated whole from its source layers on nearly every
+verb, so anything written directly into it that is not re-derived identically
+every time is silently lost. `ciu.global.toml.j2` was rejected because it is
+committed — writing machine-specific host paths into a tracked file is how one
+developer's mount path reaches everybody.
+
+The write is a **surgical text replace of that one table**, not a
+`tomllib` parse plus a `tomli_w` dump of the whole file. A full round-trip
+would carry every VALUE across correctly and destroy every comment and every
+hand-chosen bit of formatting on the way — in a file S3.1b explicitly invites
+operators to edit. Owning exactly the bytes between the table's own header and
+the next table (minus the trailing comment run that belongs to that next
+table) is what lets CIU rewrite its facts on every single `env generate`
+without ever touching a line a human wrote.
+
 ## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
 
 A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is

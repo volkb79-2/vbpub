@@ -69,7 +69,7 @@ generated."
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
-| `ciu.global.worktree.toml.j2` | **Gitignored, OPTIONAL** | Sparse worktree-local override, merged last; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16) |
+| `ciu.global.worktree.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override, merged last; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). `ciu env generate` upserts one CIU-owned table into it, `[ciu.instance.generated]` (CIU-60) — every other byte is yours and survives byte for byte. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
 | `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate` |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
@@ -992,10 +992,55 @@ refined precedence instead of "pre-set always wins":
 Every other key in this table keeps the simple "pre-set env always wins"
 rule.
 
+### CIU-owned identity facts: `[ciu.instance.generated]` [S3.1b / CIU-60]
+
+`ciu env generate` derives this workspace's identity tuple, writes it to
+`ciu.env` for shells and hooks, and — from the same in-memory values, in the
+same invocation — upserts it into `ciu.global.worktree.toml.j2` as a table:
+
+```toml
+[ciu.instance.generated]
+# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.
+# Do NOT hand-edit keys in THIS table — edits here are silently
+# overwritten. Every OTHER byte of this file is yours and is preserved.
+repo_name = "dstdns"
+instance_id = "98535c"
+network = "dstdns-98535c-network"
+physical_repo_root = "/home/dev/checkouts/dstdns"
+repo_root = "/workspaces/dstdns"
+public_fqdn = "dev.example.test"
+```
+
+That is the whole mechanism by which a TEMPLATE reaches these facts — through
+the ordinary merged config chain, like any other value:
+
+```jinja
+{# in any stack template #}
+volumes = ["{{ ciu.instance.generated.physical_repo_root }}:/repo:ro"]
+```
+
+Use these instead of `{{ env.PHYSICAL_REPO_ROOT }}` and friends. The `env`
+context is the raw process environment (S3.2): a shell that once sourced a
+sibling checkout's `ciu.env` carries THAT checkout's paths, and a template
+reading `env.*` silently renders them. `ciu.instance.generated.*` comes from a
+file in this repo root, written for this repo root, that you can `cat`.
+
+Two rules make it safe to keep your own content in the same file:
+
+- **CIU owns exactly this one table** and rewrites it whole on every
+  `env generate`, so a hand-edit to a key inside it does not survive.
+- **Nothing else in the file is touched.** The write is a surgical text
+  replace of that table's own lines, not a re-serialization of the file, so
+  your comments, spacing, key ordering and unrelated tables are preserved byte
+  for byte — before, between and after the generated block.
+
+Removing it is `ciu clean --vanilla`; ordinary `ciu clean` preserves it.
+
 ### Shared-infra join example [S16.1]
 
 Managed worktree configuration has this closed CIU-owned shape; other ordinary
-global keys may be added as sparse local overrides:
+global keys (and the CIU-owned `[ciu.instance.generated]` table above) live in
+the same file:
 
 ```toml
 [ciu.instance]

@@ -192,9 +192,17 @@ ciu capabilities [--json]
 """,
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
-ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
+ciu env generate [--define-root PATH] — (re)generate ciu.env from system state,
+  and refresh the CIU-owned [ciu.instance.generated] table in this checkout's
+  ciu.global.worktree.toml.j2 so TEMPLATES read those identity facts from the
+  merged config chain instead of ambient environment (S3.1b)
+ciu env print [--define-root PATH] — print the existing ciu.env as shell
+  `export KEY='value'` lines, for: eval "$(ciu env print)"
+  It PRINTS; it cannot itself change your shell (no subprocess can), and it
+  generates nothing — run `ciu env generate` first if ciu.env is missing.
 
   --define-root PATH   override repo root (no parent walking); for `generate`
+                       and `print`
 """,
     "iops-baseline": """\
 ciu iops-baseline [--path PATH] [--runtime N] [--force]
@@ -295,6 +303,11 @@ ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack (best-effort per stack)
+  --vanilla          ALSO remove this workspace's ciu.global.toml (rendered),
+                     ciu.env, and ciu.global.worktree.toml.j2 — a full reset to
+                     freshly-cloned state. Without it those three are left
+                     untouched, exactly as before. Only runs when the teardown
+                     above succeeded; a failed clean keeps them for the retry.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--define-root PATH]
@@ -675,11 +688,12 @@ def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
     """True when `-h`/`--help` should print the verb's own help.
 
-    `env generate --help` is excluded so its argparse help is reachable.
+    `env generate --help` / `env print --help` are excluded so their own
+    argparse help is reachable.
     """
     if "-h" not in rest and "--help" not in rest:
         return False
-    if verb == "env" and rest and rest[0] == "generate":
+    if verb == "env" and rest and rest[0] in ("generate", "print"):
         return False
     return True
 
@@ -720,6 +734,60 @@ def _env_generate(rest: list[str]) -> int:
         return 0
     from .deploy import action_generate_env
     return action_generate_env(opts.define_root, Path.cwd())
+
+
+def _shell_export_value(value: str) -> str:
+    """Always-single-quoted shell literal for *value*.
+
+    Built on `shlex.quote` (this codebase's existing shell-quoting helper), not
+    a second escaping implementation: `shlex.quote` either returns the value
+    untouched — only ever for values whose characters are all shell-inert — or
+    a fully single-quoted form with embedded quotes escaped as `'\\''`. Wrapping
+    the untouched case is therefore lossless, and it keeps every emitted line
+    in one shape (`export KEY='value'`) an operator can eyeball.
+    """
+    quoted = shlex.quote(value)
+    if quoted.startswith("'") and quoted.endswith("'"):
+        return quoted
+    return f"'{quoted}'"
+
+
+def _env_print(rest: list[str]) -> int:
+    """Handle `ciu env print [--define-root PATH]`.
+
+    Read-only: prints the ALREADY-WRITTEN ciu.env as `export KEY='value'`
+    lines and nothing else, for `eval "$(ciu env print)"`. It is deliberately
+    NOT called `apply` or `source`: a subprocess structurally cannot mutate its
+    parent shell's environment, and naming it that way would document a
+    capability that cannot exist. Nothing is (re)generated here.
+    """
+    import argparse as _ap
+    p = _ap.ArgumentParser(prog="ciu env print", add_help=True)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH",
+                   help="Override repository root directory (no parent walking)")
+    opts = p.parse_args(rest)
+    from .workspace_env import (
+        WorkspaceEnvError,
+        parse_workspace_env,
+        resolve_env_root,
+    )
+    try:
+        root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+    except WorkspaceEnvError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    env_file = root / WORKSPACE_ENV
+    if not env_file.exists():
+        print(
+            f"[ERROR] No {WORKSPACE_ENV} at {root} — nothing to print. "
+            f"Run: ciu env generate",
+            file=sys.stderr,
+        )
+        return 1
+    for key, value in parse_workspace_env(env_file).items():
+        print(f"export {key}={_shell_export_value(value)}")
+    return 0
 
 
 def _iops_baseline(rest: list[str]) -> int:
@@ -1545,6 +1613,8 @@ def main() -> None:
     if verb == "env":
         if rest and rest[0] == "generate":
             raise SystemExit(_env_generate(rest[1:]))
+        if rest and rest[0] == "print":
+            raise SystemExit(_env_print(rest[1:]))
         raise SystemExit(_env_show())
 
     elif verb == "iops-baseline":

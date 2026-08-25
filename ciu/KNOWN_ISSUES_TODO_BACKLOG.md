@@ -176,6 +176,8 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-56 | `tests/conftest.py`'s autouse ambient-env-scrub fixture (ciu-P13) never included `CIU_KSM`, despite CHANGES.md's own history recording multiple prior one-off `CIU_KSM=off` pins scattered across individual test fixtures to work around exactly this class of leak — local patches on individual flakes, never a fix of the shared fixture's actual coverage | Medium | FIXED — `CIU_KSM` added to `_AMBIENT_ENV_VARS`. Live-caught while investigating CIU-55: `test_absolute_governance_ksm_path_is_preserved_in_overlay` (`test_ciu_composefile_branch109.py`) intermittently failed `KeyError: 'volumes'` under `--dist loadfile` because `governance.resolve_ksm_optin` reads `CIU_KSM` fresh on every call and the test never pins it; a contaminated/leftover value silently changes which branch `composefile.generate_overlay` takes. No raw (non-monkeypatch) `os.environ["CIU_KSM"]` assignment or ambient shell value was found as the exact source — the fix closes the class regardless of the precise vector, matching the existing pattern for the other 6 scrubbed vars (see detail) |
 | CIU-57 | Multiple tests build their fixture tree via `shutil.copytree` FROM the real, checked-in `test-repo/` directory (a SHARED, on-disk, non-per-test-isolated source) rather than from a synthetic/generated source — a concurrent xdist worker rendering into (or otherwise mutating) that same shared source directory races the `copytree` read, observed as a `shutil.copytree`/`os.scandir` failure over entries that include unexpected generated artifacts (`ciu.compose.yml`, `__pycache__`) alongside the template files | Medium | OPEN — found live while stress-testing the CIU-55/CIU-56 fixes (2026-08-25), not caused by either; not investigated further — a structurally different, likely broader test-fixture-isolation problem across the suite, out of scope for this wave. A future package should enumerate every `copytree`/direct-read use of `test-repo/` (or any other shared non-tmp_path source) and either isolate a pristine copy once per session (not per test) or generate the fixture tree synthetically per test. **Review-added facts (ciu-P26 reviewer):** 9 test files read `test-repo/`, 3 via `copytree` — CIU-55's `--dist loadfile` fix removes only SAME-file races, cross-file concurrent access remains possible, so it likely makes this rarer without closing it; the directory currently holds gitignored, accumulating residue (`applications/app-config/ciu.compose.yml` + two `__pycache__` dirs) that is NOT tracked fixture content, so the race surface drifts between a fresh clone/CI and a developer machine — a cheap partial mitigation (render into `tmp_path`, or clean the residue) shrinks the surface without the full audit |
 | CIU-58 | `os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")` is duplicated FOUR times with no factored helper — three pre-existing in `workspace_env.py` (`:598`, `:742`, `:964`) and a fourth added by ciu-P26 (`worktree.py:395`) | Low | OPEN — filed by the ciu-P26 reviewer 2026-08-25; the implementer correctly judged factoring a helper out of scope for P26 (a two-line expression already triplicated in an out-of-scope file is disproportionate to escalate over), but the judgment was recorded only in the LOG, never filed here — every other wave follow-up got a backlog entry. A future small package should extract one `detect_devcontainer_name()`-style helper into `workspace_env.py` and have all four call sites (plus any new ones) use it |
+| CIU-60 | Jinja TEMPLATE rendering's `env` context is still raw ambient `os.environ` (S3.2) — hooks got the safe treatment in S9.3, templates never did, so a shell that once sourced a sibling checkout's `ciu.env` renders THAT checkout's `PHYSICAL_REPO_ROOT` into a bind mount, silently. The level below CIU-53 (which repo a verb acts on): facts ABOUT the already-discovered workspace | High | FIXED — ciu-P33: `ciu env generate` now upserts a CIU-owned `[ciu.instance.generated]` table (six snake_case keys, from the SAME in-memory values it writes to `ciu.env`) into the gitignored per-checkout overlay `ciu.global.worktree.toml.j2`, so templates read them as `{{ ciu.instance.generated.* }}` through the merge `render_global_chain` ALREADY performs — no bespoke Jinja global (that proposal was rejected by the operator as a new invisible-variable hazard), a real `cat`-able file behind every value, and NOT gated on an S16 record so the primary checkout is covered too. Text-level surgical block replace, never a `tomllib`+`tomli_w` full-file round-trip: operator comments/formatting/unrelated tables survive byte for byte. Shipped with the same conversation's two QOL asks: `ciu env print` (`eval "$(ciu env print)"` — named `print`, never `apply`/`source`, because a subprocess cannot mutate its parent shell) and `ciu clean --vanilla` (additive; plain `clean` still leaves `ciu.global.toml`/`ciu.env`/the overlay untouched) — see detail |
+| CIU-61 | `ciu init`'s `_GITIGNORE_ENTRIES` (`scaffold.py`) writes only 4 entries — `ciu.env`, `ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml` — and omits `ciu.global.worktree.toml.j2`, which CIU's own published `.gitignored.ciu` sample rules DO list. Harmless until CIU-60; now that `ciu env generate` upserts `[ciu.instance.generated]` into that file on every run, a freshly scaffolded consumer repo gains an untracked, machine-specific file (host paths, instance id) that a developer can commit by accident. `ciu.worktree-instance.json` and `**/ciu.toml`/`**/ciu.toml.j2` are missing from the same list for the same reason | Medium | OPEN — found by ciu-P33 while fixing the identical omission in ciu's OWN `.gitignore` (that half is FIXED in this commit; the integration suite generates into the committed `test-repo/` fixture, so the untracked file redded the dirty-tree gate immediately). `scaffold.py` was outside ciu-P33's `scope.touch`, so the consumer-facing half was not touched. A future small package should reconcile `_GITIGNORE_ENTRIES` against `.gitignored.ciu` — they are two hand-maintained copies of one list that have already drifted, so prefer deriving one from the other over adding a fifth literal |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -1656,6 +1658,137 @@ tree synthetically per test instead of copying from a shared, mutable,
 checked-in directory at all.
 
 **SPEC ownership:** none — gate/test-infrastructure.
+
+## CIU-60 — Jinja TEMPLATE rendering's `env` context is still raw ambient `os.environ`; hooks got the safe S9.3 treatment, templates never did
+
+**Filed by:** ciu-P33 (controller, from the operator architecture discussion
+of 2026-08-25 — the same devcontainer live-bug thread that produced CIU-53),
+alongside the fix, so a future reader finds the "why" without re-deriving it.
+
+### The operator's question
+
+Verbatim in substance: *"should the `env` / `ciu.global.defaults.toml.j2`
+usage be reconsidered for every `ciu` verb"* — followed by the three
+constraints that closed the design: *"we cannot write generated vars to
+`ciu.global.toml.j2` because this gets committed"*, *"we could write to
+`ciu.global.toml` instead of using `ciu.env`"*, and (separately) *"`ciu env
+apply` or `ciu env source`"* / *"does `ciu clean` also remove
+`ciu.global.toml`? … maybe have a `ciu clean --vanilla`"*.
+
+### Observed gap
+
+S9.3 already stops hooks from trusting ambient state: a hook receives
+`ctx.instance_id`/`ctx.network` read from THIS workspace's own `ciu.env` by
+exact path. S3.2's template render context never got that treatment — `env`
+is raw `os.environ`. So the documented convenience of a login shell having
+sourced a sibling checkout's `ciu.env` (the CIU-41/CIU-47/CIU-53
+contamination path, live-reproduced three times this session) makes a
+template's `{{ env.PHYSICAL_REPO_ROOT }}` render the OTHER checkout's host
+path — silently, into a bind mount, with no error anywhere. CIU-53 closed the
+level ABOVE this (which repo a verb operates on); this is facts ABOUT the
+already-discovered workspace.
+
+### Why the obvious fix was rejected
+
+The first controller proposal was a fresh-every-render Jinja context
+injection: `ciu.physical_repo_root` and friends, computed per render. The
+operator rejected it, correctly — it manufactures a variable that appears
+from nowhere, backed by no file, that cannot be inspected or diffed. That is
+the same "magically available var" hazard the whole session was fighting;
+trading an ambient value for an invisible one is not a fix.
+
+### Resolution (shipped by ciu-P33)
+
+SPEC S3.1b gains a CIU-owned `[ciu.instance.generated]` table inside the
+already-shipped, already-gitignored, already-clean-surviving per-checkout
+overlay `ciu.global.worktree.toml.j2` — CIU-52's exact precedent, a different
+field. `ciu env generate` upserts six snake_case keys (`repo_name`,
+`instance_id`, `network`, `physical_repo_root`, `repo_root`, `public_fqdn`)
+from the SAME in-memory values it writes to `ciu.env`, never re-derived and
+never read back. Templates then reach them as
+`{{ ciu.instance.generated.physical_repo_root }}` through the merge
+`render_global_chain` ALREADY performs on this file — no new context-building
+code anywhere, and a real file behind every value. The write is not gated on
+an S16 instance record, because the read side is not either: gating would have
+left the primary/main checkout (where the operator was standing) unfixed.
+
+The write is a text-level surgical block replace, not a `tomllib` +
+`tomli_w` full-file round-trip: the latter carries every VALUE across
+correctly while destroying every comment and reformatting every table in a
+file S3.1b explicitly invites operators to edit. CIU owns exactly the bytes
+from its table header to the next table (minus that region's trailing
+comment run, which belongs to the following table); everything else survives
+byte for byte, forever. Hand-edits inside the owned table are silently
+overwritten, and the block says so inline.
+
+`ciu.global.toml` was rejected as the destination on a mechanical fact: it has
+no state preservation. Only a stack's own `ciu.toml` preserves `[state]`
+across re-render (S3.4); the global rendered file is regenerated whole from
+its source layers on nearly every verb.
+
+The two QOL asks from the same conversation shipped with it:
+
+- **`ciu env print`** (S10.1) — prints the existing `ciu.env` as `export
+  KEY='value'` lines for `eval "$(ciu env print)"`. Deliberately NOT `apply`
+  or `source`: a subprocess cannot mutate its parent shell's environment, so
+  either of those names would document a capability no implementation can
+  provide.
+- **`ciu clean --vanilla`** (S6.4b) — additionally removes `ciu.global.toml`,
+  `ciu.env` and `ciu.global.worktree.toml.j2`. Purely additive; plain `clean`
+  still leaves all three untouched (regression-guarded), and `--vanilla` runs
+  only after a teardown that actually succeeded.
+
+### Side-finding: the file SPEC calls gitignored was not, here
+
+SPEC S3.1b and CIU's own published `.gitignored.ciu` sample rules both list
+`ciu.global.worktree.toml.j2` as gitignored. CIU's OWN `.gitignore` did not —
+invisible until now, because nothing wrote this file at a TRACKED repo root:
+`_write_worktree_overlay`'s only call site is worktree creation, always into
+a fresh checkout. With `env generate` now upserting into it unconditionally,
+the integration suite (`test_ciu_test_repo.py`, which generates into the
+committed `test-repo/` fixture) immediately left an untracked file that would
+red the dirty-tree gate (S18.4) on every run. Fixed in the same commit by
+adding `**/ciu.global.worktree.toml.j2`. The consumer-facing half of the same
+omission — `ciu init`'s scaffolded `.gitignore` — is filed as **CIU-61**;
+`scaffold.py` was outside this package's scope.
+
+**SPEC ownership:** S3.1b (`[ciu.instance.generated]`), S6.4b
+(`clean --vanilla`), S10.1 (`ciu env print`).
+
+## CIU-61 — `ciu init`'s scaffolded `.gitignore` omits `ciu.global.worktree.toml.j2` (and two others)
+
+**Filed by:** ciu-P33, 2026-08-25, as the named follow-up from the
+`.gitignore` side-finding above.
+
+### Observed
+
+`scaffold.py`'s `_GITIGNORE_ENTRIES` writes four entries into a consumer's
+`.gitignore`: `ciu.env`, `ciu.global.toml`, `**/.ciu/`,
+`**/ciu.compose.yml`. CIU's own published `.gitignored.ciu` sample-rules file
+lists eight, including `ciu.global.worktree.toml.j2`,
+`ciu.worktree-instance.json`, `**/ciu.toml` and `**/ciu.toml.j2`. Two
+hand-maintained copies of one list, already drifted.
+
+### Why it matters now
+
+Before CIU-60, `ciu.global.worktree.toml.j2` only ever appeared in a checkout
+a managed worktree command had just created. `ciu env generate` now upserts
+`[ciu.instance.generated]` into it on every run, in every checkout including
+the primary one. A freshly `ciu init`-ed consumer repo therefore gains an
+untracked file carrying machine-specific facts — this developer's host path
+(`physical_repo_root`), instance id, and public FQDN — which is exactly the
+class of value that should never reach a tracked file, and which an
+unsuspecting `git add -A` will commit.
+
+### Proposed direction (not designed)
+
+Reconcile the two lists. Prefer deriving `_GITIGNORE_ENTRIES` from
+`.gitignored.ciu` (or vice versa) over adding a fifth literal to a list that
+has already proven it drifts; the per-entry "why" comments the scaffolder
+attaches would need a home in whichever file becomes the source.
+
+**SPEC ownership:** S19.1 (`ciu init` scaffold), S3.1b (the file's declared
+gitignored status).
 
 ## Compact resolved index
 

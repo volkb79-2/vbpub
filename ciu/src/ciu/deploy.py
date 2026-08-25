@@ -60,7 +60,9 @@ from .cli_utils import get_cli_version
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_RENDERED,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     STACK_CONFIG_RENDERED,
+    WORKSPACE_ENV,
 )
 from .deploy_pkg import health as health_pkg
 from .deploy_pkg import phases as phases_pkg
@@ -3158,12 +3160,54 @@ def _remove_identity_networks(
     return removed, blocked
 
 
+# S6.4b (CIU-60) — the three workspace-level files `ciu clean --vanilla`
+# additionally removes. Every one of them is gitignored and regenerable:
+# `ciu.global.toml` by any render, `ciu.env` by `ciu env generate`, and
+# `ciu.global.worktree.toml.j2` by the lifecycle/`env generate` writers (its
+# HAND-authored content, if any, is not regenerable — which is exactly why
+# plain `clean` must never touch it and `--vanilla` must be explicit).
+VANILLA_RESET_FILES: tuple[str, ...] = (
+    GLOBAL_CONFIG_RENDERED,
+    WORKSPACE_ENV,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+)
+
+
+def _remove_vanilla_reset_files(repo_root: Path) -> int:
+    """S6.4b — remove :data:`VANILLA_RESET_FILES` under *repo_root*.
+
+    An absent file is a silent no-op for that file (a `--vanilla` over an
+    already-clean workspace succeeds); an OSError removing a present one is an
+    error, because a `--vanilla` that leaves one standing did not do what it
+    said. Returns the rc contribution (0 or 1).
+    """
+    rc = 0
+    removed: list[str] = []
+    for name in VANILLA_RESET_FILES:
+        target = repo_root / name
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            error(f"--vanilla: could not remove {target}: {exc}")
+            rc = 1
+            continue
+        removed.append(name)
+    if removed:
+        info(f"--vanilla: removed {', '.join(removed)}")
+    else:
+        info("--vanilla: nothing to remove (workspace already at vanilla state)")
+    return rc
+
+
 def action_clean(
     repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
     *,
     ignore_errors: bool,
+    vanilla: bool = False,
 ) -> int:
     """--clean: stop+remove containers, remove project volumes + networks, reset.
 
@@ -3193,6 +3237,18 @@ def action_clean(
     The post-clean invariant covers containers, volumes AND networks: any
     survivor that was not a declared keep makes clean exit 1, so a false
     "clean complete" over surviving identity-scoped objects is impossible.
+
+    *vanilla* (S6.4b / CIU-60) is purely ADDITIVE: with it False — the default,
+    and what every existing caller gets — this function's behaviour is
+    unchanged, and in particular `ciu.global.toml`, `ciu.env` and
+    `ciu.global.worktree.toml.j2` are left exactly where they are, as they
+    always have been (S3.1b even makes the last of those a preservation
+    REQUIREMENT of plain clean). With it True, those three are additionally
+    removed after everything above, for a full reset to freshly-cloned state —
+    but only when everything above SUCCEEDED. A clean that failed leaves them
+    in place: `ciu.env` carries the workspace identity the retry needs, and
+    deleting it over a half-torn-down workspace would take away the very
+    record naming what is still standing.
     """
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
@@ -3416,6 +3472,18 @@ def action_clean(
             # future reap refuses rather than destroys.
             warn(f"S16.9 lease not cleared (record unreadable): {exc}")
 
+    # S6.4b (CIU-60) — opt-in workspace reset, LAST and ON SUCCESS ONLY. See
+    # the docstring: a failed teardown keeps ciu.env, because that file is the
+    # workspace identity a retry (and any manual cleanup) resolves from.
+    if vanilla:
+        if rc == 0:
+            rc = _remove_vanilla_reset_files(repo_root) or rc
+        else:
+            warn(
+                "--vanilla skipped: the teardown above did not complete, so "
+                f"{', '.join(VANILLA_RESET_FILES)} are kept for the retry"
+            )
+
     if rc == 0:
         # Name only what was verified present — claiming a keep of an absent
         # network would overstate what happened.
@@ -3627,6 +3695,7 @@ Examples:
   ciu-deploy --render-toml                  # render global + selected stack TOML
   ciu-deploy --stop                         # stop project containers
   ciu-deploy --clean -y                     # remove containers/volumes/rendered
+  ciu-deploy --clean --vanilla -y           # ...and reset ciu.env/global config
   ciu-deploy --list-profiles                # show host profiles
   ciu-deploy --list-phases                  # show numbered phases
 """,
@@ -3663,6 +3732,12 @@ Examples:
                          help="Non-interactive: auto-confirm prompts")
     control.add_argument("--ignore-errors", dest="ignore_errors", action="store_true",
                          help="Continue past failures (final exit is still 1) (S7.3)")
+    control.add_argument("--vanilla", action="store_true",
+                         help="With --clean: ALSO remove this workspace's "
+                              f"{GLOBAL_CONFIG_RENDERED}, {WORKSPACE_ENV} and "
+                              f"{GLOBAL_CONFIG_WORKTREE_OVERRIDES} — a full "
+                              "reset to freshly-cloned state (S6.4b). Without "
+                              "it, clean leaves all three untouched")
     control.add_argument("--dry-run", dest="dry_run", action="store_true",
                          help="Run the pipeline but skip docker compose up (S8.3)")
     control.add_argument("--root-folder", "--define-root", dest="define_root", type=Path, default=None,
@@ -3855,7 +3930,11 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         elif action == "stop":
             ac = action_stop(profile.config)
         elif action == "clean":
-            ac = action_clean(repo_root, profile, selection, ignore_errors=args.ignore_errors)
+            ac = action_clean(
+                repo_root, profile, selection,
+                ignore_errors=args.ignore_errors,
+                vanilla=getattr(args, "vanilla", False),
+            )
         elif action == "healthcheck":
             ac = action_healthcheck(repo_root, profile, selection)
         elif action == "preflight":
