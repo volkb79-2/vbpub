@@ -19,6 +19,7 @@ scope:
     # NEW capability identifiers, and this file pins WORKTREE_CAPABILITIES
     # with two literal-list assertions.
     - "tests/tests/test_ciu_worktree.py"
+    - "tests/tests/test_ciu_cli_worktree.py"
     - "docs/SPEC.md"
     - "docs/README.md"
     - "docs/CONSUMERS.md"
@@ -83,6 +84,15 @@ machine contract; this package ships two, and a shipped contract that is not
 advertised is precisely the hole D-009's allowlist exists to close.
 `test_ciu_documentation_contract.py`'s `CLOSED_PUBLIC_VALUES` is a
 required-SUBSET check and needs no change.
+
+*(Implementation note, same ruling: a THIRD file,
+`tests/tests/test_ciu_cli_worktree.py`'s
+`TestCapabilitiesDispatch::test_capabilities_json_dispatch` ~353, pins the
+same list as a bare literal without referencing `WORKTREE_CAPABILITIES`, so
+the pre-implementation grep for the symbol did not find it. It is the
+identical edit under the identical ruling and joins `scope.touch` too. The
+authoritative sweep for this class of pin is `grep -rn
+"worktree.branches.v1"`, not a grep for the constant's name.)*
 
 **Blocker 2 — `partial-cleanup` as carved was undecidable AND had a
 catastrophic false positive. APPROVED, narrowed to the record's own declared
