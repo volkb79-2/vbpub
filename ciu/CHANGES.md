@@ -16,7 +16,10 @@ gate runs; the commit subjects remain the traceable source of detail.
   bake --profile X` builds exactly the images `ciu up --profile X` would
   deploy; `ciu bake [targets ...]` with no `--profile` is unchanged, and
   `--profile` is mutually exclusive with explicit positional targets
-  (CIU-QOL-7, SPEC S7.11)
+  (CIU-QOL-7, SPEC S7.11). The internal `deploy.action_build`/`--build`
+  path this replaces had NO CLI surface (dead code, unreachable from any
+  verb or flag) and is removed as an internal-only cleanup — not a breaking
+  change for any user.
 - feat(ciu): new read-only `ciu status [--profile NAME] [--json]` verb —
   reports every `--profile`-selected stack's resolved compose project,
   running containers, per-container health (`classify()`'s closed

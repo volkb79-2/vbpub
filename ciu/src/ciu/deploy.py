@@ -2587,36 +2587,6 @@ def _remove_project_volumes(
     return remaining
 
 
-def action_build(repo_root: Path, selection: list[dict], *, use_cache: bool) -> int:
-    """--build: thin ``docker buildx bake`` invocation over selected targets.
-
-    Targets are the final path component of services under applications/ or
-    tools/ (v1 rule). No selected targets → bake 'all'. Kept thin (the v1
-    behaviour); ``--build-no-cache`` toggles cache.
-    """
-    info("=" * 60)
-    info(f"BUILD: docker buildx bake (cache={'on' if use_cache else 'off'})")
-    info("=" * 60)
-    targets = collect_bake_targets_from_selection(selection)
-    cmd = ["buildx", "bake", *(targets or ["all"]), "--load"]
-    # Provenance: stamp the source revision so a running container can be traced
-    # back to the commit it was built from (engine.bake_revision_args).
-    cmd += engine.bake_revision_args()
-    if not use_cache:
-        cmd.append("--no-cache")
-    info(f"Running: docker {' '.join(cmd)}")
-    try:
-        result = procutil.docker(cmd, capture=False, check=False)
-    except FileNotFoundError as exc:
-        error(f"docker not available: {exc}")
-        return 1
-    if result.returncode != 0:
-        error("docker buildx bake failed")
-        return 1
-    success("build complete")
-    return 0
-
-
 # ===========================================================================
 # list-profiles / list-phases (S7.4 / S7.1, J)
 # ===========================================================================

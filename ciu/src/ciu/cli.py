@@ -817,11 +817,10 @@ def _bake(rest: list[str]) -> int:
     `ciu up --profile` uses (`load_global_config` -> `resolve_profiles` ->
     `build_selection`, mirroring `_status` above), fed through
     `deploy.collect_bake_targets_from_selection` -- the same pure resolver
-    the internal (dead, CLI-unreachable) `action_build` path also uses.
-    Either way the result feeds the SAME `docker buildx bake ... --load`
-    invocation, with identical revision-stamping
-    (`engine.bake_revision_args()`) and `--no-cache` handling -- only the
-    target list's SOURCE changes.
+    the removed internal `action_build` path used to reuse. Either way the
+    result feeds the SAME `docker buildx bake ... --load` invocation, with
+    identical revision-stamping (`engine.bake_revision_args()`) and
+    `--no-cache` handling -- only the target list's SOURCE changes.
 
     `--profile` and explicit positional targets are mutually exclusive
     (prefix-aware: `a == "--profile" or a.startswith("--profile=")`, so the

@@ -80,6 +80,32 @@ class TestCliBakeNoProfileRegressionBar:
         assert seen == [["docker", "buildx", "bake", "all", "--load", *_REVISION_ARGS, "--no-cache"]]
 
 
+class TestCliBakeDockerUnavailable:
+    """The deleted internal `action_build`'s own
+    `test_build_reports_red_when_docker_client_is_unavailable` proved a
+    clean red result on a missing Docker client -- but that was
+    `action_build`'s private `procutil.docker` wrapper, never reachable from
+    any CLI surface (confirmed dead by grep before deletion; see the LOG).
+    The REAL, reachable `ciu bake` path -- both modes share this exact final
+    `subprocess.call(cmd)` tail -- never had a test proving what actually
+    happens here. Pinning it: `subprocess.call` does NOT get a
+    `FileNotFoundError` guard in this path, so a missing `docker` binary
+    propagates as an uncaught error rather than being silently swallowed
+    into an apparent success. Not a redesign -- a coverage floor pinning the
+    real, pre-existing (and unchanged by this package) contract."""
+
+    def test_missing_docker_binary_propagates_uncaught_rather_than_a_silent_success(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cli.subprocess, "call",
+            lambda argv: (_ for _ in ()).throw(FileNotFoundError("docker")),
+        )
+
+        with pytest.raises(FileNotFoundError, match="docker"):
+            cli._bake(["api"])
+
+
 class TestCliBakeProfileFlagConflict:
     """O3: --profile and explicit positional targets are mutually exclusive,
     prefix-aware (the `up --layout` B2 precedent's fix -- also catches the
