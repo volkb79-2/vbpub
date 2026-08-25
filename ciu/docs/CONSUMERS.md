@@ -608,3 +608,50 @@ Two behaviours to script against deliberately:
 Under `--json` the check itself prints only the document, but the
 orchestrator's own `[INFO]` lines still precede it on stdout (as with
 `ciu graph --format json`); read the JSON object at the end of stdout.
+
+## 15. Adopt a shipped hook template instead of hand-writing one (`ciu init --hooks`, S19.1)
+
+`ciu init` can copy a hook implementation straight out of CIU's own hook
+template library (`ciu.hook_templates`) into a stack it scaffolds, instead of
+you writing one from scratch:
+
+```console
+$ ciu init --project-name myapp --stacks db-core --hooks post_compose_db
+wrote ciu.global.defaults.toml.j2
+wrote applications/db-core/ciu.defaults.toml.j2
+wrote applications/db-core/ciu.compose.yml.j2
+wrote applications/db-core/hooks/post_compose_db.py
+```
+
+`--hooks NAME1,NAME2` copies each named template into **every** stack this
+same invocation scaffolds (here, just `db-core`), at
+`<stack_dir>/hooks/<name>.py`. Read the first line of the copy — it is a
+stamp CIU writes at copy time, not part of the template's own code:
+
+```console
+$ head -1 applications/db-core/hooks/post_compose_db.py
+# ciu-hook-template: post_compose_db.py rev=1
+```
+
+That `rev=1` is the template's `template_revision` **at the moment you
+copied it** — your own copy from here is yours to edit freely; CIU never
+touches it again. A future revision-comparison feature can read this exact
+line back to tell you when upstream has moved past the revision you copied.
+
+Two things worth knowing before you wire it up:
+
+- **The copy is inert until you declare it.** `ciu init` writes the file; it
+  does not add `[<root>.hooks].post_compose = ["./hooks/post_compose_db.py"]`
+  to your stack's `ciu.defaults.toml.j2` — add that yourself, the same way
+  any other hook is declared (S9.1).
+- **An unknown template name refuses before anything is written**, naming
+  the bad name and the available list (exit 2); so does `--hooks` given with
+  no `--stacks` to copy into. Like every other `ciu init` output file, a copy
+  is never silently overwritten — an existing `hooks/post_compose_db.py`
+  makes the whole run refuse, naming it.
+
+CIU ships one reference template today, `post_compose_db.py` — deliberately
+generic (a database-readiness wait via `ctx.wait_healthy` plus a
+`ctx.secret_file` presence check) and honest about not being a real
+PostgreSQL/MySQL/etc. bootstrap. Treat it as a starting point to copy and
+extend with your own provisioning logic.

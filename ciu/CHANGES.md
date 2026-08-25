@@ -10,6 +10,26 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu init` gains `--hooks NAME1,NAME2` (SPEC S19.1, CIU-QOL-13),
+  copying hook implementations out of a new shipped template library
+  (`ciu.hook_templates`, inside the wheel) into every stack that same `init`
+  invocation scaffolds, at `<stack_dir>/hooks/<name>.py`. Each copy is
+  prefixed with a one-line stamp (`# ciu-hook-template: <file> rev=<N>`)
+  naming the template and the `template_revision` it was copied at, a stable
+  format a future revision-comparison feature can parse. Every template
+  implements the ordinary S9.1 `run(config, ctx) -> dict` plus an OPTIONAL
+  S9.5 `validate_config(config, ctx) -> list[str]` — the same contracts, not
+  a template-specific variant. An unknown `--hooks` name, or `--hooks` given
+  without a `--stacks` target, refuses (exit 2) before any file is written;
+  a copied hook file is never silently overwritten, same as every other
+  `ciu init` output. **Scoping decision (see the LOG for the full
+  reasoning):** this ships the MECHANISM plus exactly ONE reference
+  template, `post_compose_db.py` — a deliberately generic, honestly minimal
+  demo of the `ctx.wait_healthy`/`ctx.secret_file` pattern and a
+  `validate_config` example. It does **not** ship the backlog's other named
+  templates (Vault/Consul/Redis/Authentik/Tailscale-shaped); those need a
+  session with visibility into a real consumer's existing hook to write
+  honestly, and are left as follow-up candidates.
 - feat(ciu): `ciu worktree add|create|ensure|adopt` gain an OPTIONAL fourth
   shared-infra flag, `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`
   (SPEC S16.1a, CIU-52) — a CIU-managed NAME for a service belonging to the

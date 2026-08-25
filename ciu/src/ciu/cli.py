@@ -42,9 +42,12 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
   SCAFFOLDING
     init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]
+         [--hooks NAME1,NAME2]
                                 guided repo scaffolding: writes a validated
                                 ciu.global.defaults.toml.j2, gitignore entries,
-                                and optional stack skeletons (never overwrites)
+                                and optional stack skeletons (never overwrites);
+                                --hooks copies shipped hook templates
+                                (S19.1) into every scaffolded stack
 
   ENVIRONMENT
     env                         show ciu.env key=value pairs (read-only)

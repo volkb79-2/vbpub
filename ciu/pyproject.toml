@@ -47,8 +47,11 @@ where = ["src"]
 # consumer's .ciu/ksm/, never checked in as a binary). Without this the wheel
 # installs ciu.ksm but not the .c it compiles, and `ciu ksm build` fails at
 # runtime rather than at package time.
+# hook_templates/* (ciu-P20) — `ciu init --hooks NAME` copies these files
+# into a consumer stack by reading them via importlib.resources, mirroring
+# how templates/* already ships `ciu init`'s scaffold templates the same way.
 [tool.setuptools.package-data]
-ciu = ["data/*.c", "templates/*"]
+ciu = ["data/*.c", "templates/*", "hook_templates/*"]
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
 # Release = annotated tag `ciu-vX.Y.Z`; untagged commit = `X.Y.(Z+1).devN+g<sha>`.

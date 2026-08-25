@@ -3487,3 +3487,39 @@ is rendered through the real Jinja step and TOML-parsed BEFORE anything is
 written; an existing target file is never overwritten — the run refuses
 naming every existing target. It does NOT run `ciu env generate` (side
 effects stay with the operator); the printed next steps say to.
+
+- **S19.1** Hook template library (`ciu init --hooks NAME1,NAME2`,
+  ciu-P20/CIU-QOL-13). CIU ships a small library of copyable hook
+  implementations under `ciu.hook_templates` (`src/ciu/hook_templates/`,
+  inside the wheel like `templates/`). Each module is a plain S9.1 hook:
+  a module-level `template_revision: int` (starts at 1, incremented by the
+  template's own author on every behavioral change to its `run`/
+  `validate_config` bodies — comment/docstring-only edits do not need a
+  bump), a `run(config, ctx) -> dict` (S9.1/S9.4), and an OPTIONAL
+  `validate_config(config, ctx) -> list[str]` (S9.5) — the identical
+  contracts, not a template-specific variant.
+  `--hooks NAME1,NAME2` (composable with `init`'s other flags) copies each
+  named template's file, byte-for-byte, into **every** stack scaffolded by
+  that same `ciu init` invocation, at `<stack_dir>/hooks/<name>.py` (a
+  relative path consistent with S9.1's "script paths relative to the stack
+  dir" — a stack that declares it would write
+  `[<root>.hooks].post_compose = ["./hooks/<name>.py"]` itself; `ciu init`
+  does not write that declaration for you). The copy is prefixed with a
+  one-line stamp comment naming the template and the `template_revision` it
+  was copied at, in the exact, stably-parseable format
+  `# ciu-hook-template: <filename> rev=<N>` — a future revision-comparison
+  feature (tracked as a CIU-QOL-13 follow-up) reads this line to tell a
+  consumer's stamped copy apart from a newer upstream revision.
+  An unknown name in `--hooks` is a configuration error (exit 2, S10.3),
+  naming the unknown name(s) and the available list, refused BEFORE any
+  file is written; `--hooks` with no `--stacks` target to copy into is the
+  same class of error. The existing "never overwrite an existing target"
+  rule (this section, above) applies identically to copied hook files —
+  they are validated and written through the same file list as every other
+  scaffolded file, never special-cased into a silent overwrite.
+  CIU ships exactly ONE reference template today, `post_compose_db.py`
+  (generic database-readiness + secret-declaration demo); the backlog's
+  other named templates (Vault/Consul/Redis/Authentik/Tailscale-shaped) are
+  explicitly deferred to future packages once grounded against a real
+  consumer's existing hook — see `nyxloom-trove/reports/
+  ciu-P20-hook-template-library-LOG.md`.
