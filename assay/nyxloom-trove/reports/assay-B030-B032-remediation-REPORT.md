@@ -301,6 +301,55 @@ which is where the CLI already prints every other typed refusal it catches.
 
 ---
 
+## Gate
+
+The REAL registered gate (`bash tools/tester-unified-gate.sh ..` from the assay
+project root), against the final HEAD `0e6cab39`, exit code captured separately
+from the run and read in a separate step:
+
+```
+$ ( bash tools/tester-unified-gate.sh .. > /tmp/gate3.log 2>&1; echo $? > /tmp/gate3.exit )
+$ cat /tmp/gate3.exit
+0
+$ grep -n 'ASSAY_GATE_PHASE\|ASSAY_REGISTERED_GATE_COMPLETE\|QUALIFIED' /tmp/gate3.log
+22:ASSAY_GATE_PHASE=wheel-installed
+25:ASSAY_GATE_PHASE=attestation-hardened
+28:ASSAY_GATE_PHASE=verdict-v5-accepted
+31:ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+33:ASSAY_GATE_PHASE=verdict-v6-successors-verified
+36:ASSAY_GATE_PHASE=verdict-v7-successors-verified
+40:ASSAY_GATE_PHASE=self-hosted-lane-passed
+41:ASSAY_GATE_PHASE=topos-qualified
+55:ASSAY_B006A_CMRU_QUALIFIED=1
+56:ASSAY_GATE_PHASE=cmru-b006a-qualified
+59:ASSAY_GATE_PHASE=independent-self-hosting-passed
+60:ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+`verdict-v7-successors-verified` runs `carve-assets/W2/test_acceptance_v7.py`,
+including `test_shipped_schema_is_byte_identical_to_the_locked_v7_asset` -- the
+drift guard outside `tests/` that A-316 records as having caught real drift only
+at release time. `carve-assets/W2/verdict.schema.v7.json` was re-witnessed by
+copying the shipped schema over it and diffing before committing; the diff is
+exactly the five removed `progress_artifact` lines and nothing else, which
+independently confirms the lock was otherwise in sync.
+
+`topos-qualified` / `cmru-b006a-qualified` drive real `assay run` invocations
+against pinned disposable Topos and CMRU trees and compare complete artifacts
+against frozen templates -- the byte-for-byte real-run fidelity check A-317/
+A-318 record as the only thing that answers a question schema validity does not.
+
+Separately, over the same tree:
+
+```
+$ PYTHONPATH=$PWD/src python -m pytest tests/ -q -p no:randomly
+3271 passed, 11 skipped
+```
+
+necessary but not sufficient on its own -- it never reaches
+`nyxloom-trove/carve-assets/`, which is exactly where B010/B012's original
+defects hid.
+
 ## A-numbers recorded
 
 | id | What | Why it needed a decision |
