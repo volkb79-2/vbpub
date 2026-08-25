@@ -773,3 +773,73 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
             f"[ERROR] Stack provisioning validation failed for {source}:\n"
             + "\n".join(f"  {v}" for v in violations)
         )
+
+
+# ---------------------------------------------------------------------------
+# QOL-11 — eager S11 validation for declared layouts/exec-targets/vendor_images
+# ---------------------------------------------------------------------------
+
+
+def validate_declared_features(global_cfg: dict, hosts_cfg: dict) -> None:
+    """Eagerly validate declared layouts (S7.5c), exec-targets (S16.7), and
+    ``[deploy.provenance].vendor_images`` (S17.5) shape, on EVERY render
+    path — not only when the specific feature's own command runs this run
+    (QOL-11: a malformed globally-declared layout/exec-target/vendor_images
+    is a real defect regardless of whether this invocation touches it).
+
+    Reuses the existing, already-correct validators
+    (``deploy_pkg.layouts.resolve_layout``,
+    ``worktree.resolve_exec_targets_config``) rather than reimplementing
+    their checks; each step's own exception propagates unmodified — this
+    function never catches and rewraps.
+
+    ``deploy_pkg.layouts`` is imported function-LOCAL here, not at module
+    scope: ``deploy_pkg/layouts.py`` imports ``from .profiles import
+    resolve_profiles`` and ``deploy_pkg/profiles.py`` imports ``from
+    ..config_model import deep_merge`` — a module-scope
+    ``from .deploy_pkg.layouts import resolve_layout`` in *this* module
+    would be circular (``config_model -> deploy_pkg.layouts ->
+    deploy_pkg.profiles -> config_model``, reaching for ``deep_merge``
+    before this module has finished defining it) and would raise
+    ``ImportError`` the moment ``config_model.py`` itself is first
+    imported (reproduced directly while writing this). ``worktree`` is
+    imported function-LOCAL too, for consistency alongside the layouts
+    import above: ``worktree.py`` does ``from . import config_model`` at
+    its own module scope, but only ever reads ``config_model.<name>``
+    inside function bodies, never at worktree.py's own module scope — so a
+    module-scope import of ``worktree`` here does not actually reproduce
+    the same failure (verified), but keeping it function-local costs
+    nothing and avoids relying on that being true forever.
+    """
+    # Step 1 (S7.5c): every declared layout must resolve cleanly. An
+    # empty/absent layouts table is a no-op (zero iterations).
+    from .deploy_pkg.layouts import resolve_layout
+
+    layouts_table = global_cfg.get("deploy", {}).get("layouts", {})
+    for name in layouts_table:
+        resolve_layout(global_cfg, hosts_cfg, name)
+
+    # Step 2 (S16.7): the whole [ciu.worktree.exec_targets] table, if any.
+    # resolve_exec_targets_config is no-op-safe when the table is
+    # absent/empty (returns {}), so this is called unconditionally.
+    from . import worktree
+
+    worktree.resolve_exec_targets_config(global_cfg)
+
+    # Step 3 (S17.5): [deploy.provenance].vendor_images shape. Absent key is
+    # a no-op. A bare string is explicitly rejected before any iteration —
+    # `for v in "nginx"` would otherwise silently "validate" four
+    # single-character non-empty strings.
+    vendor_images = global_cfg.get("deploy", {}).get("provenance", {}).get("vendor_images")
+    if vendor_images is not None:
+        if not isinstance(vendor_images, list):
+            raise ValueError(
+                "[S17.5] [deploy.provenance] vendor_images must be a list of "
+                f"non-empty strings, got {type(vendor_images).__name__}."
+            )
+        for i, item in enumerate(vendor_images):
+            if not isinstance(item, str) or not item:
+                raise ValueError(
+                    f"[S17.5] [deploy.provenance] vendor_images[{i}] must be a "
+                    f"non-empty string, got {item!r}."
+                )

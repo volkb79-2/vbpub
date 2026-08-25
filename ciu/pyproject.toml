@@ -27,11 +27,18 @@ test = [
     # S5.7: configfile schema validation exercises the real jsonschema
     # library in the test closure; runtime users get it via ciu[schema].
     "jsonschema>=4.18",
+    # S13.4b: `ciu check`'s registry stage exercises the real pydantic models
+    # in the test closure; runtime users get it via ciu[registry].
+    "pydantic>=2",
 ]
 ssh = ["paramiko>=5.0"]
 # S5.7: optional runtime extra — schema-validated configfile render (CIU-37).
 # jsonschema >= 4.18 for JSON Schema Draft 2020-12 support.
 schema = ["jsonschema>=4.18"]
+# S13.4b: optional runtime extra — `[registry.*]` schema validation in
+# `ciu check` (ciu-P19). pydantic >= 2 for the v2 model API
+# (ConfigDict/model_validate/field_validator/StringConstraints).
+registry = ["pydantic>=2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

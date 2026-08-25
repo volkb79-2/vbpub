@@ -298,7 +298,7 @@ pass) for the normative behavior.
 
 ## D6 — Survey: which existing warn/error sites are candidates for S10.6 (2026-08-03)
 
-S10.6 (`warn_policy.warn_or_raise`, `CIU_WARNINGS_AS_ERRORS`) landed wired
+S10.6 (`warn_policy.warn_or_raise`, `CIU_EXIT_ON`) landed wired
 into exactly ONE site so far: S15.16's mem_min ancestor-chain finding (D5).
 Per the standing "fail first, fail early, nothing gets hidden" principle,
 more of CIU's existing warn/error sites are plausible candidates — surveyed

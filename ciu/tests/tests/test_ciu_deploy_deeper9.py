@@ -29,7 +29,7 @@ def test_health_gate_fails_closed_for_failed_or_malformed_docker_inspect(monkeyp
     monkeypatch.setattr(deploy.procutil, "docker", docker)
 
     passed, summary = deploy.run_container_health_gate(
-        ["project-prod-gone", "project-prod-proxy-error"], timeout_s=0, interval_s=0
+        {"project-prod-gone": 0, "project-prod-proxy-error": 0}, interval_s=0
     )
 
     assert passed is False

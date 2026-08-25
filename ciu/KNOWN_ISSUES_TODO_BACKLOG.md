@@ -105,11 +105,11 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
-| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22); Docker-resource detector/reap remains OPEN (see detail) |
+| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22), **HOTFIXED 2026-08-25 (ciu-P28): four reproduced prune-safety defects in the released behaviour, see detail**; Docker-resource detector/reap remains OPEN (see detail) |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
-| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c) |
+| CIU-34 | No `layout` object naming a host→bundles plan (dstdns config/landscape ask) | Medium | FIXED — `[deploy.layouts.<name>]` + `ciu up --layout` / `ciu layouts` (ciu-P10, S7.5c); **HOTFIXED 2026-08-25 (ciu-P29)** — the mutual-exclusion guard was abbreviation-blind and could silently deploy the wrong profile to every host, see the CIU-34 detail below |
 | CIU-35 | No host-scoped home for pre-Vault local secrets (SSH bootstrap key, Tailscale authkey) | Medium | FIXED — `[deploy.hosts.<h>.secrets]` + `ciu host-secrets` (ciu-P11, S14.3a) |
 | CIU-36 | No `landscape_id` identity dimension | Low | FIXED — S3.11 validation + docs (ciu-P08, 2026-08-19) |
 | CIU-37 | Rendered app config not validatable against an app-provided JSON schema | Medium | FIXED — S5.7 schema-validated render (ciu-P09, 2026-08-19) |
@@ -236,6 +236,101 @@ claimed (the P10 LOG's own count of 13 CLI tests was also off by one — see
 its appended correction note); the 18/19 above are current-tree totals after
 checkpoint C's added tests.
 
+**CIU-34 hotfix (ciu-P29, 2026-08-25) — the mutual-exclusion guard was
+abbreviation-blind; `--layout=NAME` never dispatched.** A retrospective
+adversarial review reproduced a **silent wrong-profile production deploy** in
+already-released behaviour (layouts shipped v6.3.0; every release since is
+affected). **The claim this row made above — "`--layout` is mutually exclusive
+with `--host`/`--profile`/`--dir`/`--thin`/`--bootstrap`/`--rollback`
+(prefix-aware, so `--profile=core` is caught too)" — was true only for exact
+and `=` spellings and is corrected here.** Checkpoint C made the guard
+prefix-aware for the `=` form but left it a denylist of EXACT flag names,
+while the remote parser it exists to protect (`deploy.parse_args`) is built
+without `allow_abbrev=False`, i.e. with argparse's default
+`allow_abbrev=True`. An abbreviation therefore passed the local guard, was
+forwarded verbatim after the layout's own `export CIU_SERVICES_PROFILE=...`,
+and resolved on the remote: `ciu up --layout prod --prof=core` against a
+3-host prod layout exited **0** having pushed to all three hosts, with
+`backend` (bundles `db,worker-io`) deploying `core`. The guard now registers
+the forbidden long options on a local parser with the SAME `allow_abbrev`
+semantics the remote uses and lets argparse resolve the spelling before the
+check runs — every abbreviation length covered by construction, the resolved
+flags consumed rather than forwarded, the refusal naming the resolved flag and
+landing before any inventory lookup (zero transport). Separately, the
+`"--flag" in argv` verb-dispatch tests missed every `=` form:
+`ciu up --layout=NAME` skipped the layout path entirely, and — worse, because
+`ciu-deploy` declares `--host` for its help text but never reads it (S10.2) —
+`ciu up --host=web` (and `down`/`health`/`render`) parsed cleanly and ran a
+LOCAL deploy of the active profile instead of the intended SPEC-J push, exit 0
+and silent. Dispatch is now exact-or-`=` on `--layout`/`--host`/`--dir` via
+one shared `_flag_given` predicate, **plus argparse-resolved abbreviations for
+`--host`** — see the round-2 correction immediately below. Evidence:
+`_flag_given` / `_parse_layout_argv` in
+`src/ciu/cli.py`; 96 added tests in `tests/tests/test_ciu_cli_layouts.py`
+(19 → **115** in that file across both rounds, superseding the "19 CLI tests"
+count stated in the checkpoint-C paragraph above), including the review's exact
+3-host reproduction
+asserting ZERO transport calls, every abbreviation length of all six forbidden
+flags in both forms, and `--layout=`/`--host=`/`--dir=` producing push
+sequences identical to their space forms; venv run
+(`.venv/bin/python run-ciu-tests.py`), 2714 passed, 100% line+branch — the
+iteration signal, not the ship gate. Docs: SPEC S7.5c + S10.4, CHANGES.md.
+
+**CIU-34 hotfix, round 2 (adversarial review REJECT, same day).** The round-1
+fix above made dispatch exact-or-`=` and documented the claim *"an abbreviation
+still fails loudly at whichever parser it reaches, so it can never deploy the
+wrong thing."* **That claim was FALSE for `--host`, and this entry corrects
+it.** Because `deploy.py` declares `--host` and reads it nowhere, `--hos=edge-a`
+/ `--ho=edge-a` / `--hos edge-a` / `--ho edge-a` all parsed CLEANLY downstream,
+had the host silently discarded, and ran a LOCAL deploy — **16 of the 20
+verb × spelling combinations across `up`/`down`/`health`/`render` returned exit
+0 having contacted zero remote hosts.** The `=`-only fix did not close the
+hazard, it narrowed it. `--host` dispatch is now abbreviation-aware, resolved
+by argparse (registering all three dispatch modifiers on one parser, so an
+abbreviation ambiguous BETWEEN them would stay loudly ambiguous rather than be
+claimed by whichever branch is tested first). `--layout`/`--dir` remain
+exact-or-`=` **deliberately, and this is the corrected rule**: the question is
+never "is an abbreviation possible" but "what does the fall-through parser DO
+with it" — `ciu-deploy` has no `--layout`/`--dir`, so `--lay x` and `--di=/srv`
+are `unrecognized arguments` and `--d /srv` is genuinely ambiguous there
+against `--define-root PATH`; all fail loudly, and widening them would invent a
+divergence rather than close one. That premise is pinned against the REAL
+`deploy.parse_args` by
+`test_dispatch_abbreviation_premise_against_the_real_deploy_parser`, plus a
+distinct-second-character invariant test so a future colliding flag fails at
+authoring time. The round-2 tests wrap the genuine `deploy.main`/`parse_args`
+rather than a stub — a stubbed probe is vacuous here, since a dispatch
+regression would hit the stub instead of performing the real local deploy, and
+would mask both the bug and the fix.
+
+**Follow-up filed by the round-2 review — `deploy.py` declares a flag it never
+reads (root cause of the above), OPEN.** `deploy.py:3592` registers
+`--host NAME` with the help text "Remote host name (from hosts inventory):
+push-deploy via SSH (SPEC J)", and **nothing in the file ever reads
+`args.host`** (grep confirms zero consumers). It exists only so the flag shows
+up in `ciu-deploy --help`. That is what turned every `--host` dispatch miss
+from a loud error into a silent local deploy: a "lying" flag that documents a
+behaviour it does not implement. Fixing the DISPATCH layer in `cli.py` closes
+the hazard for the real invocation surface — the `ciu` verb CLI — which is why
+ciu-P29 stopped there (`deploy.py` was `scope.forbid` for that package). The
+dead flag itself remains, and anyone invoking `ciu-deploy` directly still gets
+a silently-ignored `--host`. A small future cleanup package should either make
+`ciu-deploy --host` do what its help says or remove the declaration and point
+at `ciu up --host`; it should NOT simply be deleted without checking S10.2's
+help-surface contract. Lower urgency than the dispatch hazard, but it is the
+root cause and should not be lost.
+
+**Follow-up spotted, NOT fixed here (candidate for its own entry).** `ciu
+bake`'s `--profile`-vs-positional-targets mutual exclusion (`_bake` in
+`src/ciu/cli.py`) uses the same exact-or-`=` predicate this hotfix just
+replaced in the layout guard: `any(a == "--profile" or
+a.startswith("--profile=") ...)`. `ciu bake --prof=core web` therefore does
+NOT trip the conflict; `--prof=core` is instead treated as a positional build
+TARGET and handed to `docker buildx bake`. That is a loud failure rather than
+a silent wrong deploy, and `bake` is outside ciu-P29's scope, so it was left
+alone — but it is the same latent class and should be closed with the same
+argparse-resolution approach.
+
 **CIU-35 — host-scoped local secrets.** **FIXED** on 2026-08-19 (ciu-P11):
 `[deploy.hosts.<h>.secrets]` now holds `ASK_EXTERNAL`/`GEN_LOCAL` entries
 (SSH bootstrap key, Tailscale single-use authkey) resolvable *before* any
@@ -350,14 +445,34 @@ reachable for all-vendor deployments; B004's remaining blocker is assay-side
 
 **Status:** PARTIAL (2026-08-22) — the GIT half shipped as
 `ciu worktree branches` (SPEC S16.8, capability `worktree.branches.v1`):
-a closed six-category survey (base/mainline/current/prunable/merged-dirty/
-unmerged) with per-branch attributes (#changed files vs the merge-base,
-ahead/behind, last-commit age, dirty, ciu-instance linkage), and `-y`
-removing EXACTLY the Git-provable prunable category (worktree remove +
-`branch -d`, both re-verified by Git itself). No age heuristic, no process
-inference — the constraints below are honored by construction. The
-Docker-resource half (containers/volumes of a crashed instance) remains
-OPEN with the same ownership/lease precondition.
+a closed seven-category survey (base/mainline/current/managed-instance/
+prunable/merged-dirty/unmerged) with per-branch attributes (#changed files
+vs the merge-base, ahead/behind, last-commit age, dirty, ciu-instance
+linkage), and `-y` removing EXACTLY the Git-provable prunable category
+(worktree remove + `branch -d`, both re-verified by Git itself). No age
+heuristic, no process inference — the constraints below are honored by
+construction. The Docker-resource half (containers/volumes of a crashed
+instance) remains OPEN with the same ownership/lease precondition.
+
+**HOTFIX 2026-08-25 (ciu-P28)** — the git half as first shipped (v7.0.0,
+`c92377fb`) violated the "must not destroy resources" constraint above in
+four ways, each reproduced end-to-end by two independent retrospective
+adversarial reviews: `-y` bare-removed the checkout of a LIVE CIU-managed
+instance with no `ciu clean` first (the exact orphaned-container /
+stranded-root-owned-`vol-*` outcome this entry exists to prevent); it judged
+mergedness against the invoking linked worktree's HEAD instead of the
+primary's, falsely reporting merged branches unmerged AFTER destroying their
+checkouts; it self-destructed when invoked from a checkout whose own branch
+was prunable, aborting the whole run with no document and silently skipping
+every later candidate; and `--json` exited 0 on a partial prune. Fixed by
+the new `managed-instance` category (never pruned — use `ciu worktree rm`),
+a primary-worktree-rooted destructive pass with a third read-only
+HEAD pre-check, an invoking-checkout guard plus a no-escape per-branch loop,
+and one hoisted exit-code decision. Document `schema_version` is now `2`.
+See `nyxloom-trove/reports/ciu-P28-hotfix-worktree-branches-prune-safety-LOG.md`.
+**The Docker-resource half must not repeat this shape**: any future reap that
+touches a MANAGED instance goes through clean-then-remove, never a bare
+resource deletion.
 
 `worktree rm` cleans before removing a checkout when it runs, but a crashed
 dispatcher or forgotten teardown can leave containers and volumes running.

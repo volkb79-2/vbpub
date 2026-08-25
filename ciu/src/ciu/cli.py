@@ -61,7 +61,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree branches [--base REF] [-y] [--json]
                                 survey local branches; -y prunes exactly the
-                                fully-merged, clean ones (S16.8)
+                                fully-merged, clean, UNMANAGED ones (S16.8)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -83,13 +83,17 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     health --preflight [--strict]        probe images for missing healthcheck tools
     diagnose [--project NAME] [--logs N] [--json]
                                 explain common container failures (read-only)
+    status [--profile NAME] [--json]
+                                per-stack compose project, containers, health (read-only)
 
   PROVISIONING (requires/provides graph)
-    check [--profile NAME] [--live]      validate the dependency graph (no deploy)
+    check [--profile NAME] [--live] [--json]
+                                        validate the config pipeline (no deploy)
     graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
 
   DEV-LOOP BUILDS
-    bake [targets ...] [--no-cache]      docker buildx bake --load
+    bake [targets ...] [--profile NAME] [--no-cache]
+                                          docker buildx bake --load
     ksm build [--force]                  build the KSM shim into .ciu/ksm/ (S15.17)
     dev <stack> [--profile NAME]          run a stack's live dev loop (HMR)
 
@@ -137,7 +141,9 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
   stdout (S16.4). `branches` surveys local branches against a base and `-y`
   prunes exactly the fully-merged, clean ones — never age-based, never the
-  mainline or the primary checkout's branch (S16.8). `up` starts the selected
+  mainline, the primary or invoking checkout's branch, and never a checkout
+  carrying a CIU-managed instance (use `worktree rm`, which cleans first);
+  mergedness is always judged from the PRIMARY worktree (S16.8). `up` starts the selected
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
@@ -280,12 +286,37 @@ ciu diagnose [--project NAME] [--logs N] [--json]
   --logs N         recent log lines per container to scan (default: 100)
   --json           machine-readable findings
 """,
+    "status": """\
+ciu status [--profile NAME] [--json]
+  Read-only per-stack report: for every stack selected by --profile (same
+  resolution chain as `ciu up`), the resolved Docker Compose project, its
+  running containers, each container's health (classify()'s closed
+  vocabulary: healthy/starting/unhealthy/no-healthcheck/not-found), and
+  image reference. A stack not yet deployed is reported with an empty
+  container list, not an error. A Docker daemon that cannot be reached is
+  reported as a clean error and a non-zero exit — never as an empty/healthy-
+  looking result.
+
+  --profile NAME   restrict to the named host profile (repeatable; default:
+                   active profile — same default as `ciu up`)
+  --json           emit the versioned {schema_version, profile, stacks: [...]}
+                   document instead of one line per stack
+""",
     "bake": """\
 ciu bake [targets ...] [--no-cache]
-  Thin wrapper over `docker buildx bake --load`. No targets → bake `all`.
+ciu bake --profile NAME [--no-cache]
+  Thin wrapper over `docker buildx bake --load`. No targets, no --profile →
+  bake `all`. With --profile, the target list instead comes from the SAME
+  resolution chain `ciu up --profile` uses (host profile -> selected stacks
+  -> applications/tools/ path segments), so `ciu bake --profile X` builds
+  exactly the images `ciu up --profile X` would deploy. --profile and
+  explicit targets are mutually exclusive (pass one or the other).
   (For an iterative dev server with HMR, see `ciu dev`.)
 
-  --no-cache   pass --no-cache to buildx
+  --profile NAME   resolve targets from this host profile's selection
+                   (repeatable; comma-separated forms accepted, same as
+                   `ciu status`/`ciu up`)
+  --no-cache       pass --no-cache to buildx
 """,
     "dev": """\
 ciu dev <stack> [--profile NAME] [--no-prebuild]
@@ -326,11 +357,17 @@ ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
   -y, --yes       with --materialize, skip interactive prompts (S4.13)
 """,
     "check": """\
-ciu check [--profile NAME] [--live] [--phases N,M] [--define-root PATH]
-  Validate the requires/provides dependency graph across the selection (no deploy).
+ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
+  Validate the whole config pipeline across the selection (no deploy, S13.4a):
+  stack shape, secret directive grammar/placement, the requires/provides graph,
+  governance shape, configfile template/schema existence, hook loading, each
+  hook's optional validate_config() preflight, the guarded compose render, the
+  leak scan, and the declared-vs-consumed secret cross-check. Entirely in
+  memory: no hostdir, no materialized secret, no rendered file, no hook run().
 
   --profile NAME     restrict to the named host profile (repeatable)
   --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
+  --json             emit the per-stage report as one versioned JSON object
   --define-root PATH override repo root (alias: --root-folder)
   --phases N,M       restrict to the given phase numbers
 """,
@@ -435,6 +472,144 @@ def _push_host(
     )
     rc = ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
     return "exec", rc
+
+
+# ciu-P29 (hotfix) — the flags `ciu up --layout` refuses to accept. The layout
+# owns host order and bundles, so a companion `--profile` would silently
+# override the exported CIU_SERVICES_PROFILE (S7.5 CLI precedence) on EVERY
+# host in the plan, and `--dir`/`--thin`/`--bootstrap`/`--rollback` have no
+# meaning without a local `--host` push.
+_LAYOUT_FORBIDDEN = (
+    "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
+)
+
+
+# ciu-P29 (hotfix) — the modifiers that SELECT a verb's code path (S10.4):
+# `--layout` and `--dir` on `up`, `--host` on `up`/`down`/`health`/`render`.
+# No entry may be an argparse prefix of another (they have distinct second
+# characters), or an abbreviation would be claimed by whichever branch happens
+# to be tested first instead of being reported as ambiguous — pinned by
+# test_dispatch_flags_have_distinct_second_characters.
+_DISPATCH_FLAGS = ("--layout", "--host", "--dir")
+
+# Of those, the ones whose ABBREVIATIONS must dispatch too. See _flag_given:
+# this is exactly the set that `deploy.py`'s parser would ALSO accept, i.e.
+# where a fall-through is silent rather than loud.
+_ABBREV_DISPATCH_FLAGS = ("--host",)
+
+
+def _flag_dest(flag: str) -> str:
+    """argparse dest for a long flag, namespaced so registrations never collide."""
+    return "flag_" + flag[2:].replace("-", "_")
+
+
+def _flag_given(argv: list[str], flag: str) -> bool:
+    """True when *flag* selects this verb's code path (S10.4).
+
+    Always matches `--flag VALUE` and `--flag=VALUE`. For a flag in
+    `_ABBREV_DISPATCH_FLAGS` it ALSO matches every unambiguous argparse
+    abbreviation, resolved by argparse itself rather than by prefix arithmetic
+    — the same technique :func:`_parse_layout_argv` uses for the layout guard.
+
+    ciu-P29, first pass: every dispatch site was a plain ``flag in argv``
+    membership test, which sees the space form but not the ``=`` form, so
+    `--flag=value` silently took a DIFFERENT code path.
+
+    ciu-P29, second pass (review REJECT): exact-or-`=` was still not enough,
+    and the reason is worth stating because it is NOT symmetric across the
+    three dispatch modifiers. What a fall-through COSTS depends entirely on
+    what `deploy.py`'s parser does with the leftover token:
+
+    * `--layout` and `--dir` do not exist there at all. `--lay x` and
+      `--di=/srv` are `unrecognized arguments`; `--d /srv` is `ambiguous
+      option: --d could match --deploy, --dry-run, --define-root`. Every
+      abbreviation fails LOUDLY, exit 2, nothing deployed.
+    * `--host` DOES exist there — declared at deploy.py:3592 for the help text
+      and read by NOTHING. So `--hos=edge-a` and `--ho edge-a` parse CLEANLY,
+      `args.host` is silently discarded, and the run becomes a LOCAL deploy of
+      the active profile while the operator believes they pushed to a remote
+      host. Exit 0, no warning, zero hosts contacted.
+
+    Hence `--host` alone is abbreviation-aware here. `--layout`/`--dir` stay
+    exact-or-`=` deliberately: they have no such gap, and widening them would
+    INVENT a divergence rather than close one — locally `--d /srv` would become
+    `--dir`, while downstream `--d` is genuinely ambiguous against
+    `--define-root PATH`, a different path-taking flag. A loud error is the
+    correct answer there, and it is what already happens.
+
+    The premise this asymmetry rests on is not left to a comment:
+    `test_dispatch_abbreviation_premise_against_the_real_deploy_parser` pins it
+    against the REAL `deploy.parse_args`, so if `deploy.py` ever grows a
+    `--dir`/`--layout`, or stops accepting `--hos`, that test fails rather than
+    this docstring quietly going stale.
+    """
+    if any(a == flag or a.startswith(flag + "=") for a in argv):
+        return True
+    if flag not in _ABBREV_DISPATCH_FLAGS:
+        return False
+    import argparse as _ap
+
+    # Register ALL the dispatch modifiers, not just *flag*: an abbreviation
+    # that is ambiguous BETWEEN modifiers then stays ambiguous (argparse exits
+    # 2, loudly) instead of being silently claimed by whichever branch is
+    # tested first. None is ambiguous today — see _DISPATCH_FLAGS.
+    # nargs="?"/const=True keeps a bare `--host` from raising `expected one
+    # argument` HERE; the branch's own parser still owns that error, exactly as
+    # it did before this predicate existed.
+    p = _ap.ArgumentParser(add_help=False)
+    for candidate in _DISPATCH_FLAGS:
+        p.add_argument(candidate, dest=_flag_dest(candidate),
+                       nargs="?", const=True, default=None)
+    opts, _remaining = p.parse_known_args(argv)
+    return getattr(opts, _flag_dest(flag)) is not None
+
+
+def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str]]:
+    """Resolve `ciu up --layout`'s argv the way the REMOTE parser will.
+
+    Returns ``(layout, remaining, forbidden)`` where *forbidden* names the
+    resolved `_LAYOUT_FORBIDDEN` flags the operator actually supplied.
+
+    ciu-P29 (hotfix): the previous guard compared each leftover token against a
+    denylist of EXACT spellings (``a == flag or a.startswith(flag + "=")``).
+    ``deploy.parse_args`` builds its ``ArgumentParser`` without passing
+    ``allow_abbrev=False``, i.e. with argparse's default ``allow_abbrev=True``,
+    so the REMOTE parser happily resolves ``--prof=core`` to ``--profile``.
+    An abbreviated spelling therefore walked past the local denylist, was
+    forwarded verbatim in the remote argv, and silently overrode the layout's
+    per-host ``CIU_SERVICES_PROFILE`` with one CLI profile on every host.
+
+    The fix is to stop hand-rolling the match: register the forbidden long
+    options on a local parser with the SAME ``allow_abbrev`` semantics the
+    remote uses and let argparse itself resolve the spelling before the guard
+    looks. Every abbreviation length is covered by construction, not by
+    enumeration, and the resolved flags are CONSUMED here rather than left in
+    *remaining*, so nothing survives to be forwarded even in principle.
+
+    ``nargs="?"`` + ``const=True`` on each forbidden flag is what makes the
+    guard total: a value-taking flag supplied with no value (``--profile`` last
+    in argv) and a store-true-style flag supplied with one (``--thin=1``) both
+    reach the guard instead of dying first inside argparse with a raw
+    ``expected one argument`` / ``ignored explicit argument`` message.
+    """
+    import argparse as _ap
+
+    # allow_abbrev is left at argparse's default (True) ON PURPOSE: it is the
+    # setting deploy.parse_args runs with, so an abbreviation resolves here
+    # exactly as it would on the remote. The six forbidden flags plus --layout
+    # have distinct second characters (l/p/h/d/t/b/r), so no abbreviation of
+    # one is ambiguous against another.
+    p = _ap.ArgumentParser(add_help=False)
+    p.add_argument("--layout", dest="layout", default=None)
+    for flag in _LAYOUT_FORBIDDEN:
+        p.add_argument(flag, dest=_flag_dest(flag),
+                       nargs="?", const=True, default=None)
+    opts, remaining = p.parse_known_args(rest)
+    forbidden = [
+        flag for flag in _LAYOUT_FORBIDDEN
+        if getattr(opts, _flag_dest(flag)) is not None
+    ]
+    return opts.layout, remaining, forbidden
 
 
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
@@ -724,6 +899,143 @@ def _provenance(rest: list[str]) -> int:
     return 0
 
 
+def _status(rest: list[str]) -> int:
+    """Handle `ciu status [--profile NAME] [--json]` (CIU-QOL-6).
+
+    Read-only: resolves the selected stacks via the SAME chain `ciu up
+    --profile` uses (`load_global_config` -> `resolve_profiles` ->
+    `build_selection`), then reports each one's compose project, containers,
+    and health via `deploy.action_status`. No compose up/down/build/exec is
+    ever invoked from this path.
+
+    A `RuntimeError` out of `diagnose._inspect` (Docker daemon unreachable)
+    is deliberately NOT swallowed into an empty/successful report here — it
+    is caught ONLY to turn it into a clean one-line `[ERROR]` message and
+    exit 2, never a raw traceback. Any other config/profile-resolution
+    failure (e.g. a project-less workspace with no ciu.env identity to name a
+    stack's compose project with) is reported the same way: a determination
+    failure must be visible, never presented as "nothing running".
+    """
+    import argparse as _ap
+
+    from .deploy import action_status, build_selection, load_global_config, resolve_profiles
+    from .dev import resolve_repo_root
+
+    p = _ap.ArgumentParser(prog="ciu status", add_help=False)
+    p.add_argument("--profile", action="append", default=None, metavar="NAME")
+    p.add_argument("--json", dest="json_output", action="store_true", default=False)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH")
+    opts = p.parse_args(rest)
+
+    raw_profiles = opts.profile
+    if raw_profiles:
+        expanded: list[str] = []
+        for entry in raw_profiles:
+            for part in entry.split(","):
+                part = part.strip()
+                if part:
+                    expanded.append(part)
+        cli_profiles: list[str] | None = expanded if expanded else None
+    else:
+        cli_profiles = None
+
+    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    try:
+        global_cfg = load_global_config(repo_root)
+        profile = resolve_profiles(global_cfg, cli_profiles)
+        selection = build_selection(profile)
+        return action_status(repo_root, profile, selection, json_output=opts.json_output)
+    except (RuntimeError, ValueError) as exc:
+        print(f"[ERROR] ciu status: {exc}", file=sys.stderr)
+        return 2
+
+
+def _bake(rest: list[str]) -> int:
+    """Handle `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile
+    NAME [--no-cache]` (CIU-QOL-7).
+
+    No `--profile`: byte-identical to the pre-existing v1 behaviour --- raw
+    positional targets go straight to `docker buildx bake --load`
+    (defaulting to `all` when none are given). This is an ADDITIVE flag, not
+    a replacement, so that path is untouched here.
+
+    With `--profile`, the target list instead comes from the SAME chain
+    `ciu up --profile` uses (`load_global_config` -> `resolve_profiles` ->
+    `build_selection`, mirroring `_status` above), fed through
+    `deploy.collect_bake_targets_from_selection` -- the same pure resolver
+    the removed internal `action_build` path used to reuse. Either way the
+    result feeds the SAME `docker buildx bake ... --load` invocation, with
+    identical revision-stamping (`engine.bake_revision_args()`) and
+    `--no-cache` handling -- only the target list's SOURCE changes.
+
+    `--profile` and explicit positional targets are mutually exclusive
+    (prefix-aware: `a == "--profile" or a.startswith("--profile=")`, so the
+    equals form is caught too -- mirrors the `up --layout` precedent's B2
+    fix). Silently picking a winner between the two would invite a
+    divergent-build bug, so this is a clear stderr error + exit 2 instead.
+    """
+    from .engine import bake_revision_args
+
+    no_cache = "--no-cache" in rest
+    positional = [a for a in rest if a != "--no-cache"]
+
+    has_profile_flag = any(
+        a == "--profile" or a.startswith("--profile=") for a in positional
+    )
+    if has_profile_flag:
+        import argparse as _ap
+
+        p = _ap.ArgumentParser(prog="ciu bake", add_help=False)
+        p.add_argument("--profile", action="append", default=None, metavar="NAME")
+        opts, remaining = p.parse_known_args(positional)
+        if remaining:
+            print(
+                "ciu bake: --profile is mutually exclusive with explicit "
+                "build targets -- --profile resolves the target list from "
+                "the selection model (the same chain `ciu up --profile` "
+                "uses); pass one or the other, not both.",
+                file=sys.stderr,
+            )
+            return 2
+
+        from .deploy import (
+            build_selection,
+            collect_bake_targets_from_selection,
+            load_global_config,
+            resolve_profiles,
+        )
+        from .dev import resolve_repo_root
+
+        expanded: list[str] = []
+        for entry in opts.profile:
+            for part in entry.split(","):
+                part = part.strip()
+                if part:
+                    expanded.append(part)
+        cli_profiles: list[str] | None = expanded if expanded else None
+
+        repo_root = resolve_repo_root(None, Path.cwd())
+        try:
+            global_cfg = load_global_config(repo_root)
+            profile = resolve_profiles(global_cfg, cli_profiles)
+            selection = build_selection(profile)
+        except (RuntimeError, ValueError) as exc:
+            print(f"[ERROR] ciu bake: {exc}", file=sys.stderr)
+            return 2
+        targets = collect_bake_targets_from_selection(selection)
+    else:
+        targets = positional
+
+    cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
+    # Provenance: stamp the source revision so a running container can be
+    # traced back to the commit it was built from (engine.bake_revision_args).
+    cmd += bake_revision_args()
+    if no_cache:
+        cmd.append("--no-cache")
+    return subprocess.call(cmd)
+
+
 def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
     """`ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...`.
 
@@ -971,6 +1283,13 @@ def _worktree(rest: list[str]) -> int:
             doc = wt_mod.prune_branches(
                 repo_root, base=opts.base, yes=opts.yes
             ) if opts.yes else wt_mod.branch_hygiene(repo_root, base=opts.base)
+            # ONE exit-code decision, decided ABOVE the output-format branch so
+            # every mode shares it: a partial prune is never a silent success.
+            # It used to live inside the human/else arm only, so `--json`
+            # reported exit 0 on the same partial document (review finding);
+            # duplicating the check into both arms would just invite the drift
+            # back, so it is hoisted rather than copied.
+            code = 1 if doc.get("status") == "partial" else 0
             if getattr(opts, "json", False):
                 print(json.dumps(doc, sort_keys=True))
             else:
@@ -980,6 +1299,7 @@ def _worktree(rest: list[str]) -> int:
                     f"{counts['prunable']} prunable, "
                     f"{counts['merged-dirty']} merged-dirty, "
                     f"{counts['unmerged']} unmerged, "
+                    f"{counts['managed-instance']} managed-instance, "
                     f"{counts['current']} current, {counts['base']} base"
                 )
                 for category in wt_mod.BRANCH_CATEGORIES:
@@ -1005,15 +1325,13 @@ def _worktree(rest: list[str]) -> int:
                 print(f"\n{doc['hint']}")
                 if doc["operation"] == "branches-prune":
                     # The prune's outcome is the headline, not the re-survey:
-                    # removed/failed are named explicitly and a partial prune
-                    # exits non-zero (review: silent partial success).
+                    # removed/failed are named explicitly (the non-zero exit on
+                    # a partial prune is decided once, above).
                     for name in doc.get("removed", []):
                         print(f"removed: {name}")
                     for f in doc.get("failed", []):
                         print(f"FAILED: {f['branch']} — {f['reason']}")
-                    if doc["status"] == "partial":
-                        return 1
-            return 0
+            return code
 
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).
@@ -1073,7 +1391,7 @@ def main() -> None:
         raise SystemExit(_iops_baseline(rest))
 
     elif verb == "render":
-        if "--host" in rest:
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
@@ -1113,38 +1431,30 @@ def main() -> None:
         raise SystemExit(0)
 
     elif verb == "up":
-        if "--layout" in rest:
+        if _flag_given(rest, "--layout"):
             # S7.5c — push-deploy a named host→bundles plan. The layout owns
             # host order and bundles, so --host/--profile are excluded: a
             # passthrough --profile would silently override the exported
             # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
-            import argparse as _ap
-            p = _ap.ArgumentParser(add_help=False)
-            p.add_argument("--layout", dest="layout", default=None)
-            opts, remaining = p.parse_known_args(rest)
-            # B2 (review): a plain `"--host" in rest` membership check misses
-            # the `--profile=core` equals form (argparse leaves it in
-            # `remaining` untouched since only --layout is registered here),
-            # and did not guard --dir/--thin/--bootstrap/--rollback at all —
-            # all of which forward into the remote `ciu up` argv and either
-            # silently override the layout's exported CIU_SERVICES_PROFILE
-            # (--profile, S7.5 CLI precedence) or die opaquely on the remote
-            # (--dir/--thin/--bootstrap/--rollback have no meaning without a
-            # local --host push). Prefix-aware so both `--flag value` and
-            # `--flag=value` forms are caught.
-            _LAYOUT_FORBIDDEN = (
-                "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
-            )
-            if any(
-                a == flag or a.startswith(flag + "=")
-                for a in remaining
-                for flag in _LAYOUT_FORBIDDEN
-            ):
+            #
+            # B2 (review, ciu-P10 checkpoint C) fixed the `--profile=core`
+            # equals form and added the four unguarded flags. ciu-P29 closes
+            # the level BELOW that: the denylist still compared EXACT
+            # spellings, while the remote parser it forwards into runs with
+            # argparse's default allow_abbrev=True, so `--prof=core` resolved
+            # remotely and silently overrode every host's bundles. The check
+            # is now argparse's own resolution rather than a hand-rolled
+            # string match — see _parse_layout_argv.
+            layout_name, remaining, forbidden = _parse_layout_argv(rest)
+            if forbidden:
                 print(
                     "[S7.5c] --layout is mutually exclusive with --host and "
                     "--profile (and with --dir/--thin/--bootstrap/--rollback, "
                     "which only apply to the --host push path) — the layout "
-                    "owns the host order and the bundles.",
+                    "owns the host order and the bundles. Refused: "
+                    + ", ".join(forbidden)
+                    + " (abbreviated and `=` spellings resolve to the same "
+                      "flag on the remote, so they are refused here too).",
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
@@ -1153,7 +1463,7 @@ def main() -> None:
             from .deploy_pkg.layouts import resolve_layout
             from .hosts import get_host, load_hosts
             try:
-                layout = resolve_layout(config, load_hosts(repo_root), opts.layout)
+                layout = resolve_layout(config, load_hosts(repo_root), layout_name)
             except ValueError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 raise SystemExit(2)
@@ -1193,7 +1503,7 @@ def main() -> None:
                     )
                     raise SystemExit(rc)
             raise SystemExit(0)
-        elif "--host" in rest:
+        elif _flag_given(rest, "--host"):
             # Remote push-deploy path
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
@@ -1245,7 +1555,7 @@ def main() -> None:
                 repo_root=repo_root, config=config, remaining=remaining,
             )
             raise SystemExit(rc)
-        elif "--dir" in rest:
+        elif _flag_given(rest, "--dir"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--dir", dest="dir", default=None)
@@ -1259,7 +1569,7 @@ def main() -> None:
             raise SystemExit(deploy_main(rest))
 
     elif verb == "down":
-        if "--host" in rest:
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
@@ -1283,7 +1593,12 @@ def main() -> None:
         raise SystemExit(deploy_main(["--clean"] + rest))
 
     elif verb == "health":
-        if "--host" in rest:
+        # `health` is not named in ciu-P29's O2 (which lists up/down/render),
+        # but it carries the IDENTICAL plain-membership dispatch on the same
+        # `--host` modifier (S10.4) with the identical consequence — deploy.py
+        # accepts and ignores --host — so leaving it would leave the bug class
+        # half-closed. Same predicate, no other change to this branch.
+        if _flag_given(rest, "--host"):
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
@@ -1357,22 +1672,16 @@ def main() -> None:
     elif verb == "provenance":
         raise SystemExit(_provenance(rest))
 
+    elif verb == "status":
+        raise SystemExit(_status(rest))
+
     elif verb == "init":
         from .scaffold import init_main
 
         raise SystemExit(init_main(rest))
 
     elif verb == "bake":
-        from .engine import bake_revision_args
-        no_cache = "--no-cache" in rest
-        targets = [a for a in rest if a != "--no-cache"]
-        cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
-        # Provenance: stamp the source revision so a running container can be
-        # traced back to the commit it was built from (engine.bake_revision_args).
-        cmd += bake_revision_args()
-        if no_cache:
-            cmd.append("--no-cache")
-        raise SystemExit(subprocess.call(cmd))
+        raise SystemExit(_bake(rest))
 
     elif verb == "dev":
         import argparse as _ap

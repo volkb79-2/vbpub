@@ -27,7 +27,7 @@ def test_healthcheck_failed_gate_reports_summary_and_returns_one(monkeypatch, tm
     monkeypatch.setattr(
         deploy,
         "resolve_selection_health_containers",
-        lambda *_args: ["project-prod-api"],
+        lambda *_args, **_kwargs: {"project-prod-api": 30.0},
     )
     monkeypatch.setattr(
         deploy,

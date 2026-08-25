@@ -39,6 +39,13 @@ _STACK_RE = re.compile(r'^stack:([a-zA-Z0-9_/-]+):healthy$')
 
 VALID_REF_KINDS = frozenset({"vault", "pg", "minio", "consul", "stack"})
 
+#: Vault path template a ``consul:token/<svc>`` probe uses when
+#: ``[registry.consul].token_vault_path`` is not declared. Named once here
+#: because :func:`_probe_consul` reads it twice (declared value, then the
+#: fallback after a failed substitution) and S13.4b's validator, CONFIG.md and
+#: SPEC.md all quote it — a second literal would be a place for them to drift.
+CONSUL_TOKEN_VAULT_PATH_DEFAULT = "consul/acl/tokens/{svc}"
+
 
 def parse_ref(ref: str) -> ProvisioningRef:
     """Parse a typed provisioning ref string into a ProvisioningRef.
@@ -367,11 +374,11 @@ def _probe_consul(ref, parsed, config, repo_root, *, vault_client=None) -> Probe
         token_vault_path = "consul/{svc}/token"
     """
     consul_cfg = (config.get("registry", {}) or {}).get("consul", {}) or {}
-    template = consul_cfg.get("token_vault_path", "consul/acl/tokens/{svc}")
+    template = consul_cfg.get("token_vault_path", CONSUL_TOKEN_VAULT_PATH_DEFAULT)
     try:
         vault_path = template.format(svc=parsed.selector)
     except (KeyError, IndexError):
-        vault_path = f"consul/acl/tokens/{parsed.selector}"
+        vault_path = CONSUL_TOKEN_VAULT_PATH_DEFAULT.format(svc=parsed.selector)
     vault_ref_obj = ProvisioningRef(kind='vault', subkind='secret', selector=vault_path)
     return _probe_vault(ref, vault_ref_obj, config, repo_root, vault_client=vault_client)
 
@@ -431,3 +438,321 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (one-shot, exited 0)")
         return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is not running (exit code {exit_code})")
     return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' health status: {status}")
+
+
+# ===========================================================================
+# S13.4b — `[registry.*]` schema validation (`ciu check` stage 7, ciu-P19)
+# ===========================================================================
+
+#: The `[registry.<name>]` sub-tables CIU itself READS, and therefore the only
+#: ones it validates. **This list is deliberately not the V8 proposal's five
+#: provisioning kinds** (§2.6 sketched PostgreSQL/Redis/MinIO/Consul/Vault
+#: models): CIU's own code reads exactly two values out of `[registry.*]` —
+#: ``[registry.postgresql].database`` (:func:`_probe_pg`, the ``pg:schema/*``
+#: probe's target database) and ``[registry.consul].token_vault_path``
+#: (:func:`_probe_consul`, the ``consul:token/*`` probe's Vault path
+#: template). No Redis/MinIO/Vault/PostgreSQL-users registry shape exists
+#: anywhere in this repo's code or docs to validate against, so CIU ships no
+#: model for one: an invented schema that happens to be wrong would REJECT a
+#: legitimate consumer table CIU never needed to constrain, which is strictly
+#: worse than no schema at all. Everything else under `[registry.*]` stays
+#: free-form consumer metadata, validated — if the consumer wants it
+#: validated — by the ``validate_registry`` extension point below.
+REGISTRY_VALIDATED_TABLES: tuple[str, ...] = ("postgresql", "consul")
+
+#: Global-config key naming a Python file that defines
+#: ``validate_registry(config) -> list[str]`` (the V8 proposal's Option C, for
+#: consumer-owned registry shapes). Lives under `[ciu]` — CIU's own
+#: workspace-switch namespace — rather than inside `[registry]` itself, so a
+#: CIU-reserved key can never collide with a consumer's own
+#: `[registry.<name>]` table, which is exactly the free-form space this key
+#: exists to let them police.
+REGISTRY_VALIDATOR_KEY = "registry_validator"
+
+
+def _load_pydantic():
+    """Import the optional ``pydantic`` dependency; fail LOUD if absent.
+
+    Mirrors :func:`ciu.composefile._load_jsonschema` (S5.7/CIU-37) exactly,
+    including the lazy, function-local import: when no config declares a
+    validated `[registry.*]` sub-table, this is never called and pydantic is
+    never imported. When one IS declared but the extra is missing, the caller
+    turns this into a tagged finding naming ``ciu[registry]`` — never a
+    silent skip, which would let a typo'd registry table pass a green
+    ``ciu check``.
+    """
+    try:
+        import pydantic
+    except ImportError:
+        raise ValueError(
+            "[S13.4b] a [registry.postgresql] or [registry.consul] table is "
+            "declared, but validating it requires the optional 'pydantic' "
+            "dependency. Install it with: pip install 'ciu[registry]' "
+            "(or remove the table if nothing reads it)."
+        ) from None
+    return pydantic
+
+
+def _svc_template_problem(value: str) -> Optional[str]:
+    """Return why *value* is an unsafe ``.format(svc=…)`` template, or ``None``.
+
+    Every constraint here is grounded in what :func:`_probe_consul` ACTUALLY
+    does with the string — nothing stricter:
+
+    * unbalanced/invalid braces (``"consul/{svc"``) raise ``ValueError`` from
+      ``str.format``, which that probe does **not** catch: the whole
+      provisioning probe run dies with a traceback;
+    * any placeholder other than ``svc`` (``"{service}"``, ``"{}"``, ``"{0}"``)
+      raises ``KeyError``/``IndexError``, which the probe DOES catch — and
+      then silently falls back to :data:`CONSUL_TOKEN_VAULT_PATH_DEFAULT`,
+      i.e. reads a completely different Vault path than the operator wrote,
+      with no warning at all.
+
+    Deliberately NOT enforced: the presence of ``{svc}``. A template without
+    it substitutes cleanly and yields one constant path for every service —
+    degenerate for most deployments, but a legitimate shape for one shared
+    ACL token, and the probe code requires nothing of the sort. Rejecting it
+    would be a constraint stricter than the real consumer, which is precisely
+    how a schema starts rejecting valid configs.
+    """
+    import string
+
+    try:
+        parsed = list(string.Formatter().parse(value))
+    except ValueError as exc:
+        return (
+            f"is not a valid format template ({exc}); `str.format` raises here "
+            "and the consul:token probe does not catch ValueError, so this "
+            "aborts the whole probe run"
+        )
+    for _literal, field_name, _spec, _conv in parsed:
+        if field_name is None:
+            continue
+        root = field_name.split(".")[0].split("[")[0]
+        if root != "svc":
+            shown = "{}" if field_name == "" else "{" + field_name + "}"
+            return (
+                f"references {shown}, but the consul:token probe substitutes "
+                "only {svc}; the substitution fails and the probe SILENTLY "
+                f"falls back to '{CONSUL_TOKEN_VAULT_PATH_DEFAULT}'"
+            )
+    return None
+
+
+def _build_registry_models() -> dict:
+    """Build the `[registry.*]` models, one fresh set per call.
+
+    The classes are defined INSIDE this function because pydantic is an
+    optional extra: a module-scope ``class X(pydantic.BaseModel)`` would make
+    importing :mod:`ciu.provisioning` — and therefore every ``ciu`` command —
+    hard-depend on it. They are deliberately NOT memoized in a module global
+    either: the cost is one-off (this runs once per ``ciu check``), and a
+    cached set would silently satisfy a later call whose whole point was that
+    pydantic is unavailable.
+
+    ``extra="allow"`` is load-bearing, not laziness. CONFIG.md documents
+    `[registry.*]` as free-form cross-stack metadata (PostgreSQL users, Redis
+    ACLs, …) referenced by hooks and templates; CIU reads ONE key out of each
+    of these two tables. Forbidding extras would reject every consumer table
+    that carries anything else — which is most of them. ``strict=True`` stops
+    pydantic from coercing a wrong-typed value into a plausible-looking string
+    and calling it valid.
+    """
+    from typing import Annotated
+
+    pydantic = _load_pydantic()
+
+    NonEmptyStr = Annotated[str, pydantic.StringConstraints(min_length=1)]
+
+    class RegistryPostgresql(pydantic.BaseModel):
+        """`[registry.postgresql]` — CIU reads ``database`` only.
+
+        Consumed by :func:`_probe_pg` as the ``-d`` argument of the
+        ``pg:schema/<name>`` probe's ``psql`` invocation. It is optional
+        (absent ⇒ the probe uses the default ``postgres`` database), but a
+        DECLARED value must be a non-empty string: the probe does
+        ``str(db_name)``, so a non-string is coerced into a nonsense database
+        name rather than rejected, and an empty string is falsy, so it is
+        silently ignored and the probe quietly targets the wrong database.
+        """
+
+        model_config = pydantic.ConfigDict(extra="allow", strict=True)
+
+        database: Optional[NonEmptyStr] = None
+
+    class RegistryConsul(pydantic.BaseModel):
+        """`[registry.consul]` — CIU reads ``token_vault_path`` only.
+
+        Consumed by :func:`_probe_consul` as a ``.format(svc=…)`` template.
+        See :func:`_svc_template_problem` for exactly which shapes break, and
+        for the one plausible constraint (``{svc}`` must appear) deliberately
+        NOT enforced because the probe does not require it.
+        """
+
+        model_config = pydantic.ConfigDict(extra="allow", strict=True)
+
+        token_vault_path: Optional[NonEmptyStr] = None
+
+        @pydantic.field_validator("token_vault_path")
+        @classmethod
+        def _check_svc_template(cls, value):
+            if value is not None:
+                problem = _svc_template_problem(value)
+                if problem is not None:
+                    raise ValueError(problem)
+            return value
+
+    return {"postgresql": RegistryPostgresql, "consul": RegistryConsul}
+
+
+def _load_consumer_validator(path: Path):
+    """Import *path* and return its ``validate_registry`` callable.
+
+    Reuses :func:`ciu.hooks_runner._load_hook_module` — the loader ciu-P18
+    extracted out of ``load_hook`` precisely so a second caller could get a
+    module out of a file path with the same ``[S9.2]`` missing-file semantics
+    — instead of a second ``spec_from_file_location`` block that could drift
+    from it. This file is NOT a hook: it need not define ``run``, so
+    ``load_hook``/``load_hook_for_check`` (both of which require one) are the
+    wrong entry points.
+
+    Bytecode writing is suppressed for the duration of the import and restored
+    in a ``finally``: ``ciu check`` is contractually side-effect-free
+    (S13.4a/CIU-QOL-12) and CPython would otherwise drop a ``__pycache__/``
+    directory beside the consumer's validator file — the same real write
+    ciu-P18 had to suppress for hook imports.
+    """
+    import sys
+
+    from . import hooks_runner
+
+    saved_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        module = hooks_runner._load_hook_module(path)
+    finally:
+        sys.dont_write_bytecode = saved_dont_write_bytecode
+    return getattr(module, "validate_registry", None)
+
+
+def _run_consumer_validator(config: dict, repo_root: Path) -> list[str]:
+    """Run the consumer-declared ``validate_registry(config)``, if any (S13.4b).
+
+    The V8 proposal's Option C: CIU owns models for what CIU itself reads, and
+    hands everything else under `[registry.*]` to whoever does read it. The
+    consumer declares ONE path in the global config::
+
+        [ciu]
+        registry_validator = "infra/registry_validate.py"
+
+    and that file defines a module-level ``validate_registry(config)``
+    returning a list of error strings (empty ⇒ OK). The whole global config is
+    passed, not just `[registry]`, so a validator can cross-check a registry
+    entry against the rest of the workspace.
+
+    Return-value handling mirrors ``validate_config``'s (S9.5) exactly,
+    including the ``str``-is-iterable trap: a bare string is ONE malformed
+    return, not one finding per character.
+    """
+    ciu_table = config.get("ciu") or {}
+    if not isinstance(ciu_table, dict):
+        # [ciu] itself being a non-table is somebody else's finding (S3.x);
+        # from here it just means no validator is declared.
+        return []
+    declared = ciu_table.get(REGISTRY_VALIDATOR_KEY)
+    if declared is None:
+        return []
+    if not isinstance(declared, str) or not declared:
+        return [
+            f"[S13.4b] [ciu].{REGISTRY_VALIDATOR_KEY} must be a non-empty path "
+            f"string, got {type(declared).__name__}"
+        ]
+
+    path = Path(declared)
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        validator = _load_consumer_validator(path)
+    except Exception as exc:  # noqa: BLE001 — a consumer file can raise anything
+        return [
+            f"[S13.4b] [ciu].{REGISTRY_VALIDATOR_KEY} '{declared}' could not be "
+            f"loaded: {type(exc).__name__}: {exc}"
+        ]
+    if not callable(validator):
+        return [
+            f"[S13.4b] [ciu].{REGISTRY_VALIDATOR_KEY} '{declared}' defines no "
+            "callable validate_registry(config) -> list[str]"
+        ]
+
+    try:
+        result = validator(config)
+    except Exception as exc:  # noqa: BLE001 — the validator's own defect
+        return [
+            f"[S13.4b] validate_registry in '{declared}' raised "
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if result is None:
+        return []
+    if isinstance(result, (str, bytes)) or not isinstance(result, (list, tuple)):
+        return [
+            f"[S13.4b] validate_registry in '{declared}' returned "
+            f"{type(result).__name__}; S13.4b requires a list of error strings "
+            "(empty = OK)"
+        ]
+    return [f"[S13.4b] {item}" for item in result]
+
+
+def validate_registries(config: dict, repo_root: Path) -> list[str]:
+    """Validate `[registry.*]` against what CIU reads; return findings (S13.4b).
+
+    *config* is the GLOBAL config (``profile.config``) — the same object
+    :func:`probe_ref` is handed, and the only place `[registry.*]` can live: a
+    stack config carrying a top-level ``[registry]`` table already fails S3.5
+    at ``ciu check``'s stage 2, because ``registry`` is not stack-reserved, so
+    it would be a second non-reserved root key.
+
+    Returns a list of finding strings and **raises nothing** for any expected
+    condition, including pydantic being absent (which becomes a finding naming
+    ``ciu[registry]``). One contract for the caller: findings ⇒ the stage
+    failed ⇒ exit 2. Only the sub-tables in
+    :data:`REGISTRY_VALIDATED_TABLES` are modelled — see that constant for why
+    the V8 proposal's other three kinds are deliberately absent — and the rest
+    of `[registry.*]` is the consumer's, via
+    :func:`_run_consumer_validator`'s extension point.
+    """
+    findings: list[str] = []
+    registry = config.get("registry")
+
+    if registry is not None and not isinstance(registry, dict):
+        findings.append(
+            f"[S13.4b] [registry] must be a table, got {type(registry).__name__}"
+        )
+        registry = None
+
+    declared = [
+        name for name in REGISTRY_VALIDATED_TABLES if name in (registry or {})
+    ]
+    if declared:
+        try:
+            models = _build_registry_models()
+        except ValueError as exc:
+            # pydantic absent while a validated table IS declared: loud,
+            # actionable, and fatal to the stage — never a silent skip.
+            findings.append(str(exc))
+            models = None
+        if models is not None:
+            import pydantic
+
+            for name in declared:
+                try:
+                    models[name].model_validate(registry[name])
+                except pydantic.ValidationError as exc:
+                    for err in exc.errors():
+                        loc = ".".join(str(part) for part in err["loc"])
+                        where = f".{loc}" if loc else ""
+                        findings.append(
+                            f"[S13.4b] [registry.{name}]{where}: {err['msg']}"
+                        )
+
+    findings.extend(_run_consumer_validator(config, repo_root))
+    return findings

@@ -88,36 +88,56 @@ guessing:
 
 ```console
 $ ciu worktree branches
-branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 current, 1 base
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 managed-instance, 1 current, 1 base
 
 prunable:
   fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
+
+managed-instance:
+  feat/api @ /repo/.worktrees/api  ahead 0 behind 2 changed 0 file(s)  last 2026-08-19  ciu:api(ready)
 
 unmerged:
   feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
 ```
 
 Survey only — nothing is removed. `-y` removes exactly the `prunable`
-category, gated twice so it can never half-prune: the base must be contained
-in a checkout's HEAD (or origin/HEAD) or `-y` refuses before touching
-anything, and a branch tracking an upstream that lacks its tip is reported
-`FAILED` before its checkout is touched. Every outcome is printed
-(`removed:` / `FAILED: <branch> — <reason>` lines) and a partial prune exits
-non-zero — never a silent success. Git re-verifies cleanliness and mergedness
-on every step; nothing is ever force-deleted. The categories are closed:
-`base`, `mainline` (the origin/HEAD default branch — never prunable even
-when measured against another ref), `current` (the primary checkout's
-branch), `prunable`, `merged-dirty` (merged but its checkout has uncommitted
-work — decide by hand), and `unmerged`. Every branch carries `ahead`/
-`behind`, `changed_files` vs the merge-base, last-commit date, and its ciu
-instance linkage, so a human can rule on the rest. No age heuristic exists
-anywhere in this command: a branch one minute old that is fully merged is
-prunable, a branch six months old that is not is not.
+category. What the gating actually guarantees: **a candidate's checkout is
+never destroyed by a refusal this command could have foreseen.** Three
+read-only checks run before anything is touched — the base must be contained
+in the primary checkout's HEAD (or origin/HEAD) or `-y` refuses outright; a
+branch tracking an upstream that lacks its tip is reported `FAILED`; and a
+branch not contained in the primary's HEAD (the HEAD `git branch -d` judges
+against) is reported `FAILED`. Git can still refuse a step for a reason only
+Git knows — that branch becomes a `FAILED` line and the prune continues with
+the rest. Every outcome is printed (`removed:` / `FAILED: <branch> —
+<reason>` lines), no failure aborts the run, and a partial prune exits
+non-zero in **both** `--json` and human output — never a silent success. Git
+re-verifies cleanliness and mergedness on every step; nothing is ever
+force-deleted.
+
+Run it from any checkout: every destructive Git command executes from the
+PRIMARY worktree, so a linked checkout that is behind the mainline cannot
+make merged branches look unmerged, and the checkout you are standing in is
+never a candidate in its own run.
+
+The categories are closed: `base`, `mainline` (the origin/HEAD default branch
+— never prunable even when measured against another ref), `current` (the
+primary checkout's branch, or the one you invoked from), `managed-instance`
+(its checkout carries a CIU-managed instance record — **never** pruned here
+at any lifecycle state, because a bare `git worktree remove` would destroy
+the config that tells CIU what to clean; use `ciu worktree rm NAME`, which
+runs `ciu clean` first), `prunable`, `merged-dirty` (merged but its checkout
+has uncommitted work — decide by hand), and `unmerged`. Every branch carries
+`ahead`/`behind`, `changed_files` vs the merge-base, last-commit date, and
+its ciu instance linkage, so a human can rule on the rest. No age heuristic
+exists anywhere in this command: a branch one minute old that is fully merged
+is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
 (`ciu capabilities --json`) instead of inferring the feature from SemVer;
-the `--json` document is versioned (`schema_version: 1`, operations
-`branches`/`branches-prune`, statuses `survey`/`pruned`/`partial`).
+the `--json` document is versioned (`schema_version: 2` — 1 predates the
+`managed-instance` category, operations `branches`/`branches-prune`, statuses
+`survey`/`pruned`/`partial`).
 
 ```bash
 ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
@@ -362,3 +382,196 @@ Contract notes for a consumer of the gate:
   (verified `LoadState=loaded` before `docker run`, fail-closed) — see
   vbpub AGENTS.md "Manual tester-unified gate runs — the four traps" for a
   hand-rolled run.
+
+## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
+
+```console
+$ ciu status --profile core --json
+{
+  "schema_version": 1,
+  "profile": "core",
+  "stacks": [
+    {
+      "path": "apps/vault",
+      "name": "vault",
+      "phase_key": "phase_1",
+      "compose_project": "myapp-dev-vault",
+      "containers": [
+        {"name": "myapp-dev-vault-vault-1", "status": "healthy", "image": "hashicorp/vault:1.15"}
+      ]
+    },
+    {
+      "path": "apps/worker",
+      "name": "worker",
+      "phase_key": "phase_2",
+      "compose_project": "myapp-dev-worker",
+      "containers": []
+    },
+    {
+      "path": "apps/not-yet-scaffolded",
+      "name": "not-yet-scaffolded",
+      "phase_key": "phase_3",
+      "compose_project": null,
+      "containers": []
+    }
+  ]
+}
+```
+
+Reading this document: `apps/vault` has one running, healthy container.
+`apps/worker`'s compose project resolved (`compose_project` is a string) but
+`containers` is empty — its stack has not been started yet; that is a
+legitimate result, not an error. `apps/not-yet-scaffolded`'s
+`compose_project` is `null` — its stack directory does not exist on disk at
+all, a DIFFERENT condition from "not started" and distinguished structurally
+by the field, never collapsed into the same shape. `status` is
+`health_pkg.classify`'s closed vocabulary
+(`healthy`/`starting`/`unhealthy`/`no-healthcheck`/`not-found`); `image` is
+the container's `Config.Image` verbatim, unnormalized.
+
+If the Docker daemon itself cannot be reached, `ciu status` does NOT print
+any of the above — it exits 2 with `[ERROR] ciu status: <reason>` on
+stderr. A consumer scripting against this surface should treat a non-zero
+exit as "no determination was made" and a `containers: []` row as "checked,
+found nothing running" — the two must never be confused.
+
+## 14. Preflight a config change without deploying (`ciu check`, S13.4a / S9.5)
+
+`ciu check` walks the whole config pipeline **in memory**. It creates no
+hostdir, materializes no secret, writes no rendered compose/overlay/configfile
+(not even a `__pycache__` beside a hook it imports), executes no hook `run()`,
+and never contacts Docker. Use it instead of `ciu up --dry-run` as a
+validation tool: **`--dry-run` still creates hostdirs and still runs your
+`pre_secrets`/`pre_compose`/`post_compose` hooks for real** — it only skips
+`docker compose up`.
+
+```console
+$ ciu check --profile core          # prose, per stage
+$ ciu check --profile core --json   # one versioned object
+$ ciu check --profile core --live   # ALSO probe live provisioning state
+```
+
+Exit codes are S13.4's: `0` clean, `2` any static configuration error
+(including every stage below), `1` **only** a `--live` probe failure. A static
+failure short-circuits before any live probing happens.
+
+### Teach a hook to validate its own config (`validate_config`, S9.5)
+
+Any hook may add an OPTIONAL second entry point beside its `run`. CIU calls it
+during `ciu check` and **never** during `ciu up`:
+
+```python
+# infra/db-core/post_compose_db.py
+
+def run(config: dict, ctx) -> dict:
+    """Normal execution — provisions users, databases."""
+    ...
+
+
+def validate_config(config: dict, ctx) -> list[str]:
+    """Optional preflight. Return one error string per finding; [] = OK.
+
+    Receives the SAME merged, guarded config and HookContext that run() gets,
+    so it validates exactly what run() will consume — before any container
+    exists.
+    """
+    errors: list[str] = []
+    registry = config.get("registry", {})
+    if "database" not in registry:
+        errors.append("registry.database is missing")
+    users = registry.get("postgresql", {}).get("users", {})
+    for user in ("controller", "workerdb"):
+        if user not in users:
+            errors.append(f"registry.postgresql.users.{user} is missing")
+
+    # Secrets appear as SecretGuard objects (S4.21): you can confirm one is
+    # DECLARED by name, and you must never stringify it.
+    if "admin_password" not in config.get("db_core", {}).get("secrets", {}):
+        errors.append("db_core.secrets.admin_password is not declared")
+
+    return errors
+```
+
+Rules worth knowing before you write one:
+
+- **Return `list[str]`, never a bool.** `[]` means valid. A `True`/`False`
+  return is reported as a contract violation, not read as a verdict. `None` is
+  tolerated as "no findings".
+- **`ctx.secret_file(name)` raises `KeyError` for every name.** `ciu check`
+  materializes nothing, so there is no store file to point at. Validate that a
+  secret is *declared* (as above); if your check genuinely needs to read a
+  materialized secret's contents, it cannot run at check time — keep that part
+  in `run()`.
+- **`ctx.wait_healthy` / `ctx.wait_tcp` are `None`** at check time. Nothing is
+  running, and a preflight must not perform I/O anyway.
+- `ctx.stack_dir`, `ctx.repo_root`, `ctx.instance_id`, `ctx.network`,
+  `ctx.selected_profiles` and `ctx.deployed_stacks` are all populated exactly
+  as during a real run.
+- **No side effects.** No Docker, no network, no writes. Like S9.4's
+  env-mutation rule, this is a contract CIU does not sandbox.
+- **An exception is your hook's finding, not everyone's.** If your
+  `validate_config` raises, CIU reports it against that hook and keeps
+  checking every other hook and stack.
+- Defining `validate_config` is entirely optional; a hook without one is
+  skipped with a note, never an error.
+- Your hook file is imported **exactly once** per `ciu check` run, even when
+  it is declared at several hook points or by several stacks.
+
+### The `--json` envelope
+
+```console
+$ ciu check --json
+{
+  "schema_version": 1,
+  "operation": "config-check",
+  "status": "fail",
+  "profile": "core",
+  "stages": [
+    {"stage": "render", "status": "pass", "findings": [],
+     "notes": [{"message": "3 stack config(s) rendered"}]},
+    {"stage": "shape", "status": "pass", "findings": [], "notes": []},
+    {"stage": "secrets", "status": "pass", "findings": [], "notes": []},
+    {"stage": "provisioning", "status": "pass", "findings": [], "notes": []},
+    {"stage": "governance", "status": "pass", "findings": [], "notes": []},
+    {"stage": "configfile", "status": "pass", "findings": [], "notes": []},
+    {"stage": "hooks-load", "status": "pass", "findings": [], "notes": []},
+    {"stage": "hooks-preflight", "status": "fail",
+     "findings": [{"message": "registry.consul.acl.default_policy missing",
+                   "stack": "infra/consul-server",
+                   "hook": "post_compose_consul.py"}],
+     "notes": []},
+    {"stage": "compose-render", "status": "pass", "findings": [], "notes": []},
+    {"stage": "leak-scan", "status": "pass", "findings": [], "notes": []},
+    {"stage": "consumption", "status": "pass", "findings": [],
+     "notes": [{"message": "[S4.20] declared secret 'ca_bundle' is consumed by no channel visible to `ciu check` ...",
+                "stack": "infra/app"}]}
+  ]
+}
+```
+
+`stages` is a **list in pipeline order**, so a consumer can render it as-is.
+`findings` fail the run; `notes` never do. A `--live` run adds a top-level
+`"live": {"status": ..., "unsatisfied": [...]}` — deliberately not a stage,
+because it is the one failure class that exits `1` rather than `2`.
+
+Two behaviours to script against deliberately:
+
+- **A declared-but-unconsumed secret is a note, not a failure.** `ciu up`
+  itself only warns here, and `ciu check` cannot see the S5 configfile
+  consumption channel without rendering — so treating it as red would both
+  contradict the real pipeline and produce false positives.
+- **Registry validation covers the two fields CIU itself reads — and only
+  those** (S13.4b, stage 7): `[registry.postgresql].database` and
+  `[registry.consul].token_vault_path`. CIU ships **no** model for your
+  Redis/MinIO/Vault/PostgreSQL-users registry tables — it has never read one,
+  so it has no shape to check and does not invent one. Do not read a green
+  stage 7 as "my whole registry shape is correct". To validate the rest,
+  declare `[ciu].registry_validator = "infra/registry_validate.py"` with a
+  module-level `validate_registry(config) -> list[str]`; its findings fail the
+  check the same way. Model validation needs the optional extra
+  `pip install 'ciu[registry]'` — with a validated table declared and the
+  extra missing, `ciu check` fails loudly naming it rather than skipping.
+
+Under `--json` the check itself prints only the document, but the
+orchestrator's own `[INFO]` lines still precede it on stdout (as with
+`ciu graph --format json`); read the JSON object at the end of stdout.

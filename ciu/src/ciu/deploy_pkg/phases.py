@@ -127,6 +127,27 @@ def service_health_enabled(service: dict) -> bool:
     )
 
 
+def service_health_timeout(service: dict) -> str | None:
+    """Return the optional per-service health-gate timeout override (S7.7).
+
+    ``health_timeout`` is absent by default, meaning the service falls back to
+    the caller's shared ``[deploy.health].timeout`` default. When present it
+    MUST be a duration string (e.g. ``"300s"``), matching the convention every
+    other timeout in this codebase already uses — this accessor does not
+    itself parse the duration (that stays the caller's job via the existing
+    ``_seconds()`` helper), it only validates the declared shape.
+    """
+    raw = service.get("health_timeout")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw
+    raise ValueError(
+        f"[S7.2] service 'health_timeout' must be a string duration (e.g. '300s'); "
+        f"got {type(raw).__name__} {raw!r}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # S7.1/S7.2 — iter_enabled_services
 # ---------------------------------------------------------------------------

@@ -7,6 +7,170 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- feat(ciu): `ciu check` now walks the WHOLE config pipeline in memory and
+  side-effect-free, not just the provisioning graph — stack shape (S3.5/S3.7),
+  secret directive grammar and placement (S4), the requires/provides graph
+  lint (unchanged), governance shape (S15.2), configfile template/schema
+  existence (S5.1), hook loading (S9.1/S9.2), each hook's new optional
+  `validate_config(config, ctx) -> list[str]` preflight (S9.5), the
+  S4.21-guarded compose render, the S4.22 leak scan, and the S4.20
+  declared-vs-consumed cross-check. It creates no hostdir, materializes no
+  secret, writes no rendered compose/overlay/configfile (nor a `__pycache__`
+  beside an imported hook), executes no hook `run()`, and never contacts
+  Docker — so it replaces `ciu up --dry-run` as a validation tool, which
+  still creates hostdirs and still runs hooks for real. Each hook file is
+  imported exactly once per run. New `ciu check --json` emits one versioned
+  per-stage envelope. Exit codes are unchanged (S13.4): every new stage's
+  failure is exit 2; exit 1 stays reserved for `--live`'s probe failures,
+  which are not attempted once a static stage is red. For render fidelity the
+  check applies the PURE halves of two steps it does not run — Step 7's
+  `auto_generated.*` (S3.9) and Step 8's hostdir-to-path rewrite (S6.2/S1.4),
+  computing paths without creating, seeding or chowning a single directory —
+  so templates reading either still render. (CIU-QOL-12, SPEC S13.4a + S9.5)
+- feat(ciu): `ciu check` gains stage 7 — `[registry.*]` schema validation
+  (SPEC S13.4b). **pydantic is a NEW optional extra, `ciu[registry]`**, never
+  a hard dependency: it is imported lazily, and only when a validated table
+  is declared. If one IS declared and the extra is missing, `ciu check` fails
+  (exit 2) with a finding naming `pip install 'ciu[registry]'` — it never
+  silently skips validation, matching `ciu[schema]`'s S5.7 rule. **Scope,
+  stated plainly: CIU models exactly the TWO values it itself reads** —
+  `[registry.postgresql].database` (non-empty string; the `psql -d` target of
+  a `pg:schema/*` probe) and `[registry.consul].token_vault_path` (non-empty
+  string; a valid `str.format` template whose only placeholder is `{svc}`, the
+  Vault path of a `consul:token/*` probe). It ships **no** model for
+  Redis/MinIO/Vault/PostgreSQL-user registry tables — the V8 proposal's other
+  three "built-in kinds" — because CIU has never read one, so there is no
+  shape in this repo to validate against and a guessed schema would reject
+  legitimate configs; those tables pass through untouched. For consumer-owned
+  shapes there is one additive extension point: `[ciu].registry_validator`
+  names a module whose `validate_registry(config) -> list[str]` is called with
+  the whole global config (imported with bytecode writing suppressed, so the
+  check stays side-effect-free). Stage 7 is a GLOBAL-scope stage — it runs
+  once per run, even with an empty selection, and its findings carry no
+  `stack` key (CIU-V8-PREP-8 + CIU-QOL-12 stage 7, SPEC S13.4b).
+  **Upgrade note:** a workspace that already declares `[registry.postgresql]`
+  or `[registry.consul]` must `pip install 'ciu[registry]'`, or `ciu check`
+  now reports stage 7 red with the install hint. That is the intended
+  fail-loud behaviour, not a regression — `ciu up` is unaffected
+- feat(ciu): `ciu bake --profile NAME` — the target list can now be resolved
+  via the SAME selection chain `ciu up --profile` uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`), so `ciu
+  bake --profile X` builds exactly the images `ciu up --profile X` would
+  deploy; `ciu bake [targets ...]` with no `--profile` is unchanged, and
+  `--profile` is mutually exclusive with explicit positional targets
+  (CIU-QOL-7, SPEC S7.11). The internal `deploy.action_build`/`--build`
+  path this replaces had NO CLI surface (dead code, unreachable from any
+  verb or flag) and is removed as an internal-only cleanup — not a breaking
+  change for any user.
+- feat(ciu): new read-only `ciu status [--profile NAME] [--json]` verb —
+  reports every `--profile`-selected stack's resolved compose project,
+  running containers, per-container health (`classify()`'s closed
+  vocabulary), and image reference in one versioned JSON envelope; a stack
+  not yet deployed reports an empty container list (not an error), and a
+  Docker daemon that cannot be reached aborts with a clear error and exit 2
+  rather than rendering an empty/healthy-looking report (CIU-QOL-6, SPEC
+  S7.10)
+- feat(ciu): optional per-phase-service `health_timeout` override — each
+  container in a health gate call is now polled to its OWN deadline within
+  one shared poll loop, so a slow-but-legitimate service's timeout no
+  longer masks a fast, genuinely broken service's failure behind it (nor
+  does a short shared timeout spuriously fail the slow one) (CIU-QOL-8,
+  SPEC S7.7)
+
+### Fixed
+- fix(ciu)!: **HOTFIX — `ciu worktree branches -y` could destroy work.** Four
+  defects in ALREADY-RELEASED behaviour, each reproduced end-to-end by two
+  independent retrospective adversarial reviews. `ciu worktree branches`
+  shipped in **v7.0.0** (`c92377fb`, CIU-25 git half) and every 7.x release
+  since is affected — note the reviews reported the origin as v6.3.0/v6.4.0,
+  but CHANGES.md's own history places the feature squarely in v7.0.0.
+  (1) A fully-merged, clean checkout carrying a **live CIU-managed instance
+  record** classified `prunable` and was removed by a BARE `git worktree
+  remove` with no `ciu clean` first — destroying the rendered config that
+  tells CIU what to clean, orphaning containers/volumes/networks and stranding
+  root-owned `vol-*` dirs. Such branches are now their own closed category,
+  `managed-instance`, which `-y` never touches at any lifecycle state; the
+  hint names `ciu worktree rm NAME` (clean-then-remove) as the disposal path.
+  (2) Invoked from a LINKED worktree, `git branch -d` judged mergedness
+  against THAT checkout's HEAD: fully-merged branches were reported "not fully
+  merged" (`removed: []`) after their checkouts had already been destroyed.
+  Every destructive Git command of the `-y` pass now runs from the PRIMARY
+  worktree, and a third read-only pre-check refuses a candidate not contained
+  in the primary's HEAD BEFORE its checkout is touched.
+  (3) Invoked from a checkout whose OWN branch was prunable, the prune removed
+  its own cwd; the next Git call raised on the vanished directory, the
+  exception escaped mid-loop, NO document was returned and every later
+  prunable branch was silently never processed. The invoking checkout's branch
+  is now `current` (never a candidate in its own run), and no failure escapes
+  the per-branch loop — an unexpected raise becomes that branch's named
+  `failed` reason while the rest are still processed.
+  (4) `--json` reported exit 0 on a `partial` prune because the `partial -> 1`
+  decision lived inside the human-output arm; it is now decided once, above
+  the output-format branch, so both modes exit identically.
+  The widened closed category vocabulary bumps the document to
+  `schema_version: 2` (fail-closed, per S17.3's precedent).
+  (SPEC S16.8, CIU-25)
+- fix(ciu)!: **HOTFIX — `ciu up --layout` could silently deploy the WRONG
+  PROFILE to every host in the plan.** A defect in ALREADY-RELEASED
+  behaviour, reproduced end-to-end by a retrospective adversarial review.
+  Layouts shipped in **v6.3.0** (ciu-P10, S7.5c) and every release since is
+  affected. **Operators who use `--layout` should assume prior versions had
+  this gap and audit any layout deploy that passed a companion flag.**
+  (1) `--layout`'s mutual-exclusion guard against
+  `--profile`/`--host`/`--dir`/`--thin`/`--bootstrap`/`--rollback` compared
+  each leftover token against a denylist of EXACT spellings. But the guard's
+  whole job is to stop those flags reaching the REMOTE `ciu up`, and
+  `ciu-deploy`'s parser is built without `allow_abbrev=False` — i.e. with
+  argparse's default `allow_abbrev=True`. So an abbreviated spelling
+  (`--prof=core`, `--pro core`, `--hos edge-a`, `--th`, `--boot`, `--roll`)
+  walked straight past the local guard, was forwarded verbatim in the remote
+  argv AFTER the layout's own `export CIU_SERVICES_PROFILE=...`, and was
+  resolved remotely — silently overriding each host's declared bundles with
+  one CLI profile value. The review's reproduction: a 3-host prod layout run
+  as `ciu up --layout prod --prof=core` exited **0** having pushed to all
+  three hosts, with the `backend` host — whose bundles are `db,worker-io` —
+  deploying `core` instead. No error, no warning, exit 0. The guard no longer
+  hand-rolls the match: the forbidden long options are registered on a local
+  parser carrying the SAME `allow_abbrev` semantics the remote uses, so
+  argparse itself resolves the spelling before the check looks, every
+  abbreviation length is covered by construction rather than enumeration, and
+  the resolved flags are consumed rather than left to be forwarded. A refusal
+  now names the flag the abbreviation resolved to, exits 2, and happens
+  before any host is resolved from the inventory — zero transport opened.
+  (2) The verb-dispatch tests that route `ciu <verb>` to a code path were
+  plain `"--flag" in argv` membership checks, which see `--flag value` but not
+  `--flag=value`. `ciu up --layout=NAME` therefore never entered the layout
+  path at all, falling through to the local profile deploy and dying on an
+  unrelated raw argparse error. The same bug on `--host` was worse and
+  silent: `ciu-deploy` DECLARES `--host` for its help text but never reads it
+  (S10.2), so `ciu up --host=web` (and `down`/`health`/`render`) parsed
+  cleanly and ran a **LOCAL** deploy of the active profile while the operator
+  believed they had pushed to a remote host — again exit 0, no warning.
+  `--layout`, `--host` and `--dir` now route identically in both forms.
+  (3) **`--host`'s ABBREVIATIONS had the same silent fall-through**, and
+  fixing only the `=` form left it live — `ciu up --hos=edge-a`,
+  `--ho=edge-a`, `--hos edge-a` and `--ho edge-a` all still parsed cleanly
+  downstream, had the host discarded, and ran a local deploy: 16 of the 20
+  verb × spelling combinations across `up`/`down`/`health`/`render` returned
+  exit 0 having contacted **zero** remote hosts. `--host` dispatch is now
+  abbreviation-aware, resolved by argparse itself rather than by string
+  matching. `--layout` and `--dir` are deliberately NOT abbreviation-aware,
+  and the asymmetry is the point: `ciu-deploy` has no `--layout` or `--dir` at
+  all, so `--lay x` / `--di=/srv` are `unrecognized arguments` and `--d /srv`
+  is genuinely ambiguous there against `--define-root PATH` — all fail loudly
+  with exit 2 and nothing deployed. Widening those would invent a divergence
+  rather than close one. The premise is pinned by a test that asserts it
+  against the REAL `ciu-deploy` parser, so it cannot go stale silently.
+  (SPEC S7.5c + S10.4, CIU-34)
+- fix(ciu): declared layouts/exec-targets/vendor_images now validated
+  eagerly on every render path — `engine.main_execution` (single-stack) and
+  `deploy.action_check` (profile-mode, including an empty selection) — not
+  only when that run's own `--layout`/exec/provenance command invokes the
+  specific feature (CIU-QOL-11, SPEC S7.5c/S16.7/S17.5)
+
 ## [7.0.0] - 2026-08-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=037f858cf2f46b5db13a387273124ef4e3ad6f2d -->

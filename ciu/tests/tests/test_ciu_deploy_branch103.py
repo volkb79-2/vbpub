@@ -134,8 +134,9 @@ def test_health_resolution_deduplicates_container_names(tmp_path: Path) -> None:
 
     profile = _profile()
     assert deploy.resolve_selection_health_containers(
-        tmp_path, profile, [_entry("applications/api", 1), _entry("tools/api-copy", 2)]
-    ) == ["ciu-test-api"]
+        tmp_path, profile, [_entry("applications/api", 1), _entry("tools/api-copy", 2)],
+        default_timeout_s=30.0,
+    ) == {"ciu-test-api": 30.0}
 
 
 def test_deploy_ignore_errors_records_preflight_failure_and_continues(
@@ -177,7 +178,8 @@ def test_health_failure_reclassifies_started_stack_as_failed(
     monkeypatch.setattr(deploy, "_run_stack", lambda *_args, **_kwargs: True)
 
     monkeypatch.setattr(
-        deploy, "resolve_selection_health_containers", lambda *_args: ["ciu-test-api"]
+        deploy, "resolve_selection_health_containers",
+        lambda *_args, **_kwargs: {"ciu-test-api": 30.0},
     )
     monkeypatch.setattr(
         deploy, "run_container_health_gate",

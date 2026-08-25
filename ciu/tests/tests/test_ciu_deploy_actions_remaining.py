@@ -2,13 +2,12 @@
 
 The tests keep Docker and health-image probing deterministic, but assert the
 observable action outcome: which rendered compose files are eligible, whether a
-strict preflight can block, and whether clean/build preserve their advertised
+strict preflight can block, and whether clean preserves its advertised
 failure and cleanup semantics.
 """
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -149,29 +148,6 @@ def test_clean_stops_at_first_reset_failure_without_ignore_errors(monkeypatch, t
         ignore_errors=False,
     ) == 1
     assert reset_paths == [tmp_path / "applications/first"]
-
-
-def test_build_uses_selected_application_targets_and_propagates_docker_failure(monkeypatch, tmp_path):
-    """Build targets application/tool stacks only and a failed bake remains red."""
-    commands: list[list[str]] = []
-
-    def failed_docker(cmd, **_kwargs):
-        commands.append(cmd)
-        return subprocess.CompletedProcess(cmd, 1, "", "build failed")
-
-    monkeypatch.setattr(deploy.procutil, "docker", failed_docker)
-    monkeypatch.setattr(deploy.engine, "get_git_hash", lambda: "abc12345")
-    assert deploy.action_build(
-        tmp_path,
-        [
-            {"path": "applications/api"},
-            {"path": "tools/admin"},
-            {"path": "infrastructure/network"},
-        ],
-        use_cache=False,
-    ) == 1
-    assert commands == [["buildx", "bake", "admin", "api", "--load",
-                         "--set", "*.labels.org.opencontainers.image.revision=abc12345", "--no-cache"]]
 
 
 def test_list_actions_report_enabled_services_and_profile_details(capsys):

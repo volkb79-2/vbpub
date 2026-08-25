@@ -13,6 +13,7 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
 - failure explanation: `ciu diagnose [--project NAME] [--json]` (read-only)
+- per-stack status: `ciu status [--profile NAME] [--json]` — compose project, containers, health (read-only)
 
 (The former separate `ciu-deploy` script is withdrawn — its actions are now
 verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/FEATURES.md)**;
@@ -129,6 +130,12 @@ freshly derived Git facts — never inferred from a name or stale record —
 target (S16.7). `ciu capabilities --json` lists the shipped machine
 contracts. See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) (why) and
 [docs/CONSUMERS.md](docs/CONSUMERS.md) (how).
+
+A repo can also cap how many managed worktree instances run at once via
+`[ciu.worktree].max_concurrent_instances` (default: unlimited, no cap) —
+see [docs/CONFIG.md](docs/CONFIG.md) for the config table and
+[docs/CONSUMERS.md](docs/CONSUMERS.md) for a worked example of setting and
+verifying it.
 
 The rule of thumb: a `.j2` suffix means *template* (input); strip it to get the
 *rendered* output. Everything under `.ciu/` and every rendered output is

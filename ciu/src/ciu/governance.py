@@ -152,7 +152,7 @@ BUILTIN_KSM = "builtin"
 
 # S15.18 (CIU-17) — ad-hoc KSM override for ONE run, without editing the TOML
 # layer. `ciu up --ksm` / `--no-ksm` set this; it is also usable directly, like
-# every other ambient CIU_* toggle (CIU_WARNINGS_AS_ERRORS, CIU_SKIP_DOOD_PREFLIGHT).
+# every other ambient CIU_* toggle (CIU_EXIT_ON, CIU_SKIP_DOOD_PREFLIGHT).
 # The flag sets the env var rather than threading a parameter through, so there
 # is ONE resolution point for both surfaces instead of two that can disagree.
 KSM_ENV_VAR = "CIU_KSM"

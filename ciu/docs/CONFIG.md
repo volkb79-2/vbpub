@@ -198,7 +198,7 @@ Subsections:
 | Section | Purpose | Spec |
 |---|---|---|
 | `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
-| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`) | S7.7 |
+| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`); `timeout` is the default, overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |
 | `[deploy.control]` | Named boolean flags for phase `enabled` fields | S7.2 |
@@ -215,6 +215,30 @@ stack's rendered Compose model, not from the display label. Optional
 `health = false` excludes an ephemeral stack from orchestration health while
 still deploying it; the field is a strict boolean and defaults to `true`
 [S7.2, S7.7].
+
+Optional `health_timeout = "<duration>"` (CIU-QOL-8, [S7.2, S7.7]) overrides
+`[deploy.health].timeout` for this entry's own container(s) only — a duration
+string like every other timeout in this codebase (`"300s"`, `"5s"`; NOT a bare
+number). Each container in a health gate call is polled to its own deadline
+within one shared poll loop, so a slow-but-legitimate service's override does
+not force every other container in the same call to wait behind it, and a
+short override on a genuinely broken service is not masked behind a slower
+service's ceiling — the broken one fails at its own, shorter deadline. A
+selection where no entry sets `health_timeout` is unaffected: every container
+shares `[deploy.health].timeout`, exactly as before this key existed. Worked
+example — a slow identity provider next to fast worker stacks:
+
+```toml
+[[deploy.phases.phase_3.services]]
+path = "infra/authentik"
+health_timeout = "240s"   # Authentik's own startup migrations are slow
+
+[[deploy.phases.phase_3.services]]
+path = "applications/worker"
+health_timeout = "5s"     # workers should be healthy almost immediately;
+                          # a broken worker should fail fast, not hide
+                          # behind Authentik's 240s ceiling
+```
 
 `landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
 identity of one deployment landscape and render its Consul KV root
@@ -374,6 +398,59 @@ database = "dstdns"        # application database for pg:schema/<name> probes
 # Override if your provisioner stores tokens elsewhere:
 token_vault_path = "consul/{svc}/token"   # → consul/myapp/token
 ```
+
+#### Validation of the two CIU-read keys [S13.4b]
+
+`ciu check`'s stage 7 validates **only these two keys** — the only values CIU
+itself reads out of `[registry.*]`. Everything else in these tables, and every
+other `[registry.<name>]` table, is free-form consumer metadata and is passed
+through untouched. **CIU ships no model for Redis/MinIO/Vault/PostgreSQL-user
+registry tables**: it has never read one, so it has no shape to check against,
+and a guessed schema would reject legitimate configs.
+
+| Key | Type | Constraint | Why (what the probe actually does) |
+|---|---|---|---|
+| `[registry.postgresql].database` | string | non-empty | `pg:schema/<name>` runs `psql -d <database>`. A non-string is coerced by `str()` into a nonsense database name; an empty string is falsy, so it is silently ignored and the probe targets the default `postgres` database instead of yours. |
+| `[registry.consul].token_vault_path` | string | non-empty; a valid `str.format` template whose only placeholder is `{svc}` | `consul:token/<svc>` substitutes the template with `.format(svc=…)`. Unbalanced braces raise `ValueError`, which the probe does **not** catch — the whole probe run dies. Any other placeholder (`{service}`, `{}`, `{0}`) raises `KeyError`/`IndexError`, which the probe **does** catch and then silently falls back to `consul/acl/tokens/{svc}` — reading a different Vault path than you wrote, with no warning. |
+
+`{svc}` is deliberately **not** required to be present: a constant path
+substitutes cleanly and is legitimate for a deployment with one shared ACL
+token, so CIU does not impose a constraint its own probe does not have.
+
+Validation needs the optional `pydantic` extra:
+
+```bash
+pip install 'ciu[registry]'
+```
+
+If either table is declared and pydantic is **absent**, `ciu check` fails
+(exit 2) with a finding naming the extra — it never silently skips the check.
+When neither table is declared, pydantic is never imported.
+
+#### Validating your own registry tables [S13.4b]
+
+For the tables CIU does not model, declare one validator module:
+
+```toml
+[ciu]
+registry_validator = "infra/registry_validate.py"   # relative to the repo root
+```
+
+```python
+# infra/registry_validate.py
+def validate_registry(config):        # receives the WHOLE global config
+    errors = []
+    for name, user in config["registry"]["redis"]["users"].items():
+        if "acl" not in user:
+            errors.append(f"redis user '{name}' has no acl")
+    return errors                     # empty list = OK; None also means OK
+```
+
+Findings fail `ciu check` at exit 2 alongside CIU's own. The module is
+imported (never executed beyond import) with bytecode writing suppressed, so
+the check stays side-effect-free; a missing file, an import-time exception, a
+missing `validate_registry`, or a non-list return are each reported as a
+finding rather than aborting the run.
 
 ---
 

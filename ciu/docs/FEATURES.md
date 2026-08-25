@@ -35,9 +35,10 @@ now verbs (`ciu up/down/clean/health`).
 | **Hook readiness helpers** | `ctx.wait_healthy(service)` / `ctx.wait_tcp(host, port)` so a `post_compose` hook waits for a service instead of racing `compose up`. | S9.3 |
 | **Fail-fast validation** | Static catalog (S11) + typed exit codes; vault-backed stack aborts if no token resolves. | S10.3, S11, S7.6 |
 | **Read-only runtime diagnosis** | `ciu diagnose` correlates OOM/exit/restart/health evidence, memory+swap configuration, and bounded logs into actionable findings without reading environment/secrets or changing containers. | S10.5 |
+| **Per-stack status report** | `ciu status` resolves every `--profile`-selected stack's compose project, containers, and health in one read-only pass; a stack not yet deployed reports an empty container list (not an error), and a Docker daemon that cannot be reached aborts loudly instead of rendering an empty/healthy-looking report. | S7.10 |
 | **DooD path correctness** | Physical bind paths computed so a stack runs identically in devcontainer / native / CI. | S1.4, S1.9 |
 | **Declarative provisioning graph** | Stacks declare `requires`/`provides` typed refs in their root-key table; CIU lints the graph up-front and probes live state per-phase during `ciu up`. Purely opt-in: stacks without these keys are unaffected. | S13 |
-| **`ciu check` — graph validation** | Validates the requires/provides dependency graph without deploying: static lint + optional `--live` probe. Safe to run in CI. | S13.4 |
+| **`ciu check` — full config validation** | Walks the whole config pipeline without deploying, entirely in memory and side-effect-free (no hostdir, no materialized secret, no rendered file, no hook `run()`, no Docker): stack shape, secret directive grammar/placement, the requires/provides graph lint, governance shape, configfile template/schema existence, hook loading, each hook's optional `validate_config()` preflight, the S4.21-guarded compose render, the leak scan, and the declared-vs-consumed secret cross-check. Replaces using `ciu up --dry-run` as a validation tool — that path still creates hostdirs and still runs hooks for real. Stage 7 validates the two `[registry.*]` fields CIU itself reads (Pydantic, via the optional `ciu[registry]` extra) plus any consumer-declared `validate_registry`; it ships no model for registry tables CIU has never read. `--json` emits one versioned per-stage envelope. Safe to run in CI. | S13.4, S13.4a, S13.4b |
 | **`ciu graph` — dependency visualisation** | Renders the requires/provides graph to STDOUT as Mermaid (default), Graphviz DOT, or JSON. Pipe into docs; unprovided deps appear as dashed `UNPROVIDED` edges. | S13.5 |
 | **SSH access plane (`ciu ssh`)** | Interactive shell or one-shot command on a remote host. Key-per-host, host-key pinned, optional paramiko or subprocess transport. | S14.1 |
 | **Push-deploy (`ciu up --host`)** | Render-on-target push: bundle-syncs the repo to the host, then runs `ciu env generate && ciu render && ciu up` remotely. Secrets never leave the target host. | S14.2 |
@@ -70,12 +71,13 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
-| `ciu bake` | `docker buildx bake --load` (production image) | `[targets …]`, `--no-cache` |
+| `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
+| `ciu bake` | `docker buildx bake --load` (production image); with `--profile`, targets are resolved via the same selection chain as `ciu up --profile` (CIU-QOL-7) | `[targets …]` \| `--profile NAME`, `--no-cache` |
 | `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |
 | `ciu secrets reset` | Delete secret store files | `--name N`, `-y` |
-| `ciu check` | Validate the requires/provides dependency graph (no deploy) | `--profile NAME`, `--live` (also probe live state), `--phases N,M` |
+| `ciu check` | Validate the whole config pipeline in memory (no deploy) | `--profile NAME`, `--live` (also probe live state), `--json` (versioned per-stage report), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 | `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; legacy `add NAME`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
@@ -172,8 +174,12 @@ contract, not a hidden side effect of `ciu provenance`.
 ## Provisioning graph workflows
 
 ```bash
-# Validate the requires/provides graph (static lint — safe at any time, no stack required)
+# Validate the whole config pipeline in memory (safe at any time, no stack required,
+# nothing written: no hostdir, no secret, no rendered file, no hook run())
 ciu check
+
+# Same, as one versioned JSON object (per-stage pass/fail + findings)
+ciu check --json
 
 # Validate AND probe live state (run after the stack is up)
 ciu check --live

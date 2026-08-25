@@ -6,7 +6,7 @@ Implements S7.7 (health gate semantics) and S7.8 (anchored name filter).
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Callable, Mapping
 
 # ---------------------------------------------------------------------------
 # S7.7 — classify
@@ -128,6 +128,52 @@ def wait_for_gate(
         sleep_fn(interval_s)
         passed, summary = evaluate_gate(check_fn())
     return passed, summary
+
+
+# ---------------------------------------------------------------------------
+# CIU-QOL-8 — wait_for_gate_per_target (per-target deadlines, one poll loop)
+# ---------------------------------------------------------------------------
+
+def wait_for_gate_per_target(
+    check_fn: Callable[[], dict[str, str]],
+    target_timeouts: Mapping[str, float],
+    *,
+    interval_s: float = 5.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[bool, dict]:
+    """Poll *check_fn* until every target is resolved, each on ITS OWN deadline.
+
+    Unlike :func:`wait_for_gate` (a single shared ``timeout_s`` for every
+    target), each key in *target_timeouts* gets its own deadline
+    (``clock()`` at call time + its own timeout). A target is "resolved" —
+    removed from further consideration — the instant it reaches a
+    :data:`_READY_STATUSES` state OR its own deadline passes, whichever comes
+    first. This means a broken FAST service (a short timeout, never healthy)
+    is locked into its final non-ready status and stops being polled once its
+    own deadline passes, while a legitimately slow service (a long timeout)
+    keeps being polled up to its own deadline, independent of the fast one's
+    earlier resolution. This is the fix for the exact bug where one shared
+    deadline forces a choice between masking a broken fast service's failure
+    behind a slow ceiling, or spuriously failing a still-starting slow one.
+
+    *sleep_fn* and *clock* are injectable for deterministic tests.
+
+    The final gate result is computed by calling :func:`evaluate_gate` once,
+    over the final per-target statuses dict, after every target is resolved.
+    """
+    deadlines = {name: clock() + timeout_s for name, timeout_s in target_timeouts.items()}
+    resolved: dict[str, str] = {}
+    while len(resolved) < len(target_timeouts):
+        statuses = check_fn()
+        for name in target_timeouts:
+            if name in resolved:
+                continue
+            if statuses[name] in _READY_STATUSES or clock() >= deadlines[name]:
+                resolved[name] = statuses[name]
+        if len(resolved) < len(target_timeouts):
+            sleep_fn(interval_s)
+    return evaluate_gate(resolved)
 
 
 # ---------------------------------------------------------------------------

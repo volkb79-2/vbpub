@@ -60,9 +60,14 @@ def test_public_cli_reuses_one_render_for_ordered_check_and_graph(monkeypatch, t
         trace.append(("render", None))
         return rendered
 
-    def fake_check(root, active_profile, active_selection, received, *, live):
+    # ciu-P18: `json_output` joined action_check's keyword-only surface when
+    # `ciu check --json` landed (S13.4a). This double must track the real
+    # signature or the orchestration assertion below fails on a TypeError
+    # rather than on the ordering it exists to pin.
+    def fake_check(root, active_profile, active_selection, received, *, live, json_output=False):
         trace.append(("check", received))
         assert live is False
+        assert json_output is False
         return 0
 
     def fake_graph(root, active_profile, active_selection, received, *, fmt):

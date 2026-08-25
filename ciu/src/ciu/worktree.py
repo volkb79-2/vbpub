@@ -835,7 +835,11 @@ def capabilities_document() -> dict[str, Any]:
 # S16.8 — worktree BRANCH hygiene (CIU-25, git half): survey + prune
 # ---------------------------------------------------------------------------
 
-BRANCHES_SCHEMA_VERSION = 1
+# 2 as of ciu-P28: the closed category vocabulary WIDENED (new
+# `managed-instance`). Strict consumers refuse unknown members fail-closed, so
+# a widened vocabulary is a schema bump — the same rule S17.3's provenance
+# document followed when its verdicts widened.
+BRANCHES_SCHEMA_VERSION = 2
 
 # Closed category vocabulary. Every local branch collapses into exactly one:
 #   base          — the branch the survey is measured against (never touched)
@@ -844,15 +848,29 @@ BRANCHES_SCHEMA_VERSION = 1
 #                   is unresolvable) — never pruned even when the survey runs
 #                   against another base: "clean up merged branches" can never
 #                   mean deleting a mainline
-#   current       — the PRIMARY checkout's branch: somebody's working context,
-#                   even when merged
+#   current       — somebody's working context, even when merged: the PRIMARY
+#                   checkout's branch OR the branch of the checkout this
+#                   command was INVOKED FROM (ciu-P28: pruning the invoking
+#                   checkout removed the operator's own cwd out from under the
+#                   loop, so the next git call raised and the whole prune
+#                   aborted with no document — see prune_branches)
+#   managed-instance — its checkout carries a CIU-managed instance record, at
+#                   ANY lifecycle state. NEVER removed here: the git-half prune
+#                   does a bare `git worktree remove`, and removing a managed
+#                   checkout without `ciu clean` FIRST destroys the rendered
+#                   config that tells CIU what to clean, orphaning
+#                   containers/volumes/networks and stranding root-owned vol-*
+#                   directories no unprivileged operator can delete
+#                   (ciu-P28 / see remove()). Dispose with `ciu worktree rm`.
 #   prunable      — fully merged into base AND (no checkout, or a clean,
-#                   non-primary checkout) → safe to remove
+#                   non-primary, non-invoking, unmanaged checkout) → safe to
+#                   remove
 #   merged-dirty  — merged but its checkout carries uncommitted changes;
 #                   decide by hand what to do with the dirt first
 #   unmerged      — has commits not in base → keep; attributes inform the decision
 BRANCH_CATEGORIES = (
-    "base", "mainline", "current", "prunable", "merged-dirty", "unmerged",
+    "base", "mainline", "current", "managed-instance",
+    "prunable", "merged-dirty", "unmerged",
 )
 
 _MAINLINE_FALLBACKS = ("main", "master")
@@ -983,11 +1001,16 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
     facts = _branch_facts(repo_root, base)
     worktrees = list_worktrees(repo_root)
     checkout_map: dict[str, list[Path]] = {}
-    primary_paths: set[Path] = set()
+    # Checkouts that are somebody's working context RIGHT NOW and are
+    # therefore never a removal candidate this run: the primary, and the
+    # checkout this command was invoked from. The invoking one is load-bearing
+    # (ciu-P28): its branch used to classify `prunable`, so `-y` removed the
+    # operator's own cwd mid-loop and every following `git` call raised.
+    guarded_paths: set[Path] = {git_toplevel(repo_root).resolve()}
     for wt in worktrees:
         checkout_map.setdefault(wt.branch, []).append(wt.path)
         if wt.is_primary:
-            primary_paths.add(wt.path)
+            guarded_paths.add(wt.path.resolve())
     records = {
         r.git_worktree_path.resolve(): r for r in list_instance_records(repo_root)
     }
@@ -1021,10 +1044,17 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
             # Never prune a mainline, even when the survey runs against
             # another base and the mainline happens to be fully merged.
             category = "mainline"
-        elif checkout and Path(checkout) in primary_paths:
-            # The primary checkout's branch is somebody's working context —
-            # even when merged, removing it would yank the primary workspace.
+        elif checkout and Path(checkout).resolve() in guarded_paths:
+            # The primary checkout's branch — and the INVOKING checkout's —
+            # are somebody's working context: even when merged, removing one
+            # would yank a live workspace (the invoking one, the very cwd the
+            # rest of the prune loop still needs).
             category = "current"
+        elif ciu_instance is not None:
+            # A CIU-managed checkout is disposed of by `ciu worktree rm`
+            # (clean-then-remove), never by this git-half prune's bare
+            # `git worktree remove` — see the vocabulary comment above.
+            category = "managed-instance"
         elif fact["merged"]:
             if checkout and dirty:
                 category = "merged-dirty"
@@ -1044,18 +1074,61 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
     branches.sort(key=lambda b: (b["category"], b["name"]))
     counts = {c: sum(1 for b in branches if b["category"] == c) for c in BRANCH_CATEGORIES}
     prunable_n = counts["prunable"]
+    hint = (
+        f"{prunable_n} branch(es) are fully merged and safe to remove; "
+        "re-run with -y/--yes to prune them."
+    ) if prunable_n else "nothing prunable."
+    managed_n = counts["managed-instance"]
+    if managed_n:
+        # Name the escape hatch: -y deliberately refuses these, so the
+        # operator must be told which command DOES dispose of them safely.
+        hint += (
+            f" {managed_n} branch(es) carry a CIU-managed instance and are "
+            "never pruned here — dispose of each with `ciu worktree rm NAME`, "
+            "which runs `ciu clean` BEFORE removing the checkout."
+        )
     return {
         "schema_version": BRANCHES_SCHEMA_VERSION,
         "operation": "branches",
         "status": "survey",
         "base": base,
         "counts": counts,
-        "hint": (
-            f"{prunable_n} branch(es) are fully merged and safe to remove; "
-            "re-run with -y/--yes to prune them."
-        ) if prunable_n else "nothing prunable.",
+        "hint": hint,
         "branches": branches,
     }
+
+
+def _prune_candidate_refusal(git_root: Path, name: str) -> str:
+    """Why ``git branch -d NAME`` would refuse, read-only, or ``""``.
+
+    Both arms exist because ``git worktree remove`` runs FIRST: a refusal
+    discovered by ``branch -d`` is discovered when the checkout is already
+    gone — the half-pruned state the reviews reproduced. Git's own deletion
+    rule is "contained in the upstream, else contained in HEAD", and *git_root*
+    is the PRIMARY worktree, so ``HEAD`` here is exactly the HEAD the real
+    ``branch -d`` will judge against (ciu-P28: it used to be the INVOKING
+    checkout's HEAD, which falsely reported merged branches "not fully
+    merged" — after destroying their checkouts).
+    """
+    tip = _git(["rev-parse", "--verify", f"refs/heads/{name}"], git_root)
+    up = _git(["rev-parse", "--verify", "--quiet", f"{name}@{{upstream}}"], git_root)
+    if up.returncode == 0:
+        if tip.returncode == 0 and not _is_ancestor(
+            git_root, tip.stdout.strip(), up.stdout.strip()
+        ):
+            return (
+                "tracks an upstream that does not contain it — git branch -d "
+                "would refuse after the checkout was gone; reconcile the "
+                "upstream first"
+            )
+        return ""  # upstream contains it: git deletes regardless of HEAD
+    if tip.returncode == 0 and not _is_ancestor(git_root, tip.stdout.strip(), "HEAD"):
+        return (
+            "not contained in the PRIMARY checkout's HEAD, which is the HEAD "
+            "`git branch -d` judges against — it would refuse after the "
+            "checkout was gone; merge it there (or into an upstream) first"
+        )
+    return ""
 
 
 def prune_branches(
@@ -1063,10 +1136,20 @@ def prune_branches(
 ) -> dict[str, Any]:
     """Remove exactly the ``prunable`` category (S16.8 / CIU-25).
 
-    Removal order per branch: ``git worktree remove`` first (Git re-verifies
-    cleanliness and refuses dirt — belt to our braces), then ``git branch -d``
-    (Git re-verifies mergedness). A refusal anywhere moves that branch to
-    *failed* WITH the reason and the prune continues; the overall status is
+    Every destructive git command runs from the PRIMARY worktree, never from
+    the invoking checkout: ``git branch -d`` judges mergedness against the
+    HEAD of the worktree it runs in, so invoking from a linked checkout that
+    was behind used to report fully-merged branches as "not fully merged"
+    while destroying their checkouts anyway (ciu-P28). It also means the
+    prune's own cwd is a checkout no candidate can remove.
+
+    Removal order per branch: the read-only refusal pre-checks
+    (:func:`_prune_candidate_refusal`), then ``git worktree remove`` (Git
+    re-verifies cleanliness and refuses dirt — belt to our braces), then
+    ``git branch -d`` (Git re-verifies mergedness). A refusal ANYWHERE — a
+    non-zero exit or an unexpected raise — moves that branch to *failed* WITH
+    the reason and the prune continues to the remaining candidates; nothing
+    escapes the loop, so a document is always returned. The overall status is
     ``pruned`` only when every prunable branch was removed. Without *yes* no
     side effect happens: the caller gets the survey with an explicit hint.
     """
@@ -1082,42 +1165,29 @@ def prune_branches(
     _prune_base_sanity(repo_root, base)
 
     repo_root = Path(repo_root).resolve()
+    git_root = primary_worktree_root(repo_root)
     removed: list[str] = []
     failed: list[dict[str, str]] = []
     for branch in prunables:
         name = branch["name"]
-        failure = ""
-        # Read-only pre-check mirroring git's own deletion rule: a branch
-        # tracking an upstream that does not contain it will be refused by
-        # `branch -d` AFTER we already removed its checkout — check FIRST,
-        # while everything is still intact (review blocker's other half).
-        up = _git(
-            ["rev-parse", "--verify", "--quiet", f"{name}@{{upstream}}"],
-            repo_root,
-        )
-        if up.returncode == 0:
-            upstream = up.stdout.strip()
-            tip = _git(["rev-parse", "--verify", f"refs/heads/{name}"], repo_root)
-            if tip.returncode == 0 and not _is_ancestor(
-                repo_root, tip.stdout.strip(), upstream
-            ):
-                failed.append({
-                    "branch": name,
-                    "reason": (
-                        "tracks an upstream that does not contain it — git "
-                        "branch -d would refuse after the checkout was gone; "
-                        "reconcile the upstream first"
-                    ),
-                })
-                continue
-        if branch["checkout"]:
-            res = _git(["worktree", "remove", branch["checkout"]], repo_root)
-            if res.returncode != 0:
-                failure = (res.stderr or res.stdout).strip()
-        if not failure:
-            res = _git(["branch", "-d", name], repo_root)
-            if res.returncode != 0:
-                failure = (res.stderr or res.stdout).strip()
+        try:
+            failure = _prune_candidate_refusal(git_root, name)
+            if not failure and branch["checkout"]:
+                res = _git(["worktree", "remove", branch["checkout"]], git_root)
+                if res.returncode != 0:
+                    failure = (res.stderr or res.stdout).strip()
+            if not failure:
+                res = _git(["branch", "-d", name], git_root)
+                if res.returncode != 0:
+                    failure = (res.stderr or res.stdout).strip()
+        except WorktreeError as exc:
+            # One candidate's failure is never the whole operation's: the
+            # review reproduced an unhandled mid-loop raise that returned NO
+            # document at all and silently left every later candidate
+            # unprocessed. Name it, keep going.
+            failure = (
+                f"unexpected git failure, remaining branches still processed: {exc}"
+            )
         if failure:
             failed.append({"branch": name, "reason": failure})
         else:

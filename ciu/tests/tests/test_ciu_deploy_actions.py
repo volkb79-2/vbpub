@@ -160,10 +160,10 @@ services:
     profile = Profile(name=None, phase_keys=None, config=config)
 
     targets = deploy.resolve_selection_health_containers(
-        tmp_path, profile, deploy.build_selection(profile)
+        tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
     )
 
-    assert targets == ["p-t-postgres", "p-t-minio"]
+    assert targets == {"p-t-postgres": 30.0, "p-t-minio": 30.0}
     assert all("Database Core" not in target for target in targets)
 
 
@@ -207,10 +207,10 @@ services:
     )
 
     targets = deploy.resolve_selection_health_containers(
-        tmp_path, profile, deploy.build_selection(profile)
+        tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
     )
 
-    assert targets == ["p-t-always", "p-t-debug", "p-t-metrics"]
+    assert targets == {"p-t-always": 30.0, "p-t-debug": 30.0, "p-t-metrics": 30.0}
 
 
 def test_health_target_resolution_fails_for_ambiguous_compose_identity(tmp_path):
@@ -235,7 +235,7 @@ services:
 
     with pytest.raises(ValueError, match="set a concrete container_name") as exc:
         deploy.resolve_selection_health_containers(
-            tmp_path, profile, deploy.build_selection(profile)
+            tmp_path, profile, deploy.build_selection(profile), default_timeout_s=30.0,
         )
 
     assert "infra/cache" in str(exc.value)
@@ -506,13 +506,14 @@ def test_deploy_health_failure_stops_later_phase_after_reporting_summary(monkeyp
         events.append(("deploy", (stack_dir.name,)))
         return True
 
-    def fake_targets(_root, _profile, entries):
+    def fake_targets(_root, _profile, entries, *, default_timeout_s):
         names = tuple(f"project-prod-{entry['name']}" for entry in entries)
         events.append(("targets", names))
-        return list(names)
+        return {name: default_timeout_s for name in names}
 
-    def fake_gate(names, **_kwargs):
-        events.append(("health", tuple(names)))
+    def fake_gate(container_timeouts, **_kwargs):
+        names = tuple(container_timeouts)
+        events.append(("health", names))
         return False, _unhealthy_summary(names[0])
 
     monkeypatch.setattr(deploy, "_run_stack", fake_run)
@@ -548,15 +549,16 @@ def test_deploy_ignore_errors_continues_after_health_failure_but_returns_1(monke
         events.append(("deploy", (stack_dir.name,)))
         return True
 
-    def fake_targets(_root, _profile, entries):
+    def fake_targets(_root, _profile, entries, *, default_timeout_s):
         names = tuple(f"project-prod-{entry['name']}" for entry in entries)
         events.append(("targets", names))
-        return list(names)
+        return {name: default_timeout_s for name in names}
 
     gate_results = iter([False, True])
 
-    def fake_gate(names, **_kwargs):
-        events.append(("health", tuple(names)))
+    def fake_gate(container_timeouts, **_kwargs):
+        names = tuple(container_timeouts)
+        events.append(("health", names))
         passed = next(gate_results)
         return passed, (
             {"healthy": list(names), "pending": [], "unhealthy": [], "no_healthcheck": [], "not_found": []}
@@ -1105,36 +1107,13 @@ def _governance_selection_rendered_mem_min(cgroup_parent: str, mem_min: str, *, 
     return selection, rendered
 
 
-def test_governance_slice_preflight_raises_when_mem_min_inadequate(monkeypatch, tmp_path):
-    import pytest
-
-    profile = Profile(name=None, phase_keys=None, config=_plain_config())
-    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
-
-    monkeypatch.setattr(
-        deploy.governance_mod, "check_slice_unit",
-        lambda name: (True, f"{name}: LoadState=loaded"),
-    )
-    monkeypatch.setattr(
-        deploy.governance_mod, "check_slice_memory_min",
-        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
-    )
-    with pytest.raises(ValueError) as exc_info:
-        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
-    assert "[S15.16]" in str(exc_info.value)
-    assert "nyxloom-daemon.slice" in str(exc_info.value)
-    assert "applications/app" in str(exc_info.value)
-
-
-def test_governance_slice_preflight_mem_min_inadequate_logs_only_when_warnings_opted_out(
+def test_governance_slice_preflight_mem_min_inadequate_warns_by_default(
     monkeypatch, tmp_path, capsys,
 ):
-    """S10.6: CIU_WARNINGS_AS_ERRORS=0 turns the same S15.16 finding into a
-    logged [WARN] that does not stop the deploy — the default (unset/"1")
-    stays fail-first per test_..._raises_when_mem_min_inadequate above."""
-    from ciu import warn_policy
-
-    monkeypatch.setenv(warn_policy.WARNINGS_AS_ERRORS_ENV_VAR, "0")
+    """deploy.py:1128-1134 (S10.7): the DEFAULT ciu.exit_on (ERROR, i.e. no
+    ciu.exit_on set at all) means an [S15.16] mem_min-inadequate finding is a
+    logged [WARN] that does NOT stop the deploy; the test below shows
+    ciu.exit_on="WARN" restores the fail-fast behavior."""
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
@@ -1151,6 +1130,32 @@ def test_governance_slice_preflight_mem_min_inadequate_logs_only_when_warnings_o
     assert "[WARN]" in out
     assert "[S15.16]" in out
     assert "nyxloom-daemon.slice" in out
+
+
+def test_governance_slice_preflight_raises_when_mem_min_inadequate_and_exit_on_warn(
+    monkeypatch, tmp_path,
+):
+    """S10.7: setting ciu.exit_on = "WARN" in config makes the same [S15.16]
+    mem_min-inadequate finding fail-fast (raise), unlike the DEFAULT
+    (exit_on=ERROR) case in test_..._warns_by_default above."""
+    config = _plain_config()
+    config["ciu"] = {"exit_on": "WARN"}
+    profile = Profile(name=None, phase_keys=None, config=config)
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_memory_min",
+        lambda name, required: (False, f"{name}: MemoryMin=0 — no floor is configured on the slice unit"),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "[S15.16]" in str(exc_info.value)
+    assert "nyxloom-daemon.slice" in str(exc_info.value)
+    assert "applications/app" in str(exc_info.value)
 
 
 def test_governance_slice_preflight_passes_when_mem_min_adequate(monkeypatch, tmp_path):
@@ -1566,3 +1571,1142 @@ class TestFilterDeploymentPhasesNarrowing:
     def test_subset_filters(self):
         out = deploy.filter_deployment_phases(self._PHASES, {"phase_2"})
         assert out == [{"key": "phase_2"}]
+
+
+# ===========================================================================
+# `ciu check` — full config-validation pipeline (CIU-QOL-12 / S13.4a, ciu-P18)
+# ===========================================================================
+
+import json  # noqa: E402
+import os  # noqa: E402
+import textwrap  # noqa: E402
+
+from ciu import provisioning  # noqa: E402
+
+
+_CHECK_GLOBAL: dict = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+
+
+def _check_profile(config: dict | None = None) -> Profile:
+    return Profile(
+        name=None, phase_keys=None,
+        config=config if config is not None else {"deploy": dict(_CHECK_GLOBAL["deploy"])},
+    )
+
+
+def _tree_snapshot(root: Path) -> dict[str, object]:
+    """Every path under *root* with its type, mode, size and bytes.
+
+    Deliberately content-sensitive: a created directory, a materialized secret,
+    a rendered compose/overlay/configfile, or an in-place rewrite of any
+    existing file all change this dict. Used by the O1 oracle below.
+    """
+    snap: dict[str, object] = {}
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        if path.is_symlink():
+            snap[rel] = f"<symlink:{os.readlink(path)}>"
+        elif path.is_dir():
+            snap[rel] = "<dir>"
+        else:
+            st = path.stat()
+            snap[rel] = (oct(st.st_mode), st.st_size, path.read_bytes())
+    return snap
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(text), encoding="utf-8")
+    return path
+
+
+def _full_stack_fixture(repo_root: Path, rel: str = "infra/app") -> dict:
+    """A stack whose REAL `ciu up` would create dirs, secrets, files and run hooks.
+
+    Mirrors test-repo/applications/app-config: a hostdir, four secret
+    directives (incl. GEN_LOCAL, which materializes into the project store), a
+    configfile with a schema, a compose template consuming secrets, and hooks
+    at all three points whose `run()` writes a marker file. Returns the
+    rendered stack config dict `action_check` receives.
+    """
+    stack_dir = repo_root / rel
+    _write(stack_dir / "ciu.compose.yml.j2", """\
+        services:
+          app:
+            image: {{ app_stack.app.image }}
+            container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-app
+            secrets:
+              - api_key
+              - run_nonce
+    """)
+    _write(stack_dir / "conf/app.toml.j2", 'name = "{{ app_stack.app.image }}"\n')
+    _write(stack_dir / "conf/app.schema.json", '{"type": "object"}\n')
+    _write(stack_dir / "files/demo-ca.pem", "-----BEGIN CERTIFICATE-----\n")
+    _write(stack_dir / "hooks/preflight_hook.py", """\
+        from pathlib import Path
+
+
+        def run(config, ctx):
+            # If `ciu check` ever executes a hook body, this marker appears and
+            # BOTH the O1 tree snapshot and the explicit assertion below fail.
+            Path(ctx.stack_dir, "HOOK_RUN_MARKER").write_text("ran")
+            return {}
+
+
+        def validate_config(config, ctx):
+            errors = []
+            # The guarded config is the sanctioned way to see a secret is DECLARED.
+            if "api_key" not in config.get("app_stack", {}).get("secrets", {}):
+                errors.append("api_key is not declared")
+            # `ctx.secret_file` refuses unconditionally during check (S13.4a).
+            try:
+                ctx.secret_file("api_key")
+            except KeyError:
+                pass
+            else:
+                errors.append("secret_file should be unavailable during check")
+            return errors
+    """)
+    return {
+        "app_stack": {
+            "requires": [],
+            "provides": [],
+            "governance": {"enabled": True},
+            "secrets": {
+                "api_key": "GEN_LOCAL:demo/api_key",
+                "run_nonce": "GEN_EPHEMERAL",
+                "license": {"directive": "ASK_EXTERNAL:CIU_DEMO_LICENSE",
+                            "consumed_by": "hook"},
+                "ca_bundle": "ASK_FILE:files/demo-ca.pem",
+            },
+            "app": {
+                "image": "busybox",
+                "hostdir": {"logs": str(stack_dir / "vol-logs")},
+                "configfile": {
+                    "main": {
+                        "template": "conf/app.toml.j2",
+                        "target": "/etc/app/config.toml",
+                        "schema": "conf/app.schema.json",
+                    }
+                },
+            },
+            "hooks": {
+                "pre_secrets": ["hooks/preflight_hook.py"],
+                "pre_compose": ["hooks/preflight_hook.py"],
+                "post_compose": ["hooks/preflight_hook.py"],
+            },
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# O1 — `ciu check` is side-effect-free
+# ---------------------------------------------------------------------------
+
+
+def test_tree_snapshot_helper_actually_detects_a_change(tmp_path: Path):
+    """Guard on the O1 oracle itself: the snapshot must not be vacuous."""
+    _write(tmp_path / "a.txt", "one")
+    before = _tree_snapshot(tmp_path)
+
+    (tmp_path / "b.txt").write_text("two", encoding="utf-8")
+    assert _tree_snapshot(tmp_path) != before
+
+    (tmp_path / "b.txt").unlink()
+    assert _tree_snapshot(tmp_path) == before
+
+    (tmp_path / "a.txt").write_text("changed", encoding="utf-8")
+    assert _tree_snapshot(tmp_path) != before
+
+    (tmp_path / "a.txt").write_text("one", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    assert _tree_snapshot(tmp_path) != before
+
+
+def test_check_leaves_the_filesystem_byte_for_byte_unchanged(tmp_path: Path, capsys):
+    """O1 — the whole reason CIU-QOL-12 exists.
+
+    A stack that on a real `ciu up` (or `ciu up --dry-run`, which still does
+    both) would create a hostdir, materialize four secrets, write a rendered
+    configfile + compose + overlay, and execute three hook `run()` bodies.
+    After `ciu check` the tmp_path tree must be IDENTICAL.
+    """
+    rendered = {"infra/app": _full_stack_fixture(tmp_path)}
+    selection = [{"path": "infra/app"}]
+
+    before = _tree_snapshot(tmp_path)
+    rc = deploy.action_check(tmp_path, _check_profile(), selection, rendered)
+    after = _tree_snapshot(tmp_path)
+
+    assert rc == 0, capsys.readouterr().out
+    assert after == before
+
+    # Named, specific negatives on top of the whole-tree equality, so a
+    # failure says WHICH side effect leaked rather than only "tree differs".
+    stack_dir = tmp_path / "infra/app"
+    assert not (stack_dir / "HOOK_RUN_MARKER").exists()   # no hook run() executed
+    assert not (stack_dir / "vol-logs").exists()          # no hostdir created
+    assert not (stack_dir / ".ciu").exists()              # no secrets/rendered/overlay
+    assert not (stack_dir / "ciu.compose.yml").exists()   # no compose written
+
+
+def test_check_never_calls_main_execution(tmp_path: Path, monkeypatch):
+    """The forbidden implementation shortcut, pinned as a negative.
+
+    `engine.main_execution(dry_run=True)` still creates hostdirs and still runs
+    hooks for real — building `ciu check` on it would reproduce the exact
+    defect this package removes.
+    """
+    monkeypatch.setattr(
+        deploy.engine, "main_execution",
+        lambda *_a, **_kw: pytest.fail("ciu check must never call main_execution"),
+    )
+    rendered = {"infra/app": _full_stack_fixture(tmp_path)}
+
+    assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-stage failure fixtures (O2) — every new stage's failure is exit 2
+# ---------------------------------------------------------------------------
+
+
+def _min_stack(repo_root: Path, rel: str, root: dict, *, compose: str | None = None) -> dict:
+    """A minimal on-disk stack: a compose template plus the given root table."""
+    stack_dir = repo_root / rel
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    if compose is not None:
+        _write(stack_dir / "ciu.compose.yml.j2", compose)
+    return {"app_stack": root}
+
+
+_TRIVIAL_COMPOSE = "services:\n  app:\n    image: busybox\n"
+
+
+def _stage(out_document: dict, name: str) -> dict:
+    return next(s for s in out_document["stages"] if s["stage"] == name)
+
+
+def _run_check_json(
+    repo_root: Path, rendered: dict, capsys, *, profile: Profile | None = None, **kwargs
+) -> tuple[int, dict]:
+    selection = [{"path": rel} for rel in rendered]
+    rc = deploy.action_check(
+        repo_root, profile or _check_profile(), selection, rendered,
+        json_output=True, **kwargs
+    )
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def test_check_stage2_shape_failure_is_exit_2_and_skips_that_stack_only(tmp_path, capsys):
+    rendered = {
+        "infra/bad": {"state": {}},  # S3.5: no non-reserved root key
+        "infra/good": _min_stack(tmp_path, "infra/good", {"app": {}}, compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert doc["status"] == "fail"
+    shape = _stage(doc, "shape")
+    assert shape["status"] == "fail"
+    assert "[S3.5]" in shape["findings"][0]["message"]
+    assert shape["findings"][0]["stack"] == "infra/bad"
+    # The healthy stack was still walked — one bad stack does not blind the run.
+    assert _stage(doc, "compose-render")["status"] == "pass"
+
+
+def test_check_stage3_rejects_a_malformed_secret_directive(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app", {"secrets": {"api_key": 123}}, compose=_TRIVIAL_COMPOSE
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "[S4.4]" in _stage(doc, "secrets")["findings"][0]["message"]
+    # Guarding is impossible without specs, so the render stages stand down
+    # explicitly rather than rendering against an unguarded config.
+    assert "skipped" in _stage(doc, "compose-render")["notes"][0]["message"]
+
+
+def test_check_stage3_rejects_a_directive_outside_a_secrets_table(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app", {"app": {"token": "GEN_LOCAL:x/y"}},
+            compose=_TRIVIAL_COMPOSE,
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "[S4.5/S4.1]" in _stage(doc, "secrets")["findings"][0]["message"]
+
+
+def test_check_stage5_reports_a_malformed_governance_table(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app", {"governance": "not-a-table"}, compose=_TRIVIAL_COMPOSE
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "[S15.2]" in _stage(doc, "governance")["findings"][0]["message"]
+
+
+def test_check_stage5_never_touches_systemd(tmp_path, monkeypatch):
+    """Governance stage is shape/resolution ONLY — no live slice probing."""
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda *_a, **_kw: pytest.fail("ciu check must not probe systemd slices"),
+    )
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app",
+            {"governance": {"enabled": True, "cgroup_parent": "x.slice"}},
+            compose=_TRIVIAL_COMPOSE,
+        )
+    }
+
+    assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
+
+
+def test_check_stage6_reports_every_configfile_declaration_defect(tmp_path, capsys):
+    stack_dir = tmp_path / "infra/app"
+    stack_dir.mkdir(parents=True)
+    _write(stack_dir / "ciu.compose.yml.j2", _TRIVIAL_COMPOSE)
+    _write(stack_dir / "present.j2", "x = 1\n")
+    root = {
+        "app": {
+            "configfile": {
+                "not_a_table": "oops",
+                "no_template": {"target": "/etc/a.toml"},
+                "empty_template": {"template": "", "target": "/etc/a.toml"},
+                "absent_template": {"template": "gone.j2", "target": "/etc/a.toml"},
+                "no_target": {"template": "present.j2"},
+                "relative_target": {"template": "present.j2", "target": "etc/a.toml"},
+                "bad_schema_type": {"template": "present.j2", "target": "/etc/a.toml",
+                                    "schema": 7},
+                "absent_schema": {"template": "present.j2", "target": "/etc/a.toml",
+                                  "schema": "gone.json"},
+                "bad_instances": {"template": "present.j2", "target": "/etc/a.toml",
+                                  "instances": 0},
+                "bool_instances": {"template": "present.j2", "target": "/etc/a.toml",
+                                   "instances": True},
+                "ok": {"template": "present.j2", "target": "/etc/a.toml",
+                       "instances": 2},
+            }
+        },
+        "not_a_service": 5,
+        "no_configfile": {"image": "busybox"},
+        "configfile_not_a_table": {"configfile": "nope"},
+    }
+    rendered = {"infra/app": {"app_stack": root}}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    messages = [f["message"] for f in _stage(doc, "configfile")["findings"]]
+    assert all(m.startswith("[S5.1]") for m in messages)
+    joined = "\n".join(messages)
+    for expected in (
+        "'app.not_a_table' must be a table",
+        "'app.no_template' is missing a `template` path",
+        "'app.empty_template' is missing a `template` path",
+        "template not found for 'app.absent_template'",
+        "'app.no_target' is missing a `target` container path",
+        "'app.relative_target' has a non-absolute `target`",
+        "'app.bad_schema_type': `schema` must be a file path",
+        "schema file not found for 'app.absent_schema'",
+        "'app.bad_instances': 'instances' must be a positive integer",
+        "'app.bool_instances': 'instances' must be a positive integer",
+    ):
+        assert expected in joined, expected
+    assert "'app.ok'" not in joined
+
+
+def test_check_stage6_tolerates_a_non_table_stack_root(tmp_path):
+    """A root key that merges to a non-dict yields no configfile findings."""
+    assert deploy._check_configfile_declarations(tmp_path, "app_stack", {"app_stack": 5}) == []
+
+
+def test_check_stage6_renders_nothing_to_disk(tmp_path):
+    """Stage 6 is existence-only: `.ciu/rendered/` must never appear."""
+    stack_dir = tmp_path / "infra/app"
+    stack_dir.mkdir(parents=True)
+    _write(stack_dir / "ciu.compose.yml.j2", _TRIVIAL_COMPOSE)
+    _write(stack_dir / "c.j2", "value = 1\n")
+    rendered = {"infra/app": {"app_stack": {"app": {"configfile": {
+        "main": {"template": "c.j2", "target": "/etc/a.toml"}}}}}}
+
+    before = _tree_snapshot(tmp_path)
+    assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
+    assert _tree_snapshot(tmp_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Stages 8 + 9 — hook load and validate_config preflight (O3)
+# ---------------------------------------------------------------------------
+
+
+def _hook_stack(repo_root: Path, rel: str, hooks: dict, *, extra: dict | None = None) -> dict:
+    root: dict = {"hooks": hooks}
+    if extra:
+        root.update(extra)
+    return _min_stack(repo_root, rel, root, compose=_TRIVIAL_COMPOSE)
+
+
+def test_check_stage8_reports_a_missing_hook_file(tmp_path, capsys):
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app",
+                                         {"pre_compose": ["hooks/gone.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    finding = _stage(doc, "hooks-load")["findings"][0]
+    assert "[S9.2]" in finding["message"]
+    assert finding["hook"] == "hooks/gone.py"
+
+
+def test_check_stage8_reports_a_module_with_no_run(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", "X = 1\n")
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "does not define a 'run' function" in _stage(doc, "hooks-load")["findings"][0]["message"]
+
+
+def test_check_stage8_reports_an_import_time_explosion_without_aborting(tmp_path, capsys):
+    _write(tmp_path / "infra/boom/h.py", "raise RuntimeError('import blew up')\n")
+    rendered = {
+        "infra/boom": _hook_stack(tmp_path, "infra/boom", {"pre_compose": ["h.py"]}),
+        "infra/ok": _min_stack(tmp_path, "infra/ok", {"app": {}}, compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "RuntimeError: import blew up" in _stage(doc, "hooks-load")["findings"][0]["message"]
+    assert _stage(doc, "compose-render")["status"] == "pass"
+
+
+def test_check_stage9_aggregates_validate_config_findings(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            raise AssertionError("run() must not execute")
+
+        def validate_config(config, ctx):
+            return ["registry.database is missing", "registry.postgresql.users.api is missing"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"post_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    findings = _stage(doc, "hooks-preflight")["findings"]
+    assert [f["message"] for f in findings] == [
+        "registry.database is missing",
+        "registry.postgresql.users.api is missing",
+    ]
+    assert {f["hook"] for f in findings} == {"h.py"}
+
+
+def test_check_stage9_skips_hooks_without_validate_config(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_secrets": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "pass"
+    assert "defines no validate_config" in stage["notes"][0]["message"]
+
+
+def test_check_stage9_one_hooks_exception_does_not_abort_the_others(tmp_path, capsys):
+    """O3/review-focus: a broken preflight is THAT hook's finding, nothing more."""
+    _write(tmp_path / "infra/broken/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            raise ZeroDivisionError("preflight exploded")
+    """)
+    _write(tmp_path / "infra/healthy/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return ["healthy stack still reported"]
+    """)
+    rendered = {
+        "infra/broken": _hook_stack(tmp_path, "infra/broken", {"pre_compose": ["h.py"]}),
+        "infra/healthy": _hook_stack(tmp_path, "infra/healthy", {"pre_compose": ["h.py"]}),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    messages = {f["stack"]: f["message"] for f in _stage(doc, "hooks-preflight")["findings"]}
+    assert "validate_config raised ZeroDivisionError: preflight exploded" == messages["infra/broken"]
+    # The OTHER stack's preflight still ran and still reported.
+    assert messages["infra/healthy"] == "healthy stack still reported"
+    # And every later stage of the broken stack still ran too.
+    assert _stage(doc, "compose-render")["status"] == "pass"
+
+
+def test_check_stage9_rejects_a_boolean_return(tmp_path, capsys):
+    """S9.5 returns list[str] — a bool must never be read as a verdict."""
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return True
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "returned bool" in _stage(doc, "hooks-preflight")["findings"][0]["message"]
+
+
+def test_check_stage9_rejects_a_bare_string_return(tmp_path, capsys):
+    """A str is iterable — treating it as a list would report one error per char."""
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return "boom"
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    findings = _stage(doc, "hooks-preflight")["findings"]
+    assert len(findings) == 1
+    assert "returned str" in findings[0]["message"]
+
+
+def test_check_stage9_treats_none_as_no_findings(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return None
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert "returned None" in _stage(doc, "hooks-preflight")["notes"][0]["message"]
+
+
+def test_check_stage9_accepts_an_empty_list(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return []
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert _stage(doc, "hooks-preflight")["status"] == "pass"
+
+
+def test_check_imports_each_hook_file_exactly_once_per_run(tmp_path, capsys):
+    """O3: same file at three points AND in a second stack — one import total."""
+    counter = tmp_path / "import-count"
+    hook = _write(tmp_path / "infra/a/h.py", """\
+        from pathlib import Path
+
+        with Path(__file__).parents[2].joinpath("import-count").open("a") as fh:
+            fh.write("import\\n")
+
+        def run(config, ctx):
+            raise AssertionError("run() must never execute during ciu check")
+
+        def validate_config(config, ctx):
+            return []
+    """)
+    rendered = {
+        "infra/a": _hook_stack(tmp_path, "infra/a", {
+            "pre_secrets": ["h.py"], "pre_compose": ["h.py"], "post_compose": ["h.py"],
+        }),
+        # A SECOND stack pointing at the SAME file by absolute path.
+        "infra/b": _hook_stack(tmp_path, "infra/b", {"pre_compose": [str(hook)]}),
+    }
+
+    rc, _doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert counter.read_text(encoding="utf-8") == "import\n"
+
+
+def test_check_suppresses_bytecode_writes_while_importing_hooks(tmp_path):
+    """__pycache__ beside a hook file is still a write into the consumer's tree."""
+    _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    before = _tree_snapshot(tmp_path)
+    assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
+    assert _tree_snapshot(tmp_path) == before
+    assert sys.dont_write_bytecode is False  # restored
+
+
+def test_check_restores_the_bytecode_flag_after_a_failed_import(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", "raise RuntimeError('nope')\n")
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, _doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert sys.dont_write_bytecode is False
+
+
+def test_check_ignores_malformed_hook_declarations(tmp_path, capsys):
+    """A non-table `hooks`, or a non-list point, is not this stage's error."""
+    rendered = {
+        "infra/a": _min_stack(tmp_path, "infra/a", {"hooks": "nope"}, compose=_TRIVIAL_COMPOSE),
+        "infra/b": _min_stack(tmp_path, "infra/b", {"hooks": {"pre_compose": "h.py"}},
+                              compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert _stage(doc, "hooks-load")["findings"] == []
+
+
+def test_check_hook_context_mirrors_a_real_run_minus_secret_files(tmp_path, capsys):
+    """The preflight ctx carries S3.12/CIU-41 identity + selection facts."""
+    (tmp_path / "ciu.env").write_text(
+        "INSTANCE_ID=inst-7\nDOCKER_NETWORK_INTERNAL=net-7\n", encoding="utf-8"
+    )
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            errors = []
+            if ctx.instance_id != "inst-7":
+                errors.append(f"instance_id={ctx.instance_id!r}")
+            if ctx.network != "net-7":
+                errors.append(f"network={ctx.network!r}")
+            if ctx.deployed_stacks != ("infra/app",):
+                errors.append(f"deployed_stacks={ctx.deployed_stacks!r}")
+            if ctx.selected_profiles != ():
+                errors.append(f"selected_profiles={ctx.selected_profiles!r}")
+            if ctx.point != "pre_compose":
+                errors.append(f"point={ctx.point!r}")
+            if ctx.stack_dir.name != "app":
+                errors.append(f"stack_dir={ctx.stack_dir!r}")
+            return errors
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ciu.env").write_text("INSTANCE_ID=x\n", encoding="utf-8")
+    monkeypatch.setattr(
+        deploy, "parse_workspace_env",
+        lambda _p: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return [] if ctx.instance_id is None else [f"leaked {ctx.instance_id}"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+def test_check_secret_file_callback_refuses_every_name(tmp_path):
+    """The named design decision, pinned: KeyError for ANY name during check."""
+    with pytest.raises(KeyError, match="unavailable during"):
+        deploy._check_secret_file("api_key")
+
+
+# ---------------------------------------------------------------------------
+# Stages 10-12 — guarded compose render, leak scan, consumption cross-check
+# ---------------------------------------------------------------------------
+
+
+def test_check_stage10_render_aborts_when_a_template_stringifies_a_secret(tmp_path, capsys):
+    """S4.21: the guard is what makes an in-memory render safe with no values."""
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app",
+            {"secrets": {"pw": "GEN_LOCAL:app/pw"}},
+            compose="services:\n  app:\n    image: busybox\n"
+                    "    environment:\n      - PW={{ app_stack.secrets.pw }}\n",
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    message = _stage(doc, "compose-render")["findings"][0]["message"]
+    assert "SecretLeakError" in message and "[S4.21]" in message
+
+
+def test_check_stage10_reports_a_broken_compose_template(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app", {"app": {}},
+            compose="services:\n  app:\n    image: {{ app_stack.app.missing.deep }}\n",
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert _stage(doc, "compose-render")["status"] == "fail"
+    # A failed render means no text to scan or cross-check — those stay clean.
+    assert _stage(doc, "consumption")["status"] == "pass"
+
+
+def test_check_stage10_falls_back_to_a_shipped_compose_file(tmp_path, capsys):
+    stack_dir = tmp_path / "infra/app"
+    stack_dir.mkdir(parents=True)
+    _write(stack_dir / "docker-compose.yml", "services:\n  app:\n    image: busybox\n")
+    rendered = {"infra/app": {"app_stack": {"app": {}}}}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "compose-render")
+    assert stage["findings"] == []
+    assert not any("skipped: neither" in n["message"] for n in stage["notes"])
+
+
+def test_check_stage10_notes_a_stack_with_no_compose_file_at_all(tmp_path, capsys):
+    (tmp_path / "infra/app").mkdir(parents=True)
+    rendered = {"infra/app": {"app_stack": {"app": {}}}}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    notes = [n["message"] for n in _stage(doc, "compose-render")["notes"]]
+    assert any("skipped: neither" in n for n in notes)
+
+
+def test_check_notes_a_stack_that_is_not_on_disk(tmp_path, capsys):
+    """Absence is reported, never silently converted into a pass or a failure."""
+    rendered = {"infra/absent": {"app_stack": {"app": {}}}}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert "not present on disk" in _stage(doc, "configfile")["notes"][0]["message"]
+
+
+def test_check_stage12_fails_on_a_service_referencing_an_undeclared_secret(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app", {"app": {}},
+            compose="services:\n  app:\n    image: busybox\n    secrets:\n      - ghost\n",
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "[S4.20]" in _stage(doc, "consumption")["findings"][0]["message"]
+
+
+def test_check_stage12_unconsumed_secret_is_a_warning_not_a_failure(tmp_path, capsys):
+    """Named decision: match engine.py Step 14's WARN precedent, never exit 2.
+
+    `ciu up` only warns here, so failing the check would make it red where the
+    real pipeline is green; and the check cannot render configfiles, so it
+    cannot see the S5 consumption channel at all.
+    """
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app",
+            {"secrets": {"unused": "GEN_LOCAL:app/unused"}},
+            compose=_TRIVIAL_COMPOSE,
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "consumption")
+    assert stage["status"] == "pass"
+    assert stage["findings"] == []
+    assert "[S4.20]" in stage["notes"][0]["message"]
+    assert "unused" in stage["notes"][0]["message"]
+
+
+def test_check_stage12_counts_the_hook_consumption_marker(tmp_path, capsys):
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app",
+            {"secrets": {"tok": {"directive": "GEN_LOCAL:app/tok", "consumed_by": "hook"}}},
+            compose=_TRIVIAL_COMPOSE,
+        )
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert _stage(doc, "consumption")["notes"] == []
+
+
+# ---------------------------------------------------------------------------
+# O4 — CLI surface, JSON envelope, exit-code discipline
+# ---------------------------------------------------------------------------
+
+
+def test_check_json_envelope_is_versioned_and_ordered(tmp_path, capsys):
+    rendered = {"infra/app": _min_stack(tmp_path, "infra/app", {"app": {}},
+                                        compose=_TRIVIAL_COMPOSE)}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert doc["schema_version"] == deploy.CHECK_SCHEMA_VERSION == 1
+    assert doc["operation"] == "config-check"
+    assert doc["status"] == "pass"
+    assert doc["profile"] is None
+    assert [s["stage"] for s in doc["stages"]] == list(deploy.CHECK_STAGES)
+    assert all({"stage", "status", "findings", "notes"} <= set(s) for s in doc["stages"])
+    # Stage 7 (registry) landed in ciu-P19 at the position ciu-P18 predicted.
+    # This assertion was ciu-P18's forward marker for the gap ("registry" NOT
+    # in CHECK_STAGES) and is flipped here by the package that closed it; its
+    # positional contract is pinned in test_ciu_provisioning.py's
+    # test_check_stage7_is_between_configfile_and_hooks_load.
+    assert "registry" in deploy.CHECK_STAGES
+    assert "live" not in doc  # no --live in this run
+
+
+def test_check_json_output_writes_only_the_document(tmp_path, capsys):
+    rendered = {"infra/app": _min_stack(tmp_path, "infra/app", {"app": {}},
+                                        compose=_TRIVIAL_COMPOSE)}
+
+    deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered,
+                        json_output=True)
+
+    out = capsys.readouterr().out
+    assert out.lstrip().startswith("{")
+    assert "[INFO]" not in out and "[SUCCESS]" not in out
+
+
+def test_check_prose_output_lists_every_stage_with_its_verdict(tmp_path, capsys):
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return ["a prose finding"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc = deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered)
+
+    out = capsys.readouterr().out
+    assert rc == 2
+    for stage in deploy.CHECK_STAGES:
+        assert f"{stage}: " in out
+    assert "[x] hooks-preflight: fail" in out
+    assert "a prose finding" in out
+    assert "check failed: 1 finding(s)" in out
+    assert "check passed" not in out
+
+
+def test_check_json_reports_the_live_probe_verdict_separately(tmp_path, capsys, monkeypatch):
+    """--live is the ONLY exit-1 class, so it is not a stage in the envelope."""
+    monkeypatch.setattr(
+        "ciu.provisioning.probe_ref",
+        lambda ref, _c, _r: provisioning.ProbeResult(ref, False, "absent"),
+    )
+    rendered = {
+        "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},
+                               compose=_TRIVIAL_COMPOSE),
+        "apps/api": _min_stack(tmp_path, "apps/api", {"requires": ["pg:db/app"]},
+                               compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys, live=True)
+
+    assert rc == 1
+    assert doc["status"] == "pass"          # every STATIC stage is clean
+    assert doc["live"] == {"status": "fail", "unsatisfied": ["pg:db/app"]}
+
+
+def test_check_json_records_a_passing_live_probe(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(
+        "ciu.provisioning.probe_ref",
+        lambda ref, _c, _r: provisioning.ProbeResult(ref, True, "ok"),
+    )
+    rendered = {
+        "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},
+                               compose=_TRIVIAL_COMPOSE),
+        "apps/api": _min_stack(tmp_path, "apps/api", {"requires": ["pg:db/app"]},
+                               compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys, live=True)
+
+    assert rc == 0
+    assert doc["live"] == {"status": "pass", "unsatisfied": []}
+
+
+def test_check_new_stage_failure_never_returns_1_even_with_live(tmp_path, monkeypatch, capsys):
+    """Exit-code discipline (O4): 1 is reserved for --live probe failures."""
+    monkeypatch.setattr(
+        "ciu.provisioning.probe_ref",
+        lambda *_a, **_kw: pytest.fail("a static failure must not reach the live probe"),
+    )
+    rendered = {
+        "infra/app": _min_stack(
+            tmp_path, "infra/app",
+            {"requires": ["pg:db/app"], "secrets": {"pw": 123}},
+            compose=_TRIVIAL_COMPOSE,
+        ),
+        "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},
+                               compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc = deploy.action_check(
+        tmp_path, _check_profile(), [{"path": r} for r in rendered], rendered, live=True
+    )
+
+    assert rc == 2
+    assert "check failed" in capsys.readouterr().out
+
+
+def test_check_graph_lint_failure_is_still_exit_2(tmp_path, capsys):
+    rendered = {
+        "apps/api": _min_stack(tmp_path, "apps/api", {"requires": ["pg:db/nobody"]},
+                               compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    prov = _stage(doc, "provisioning")
+    assert prov["status"] == "fail"
+    assert "stack" not in prov["findings"][0]  # graph-level, not per-stack
+
+
+def test_check_global_declared_feature_failure_short_circuits(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(
+        deploy.config_model, "validate_declared_features",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("[S16.7] bad exec target")),
+    )
+    monkeypatch.setattr(
+        deploy.config_model, "validate_stack_shape",
+        lambda *_a, **_kw: pytest.fail("a bad global config must not be walked per-stack"),
+    )
+    rendered = {"infra/app": {"app_stack": {"app": {}}}}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "[S16.7]" in _stage(doc, "shape")["findings"][0]["message"]
+
+
+def test_check_global_declared_feature_failure_in_prose_mode(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(
+        deploy.config_model, "validate_declared_features",
+        lambda *_a, **_kw: (_ for _ in ()).throw(deploy.worktree_pkg.WorktreeError("bad tree")),
+    )
+
+    rc = deploy.action_check(tmp_path, _check_profile(), [], {})
+
+    assert rc == 2
+    assert "bad tree" in capsys.readouterr().out
+
+
+def test_check_json_flag_reaches_action_check_from_the_cli(tmp_path, monkeypatch):
+    """`ciu check --json` (via ciu-deploy --check --json) wires json_output."""
+    seen: dict = {}
+
+    def fake_check(_root, _profile, _selection, _rendered, *, live, json_output):
+        seen["live"] = live
+        seen["json_output"] = json_output
+        return 0
+
+    monkeypatch.setattr(deploy, "action_check", fake_check)
+    args = deploy.parse_args(["--check", "--json"])
+    assert args.json_output is True
+
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_a, **_kw: {})
+    profile = _check_profile()
+    monkeypatch.setattr(deploy, "load_global_config", lambda *_a, **_kw: profile.config)
+    monkeypatch.setattr(deploy, "resolve_profiles", lambda *_a, **_kw: profile)
+    monkeypatch.setattr(deploy, "build_selection", lambda *_a, **_kw: [])
+    monkeypatch.setattr(deploy, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
+    monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **_kw: None)
+    monkeypatch.setattr(deploy, "enforce_standalone_root", lambda *_a, **_kw: None)
+
+    assert deploy.main(["--check", "--json"]) == 0
+    assert seen == {"live": False, "json_output": True}
+
+
+# ---------------------------------------------------------------------------
+# Render-context fidelity: engine Steps 7 and 8's PURE halves, no side effects
+# ---------------------------------------------------------------------------
+
+
+_SHARED_ENV = {"CONTAINER_UID": "1000", "CONTAINER_GID": "1000", "DOCKER_GID": "999"}
+
+
+def _uid_profile() -> Profile:
+    return _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t",
+                   "env": {"shared": dict(_SHARED_ENV)}},
+    })
+
+
+def test_check_render_sees_auto_generated_and_resolved_hostdirs(tmp_path, capsys):
+    """A template reading `auto_generated.*` and a hostdir path must render.
+
+    Both are supplied by pipeline steps `ciu check` does not run (Step 7
+    auto-generate, Step 8 hostdir creation). Their PURE halves run here so the
+    render stage is faithful — without ever creating the directory.
+    """
+    stack_dir = tmp_path / "infra/app"
+    stack_dir.mkdir(parents=True)
+    _write(stack_dir / "ciu.compose.yml.j2", """\
+        services:
+          app:
+            image: busybox
+            user: "{{ auto_generated.uid }}:{{ auto_generated.gid }}"
+            volumes:
+              - {{ app_stack.app.hostdir.logs }}:/var/log/app
+              - {{ app_stack.app.hostdir.data }}:/data
+              - {{ app_stack.app.hostdir.given }}:/given
+              - {{ app_stack.sidecars[0].hostdir.cache }}:/cache
+    """)
+    rendered = {"infra/app": {"app_stack": {
+        "app": {
+            "name": "app",
+            "hostdir": {
+                "logs": "",                                  # auto name
+                "data": {"path": "", "uid": 70, "mode": "0770"},  # auto, table form
+                "given": "vol-explicit",                     # relative override
+            },
+        },
+        "sidecars": [{"name": "side", "hostdir": {"cache": "/abs/cache"}}],
+    }}}
+
+    before = _tree_snapshot(tmp_path)
+    rc, doc = _run_check_json(tmp_path, rendered, capsys, profile=_uid_profile())
+    assert _tree_snapshot(tmp_path) == before  # nothing created
+
+    assert rc == 0, _stage(doc, "compose-render")["findings"]
+    assert _stage(doc, "compose-render")["notes"] == []
+    assert not (stack_dir / "vol-app-logs").exists()
+    assert not (stack_dir / "vol-app-data").exists()
+
+
+def test_check_hostdir_resolution_uses_the_physical_root_when_available(tmp_path, monkeypatch):
+    """S1.4 translation is applied when PHYSICAL_REPO_ROOT is in scope."""
+    monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/physical/root")
+    config = {"app": {"name": "app", "hostdir": {"logs": ""}}}
+
+    deploy._resolve_hostdirs_for_render(config, tmp_path / "infra/app", tmp_path)
+
+    assert config["app"]["hostdir"]["logs"] == "/physical/root/infra/app/vol-app-logs"
+
+
+def test_check_hostdir_resolution_falls_back_to_the_logical_path(tmp_path, monkeypatch):
+    """No PHYSICAL_REPO_ROOT → the logical path, never a crash."""
+    monkeypatch.delenv("PHYSICAL_REPO_ROOT", raising=False)
+    config = {"app": {"name": "app", "hostdir": {"logs": ""}}}
+
+    deploy._resolve_hostdirs_for_render(config, tmp_path / "infra/app", tmp_path)
+
+    assert config["app"]["hostdir"]["logs"] == str(tmp_path / "infra/app/vol-app-logs")
+
+
+def test_check_hostdir_resolution_leaves_unresolvable_declarations_alone(tmp_path):
+    """Shape defects are Step 8's error to name — `ciu check` has no S6 stage."""
+    config = {
+        "svc": {"hostdir": {"nameless": "", "wrong_type": 7,
+                            "table_nameless": {"uid": 1}}},
+        "other": {"hostdir": "not-a-table"},
+    }
+
+    deploy._resolve_hostdirs_for_render(config, tmp_path, tmp_path)
+
+    assert config["svc"]["hostdir"] == {"nameless": "", "wrong_type": 7,
+                                        "table_nameless": {"uid": 1}}
+    assert config["other"]["hostdir"] == "not-a-table"
+
+
+def test_check_notes_when_auto_generated_values_are_unavailable(tmp_path, capsys):
+    """A missing CONTAINER_UID is an S2 bootstrap problem — a note, not exit 2."""
+    rendered = {"infra/app": _min_stack(tmp_path, "infra/app", {"app": {}},
+                                        compose=_TRIVIAL_COMPOSE)}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "compose-render")
+    assert stage["status"] == "pass"
+    assert "auto_generated values unavailable" in stage["notes"][0]["message"]
+
+
+def test_check_auto_generate_runs_when_the_shared_env_is_present(tmp_path, capsys):
+    stack_dir = tmp_path / "infra/app"
+    stack_dir.mkdir(parents=True)
+    _write(stack_dir / "ciu.compose.yml.j2",
+           "services:\n  app:\n    image: busybox\n"
+           "    labels:\n      - uid={{ auto_generated.uid }}\n")
+    rendered = {"infra/app": {"app_stack": {"app": {}}}}
+
+    rc = deploy.action_check(tmp_path, _uid_profile(), [{"path": "infra/app"}],
+                             rendered, json_output=True)
+    doc = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert _stage(doc, "compose-render")["notes"] == []
+
+
+def test_check_reports_unparseable_compose_without_aborting_the_run(tmp_path, capsys):
+    """A YAMLError out of validate_consumption must be a finding, not a crash."""
+    rendered = {
+        "infra/broken": _min_stack(tmp_path, "infra/broken", {"app": {}},
+                                   compose="services: [unterminated\n"),
+        "infra/ok": _min_stack(tmp_path, "infra/ok", {"app": {}},
+                               compose=_TRIVIAL_COMPOSE),
+    }
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    finding = _stage(doc, "consumption")["findings"][0]
+    assert finding["stack"] == "infra/broken"
+    assert "not parseable YAML" in finding["message"]
+    # The healthy stack was still checked — one bad render does not end the run.
+    assert _stage(doc, "compose-render")["status"] == "pass"

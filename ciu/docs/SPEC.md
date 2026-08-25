@@ -834,12 +834,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   bundle (naming layout+host+bundle); unknown host (naming layout+host);
   an empty or non-table `hosts`. A host failure **aborts** the sequence (no
   continue-on-error in v1), naming the failed host and the not-yet-deployed
-  remainder. `--layout` is mutually exclusive with `--host` and `--profile`
-  (the layout owns host order and bundles; a passthrough `--profile` would
-  silently override the exported `CIU_SERVICES_PROFILE` under S7.5 CLI
-  precedence). `ciu layouts` lists declared layouts (name, environment,
-  ordered hosts) without validating them — `ciu up --layout` is the
-  validating consumer.
+  remainder. `--layout` is mutually exclusive with `--host`, `--profile`,
+  `--dir`, `--thin`, `--bootstrap` and `--rollback` (the layout owns host
+  order and bundles; a passthrough `--profile` would silently override the
+  exported `CIU_SERVICES_PROFILE` under S7.5 CLI precedence, and the other
+  four have no meaning without a local `--host` push). This exclusion MUST be
+  resolved the way the REMOTE parser resolves it — `deploy.parse_args` runs
+  with argparse's default `allow_abbrev=True`, so **any unambiguous
+  abbreviation of a forbidden flag, in either the `--flag value` or
+  `--flag=value` form, is the same flag and MUST be refused identically**
+  (`--prof=core` is `--profile`). A refusal names the resolved flag, exits 2,
+  and MUST happen before any host is resolved from the inventory, so no
+  transport is opened. `ciu layouts` lists declared layouts (name,
+  environment, ordered hosts) without validating them — `ciu up --layout` is
+  the validating consumer.
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —
@@ -851,7 +859,23 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `healthy`. `starting`/pending counts as **not passed**; the gate polls
   until `--health-timeout` then fails (exit 1). Services without a
   healthcheck are reported as `no-healthcheck` (warning), not as passing
-  silently. `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
+  silently. A phase service entry MAY set an optional `health_timeout =
+  "<duration>"` key (e.g. `"300s"`, same duration-string convention as
+  `[deploy.health].timeout`) to override that shared default for its own
+  container(s) (CIU-QOL-8). This is not merely a per-service number: every
+  container in a health gate call is polled to **its own deadline** within
+  one shared poll loop, not a single deadline shared by the whole call. A
+  container whose (short) `health_timeout` elapses without ever reporting
+  `healthy` is locked into its final status and reported failed at that
+  deadline — it does NOT keep waiting behind another, unrelated container's
+  longer (legitimately slow) deadline in the same call. Symmetrically, a
+  genuinely slow container with a longer override is polled all the way to
+  its own deadline and is not spuriously failed by a shorter timeout meant
+  for other containers. A selection where no entry declares `health_timeout`
+  is unaffected: every container shares `[deploy.health].timeout`, byte-for-
+  byte the same behavior as before this key existed.
+
+  `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
   probes only external executables in the declared image. Shell builtins,
   control-flow tokens, numeric arguments, and quoted `python -c`/`node -e`
   source MUST NOT be treated as executable names; `--strict` exits 1 only for
@@ -876,6 +900,44 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   credentials for that registry exist (Docker config `auths`/`credHelpers`
   lookup); v1's `docker login --get-credentials` invocation is withdrawn.
   Verification failure aborts before compose runs.
+
+### Status reporting
+
+- **S7.10** `ciu status [--profile NAME] [--json]` (CIU-QOL-6) is a
+  READ-ONLY report over the SAME selection chain `ciu up --profile` uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`). For every
+  selected stack it resolves the compose project using S8.7's exact
+  tags-present/tags-absent branching (per stack — never a bespoke
+  re-derivation), inspects that project's containers, and classifies each
+  container's health via the S7.7 vocabulary
+  (healthy/starting/unhealthy/no-healthcheck/not-found). A stack directory
+  absent on disk MUST be reported with `compose_project: null` and an empty
+  container list — never dropped from the output; a resolved compose
+  project with zero containers is a legitimate "not started" result. A
+  Docker daemon that cannot be reached MUST abort the command with a
+  non-zero exit and a clear message — it MUST NOT render as an empty or
+  healthy-looking report; the two determinations (unreachable daemon vs.
+  nothing running) MUST NOT collapse into the same output. `--json` emits
+  `{schema_version: 1, profile, stacks: [{path, name, phase_key,
+  compose_project, containers: [{name, status, image}]}]}`. `ciu status`
+  never invokes `docker compose up/down/build/exec` — it is read-only by
+  contract, not merely by default.
+
+- **S7.11** `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile NAME
+  [--no-cache]` (CIU-QOL-7) unifies the two build entry points around ONE
+  selection model. With NO `--profile`, behaviour is byte-identical to the
+  pre-existing form: explicit positional targets (or `all`, when none are
+  given) go straight to `docker buildx bake ... --load`. With `--profile`,
+  the target list instead comes from the SAME selection chain S7.10 uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`), reduced
+  to the final path component of every selected `applications/`/`tools/`
+  entry — so `ciu bake --profile X` builds exactly the images `ciu up
+  --profile X` would deploy (an empty resulting target list still bakes
+  `all`, matching the no-`--profile` default). `--profile` and explicit
+  positional targets are mutually exclusive (S10.3 exit 2) — which one
+  would silently "win" is not obvious to a reader and would invite a
+  divergent-build bug. `--no-cache` combines with either mode unchanged.
+  Every invocation still carries S17.1's revision stamp.
 
 ## S8 — Compose execution
 
@@ -1035,6 +1097,33 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   updates from hook returns (hook→pipeline communication goes through
   config/state; the v1 `VAULT_TOKEN`-export hook is superseded by the
   S4.16 built-in token source order).
+- **S9.5** **Optional preflight entry point** — a hook module (or `Hook`
+  class) MAY define `validate_config(config, ctx) -> list[str]` beside its
+  `run`. CIU calls it **only** during `ciu check` (S13.4a) and **never**
+  during `ciu up`; `run()` is never called by `ciu check`. Contract:
+  - **Return type is `list[str]`** — one error string per finding, empty
+    list = valid. It is NOT a boolean: a `True`/`False` return is a contract
+    violation and is reported as such, never read as a verdict. A `None`
+    return is tolerated as "no findings"; any other type is a violation.
+  - It receives the **same merged, guarded config** (S4.21 — secrets appear
+    as `SecretGuard` objects, so a preflight can confirm a secret is
+    *declared* by name without ever seeing a value) and a `HookContext` with
+    the same `stack_dir`/`repo_root`/`selected_profiles`/`deployed_stacks`/
+    `instance_id`/`network` fields a real `run()` would receive.
+  - `ctx.secret_file(name)` raises `KeyError` for **every** name during
+    `ciu check` — no secret was materialized, so no store file exists to
+    name (S13.4a). A preflight needing a real materialized secret **path**
+    (not merely the fact that the secret is declared) cannot run at check
+    time; this is a documented limitation, not a defect. `ctx.wait_healthy`
+    / `ctx.wait_tcp` are `None` at check time for the same reason — nothing
+    is running, and a preflight must not perform I/O anyway.
+  - It MUST NOT execute side effects (no Docker, no network, no writes).
+    Like S9.4's env rule this is a contract, not a sandbox.
+  - An exception escaping its body is reported as **that hook's own**
+    preflight failure, naming the exception; it never aborts the rest of the
+    check run.
+  - Defining it is entirely optional. A hook without one is skipped by the
+    preflight stage — that is a note, not an error.
 
 ## S10 — CLI surface (delta to v1)
 
@@ -1067,6 +1156,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
   (with `--host`) selects the docker-optional push→activate path on `up` and
   `health` (S14.6). `up --host --thin` also accepts `--bootstrap`/`--rollback`.
+  The modifiers that SELECT a verb's code path — `--host` on `up`/`down`/
+  `health`/`render`, `--dir` and `--layout` (S7.5c) on `up` — MUST route
+  identically whether written `--flag value` or `--flag=value`, **and MUST
+  additionally route every abbreviation that the parser they would otherwise
+  fall through to would itself accept**. A modifier spelling that fails to
+  route is a defect, not a syntax error, whenever the fall-through is silent:
+  `ciu-deploy` declares `--host` for its help text but never reads it (S10.2),
+  so `--host=NAME` — and equally `--hos NAME` or `--ho=NAME` — once parsed
+  cleanly downstream with the host discarded, turning an intended SPEC-J push
+  into a LOCAL deploy of the active profile at exit 0. `--layout` and `--dir`
+  do not exist in that parser at all, so every abbreviation of them already
+  fails loudly (exit 2, nothing deployed) and they route on the exact and `=`
+  forms only — widening them would resolve, in CIU, an abbreviation that
+  `ciu-deploy` itself treats as ambiguous (`--d` against `--define-root`).
+  This asymmetry is normative and MUST be pinned by a test against the real
+  `ciu-deploy` parser rather than asserted in prose.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
   `--log-prefix-time-short` is a global presentation flag accepted before or after the
   verb (before a `--` passthrough boundary): it prefixes CIU's existing `[INFO]`, `[WARN]`,
@@ -1148,6 +1253,11 @@ stack/service/workdir/requires_worktree_mount keys) ·
 S17.5 `[deploy.provenance].vendor_images` type checks (list of non-empty
 strings) · S13 provisioning ref grammar validation on every render path
 (including single-stack `--dir` mode via engine.main_execution).
+`config_model.validate_declared_features` (QOL-11) runs the layout/
+exec-target/vendor_images checks EAGERLY on every render path — single-stack
+`engine.main_execution` and profile-mode `deploy.action_check` — not only
+when that run's own `--layout`/exec/provenance command invokes the specific
+feature; the underlying checks are unchanged, only their reach is widened.
 
 ## S12 — Extension points (reserved, not implemented)
 
@@ -1247,11 +1357,74 @@ Both checks are skipped under `--dry-run` (nothing is running to probe) and
 under `--no-preflight` (break-glass flag). If the full run is `--no-preflight`,
 both checks are bypassed entirely.
 
-- **S13.4** `ciu check [--profile NAME] [--live]` — validates the graph
-  without deploying. Without `--live`: runs only the static lint. With `--live`:
-  additionally probes live state for each `requires` entry. Exit code: `0`
-  clean · `1` live probe failure · `2` graph lint error. Safe to run in CI
-  against a running stack.
+- **S13.4** `ciu check [--profile NAME] [--live] [--json]` — validates the
+  configuration without deploying (see S13.4a for the full stage list; the
+  provisioning graph is one of its stages). Without `--live`: static checks
+  only. With `--live`: additionally probes live state for each `requires`
+  entry. Exit code: `0` clean · `1` **live probe failure only** · `2` any
+  static configuration/validation error. Safe to run in CI against a running
+  stack.
+
+### S13.4a — `ciu check`'s config-validation pipeline
+
+`ciu check` walks the whole config pipeline **in memory and side-effect-free**.
+It creates no hostdir, materializes no secret, writes no rendered
+compose/overlay/configfile, executes no hook `run()`, writes no `__pycache__`
+beside an imported hook, and never contacts Docker. This is what makes it a
+substitute for using `ciu up --dry-run` as a validation tool: **`--dry-run`
+still creates hostdirs and still runs `pre_secrets`/`pre_compose`/
+`post_compose` hooks for real**, skipping only `docker compose up`.
+
+Stages, in order, each reusing the same function the real pipeline
+(`engine.main_execution`) calls at the corresponding step:
+
+| Stage | Validates | Failure |
+|---|---|---|
+| `render` | Jinja2 + `$VAR` + TOML parse of the global chain and every selected stack (already performed to produce the check's input) | 2 |
+| `shape` | single root key (S3.5), reserved-namespace collision (S3.7), plus the global declared-feature check (S11) | 2 |
+| `secrets` | directive grammar and name uniqueness (S4/S4.6), placement (S4.1/S4.5) | 2 |
+| `provisioning` | `requires`/`provides` grammar (S13), graph lint, cycles | 2 |
+| `governance` | governance table shape and layering (S15.2/S15.10). Resolution only — no cgroup is created and no systemd slice is probed | 2 |
+| `configfile` | per-configfile declaration shape, template file existence, absolute `target`, declared `schema` file existence (S5.1). **Existence only — nothing is rendered** | 2 |
+| `registry` | the two `[registry.*]` values CIU itself reads, plus any consumer-declared `validate_registry` (S13.4b). **Global scope: runs once per run, not once per stack** — its findings are the only ones carrying no `stack` key | 2 |
+| `hooks-load` | every declared hook file exists and exports `run` or a `Hook` class with `run` (S9.1/S9.2). Each file is imported **exactly once per run**, and `run` is located but never called | 2 |
+| `hooks-preflight` | each hook's optional `validate_config(config, ctx)` (S9.5) | 2 |
+| `compose-render` | full compose-template render against the S4.21-guarded config, in memory. A template that stringifies a secret aborts here | 2 |
+| `leak-scan` | S4.22 scan of the rendered text. **Structurally vacuous at check time** — nothing was materialized, so there are no values to search for; the barrier that actually bites here is S4.21's guard in `compose-render` | 2 |
+| `consumption` | declared-vs-consumed secret cross-check (S4.20). An undeclared reference is a failure; a declared-but-unconsumed secret is a **warning**, matching the real pipeline's own Step-14 behaviour — and the check cannot see the S5 configfile consumption channel without rendering | 2 (undeclared) / warn (unconsumed) |
+
+**Render fidelity.** Two pipeline steps `ciu check` does not run nevertheless
+supply values a compose template legitimately reads, so their *pure* halves
+are applied to the in-memory config before the render: Step 7's
+`auto_generated.*` (S3.9 — build metadata and UID/GID), and Step 8's rewrite
+of each `[<…>.hostdir]` declaration to its absolute path (S6.1/S6.2/S1.4).
+**No directory is created, seeded, chowned or chmod'ed** — only the path
+string is computed. Without this the render stage would fail on most real
+stacks for reasons that are artifacts of the check rather than defects in the
+config. When `CONTAINER_UID`/`DOCKER_GID` are absent the `auto_generated`
+values are skipped with a **note**, not a failure: that is an S2 bootstrap
+condition (exit 3), already enforced by `bootstrap_workspace_env`, and does
+not belong in the exit-2 configuration taxonomy. A hostdir declaration whose
+shape is unusable is left untouched for the real pipeline's own Step-8 error
+to name — `ciu check` has no S6 stage.
+
+**Stage coverage:** `ciu check` implements the V8 proposal's stages 1-12.
+Stage 7 (`registry`) is scoped to what CIU actually reads — see S13.4b, which
+states plainly what it does and does **not** check.
+
+Every stage failure above is exit `2`. Exit `1` is reserved for `--live`'s
+live probe failures and is never produced by a static stage; when a static
+stage has already failed, the live probe is not attempted at all.
+
+`--json` writes ONE versioned object: `schema_version`, `operation`
+(`"config-check"`), `status` (`"pass"`/`"fail"`), `profile`, and `stages` — a
+**list** in pipeline order, each entry `{stage, status, findings, notes}`,
+where a finding carries `message` plus `stack`/`hook` when scoped to one. A
+`--live` run additionally carries a top-level `live` key
+(`{status, unsatisfied}`) — deliberately not a stage, because it is the one
+failure class that maps to exit 1. Under `--json` the action emits no prose
+of its own; the orchestrator's own `[INFO]` lines still precede the document
+on stdout, exactly as for `ciu graph --format json`.
 
 - **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
   — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
@@ -1259,6 +1432,67 @@ both checks are bypassed entirely.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+
+### S13.4b — `[registry.*]` schema validation (`ciu check` stage 7)
+
+`[registry.*]` is free-form, project-specific cross-stack metadata (S3.7
+reserves the namespace; CONFIG.md documents the tables). CIU reads **exactly
+two values** out of it, and validates **exactly those two**:
+
+| Key | Type | Constraint | Read by |
+|---|---|---|---|
+| `[registry.postgresql].database` | string | non-empty | `_probe_pg` — the `psql -d` target of a `pg:schema/<name>` probe (S13.2) |
+| `[registry.consul].token_vault_path` | string | non-empty; a valid `str.format` template whose only placeholder is `{svc}` | `_probe_consul` — the Vault path of a `consul:token/<svc>` probe (S13.2) |
+
+Both keys are OPTIONAL; a table may carry any number of other keys, which are
+**never** constrained. Every constraint above is grounded in what the probe
+does with the value: an unbalanced brace raises `ValueError` from
+`str.format`, which the probe does not catch (the probe run dies); any other
+placeholder raises `KeyError`/`IndexError`, which the probe catches and then
+silently substitutes the default `consul/acl/tokens/{svc}`, reading a
+different Vault path than the operator declared. The presence of `{svc}` is
+deliberately **not** required — a constant path substitutes cleanly and the
+probe demands nothing more.
+
+**CIU ships no model for any other registry table.** The V8 proposal §2.6
+sketched models for five provisioning kinds (PostgreSQL, Redis, MinIO,
+Consul, Vault); CIU has never read a Redis, MinIO, Vault, or
+PostgreSQL-users registry shape, so there is nothing in this repo to validate
+against and no model is invented. A guessed schema that is wrong REJECTS
+legitimate consumer configs, which is strictly worse than no schema.
+
+**Consumer-owned shapes** (the proposal's Option C) get one additive
+extension point. The global config declares a module:
+
+```toml
+[ciu]
+registry_validator = "infra/registry_validate.py"
+```
+
+whose module-level `validate_registry(config) -> list[str]` receives the
+whole global config and returns error strings (empty list — or `None` — means
+OK). It is imported with bytecode writing suppressed, so stage 7 keeps
+S13.4a's side-effect-freedom; `run()`-style execution never happens. A
+missing file, an import-time exception, a missing or non-callable
+`validate_registry`, a raising validator, or a non-list return are each
+reported as a finding rather than aborting the run — including the
+`str`-is-iterable trap S9.5 names (a bare string is ONE malformed return, not
+one finding per character).
+
+**Optional dependency.** Model validation requires `pydantic >= 2`, shipped
+as the optional extra `ciu[registry]`. The import is lazy: when neither
+validated table is declared, pydantic is never imported. When one IS declared
+and pydantic is absent, `ciu check` FAILS with a finding naming the extra and
+its install command — never a silent skip (the same rule S5.7 applies to
+`ciu[schema]`). The consumer extension point does not depend on pydantic and
+runs either way.
+
+**Scope.** Stage 7 is a GLOBAL-config stage: `registry` is an S3.7 reserved
+global namespace (a stack config carrying its own top-level `[registry]`
+table already fails S3.5 at stage 2, as a second non-reserved root key), and
+the probes read it off the profile config. It therefore runs **once per
+`ciu check` run**, including when the selection is empty, and its findings
+carry no `stack` key. Failures are exit `2`, like every other static stage.
 
 ### S13.6 — Cross-profile producer declaration (`produced_by`, CIU-42)
 
@@ -2175,9 +2409,11 @@ Outcomes mirror S15.12's shape exactly:
   bytes anywhere in the ancestor chain** — `[S15.16]` naming every
   under-provisioned slice, the stacks that declared a floor for it, and the
   required byte count, via `warn_policy.warn_or_raise` (S10.6): always
-  logged as `[WARN]`, and by default also raised (`ValueError`, S10.3 exit
-  2) — `CIU_WARNINGS_AS_ERRORS=0` downgrades this specific finding to
-  log-only for an operator who already knows about the gap. `infinity` and
+  logged as `[WARN]`; by DEFAULT (`ciu.exit_on` = `"ERROR"`) it does NOT
+  raise. `ciu.exit_on = "WARN"` makes it raise (`ValueError`, S10.3 exit
+  2) for an operator who wants this fail-fast; `"NEVER"` suppresses even
+  the WARN-level abort entirely for this and every other S10.6 site.
+  `infinity` and
   `0` are both treated as "no floor" — systemd reports `0` for both an
   explicit "no protection" and a genuinely unset property, and there is no
   way to tell those apart from outside the unit, so this fails toward the
@@ -2801,7 +3037,7 @@ its checkout behind, and nothing grounded said so. `ciu worktree branches
 *base* MUST name a LOCAL BRANCH — a SHA or remote-tracking ref refuses
 `[S16.8]`: classification and the destructive prune reason about branch
 NAMES, and a SHA anchor once let the anchor branch itself classify prunable
-(adversarial-review finding). Classification is a CLOSED six-value
+(adversarial-review finding). Classification is a CLOSED seven-value
 vocabulary:
 
 - **`base`** — the branch measured against; never touched.
@@ -2810,11 +3046,25 @@ vocabulary:
   (documented policy fallback). Never pruned, even when the survey runs
   against another base and the mainline happens to be fully merged there:
   "clean up merged branches" can never mean deleting a mainline.
-- **`current`** — the PRIMARY checkout's branch: somebody's working context,
-  even when merged.
+- **`current`** — somebody's working context, even when merged: the PRIMARY
+  checkout's branch, **or the branch of the checkout the command was INVOKED
+  FROM**. The invoking checkout is never a candidate in its own run — a
+  self-referential prune once removed the operator's own working directory
+  mid-loop, after which the next Git call failed on a vanished cwd and the
+  whole operation aborted (ciu-P28).
+- **`managed-instance`** — its checkout carries a CIU-managed instance record
+  (S16.2), at ANY lifecycle state. **Never removed by `-y`**, whatever its
+  mergedness: this is the GIT half of CIU-25 and its removal step is a bare
+  `git worktree remove`, so removing a managed checkout without `ciu clean`
+  FIRST destroys the rendered config that tells CIU what to clean — orphaning
+  containers/volumes/networks and stranding root-owned `vol-*` directories no
+  unprivileged operator can delete (ciu-P28; the exact hazard S16.4's
+  clean-then-remove ordering exists to prevent). The survey's hint names the
+  disposal command, `ciu worktree rm NAME`, which runs `ciu clean` first.
 - **`prunable`** — Git PROVES nothing would be lost: zero commits not in
   base (`rev-list --count base...branch`), and either no checkout or a CLEAN,
-  non-primary one. Only this category is ever removed.
+  non-primary, non-invoking, unmanaged one. Only this category is ever
+  removed.
 - **`merged-dirty`** — merged, but its checkout carries uncommitted changes;
   listed with attributes so a human rules on the dirt first.
 - **`unmerged`** — has work not in base; keep.
@@ -2827,25 +3077,48 @@ there). No age heuristic, no process-lifetime inference, no basename
 similarity — the estate rule: removal only on proof, survey otherwise.
 
 Without `-y` there are NO side effects: the survey carries an explicit hint
-naming how many branches `-y` would remove. The destructive pass is gated
-TWICE against the reviewed half-prune failure (destroy a checkout, then have
-Git refuse the deletion — divergent mergedness definitions): (1) **base
-sanity** — `-y` refuses `[S16.8]` unless the base tip IS, or is an ancestor
-of, the primary checkout's HEAD or the origin/HEAD target (surveying any
-base stays allowed; pruning demands one Git agrees with); (2) **per-candidate
-upstream pre-check** — a branch tracking an upstream that does not contain
-it is moved to `failed` BEFORE its checkout is touched, with the reason.
-Then exactly the remaining `prunable` category is removed — per branch,
-`git worktree remove` FIRST (Git re-verifies cleanliness itself) then
-`git branch -d` (Git re-verifies mergedness); any residual refusal moves
-that branch to `failed` WITH Git's reason and the prune continues. The
-document is then RE-SURVEYED so its counts and branches report the
-post-prune truth, never the stale pre-prune snapshot. The human output names
-every `removed:` and `FAILED:` branch and exits non-zero on a `partial`
-prune — a partial success is never silent. The document is versioned
-(`schema_version: 1`, operation `branches` / `branches-prune`, status
-`survey`/`pruned`/`partial`) under the S16.4 envelope conventions; capability
-id `worktree.branches.v1`.
+naming how many branches `-y` would remove, plus how to dispose of any
+`managed-instance` branches it deliberately refuses.
+
+**Every destructive Git command of the `-y` pass runs from the PRIMARY
+worktree, never from the invoking checkout.** `git branch -d` judges
+mergedness against the HEAD of the worktree it runs in, so invoking
+`branches -y` from a linked checkout that was behind the mainline used to
+report fully-merged branches as "not fully merged" — `removed: []` — while
+their checkouts had already been destroyed (ciu-P28, reproduced end-to-end).
+The primary's HEAD is the anchor the base-sanity guard already validates, so
+the check and the operation now judge against the same HEAD.
+
+The destructive pass is gated THREE times against the half-prune failure
+(destroy a checkout, then have Git refuse the deletion — divergent mergedness
+definitions): (1) **base sanity** — `-y` refuses `[S16.8]` unless the base tip
+IS, or is an ancestor of, the primary checkout's HEAD or the origin/HEAD
+target (surveying any base stays allowed; pruning demands one Git agrees
+with); (2) **per-candidate upstream pre-check** — a branch tracking an
+upstream that does not contain it is moved to `failed` BEFORE its checkout is
+touched, with the reason; (3) **per-candidate HEAD pre-check** — a branch with
+no upstream that is not contained in the PRIMARY checkout's HEAD (reachable
+when base sanity passed via the origin/HEAD target alone) is likewise moved to
+`failed` before its checkout is touched. Then exactly the remaining `prunable`
+category is removed — per branch, `git worktree remove` FIRST (Git re-verifies
+cleanliness itself) then `git branch -d` (Git re-verifies mergedness); any
+residual refusal moves that branch to `failed` WITH Git's reason and the prune
+continues. **No failure escapes the per-branch loop**: an unexpected raise
+becomes that branch's named `failed` reason and the remaining candidates are
+still processed, so a document is always returned — an unhandled mid-loop
+error once returned none at all and silently left later candidates
+unprocessed (ciu-P28). The document is then RE-SURVEYED so its counts and
+branches report the post-prune truth, never the stale pre-prune snapshot.
+
+The output names every `removed:` and `FAILED:` branch, and a `partial` prune
+exits non-zero — a partial success is never silent. **That exit-code decision
+is made once, above the output-format branch, so `--json` and human output
+exit identically** (it previously lived inside the human arm only, and
+`--json` reported exit 0 on the same partial document). The document is
+versioned (`schema_version: 2` — bumped from 1 by the widened category
+vocabulary, the same fail-closed rule S17.3 applies; operation `branches` /
+`branches-prune`, status `survey`/`pruned`/`partial`) under the S16.4 envelope
+conventions; capability id `worktree.branches.v1`.
 
 The Docker-resource half of CIU-25 (containers/volumes of a crashed
 instance) remains OPEN: it needs the ownership/lease contract described in
