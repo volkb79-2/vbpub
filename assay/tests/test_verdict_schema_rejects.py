@@ -483,3 +483,29 @@ def test_a_payload_free_claim_a_producer_really_emits_stays_valid(
         key in claim for key in ("coverage", "mutation", "canary")
     ), f"{fixture} is not the payload-free shape this test exists to protect"
     assert why_invalid(validator, document) == []
+
+
+def test_a_populated_shard_verdict_validates_against_the_shipped_schema(
+    validator: Draft202012Validator,
+):
+    """(B012 remediation, D-10) `mutation.candidate_ids`/`progress_artifact`
+    shipped on the wrong `$defs` entries (`coverage` and `claim`, which
+    `additionalProperties: false` on `$defs/mutation` then rejected) --
+    proven only by hand-rolling a schema fragment during remediation, never
+    by an actual test against the real, shipped schema. This is that test:
+    reverting the `$defs/mutation` move must turn it red.
+    """
+    document = _verdict_document("r2_fail_mutants_survived.json")
+    assert why_invalid(validator, document) == [], "the canonical form must validate"
+
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["candidate_ids"] = [
+        "a" * 64,
+        "b" * 64,
+    ]
+    claim["mutation"]["progress_artifact"] = ".assay/package.progress.jsonl"
+
+    assert why_invalid(validator, document) == [], (
+        "a populated shard verdict (candidate_ids + progress_artifact) must "
+        "validate against the shipped schema"
+    )

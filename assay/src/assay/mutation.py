@@ -121,6 +121,7 @@ from .errors import AssayError, Outcome, ReasonCode
 from .verdict import (
     MUTATION_BUCKETS,
     MAX_CANDIDATE_CEILING,
+    MAX_SHARD_COUNT,
     Claim,
     Mutation,
     MutantOutcome,
@@ -129,6 +130,7 @@ from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
     "MAX_CANDIDATE_CEILING",
+    "MAX_SHARD_COUNT",
     "MAX_EQUIVALENCE_ARTIFACT_BYTES",
     "MAX_KILL_SIGNAL_BYTES",
     "MUTATION_OPERATORS",
@@ -839,9 +841,9 @@ def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) 
         raise ValueError("shard index and count must be integers")
     if not isinstance(index, int) or not isinstance(count, int):
         raise ValueError("shard index and count must be integers")
-    if not 1 <= count <= MAX_CANDIDATE_CEILING:
+    if not 1 <= count <= MAX_SHARD_COUNT:
         raise ValueError(
-            f"shard count must be in 1..{MAX_CANDIDATE_CEILING}, got {count}"
+            f"shard count must be in 1..{MAX_SHARD_COUNT}, got {count}"
         )
     if not 0 <= index < count:
         raise ValueError(f"shard index {index} is outside 0..{count - 1}")
@@ -902,7 +904,7 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
             or not isinstance(shard_count, int)
         ):
             raise MutationStateError("shard index and count must be integers")
-        if not 1 <= shard_count <= MAX_CANDIDATE_CEILING or not 0 <= shard_index < shard_count:
+        if not 1 <= shard_count <= MAX_SHARD_COUNT or not 0 <= shard_index < shard_count:
             raise MutationStateError(f"invalid shard pair ({shard_index}, {shard_count})")
         candidate_ids = document["candidate_ids"]
         if not isinstance(candidate_ids, list):
@@ -938,7 +940,18 @@ def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, 
             merged_candidates.append(candidate.lower())
         lanes.add(lane)
         commits.add(commit)
-        covered_pairs.add((shard_index, shard_count))
+        pair = (shard_index, shard_count)
+        if pair in covered_pairs:
+            # (B012 remediation, N-merge-F) `covered_pairs` is a set, so two
+            # documents claiming the same shard index used to merge
+            # silently -- each individually valid, together not proof of
+            # "exactly one document per shard". Their candidate ids are
+            # already required to be disjoint (checked above); this closes
+            # the remaining gap: the SAME index cannot be filed twice.
+            raise MutationStateError(
+                f"shard {shard_index}/{shard_count} is present in more than one document"
+            )
+        covered_pairs.add(pair)
     if len(lanes) > 1 or len(commits) > 1:
         raise MutationStateError("all shards must share exactly one lane and commit")
     counts = {pair[1] for pair in covered_pairs}

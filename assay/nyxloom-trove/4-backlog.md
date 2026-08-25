@@ -1776,16 +1776,31 @@ does with a merged candidate-id set (is there a further verdict-merge step,
 or is the summary itself the deliverable?) — a design question, not just
 plumbing.
 
+**Update 2026-08-25 (round 2 review + round-3 fix):** the assignment-domain
+check now also refuses a duplicate `(shard_index, shard_count)` pair across
+documents (round-2 finding F — two documents claiming the same index used to
+merge silently since `covered_pairs` was a plain set). One honest limit
+remains and is **inherent to the function's signature, not fixable without a
+producer**: a document truthfully reporting a strict subset of its own real
+candidates (e.g. 1 of 6 actually assigned) is indistinguishable from a
+document whose shard genuinely had only 1 candidate — `merge_mutation_shards`
+never learns the full candidate universe for a shard, only what each document
+claims, so "exact coverage" can only mean "every required index present
+exactly once with internally-consistent candidates," never "every candidate
+that shard actually owned." This is round 2's case C; note it here explicitly
+rather than let a future round re-discover it as a defect.
+
 ### Acceptance
 
 - [ ] `assay run --shard I/N` emits a shard-summary document `assay
       merge-shards` (or equivalent) can consume directly, no hand-building;
 - [ ] a real dstdns-shaped multi-shard lane merges end-to-end through the
       shipped CLI, verified by driving it, not by reading the diff;
-- [ ] `merge_mutation_shards`'s remaining honest limit is documented: it
-      proves internal consistency and correct assignment among the documents
-      it is given, never that a candidate id came from a real plan rather
-      than a well-formed fabrication, absent a signed/attested plan artifact.
+- [x] `merge_mutation_shards`'s remaining honest limits are documented above:
+      it cannot detect a shard reporting a genuine subset of its own
+      candidates (case C, inherent), and it cannot prove a candidate id came
+      from a real plan rather than a well-formed fabrication absent a
+      signed/attested plan artifact (case E, also inherent).
 
 ---
 
@@ -1831,14 +1846,14 @@ undetected.
 
 ---
 
-## B025 — an infrastructure-resolution refusal (B013) writes no verdict artifact
+## B025 — a refusal whose OWN cause is an unresolvable infrastructure declaration writes no verdict artifact
 
-**Filed 2026-08-25, found while remediating B013's D-11 crash (round 1
-adversarial review).** Not itself a crash — the refusal is a clean, typed
-`AssayError` that reaches `main()`'s handler and prints a one-line message —
-but unlike every other post-HEAD-resolution refusal in `runner.py`
-(`missing_required`, a bad `--shard`, adapter resolution), it writes **no**
-verdict artifact even when `--verdict-json` was reserved.
+**Filed 2026-08-25 (round 1 remediation), rescoped 2026-08-25 after round 2
+review + a round-3 partial fix narrowed it.** Not itself a crash — the
+refusal is a clean, typed `AssayError` that reaches `main()`'s handler and
+prints a one-line message — but unlike every other post-HEAD-resolution
+refusal in `runner.py`, it writes **no** verdict artifact even when
+`--verdict-json` was reserved.
 
 ### Problem
 
@@ -1846,40 +1861,112 @@ verdict artifact even when `--verdict-json` was reserved.
 internally, to record the attempted plan in the refusal verdict. Before
 B013, `resolve_command_plan` could never raise, so this was always safe. Now
 it can: an unresolvable `[lanes.<name>.infrastructure]` declaration raises
-`AssayError` from inside `resolve_command_plan`. If the *caller's* reason for
-refusing is that same infrastructure failure, calling `refuse_lane` re-runs
-the identical failing resolution and raises again, this time from inside the
-refusal path itself, uncaught. `_run_higher_rigor_lane` (`runner.py`, right
-after resolving `project_prefix`) therefore cannot simply wrap its
-`resolve_command_plan` call in a catch that calls `refuse_lane` — verified by
-trying exactly that and reproducing the same crash one level deeper, through
-the installed CLI, before reverting it.
+`AssayError` from inside `resolve_command_plan`.
+
+**Original filing understated the scope; corrected by round 2 review:** the
+trigger is not "the caller is refusing *because of* infrastructure" — it is
+"the lane declares a `derived:` fact at all". Any refusal on such a lane,
+for any reason, re-triggers the identical resolution inside `refuse_lane`
+and can crash. **Round-3 fix (2026-08-25): every `refuse_lane` call site in
+`run_lane` now forwards its own `infrastructure_source`/
+`infrastructure_environment` parameters** (five call sites; two — the
+`dirty_paths` refusal and, now, all the others — previously only one did).
+This closes the bug for the entire class of refusal that co-occurs with a
+declared-but-*resolvable* infrastructure table — proven: `assay run --shard
+9/2` on a lane with a real, readable `derived:` fact now writes a proper
+`ERROR`/`BAD_LANE_CONFIG` verdict where it previously crashed uncaught.
+
+**What remains, narrowed:** only the case where the infrastructure
+declaration is *itself* what's unresolvable (missing `ciu.global.toml`, a
+missing `required-env` var, a malformed dotted path) — there, `refuse_lane`'s
+internal `resolve_command_plan` call hits the exact same failure a second
+time and still raises uncaught, because there is no *other* infrastructure
+state to substitute. Reproduced 2026-08-25 (round-3 verification): a lane
+with a `derived:` fact and no `ciu.global.toml` present still writes no
+verdict on a bad `--shard`, while the identical lane WITH the file present
+now does.
 
 ### Why this needs a design decision, not a quick patch
 
 A-036's own stated invariant is "the command's own `CommandPlan` is still
-resolved and recorded... a refused run is not an unrecorded one." An
-infrastructure-resolution failure is the one case where that invariant is
-impossible to satisfy literally — the plan cannot be resolved because the
-declaration is the thing that's wrong. Candidate resolutions, none obviously
-correct without review:
+resolved and recorded... a refused run is not an unrecorded one." **Round 2
+correction: `argv_effective` never needs omitting** — infrastructure facts
+only ever write into `env_effective` (`resolve_command_plan`'s env-building
+step); `argv_effective` is assembled independently and is always resolvable.
+The remaining question is narrower than originally filed: can a refusal
+verdict honestly omit only `env_effective` (or state it partially, minus the
+unresolved names) when infrastructure itself is what failed? Candidate
+resolutions:
 
-1. Let a refusal verdict honestly omit `argv_effective`/`env_effective` when
-   the plan could not be built at all — needs a schema change and a decision
-   on whether that is ever otherwise true today.
+1. Let a refusal verdict honestly omit `env_effective` alone when
+   infrastructure resolution is what failed — a smaller schema change than
+   originally filed (never touches `argv_effective`).
 2. Have `refuse_lane` retry plan resolution treating the lane as if it
    declared no infrastructure table, so the refusal at least records the
-   argv/env that *would* apply absent the failed facts — arguably misleading
-   (it is not what would actually have run).
+   argv and the non-infrastructure env that *would* apply — arguably
+   misleading (it is not what would actually have run).
 3. Give infrastructure-declaration errors their own dedicated refusal helper
    that never attempts plan resolution, parallel to but distinct from
    `refuse_lane`.
+4. ~~Forward the caller's already-resolved `infrastructure_source`/
+   `infrastructure_environment` into `refuse_lane`~~ — **done, round 3**;
+   resolves every case EXCEPT the one this entry is now scoped to (the
+   source itself is the thing that's broken).
 
 ### Acceptance
 
-- [ ] a decision recorded on which shape a plan-unresolvable refusal takes;
-- [ ] `assay run` on a lane with an unresolvable `[lanes.<name>.infrastructure]`
-      declaration writes a verdict artifact to a reserved `--verdict-json`,
+- [x] every `refuse_lane` call site in `run_lane` forwards
+      `infrastructure_source`/`infrastructure_environment` (round 3);
+- [ ] a decision recorded on which of options 1-3 handles the remaining case
+      (infrastructure itself unresolvable);
+- [ ] `assay run` on a lane whose OWN infrastructure declaration is
+      unresolvable writes a verdict artifact to a reserved `--verdict-json`,
       not just a stderr message;
 - [ ] a test drives this through the installed CLI (not `resolve_command_plan`
       directly) and asserts the artifact exists and is schema-valid.
+
+---
+
+## B026 — a bad `--shard` refusal names no cause; `judge.mutation.shard_index`/`shard_count` are dead config
+
+**Filed 2026-08-25 from round 2 review of the B012/B013/B016/B017
+remediation (findings N-4, N-5).** Two small, unrelated diagnosability gaps
+bundled here rather than as two one-line items.
+
+### N-4 — the bad-`--shard` refusal carries no diagnostic
+
+`assay run <lane> --shard 7/2` on a 2-shard lane now returns a clean
+`ERROR`/`BAD_LANE_CONFIG` verdict (fixed, round 3 — see A-296/A-298) instead
+of crashing, but nothing in the artifact or stdout says the word "shard": the
+old code's `f"invalid mutation shard spelling {shard!r}"` message is gone
+along with the exception it used to travel in, because `refuse_lane` (like
+every other refusal in this module — `missing_required`, `dirty_tree`,
+adapter resolution) carries no free-text field, only `(outcome,
+reason_code)`. `assay plan`'s equivalent refusal still raises `LaneConfigError`
+and prints its message via `main()`'s handler, so `run` and `plan` now
+disagree on how much a consumer learns. Restoring the detail needs either a
+new `ReasonCode` (a closed-enum widening every consumer's schema copy would
+have to accept — A-138/A-170 make this deliberate, not a quick add) or
+accepting that `run`'s refusals are, by this project's own design, diagnosed
+by reason code alone and `plan`'s richer message is the exception rather than
+the norm worth matching. Needs a decision, not a guess.
+
+### N-5 — `judge.mutation.shard_index`/`shard_count` select nothing
+
+Lane-declared shard fields (`config.py` validates and echoes them;
+`verdict.py`'s `JudgmentR2` has fields of the same name) are read by nothing
+in `runner.py`/`mutation.py` — confirmed by `grep`. Before round-3's D-8 fix
+they produced a **false** stamp (a verdict claiming a shard identity nothing
+enforced); now `judgment.r2.shard_index`/`shard_count` come from the executed
+`--shard` CLI value instead, so the lane-declared fields are simply inert —
+config validates them, nothing consumes them. Wire them as the default
+`--shard` when the CLI flag is absent, remove the config fields, or document
+them as reserved-for-future-use — any of the three closes this; leaving it
+silent is the A-046 "lane-table-implies-capability" trap.
+
+### Acceptance
+
+- [ ] a decision recorded on N-4 (new ReasonCode vs. accept the asymmetry
+      with `plan`, document it in CONSUMERS.md either way);
+- [ ] a decision recorded on N-5 (wire / remove / document reserved), and
+      `config.py`/`CONSUMERS.md` updated to match.

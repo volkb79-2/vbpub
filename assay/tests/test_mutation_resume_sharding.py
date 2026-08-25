@@ -192,6 +192,42 @@ def test_manifest_merge_refuses_a_candidate_assigned_to_the_wrong_shard():
         merge_mutation_shards(documents)
 
 
+def test_manifest_merge_refuses_a_duplicate_shard_index():
+    """(B012/B023 remediation, round-2 finding F) `covered_pairs` is a set,
+    so two documents both claiming shard 0/2 (with disjoint candidate ids,
+    so the non-disjoint check does not fire first) used to merge silently --
+    "exact shard-index coverage" must mean exactly one document per index,
+    not merely that every index was seen at least once."""
+    documents = [
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": 0,
+            "shard_count": 2,
+            "candidate_ids": [],
+        },
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": 0,
+            "shard_count": 2,
+            "candidate_ids": ["a" * 64],
+        },
+        {
+            "schema_version": 1,
+            "lane": "lane",
+            "commit": "a" * 40,
+            "shard_index": 1,
+            "shard_count": 2,
+            "candidate_ids": [],
+        },
+    ]
+    with pytest.raises(MutationStateError, match="0/2 is present in more than one document"):
+        merge_mutation_shards(documents)
+
+
 def test_manifest_merge_refuses_all_empty_shards():
     """(B012/B023 remediation) Every required (shard_index, shard_count) pair
     being present says only that a document was filed for each slot, never

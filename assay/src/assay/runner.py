@@ -2053,7 +2053,17 @@ def _run_prepared_lane(
                         else None
                     ),
                     progress_artifact=progress_path,
-                    state_project_root=project_root if resume else None,
+                    # A sharded run needs the same authoritative state root
+                    # `run_mutation` requires for `resume` (its own guard:
+                    # "an ephemeral snapshot cannot own resume evidence") --
+                    # sharding a lane is exactly the long-running case this
+                    # exists to make crash-resumable, so a bare `--shard`
+                    # with no `--resume` still gets persisted candidate
+                    # records, even though this particular invocation never
+                    # reads them back.
+                    state_project_root=(
+                        project_root if (resume or shard_index is not None) else None
+                    ),
                     resume=resume,
                     shard_index=shard_index,
                     shard_count=shard_count,
@@ -2568,6 +2578,8 @@ def run_lane(
                     reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
                     argv_append=argv_append,
                     passthrough_source=passthrough_source,
+                    infrastructure_source=infrastructure_source,
+                    infrastructure_environment=infrastructure_environment,
                     assay_version=assay_version,
                     evidence=evidence,
                     declared_evidence=declared_evidence,
@@ -2618,6 +2630,8 @@ def run_lane(
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
                 assay_version=assay_version,
                 evidence=evidence,
                 declared_evidence=declared_evidence,
@@ -2660,6 +2674,8 @@ def run_lane(
             reason_code=ReasonCode.BAD_LANE_CONFIG,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
             evidence=evidence,
             declared_evidence=declared_evidence,
@@ -2702,6 +2718,8 @@ def run_lane(
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
                 assay_version=assay_version,
                 evidence=evidence,
                 declared_evidence=declared_evidence,

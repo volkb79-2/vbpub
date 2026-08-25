@@ -384,6 +384,16 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 #: This is a defence against a malicious declared cap, not a policy knob.
 MAX_CANDIDATE_CEILING = 10_001
 
+#: (B012 remediation, N-2) The hard ceiling on a `--shard` COUNT -- a
+#: distinct concept from :data:`MAX_CANDIDATE_CEILING` above, which bounds
+#: how many candidate SITES discovery may observe (deliberately `max + 1` to
+#: carry the "at least this many exist" sentinel). `JudgmentR2.shard_count`
+#: below validates `1..10_000` with no `+ 1`, because a shard count has no
+#: such sentinel; `select_mutation_shard`/`merge_mutation_shards` must use
+#: the SAME bound so a value the CLI accepts cannot fail schema validation
+#: three call sites later.
+MAX_SHARD_COUNT = 10_000
+
 #: (P33/V5-3) `Mutation`'s identity buckets, in wire order. FIVE since v5.
 #: Named once rather than transcribed at each of the five sites that iterate
 #: them: A-228's own root cause was a new bucket reaching some of the layers
@@ -1681,9 +1691,10 @@ class JudgmentR2:
                 "judgment.r2 requires integer shard_index and shard_count together"
             )
         if shard_specified and self.shard_count is not None:
-            if not 1 <= self.shard_count <= 10_000:
+            if not 1 <= self.shard_count <= MAX_SHARD_COUNT:
                 raise ValueError(
-                    f"judgment.r2.shard_count must be in 1..10,000, got {self.shard_count}"
+                    f"judgment.r2.shard_count must be in 1..{MAX_SHARD_COUNT}, "
+                    f"got {self.shard_count}"
                 )
             assert self.shard_index is not None
             if not 0 <= self.shard_index < self.shard_count:
