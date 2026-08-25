@@ -1057,6 +1057,28 @@ intentional, surface it loudly in the verdict (a `base_resolution:
 scope. **Workaround used:** re-run the gate after merging to main, where
 first-parent and merge-base coincide.
 
+**Second reproduction, 2026-08-25 (dstdns P132 implementer, priority
+evidence — same mechanism, different judge kind).** Confirms the bug also
+collapses **R2 mutation lanes**, not only R1 changed-line coverage as
+originally scoped. Reproduced by merging `main` into
+`feat/dstdns-P132-worker-io-execution-repair` (`git merge main --no-edit` →
+`039d9679`, HEAD now a merge commit), then re-running the four
+`worker-execution-admission-r2-*` lanes: all four read
+`INCONCLUSIVE/NO_MUTANTS`, down from real PASS/kill counts (9/9 boolop, 8/9
+flips) measured on the same source pre-merge. Confirmed directly:
+`git diff --stat 55c41dac..039d9679 -- applications/worker-io/src` is empty
+— `resolve_base` used HEAD's first parent (the branch's own pre-merge tip,
+`55c41dac`) instead of the lane-declared `judge.base`, so the diff assay
+measured is "what did pulling main in change" (nothing in the package's own
+source), not the branch's actual accumulated work. Same root cause as the
+R1 case above (`assay/git.py::resolve_base`), same fix would close both.
+**Not a workaround this time** — confirmed self-resolving at final-merge
+time (when the branch lands ON main, main's own pre-package tip becomes the
+first parent, restoring a real diff), but real evidence quietly went from
+"9/9 mutants killed" to "nothing to measure" with zero warning in between,
+on a source tree that hadn't actually lost any coverage. Provenance:
+`dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md` §1a/§1b/§2/§2a.
+
 ## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
 
 Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
