@@ -150,7 +150,11 @@ _OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
     "isolation",
     "env_required",
     "environment_command",
+    "infrastructure",
 )
+
+INFRASTRUCTURE_SOURCES: frozenset[str] = frozenset({"required-env", "derived"})
+MAX_INFRASTRUCTURE_FACTS = 64
 
 #: (B006a/A-269, §3.2) The closed `isolation.snapshot_selection` vocabulary.
 #: `"repository"` materialises the whole commit; `"repository-minus-unsafe-
@@ -639,6 +643,9 @@ class Lane:
     #: meaningful wherever it is invoked; a declared argv is executed in the
     #: invoking context before the lane command and must exit zero.
     environment_command: tuple[str, ...] | None = None
+    #: (B013) Declared infrastructure facts, resolved in the invoking context
+    #: before snapshot execution and injected into the isolated command.
+    infrastructure: Mapping[str, str] | None = None
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -662,6 +669,8 @@ class Lane:
             declared["env_required"] = list(self.env_required)
         if self.environment_command is not None:
             declared["environment_command"] = list(self.environment_command)
+        if self.infrastructure is not None:
+            declared["infrastructure"] = dict(self.infrastructure)
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -881,12 +890,52 @@ def _load_lane(
                 f"{where}: 'environment_command' is empty; omit the field when "
                 f"the lane is meaningful in any invoking environment"
             )
-        if "/" not in environment_command[0] and "PATH" not in env and "PATH" not in env_passthrough:
+    infrastructure = None
+    if "infrastructure" in table:
+        raw_infrastructure = table["infrastructure"]
+        if not isinstance(raw_infrastructure, dict):
             raise LaneConfigError(
-                f"{where}: 'environment_command[0]' {environment_command[0]!r} is "
-                f"a bare executable name but PATH is declared by neither 'env' "
-                f"nor 'env_passthrough'. Declare PATH or use an executable path."
+                f"{where}: 'infrastructure' must be a table, got "
+                f"{_type_name(raw_infrastructure)}"
             )
+        if not raw_infrastructure:
+            raise LaneConfigError(
+                f"{where}: 'infrastructure' declares no facts; omit the table"
+            )
+        if len(raw_infrastructure) > MAX_INFRASTRUCTURE_FACTS:
+            raise LaneConfigError(
+                f"{where}: 'infrastructure' declares {len(raw_infrastructure)} "
+                f"facts; the bound is {MAX_INFRASTRUCTURE_FACTS}"
+            )
+        parsed_facts: dict[str, str] = {}
+        for key, declaration in raw_infrastructure.items():
+            if not isinstance(key, str) or not key:
+                raise LaneConfigError(
+                    f"{where}: infrastructure names must be non-empty strings"
+                )
+            if not isinstance(declaration, str) or not declaration:
+                raise LaneConfigError(
+                    f"{where}: 'infrastructure.{key}' must be a non-empty string, "
+                    f"got {_type_name(declaration)}"
+                )
+            source, separator, expression = declaration.partition(":")
+            if not separator or source not in INFRASTRUCTURE_SOURCES or not expression:
+                raise LaneConfigError(
+                    f"{where}: 'infrastructure.{key}' must use "
+                    f"{sorted(INFRASTRUCTURE_SOURCES)} with a non-empty value, got "
+                    f"{declaration!r}"
+                )
+            if any(character.isspace() for character in expression):
+                raise LaneConfigError(
+                    f"{where}: 'infrastructure.{key}' expression contains whitespace"
+                )
+            if source == "derived" and any(part == "" for part in expression.split(".")):
+                raise LaneConfigError(
+                    f"{where}: 'infrastructure.{key}' derived path is not dotted: "
+                    f"{expression!r}"
+                )
+            parsed_facts[key] = declaration
+        infrastructure = MappingProxyType(dict(parsed_facts))
     # (A-254) `env_required` must be a SUBSET of `env_passthrough`, because a
     # name outside it is unreachable by construction -- `resolve_command_plan`
     # only ever copies declared passthrough names, so requiring a name the lane
@@ -910,6 +959,21 @@ def _load_lane(
             f"environment silently overrides the fixed value, which makes "
             f"'fixed' a lie."
         )
+    if infrastructure is not None:
+        collisions = sorted(set(infrastructure) & set(env))
+        if collisions:
+            raise LaneConfigError(
+                f"{where}: {', '.join(collisions)} declared in both "
+                f"'infrastructure' and fixed 'env'; an injected fact must own its "
+                f"name exclusively"
+            )
+        collisions = sorted(set(infrastructure) & set(env_passthrough))
+        if collisions:
+            raise LaneConfigError(
+                f"{where}: {', '.join(collisions)} declared in both "
+                f"'infrastructure' and 'env_passthrough'; an injected fact must "
+                f"own its name exclusively"
+            )
     if "/" not in argv[0] and "PATH" not in env and "PATH" not in env_passthrough:
         raise LaneConfigError(
             f"{where}: argv[0] {argv[0]!r} is a bare executable name but PATH "
@@ -977,6 +1041,7 @@ def _load_lane(
         env=MappingProxyType(dict(env)),
         env_passthrough=tuple(env_passthrough),
         env_required=tuple(env_required),
+        infrastructure=infrastructure,
         budget=budget,
         budget_seconds=budget_seconds,
         allow_argv_append=allow_argv_append,
