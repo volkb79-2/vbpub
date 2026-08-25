@@ -1721,6 +1721,17 @@ CHECK_SCHEMA_VERSION = 1
 #: it is the one stage whose findings carry no ``stack`` key. ``ciu check``
 #: now implements proposal stages 1-12; SPEC S13.4a/S13.4b say exactly what
 #: stage 7 does and does NOT validate.
+#:
+#: Stage 13 (``"service-registry"``) landed in ciu-P22 (S3.15, V8-PREP-3
+#: narrowed) — a WARN-only, GLOBAL-scope, registry-declaration-gated
+#: cross-check of the `[service.<name>]` identity registry (S3.14) against
+#: what the current profile/phase selection actually deploys. It is NOT
+#: part of the V8 proposal's own §2.7 stage table (that table predates the
+#: two-level stack.service hierarchy this stage cross-checks), so it is
+#: appended last rather than interleaved, leaving stages 1-12's positions
+#: and the existing `registry`/`hooks-load` adjacency (pinned by
+#: test_ciu_provisioning.py's test_check_stage7_is_between_configfile_and_hooks_load)
+#: undisturbed.
 CHECK_STAGES: tuple[str, ...] = (
     "render",
     "shape",
@@ -1734,6 +1745,7 @@ CHECK_STAGES: tuple[str, ...] = (
     "compose-render",
     "leak-scan",
     "consumption",
+    "service-registry",
 )
 
 
@@ -2458,7 +2470,10 @@ def action_check(
     (S9.1/S9.2), the optional ``validate_config`` hook preflight (S9.5), the
     guarded compose render (S4.21), the leak scan (S4.22), and the
     declared-vs-consumed secret cross-check (S4.20), plus — ONCE per run, at
-    global scope — stage 7's `[registry.*]` schema validation (S13.4b).
+    global scope — stage 7's `[registry.*]` schema validation (S13.4b) and
+    (ciu-P22) stage 13's WARN-only `[service.*]` identity registry
+    consistency lint (S3.15, V8-PREP-3 narrowed) — not part of the V8
+    proposal's own §2.7 stage numbering, appended after it.
 
     SIDE-EFFECT-FREE (CIU-QOL-12's whole point): no hostdir is created, no
     secret is materialized, no compose/overlay/configfile is written, no hook
@@ -2536,6 +2551,47 @@ def action_check(
     # the end, exactly as it does for the other per-stage failures.
     for finding in provisioning_pkg.validate_registries(profile.config, repo_root):
         report.fail("registry", finding)
+
+    # ---- stage 13: `[service.*]` identity registry consistency lint
+    # (S3.15, WARN-only, ciu-P22, V8-PREP-3 narrowed) ----
+    # Registry-declaration-gated (mirrors S3.14's own opt-in nature): the
+    # whole block below is skipped — the lint code path is not entered at
+    # all — when `[service.*]` is absent or empty. GLOBAL scope, exactly
+    # once per run, same reasoning as stage 7's registry validation just
+    # above: `[service.*]` is an S3.7 reserved GLOBAL namespace, read off
+    # `profile.config`. Never a refusal: every finding is a `report.note`
+    # observation, never `report.fail` — `_CheckReport.failed` inspects
+    # only each stage's `status`, which `note()` never touches, so this
+    # stage can never flip the run's exit code or make `--live` unreachable.
+    # Each message is tagged `[WARN]` so it is recognizable as advisory in
+    # both the JSON envelope's `notes` array and the prose "note: " line.
+    service_table = profile.config.get("service") or {}
+    if service_table:
+        deployed_paths = {entry["path"] for entry in selection}
+        # location -> declaring stack name, for every entry that HAS a
+        # location (CIU/COMPOSE only — EXTERNAL/IN_PROCESS never do, per
+        # S3.14, so they never participate in either direction below).
+        registered_paths = {
+            entry["location"]: stack_name
+            for stack_name, entry in service_table.items()
+            if isinstance(entry, dict) and isinstance(entry.get("location"), str)
+            and entry["location"]
+        }
+        for location in sorted(registered_paths):
+            if location not in deployed_paths:
+                report.note(
+                    "service-registry",
+                    f"[WARN] [service.{registered_paths[location]}] declares "
+                    f"location {location!r}, but no currently-selected "
+                    "profile/phase deploys it",
+                )
+        for path in sorted(deployed_paths):
+            if path not in registered_paths:
+                report.note(
+                    "service-registry",
+                    f"[WARN] stack {path!r} is deployed but has no "
+                    "corresponding [service.*] registry entry",
+                )
 
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
     identity = _workspace_identity(repo_root)

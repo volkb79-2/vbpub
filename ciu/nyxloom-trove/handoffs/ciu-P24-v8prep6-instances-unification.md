@@ -20,6 +20,20 @@ scope:
     - "CHANGES.md"
     - "docs/BACKLOG-2026-08-24.md"
     - "nyxloom-trove/reports/ciu-P24-v8prep6-instances-unification-LOG.md"
+    # --- controller-authorized widening, 2026-08-25 (same pattern as this
+    # wave's ciu-P15/P17/P32 scope-widening episodes): implementing O1
+    # surfaced a live blast-radius issue (a pre-existing test pinning the
+    # OLD "single shared render, S5.3 base-selector fan-out" behavior for
+    # a stack that already carries a service-level `instances` key used
+    # only by its own compose loop) PLUS a real silent-upgrade hazard for
+    # any external consumer shaped the same way. The controller decided:
+    # migrate this demo fixture to the new unified pattern, update its
+    # pinning test, and add a dedicated refusal (S7.5e) closing the hazard
+    # for everyone else. See the LOG's dedicated section for the full story.
+    - "test-repo/applications/workers/ciu.defaults.toml.j2"
+    - "test-repo/applications/workers/ciu.compose.yml.j2"
+    - "test-repo/applications/workers/config.toml.j2"
+    - "tests/tests/test_ciu_test_repo.py"
   forbid:
     - "src/ciu/engine.py"
     - "src/ciu/deploy.py"

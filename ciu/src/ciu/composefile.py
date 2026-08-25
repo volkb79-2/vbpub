@@ -16,6 +16,14 @@ Normative contract: docs/SPEC.md
          governance injections
   S8.2   compose process env = base/os.environ + PWD + COMPOSE_PROFILES +
          expose_env secrets — nothing else
+  S8.2a  optional ``env_required = [...]`` per ``[<root>.<service>]``:
+         shape-validated (a list of valid env-var-name strings); when
+         ``compose_process_env`` is given the stack's ``config``/``root_key``,
+         every declared name is checked for presence in the SAME env dict
+         it just built (post-materialization, pre-invocation) — never
+         against ``os.environ`` alone, since an ``expose_env`` secret value
+         (S4.19) never touches the real process environment. All missing
+         (service, variable) pairs are collected into ONE error.
   S1.3/S1.4  bind sources handed to the daemon are physical paths
   S15    stack-wide resource governance ([<root>.governance]): overlay
          injects cgroup_parent/mem_limit/mem_reservation/blkio_config into
@@ -46,7 +54,9 @@ leak_scan(rendered_text, materialized) -> None
 validate_consumption(compose_yaml_text, declared, *, configfile_mounts=(), hook_consumed=()) -> list[str]
 render_configfiles(stack_dir, root_key, config, secret_value_fn) -> list[ConfigFileMount]
 generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text, governance, image_revisions) -> Path | None
-compose_process_env(specs, materialized, *, base, compose_profiles) -> dict
+compose_process_env(specs, materialized, *, base, compose_profiles, config, root_key) -> dict
+resolve_env_required(root) -> dict[str, list[str]]
+check_env_required(env_required, env) -> None
 compose_file_args(stack_dir, overlay_path) -> list[str]
 """
 
@@ -241,6 +251,22 @@ def render_compose(
     are exposed to the template as ``ciu``; omitted otherwise, so ``ciu.*``
     references outside a deployment render fail loudly.
 
+    V8-PREP-6 / S7.5d — when *ciu_context* carries an ``instances`` entry
+    (populated by :func:`render_configfiles` as a side effect of resolving
+    O1's service-level default; see that function's docstring for why the
+    injection happens there rather than here), it is a ``{service: N}`` map
+    of every service with a resolved ``instances`` count > 1. Immediately
+    after a successful render, :func:`_check_instance_service_keys` asserts
+    the rendered compose text actually enumerates ``<service>-1``..
+    ``<service>-N`` for each such service and does NOT also emit a bare
+    ``<service>`` key — the duplicate-mount trap named in
+    docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.19, where a compose template that
+    forgets to loop would otherwise silently mount every instance's
+    configfile onto ONE shared container. A ``ciu_context`` carrying no
+    ``instances`` entry (the overwhelming common case: no service anywhere
+    declared one) skips this check entirely, as does a compose render
+    outside a deployment render (``ciu_context=None``).
+
     Jinja2 ``TemplateError``s surface wrapped with the source filename for
     diagnostics; ``SecretLeakError`` propagates unchanged.
     """
@@ -251,13 +277,14 @@ def render_compose(
     context = {**guarded_config, "env": dict(os.environ)}
     if ciu_context is not None:
         # S3.12: MERGE into the config's own [ciu] table (never replace it —
-        # workspace switches like auto_connect_network live there); the two
-        # fact keys are reserved for CIU.
+        # workspace switches like auto_connect_network live there); CIU's own
+        # fact keys (`selected_profiles`, `deployed_stacks`, and now
+        # `instances` — V8-PREP-6) are reserved.
         merged_ciu = dict(context.get("ciu") or {})
         merged_ciu.update(ciu_context)
         context["ciu"] = merged_ciu
     try:
-        return render_jinja2_text(raw, context)
+        rendered = render_jinja2_text(raw, context)
     except SecretLeakError:
         # The guard fired inside the render — propagate the precise leak error
         # instead of burying it as a generic template failure.
@@ -269,6 +296,61 @@ def render_compose(
         raise TemplateError(
             f"Failed to render compose template {template_path}: {exc}"
         ) from exc
+
+    if ciu_context is not None:
+        instances_map = context["ciu"].get("instances")
+        if instances_map:
+            _check_instance_service_keys(rendered, instances_map)
+
+    return rendered
+
+
+def _check_instance_service_keys(
+    compose_yaml_text: str, instances_map: Mapping[str, int]
+) -> None:
+    """V8-PREP-6 (O3) — refuse the duplicate-mount trap at its source.
+
+    For every ``{service: N}`` entry (``render_configfiles`` only ever injects
+    entries where N > 1), the rendered compose document must contain exactly
+    the instance-indexed keys ``<service>-1``..``<service>-N`` and must NOT
+    also contain a bare ``<service>`` key. Declaring ``instances`` (service-
+    level or configfile-level, O1) but rendering a bare compose key means
+    every instance's configfile mount targets the SAME single container —
+    later mounts silently winning over earlier ones.
+
+    This is deliberately narrower than — and the OPPOSITE direction of —
+    :func:`_configfile_mount_services`'s existing S5.3 ``[WARN]``, which
+    fires when a configfile selector names a service the rendered compose
+    does not have at all; that check is untouched by this one. This function
+    never runs for a service absent from *instances_map*, so an ordinary
+    single-instance service with a numeric-looking name is never touched.
+    """
+    compose_services = set(_compose_service_blocks(compose_yaml_text))
+    for service_name, count in instances_map.items():
+        expected = [f"{service_name}-{i}" for i in range(1, count + 1)]
+        bad = service_name in compose_services or any(
+            key not in compose_services for key in expected
+        )
+        if not bad:
+            continue
+        found = sorted(
+            s for s in compose_services
+            if s == service_name or s.startswith(f"{service_name}-")
+        )
+        prefix = (
+            f"[S7.5d] service '{service_name}' declares instances={count} "
+            f"(V8-PREP-6): the rendered compose must enumerate {expected} "
+            f"and must NOT also contain a bare '{service_name}' service "
+            "(the duplicate-mount trap -- every instance would otherwise "
+            "share ONE container, only the last instance's mount taking "
+            f"effect). Found instead: {found}. "
+        )
+        suffix = (
+            "Loop the compose template as '{% for i in range(1, "
+            "ciu.instances." + service_name + " + 1) %}' naming '"
+            + service_name + "-{{ i }}'."
+        )
+        raise ValueError(prefix + suffix)
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +600,113 @@ def _validate_rendered_configfile_schema(
         ) from exc
 
 
+def _validate_positive_instances(raw: Any, *, where: str) -> int:
+    """Shared positive-int validation for any ``instances`` declaration (S5.1).
+
+    Used identically for the pre-existing per-configfile ``instances`` key
+    and the new service-level default (V8-PREP-6/O1), so the two can never
+    silently accept different shapes of value.
+    """
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 1:
+        raise ValueError(
+            f"[S5.1] {where}: 'instances' must be a positive integer, got {raw!r}."
+        )
+    return raw
+
+
+def _resolve_service_instances(
+    root: Mapping,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """V8-PREP-6 (O1) — resolve every service's declared ``instances`` count.
+
+    *root* is the stack's already-validated ``config[root_key]`` table (the
+    caller, :func:`render_configfiles`, only ever calls this after confirming
+    it is a ``Mapping`` — this function does not re-check that).
+
+    Reads the optional service-level ``[<root_key>.<service>] instances`` key
+    and every ``[<root_key>.<service>.configfile.<name>] instances`` key
+    under it, validating each with :func:`_validate_positive_instances` — the
+    IDENTICAL rule the pre-existing per-configfile check has always used.
+
+    A declared service-level value and a declared configfile-level value for
+    the SAME service that DISAGREE is a refusal naming the service, the
+    configfile, and both values — the duplicate-mount trap named in
+    docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.19: the whole point of a single
+    declared count is that the two fan-out mechanisms can never quietly
+    drift apart.
+
+    Returns ``(service_defaults, resolved)``:
+
+    - *service_defaults*: ``{service_name: N}`` for every service with an
+      EXPLICIT service-level declaration. :func:`render_configfiles` uses
+      this ONLY to (a) validate agreement against any configfile-level
+      value declared for the same service (this function's own disagreement
+      refusal, above), and (b) refuse — never silently apply — when a
+      configfile under the service omits its own ``instances`` key and this
+      default is > 1 (S7.5e's migration-safety refusal; see
+      :func:`render_configfiles`'s docstring). A configfile-level value with
+      no service-level default present never becomes another sibling
+      configfile's default either; that would silently change what an
+      omitted key has always meant.
+    - *resolved*: ``{service_name: N}`` for every service where SOME
+      declaration exists at all — the service-level value when declared,
+      otherwise the largest of that service's own configfile-level values
+      (a documented, deliberate tie-break for the case — not the intended
+      usage pattern, and carrying no dedicated oracle — of two configfiles
+      on one service declaring different values with no service-level
+      default to reconcile them against). This is the map
+      :func:`render_configfiles` filters to N > 1 for ``ciu.instances``
+      (O2), and that :func:`_check_instance_service_keys` (O3) checks
+      compose enumeration against.
+    """
+    service_defaults: dict[str, int] = {}
+    resolved: dict[str, int] = {}
+
+    for service_name, service_block in root.items():
+        if not isinstance(service_block, Mapping):
+            continue
+
+        service_raw = service_block.get("instances", None)
+        service_value: int | None = None
+        if service_raw is not None:
+            service_value = _validate_positive_instances(
+                service_raw, where=f"service '{service_name}'"
+            )
+            service_defaults[service_name] = service_value
+
+        configfiles = service_block.get("configfile")
+        own_values: list[int] = []
+        if isinstance(configfiles, Mapping):
+            for cfg_name, cfg in configfiles.items():
+                if not isinstance(cfg, Mapping):
+                    continue
+                cfg_raw = cfg.get("instances", None)
+                if cfg_raw is None:
+                    continue
+                cfg_value = _validate_positive_instances(
+                    cfg_raw,
+                    where=f"configfile '{cfg_name}' of service '{service_name}'",
+                )
+                own_values.append(cfg_value)
+                if service_value is not None and cfg_value != service_value:
+                    raise ValueError(
+                        f"[S7.5d] service '{service_name}' declares "
+                        f"instances={service_value} but its configfile "
+                        f"'{cfg_name}' declares instances={cfg_value} -- a "
+                        "service-level default and a configfile-level "
+                        "override must agree (V8-PREP-6). Remove the "
+                        "configfile-level 'instances' key to inherit the "
+                        "service default, or change one so both match."
+                    )
+
+        if service_value is not None:
+            resolved[service_name] = service_value
+        elif own_values:
+            resolved[service_name] = max(own_values)
+
+    return service_defaults, resolved
+
+
 def render_configfiles(
     stack_dir: Path | str,
     root_key: str,
@@ -544,6 +733,57 @@ def render_configfiles(
     (``"<service>-<index>"``) so templates can produce unique content per
     instance. Single-instance configfiles (no ``instances`` key, or
     ``instances = 1``) behave identically to before this change.
+
+    **Service-level declaration (V8-PREP-6/O1, S7.5d/S7.5e):** a service MAY
+    also declare ``[<root_key>.<service>] instances = N`` — a sibling of its
+    ``configfile`` table, not inside it. An explicit configfile-level value
+    still wins and is unaffected (byte-identical to before this package)
+    whenever it AGREES with the service value; a service-level value that
+    DISAGREES with a declared configfile-level value is a refusal (see
+    :func:`_resolve_service_instances`) — never a silent preference of one
+    over the other. A configfile that OMITS its own ``instances`` key does
+    **not** silently inherit the service-level value when it is > 1 — see
+    S7.5e below; it must either restate the same value explicitly or the
+    service must not declare one.
+
+    **S7.5e — migration-safety refusal (added post-review, V8-PREP-6):** a
+    configfile that omits its own ``instances`` key, under a service that
+    DOES declare an explicit ``instances`` value > 1, is a refusal naming
+    the service, the configfile, and the declared value — never a silent
+    default application. Before this package, such a configfile had exactly
+    ONE way to end up mounted into every compose replica: a single shared
+    render, fanned out at overlay time by the pre-existing S5.3 base-
+    selector mechanism (:func:`_configfile_mount_services`). Silently
+    reinterpreting that same omission as "render N independent times" the
+    moment a service declares ``instances`` would be a silent behavior
+    change for any existing consumer already shaped this way (this is
+    precisely how the ``applications/workers`` test-repo demo looked before
+    it was migrated to explicitly restate ``instances`` on its configfile —
+    see CHANGES.md's migration note). The remedy is always one of: declare
+    the same ``instances`` value explicitly on the configfile (opts into
+    the new per-instance render), or don't declare a service-level value at
+    all (keeps the configfile a single shared render, fanned out the old
+    way).
+
+    **``ciu.instances`` injection (V8-PREP-6/O2):** when *ciu_context* is
+    given, this function also resolves the FULL fan-out picture (service-
+    level default, or absent that, the largest configfile-level value for
+    that service — see :func:`_resolve_service_instances`) and, for every
+    service where that resolves to N > 1, MUTATES *ciu_context* in place to
+    carry ``{"instances": {service: N, ...}}``. This is deliberately a
+    mutation of the CALLER's dict, not a return value: engine.py (this
+    package's scope forbids touching it) threads the SAME ``ciu_context``
+    object reference into the LATER ``render_compose`` call for this same
+    stack render (the pre-existing S3.12 ``selected_profiles``/
+    ``deployed_stacks`` channel) — mutating it here is the only way
+    ``ciu.instances`` reaches compose templates without a new parameter
+    threading through a forbidden file. A service with no resolved N > 1 is
+    simply absent — never present with a value of 1. Because engine.py
+    reuses ONE ``ciu_context`` object across every stack in a single
+    ``ciu up`` invocation, the ``instances`` key is explicitly POPPED (not
+    just left unset) when this stack's own resolution is empty, so an
+    earlier stack's fan-out counts can never leak into a later stack's
+    compose render.
 
     The result is written to
     ``<stack_dir>/.ciu/rendered/<service[-index]>/<target's own directory
@@ -585,6 +825,15 @@ def render_configfiles(
     root = config.get(root_key)
     if not isinstance(root, Mapping):
         return []
+
+    # V8-PREP-6/O1: resolve service-level `instances` defaults (and refuse
+    # any disagreement with a configfile-level value) BEFORE any secret
+    # discovery or rendering — a bad declaration fails immediately, not
+    # after work has already started. This ALSO validates every service-
+    # level/configfile-level value in the config up front, so the loop below
+    # never needs to re-validate an `instances_raw` it already knows is a
+    # positive int (see the resolution block for why that's safe).
+    service_defaults, resolved_instances = _resolve_service_instances(root)
 
     # Secrets reachable ONLY via secret(): guard the config so any
     # {{ root.secrets.x }} in a configfile template still aborts (S4.21/S5.4).
@@ -629,16 +878,45 @@ def render_configfiles(
                     f"is missing a `target` container path."
                 )
 
-            # Validate + resolve instance count
+            # Validate + resolve instance count. V8-PREP-6/O1: an explicit
+            # configfile-level value always wins (byte-identical to before
+            # this package). `instances_raw`, when not None, is already
+            # known valid here — _resolve_service_instances above validated
+            # (and would have refused any disagreement for) every
+            # service+configfile in this config before this loop started.
             if instances_raw is None:
+                # S7.5e (migration-safety refusal, added post-review): the
+                # service-level default does NOT silently apply here. Before
+                # this package, a configfile omitting `instances` under a
+                # multi-instance service had exactly ONE way to end up
+                # mounted into every compose replica: a single shared
+                # render, fanned out at overlay time by the pre-existing
+                # S5.3 base-selector mechanism (_configfile_mount_services).
+                # Silently reinterpreting that same omission as "render N
+                # independent times" the moment a service declares
+                # `instances` is precisely the silent-behavior-change-on-
+                # upgrade hazard this whole wave refuses rather than guesses
+                # at (repo-root precedence, identity-tuple precedence, and
+                # now this) — so an omitted key paired with a declared
+                # service default > 1 REFUSES instead of picking a reading.
+                default_instances = service_defaults.get(service_name)
+                if default_instances is not None and default_instances > 1:
+                    raise ValueError(
+                        f"[S7.5e] service '{service_name}' declares "
+                        f"instances={default_instances} but its configfile "
+                        f"'{cfg_name}' has no 'instances' key of its own "
+                        "(V8-PREP-6): a configfile can never silently "
+                        "inherit the service-level default. Either declare "
+                        f"`instances = {default_instances}` explicitly on "
+                        "this configfile to opt into the new per-instance "
+                        "render, or remove the service-level default if "
+                        "this configfile is intentionally a single shared "
+                        "render meant to be fanned out by the S5.3 "
+                        "base-selector mechanism instead."
+                    )
                 instance_count = 1
                 multi_instance = False
             else:
-                if not isinstance(instances_raw, int) or isinstance(instances_raw, bool) or instances_raw < 1:
-                    raise ValueError(
-                        f"[S5.1] configfile '{cfg_name}' of service '{service_name}': "
-                        f"'instances' must be a positive integer, got {instances_raw!r}."
-                    )
                 instance_count = instances_raw
                 multi_instance = instance_count > 1
 
@@ -762,6 +1040,26 @@ def render_configfiles(
                         consumed_secrets=tuple(sorted(consumed_here)),
                     )
                 )
+
+    if ciu_context is not None:
+        instances_for_ciu = {
+            name: count for name, count in resolved_instances.items() if count > 1
+        }
+        # V8-PREP-6/O2: engine.py reuses ONE `ciu_context` object across
+        # every stack in a single `ciu up` run — the SAME cross-stack-
+        # contamination hazard `selected_profiles`/`deployed_stacks` (S3.12)
+        # was built to guard against, now recurring for `instances` because
+        # this key is threaded through the identical shared object. ALWAYS
+        # resolve the key for THIS stack: a FRESH assignment when non-empty
+        # (never `setdefault(...).update(...)` / any other accumulate-style
+        # write — that would keep a PRIOR stack's service keys alongside
+        # this stack's own, not just when this stack has none), POP when
+        # empty. Either half done wrong lets an earlier stack's fan-out
+        # counts silently leak into a later stack's compose render.
+        if instances_for_ciu:
+            ciu_context["instances"] = instances_for_ciu
+        else:
+            ciu_context.pop("instances", None)
 
     return mounts
 
@@ -1109,6 +1407,112 @@ def generate_overlay(
 
 
 # ---------------------------------------------------------------------------
+# env_required (V8-PREP-7 / S8.2a)
+# ---------------------------------------------------------------------------
+
+_ENV_VAR_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def resolve_env_required(root: Mapping[str, Any]) -> dict[str, list[str]]:
+    """V8-PREP-7 (O1) — shape-validate every declared ``env_required`` list.
+
+    *root* is a stack's ``config[root_key]`` table. Every direct child value
+    that is itself a ``Mapping`` and declares an ``env_required`` key is
+    treated as a service declaration — the same opportunistic "any Mapping
+    child with the key I care about" convention :func:`_resolve_service_instances`
+    (V8-PREP-6) already uses for ``instances``. No separate reserved-key list
+    is needed: CIU's other reserved stack-level tables (``secrets``, ``hooks``,
+    ``governance``, ``env``, ...) never declare an ``env_required`` key of
+    their own, so they are silently skipped exactly like a service that
+    simply didn't declare one.
+
+    Each declared value must be a ``list`` of non-empty strings, each
+    matching ``^[A-Za-z_][A-Za-z0-9_]*$`` (a valid shell/env variable name),
+    with no duplicate entries within one service's own list. Any violation
+    raises :class:`ValueError` naming the service and the exact bad value —
+    never silently coerced, truncated, or skipped.
+
+    Returns ``{service_name: [var, ...]}`` for every service that declared
+    ``env_required``; a config with none declared anywhere returns ``{}``
+    (O1's "absent -> zero behavior change").
+    """
+    declared: dict[str, list[str]] = {}
+    for service_name, service_block in root.items():
+        if not isinstance(service_block, Mapping):
+            continue
+        raw = service_block.get("env_required", None)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"[V8-PREP-7] service '{service_name}' declares "
+                f"env_required = {raw!r}; expected a list of environment "
+                "variable name strings."
+            )
+        seen: set[str] = set()
+        names: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item:
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"entry {item!r} must be a non-empty string."
+                )
+            if not _ENV_VAR_NAME_RE.match(item):
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"entry {item!r} is not a valid environment variable "
+                    "name (must match ^[A-Za-z_][A-Za-z0-9_]*$)."
+                )
+            if item in seen:
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"declares '{item}' more than once."
+                )
+            seen.add(item)
+            names.append(item)
+        declared[service_name] = names
+    return declared
+
+
+def check_env_required(
+    env_required: Mapping[str, Iterable[str]], env: Mapping[str, str]
+) -> None:
+    """V8-PREP-7 (O2/O3) — collective presence check against *env*.
+
+    *env* MUST be the dict :func:`compose_process_env` itself builds and
+    returns (i.e. AFTER secret materialization, IMMEDIATELY BEFORE the
+    compose invocation) — never ``os.environ`` or any pre-materialization
+    environment. Checking against ``os.environ`` produces false failures for
+    a variable supplied only via a secret's ``expose_env`` (S4.19): that
+    value is injected only into ``compose_process_env``'s returned dict, it
+    never touches the real process environment.
+
+    Collects every missing ``(service, variable)`` pair across ALL declared
+    services into ONE :class:`ValueError` — mirroring
+    :func:`config_model.expand_env_vars_or_fail`'s collective-error STYLE
+    (report everything the caller must fix, not just the first miss) —
+    rather than raising on the first miss and stopping. A variable present
+    in *env* but set to the empty string counts as missing, the same
+    convention ``expand_env_vars_or_fail`` uses.
+
+    A no-op when *env_required* is empty.
+    """
+    missing: list[str] = []
+    for service_name in sorted(env_required):
+        for var_name in env_required[service_name]:
+            if not env.get(var_name):
+                missing.append(f"{service_name}.{var_name}")
+    if missing:
+        raise ValueError(
+            "[V8-PREP-7] Missing required environment variable(s) declared "
+            f"via env_required: {', '.join(missing)}.\n"
+            "[V8-PREP-7] ciu.env is authoritative — run 'ciu env generate' "
+            "and source ciu.env before running CIU, or confirm any "
+            "expose_env secret this variable relies on actually materialized."
+        )
+
+
+# ---------------------------------------------------------------------------
 # compose_process_env (S8.2)
 # ---------------------------------------------------------------------------
 
@@ -1118,6 +1522,8 @@ def compose_process_env(
     *,
     base: Mapping[str, str] | None = None,
     compose_profiles: Iterable[str] | None = None,
+    config: Mapping[str, Any] | None = None,
+    root_key: str | None = None,
 ) -> dict[str, str]:
     """Build the compose process environment (S8.2) — and nothing more.
 
@@ -1134,6 +1540,19 @@ def compose_process_env(
     The ``expose_env`` value comes from ``materialized[spec.name].value``; if a
     spec declares ``expose_env`` but is not present in *materialized* (or its
     value is ``None``), it is skipped — there is nothing to expose.
+
+    V8-PREP-7 (S8.2a / O1-O3): when *config* and *root_key* are BOTH given,
+    every ``[<root_key>.<service>] env_required = [...]`` declaration found
+    in ``config[root_key]`` is shape-validated
+    (:func:`resolve_env_required`) and then checked for presence
+    (:func:`check_env_required`) against the env dict THIS call itself just
+    built above — i.e. after secret materialization, immediately before the
+    compose invocation this env is built for. Omitting either (or both,
+    the default) is a complete no-op — zero behavior change for every
+    existing caller. Wiring the real ``ciu up`` pipeline to pass its
+    already-merged stack ``config``/``root_key`` here is deferred to the V8
+    cutover (docs/BACKLOG-2026-08-24.md — this package's scope forbids
+    touching ``engine.py``, the only call site that has both in hand today).
     """
     env: dict[str, str] = dict(base if base is not None else os.environ)
     env["PWD"] = os.getcwd()
@@ -1153,6 +1572,13 @@ def compose_process_env(
         if value is None:
             continue
         env[spec.expose_env] = value if isinstance(value, str) else str(value)
+
+    if config is not None and root_key is not None:
+        root = config.get(root_key)
+        if isinstance(root, Mapping):
+            env_required = resolve_env_required(root)
+            if env_required:
+                check_env_required(env_required, env)
 
     return env
 

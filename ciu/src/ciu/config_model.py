@@ -9,7 +9,12 @@ Implements SPEC S3 (configuration model):
   S3.4  Re-render preserves only [state]; [secrets] NOT preserved
   S3.5  Stack shape: exactly one non-reserved top-level key
   S3.7  Stack root key must not collide with reserved global namespaces
+        (also recognizes `local_stack` as a preferred root key name, V8-PREP-4)
   S3.11 [deploy].landscape_id validated on the final merged global config (CIU-36)
+  S3.13 ciu.user_tables validated on the final merged global config (V8-PREP-1)
+  S3.14 [service.<name>] identity registry shape validated at global scope
+        (V8-PREP-3, narrowed: declaration-only — type/location/description,
+        no per-service realness sub-tables)
 
 This module is standalone: it does NOT import from engine.py or deploy.py.
 Engine.py / deploy.py will import this module in the Wave-3 cutover.
@@ -28,7 +33,11 @@ deep_merge(base, override)       -> dict   (S3.3: tables merge, lists replace)
 chain_dirs(repo_root, working_dir) -> list[Path]   (S3.3 fix of B11)
 render_global_chain(working_dir, repo_root, *, write_rendered=True, environ=None) -> dict
 render_stack(working_dir, global_config, preserve_state=True) -> dict
-RESERVED_GLOBAL_NAMESPACES       frozenset[str]   (S3.7)
+RESERVED_GLOBAL_NAMESPACES       frozenset[str]   (S3.7 — forbidden stack root keys)
+RESERVED_GLOBAL_TABLES           frozenset[str]   (S3.13 — tables CIU reads at global scope)
+validate_user_tables(merged)     -> None           (S3.13)
+VALID_SERVICE_TYPES              frozenset[str]   (S3.14 — closed [service.<name>].type vocabulary)
+validate_service_registry(merged, repo_root) -> None  (S3.14)
 validate_stack_shape(stack_config) -> str          (S3.5 + S3.7)
 """
 
@@ -45,6 +54,7 @@ from .config_constants import (
     GLOBAL_CONFIG_OVERRIDES,
     GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
+    SHIPPED_COMPOSE,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
     STACK_CONFIG_RENDERED,
@@ -67,6 +77,104 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
     "auto_generated",
     "secrets",
     "governance",
+    "infrastructure",
+})
+
+# ---------------------------------------------------------------------------
+# S3.13 (V8-PREP-1 groundwork) – tables CIU itself reads at GLOBAL scope
+# ---------------------------------------------------------------------------
+#
+# DISTINCT from RESERVED_GLOBAL_NAMESPACES above. That set answers "which
+# names may a STACK not pick as its own root key" (S3.7) — a defensive,
+# broader set. This set answers a different question: "which top-level
+# tables does CIU's OWN code actually read off the rendered GLOBAL config
+# today". It backs `validate_user_tables`'s allowlist denominator (S3.13):
+# when a consumer opts into `ciu.user_tables`, every top-level key that is
+# neither here nor declared in `ciu.user_tables` is an error.
+#
+# Membership determined by tracing every `render_global_chain` call site and
+# every place its result (or a downstream still-global-scope value derived
+# from it, e.g. `profile.config`) is read with `.get(<name>)` / `[<name>]`,
+# never by guessing from RESERVED_GLOBAL_NAMESPACES's membership — AND (fix
+# added at review, ciu-P21) every direct reader of the RENDERED
+# `GLOBAL_CONFIG_RENDERED` file that bypasses `render_global_chain` entirely
+# (grep `GLOBAL_CONFIG_RENDERED` across src/ciu/*.py: the only such bypass
+# is workspace_env.py's own `tomllib.load` of `ciu.global.toml`; every other
+# hit is the writer in this module, a log message, or an unused import):
+#   - "ciu"        engine.py (auto_connect_network, log_level via ciu.*),
+#                  deploy.py (resolve_profiles' ciu.instance.*), worktree.py
+#                  (ciu.worktree cap, S16.3), warn_policy.py, provisioning.py
+#                  (REGISTRY_VALIDATOR_KEY lookup) — all on global-scope dicts.
+#   - "deploy"     engine.py/deploy.py/config_model.py itself
+#                  (_validate_deploy_landscape_id, validate_declared_features's
+#                  deploy.layouts/deploy.provenance.vendor_images), hosts.py.
+#   - "topology"   worktree.py's `_ref_service_port` reads
+#                  `ref_global.get("topology")` on a pure global-chain render
+#                  (write_rendered=False, no stack merged in).
+#   - "vault"      deploy.py's `_is_vault_stack_path(profile.config, ...)` —
+#                  profile.config is the profile-resolved GLOBAL config
+#                  (deploy_pkg/profiles.py: `config=global_cfg` / a profile
+#                  overlay over it), never a stack merge.
+#   - "registry"   provisioning.py's `probe_ref`/`validate_registries`, both
+#                  explicitly documented ("merged global config") and called
+#                  with `profile.config`.
+#   - "governance" governance.py's own docstring: "a bare top-level
+#                  `[governance]` table in `ciu.global.toml`" is the BASE
+#                  layer read directly off the global config.
+#   - "service"    docs/SPEC.md S3.8: stacks reference the global
+#                  `[service.*]` registry directly in their own TOML
+#                  templates (`{{ service.infra.redis_core.redis.name }}`) —
+#                  CIU's config model carries this table through to every
+#                  render context; there is no per-key Python `.get()` for
+#                  it (it is pass-through, not interpreted), but it is a
+#                  real, currently-shipped global table, not an invented one.
+#                  ciu-P22 (S3.14, V8-PREP-3 narrowed) adds the FIRST actual
+#                  Python-side shape check of this table's own top-level
+#                  entries (`validate_service_registry`); the per-service
+#                  values nested underneath a `[service.<stack>]` entry
+#                  remain pure pass-through, unread and unvalidated by CIU.
+#   - "auto_generated" S3.9: build_version/build_time/uid/gid/docker_gid are
+#                  computed by CIU (`engine.auto_generate_values`) and written
+#                  onto the merged config every run — a consumer's OWN
+#                  top-level `[auto_generated]` table would be silently
+#                  clobbered by that write.
+#   - "infrastructure" workspace_env.py:325 —
+#                  `config.get("infrastructure", {}).get("public_fqdn", "")`,
+#                  read directly off the RENDERED `ciu.global.toml` (a raw
+#                  `tomllib.load`, not through `render_global_chain`) inside
+#                  `_detect_public_fqdn` (S2.7/CIU-47's PUBLIC_FQDN
+#                  derivation). This bypass is exactly why membership here
+#                  cannot be determined from `render_global_chain` call
+#                  sites alone — see the methodology note above.
+#
+# Explicitly EXCLUDED, despite being in RESERVED_GLOBAL_NAMESPACES, because
+# grepping every call site found no code that reads a literal TOP-LEVEL
+# table by that name off the global config (each is either nested under one
+# of the tables above, or a STACK-scope-only concept):
+#   - "consul"   only ever read nested, as `[registry.consul]`
+#                (provisioning.py) — never a top-level `[consul]` table.
+#   - "env"      reserved because `env` is the Jinja context key CIU injects
+#                itself (`_make_render_context`); `[deploy.env.*]` is a
+#                nested sub-table, not a top-level `[env]` global table.
+#   - "state"    a STACK-scope reserved key (`_STACK_RESERVED`, S3.4/S3.5)
+#                preserved on RE-RENDER of `ciu.toml`; never a top-level
+#                table in `ciu.global.toml`.
+#   - "secrets"  a STACK-scope concept only (`[<root>.secrets]`, S4.1);
+#                S4.1 says global config MUST NOT contain `secrets` tables.
+#
+# `build` (proposal §1.14's own example lists it as a USER table) is
+# deliberately absent — it is exactly the kind of consumer-domain table
+# `ciu.user_tables` exists to declare, not a CIU-reserved one.
+RESERVED_GLOBAL_TABLES: frozenset[str] = frozenset({
+    "ciu",
+    "deploy",
+    "topology",
+    "vault",
+    "registry",
+    "governance",
+    "service",
+    "auto_generated",
+    "infrastructure",
 })
 
 # ---------------------------------------------------------------------------
@@ -511,6 +619,17 @@ def render_global_chain(
     # later layer that corrects an earlier bad value is honored, and an
     # overlay-set value is covered too.
     _validate_deploy_landscape_id(merged)
+    # S3.13 (V8-PREP-1): same timing/reasoning as S3.11 immediately above —
+    # once, on the FINAL merged config, so a later layer (or the worktree
+    # overlay) can correct an earlier layer's declaration.
+    validate_user_tables(merged)
+    # S3.14 (V8-PREP-3 narrowed): same timing/reasoning again — the global
+    # `[service.<name>]` identity registry is validated once, on the FINAL
+    # merged config, so a later layer can correct an earlier declaration.
+    # Needs *repo_root* (unlike the two checks above) to confirm a CIU/COMPOSE
+    # entry's `location` names a real directory containing the right marker
+    # file — a purely in-memory shape check cannot see that.
+    validate_service_registry(merged, repo_root)
 
     if write_rendered:
         output_path = repo_root / GLOBAL_CONFIG_RENDERED
@@ -550,6 +669,227 @@ def _validate_deploy_landscape_id(merged: dict) -> None:
             f"[S3.11] [deploy].landscape_id must match '^[a-z][a-z0-9-]{{0,62}}$' "
             f"(a DNS-label-safe slug); got {landscape_id!r}."
         )
+
+
+# ---------------------------------------------------------------------------
+# S3.13 (V8-PREP-1 groundwork) – ciu.user_tables validation
+# ---------------------------------------------------------------------------
+
+_USER_TABLE_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_user_tables(merged: dict) -> None:
+    """S3.13 (V8-PREP-1) — validate ``ciu.user_tables`` on the FINAL merged
+    global config, once (same timing/reasoning as :func:`_validate_deploy_landscape_id`
+    directly above: after the committed chain and the worktree overlay, so a
+    later layer that corrects an earlier declaration is honored).
+
+    ``ciu.user_tables`` is consumer opt-in: absence is a complete no-op — a
+    config that never declares it sees ZERO behavior change, regardless of
+    what top-level tables it has. This is the additive V8-PREP-1 groundwork
+    step only; the eventual V8 breaking step (deferred, not shipped here) is
+    defaulting ``ciu.user_tables`` to empty so every undeclared table is
+    always an error.
+
+    When present, ``ciu.user_tables`` MUST be a list of strings, each
+    matching ``^[A-Za-z0-9_-]+$`` (TOML bare-key charset), with no duplicate
+    and no member already in :data:`RESERVED_GLOBAL_TABLES` (CIU already
+    reserves those names — declaring one in ``ciu.user_tables`` would be
+    redundant/misleading, so it is rejected rather than silently accepted).
+    Each malformed condition raises its own tagged ``ValueError`` naming the
+    offending member(s) collectively (never partial — mirrors
+    :func:`expand_env_vars_or_fail`'s collective-error style).
+
+    Once the declaration itself is well-formed, every top-level key in
+    *merged* that is neither in :data:`RESERVED_GLOBAL_TABLES` nor listed in
+    ``ciu.user_tables`` is a single collective ``ValueError`` naming every
+    offending key.
+    """
+    ciu_table = merged.get("ciu")
+    if not isinstance(ciu_table, dict):
+        return
+    declared = ciu_table.get("user_tables")
+    if declared is None:
+        return
+
+    if not isinstance(declared, list) or not all(isinstance(m, str) for m in declared):
+        raise ValueError(
+            f"[S3.13] ciu.user_tables must be a list of strings; got {declared!r}."
+        )
+
+    malformed = [m for m in declared if not _USER_TABLE_NAME_RE.fullmatch(m)]
+    if malformed:
+        raise ValueError(
+            "[S3.13] ciu.user_tables member(s) must match "
+            f"'{_USER_TABLE_NAME_RE.pattern}': "
+            + ", ".join(repr(m) for m in malformed)
+        )
+
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for m in declared:
+        if m in seen:
+            duplicates.add(m)
+        seen.add(m)
+    if duplicates:
+        raise ValueError(
+            "[S3.13] ciu.user_tables has duplicate member(s): "
+            + ", ".join(sorted(duplicates))
+        )
+
+    collisions = [m for m in declared if m in RESERVED_GLOBAL_TABLES]
+    if collisions:
+        raise ValueError(
+            "[S3.13] ciu.user_tables member(s) collide with CIU's own "
+            "reserved global tables: " + ", ".join(sorted(collisions))
+            + ". Remove them from ciu.user_tables — CIU already reserves these names."
+        )
+
+    allowed = RESERVED_GLOBAL_TABLES | set(declared)
+    unknown = sorted(k for k in merged if k not in allowed)
+    if unknown:
+        raise ValueError(
+            "[S3.13] Unknown top-level table(s) in the global config: "
+            + ", ".join(unknown)
+            + ". Every top-level table must be a CIU-reserved global table "
+            "(RESERVED_GLOBAL_TABLES) or declared in ciu.user_tables."
+        )
+
+
+# ---------------------------------------------------------------------------
+# S3.14 (V8-PREP-3 narrowed groundwork) – [service.<name>] identity registry
+# ---------------------------------------------------------------------------
+#
+# Declaration-only, per docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1
+# (rev 1.4, commit 4440c17e — the two-level stack.service hierarchy). This
+# validates ONLY the stack-level identity fields (`type`/`location`/
+# `description`) sitting directly under `[service.<stack_name>]`. The
+# per-service REALNESS sub-table layer described in §3.2
+# (`[service.<stack>.<svc>.<level>]`: live/mock/owned-seeded/simulated) is
+# deliberately NOT accepted here — see the "any other key... REJECTED"
+# branch below. Accepting-and-ignoring that layer now would let a consumer
+# ship configs the real V8 rewrite could not safely reinterpret without a
+# silent-migration trap; refusing it instead keeps that layer free for V8
+# to define on its own terms.
+
+#: S3.14 — the only three keys accepted directly under `[service.<name>]`.
+_SERVICE_ALLOWED_KEYS: frozenset[str] = frozenset({"type", "location", "description"})
+
+#: S3.14 — stack types whose `location` is REQUIRED, and the marker file
+#: `location` must contain for each (reusing config_constants.py's existing
+#: filename constants rather than re-hardcoding the strings, per the
+#: handoff's escalate_if).
+_SERVICE_TYPE_REQUIRED_FILE: dict[str, str] = {
+    "CIU": STACK_CONFIG_DEFAULTS,
+    "COMPOSE": SHIPPED_COMPOSE,
+}
+
+#: S3.14 — stack types whose `location` is FORBIDDEN (the entity IS the
+#: service; there is nothing on disk for CIU to deploy).
+_SERVICE_TYPES_FORBIDDING_LOCATION: frozenset[str] = frozenset({"EXTERNAL", "IN_PROCESS"})
+
+#: S3.14 — the closed `[service.<name>].type` vocabulary (proposal §1.15).
+VALID_SERVICE_TYPES: frozenset[str] = frozenset(
+    set(_SERVICE_TYPE_REQUIRED_FILE) | _SERVICE_TYPES_FORBIDDING_LOCATION
+)
+
+
+def validate_service_registry(merged: dict, repo_root: Path) -> None:
+    """S3.14 (V8-PREP-3 narrowed) — validate the global `[service.<name>]`
+    identity registry on the FINAL merged global config, once (same timing/
+    reasoning as :func:`validate_user_tables` immediately above).
+
+    ``[service.*]`` is consumer opt-in: absence (or an empty table) is a
+    complete no-op — this function's body is not entered at all, so a
+    config that never declares a `[service.<name>]` entry sees ZERO
+    behavior change.
+
+    When present, each `[service.<stack_name>]` entry MUST be a TOML table
+    containing ONLY the keys in :data:`_SERVICE_ALLOWED_KEYS`
+    (``type``, ``location``, ``description``). Any other key — including a
+    nested table, which is exactly how the deferred per-service realness
+    layer (§3.2) would appear — is REJECTED naming the stack and the
+    offending key(s); this deliberately does NOT accept-and-ignore that
+    layer (see the module comment above :data:`_SERVICE_ALLOWED_KEYS`).
+
+    - ``type`` is REQUIRED and MUST be one of :data:`VALID_SERVICE_TYPES`
+      (``CIU``, ``COMPOSE``, ``EXTERNAL``, ``IN_PROCESS``).
+    - ``location`` is REQUIRED for ``CIU``/``COMPOSE`` and MUST name a
+      repo-relative directory containing that type's marker file
+      (:data:`_SERVICE_TYPE_REQUIRED_FILE`) — ``ciu.defaults.toml.j2`` for
+      ``CIU``, ``docker-compose.yml`` for ``COMPOSE``. ``location`` is
+      FORBIDDEN (a config error, not silently ignored) for
+      ``EXTERNAL``/``IN_PROCESS`` — those types have no stack directory;
+      the entity itself IS the service.
+    - ``description``, when present, MUST be a string.
+
+    Each malformed condition raises its own tagged ``ValueError`` naming the
+    offending stack (mirrors :func:`validate_user_tables`'s per-condition,
+    collective-error style — one clear failure per stack entry, not a single
+    error covering the whole table, since each stack's shape is independent).
+    """
+    service_table = merged.get("service")
+    if not isinstance(service_table, dict) or not service_table:
+        return
+
+    for stack_name, entry in service_table.items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}] must be a TOML table; "
+                f"got {type(entry).__name__}."
+            )
+
+        unknown = sorted(k for k in entry if k not in _SERVICE_ALLOWED_KEYS)
+        if unknown:
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}] has unrecognized key(s): "
+                + ", ".join(unknown)
+                + ". Only 'type', 'location', and 'description' are accepted "
+                "at this scope — the per-service realness sub-table layer "
+                "(V8 proposal §3.2) is deliberately reserved, not accepted, "
+                "so V8 can define it later without a silent-acceptance "
+                "migration trap."
+            )
+
+        service_type = entry.get("type")
+        # isinstance-guarded BEFORE the membership test: an inline-table or
+        # array `type` value (e.g. `type = ["CIU"]`) is unhashable, and
+        # `x not in a_frozenset` hashes `x` — an unguarded membership test
+        # would raise a bare TypeError instead of this function's own
+        # tagged ValueError.
+        if not isinstance(service_type, str) or service_type not in VALID_SERVICE_TYPES:
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}].type must be one of "
+                f"{sorted(VALID_SERVICE_TYPES)}; got {service_type!r}."
+            )
+
+        location = entry.get("location")
+        if service_type in _SERVICE_TYPES_FORBIDDING_LOCATION:
+            if location is not None:
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location is FORBIDDEN "
+                    f"for type {service_type!r}; got {location!r}."
+                )
+        else:
+            if not isinstance(location, str) or not location:
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location is required "
+                    f"for type {service_type!r}; got {location!r}."
+                )
+            required_file = _SERVICE_TYPE_REQUIRED_FILE[service_type]
+            if not (Path(repo_root) / location / required_file).is_file():
+                raise ValueError(
+                    f"[S3.14] [service.{stack_name}].location {location!r} "
+                    f"must name a directory containing {required_file!r} "
+                    f"(type {service_type!r})."
+                )
+
+        description = entry.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError(
+                f"[S3.14] [service.{stack_name}].description must be a "
+                f"string; got {type(description).__name__}."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +979,21 @@ def validate_stack_shape(stack_config: dict) -> str:
 
     S3.7: the root key must not be in RESERVED_GLOBAL_NAMESPACES.
     Violation raises ValueError with "[S3.7]" and a renaming suggestion.
+
+    V8-PREP-4 (docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.16): ``local_stack``
+    is the V8-preferred stack root key name — a stack MAY name its root
+    table ``[local_stack]`` instead of a directory-derived name. It requires
+    NO special-casing here: ``local_stack`` is deliberately absent from
+    ``RESERVED_GLOBAL_NAMESPACES`` (membership there would make it
+    FORBIDDEN, the opposite of "preferred") and from ``RESERVED_GLOBAL_TABLES``
+    (S3.13 — that set is global-scope, `local_stack` is a stack-scope name),
+    so it flows through every check below identically to any other
+    non-reserved root key and is returned exactly the same way. A stack that
+    keeps its existing directory-derived root key is completely unaffected —
+    its own name still hits the S3.7 collision check unchanged. Every
+    downstream reader of the returned root key (secret discovery, hooks,
+    configfile, governance) already takes it as an opaque string parameter,
+    so it behaves identically to any other stack name.
     """
     if not isinstance(stack_config, dict):
         raise ValueError(
@@ -698,7 +1053,7 @@ _REF_RE = re.compile(
     r"|pg:(?:role|db|schema)/[a-zA-Z0-9_-]+"      # pg:role/<n>, pg:db/<n>, or pg:schema/<n>
     r"|minio:user/[a-zA-Z0-9_-]+"                 # minio:user/<name>
     r"|consul:token/[a-zA-Z0-9_-]+"               # consul:token/<svc>
-    r"|stack:[a-zA-Z0-9_/-]+:healthy)"            # stack:<name>:healthy
+    r"|stack:[a-zA-Z0-9_/-]+:(?:healthy|completed))"  # stack:<name>:healthy|completed
 )
 
 
@@ -726,7 +1081,8 @@ def validate_provisioning_ref(ref: str) -> None:
         raise ValueError(
             f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
             f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, pg:schema/myschema, "
-            f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
+            f"minio:user/worker, consul:token/myapp, stack:db-core:healthy, "
+            f"stack:db-core:completed"
         )
 
 

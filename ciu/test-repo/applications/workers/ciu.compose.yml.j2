@@ -1,11 +1,17 @@
 # ============================================================================
-# workers — compose template: N instances via an index loop (S5.3 / CIU-2)
+# workers — compose template: N instances via ciu.instances (V8-PREP-6/O2)
 # ============================================================================
-# The loop emits `worker-1`, `worker-2`, … . The configfile mount is NOT listed
-# here — it is injected by the generated overlay (S4.17), fanned out to each
-# instance key. Per-instance identity goes in env (WORKER_INSTANCE).
+# The loop bound comes from `ciu.instances.worker` — CIU's own resolution of
+# the declared instances count (S7.5d) — rather than reading
+# `workers.worker.instances` directly, so this template automatically tracks
+# whichever level (service or configfile) ends up authoritative, and a
+# template checking `'worker' in ciu.instances` is the sanctioned way to ask
+# "does this service fan out at all". The loop emits `worker-1`, `worker-2`,
+# … ; the configfile mount is NOT listed here — it is injected by the
+# generated overlay (S4.17), one exact-match mount per instance key (S7.5b).
+# Per-instance identity goes in env (WORKER_INSTANCE).
 services:
-{% for i in range(1, workers.worker.instances + 1) %}
+{% for i in range(1, ciu.instances.worker + 1) %}
   {{ workers.worker.name }}-{{ i }}:
     image: {{ workers.worker.image_name }}:{{ workers.worker.image_tag }}
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ workers.worker.name }}-{{ i }}

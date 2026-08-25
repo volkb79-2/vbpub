@@ -1,12 +1,29 @@
 # ============================================================================
-# applications/workers — replicated service: configfile fan-out (S5.3 / CIU-2)
-#                        + the dev-loop profile (S5a / CIU-5)
+# applications/workers — replicated service: unified instances fan-out
+#                        (V8-PREP-6 / S7.5d-e, ciu-P24) + the dev-loop
+#                        profile (S5a / CIU-5)
 # ============================================================================
 # This stack runs N instances of one service (compose keys `worker-1`,
-# `worker-2`, … from an instance loop) and demonstrates that a SINGLE base
-# configfile section fans out to every instance — you do NOT declare one section
-# per replica. It also carries a [workers.dev] profile so `ciu dev` has a worked
-# example. Render-only in the demo (no docker needed).
+# `worker-2`, … from an instance loop driven by `ciu.instances`) and
+# demonstrates the UNIFIED V8-PREP-6 pattern: ONE declared `instances` count
+# drives BOTH the compose template's own loop (via `ciu.instances.worker`,
+# S7.5d/O2) AND the configfile's per-instance fan-out (S7.5b), instead of two
+# independently-maintained mechanisms that could silently disagree. It also
+# carries a [workers.dev] profile so `ciu dev` has a worked example.
+# Render-only in the demo (no docker needed).
+#
+# Migration note (ciu-P24, 2026-08-25): before V8-PREP-6, this stack's
+# `[workers.worker.configfile.main]` omitted `instances` entirely and relied
+# on the pre-existing S5.3 base-selector mechanism to fan a SINGLE shared
+# render out to `worker-1`/`worker-2` at overlay time. Once `instances` on
+# `[workers.worker]` became a meaningful V8-PREP-6 declaration, that same
+# omission became ambiguous (does the configfile mean to opt into the new
+# per-instance render, or does it still want the old single-shared-render
+# behavior?) — S7.5e refuses rather than guess, naming exactly this
+# collision. This is why `[workers.worker.configfile.main]` below now
+# explicitly restates `instances = 2`, matching the service-level value: it
+# is the required opt-in, not decoration. See CHANGES.md and SPEC.md S7.5e
+# for the general rule.
 
 [workers]
 stack_name = "workers"
@@ -22,8 +39,10 @@ requires = [
 name = "worker"
 image_name = "python"
 image_tag = "3.12-alpine"
-# Number of instances; the compose template loops 1..instances to emit
-# `worker-1`, `worker-2`, … (1-based — the convention CIU's fan-out matches).
+# Number of instances (V8-PREP-6 service-level declaration, S7.5d): drives
+# `ciu.instances.worker` in the compose template's own loop below AND
+# validates agreement with the configfile's own restated value (S7.5e).
+# 1-based fan-out — `worker-1`, `worker-2`, … — the convention CIU matches.
 instances = 2
 
 # --- secrets ----------------------------------------------------------------
@@ -32,14 +51,19 @@ instances = 2
 [workers.secrets]
 queue_token = "GEN_LOCAL:demo/worker_queue_token"
 
-# --- configfile mount: ONE base section, fanned out to all instances --------
-# [workers.worker.configfile.main] targets the BASE service `worker`. Because the
-# rendered compose has no exact `worker` key but has `worker-1`/`worker-2`, the
-# overlay mounts the rendered file into BOTH instances (S5.3 / CIU-2). Adding a
-# 3rd replica needs no new section here.
+# --- configfile mount: ONE base section, rendered once PER instance ---------
+# `instances = 2` here (V8-PREP-6/O1) must match the service-level value
+# above — S7.5e refuses if it disagrees, and refuses just as loudly if this
+# key were omitted entirely while the service declares one (the collision
+# this demo used to have, see the migration note above). With it declared,
+# `render_configfiles` renders `main` TWICE — once per instance, each with
+# its own `instance_index`/`instance_id` — and emits mounts named
+# `worker-1`/`worker-2` directly (S7.5b), which the overlay mounts as exact
+# matches; the old S5.3 base-selector fallback is never needed here anymore.
 [workers.worker.configfile.main]
 template = "config.toml.j2"
 target = "/etc/worker/config.toml"
+instances = 2
 
 # --- dev loop (S5a / CIU-5) -------------------------------------------------
 # `ciu dev applications/workers` runs the prebuild then the reload server in one

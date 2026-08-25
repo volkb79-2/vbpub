@@ -168,6 +168,42 @@ though top-level reserved namespaces (S3.7) still apply.
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
 
+### `[ciu].user_tables` — declared consumer-owned global tables [S3.13]
+
+**V8-PREP-1 groundwork (additive; opt-in).** A consumer MAY declare which
+top-level global-config tables are its own, so CIU can flag an unexpected
+future collision immediately rather than silently merging it:
+
+```toml
+[ciu]
+user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
+```
+
+- Absence is legal and is a **complete no-op** — a config that never
+  declares `ciu.user_tables` sees zero behavior change, no matter what
+  top-level tables it has.
+- Once declared, every top-level key in the FINAL merged global config
+  (after the committed chain and the worktree overlay, same timing as
+  `[deploy].landscape_id`, S3.11) must be either one of CIU's own
+  `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`, `topology`, `vault`,
+  `registry`, `governance`, `service`, `auto_generated`,
+  `infrastructure` — the tables CIU itself reads at global scope today;
+  `infrastructure` backs `[infrastructure].public_fqdn`, S2.7/CIU-47) or a
+  name listed in `ciu.user_tables`. An unlisted table is a configuration
+  error naming every offending key.
+- Each declared name must be a bare-key-safe string (`^[A-Za-z0-9_-]+$`),
+  unique within the list, and must not repeat one of CIU's own
+  `RESERVED_GLOBAL_TABLES` names (that would be redundant/misleading —
+  CIU already reserves those).
+- This is **not** the same set as the S3.7 `RESERVED_GLOBAL_NAMESPACES`
+  used to reject a STACK's root key — that set is intentionally broader and
+  defensive; `RESERVED_GLOBAL_TABLES` answers a narrower question ("what
+  does CIU itself actually read here today").
+- This is the additive groundwork step only. The eventual V8 breaking
+  step (deferred) is defaulting `ciu.user_tables` to empty, so every
+  undeclared top-level table becomes an error even without an explicit
+  opt-in.
+
 ### `[ciu.worktree]` — repository-wide instance capacity [S16.3]
 
 | Key | Default | Spec | Example |
@@ -238,6 +274,24 @@ path = "applications/worker"
 health_timeout = "5s"     # workers should be healthy almost immediately;
                           # a broken worker should fail fast, not hide
                           # behind Authentik's 240s ceiling
+```
+
+Optional `one_shot = true` (ciu-P23, V8-PREP-5, [S7.2]) DECLARES that a
+service is a run-to-completion stack (e.g. a migration/db-init container)
+whose successful **clean exit** — not a Docker healthcheck — is the correct
+completion signal. It is a strict boolean and defaults to `false`. This key
+is declaration + shape validation only: it does **not** change the health
+gate's own polling loop above (a larger, future change once a real caller
+needs that behavior). Its one live consumer today is the `requires`/
+`provides` provisioning probe (`stack:<path>:completed`, see below) — when
+another stack's `requires` references a `one_shot = true` stack via
+`:healthy` instead of `:completed`, `ciu up`/`ciu check --live` prints a
+`[WARN]` suggesting the switch:
+
+```toml
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true    # a migration container that exits 0 when done
 ```
 
 `landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
@@ -463,6 +517,54 @@ the check stays side-effect-free; a missing file, an import-time exception, a
 missing `validate_registry`, or a non-list return are each reported as a
 finding rather than aborting the run.
 
+### `[service.<name>]` — global service identity registry [S3.14, S3.15]
+
+**V8-PREP-3 narrowed groundwork (additive; opt-in).** Declares WHAT a stack
+is and WHERE to find it — the identity half of the V8 two-level
+`stack.service` hierarchy
+([CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1](CIU-V8-TESTING-GATE-PROPOSAL.md)).
+
+```toml
+[service.our_db_stack]
+type = "CIU"                        # CIU | COMPOSE | EXTERNAL | IN_PROCESS
+location = "infra/db-core"          # repo-relative dir; must contain ciu.defaults.toml.j2
+description = "Postgres + minio core infra"
+
+[service.payment-api]
+type = "EXTERNAL"                   # consumed, never deployed by this repo
+description = "Stripe payment gateway"
+```
+
+| Key | Required | Constraint |
+|---|---|---|
+| `type` | Yes | one of `CIU` \| `COMPOSE` \| `EXTERNAL` \| `IN_PROCESS` |
+| `location` | `CIU`/`COMPOSE` only | repo-relative directory; `CIU` requires `ciu.defaults.toml.j2` inside it, `COMPOSE` requires `docker-compose.yml`. **FORBIDDEN** (a configuration error, not silently ignored) for `EXTERNAL`/`IN_PROCESS` |
+| `description` | No | free-form string |
+
+- Absence of `[service.*]` entirely (or an empty table) is a **complete
+  no-op** — zero behavior change, the same additive contract as
+  `ciu.user_tables` (S3.13) and `[deploy].landscape_id` (S3.11).
+- Any key other than `type`/`location`/`description` at `[service.<name>]`
+  scope — including a nested table, which is exactly the shape the
+  deferred per-service **realness** layer would take
+  (`[service.<stack>.<svc>.<level>]`: `live`/`mock`/`owned-seeded`/
+  `simulated`, proposal §3.2) — is REJECTED naming the stack and the
+  offending key. This is deliberate: accepting-and-ignoring that layer now
+  would leave the real V8 rewrite unable to define it safely later without
+  a silent-acceptance migration trap.
+- `ciu check` cross-checks a non-empty registry against what the
+  currently-selected profile/phase actually deploys, in both directions,
+  and WARNS — never fails, never exit 2 — on either a registered-but-
+  undeployed entry or a deployed-but-unregistered stack (S3.15). This is
+  advisory: per the V8 proposal's own §1.16 mapping rule 1, an entry with
+  no live consumer, or a live stack with no registry entry, are both
+  legitimate transitional states while a repo migrates toward the full V8
+  model, not defects.
+- **Not shipped** (the eventual V8 breaking step, still deferred): the
+  per-service realness sub-table layer itself, `[local_stack]`-to-registry
+  join-key enforcement (V8-PREP-4's mapping rule 1), and topology/group
+  references by compound `<stack>.<service>` key.
+
 ---
 
 ## Stack Configuration Sections
@@ -471,6 +573,30 @@ finding rather than aborting the run.
 
 Exactly one non-reserved top-level key per stack config. Example root keys:
 `redis_core`, `db_core`, `vault_core`, `app_config`.
+
+**`local_stack` — a recognized, preferred root key name (V8-PREP-4
+groundwork).** A stack MAY name its root table `[local_stack]` instead of a
+directory-derived name:
+
+```toml
+[local_stack]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+```
+
+This is purely additive and opt-in: `local_stack` is deliberately absent
+from both S3.7's `RESERVED_GLOBAL_NAMESPACES` (membership there would make
+it *forbidden*, the opposite of "preferred") and S3.13's
+`RESERVED_GLOBAL_TABLES` (it is a stack-scope name, not a global one). A
+stack that renames its root table to `local_stack` needs no other change —
+every downstream consumer of the stack root key (secret discovery, hooks,
+configfile mounts, governance) already takes it as an opaque parameter. A
+stack that keeps its existing directory-derived root key is completely
+unaffected; its own name still hits the S3.7 collision check unchanged.
+This is the additive groundwork step only — the eventual V8 breaking step
+(deferred) is making `local_stack` the ONLY accepted root key and
+relocating hooks to `[local_stack.<svc>.hooks]` (no per-service
+`[local_stack.<svc>]` wiring or hook relocation ships here).
 
 #### `requires` and `provides` — provisioning dependencies [S13]
 
@@ -493,7 +619,7 @@ requires = [
   "pg:role/authentik",
   "pg:schema/authentik",
   "vault:secret/db/postgres/authentik_password",
-  "stack:db-init:healthy",      # one-shot exited-0 containers count as satisfied
+  "stack:db-init:healthy",      # DEPRECATED for a one_shot stack -- see below
 ]
 ```
 
@@ -512,6 +638,42 @@ and live-probes each phase's requirements just before that phase deploys.
 | `minio:user/<name>` | `minio:user/worker-io` |
 | `consul:token/<svc>` | `consul:token/myapp` |
 | `stack:<name>:healthy` | `stack:db-init:healthy` |
+| `stack:<name>:completed` | `stack:db-init:completed` |
+
+Either `stack:` selector MAY be a bare name or a repo-relative path
+containing `/` (ciu-P23, V8-PREP-5): a slash-bearing selector (e.g.
+`stack:infra/db-init:completed`) is resolved against the declared stack
+paths in `deploy.phases.*.services[].path`/`deploy.profiles.*.stacks[]`. A
+selector that matches no declared path is left unresolved (a typo still
+fails as "container not found," never silently reinterpreted); a bare
+selector's resolution is unchanged either way.
+
+**`:healthy` vs `:completed` — one-shot / run-to-completion stacks.** A
+service whose phase entry declares `one_shot = true` (see
+`[[deploy.phases.phase_N.services]]` above) is a run-to-completion stack
+(e.g. a DB migration container): the correct completion signal is a clean
+exit, not a Docker healthcheck. Reference it with `:completed`, not
+`:healthy` — `:healthy`'s own exit-0-no-healthcheck fallback still works
+(unchanged) but is now deprecated and prints a `[WARN]`, and — unlike
+`:completed` — it can be fooled by a healthcheck that reports `healthy`
+before the container exits. `ciu up`/`ciu check --live` also warns
+automatically whenever a `:healthy` ref targets a stack that declares
+`one_shot = true`, even before you notice the deprecation warning yourself.
+Worked example — a DB migration container another stack must wait on:
+
+```toml
+# infra/db-init/ciu.defaults.toml.j2
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true
+
+[db_init]
+provides = ["stack:infra/db-init:completed"]
+
+# applications/worker/ciu.defaults.toml.j2
+[worker]
+requires = ["stack:infra/db-init:completed"]   # NOT :healthy -- db-init exits, it never "runs"
+```
 
 ### `[<root>.env]` — stack-scoped env [S3.6]
 
@@ -587,10 +749,11 @@ data = { path = "", seed = "seed-dir", uid = 1000, mode = "0750" }   # seed [S6.
 
 ```toml
 [app_config.app.configfile.main]
-template = "config.toml.j2"           # relative to stack dir
-target   = "/etc/app/config.toml"     # absolute path in container
-mode     = "0440"                     # optional; default 0440
-schema   = "config.schema.json"       # optional; JSON Schema for the rendered config [S5.7]
+template  = "config.toml.j2"          # relative to stack dir
+target    = "/etc/app/config.toml"    # absolute path in container
+mode      = "0440"                    # optional; default 0440
+instances = 3                         # optional; positive int — S7.5b/S7.5d
+schema    = "config.schema.json"      # optional; JSON Schema for the rendered config [S5.7]
 ```
 
 Optional `schema` [S5.7]: a JSON Schema (Draft 2020-12) **relative to the
@@ -605,6 +768,99 @@ a silent skip.
 Validation runs on the **up/dev path** (engine step 12, where configfiles
 render); `ciu render` renders TOML configs only and does not run configfile
 validation.
+
+Optional `instances` [S7.5b]: a positive integer. When present,
+`render_configfiles` renders the template N times (1-based) and emits N
+mounts named `<name>-<index>`/`<service>-<index>`, each with `instance_index`/
+`instance_id` in its render context. Omitted (or `1`) behaves as a single
+render, unchanged.
+
+#### `[<root>.<service>] instances = N` — unified fan-out default [S7.5d/S7.5e, V8-PREP-6]
+
+```toml
+[app_config.app]
+instances = 3    # drives ciu.instances AND validates agreement with any
+                  # configfile-level `instances` under this service
+
+[app_config.app.configfile.main]
+template  = "config.toml.j2"
+target    = "/etc/app/config.toml"
+instances = 3     # REQUIRED restatement if this configfile wants to opt
+                   # into per-instance rendering — see the S7.5e box below
+```
+
+A service MAY declare `instances = N` as a sibling of its `configfile`
+table (not inside it). It does two things: (1) any configfile under the
+service that ALSO declares its own `instances` must AGREE with this value —
+a disagreement refuses, naming the service, the configfile, and both
+values; (2) it makes the service a key in the compose template's
+`ciu.instances` context (see the worked example in
+[CONSUMERS.md §16](CONSUMERS.md#16-fan-a-service-out-by-instances-instead-of-hand-rolling-a-compose-loop-v8-prep-6)),
+so the compose template's own replica loop reads ONE CIU-resolved count
+instead of a hand-maintained value.
+
+> **S7.5e — this is NOT a silent default.** A configfile that OMITS its own
+> `instances` key while the service declares one > 1 REFUSES — it does not
+> quietly inherit the service value. Before this key existed, an omitted
+> configfile-level `instances` meant "single shared render, fanned out by
+> the S5.3 base-selector mechanism" — silently reinterpreting that as "N
+> independent renders" the moment a service declares `instances` would be a
+> silent behavior change on upgrade for any existing stack shaped this way.
+> Restate the same value explicitly on the configfile to opt in, or don't
+> declare a service-level value if the configfile is intentionally a single
+> shared render. See [SPEC.md S7.5e](SPEC.md#s7--orchestration-ciu-up) for the full rule and
+> [CHANGES.md](../CHANGES.md) for the migration this forced on the
+> `applications/workers` test-repo demo.
+
+#### `[<root>.<service>] env_required = [...]` — declared required env vars [S8.2a, V8-PREP-7]
+
+```toml
+[app_config.app]
+env_required = ["DATABASE_URL", "API_TOKEN"]   # every entry: ^[A-Za-z_][A-Za-z0-9_]*$
+```
+
+A service MAY declare `env_required` as a sibling of its `configfile`
+table. Each entry is a valid shell/env variable name; a non-list, an
+empty-string entry, an invalid-charset entry, or a duplicate within the
+same service's list all raise a tagged error naming the service and the
+exact bad value. Declaring nothing anywhere is a complete no-op — no
+existing config is affected.
+
+The check itself validates presence in the **actual environment `docker
+compose` will see** — the dict `compose_process_env` builds internally,
+which is `os.environ` + `PWD` + `COMPOSE_PROFILES` + every secret's
+`expose_env` value (S8.2), taken AFTER secret materialization and
+immediately before the compose invocation. Missing variables across every
+service declaring `env_required` are collected into ONE error naming every
+`service.VARIABLE` pair — never a stop on the first miss.
+
+> **Not a new way to read an env var.** `{{ env.* }}` in a compose or
+> configfile template already receives the full process environment today,
+> with or without this key — `env_required` adds a CHECK, not a second
+> access mechanism. A template MAY reference a variable via `{{ env.* }}`
+> whether or not it is also listed in `env_required`; declaring it here
+> only makes CIU refuse loudly, naming the variable, before compose ever
+> starts, instead of letting `docker compose` fail (or silently start with
+> an empty/default value) further downstream. It also does **not** change
+> `${VAR:-fallback}`/`${VAR:?msg}` interpolation inside compose templates —
+> withdrawing that is a separate, breaking item tracked for the real V8
+> gate.
+>
+> A template can already rely on the machine-identity keys in the
+> [`ciu.env` Key Provenance Table](#ciuenv-key-provenance-table-s27) below
+> (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`,
+> `CONTAINER_UID`, `DOCKER_GID`, `REPO_NAME`, `INSTANCE_ID`, `PUBLIC_FQDN`)
+> via `{{ env.* }}` without declaring them in `env_required` — they are
+> always present by construction once `ciu.env` is sourced.
+>
+> **Not yet wired to `ciu up`.** `compose_process_env` (the function this
+> check lives in) gains optional `config`/`root_key` parameters that
+> activate the check above when both are given; CIU's own `ciu up` call
+> site does not pass them yet (a one-line change deferred to the real V8
+> cutover — see [SPEC.md S8.2a](SPEC.md#s8--compose-execution)). A
+> malformed `env_required` declaration is caught by direct/library use of
+> `compose_process_env` today; the presence check is exercised the same
+> way until that wiring lands.
 
 ### `[state]` — persisted hook state [S3.4, S9.4]
 

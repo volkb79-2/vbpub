@@ -10,6 +10,7 @@ existing target file is never overwritten. Templates ship inside the wheel
 from __future__ import annotations
 
 import re
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -23,6 +24,11 @@ _GITIGNORE_ENTRIES = (
     ("**/ciu.compose.yml", "CIU's rendered compose output for .j2 templates (S8.1)"),
 )
 _TEMPLATE_DIR = "templates"
+# ciu-P20 (CIU-QOL-13) — `ciu init --hooks NAME1,NAME2` (docs/SPEC.md S19.1).
+_HOOK_TEMPLATE_PACKAGE = "ciu.hook_templates"
+# The exact copy-time stamp format, documented in docs/SPEC.md S19.1 so a
+# future revision-comparison feature has a stable format to parse back out.
+_HOOK_STAMP_FORMAT = "# ciu-hook-template: {filename} rev={revision}\n"
 
 
 def _template(name: str) -> str:
@@ -31,6 +37,41 @@ def _template(name: str) -> str:
             encoding="utf-8"
         )
     )
+
+
+def _available_hook_templates() -> dict[str, str]:
+    """Return ``{template_name: filename}`` for every shipped hook template.
+
+    Discovered dynamically from ``ciu.hook_templates`` (P20) so a future
+    template lands here just by adding a module — no name list to keep in
+    sync. ``template_name`` is the file stem, so ``ciu init --hooks NAME``
+    maps 1:1 onto ``hook_templates/<NAME>.py``.
+    """
+    pkg = resources.files(_HOOK_TEMPLATE_PACKAGE)
+    return {
+        entry.name[: -len(".py")]: entry.name
+        for entry in pkg.iterdir()
+        if entry.name.endswith(".py") and entry.name != "__init__.py"
+    }
+
+
+def _hook_template_source(filename: str) -> str:
+    """Verbatim source text of one shipped hook template file."""
+    return resources.files(_HOOK_TEMPLATE_PACKAGE).joinpath(filename).read_text(
+        encoding="utf-8"
+    )
+
+
+def _hook_template_revision(name: str) -> int:
+    """The CURRENT ``template_revision`` of shipped hook template *name*.
+
+    Imported (not regex-scraped) so this always matches the real value the
+    module carries — the same file `_hook_template_source` copies verbatim.
+    """
+    import importlib
+
+    module = importlib.import_module(f"{_HOOK_TEMPLATE_PACKAGE}.{name}")
+    return module.template_revision
 
 
 def _prompt(message: str, default: str) -> str:
@@ -101,10 +142,44 @@ def collect_plan(argv: list[str], root: Path) -> dict:
             "image": flag("--image") or "python:3.12-alpine",
             "port": 8080,
         })
+
+    # ciu-P20 (CIU-QOL-13, S19.1) — `--hooks NAME1,NAME2` copies shipped hook
+    # templates into every stack scaffolded THIS run. Validated here (before
+    # any file is written, same discipline as --project-name/--environment-tag
+    # above): an unknown name, or --hooks with no stack to copy into, is a
+    # configuration error (exit 2 — S10.3), never a partial/silent scaffold.
+    hooks_raw = flag("--hooks")
+    # De-duplicated, order-preserving: a repeated name would otherwise queue
+    # the identical (path, content) pair twice in build_files.
+    hooks = list(dict.fromkeys(
+        h.strip() for h in (hooks_raw or "").split(",") if h.strip()
+    ))
+    if hooks:
+        available = _available_hook_templates()
+        unknown = [h for h in hooks if h not in available]
+        if unknown:
+            print(
+                "ciu init: unknown --hooks template(s): "
+                + ", ".join(unknown)
+                + " (available: "
+                + (", ".join(sorted(available)) or "none")
+                + ")",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if not parsed_stacks:
+            print(
+                "ciu init: --hooks requires at least one --stacks target "
+                "to copy into",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
     return {
         "project_name": project_name,
         "environment_tag": environment_tag,
         "stacks": parsed_stacks,
+        "hooks": hooks,
     }
 
 
@@ -167,6 +242,25 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
             .replace("@@STACK_DIR@@", stack["dir"])
             .replace("@@GENERATED_BY@@", generated_by),
         ))
+        # ciu-P20 (CIU-QOL-13, S19.1) — copy each requested hook template
+        # into THIS stack, verbatim plus a stamp comment naming the template
+        # and the template_revision it was copied at. Destination is
+        # `<stack_dir>/hooks/<name>.py` (S9.1's "script paths relative to the
+        # stack dir" convention — a hook so declared would be
+        # `./hooks/<name>.py` in `[<root>.hooks]`). Queued into the SAME
+        # `files` list as everything else, so the existing-file-refusal
+        # check below (and init_main's generic write loop) covers it for
+        # free — no special-casing a hook file into a silent overwrite.
+        for hook_name in plan.get("hooks", []):
+            filename = _available_hook_templates()[hook_name]
+            stamp = _HOOK_STAMP_FORMAT.format(
+                filename=filename,
+                revision=_hook_template_revision(hook_name),
+            )
+            files.append((
+                root / stack["dir"] / "hooks" / filename,
+                stamp + _hook_template_source(filename),
+            ))
     # ---- validation-first: render + parse everything before writing -------
     from jinja2 import Environment
 

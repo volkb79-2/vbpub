@@ -60,6 +60,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | Verb | Purpose | Key options |
 |---|---|---|
 | `ciu version` | Print the CIU package version | Top-level `ciu --version` is withdrawn |
+| `ciu init` | Guided repo scaffolding (S19): validated global defaults template, gitignore entries, optional stack skeletons; never overwrites an existing target | `--project-name NAME`, `--environment-tag TAG`, `--stacks A,B`, `--hooks NAME1,NAME2` (S19.1: copies shipped, revision-stamped hook templates into every scaffolded stack; unknown name or no `--stacks` target refuses with exit 2 before any write) |
 | `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |

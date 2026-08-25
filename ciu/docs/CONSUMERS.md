@@ -608,3 +608,120 @@ Two behaviours to script against deliberately:
 Under `--json` the check itself prints only the document, but the
 orchestrator's own `[INFO]` lines still precede it on stdout (as with
 `ciu graph --format json`); read the JSON object at the end of stdout.
+
+## 15. Adopt a shipped hook template instead of hand-writing one (`ciu init --hooks`, S19.1)
+
+`ciu init` can copy a hook implementation straight out of CIU's own hook
+template library (`ciu.hook_templates`) into a stack it scaffolds, instead of
+you writing one from scratch:
+
+```console
+$ ciu init --project-name myapp --stacks db-core --hooks post_compose_db
+wrote ciu.global.defaults.toml.j2
+wrote applications/db-core/ciu.defaults.toml.j2
+wrote applications/db-core/ciu.compose.yml.j2
+wrote applications/db-core/hooks/post_compose_db.py
+```
+
+`--hooks NAME1,NAME2` copies each named template into **every** stack this
+same invocation scaffolds (here, just `db-core`), at
+`<stack_dir>/hooks/<name>.py`. Read the first line of the copy — it is a
+stamp CIU writes at copy time, not part of the template's own code:
+
+```console
+$ head -1 applications/db-core/hooks/post_compose_db.py
+# ciu-hook-template: post_compose_db.py rev=1
+```
+
+That `rev=1` is the template's `template_revision` **at the moment you
+copied it** — your own copy from here is yours to edit freely; CIU never
+touches it again. A future revision-comparison feature can read this exact
+line back to tell you when upstream has moved past the revision you copied.
+
+Two things worth knowing before you wire it up:
+
+- **The copy is inert until you declare it.** `ciu init` writes the file; it
+  does not add `[<root>.hooks].post_compose = ["./hooks/post_compose_db.py"]`
+  to your stack's `ciu.defaults.toml.j2` — add that yourself, the same way
+  any other hook is declared (S9.1).
+- **An unknown template name refuses before anything is written**, naming
+  the bad name and the available list (exit 2); so does `--hooks` given with
+  no `--stacks` to copy into. Like every other `ciu init` output file, a copy
+  is never silently overwritten — an existing `hooks/post_compose_db.py`
+  makes the whole run refuse, naming it.
+
+CIU ships one reference template today, `post_compose_db.py` — deliberately
+generic (a database-readiness wait via `ctx.wait_healthy` plus a
+`ctx.secret_file` presence check) and honest about not being a real
+PostgreSQL/MySQL/etc. bootstrap. Treat it as a starting point to copy and
+extend with your own provisioning logic.
+
+## 16. Fan a service out by `instances` instead of hand-rolling a compose loop (V8-PREP-6)
+
+Before this, a replicated service needed a hand-written compose loop AND,
+separately, a configfile section that either restated the same count or
+relied on the S5.3 base-selector mechanism to fan a single shared render
+out — two independently-maintained mechanisms that could silently disagree.
+V8-PREP-6 unifies them: declare `instances` once, and BOTH the compose
+template's own loop and the configfile's per-instance render read from the
+one CIU-resolved count.
+
+```toml
+[myapp.api]
+instances = 3    # sibling of [myapp.api.configfile.*], not inside it
+
+[myapp.api.configfile.main]
+template  = "config.toml.j2"
+target    = "/etc/api/config.toml"
+instances = 3    # REQUIRED restatement -- see the warning box below
+```
+
+The compose template reads the resolved count from `ciu.instances`, never
+from `myapp.api.instances` directly (that only works when the count is
+declared at the service level; `ciu.instances` also carries the resolved
+value when a configfile is the ONLY thing that declared it):
+
+```jinja
+services:
+{% for i in range(1, ciu.instances.api + 1) %}
+  api-{{ i }}:
+    image: {{ myapp.api.image_name }}:{{ myapp.api.image_tag }}
+    environment:
+      - API_INSTANCE=api-{{ i }}
+{% endfor %}
+```
+
+`{% for i in range(1, ciu.instances.api + 1) %}` naming `api-{{ i }}` is the
+sanctioned loop shape — 1-based, matching exactly what
+`_configfile_mount_services` already understands for the configfile side
+(S5.3/S7.5b). CIU does **not** generate compose service blocks itself: your
+own `{% for %}` loop still writes the YAML, now driven by one CIU-resolved
+count instead of a value you'd otherwise have to keep in sync by hand. A
+template that only needs to know WHETHER a service fans out (not by how
+much) checks membership: `{% if 'api' in ciu.instances %}`. A service with
+no declared `instances` anywhere (service-level or configfile-level) is
+simply absent from the mapping — never present with a value of `1` — and
+referencing `ciu.instances` at all when NOTHING anywhere declares one raises
+a Jinja `UndefinedError`, the same fail-loud pattern as
+`ciu.selected_profiles`/`ciu.deployed_stacks` (§10 above).
+
+> **The configfile's `instances = 3` above is required, not decoration.** A
+> configfile that OMITS `instances` while its service declares one > 1
+> REFUSES (S7.5e) — it does not silently inherit the service-level count.
+> Before V8-PREP-6, an omitted configfile-level `instances` meant "render
+> once, let the S5.3 base-selector mechanism fan the same shared file out to
+> every replica"; silently reinterpreting that omission as "render N
+> independent times" the moment a service declares `instances` would be a
+> silent behavior change for any stack already shaped this way. Restate the
+> same value explicitly to opt into the new per-instance render (as above),
+> or don't declare `instances` on `[myapp.api]` at all if this configfile is
+> intentionally a single shared render. See
+> [SPEC.md S7.5e](SPEC.md#s7--orchestration-ciu-up)
+> and [CHANGES.md](../CHANGES.md) — the `applications/workers` test-repo
+> stack had exactly this shape and was migrated to this pattern as part of
+> landing V8-PREP-6.
+
+Declaring a service-level default and a configfile-level value that
+DISAGREE (e.g. `instances = 3` on `[myapp.api]` but `instances = 5` on its
+configfile) refuses too, naming both values — the two mechanisms can never
+silently drift apart.

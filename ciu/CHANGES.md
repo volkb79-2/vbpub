@@ -103,6 +103,189 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): optional `env_required = [...]` declaration + collective
+  presence check (SPEC S8.2a, V8-PREP-7, ciu-P25,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.20) — fully additive, zero
+  behavior change for every config that does not declare it:
+  - A service MAY declare `[<root>.<service>] env_required = [...]` — a
+    list of non-empty strings, each a valid shell/env variable name
+    (`^[A-Za-z_][A-Za-z0-9_]*$`), duplicates within one service's own list
+    rejected. Shape-validated via `composefile.resolve_env_required`; a
+    malformed declaration raises naming the service and the exact bad
+    value.
+  - `composefile.compose_process_env` gains optional `config`/`root_key`
+    keyword parameters. When both are given, every declared variable is
+    checked for presence in the SAME env dict the function itself just
+    built — i.e. after secret materialization, immediately before the
+    compose invocation — never against `os.environ` alone, since an
+    `expose_env` secret value (S4.19) never touches the real process
+    environment. Missing variables across ALL declared services are
+    collected into ONE error naming every `service.VARIABLE` pair
+    (mirroring `config_model.expand_env_vars_or_fail`'s collective-error
+    style), never a stop on the first miss.
+  - No new Jinja/template mechanism: `{{ env.* }}` already receives the
+    full process environment on every render path today; this package adds
+    only the presence CHECK, not a second way to read an env var. It also
+    does **not** touch `${VAR:-fallback}`/`${VAR:?msg}` handling in compose
+    templates — withdrawing that is the separate, genuinely breaking
+    QOL-10 item, deliberately out of scope here.
+  - **Not yet wired to `ciu up`.** `engine.py` — the only call site with
+    both the merged stack config and the post-materialization env in hand
+    — is out of this package's scope; passing its already-computed
+    `merged`/`root_key` through to `compose_process_env` is a one-line
+    change deferred to the real V8 cutover. Until then this is a tested,
+    ready-to-activate library capability, not a live check in `ciu up`.
+- feat(ciu)!: unified `instances = N` fan-out for compose enumeration +
+  configfile mounts (SPEC S7.5d/S7.5e, V8-PREP-6, ciu-P24,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.19). A service MAY declare
+  `[<root>.<service>] instances = N` (sibling of its `configfile` table):
+  - A configfile under the service that ALSO declares its own `instances`
+    must AGREE with the service-level value — a disagreement refuses,
+    naming the service, the configfile, and both values (never a silent
+    preference of one over the other).
+  - `render_compose`'s template context gains `ciu.instances` — a
+    `{service: N}` map (merged into `ciu` the same way
+    `ciu.selected_profiles`/`ciu.deployed_stacks` already are, S3.12) — for
+    every service resolving to N > 1, service-level or configfile-level.
+    Absent entirely when nothing anywhere resolves above 1. A compose
+    template loops `{% for i in range(1, ciu.instances.api + 1) %}` naming
+    `api-{{ i }}` instead of hand-maintaining the count; CIU does not
+    generate compose service blocks itself, this only unifies the count.
+  - A new post-render assertion refuses (naming the service, the declared
+    count, and what compose keys were actually found) when a service in
+    `ciu.instances` renders a bare `<service>` key instead of enumerating
+    `<service>-1`..`<service>-N` — the duplicate-mount trap, where a
+    forgotten loop would otherwise silently mount every instance's config
+    onto ONE shared container. This is separate from, and does not change,
+    the pre-existing S5.3 base-selector `[WARN]` for the opposite direction.
+  - **Migration-safety refusal (S7.5e), added mid-review:** a configfile
+    that OMITS its own `instances` key, under a service that DOES declare
+    one > 1, now REFUSES instead of silently inheriting the service-level
+    value — naming the service, the configfile, and the declared value,
+    with both remedies (restate `instances` explicitly on the configfile,
+    or don't declare one on the service). **Upgrade note:** before this
+    package, such a configfile had exactly one way to end up mounted into
+    every replica: a single shared render, fanned out at overlay time by
+    the pre-existing S5.3 base-selector mechanism. Any stack ALREADY shaped
+    this way — a service-level `instances` key used only to drive its own
+    hand-rolled compose loop, paired with a configfile that never restated
+    `instances` — will now REFUSE at render time instead of silently
+    starting to render that configfile N independent times. Nothing that
+    genuinely worked breaks silently; add the matching `instances = N` to
+    the configfile (the new, unified behavior) or remove the service-level
+    key (keeps the old single-shared-render behavior) to resolve it. The
+    `applications/workers` test-repo demo had exactly this shape and was
+    migrated to the new pattern as part of landing this package — see its
+    `ciu.defaults.toml.j2` for a live before/after reference.
+- feat(ciu): one-shot completion semantics for the `requires`/`provides`
+  provisioning model (SPEC S13.2/S7.7, V8-PREP-5, ciu-P23,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.18) — fully additive, all existing
+  `:healthy` refs parse and behave exactly as before:
+  - New provisioning-ref terminal `stack:<name>:completed` (both grammar
+    copies — `provisioning.py` and `config_model.py` — updated together):
+    satisfied when `State.Running == false` and `State.ExitCode == 0`; NEVER
+    reads `.State.Health` under any code path, closing the false-positive
+    gap `:healthy`'s own exit-0-no-healthcheck fallback has (a healthcheck
+    that reports healthy and only later exits still satisfies `:healthy`).
+  - That existing exit-0-no-healthcheck fallback on `:healthy` now prints a
+    `[WARN]` naming the ref and suggesting `:completed` — behavior is
+    UNCHANGED (removing the fallback is V8's own breaking step), only the
+    warning is new.
+  - New optional phase-entry key `[[deploy.phases.phase_N.services]]
+    one_shot = true` (`deploy_pkg.phases.service_one_shot`, mirrors
+    `service_shipped`/`service_health_enabled`'s exact validation pattern;
+    defaults `false`) — declaration + shape validation only, does NOT wire
+    into the deploy loop's own post-up wait behavior. `provisioning.py`'s
+    `:healthy` probe reads it to warn when another stack's `requires`
+    references a `one_shot = true` stack via `:healthy` instead of
+    `:completed`.
+  - A `stack:` ref selector containing `/` (e.g.
+    `stack:infra/db-init:completed`) now resolves against the declared
+    stack paths (`deploy.phases.*.services[].path` /
+    `deploy.profiles.*.stacks[]`) instead of today's guaranteed-broken
+    passthrough (a slash-bearing selector could never match a real
+    container name before this). A slash-free selector's resolution is
+    byte-identical to before.
+  - `lint_graph`'s stack-to-stack cycle detection now resolves a bare (or
+    slash-bearing) selector to its declared stack path before adding the
+    graph edge — previously the graph was keyed by full path while the only
+    selector form that ever worked for probing was a bare basename, so a
+    real cross-stack cycle declared the ONLY way that actually worked
+    silently passed lint.
+- feat(ciu): global config gains an optional `[service.<stack_name>]`
+  identity registry (SPEC S3.14/S3.15, V8-PREP-3 narrowed groundwork) — the
+  identity half of the V8 two-level `stack.service` hierarchy
+  (docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1, rev 1.4, commit
+  `4440c17e`). Absence of `[service.*]` (or an empty table) is a complete
+  no-op. When present, each entry MUST contain only `type` (required,
+  closed vocabulary `CIU`\|`COMPOSE`\|`EXTERNAL`\|`IN_PROCESS`), `location`
+  (required for `CIU`/`COMPOSE` — must name a directory containing
+  `ciu.defaults.toml.j2`/`docker-compose.yml` respectively; FORBIDDEN, not
+  silently ignored, for `EXTERNAL`/`IN_PROCESS`), and `description`
+  (optional string). **Any other key — including a nested table, which is
+  exactly the shape the deferred per-service realness layer (proposal §3.2)
+  would take — is REJECTED**, naming the stack and the offending key, so V8
+  can define that layer later without a silent-acceptance migration trap.
+  Validated once on the FINAL merged global config (same timing as
+  `[deploy].landscape_id`/`ciu.user_tables`). Additionally, `ciu check`
+  gains a registry-declaration-gated, WARN-only (never a refusal, never
+  exit 2) two-directional consistency lint (new stage `service-registry`,
+  appended after the V8 proposal's own §2.7 stage numbering): a registered
+  `location` no selected profile/phase deploys, and a deployed stack path
+  with no registry entry, are each named in a separate `[WARN]` — both
+  legitimate transitional states per the proposal's own §1.16 mapping rule
+  1, not defects.
+- feat(ciu): global config gains an optional `ciu.user_tables = [...]`
+  declaration (SPEC S3.13, V8-PREP-1 groundwork) — a consumer opt-in list of
+  top-level global-config tables it owns. Absence is a complete no-op; once
+  declared, CIU validates the FINAL merged global config (same timing as
+  `[deploy].landscape_id`, S3.11) and flags any top-level key that is
+  neither one of CIU's own `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`,
+  `topology`, `vault`, `registry`, `governance`, `service`,
+  `auto_generated`, `infrastructure` — a new, narrower set distinct from
+  S3.7's `RESERVED_GLOBAL_NAMESPACES`) nor listed in the declaration, in one
+  collective error naming every offending key. This is the additive
+  groundwork only; the eventual V8 breaking step (defaulting
+  `ciu.user_tables` to empty) is deferred. **Corrected at review:**
+  `infrastructure` was initially omitted — `workspace_env.py` reads a
+  top-level `[infrastructure].public_fqdn` directly off the RENDERED global
+  config (S2.7/CIU-47), bypassing `render_global_chain` entirely, which the
+  original grep-every-call-site methodology missed. Now added to both
+  `RESERVED_GLOBAL_TABLES` and (necessarily, to keep the subset relationship
+  honest) `RESERVED_GLOBAL_NAMESPACES` — the latter as a side effect newly
+  forbids `infrastructure` as a stack root key, matching the existing
+  `vault`/`topology` precedent; no existing stack (in this repo or dstdns)
+  uses it as one.
+- feat(ciu): `validate_stack_shape` recognizes `local_stack` as a
+  preferred stack root key name (SPEC S3.5/S3.7, V8-PREP-4 groundwork) — a
+  stack MAY name its root table `[local_stack]` instead of a
+  directory-derived name. Purely additive: `local_stack` is deliberately
+  absent from both `RESERVED_GLOBAL_NAMESPACES` and `RESERVED_GLOBAL_TABLES`,
+  requires no other code change (every downstream reader of the stack root
+  key already treats it as an opaque parameter), and a stack that keeps its
+  existing root key is completely unaffected. No per-service
+  `[local_stack.<svc>]` wiring or hook relocation ships here — those remain
+  deferred to the eventual V8 breaking step.
+- feat(ciu): `ciu init` gains `--hooks NAME1,NAME2` (SPEC S19.1, CIU-QOL-13),
+  copying hook implementations out of a new shipped template library
+  (`ciu.hook_templates`, inside the wheel) into every stack that same `init`
+  invocation scaffolds, at `<stack_dir>/hooks/<name>.py`. Each copy is
+  prefixed with a one-line stamp (`# ciu-hook-template: <file> rev=<N>`)
+  naming the template and the `template_revision` it was copied at, a stable
+  format a future revision-comparison feature can parse. Every template
+  implements the ordinary S9.1 `run(config, ctx) -> dict` plus an OPTIONAL
+  S9.5 `validate_config(config, ctx) -> list[str]` — the same contracts, not
+  a template-specific variant. An unknown `--hooks` name, or `--hooks` given
+  without a `--stacks` target, refuses (exit 2) before any file is written;
+  a copied hook file is never silently overwritten, same as every other
+  `ciu init` output. **Scoping decision (see the LOG for the full
+  reasoning):** this ships the MECHANISM plus exactly ONE reference
+  template, `post_compose_db.py` — a deliberately generic, honestly minimal
+  demo of the `ctx.wait_healthy`/`ctx.secret_file` pattern and a
+  `validate_config` example. It does **not** ship the backlog's other named
+  templates (Vault/Consul/Redis/Authentik/Tailscale-shaped); those need a
+  session with visibility into a real consumer's existing hook to write
+  honestly, and are left as follow-up candidates.
 - feat(ciu): `ciu worktree add|create|ensure|adopt` gain an OPTIONAL fourth
   shared-infra flag, `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`
   (SPEC S16.1a, CIU-52) — a CIU-managed NAME for a service belonging to the

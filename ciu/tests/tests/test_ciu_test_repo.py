@@ -435,11 +435,17 @@ WORKERS_STACK = TEST_REPO / "applications" / "workers"
 
 
 def test_workers_stack_configfile_fans_out_and_dev_profile(monkeypatch) -> None:
-    """Living example for CIU-2 (configfile fan-out) + CIU-5 (dev profile).
+    """Living example for V8-PREP-6 unified instances fan-out (ciu-P24) +
+    CIU-5 (dev profile).
 
-    The `applications/workers` stack declares ONE base configfile section
-    `[workers.worker.configfile.main]`; the overlay must mount it into every
-    rendered instance key (`worker-1`, `worker-2`). The same stack's
+    The `applications/workers` stack declares a service-level `instances = 2`
+    (S7.5d) AND explicitly restates `instances = 2` on its one configfile
+    section `[workers.worker.configfile.main]` (S7.5e's required opt-in --
+    an omitted key here would now refuse rather than silently inherit the
+    service default, see SPEC.md S7.5e and CHANGES.md's migration note).
+    `render_configfiles` therefore renders `main` ONCE PER INSTANCE, emitting
+    two mounts already named `worker-1`/`worker-2` (S7.5b) -- exact matches
+    at overlay time, no S5.3 base-selector fallback needed. The same stack's
     `[workers.dev]` profile must parse (S5a).
     """
     _set_env_defaults()
@@ -451,19 +457,22 @@ def test_workers_stack_configfile_fans_out_and_dev_profile(monkeypatch) -> None:
     root_key = config_model.validate_stack_shape(stack_config)
     assert root_key == "workers"
     assert stack_config["workers"]["worker"]["instances"] == 2
+    assert stack_config["workers"]["worker"]["configfile"]["main"]["instances"] == 2
 
     merged = config_model.deep_merge(global_config, stack_config)
     try:
-        # S5: render the single configfile; base service is 'worker', and it
-        # consumes the queue_token secret via secret() (S4.20 configfile channel).
+        # V8-PREP-6/O1: two configfile renders (worker-1, worker-2), each
+        # consuming the queue_token secret via secret() (S4.20 channel).
         mounts = composefile.render_configfiles(
             WORKERS_STACK, root_key, merged, secret_value_fn=lambda name: "tok"
         )
-        assert len(mounts) == 1
-        assert mounts[0].service == "worker"
-        assert mounts[0].consumed_secrets == ("queue_token",)
+        assert len(mounts) == 2
+        assert [m.service for m in mounts] == ["worker-1", "worker-2"]
+        assert [m.name for m in mounts] == ["main-1", "main-2"]
+        assert all(m.consumed_secrets == ("queue_token",) for m in mounts)
 
-        # S5.3 / CIU-2: the overlay fans the one mount out to worker-1, worker-2.
+        # S7.5b: each mount is an EXACT compose-key match now -- no S5.3
+        # base-selector fallback needed (the mounts are already indexed).
         compose_yaml = (
             "services:\n  worker-1:\n    image: w\n  worker-2:\n    image: w\n"
         )
@@ -474,10 +483,16 @@ def test_workers_stack_configfile_fans_out_and_dev_profile(monkeypatch) -> None:
         import yaml
         doc = yaml.safe_load(overlay.read_text())
         assert sorted(doc["services"]) == ["worker-1", "worker-2"]
-        assert (
-            doc["services"]["worker-1"]["volumes"]
-            == doc["services"]["worker-2"]["volumes"]
-        )
+        # Each instance now has its OWN independent render/staging directory
+        # (worker-1's config.toml differs from worker-2's -- instance_id is
+        # embedded, see config.toml.j2), so the two mounts' bind sources are
+        # DIFFERENT -- the opposite of the pre-ciu-P24 shared-render mount.
+        vol_1 = doc["services"]["worker-1"]["volumes"][0]
+        vol_2 = doc["services"]["worker-2"]["volumes"][0]
+        assert vol_1["source"] != vol_2["source"]
+        assert vol_1["source"].endswith("worker-1/etc/worker")
+        assert vol_2["source"].endswith("worker-2/etc/worker")
+        assert vol_1["target"] == vol_2["target"] == "/etc/worker"
 
         # S5a / CIU-5: the [workers.dev] profile parses with its declared shape.
         profile = dev.parse_dev_profile(stack_config, root_key)
