@@ -11,7 +11,22 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-22 — backlog wave on
+Last updated: 2026-08-25 — **CIU-48 through CIU-52 FILED, OPEN**, all five
+from one investigation (dstdns's §3.6 cockpit-alias-ambiguity hazard,
+`dstdns/nyxloom-trove/GUIDE.md` §3.6): CIU-48 (Compose `hostname:` field
+independently registers a bare, ambiguous DNS alias — empirically confirmed
+live, not assumed) and CIU-49 (app-config `internal_host`-style defaults are
+also bare) are both pure template-default-VALUE changes, zero schema impact,
+proposed as HIGH-priority backports to current CIU rather than deferred to
+v8. CIU-52 (implement the reserved S12 `shared_infra.services[*].aliases`
+field) is likewise an additive, backport-safe HIGH-priority fix attaching to
+the already-shipped S16.1 join mechanism. CIU-50 (rename `environment_tag` →
+`instance_id`, naming-clarity only) and CIU-51 (eliminate Compose's
+automatic bare service-key alias entirely — genuinely v8-scale, touches
+every stack's compose template structure) are lower-urgency / v8-timed;
+CIU-51 in particular is explicitly NOT proposed as a backport and says why.
+
+Previously, 2026-08-22 — backlog wave on
 `feat/ciu-backlog-wave-39-42-46-47` shipped four fixes and CIU-25's git
 half: **CIU-39 FIXED** (declared vendor baseline `[deploy.provenance]
 vendor_images`; provenance documents now `schema_version: 2`; `verified-
@@ -108,6 +123,11 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-45 | ~~`requires` PROVISIONS rather than VERIFIES~~ — **misdiagnosis, see disposition below**. The lint rule is a plain `requires`/`provides` completeness check; a `post_compose` hook registering itself as a provider already ships (`infra/consul-server/ciu.defaults.toml.j2:9-17`). The actual dstdns failure was a missing `provides` array in one unrelated stack, fixed declaratively in-repo | — | **WITHDRAWN 2026-08-21** — see `## CIU-45` below for the full disposition; `dstdns/nyxloom-trove/decisions.md` D-170 |
 | CIU-46 | Shipped stacks run under the legacy directory-derived compose project when `deploy.project_name`/`environment_tag` are absent (`engine.py run_shipped`), and clean's S6.4a enumeration then sees no projects at all — legacy-project networks/volumes survive a reported-clean teardown | Low | FIXED — **cutover, BREAKING**: the basename fallback is WITHDRAWN; config-less shipped/reset deployments derive the workspace-identity project `{REPO_NAME}-{INSTANCE_ID}-{stack}` from THIS checkout's ciu.env (`engine.identity_compose_project_name`, exact-path parsed), and clean enumerates the SAME names via the compose-label passes; missing/identity-less ciu.env refuses instead of silently skipping; no `-p`-less compose invocation remains anywhere in ciu; the S16.1 cannot-derive join refusal fell out as unreachable and is withdrawn. One-time migration for pre-existing deployments: CONSUMERS §11 (S6.4a item 7 + S8.7, 2026-08-22). Follow-up candidates named by the adversarial review: (a) non-round-tripping stack dirnames refuse (Vault/vault collision class closed); (b) two DIFFERENT dirs with the SAME normalized basename still collide in config-less mode — documented limit, tagged naming is the escape hatch; a stack-path label stamp at up would close it |
 | CIU-47 | `ciu env generate` adopts an ambient `PUBLIC_FQDN` with no consistency check (`workspace_env.py` bare reads) — the same masked-default family CIU-41 fixed for the identity tuple; a main checkout's sourced `ciu.env` leaks its FQDN into a fresh worktree's generated file | Low | FIXED — S2.7 refined precedence extended to PUBLIC_FQDN: derived from THIS workspace's own inputs first (config entry → reverse DNS of the detected IP); ambient adopted only when equal or when detection yields no sourced value (offline host keeps the operator override silently); on mismatch the derived value is written and a warning names the ignored one; PUBLIC_FQDN joins GENERATED_IDENTITY_KEYS so post-generate steps act on the written record. PUBLIC_IP/PUBLIC_TLS_* stay plain pre-set-wins (out of scope). Controlled wrong: restoring the bare fallback fails oracle 1 (2026-08-22) |
+| CIU-48 | Compose's `hostname:` field independently registers a bare, network-resolvable DNS alias — a second source of the §3.6 cockpit multi-instance ambiguity, separate from the automatic service-key alias (CIU-51) | High | OPEN — pure template-default value fix, proposed backport to current CIU (see detail) |
+| CIU-49 | App-config `topology.services.*.internal_host`-style Jinja defaults render the bare service name instead of the already-computed qualified `{project}-{instance_id}-{service}` form, forcing consumers to hand-maintain per-worktree overrides (dstdns's `dstdns-mstest` template) | High | OPEN — pure template-default value fix, proposed backport to current CIU (see detail) |
+| CIU-50 | `deploy.environment_tag` names a per-deployment INSTANCE identifier but reads as a deployment ENVIRONMENT classification — ambiguous naming, cost real investigation time this session to re-derive its actual purpose from source | Medium | OPEN — proposed rename to `instance_id`; schema-key change, v8-timed rather than a live backport (see detail) |
+| CIU-51 | Docker Compose always auto-registers a service's top-level YAML key as a network-scoped DNS alias with no documented suppression mechanism (confirmed against Compose's own docs) — the root cause CIU-48/49 work around but do not eliminate | Medium | OPEN — genuinely v8-scale (every stack's compose template structure changes); explicitly NOT proposed as a backport, see detail for why |
+| CIU-52 | S12's reserved `ciu.instance.shared_infra.services[*].aliases` field is unimplemented, so a diverging-tier instance joining a reference instance's network via S16.1 has no clean, CIU-managed name to reach the shared service by | High | OPEN — additive to the already-shipped S16.1 join mechanism, proposed backport (see detail) |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -832,6 +852,322 @@ override.)
   `os.environ.get("PUBLIC_FQDN", ...)` fallback must fail the first oracle.
 
 **SPEC ownership:** S2 (workspace environment), extending S2.7.
+
+## CIU-48 — Compose `hostname:` independently registers a bare, ambiguous DNS alias
+
+**Filed by:** dstdns controller session, 2026-08-25, from the §3.6
+cockpit-alias-ambiguity investigation
+(`dstdns/nyxloom-trove/GUIDE.md` §3.6,
+`dstdns/nyxloom-trove/CONTROLLER-BRIEF.md`). Empirically confirmed, not
+assumed — reproduced live:
+
+```
+$ docker run -d --name test-svcA --hostname aliasname busybox sleep 60
+$ docker run --rm busybox nslookup aliasname
+Non-authoritative answer:
+Name:   aliasname
+Address: 172.25.0.2
+```
+
+`aliasname` (the `--hostname`/Compose `hostname:` value) resolves from a
+third container independently of the container's actual name — a SECOND,
+separate mechanism from Compose's automatic service-key alias (CIU-51),
+and one CIU already controls directly at template-render time. dstdns's own
+compose templates set `hostname:` to the bare service name in 31 locations
+(e.g. `infra/db-core/ciu.compose.yml.j2:59`:
+`hostname: {{ db_core.postgres.name }}` → renders bare `postgres`).
+
+### Why CIU owns it
+
+`hostname:` is a value CIU's own template rendering already controls, using
+identity facts (`deploy.project_name`/`deploy.environment_tag`) it already
+computes uniformly for every deployment (`container_name()`,
+`src/ciu/deploy.py:138-151` — confirmed nothing worktree-conditional in its
+derivation). This is not a consumer-side workaround; the fix belongs in the
+same render layer that already produces `container_name`.
+
+### Proposed contract
+
+```jinja
+# before (31 sites across dstdns alone)
+hostname: {{ db_core.postgres.name }}
+
+# after — same variables container_name() already uses
+hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ db_core.postgres.name }}
+```
+
+A template-default value change, applied uniformly (main included, not
+`ciu worktree`-specific) — the ambiguity only *manifests* as a worktree
+problem because main rarely coexists with a second same-shaped instance;
+the underlying defect is present on every deployment. Open question to
+audit before changing (not assumed either way): does anything currently
+rely on the container's self-reported hostname matching its bare service
+name for a reason unrelated to DNS (log self-identification, TLS SNI)? The
+service-key alias (CIU-51) remains available regardless, so intra-stack
+bare-name reachability is not lost by this change alone.
+
+### Oracles
+
+- From a container attached to two independent CIU-deployed stacks'
+  networks simultaneously (the exact §3.6 scenario), resolving a service's
+  `hostname:`-derived qualified name returns exactly one deployment's
+  container, deterministically.
+- Controlled wrong implementation: a `hostname:` value that's unique-looking
+  but not derived from `deploy.project_name`/`environment_tag` (e.g. a
+  random suffix) — reintroduces a second identity axis to keep in sync,
+  the exact staleness class this closes.
+
+**SPEC ownership:** the compose-template rendering layer that already
+supplies `container_name` (same code path, `src/ciu/deploy.py` +
+consumer `*/ciu.compose.yml.j2` templates).
+
+## CIU-49 — App-config `internal_host`-style defaults render the bare service name, not the already-qualified form
+
+**Filed by:** dstdns controller session, 2026-08-25, same investigation as
+CIU-48 (file together). `ciu.global.defaults.toml.j2`'s
+`topology.services.<svc>.internal_host` (and equivalent per-stack defaults)
+currently default to the bare name:
+
+```toml
+[topology.services.vault]
+internal_host = "vault"
+```
+
+Application config built from this template inherits the §3.6 ambiguity —
+except here the consumer is the APPLICATION's own outbound connection code,
+not Docker DNS directly. This is already hand-worked-around exactly once:
+dstdns's `test/multistack-v1` worktree (documented as the permanent live
+Mode-B template) manually overrides it:
+
+```toml
+internal_host = "dstdns-mstest-f2d1cb-vault"  # instance config: scoped (GUIDE 3.6)
+```
+
+### Why CIU owns it
+
+Same reasoning as CIU-48: the qualifying identity facts are already
+computed by CIU for every deployment; a consumer hand-maintaining a
+per-worktree override is exactly the staleness hazard CIU's own instance
+identity machinery exists to make unnecessary — the NEXT worktree template
+someone copies from `dstdns-mstest` carries a wrong, copy-pasted instance
+ID the moment it diverges.
+
+### Proposed contract
+
+```toml
+# proposed default, ciu.global.defaults.toml.j2
+[topology.services.vault]
+internal_host = "{{ deploy.project_name }}-{{ deploy.environment_tag }}-vault"
+```
+
+Template default, uniform across every deployment, not `ciu worktree`-
+specific (same reasoning as CIU-48). Once shipped, dstdns's hand-maintained
+override becomes redundant and can be deleted. **Does not yet cover the
+shared-infra case** (a joining instance needs the REFERENCE instance's
+qualified name, not its own) — that's CIU-52, filed separately rather than
+conflated here.
+
+### Oracles
+
+- Render the same template for two different `deploy.environment_tag`
+  values (simulating two coexisting instances): the two `internal_host`
+  outputs differ and each is independently correct, never requiring a hand
+  override to differ.
+- Controlled wrong implementation: hardcoding the qualified form as a
+  literal per-stack override instead of deriving it from
+  `deploy.project_name`/`environment_tag` in the shared template —
+  reintroduces the exact per-worktree drift hazard this closes.
+
+**SPEC ownership:** CIU's global config-default template layer
+(`ciu.global.defaults.toml.j2` and equivalent per-project defaults).
+
+## CIU-50 — `deploy.environment_tag` should be `deploy.instance_id` (naming clarity, not a defect)
+
+**Filed by:** dstdns operator directive, 2026-08-25, same investigation.
+`environment_tag` is CIU's per-deployment INSTANCE identifier (the
+component making `container_name()`'s output unique) but reads as though it
+names a deployment ENVIRONMENT (dev/staging/prod) — a different, more
+common concept in infra tooling. This ambiguity cost real investigation
+time this session (the field's actual purpose had to be re-derived from
+source rather than inferred from its name).
+
+### Why CIU owns it
+
+Pure naming-clarity request on CIU's own config schema; no behavior change.
+
+### Proposed contract
+
+Rename `deploy.environment_tag` → `deploy.instance_id` (namespace TBD —
+`ciu.instance_id` was also suggested; settle against CIU's existing config
+structure). Measured blast radius: 9 files in ciu's own `src/` (core site
+`src/ciu/deploy.py`, including a hard-fail validation message quoting the
+literal key name), 46 files in dstdns's own templates — grep-and-replace
+scale, but a SCHEMA KEY rename (unlike CIU-48/49's pure default-value
+changes), so every consumer's rendered config keys change shape. Proposed
+as a v8-timed cutover rather than a silent rename on stable current-CIU
+config, per this project's own no-dual-naming greenfield doctrine — not
+proposed as an immediate backport for this reason specifically.
+
+### Oracles
+
+- Every config surface (rendered TOML, generated docs, CLI help) names
+  `instance_id` consistently, no dual-naming transition period.
+- Controlled wrong implementation: a partial rename leaving some consumer
+  templates on the old key while ciu's own source moves to the new one —
+  silent breakage, not a clean rename.
+
+**SPEC ownership:** CIU's deployment config schema (`deploy.*` namespace,
+`src/ciu/deploy.py`) — land alongside v8's other `deploy.*` schema work if
+any lands in the same pass.
+
+## CIU-51 — Eliminating Compose's automatic bare service-key alias (the full §3.6 fix; v8-scale, not a backport)
+
+**Filed by:** dstdns operator directive, 2026-08-25, same investigation —
+explicitly requested as "how would that change look like." This is the
+harder half CIU-48/49 do not close: Compose ALWAYS registers a service's
+top-level YAML key as a network-scoped DNS alias, confirmed against
+Compose's own docs (`services` reference: "aliases declares *alternative*
+hostnames... the service name itself remains resolvable") — no documented
+mechanism suppresses this per-network.
+
+### Concrete before/after
+
+Today (representative pattern across dstdns's compose templates):
+
+```yaml
+services:
+  vault:                                    # bare compose service KEY — this is what gets auto-aliased
+    container_name: dstdns-98535c-vault     # already qualified (unrelated mechanism, doesn't help)
+  consul-server:
+    depends_on:
+      vault: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "http://vault:8200/v1/sys/health"]
+```
+
+To eliminate the bare alias, the KEY itself must already be qualified,
+because the key is what Compose auto-aliases:
+
+```yaml
+services:
+  dstdns-98535c-vault:                      # key IS the qualified form now
+    container_name: dstdns-98535c-vault
+  dstdns-98535c-consul-server:
+    depends_on:
+      dstdns-98535c-vault: {condition: service_healthy}   # every reference must follow
+    healthcheck:
+      test: ["CMD", "curl", "http://dstdns-98535c-vault:8200/v1/sys/health"]
+```
+
+Every service key, every `depends_on:` entry, every intra-stack healthcheck/
+init-script reference to a sibling by bare name has to move together in one
+atomic pass per stack — a partial migration is a Compose parse-time error
+(loud, at least, unlike today's silent ambiguity) rather than a
+hand-editable transition.
+
+### Why CIU owns it, and what CIU would need to provide
+
+A template-level qualifying primitive, so authors don't hand-interpolate
+`{{ deploy.project_name }}-{{ deploy.environment_tag }}-` at every service
+key and reference (pure repetition-as-correctness — the exact staleness
+hazard class CIU-48/49 also close, but at compose-structure scale instead
+of a single default value):
+
+```jinja
+services:
+  {{ qname('vault') }}:
+    container_name: {{ qname('vault') }}
+  {{ qname('consul-server') }}:
+    depends_on:
+      {{ qname('vault') }}: {condition: service_healthy}
+```
+
+where `qname()` is a single CIU-provided template function deriving from
+the same identity facts `container_name()` already uses — one source of
+truth referenced everywhere, never re-typed.
+
+### Why this is explicitly NOT proposed as a backport
+
+Unlike CIU-48/49 (pure default-VALUE changes), this is a breaking
+compose-template STRUCTURE change requiring a new template primitive to
+exist before any consumer template can adopt it, and a partial migration is
+actively worse than the status quo. This is exactly the class of change
+v8's `docs/SPEC-RECONCILIATION-2026-08-24.md` "Priority 1: Structural
+clarity" bucket exists to absorb deliberately, in one coordinated pass
+across all consumer templates — not proposed as a same-day patch on live
+current-CIU deployments. CIU-48/49, by contrast, close most of the actual
+operator pain (everything except direct ad-hoc bare-name DNS lookups from
+outside CIU's own config layer) without this larger change.
+
+### Oracles
+
+- After this change, the bare service name is NOT resolvable via DNS from
+  ANY container in the stack — `getent hosts vault` from a sibling
+  container fails (NXDOMAIN), where today it succeeds (ambiguously, when
+  multi-homed).
+- Controlled wrong implementation: qualifying the service KEY but adding a
+  compose long-form `aliases:` entry that re-adds the bare name "for
+  convenience" — reintroduces the alias through the back door while
+  looking migrated.
+
+**SPEC ownership:** new surface (compose-template Jinja global
+functions/filters) — cross-reference
+`docs/SPEC-RECONCILIATION-2026-08-24.md` §2b/§2e (`CIU-V8-PREP-3`/`-6`)
+as the nearest existing v8 work touching service naming/addressing; land
+alongside it.
+
+## CIU-52 — Implement S12's reserved `shared_infra.services[*].aliases`
+
+**Filed by:** dstdns controller session, 2026-08-25, same investigation —
+the naming half of the operator's "pass the existing instance's container
+names to the new instance" proposal. `docs/SPEC.md:1152-1159` (S12) already
+reserves `ciu.instance.shared_infra.services[*].aliases` as
+not-yet-implemented. The join mechanism itself IS shipped and appears
+production-hardened: `docs/SPEC.md:2482-2560` (S16.1/CIU-22),
+`ciu worktree add NAME --shared-infra REF --shared-infra-services S1[,S2]
+--shared-infra-ref-projects R1[,R2]` — concurrency-safe liveness
+re-validation, Docker-state idempotency, scoped rollback. What's missing:
+after joining a reference instance's network, the joining instance has no
+CIU-declared name to call the shared service by.
+
+### Why CIU owns it
+
+Additive to an already-shipped mechanism (S16.1) — implementing a reserved
+field, not new architecture.
+
+### Proposed contract
+
+```toml
+# worktree B's config, joining worktree A's vault
+[[shared_infra.services]]
+name = "vault"
+ref_project = "dstdns"
+ref_instance_id = "98535c"          # A's instance_id — derived, not hand-typed
+aliases = ["vault"]                 # what B's own templates may call it
+```
+
+CIU resolves `aliases` into B's own `topology.services.vault.internal_host`
+(CIU-49's field) automatically at join time, pointing at A's already-
+qualified `container_name` output — B's config keeps a short local name
+while the underlying resolution is CIU-managed, not a bare Docker DNS alias
+subject to CIU-51's ambiguity at all.
+
+### Oracles
+
+- After `ciu worktree add ... --shared-infra-services vault`, the joining
+  instance's rendered `internal_host` resolves to the reference instance's
+  qualified `container_name`, with no hand-written override needed (contrast
+  dstdns's current hand-maintained `dstdns-mstest` override for the
+  non-shared case, CIU-49).
+- Controlled wrong implementation: injecting the reference instance's BARE
+  service name instead of its qualified `container_name` — reproduces the
+  exact bug this closes, relocated to the shared-infra path.
+- Fixture: instance A (reference) + instance B (diverging, shared-infra
+  join) + instance C (unrelated, own vault) coexisting — B's resolution is
+  scoped to A specifically, unaffected by C.
+
+**SPEC ownership:** `docs/SPEC.md` S12 (declares the field) + S16.1/CIU-22
+(the join mechanism this attaches to).
 
 ## Compact resolved index
 
