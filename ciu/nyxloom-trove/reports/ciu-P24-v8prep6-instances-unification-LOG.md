@@ -5,9 +5,10 @@
 confirmed with `git status --porcelain && git log --oneline -3` before any
 edit — tree was clean).
 
-**Status: COMPLETE.** Full gate green (2967 passed, 100.00% line+branch
-coverage). One controller-authorized scope widening along the way (§3) —
-same pattern as this wave's ciu-P15/P17/P32 episodes.
+**Status: COMPLETE (ACCEPT-conditional review fix applied, §9).** Full gate
+green (2968 passed, 100.00% line+branch coverage). One controller-authorized
+scope widening along the way (§3) — same pattern as this wave's
+ciu-P15/P17/P32 episodes.
 
 ---
 
@@ -248,9 +249,80 @@ $ .venv/bin/python -m pytest tests/tests/test_ciu_composefile.py \
    silent-upgrade hazard` (the scope.touch widening, committed separately
    per the controller's instruction, before any of the newly-authorized
    files were touched).
-2. The full implementation/test/docs/fixture-migration diff from §5 (this
-   package's main commit).
-3. This LOG file.
+2. `e26d08f7` — the full implementation/test/docs/fixture-migration diff
+   from §5 (this package's main commit).
+3. `1ddfdfba` — this LOG file, first version.
+4. §9's review-fix commit and its LOG update, both listed at the end of §9.
 
-Exact hashes for commits 2-3 are in this package's final report (read back
-via `git log --format=%H`, not predicted ahead of the actual commit).
+## 9. Review fix — the fresh-assignment half of the leak-guard wasn't pinned
+
+**Verdict on the shipped code: ACCEPT-conditional.** The reviewer confirmed
+`ciu_context["instances"] = instances_for_ciu` (a fresh, replacing
+assignment) is the CORRECT behavior — no code defect — but found the test
+suite only pinned HALF of it. They mutated the assignment to
+`ciu_context.setdefault("instances", {}).update(instances_for_ciu)` (an
+accumulate-instead-of-replace refactor) and got all 127 tests in this file
+passing, then proved the mutant is a REAL leak by hand: with that mutation,
+stack A's `{'worker': 3}` survives inside stack B's OWN non-empty map,
+producing `{'worker': 3, 'other': 2}` in stack B's compose render instead
+of stack B's own `{'other': 2}`. My existing
+`test_cross_stack_reuse_does_not_leak_stale_instances` only exercises the
+POP-when-empty half (stack B declares NOTHING); it never constructs the
+case where BOTH stacks declare their own, DIFFERENT, non-empty maps — so it
+cannot distinguish "replace" from "merge" and passed unchanged under the
+mutant.
+
+**Fix:** one new test,
+`TestCiuInstancesContextInjection::test_cross_stack_reuse_replaces_not_merges_when_both_declare`
+(`tests/tests/test_ciu_composefile.py`) — stack A declares
+`[mystack.worker] instances = 3`, stack B (a SEPARATE stack directory,
+same shared `ciu_context` object, same call pattern as the existing
+cross-stack test) declares its own, unrelated `[mystack.other] instances =
+2`; asserts `shared_ciu_context["instances"] == {"other": 2}` after stack
+B's render — i.e. ONLY stack B's own service key, `"worker"` from stack A
+gone entirely. Verified by hand this test actually catches the reviewer's
+exact mutant (applied it to a scratch copy of `composefile.py`, re-ran just
+this test, confirmed it fails with
+`AssertionError: assert {'worker': 3, 'other': 2} == {'other': 2}` — the
+literal leak the reviewer described — then restored the real source and
+re-confirmed byte-identical via `diff`).
+
+Also added the S3.12-lineage comment the coordinator asked for, right above
+the fresh-assignment/pop code in `render_configfiles`: the shared-object
+leak class this guards against is the SAME one
+`selected_profiles`/`deployed_stacks` (S3.12) was built to close, now
+recurring for `instances` because it rides the identical shared
+`ciu_context` object — and spelled out explicitly that a `setdefault(...
+).update(...)`-style accumulate is the wrong fix for either half (empty OR
+non-empty), not just something to avoid in the empty case. No functional
+code change — `ciu_context["instances"] = instances_for_ciu` was already
+correct; only the comment and the new test changed in
+`src/ciu/composefile.py`'s neighborhood.
+
+### Gate output (verbatim, post-fix)
+
+```
+$ .venv/bin/python run-ciu-tests.py
+...
+--------------------------------------------------------------------------------------------
+TOTAL                                             8950      0   3628      0   100%
+Coverage JSON written to file coverage.json
+Required test coverage of 100% reached. Total coverage: 100.00%
+====================== 2968 passed, 6 warnings in 23.07s =======================
+```
+
+2968 passed (up from 2967 by exactly the one new test added), 100.00% line
++branch coverage, exit code `0`. Isolated re-run of just the affected file
+first (`tests/tests/test_ciu_composefile.py -q -k cross_stack`): 2 passed,
+confirming both the pre-existing pop-guard test and the new replace-guard
+test pass together.
+
+### Commits (this fix)
+
+1. `git commit --only -F - -- src/ciu/composefile.py
+   tests/tests/test_ciu_composefile.py` — the comment update + new test,
+   on top of `1ddfdfba`.
+2. This LOG update, committed separately (`docs(ciu):` prefix).
+
+Exact hashes are in this package's final report (read back via `git log
+--format=%H`, not predicted ahead of the actual commit).
