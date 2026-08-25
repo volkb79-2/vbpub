@@ -130,7 +130,7 @@ review_focus:
 8. `KNOWN_ISSUES_TODO_BACKLOG.md` — search `CIU-53`/`CIU-54` (the entries this
    session's ciu-P32 filed) for this backlog's current numbering; this
    package's own filing (if the operator's proposal is filed as a formal
-   backlog entry at all — controller's call: file it as CIU-55 alongside the
+   backlog entry at all — controller's call: file it as CIU-60 (or whatever the next free number actually is at implementation time -- re-verify) alongside the
    fix, following this backlog's own established style, so a future reader
    finds the "why" without re-deriving this handoff's reasoning) should slot
    in immediately after CIU-54.
@@ -215,7 +215,7 @@ derived, with a real file backing every value.
   needed unless the implementer finds a genuine breaking edge case, in which
   case escalate rather than silently deciding either way.
 - `KNOWN_ISSUES_TODO_BACKLOG.md` gets a new entry (controller suggests
-  CIU-55, verify the next free number yourself) recording the operator's
+  CIU-60 at time of writing, but this wave hit a real ID collision during the P26/P27 merge -- ALWAYS re-verify against KNOWN_ISSUES_TODO_BACKLOG.md live rather than trusting this number) recording the operator's
   original architecture question and this package's resolution, following
   this file's own established style (see CIU-52/CIU-53's entries for the
   shape).
