@@ -15,6 +15,7 @@ scope:
     - "src/ciu/dev.py"
     - "src/ciu/cli.py"
     - "tests/tests/test_ciu_dev.py"
+    - "tests/tests/test_ciu_workspace_dev_remaining_boundaries.py"
     - "docs/SPEC.md"
     - "docs/CONFIG.md"
     - "docs/CIU.md"
