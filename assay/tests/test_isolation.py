@@ -306,6 +306,37 @@ def test_repository_root_project_materializes_every_literal_exactly(
     assert list(scratch.iterdir()) == []
 
 
+def test_sibling_pycache_directories_do_not_omit_committed_sources(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "pycache-consumer"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    source = repo / "libs" / "common" / "src" / "common"
+    source.mkdir(parents=True)
+    (source / "__init__.py").write_text("", encoding="utf-8")
+    (source / "module.py").write_text("value = 1\n", encoding="utf-8")
+    cache = source / "__pycache__"
+    cache.mkdir()
+    (cache / "module.cpython-314.pyc").write_bytes(b"untracked residue\n")
+    _git(repo, "add", "libs/common/src/common/__init__.py")
+    _git(repo, "add", "libs/common/src/common/module.py")
+    _git(repo, "commit", "-q", "-m", "tracked sources beside an untracked pycache")
+    commit = _git(repo, "rev-parse", "HEAD")
+    scratch = _scratch(tmp_path)
+
+    with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+        with prepared.materialize(timeout=TIMEOUT) as snapshot:
+            assert (snapshot.root / "libs/common/src/common/module.py").read_text(
+                encoding="utf-8"
+            ) == "value = 1\n"
+            assert (snapshot.root / "libs/common/src/common/__init__.py").is_file()
+            assert not (
+                snapshot.root / "libs/common/src/common/__pycache__"
+            ).exists()
+    assert list(scratch.iterdir()) == []
+
+
 def test_read_regular_file_refuses_a_symlink_and_an_absent_path(
     tmp_path: Path,
 ) -> None:

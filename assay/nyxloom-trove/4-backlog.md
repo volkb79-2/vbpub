@@ -1415,6 +1415,14 @@ discipline.
 ## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
 
 **Filed 2026-08-24 (dstdns P128 R1 blocker; consumer evidence from P128 debugging session).**
+**Status:** **NOT REPRODUCIBLE at current HEAD; hardened 2026-08-25.** A literal
+tracked-source/untracked-sibling-cache fixture passes, and the existing
+index-tree/clean-status verification already rejects the described omission.
+The required post-materialization manifest-presence check is now explicit,
+so a future writer regression fails closed even if Git status were unable to
+observe it. The historical dstdns end-to-end acceptance is obsolete as proof
+of the filed defect; re-run that consumer lane against its current dependency
+if the symptom recurs.
 
 ### The observation
 
@@ -1450,6 +1458,8 @@ materialization rather than written.
       both `.py` sources and `__pycache__` siblings;
 - [ ] all manifest entries are materialized after the fix;
 - [ ] dstdns P128 R1 lane passes end-to-end against the fixed build.
+- [x] a sibling-cache fixture proves tracked sources remain materialized;
+- [x] every non-omitted manifest leaf is explicitly verified on disk before yield.
 
 ---
 
