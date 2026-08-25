@@ -4,11 +4,16 @@
 - Worktree: `/workspaces/vbpub/.worktrees/ciu-qol-v8prep-wave/ciu`
 - Branch: `feat/ciu-qol-v8prep-wave`
 - Handoff `input_revision`: `370ea8141f7f69399a751f2d5731a8ccf5419921`
-- Status: **PARTIAL — O1 and O2 COMPLETE and independently proven; O3 (the
-  `deploy.py` wiring) BLOCKED per the handoff's own `escalate_if`; O4 (docs)
-  deferred as a consequence of O3 being blocked (documenting a config key
-  with no wired effect would be actively misleading). Full gate is GREEN:
-  0 failures, 100% line+branch coverage across the whole `ciu` package.**
+- Status: **COMPLETE — O1-O4 all done.** (Superseded the PARTIAL/BLOCKED
+  status below: the controller reviewed the BLOCKED evidence, widened
+  `scope.touch` to include the 6 dependent test files (handoff commit
+  `a255a639`, "Amendment" section), and directed the mechanical path —
+  update those 6 files' fakes/assertions to the new interface rather than
+  add a compatibility shim. Done; see "Amendment — O3 redone and landed,
+  O4 completed" below for the full second-pass account. The narrative
+  below this point (up through the first "Gate output" section) is the
+  ORIGINAL first-attempt record, kept verbatim for the audit trail — do
+  not read it as the current state of the code.**
 
 ## Summary of the block (read this first)
 
@@ -472,4 +477,213 @@ predicted):
   — `src/ciu/deploy_pkg/health.py`, `src/ciu/deploy_pkg/phases.py`,
   `tests/tests/test_ciu_deploy_health.py` (new),
   `tests/tests/test_ciu_deploy_phases.py` (new).
-- LOG commit (this file): committed separately, on top of the commit above.
+- LOG commit (first version): `422de38b099bc48750d8d11a3ddd5df9775d1ce9`.
+- See "Amendment" section below for the O3/O4 commits that supersede the
+  BLOCKED status recorded above.
+
+---
+
+## Amendment — O3 redone and landed, O4 completed
+
+Controller reviewed the BLOCKED evidence above and widened `scope.touch`
+(handoff commit `a255a639`, "Amendment" section) to include the 6
+dependent test files, with an explicit ruling: `resolve_selection_health_containers`/
+`run_container_health_gate` are internal `deploy.py` helpers, not part of
+ciu's public CLI/config contract, so updating their 6 dependent test
+files' fakes/assertions to the new `dict`-based interface is an ordinary
+internal refactor — take the mechanical path, not a compatibility shim.
+
+### O3 — redone (DONE)
+
+Re-applied the exact same `src/ciu/deploy.py` wiring described in "What I
+actually built and then reverted" above, verbatim (confirmed via `git
+diff` against my in-memory record of the first attempt — same functions,
+same signatures, same `_seconds(raw_override, default=default_timeout_s)`
+resolution I'd already flagged as the correct reading of the two
+discrepant packet sections). Did **not** re-implement or revert O1/O2 —
+built directly on the already-landed `7a1ca22b`.
+
+### Six dependent test files — fixed to genuinely exercise the new
+interface (not just silenced)
+
+For each, I converted assertions/fakes to the new shape rather than
+papering over the type error:
+
+- **`tests/tests/test_ciu_deploy_deeper6.py`** (4 tests) — all four calls
+  only assert an exception is raised (never inspect the return value), so
+  the only change needed was adding `default_timeout_s=30.0` to each
+  direct call.
+- **`tests/tests/test_ciu_deploy_health_boundaries.py`** (4 failing
+  tests, 11 total in file):
+  - `test_health_gate_inspects_exact_resolved_container_names` and
+    `test_health_gate_timeout_preserves_pending_summary`: `["name"],
+    timeout_s=N` → `{"name": N}` (dict), dropping `timeout_s=`.
+  - `test_malformed_compose_health_model_is_authoring_error` (3
+    parametrizations): added `default_timeout_s=30.0`.
+  - `test_health_gate_pending_then_healthy_uses_deterministic_polling`:
+    this one needed a REAL rewrite, not a mechanical signature patch — it
+    monkeypatched `deploy.health_pkg.wait_for_gate` (the OLD primitive)
+    with a real-`wait_for_gate`-backed fake using an injected clock/sleep,
+    to prove `run_container_health_gate` correctly delegates polling.
+    Since `run_container_health_gate` now calls `wait_for_gate_per_target`
+    instead, patching `wait_for_gate` no longer intercepts anything — the
+    test would have silently stopped testing what it claimed to test
+    (using real `time.sleep`/`time.monotonic` instead, and only passing by
+    coincidence). Rewrote it to monkeypatch `deploy.health_pkg.
+    wait_for_gate_per_target` instead, using the REAL
+    `health.wait_for_gate_per_target` wrapped around the same injected
+    fake clock/`slept.append` sleep_fn, called with a `{"project-prod-cache":
+    5}` timeout dict. Traced the fake clock/status sequence by hand before
+    running it (starting → healthy on the 2nd check_fn call, one sleep)
+    and confirmed the test's `assert slept == [1]` still holds for the
+    right reason — the poll loop's actual, injected clock progression —
+    not an accident of unpatched real timing.
+- **`tests/tests/test_ciu_deploy_deeper9.py`** (1 test) — `["a","b"],
+  timeout_s=0` → `{"a": 0, "b": 0}`.
+- **`tests/tests/test_ciu_deploy_direct72.py`** (1 failing test) — the
+  `resolve_selection_health_containers` fake `lambda *_args: [...]` →
+  `lambda *_args, **_kwargs: {"project-prod-api": 30.0}` (absorbs the new
+  `default_timeout_s=` keyword, returns a dict). Left
+  `test_healthcheck_empty_selection_is_successful_noop`'s fake untouched —
+  it's never invoked (`action_healthcheck` returns before calling
+  `resolve_selection_health_containers` for an empty selection), and it
+  wasn't in the original 19 failures.
+- **`tests/tests/test_ciu_deploy_branch103.py`** (2 failing tests, 11
+  total in file):
+  - `test_health_resolution_deduplicates_container_names`: `==
+    ["ciu-test-api"]` → `== {"ciu-test-api": 30.0}` (both source entries
+    dedupe to the same container name; the FIRST entry's resolved timeout
+    — here, `default_timeout_s` for both, since neither declares an
+    override — wins, matching the pre-existing dedup semantics of "first
+    insertion wins").
+  - `test_health_failure_reclassifies_started_stack_as_failed`: fake
+    `lambda *_args: [...]` → `lambda *_args, **_kwargs: {"ciu-test-api":
+    30.0}`.
+- **`tests/tests/test_ciu_deploy_actions.py`** (5 failing tests, 72 total
+  in file):
+  - `test_health_targets_come_from_all_compose_services_not_phase_display_name`
+    and `test_health_targets_honor_entry_and_host_compose_profiles`: list
+    equality → dict equality (`{"p-t-postgres": 30.0, "p-t-minio": 30.0}`,
+    `{"p-t-always": 30.0, "p-t-debug": 30.0, "p-t-metrics": 30.0}`); the
+    surviving `assert all("Database Core" not in target for target in
+    targets)` line needed NO change — iterating a dict already yields its
+    keys, so this line means exactly the same thing before and after the
+    return-type change.
+  - `test_health_target_resolution_fails_for_ambiguous_compose_identity`:
+    added `default_timeout_s=30.0` (exception-only assertion, no shape
+    change needed otherwise).
+  - `test_deploy_health_failure_stops_later_phase_after_reporting_summary`
+    and `test_deploy_ignore_errors_continues_after_health_failure_but_returns_1`:
+    both `fake_targets(_root, _profile, entries)` → `fake_targets(_root,
+    _profile, entries, *, default_timeout_s)`, returning `{name:
+    default_timeout_s for name in names}` instead of `list(names)`
+    (keeping the recorded `events` tuple of names unchanged — the test's
+    externally-observed sequence assertions did not need to change at
+    all); both `fake_gate(names, **_kwargs)` → `fake_gate(container_timeouts,
+    **_kwargs)`, deriving `names = tuple(container_timeouts)` (dict keys,
+    same content as before) since `names[0]` on a dict would have raised
+    `KeyError: 0`.
+
+### Regression bar re-confirmed (controller's item 3)
+
+`grep -rn "health_timeout" tests/tests/test_ciu_deploy_actions.py
+tests/tests/test_ciu_deploy_branch103.py tests/tests/test_ciu_deploy_deeper6.py
+tests/tests/test_ciu_deploy_deeper9.py tests/tests/test_ciu_deploy_direct72.py
+tests/tests/test_ciu_deploy_health_boundaries.py` — **zero matches**. None
+of these six files' fixtures declare a `health_timeout` override anywhere,
+so every one of their scenarios exercises exactly the "no entry declares
+`health_timeout`" regression-bar row from O3's own decision table: every
+container in each of these tests' selections shares the same
+`default_timeout_s`, and each test's pre-existing pass/fail/summary
+expectations (only the container-list-vs-dict *shape* changed in the
+assertions above, never the expected health outcome, exit code, or log
+text) hold unchanged. This is the concrete, per-file confirmation the
+controller asked for, not an inference from the isolated O2-level
+`TestWaitForGatePerTargetAgainstWaitForGate` unit test alone (which
+remains true too, and covers the primitive-level case).
+
+### O4 — docs (DONE)
+
+- **`docs/SPEC.md`** S7.7: added a paragraph immediately after the
+  existing timeout/healthcheck sentence describing the optional
+  `health_timeout` key, its fallback to `[deploy.health].timeout`, and —
+  per O4's own negative constraint — the actual per-target-deadline
+  polling semantics (a broken override-tagged service can fail before the
+  global timeout elapses, independent of any other target in the same
+  gate call), not merely "a number changes." Split the bullet into two
+  paragraphs (blank line + 2-space indent continuation) matching the
+  existing multi-paragraph-bullet convention already used by S8.3 in the
+  same file.
+- **`docs/CONFIG.md`**: added a paragraph after the existing `health =
+  false` paragraph in the phase-service-entry section, with the exact
+  worked example from the backlog item (Authentik `"240s"` / worker
+  `"5s"`), and updated the `[deploy.health]` subsections-table row to
+  point at it.
+- **`CHANGES.md`**: added a new `### Added` subsection to the existing
+  `[Unreleased]` block (ordered before the pre-existing `### Fixed`
+  subsection from ciu-P14, matching this file's own Added-before-Fixed
+  convention visible in the `[7.0.0]` release section above it).
+- **`docs/BACKLOG-2026-08-24.md`**: `CIU-QOL-8`'s `**Status:**` line `OPEN`
+  → `✅ FIXED (ciu-P15)`, plus a new `**Evidence:**` line naming the
+  shipped functions, the SPEC/CONFIG doc locations, and this LOG.
+
+### Full gate — final state (real, pasted verbatim)
+
+```
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.14.6-final-0 ________________
+
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/deploy.py                                 1327      0    562      0   100%
+src/ciu/deploy_pkg/__init__.py                       8      0      0      0   100%
+src/ciu/deploy_pkg/health.py                       205      0    108      0   100%
+src/ciu/deploy_pkg/phases.py                        76      0     44      0   100%
+--------------------------------------------------------------------------------------------
+TOTAL                                             8098      0   3218      0   100%
+Coverage JSON written to file coverage.json
+Required test coverage of 100% reached. Total coverage: 100.00%
+====================== 2452 passed, 6 warnings in 16.12s =======================
+```
+
+(Full 40-module coverage table omitted here for length — every module
+reports 100%, identical in shape to the first-attempt table above except
+`src/ciu/deploy.py` grew from 1324 to 1327 statements, the O3 wiring's net
+new lines. Same 2452 total tests as the O1+O2-only run: the 6 dependent
+files' tests were fixed in place, not added to.)
+
+### Oracle table — final
+
+| Oracle | Status | Satisfied by |
+|---|---|---|
+| O1-declaration | DONE | Unchanged from the first attempt — `service_health_timeout` in `phases.py`, 10 tests, 100% coverage. |
+| O2-per-target-poll | DONE | Unchanged from the first attempt — `wait_for_gate_per_target` in `health.py`, 7 tests including the required combined-axis fixture, 100% coverage. |
+| O3-wiring | **DONE** | `resolve_selection_health_containers`/`run_container_health_gate`/both `deploy.py` call sites wired exactly per the packet; 6 dependent test files updated to the new interface (see above); "no override" regression bar re-confirmed by grep across all 6 files. |
+| O4-docs | **DONE** | `docs/SPEC.md` S7.7, `docs/CONFIG.md` phase-service-entry section + worked example, `CHANGES.md` Unreleased/Added, `docs/BACKLOG-2026-08-24.md` CIU-QOL-8 → FIXED with evidence. |
+
+### Files changed (this amendment)
+
+Wiring + test-fix commit:
+- `src/ciu/deploy.py`
+- `tests/tests/test_ciu_deploy_actions.py`
+- `tests/tests/test_ciu_deploy_branch103.py`
+- `tests/tests/test_ciu_deploy_deeper6.py`
+- `tests/tests/test_ciu_deploy_deeper9.py`
+- `tests/tests/test_ciu_deploy_direct72.py`
+- `tests/tests/test_ciu_deploy_health_boundaries.py`
+
+Docs commit:
+- `docs/SPEC.md`
+- `docs/CONFIG.md`
+- `CHANGES.md`
+- `docs/BACKLOG-2026-08-24.md`
+
+No `scope.forbid` file was touched at any point in this package (both
+attempts).
+
+### Commit hashes (this amendment, read back via `git log -1 --format=%H`,
+not predicted)
+
+- Wiring + test-fix commit: `75a643c169d19ec774755164a685925e27ed6a1d`
+- Docs commit: `797e403fbaaced530138de56cd0a6f42c3d70c85`
+- LOG commit (this update): committed next, see repository history.
