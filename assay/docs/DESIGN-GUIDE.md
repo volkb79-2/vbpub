@@ -462,6 +462,14 @@ status still reports modified and staged tracked work. P22 lands the committed-o
 run on (below); P23 moves baseline/repeated execution onto it, which is the
 boundary that also removes ignored/untracked inputs from those executions.
 
+**A snapshot is proven leaf-for-leaf before yield.** The committed manifest is
+the write contract: after materialization, every non-omitted regular-file entry
+must exist as a regular file and every symlink entry as a symlink. This is in
+addition to clean status and index-tree equality; it catches a future writer
+regression even for a path Git status could not report. Untracked caller residue
+such as `__pycache__/` is not part of the commit and therefore never enters the
+snapshot.
+
 ### Rollup precedence
 
 `ERROR > NO_MEASUREMENT > BUDGET_EXCEEDED > FAIL > INCONCLUSIVE`, and `PASS`

@@ -673,6 +673,20 @@ class SnapshotRepository:
                     f"declared omission {omitted_path!s}, which must be "
                     f"absent from the worktree"
                 )
+        for entry in self._manifest.entries:
+            materialized = root.joinpath(*entry.path.parts)
+            if entry.mode == _MODE_SYMLINK:
+                if not materialized.is_symlink():
+                    raise _git_failed(
+                        f"the private snapshot at {root} omitted the manifest "
+                        f"symlink leaf {entry.path!s}"
+                    )
+                continue
+            if not materialized.is_file():
+                raise _git_failed(
+                    f"the private snapshot at {root} omitted the manifest "
+                    f"regular-file leaf {entry.path!s}"
+                )
         if (git_dir / "objects" / "info" / "alternates").exists():
             raise _git_failed(
                 f"the private snapshot at {root} depends on an alternate object store"
