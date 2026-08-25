@@ -1,7 +1,7 @@
 # ciu-P27 — CIU-25 completion: `ciu worktree reap`
 
 **Handoff:** `nyxloom-trove/handoffs/ciu-P27-ciu25-reap-verb.md`
-**Branch:** `feat/ciu-qol-v8prep-wave` · **Base HEAD:** `32f3a0f9` (CIU-58
+**Branch:** `feat/ciu-qol-v8prep-wave` · **Base HEAD:** `32f3a0f9` (CIU-59
 filing on top of ciu-P26), confirmed with `git status --porcelain && git log
 --oneline -3` before any edit — tree was clean.
 
@@ -386,7 +386,7 @@ TOTAL                                             9579      0   3920      0   10
 3206 passed, 20 warnings in 39.30s
 ```
 
-CIU-55 is fixed on this branch (`e83a8b44` put `--dist loadfile` into
+CIU-56 is fixed on this branch (`e83a8b44` put `--dist loadfile` into
 `run-ciu-tests.py`), so unlike ciu-P26 the bare gate command is now the
 green one — no caveat.
 

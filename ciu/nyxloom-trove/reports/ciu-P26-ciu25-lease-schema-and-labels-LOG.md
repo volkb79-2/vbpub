@@ -11,7 +11,7 @@ All five oracles met; 3127 tests pass; coverage is 100.00% line+branch under
 bare default (`-n auto`, xdist `--dist load`) it reports 99.85%, for a
 **pre-existing** coverage-measurement defect in an unrelated file that this
 package's +122 tests merely tip into failing — **reproduced on the clean
-`6f80e2cf` baseline with zero source changes**. Filed as **CIU-55** with the
+`6f80e2cf` baseline with zero source changes**. Filed as **CIU-56** with the
 reproducer and a one-line fix that lives outside this package's `scope.touch`.
 See §7. No `escalate_if` fired. No `scope.forbid` file touched. No scope
 widened.
@@ -247,7 +247,7 @@ set) so `--json` emits a proper S16.4 document.
 | `docs/SPEC.md` | New `S16.9` (lease field + v1/v2 coexistence, the mode↔expiry table, `lease_ttl_hours`, lifecycle, the verb, ownership labels, and a "Still open" naming both the shipped-mode label gap and the untouched three of CIU-25's five states); S16's "schema-v1" wording corrected; S16.4's operation vocabulary gains `lease` |
 | `docs/CONFIG.md` | `[ciu.worktree]` table gains the `lease_ttl_hours` row + a paragraph on why absent ≠ default, with an S16.9 cross-link |
 | `CHANGES.md` | Unreleased `feat(ciu):` entry |
-| `KNOWN_ISSUES_TODO_BACKLOG.md` | CIU-25 row + detail updated to PARTIAL naming this package as the substrate and ciu-P27 as the successor (explicitly NOT FIXED); **new CIU-55** (§7) |
+| `KNOWN_ISSUES_TODO_BACKLOG.md` | CIU-25 row + detail updated to PARTIAL naming this package as the substrate and ciu-P27 as the successor (explicitly NOT FIXED); **new CIU-56** (§7) |
 
 `scope.forbid` verified empty before writing code and again before commit:
 
@@ -327,7 +327,7 @@ tests**: 2 of 3 `-n auto` runs then reported the identical 17% / 99.85%;
 removing the pad file restored 6/6 green; this package's own +122 real tests
 reproduce it 6/6.
 
-Filed as **CIU-55** (High) with the full reproducer. The fix is one line in
+Filed as **CIU-56** (High) with the full reproducer. The fix is one line in
 `tests/tests/test_ciu_scaffold_hooks.py` (a module-level
 `import ciu.hook_templates.post_compose_db  # noqa: F401`) and/or `--dist
 loadfile` in `run-ciu-tests.py` — **both outside this package's `scope.touch`,
