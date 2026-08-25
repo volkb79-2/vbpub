@@ -793,16 +793,23 @@ def validate_declared_features(global_cfg: dict, hosts_cfg: dict) -> None:
     their checks; each step's own exception propagates unmodified — this
     function never catches and rewraps.
 
-    Both ``deploy_pkg.layouts`` and ``worktree`` are imported function-LOCAL
-    here, not at module scope: ``deploy_pkg/layouts.py`` imports
-    ``from .profiles import resolve_profiles`` and ``deploy_pkg/profiles.py``
-    imports ``from ..config_model import deep_merge``, and ``worktree.py``
-    imports ``from . import config_model`` directly — a module-scope import
-    of either from *this* module would be circular
-    (``config_model -> deploy_pkg.layouts -> deploy_pkg.profiles ->
-    config_model`` and ``config_model -> worktree -> config_model``) and
-    would raise ``ImportError`` the moment ``config_model.py`` itself is
-    first imported.
+    ``deploy_pkg.layouts`` is imported function-LOCAL here, not at module
+    scope: ``deploy_pkg/layouts.py`` imports ``from .profiles import
+    resolve_profiles`` and ``deploy_pkg/profiles.py`` imports ``from
+    ..config_model import deep_merge`` — a module-scope
+    ``from .deploy_pkg.layouts import resolve_layout`` in *this* module
+    would be circular (``config_model -> deploy_pkg.layouts ->
+    deploy_pkg.profiles -> config_model``, reaching for ``deep_merge``
+    before this module has finished defining it) and would raise
+    ``ImportError`` the moment ``config_model.py`` itself is first
+    imported (reproduced directly while writing this). ``worktree`` is
+    imported function-LOCAL too, for consistency alongside the layouts
+    import above: ``worktree.py`` does ``from . import config_model`` at
+    its own module scope, but only ever reads ``config_model.<name>``
+    inside function bodies, never at worktree.py's own module scope — so a
+    module-scope import of ``worktree`` here does not actually reproduce
+    the same failure (verified), but keeping it function-local costs
+    nothing and avoids relying on that being true forever.
     """
     # Step 1 (S7.5c): every declared layout must resolve cleanly. An
     # empty/absent layouts table is a no-op (zero iterations).
