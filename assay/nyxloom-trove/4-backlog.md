@@ -1615,10 +1615,40 @@ CIU could track `ciu.worktree-instance.json` via the repo's COMMITTED
 flag without touching assay's own git-invocation code at all. Filed as a
 cross-repo note; CIU owns whether to act on it (dstdns provenance below).
 
+**RESOLVED same day, 2026-08-25 — the git-dir hypothesis is REFUTED and no
+assay-side change is needed; the mitigation above is already applied on
+dstdns's side.** Directly measured with a from-scratch linked-worktree
+repro: `git ls-files --others --exclude-per-directory=.gitignore` (both
+auto-discovering `-C <path>` AND explicit `--git-dir=<resolved>
+--work-tree=<repo_top>`, matching `_resolve_repo`'s own invocation shape
+exactly) return **identical** results in every combination tested — a file
+excluded only via `.git/info/exclude` is NOT hidden by either invocation
+style, in a linked worktree OR a plain non-worktree checkout. There is no
+worktree-specific git-dir-anchoring effect; `_resolve_repo`'s explicit
+`--git-dir=`/`--work-tree=` does not change `info/exclude` resolution at
+all, confirmed against the real `assay.git.dirty_paths()` function itself,
+not just raw git output. The symptom is exactly A-177's documented,
+deliberate design: `--exclude-per-directory=.gitignore` never consults
+`.git/info/exclude`, on purpose (a personal/local ignore rule must not hide
+anything from the dirty-tree check). It reads as "worktree-specific" only
+because `ciu.worktree-instance.json` happens to exist solely in worktree
+contexts, not because worktree topology changes assay's behavior.
+
+The suggested mitigation was independently verified (a committed
+`.gitignore` entry for the exact filename correctly makes
+`dirty_paths()` report clean, confirmed against the real function) — **and
+dstdns already shipped it the same day**: `dstdns@08b789f5` "fix(gitignore):
+track ciu.worktree-instance.json ignore (was local-only)" adds exactly this
+line to dstdns's committed `.gitignore`. No further action needed here;
+closing this reproduction as resolved upstream. If the symptom recurs,
+re-verify against dstdns's current `.gitignore` before re-opening — the most
+likely cause of a recurrence is a stale/different commit or branch, not a
+regression in this mechanism.
+
 **Provenance:** `dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md`,
 `dstdns/nyxloom-trove/reviews/dstdns-P130-code-review-phase1-r1.md` §B1
 (the black-box symptom, found first, from a different worktree),
-`dstdns/nyxloom-trove/decisions.md` D-193.
+`dstdns/nyxloom-trove/decisions.md` D-193, `dstdns@08b789f5` (the shipped fix).
 
 ---
 
