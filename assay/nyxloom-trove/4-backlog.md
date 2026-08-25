@@ -1568,6 +1568,58 @@ sources git consults.
 **Impact.** dstdns had to split one clean pattern into four narrow patterns,
 and still hit issues when new artifact types appeared.
 
+**New reproduction, 2026-08-25 (dstdns P132 implementer, priority evidence —
+different mechanism from the reverted flag-switch above, not a re-request of
+it.** `assay`/`assay-dlq` fail `NO_MEASUREMENT`/`DIRTY_TREE` on a git tree a
+plain `git status --short`/`--porcelain` correctly reports as clean, on
+EVERY ciu-registered git worktree tested (dstdns P130 and P132's worktrees
+both, independently). Root-caused with a direct Python probe calling
+`assay.git.dirty_paths()` in-process: the dirty file is
+`ciu.worktree-instance.json`, a CIU-created worktree-registration metadata
+file present in every `ciu worktree create`d instance, excluded ONLY via
+`.git/info/exclude` (untracked, per-clone) — never via the repo's committed
+`.gitignore`. Confirmed deterministic and reproduced twice: `mv` the file out
+→ `dirty_paths()` returns `()` immediately; `mv` it back → `DIRTY_TREE`
+reappears immediately, in the same shell/cwd/env where plain `git status`
+sees nothing throughout.
+
+**This is NOT simply "B017's flag issue again."** `dirty_paths()`'s
+`--exclude-per-directory=.gitignore` vs `--exclude-standard` choice (the
+already-reverted fix above) is orthogonal to what's actually failing here.
+`git.py`'s `_resolve_repo()` (`assay/git.py:390-429`) explicitly anchors
+subsequent commands with `--git-dir=<resolved>` where `<resolved>` comes
+from `git rev-parse --absolute-git-dir` run at the worktree — for a LINKED
+worktree this resolves to the per-worktree private dir
+(`<main-repo>/.git/worktrees/<name>/`), not the shared common `.git/info/`
+location `info/exclude` actually lives in for a linked worktree setup. The
+hypothesis (not yet source-confirmed against `dirty_paths()`'s own git
+invocation — worth checking directly): explicit `--git-dir=` anchored at the
+private per-worktree dir may not resolve `info/exclude` the same way a
+normal auto-discovering `-C <worktree-path>` invocation does, INDEPENDENT of
+which exclude flag is passed. If confirmed, this is a linked-worktree-
+specific bug in how `_resolve_repo`/its callers anchor git invocations, not
+a flag choice — and would need its own fix distinct from (and compatible
+with) the security posture that reverted the flag-switch attempt above.
+
+**Impact, worth restating plainly:** this silently converts assay's
+dirty-tree gate into a false-positive refusal for every worktree-based
+package in dstdns's pipeline — every package currently gets ZERO real
+`assay`/`assay-dlq` R0/R1 evidence unless the operator happens to discover
+and apply the `mv`-out/`mv`-back workaround by hand (verified working,
+documented in `dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md`).
+
+**Suggested immediate mitigation, orthogonal to the deeper git-dir question:**
+CIU could track `ciu.worktree-instance.json` via the repo's COMMITTED
+`.gitignore` instead of `.git/info/exclude` — that would make it visible to
+`dirty_paths()`'s current, unreverted `--exclude-per-directory=.gitignore`
+flag without touching assay's own git-invocation code at all. Filed as a
+cross-repo note; CIU owns whether to act on it (dstdns provenance below).
+
+**Provenance:** `dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md`,
+`dstdns/nyxloom-trove/reviews/dstdns-P130-code-review-phase1-r1.md` §B1
+(the black-box symptom, found first, from a different worktree),
+`dstdns/nyxloom-trove/decisions.md` D-193.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
