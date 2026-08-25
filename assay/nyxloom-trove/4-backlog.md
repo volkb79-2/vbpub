@@ -1909,14 +1909,18 @@ resolutions:
    that never attempts plan resolution, parallel to but distinct from
    `refuse_lane`.
 4. ~~Forward the caller's already-resolved `infrastructure_source`/
-   `infrastructure_environment` into `refuse_lane`~~ — **done, round 3**;
-   resolves every case EXCEPT the one this entry is now scoped to (the
-   source itself is the thing that's broken).
+   `infrastructure_environment` into `refuse_lane`~~ — **done, round 3, all
+   call sites in both `runner.py` and `cli.py`** (round-2-of-round-3 review
+   found two more in `cli.py` the first pass missed — same fix); resolves
+   every case EXCEPT the one this entry is now scoped to (the source itself
+   is the thing that's broken).
 
 ### Acceptance
 
-- [x] every `refuse_lane` call site in `run_lane` forwards
-      `infrastructure_source`/`infrastructure_environment` (round 3);
+- [x] every `refuse_lane` call site in `run_lane` (`runner.py`, 5 sites) AND
+      in `_run_reserved` (`cli.py`, 2 sites) forwards
+      `infrastructure_source`/`infrastructure_environment` (round 3, both
+      passes — see A-298/A-299);
 - [ ] a decision recorded on which of options 1-3 handles the remaining case
       (infrastructure itself unresolvable);
 - [ ] `assay run` on a lane whose OWN infrastructure declaration is
@@ -1942,14 +1946,31 @@ old code's `f"invalid mutation shard spelling {shard!r}"` message is gone
 along with the exception it used to travel in, because `refuse_lane` (like
 every other refusal in this module — `missing_required`, `dirty_tree`,
 adapter resolution) carries no free-text field, only `(outcome,
-reason_code)`. `assay plan`'s equivalent refusal still raises `LaneConfigError`
-and prints its message via `main()`'s handler, so `run` and `plan` now
-disagree on how much a consumer learns. Restoring the detail needs either a
-new `ReasonCode` (a closed-enum widening every consumer's schema copy would
-have to accept — A-138/A-170 make this deliberate, not a quick add) or
-accepting that `run`'s refusals are, by this project's own design, diagnosed
-by reason code alone and `plan`'s richer message is the exception rather than
-the norm worth matching. Needs a decision, not a guess.
+reason_code)`.
+
+**The sharper framing (round-3 review correction): this is not just a
+`run`-vs-`plan` mismatch, it's *inside* `run` itself.** `run --operators
+bogus:x` prints a message to stderr and writes **no** artifact (refused
+before output reservation, per A-181); `run --shard 7/2` writes an artifact
+and prints **no** message. Neither single invocation gives a consumer both
+the exit code AND the cause. `assay plan`'s equivalent refusal (still raises
+`LaneConfigError`, printed via `main()`'s handler) is a third, different
+shape again.
+
+Restoring the detail has (at least) two real options, not one:
+1. A new `ReasonCode` — a closed-enum widening every consumer's schema copy
+   would have to accept (A-138/A-170 make this deliberate, not a quick add).
+2. Print the diagnostic to stderr without touching the enum or the schema,
+   reusing the exact pattern `cli.py`'s adapter-refusal branch already uses
+   (`print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)`) —
+   cheaper, no schema change, but needs the detail string plumbed back out of
+   `run_lane` to the CLI layer (it currently only returns a `Verdict`), and
+   the artifact itself still would not carry it.
+
+Or accept that `run`'s refusals are, by this project's own design, diagnosed
+by reason code alone, and document the resulting three-way asymmetry
+(`run`+operators / `run`+shard / `plan`+either) rather than closing it. Needs
+a decision, not a guess.
 
 ### N-5 — `judge.mutation.shard_index`/`shard_count` select nothing
 
@@ -1964,9 +1985,21 @@ config validates them, nothing consumes them. Wire them as the default
 them as reserved-for-future-use — any of the three closes this; leaving it
 silent is the A-046 "lane-table-implies-capability" trap.
 
+**Round-3 review addition:** `config.py:1784` independently bounds
+`judge.mutation.shard_count` by `MAX_MAX_MUTANTS` (10,000) — a *fourth*
+shard-count ceiling, on a constant that merely happens to also equal
+`MAX_SHARD_COUNT`. Inert today because this config is the dead field N-5 is
+about, but if N-5 is resolved by "wire them as the `--shard` default", this
+bound must switch to `MAX_SHARD_COUNT` explicitly or the two can silently
+drift apart the next time either constant changes for its own reason.
+
 ### Acceptance
 
-- [ ] a decision recorded on N-4 (new ReasonCode vs. accept the asymmetry
-      with `plan`, document it in CONSUMERS.md either way);
+- [ ] a decision recorded on N-4 (new `ReasonCode` vs. a stderr-only
+      diagnostic reusing `cli.py`'s existing print pattern vs. accept and
+      document the three-way asymmetry between `run`+operators, `run`+shard,
+      and `plan`);
 - [ ] a decision recorded on N-5 (wire / remove / document reserved), and
-      `config.py`/`CONSUMERS.md` updated to match.
+      `config.py`/`CONSUMERS.md` updated to match;
+- [ ] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
+      bound is switched to `MAX_SHARD_COUNT` in the same change.

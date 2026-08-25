@@ -753,6 +753,41 @@ def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
     assert "go" in err
 
 
+def test_run_refuses_an_unregistered_language_with_a_resolvable_infrastructure_fact(
+    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+):
+    """(B012/B013 remediation, round-3 finding N-6) `_run_reserved`'s two
+    `refuse_lane` calls (attestation `LANE_TIMEOUT` and adapter refusal --
+    this one) never forwarded `infrastructure_source`/
+    `infrastructure_environment`, though both are already computed a few
+    lines above. On any lane declaring `[lanes.<name>.infrastructure]`,
+    `refuse_lane`'s own internal plan-resolution re-triggered the SAME
+    facts (this test uses a `derived:` fact that resolves cleanly, so the
+    only thing that can go wrong is the missing forward) and raised
+    uncaught -- no verdict artifact, despite `--verdict-json` being
+    reserved. Same defect class as N-3, at the two call sites in `cli.py`
+    the round-3 fix (which only touched `runner.py`) never reached."""
+    marker = tmp_path / "the-command-ran"
+    lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"go"')
+    lane += '\n[lanes.package.infrastructure]\nimg = "derived:deploy.image"\n'
+    path = _write_and_commit_lane(git_repo, lane)
+    for name in ("src", "scripts"):
+        (git_repo.path / name).mkdir(exist_ok=True)
+    (git_repo.path / "ciu.global.toml").write_text(
+        "[deploy]\nimage = 'postgres:18'\n", encoding="utf-8"
+    )
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 2
+    assert not marker.exists()
+    document = json.loads(out)
+    assert why_invalid(validator, document) == []
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "BAD_LANE_CONFIG"
+    assert "go" in err
+
+
 # --- this build evaluates R0, Python R1, Python R2 and Python R3 (P19) -------
 #
 # R3 declared with NO R1 beside it used to be exactly the level the
