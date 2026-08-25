@@ -399,6 +399,59 @@ database = "dstdns"        # application database for pg:schema/<name> probes
 token_vault_path = "consul/{svc}/token"   # → consul/myapp/token
 ```
 
+#### Validation of the two CIU-read keys [S13.4b]
+
+`ciu check`'s stage 7 validates **only these two keys** — the only values CIU
+itself reads out of `[registry.*]`. Everything else in these tables, and every
+other `[registry.<name>]` table, is free-form consumer metadata and is passed
+through untouched. **CIU ships no model for Redis/MinIO/Vault/PostgreSQL-user
+registry tables**: it has never read one, so it has no shape to check against,
+and a guessed schema would reject legitimate configs.
+
+| Key | Type | Constraint | Why (what the probe actually does) |
+|---|---|---|---|
+| `[registry.postgresql].database` | string | non-empty | `pg:schema/<name>` runs `psql -d <database>`. A non-string is coerced by `str()` into a nonsense database name; an empty string is falsy, so it is silently ignored and the probe targets the default `postgres` database instead of yours. |
+| `[registry.consul].token_vault_path` | string | non-empty; a valid `str.format` template whose only placeholder is `{svc}` | `consul:token/<svc>` substitutes the template with `.format(svc=…)`. Unbalanced braces raise `ValueError`, which the probe does **not** catch — the whole probe run dies. Any other placeholder (`{service}`, `{}`, `{0}`) raises `KeyError`/`IndexError`, which the probe **does** catch and then silently falls back to `consul/acl/tokens/{svc}` — reading a different Vault path than you wrote, with no warning. |
+
+`{svc}` is deliberately **not** required to be present: a constant path
+substitutes cleanly and is legitimate for a deployment with one shared ACL
+token, so CIU does not impose a constraint its own probe does not have.
+
+Validation needs the optional `pydantic` extra:
+
+```bash
+pip install 'ciu[registry]'
+```
+
+If either table is declared and pydantic is **absent**, `ciu check` fails
+(exit 2) with a finding naming the extra — it never silently skips the check.
+When neither table is declared, pydantic is never imported.
+
+#### Validating your own registry tables [S13.4b]
+
+For the tables CIU does not model, declare one validator module:
+
+```toml
+[ciu]
+registry_validator = "infra/registry_validate.py"   # relative to the repo root
+```
+
+```python
+# infra/registry_validate.py
+def validate_registry(config):        # receives the WHOLE global config
+    errors = []
+    for name, user in config["registry"]["redis"]["users"].items():
+        if "acl" not in user:
+            errors.append(f"redis user '{name}' has no acl")
+    return errors                     # empty list = OK; None also means OK
+```
+
+Findings fail `ciu check` at exit 2 alongside CIU's own. The module is
+imported (never executed beyond import) with bytecode writing suppressed, so
+the check stays side-effect-free; a missing file, an import-time exception, a
+missing `validate_registry`, or a non-list return are each reported as a
+finding rather than aborting the run.
+
 ---
 
 ## Stack Configuration Sections

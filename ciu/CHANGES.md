@@ -29,9 +29,32 @@ gate runs; the commit subjects remain the traceable source of detail.
   check applies the PURE halves of two steps it does not run — Step 7's
   `auto_generated.*` (S3.9) and Step 8's hostdir-to-path rewrite (S6.2/S1.4),
   computing paths without creating, seeding or chowning a single directory —
-  so templates reading either still render. Registry (Pydantic-model)
-  validation is deliberately NOT included yet and is documented as absent
-  (CIU-QOL-12, SPEC S13.4a + S9.5)
+  so templates reading either still render. (CIU-QOL-12, SPEC S13.4a + S9.5)
+- feat(ciu): `ciu check` gains stage 7 — `[registry.*]` schema validation
+  (SPEC S13.4b). **pydantic is a NEW optional extra, `ciu[registry]`**, never
+  a hard dependency: it is imported lazily, and only when a validated table
+  is declared. If one IS declared and the extra is missing, `ciu check` fails
+  (exit 2) with a finding naming `pip install 'ciu[registry]'` — it never
+  silently skips validation, matching `ciu[schema]`'s S5.7 rule. **Scope,
+  stated plainly: CIU models exactly the TWO values it itself reads** —
+  `[registry.postgresql].database` (non-empty string; the `psql -d` target of
+  a `pg:schema/*` probe) and `[registry.consul].token_vault_path` (non-empty
+  string; a valid `str.format` template whose only placeholder is `{svc}`, the
+  Vault path of a `consul:token/*` probe). It ships **no** model for
+  Redis/MinIO/Vault/PostgreSQL-user registry tables — the V8 proposal's other
+  three "built-in kinds" — because CIU has never read one, so there is no
+  shape in this repo to validate against and a guessed schema would reject
+  legitimate configs; those tables pass through untouched. For consumer-owned
+  shapes there is one additive extension point: `[ciu].registry_validator`
+  names a module whose `validate_registry(config) -> list[str]` is called with
+  the whole global config (imported with bytecode writing suppressed, so the
+  check stays side-effect-free). Stage 7 is a GLOBAL-scope stage — it runs
+  once per run, even with an empty selection, and its findings carry no
+  `stack` key (CIU-V8-PREP-8 + CIU-QOL-12 stage 7, SPEC S13.4b).
+  **Upgrade note:** a workspace that already declares `[registry.postgresql]`
+  or `[registry.consul]` must `pip install 'ciu[registry]'`, or `ciu check`
+  now reports stage 7 red with the install hint. That is the intended
+  fail-loud behaviour, not a regression — `ciu up` is unaffected
 - feat(ciu): `ciu bake --profile NAME` — the target list can now be resolved
   via the SAME selection chain `ciu up --profile` uses
   (`load_global_config` → `resolve_profiles` → `build_selection`), so `ciu

@@ -1715,13 +1715,12 @@ CHECK_SCHEMA_VERSION = 1
 #: Ordered stage names in ``ciu check``'s report, matching the V8 proposal's
 #: §2.7 stage table (docs/CIU-V8-TESTING-GATE-PROPOSAL.md).
 #:
-#: Proposal stage 7 (registry validation against built-in Pydantic models) is
-#: DELIBERATELY ABSENT, not forgotten: it is a separate unit of work (five
-#: model classes plus a new optional dependency) tracked as ciu-P19, which
-#: will insert a ``"registry"`` entry between ``"configfile"`` and
-#: ``"hooks-load"`` here and a matching pass at the marked insertion point in
-#: :func:`_check_stack_config`. ``ciu check`` therefore implements proposal
-#: stages 1-6 and 8-12 today, and SPEC S13.4a says exactly that.
+#: Stage 7 (``"registry"``) landed in ciu-P19 as
+#: :func:`provisioning.validate_registries`. It is a GLOBAL-scope stage, not a
+#: per-stack one — see the note at its call site in :func:`action_check` — so
+#: it is the one stage whose findings carry no ``stack`` key. ``ciu check``
+#: now implements proposal stages 1-12; SPEC S13.4a/S13.4b say exactly what
+#: stage 7 does and does NOT validate.
 CHECK_STAGES: tuple[str, ...] = (
     "render",
     "shape",
@@ -1729,6 +1728,7 @@ CHECK_STAGES: tuple[str, ...] = (
     "provisioning",
     "governance",
     "configfile",
+    "registry",
     "hooks-load",
     "hooks-preflight",
     "compose-render",
@@ -2188,6 +2188,11 @@ def _check_stack_config(
 ) -> None:
     """Walk V8 §2.7 stages 2, 3, 5, 6, 8-12 for ONE stack, in memory only.
 
+    Stage 7 (registry) is absent here BY SCOPE, not by omission: it is a
+    global-config stage that runs once in :func:`action_check` — see the
+    marked note where it used to be slated to go.
+
+
     Every stage calls the SAME function the real pipeline
     (:func:`engine.main_execution`) delegates to at the corresponding step —
     never a reimplementation — with the sole, documented exception of the
@@ -2252,13 +2257,16 @@ def _check_stack_config(
     for finding in _check_configfile_declarations(stack_dir, root_key, merged):
         report.fail("configfile", finding, stack=rel)
 
-    # ---- stage 7: registry validation (V8 §2.7) — ciu-P19 ----------------
-    # INSERTION POINT, deliberately empty in this package. ciu-P19 adds the
-    # built-in Pydantic registry models and validates merged[root_key]
-    # ["registry"] here, adding a "registry" entry to CHECK_STAGES. It is a
-    # separate package because it brings five model classes and a new optional
-    # dependency; SPEC S13.4a documents the gap explicitly rather than letting
-    # `ciu check` imply it validates all twelve proposal stages today.
+    # ---- stage 7: registry validation (V8 §2.7) — ciu-P19, NOT here ------
+    # ciu-P18 left the insertion point here on the assumption that `[registry]`
+    # would be read per-stack out of `merged`. It is not: `registry` is an
+    # S3.7 RESERVED GLOBAL namespace, `probe_ref` is handed `profile.config`
+    # (never `merged`), and a stack config carrying its own top-level
+    # `[registry]` table already fails S3.5 at stage 2 above — it would be a
+    # second non-reserved root key. Validating `merged["registry"]` per stack
+    # would therefore re-validate the SAME global table N times and emit N
+    # copies of every finding. Stage 7 runs ONCE, at global scope, in
+    # `action_check`; this comment stays as the pointer.
 
     if specs is None:
         # Secret discovery failed above, so the S4.21 guard cannot be built
@@ -2449,9 +2457,8 @@ def action_check(
     shape (S15.2), configfile template/schema existence (S5), hook loading
     (S9.1/S9.2), the optional ``validate_config`` hook preflight (S9.5), the
     guarded compose render (S4.21), the leak scan (S4.22), and the
-    declared-vs-consumed secret cross-check (S4.20). Stage 7 (registry
-    Pydantic models) is deliberately NOT implemented here — see
-    :data:`CHECK_STAGES` and ciu-P19.
+    declared-vs-consumed secret cross-check (S4.20), plus — ONCE per run, at
+    global scope — stage 7's `[registry.*]` schema validation (S13.4b).
 
     SIDE-EFFECT-FREE (CIU-QOL-12's whole point): no hostdir is created, no
     secret is materialized, no compose/overlay/configfile is written, no hook
@@ -2513,6 +2520,22 @@ def action_check(
     # Stage 1 (render) already happened in the caller — `rendered` is its
     # product, and a render failure raised there long before this point.
     report.note("render", f"{len(rendered)} stack config(s) rendered")
+
+    # ---- stage 7: `[registry.*]` schema validation (S13.4b, ciu-P19) ----
+    # GLOBAL scope, exactly once per run, for the same reason QOL-11's
+    # validate_declared_features above is: `[registry]` is an S3.7 reserved
+    # GLOBAL namespace (a stack declaring its own would fail S3.5 at stage 2),
+    # `probe_ref` reads it off `profile.config`, and a malformed registry
+    # table is a real defect regardless of which stacks this run selected —
+    # including when `selection` is empty. Findings therefore carry no
+    # `stack` key. `validate_registries` raises nothing: pydantic being
+    # absent while a validated table is declared comes back as a finding
+    # naming `ciu[registry]`, so it fails LOUDLY at exit 2 instead of being
+    # silently skipped, and no other stage is aborted by it.
+    # No `complain()` here: `_emit_check_report` prints every finding once at
+    # the end, exactly as it does for the other per-stage failures.
+    for finding in provisioning_pkg.validate_registries(profile.config, repo_root):
+        report.fail("registry", finding)
 
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
     identity = _workspace_identity(repo_root)

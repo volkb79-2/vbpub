@@ -1024,3 +1024,603 @@ def test_preflight_probe_failure_raises(monkeypatch):
     )
     with pytest.raises(ValueError, match="unsatisfied requirements"):
         deploy.provisioning_preflight(Path("/tmp"), profile, selection, rendered, lint=False)
+
+
+# ===========================================================================
+# S13.4b — `[registry.*]` schema validation (ciu check stage 7, ciu-P19)
+# ===========================================================================
+#
+# SCOPE NOTE (ciu-P19 O1). CIU reads exactly TWO values out of `[registry.*]`:
+# `[registry.postgresql].database` (_probe_pg's `psql -d` target) and
+# `[registry.consul].token_vault_path` (_probe_consul's `.format(svc=…)`
+# template). Those are the only two these tests pin. The V8 proposal's other
+# three "built-in kinds" (Redis/MinIO/Vault registry tables) have NO shape
+# anywhere in this repo to validate against, so no model exists to test and a
+# consumer table carrying them must pass untouched — which
+# `test_registry_extra_keys_are_never_rejected` asserts directly.
+
+import textwrap  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _validator_file(tmp_path: Path, body: str, name: str = "registry_validate.py") -> Path:
+    path = tmp_path / name
+    path.write_text(textwrap.dedent(body), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# _svc_template_problem — every constraint grounded in _probe_consul
+# ---------------------------------------------------------------------------
+
+
+def test_svc_template_accepts_the_documented_default():
+    assert provisioning._svc_template_problem(
+        provisioning.CONSUL_TOKEN_VAULT_PATH_DEFAULT
+    ) is None
+
+
+def test_svc_template_accepts_a_template_with_no_placeholder_at_all():
+    """A constant path substitutes cleanly, so it is NOT rejected.
+
+    Deliberate non-constraint (O4's negative): `{svc}` presence is not
+    required, because `_probe_consul` requires nothing of the sort — a
+    template without it is degenerate for most deployments but legitimate for
+    one shared ACL token.
+    """
+    assert provisioning._svc_template_problem("consul/shared/token") is None
+
+
+def test_svc_template_rejects_unbalanced_braces():
+    problem = provisioning._svc_template_problem("consul/{svc/token")
+    assert problem is not None
+    assert "aborts the whole probe run" in problem
+
+
+def test_svc_template_rejects_an_unknown_named_placeholder():
+    problem = provisioning._svc_template_problem("consul/{service}/token")
+    assert problem is not None
+    assert "{service}" in problem
+    assert "SILENTLY" in problem
+    assert provisioning.CONSUL_TOKEN_VAULT_PATH_DEFAULT in problem
+
+
+def test_svc_template_rejects_positional_placeholders():
+    assert "{}" in (provisioning._svc_template_problem("consul/{}/token") or "")
+    assert "{0}" in (provisioning._svc_template_problem("consul/{0}/token") or "")
+
+
+def test_svc_template_accepts_attribute_and_index_access_on_svc():
+    """The root of the field name is what matters — `{svc.x}` still substitutes."""
+    assert provisioning._svc_template_problem("consul/{svc:>4}/token") is None
+
+
+def test_svc_template_rejection_matches_the_probe_it_protects(tmp_path):
+    """The validator's grounding, proved against the real probe.
+
+    `_probe_consul` catches KeyError and silently falls back to the default
+    path — so an unknown placeholder produces a WRONG Vault read with no
+    warning. That is the behaviour this constraint exists to surface at check
+    time, and it is asserted here rather than merely asserted about.
+    """
+    seen = []
+
+    class Vault:
+        def read(self, path):
+            seen.append(path)
+            return None
+
+    provisioning.probe_ref(
+        "consul:token/api",
+        {"registry": {"consul": {"token_vault_path": "consul/{service}/token"}}},
+        tmp_path,
+        vault_client=Vault(),
+    )
+    assert seen == ["consul/acl/tokens/api"]  # NOT consul/api/token
+    assert provisioning._svc_template_problem("consul/{service}/token") is not None
+
+
+# ---------------------------------------------------------------------------
+# The two models — exactly the two fields CIU consumes
+# ---------------------------------------------------------------------------
+
+
+def test_registry_models_accept_the_documented_config(tmp_path):
+    config = {
+        "registry": {
+            "postgresql": {"database": "dstdns"},
+            "consul": {"token_vault_path": "consul/{svc}/token"},
+        }
+    }
+    assert provisioning.validate_registries(config, tmp_path) == []
+
+
+@pytest.mark.parametrize("bad", [123, True, ["dstdns"], {"name": "dstdns"}])
+def test_registry_postgresql_database_must_be_a_string(bad, tmp_path):
+    findings = provisioning.validate_registries(
+        {"registry": {"postgresql": {"database": bad}}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert findings[0].startswith("[S13.4b] [registry.postgresql].database: ")
+    assert "valid string" in findings[0]
+
+
+def test_registry_postgresql_database_must_not_be_empty(tmp_path):
+    """An empty string is falsy, so `_probe_pg` skips it and quietly targets
+    the default `postgres` database instead of the app one."""
+    findings = provisioning.validate_registries(
+        {"registry": {"postgresql": {"database": ""}}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "at least 1 character" in findings[0]
+
+
+def test_registry_consul_token_vault_path_must_be_a_valid_svc_template(tmp_path):
+    findings = provisioning.validate_registries(
+        {"registry": {"consul": {"token_vault_path": "consul/{service}/token"}}},
+        tmp_path,
+    )
+    assert len(findings) == 1
+    assert findings[0].startswith("[S13.4b] [registry.consul].token_vault_path: ")
+    assert "{service}" in findings[0]
+
+
+def test_registry_consul_token_vault_path_must_be_a_string(tmp_path):
+    findings = provisioning.validate_registries(
+        {"registry": {"consul": {"token_vault_path": 42}}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "valid string" in findings[0]
+
+
+def test_registry_sub_table_must_be_a_table(tmp_path):
+    """`registry.postgresql = "x"` crashes `_probe_pg` with AttributeError;
+    the finding names the table with no key path appended."""
+    findings = provisioning.validate_registries(
+        {"registry": {"postgresql": "dstdns"}}, tmp_path
+    )
+    assert findings == [
+        "[S13.4b] [registry.postgresql]: Input should be a valid dictionary "
+        "or instance of RegistryPostgresql"
+    ]
+
+
+def test_registry_itself_must_be_a_table(tmp_path):
+    findings = provisioning.validate_registries({"registry": "nope"}, tmp_path)
+    assert findings == ["[S13.4b] [registry] must be a table, got str"]
+
+
+def test_registry_extra_keys_are_never_rejected(tmp_path):
+    """O1's negative, pinned: `[registry.*]` is free-form consumer metadata.
+
+    CIU constrains the two keys it reads and NOTHING else — not the
+    PostgreSQL users table, not Redis ACLs, not a MinIO/Vault table it has
+    never had a shape for. A model that rejected these would break every real
+    consumer config.
+    """
+    config = {
+        "registry": {
+            "postgresql": {
+                "database": "dstdns",
+                "users": {"controller": {"role": "rw", "schema": "controller"}},
+            },
+            "consul": {"token_vault_path": "consul/{svc}/token", "datacenter": "dc1"},
+            "redis": {"users": {"worker": {"acl": "+@read"}}},
+            "minio": {"buckets": ["artifacts"]},
+            "vault": {"mounts": {"kv": {"type": "kv-v2"}}},
+        }
+    }
+    assert provisioning.validate_registries(config, tmp_path) == []
+
+
+def test_registry_models_report_every_finding_not_just_the_first(tmp_path):
+    findings = provisioning.validate_registries(
+        {
+            "registry": {
+                "postgresql": {"database": 1},
+                "consul": {"token_vault_path": "consul/{}/token"},
+            }
+        },
+        tmp_path,
+    )
+    assert len(findings) == 2
+    assert any("[registry.postgresql].database" in f for f in findings)
+    assert any("[registry.consul].token_vault_path" in f for f in findings)
+
+
+def test_registry_consul_model_tolerates_an_explicit_none(tmp_path):
+    """The field validator's None guard, exercised through the model API.
+
+    TOML cannot express null, so this is reachable only by a direct
+    `model_validate` — but the guard is what keeps the validator from calling
+    `_svc_template_problem(None)` if it ever is.
+    """
+    models = provisioning._build_registry_models()
+    assert models["consul"].model_validate({"token_vault_path": None}).token_vault_path is None
+
+
+# ---------------------------------------------------------------------------
+# pydantic is OPTIONAL — absent ⇒ loud, never a silent skip (O2)
+# ---------------------------------------------------------------------------
+
+
+def test_absent_pydantic_fails_loud_with_install_hint(tmp_path, monkeypatch):
+    """With pydantic unimportable and a validated table declared, the finding
+    names the extra and how to install it (mirrors CIU-37/S5.7's
+    `test_absent_jsonschema_fails_loud_with_install_hint`; `sys.modules[…] =
+    None` makes the import raise ImportError)."""
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    findings = provisioning.validate_registries(
+        {"registry": {"postgresql": {"database": "dstdns"}}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "[S13.4b]" in findings[0]
+    assert "ciu[registry]" in findings[0]
+    assert "pip install" in findings[0]
+
+
+def test_absent_pydantic_never_silently_skips_a_malformed_table(tmp_path, monkeypatch):
+    """The anti-pattern this exists to avoid: a config that IS wrong must not
+    come back clean just because the extra is missing."""
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    findings = provisioning.validate_registries(
+        {"registry": {"consul": {"token_vault_path": "consul/{service}/token"}}},
+        tmp_path,
+    )
+    assert findings != []
+
+
+def test_no_registry_table_never_imports_pydantic(tmp_path, monkeypatch):
+    """With pydantic forced unimportable, a config declaring no validated
+    sub-table still validates clean — any import attempt would raise."""
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    assert provisioning.validate_registries({}, tmp_path) == []
+    assert provisioning.validate_registries(
+        {"registry": {"redis": {"users": {}}}}, tmp_path
+    ) == []
+
+
+# ---------------------------------------------------------------------------
+# The consumer-declared validate_registry extension point (Option C)
+# ---------------------------------------------------------------------------
+
+
+def test_consumer_validator_findings_are_reported(tmp_path):
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            entries = config["registry"]["redis"]["users"]
+            return [f"redis user {n} has no acl" for n, u in entries.items()
+                    if "acl" not in u]
+        """,
+    )
+    findings = provisioning.validate_registries(
+        {
+            "ciu": {"registry_validator": "registry_validate.py"},
+            "registry": {"redis": {"users": {"worker": {}, "reader": {"acl": "+@read"}}}},
+        },
+        tmp_path,
+    )
+    assert findings == ["[S13.4b] redis user worker has no acl"]
+
+
+def test_consumer_validator_accepts_an_absolute_path(tmp_path):
+    path = _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            return []
+        """,
+        name="abs_validate.py",
+    )
+    assert provisioning.validate_registries(
+        {"ciu": {"registry_validator": str(path)}}, tmp_path
+    ) == []
+
+
+def test_consumer_validator_receives_the_whole_global_config(tmp_path):
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            if config["deploy"]["project_name"] != "demo":
+                return ["did not see the whole global config"]
+            return []
+        """,
+    )
+    assert provisioning.validate_registries(
+        {
+            "ciu": {"registry_validator": "registry_validate.py"},
+            "deploy": {"project_name": "demo"},
+        },
+        tmp_path,
+    ) == []
+
+
+def test_consumer_validator_returning_none_is_no_findings(tmp_path):
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            return None
+        """,
+    )
+    assert provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    ) == []
+
+
+@pytest.mark.parametrize("returned, shown", [("'one big string'", "str"), ("7", "int")])
+def test_consumer_validator_malformed_return_is_one_finding(returned, shown, tmp_path):
+    """A bare string is ONE malformed return, not one finding per character —
+    the same `str`-is-iterable trap S9.5's `validate_config` handling avoids."""
+    _validator_file(
+        tmp_path,
+        f"""
+        def validate_registry(config):
+            return {returned}
+        """,
+    )
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert f"returned {shown}" in findings[0]
+
+
+def test_consumer_validator_exception_is_reported_not_raised(tmp_path):
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            raise RuntimeError("boom")
+        """,
+    )
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "raised RuntimeError: boom" in findings[0]
+
+
+def test_consumer_validator_import_time_explosion_is_reported(tmp_path):
+    _validator_file(
+        tmp_path,
+        """
+        raise ZeroDivisionError("at import")
+
+        def validate_registry(config):
+            return []
+        """,
+    )
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "could not be loaded: ZeroDivisionError" in findings[0]
+
+
+def test_consumer_validator_missing_file_is_reported(tmp_path):
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "nope.py"}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "could not be loaded: FileNotFoundError" in findings[0]
+    assert "[S9.2]" in findings[0]  # reuses hooks_runner's loader semantics
+
+
+@pytest.mark.parametrize("body", [
+    "x = 1\n",
+    "validate_registry = 'not callable'\n",
+])
+def test_consumer_validator_without_the_callable_is_reported(body, tmp_path):
+    _validator_file(tmp_path, body)
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "defines no callable validate_registry(config)" in findings[0]
+
+
+@pytest.mark.parametrize("declared", [42, ""])
+def test_consumer_validator_path_must_be_a_non_empty_string(declared, tmp_path):
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": declared}}, tmp_path
+    )
+    assert len(findings) == 1
+    assert "must be a non-empty path string" in findings[0]
+
+
+@pytest.mark.parametrize("ciu_table", [{}, {"require_fqdn": True}, "not-a-table", None])
+def test_no_consumer_validator_declared_is_a_no_op(ciu_table, tmp_path):
+    assert provisioning.validate_registries({"ciu": ciu_table}, tmp_path) == []
+
+
+def test_consumer_validator_import_writes_no_pycache(tmp_path):
+    """`ciu check` is side-effect-free (S13.4a): importing the consumer's
+    validator must not drop a `__pycache__/` beside it."""
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            return []
+        """,
+    )
+    before = sorted(p.name for p in tmp_path.iterdir())
+    saved = sys.dont_write_bytecode
+    assert provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    ) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert sys.dont_write_bytecode is saved  # flag restored
+
+
+def test_consumer_validator_bytecode_flag_is_restored_after_a_failed_import(tmp_path):
+    _validator_file(tmp_path, "raise ValueError('nope')\n")
+    saved = sys.dont_write_bytecode
+    provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert sys.dont_write_bytecode is saved
+
+
+def test_consumer_validator_runs_even_when_pydantic_is_absent(tmp_path, monkeypatch):
+    """Option C does not depend on Option B's optional extra."""
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            return ["consumer finding"]
+        """,
+    )
+    findings = provisioning.validate_registries(
+        {"ciu": {"registry_validator": "registry_validate.py"}}, tmp_path
+    )
+    assert findings == ["[S13.4b] consumer finding"]
+
+
+# ---------------------------------------------------------------------------
+# Wiring into `ciu check` stage 7 — P18's machinery, P18's exit-code contract
+# ---------------------------------------------------------------------------
+
+
+def _check_profile(config):
+    from ciu.deploy_pkg.profiles import Profile
+    return Profile(name=None, phase_keys=None, config=config)
+
+
+def test_check_stage7_is_between_configfile_and_hooks_load():
+    from ciu import deploy
+    stages = list(deploy.CHECK_STAGES)
+    assert stages.index("registry") == stages.index("configfile") + 1
+    assert stages.index("hooks-load") == stages.index("registry") + 1
+
+
+def test_check_fails_exit_2_on_a_malformed_registry_table(tmp_path):
+    from ciu import deploy
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {"postgresql": {"database": 5}},
+    })
+    rc = deploy.action_check(tmp_path, profile, [], {})
+    assert rc == 2
+
+
+def test_check_stage7_finding_lands_in_the_json_envelope(tmp_path, capsys):
+    import json
+    from ciu import deploy
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {"consul": {"token_vault_path": "consul/{service}/token"}},
+    })
+    rc = deploy.action_check(tmp_path, profile, [], {}, json_output=True)
+    doc = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert doc["status"] == "fail"
+    stage = next(s for s in doc["stages"] if s["stage"] == "registry")
+    assert stage["status"] == "fail"
+    assert len(stage["findings"]) == 1
+    # Global-scope stage: the one stage whose findings carry no `stack` key.
+    assert "stack" not in stage["findings"][0]
+    assert "{service}" in stage["findings"][0]["message"]
+
+
+def test_check_stage7_failure_is_exit_2_even_with_live(tmp_path, monkeypatch):
+    """P18's exit-code contract: a static stage failure is 2, never 1, and the
+    live probe is never reached."""
+    from ciu import deploy, provisioning as prov_mod
+    monkeypatch.setattr(prov_mod, "probe_ref", lambda *a, **k: pytest.fail("probed"))
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {"postgresql": {"database": ""}},
+    })
+    rc = deploy.action_check(tmp_path, profile, [], {}, live=True)
+    assert rc == 2
+
+
+def test_check_stage7_runs_with_an_empty_selection(tmp_path):
+    """A malformed GLOBAL registry table is a real defect regardless of which
+    stacks this run selected — same rationale as QOL-11's eager validation."""
+    from ciu import deploy
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {"postgresql": {"database": []}},
+    })
+    assert deploy.action_check(tmp_path, profile, [], {}) == 2
+
+
+def test_check_stage7_reports_one_finding_not_one_per_stack(tmp_path, capsys):
+    """`[registry]` is GLOBAL, so stage 7 runs once — not once per stack.
+
+    This is why it lives in `action_check` rather than at P18's per-stack
+    insertion point: `merged` carries the same global table for every stack.
+    """
+    import json
+    from ciu import deploy
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {"postgresql": {"database": 5}},
+    })
+    selection = [{"path": "a"}, {"path": "b"}, {"path": "c"}]
+    deploy.action_check(tmp_path, profile, selection, {}, json_output=True)
+    doc = json.loads(capsys.readouterr().out)
+    stage = next(s for s in doc["stages"] if s["stage"] == "registry")
+    assert len(stage["findings"]) == 1
+
+
+def test_check_stage7_passes_on_a_clean_registry(tmp_path, capsys):
+    import json
+    from ciu import deploy
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "registry": {
+            "postgresql": {"database": "dstdns", "users": {"c": {"role": "rw"}}},
+            "consul": {"token_vault_path": "consul/{svc}/token"},
+        },
+    })
+    rc = deploy.action_check(tmp_path, profile, [], {}, json_output=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    stage = next(s for s in doc["stages"] if s["stage"] == "registry")
+    assert stage == {"stage": "registry", "status": "pass", "findings": [], "notes": []}
+
+
+def test_check_stage7_wires_the_consumer_validator(tmp_path):
+    """End-to-end: a consumer-declared validator's finding fails `ciu check`."""
+    from ciu import deploy
+    _validator_file(
+        tmp_path,
+        """
+        def validate_registry(config):
+            return ["redis user 'worker' has no acl"]
+        """,
+    )
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "ciu": {"registry_validator": "registry_validate.py"},
+    })
+    assert deploy.action_check(tmp_path, profile, [], {}) == 2
+
+
+def test_check_stage7_resolves_the_validator_against_repo_root(tmp_path):
+    """A relative `registry_validator` is resolved against the repo root the
+    action was invoked with — not the process CWD."""
+    from ciu import deploy
+    sub = tmp_path / "infra"
+    sub.mkdir()
+    _validator_file(
+        sub,
+        """
+        def validate_registry(config):
+            return []
+        """,
+    )
+    profile = _check_profile({
+        "deploy": {"project_name": "p", "environment_tag": "t"},
+        "ciu": {"registry_validator": "infra/registry_validate.py"},
+    })
+    assert deploy.action_check(tmp_path, profile, [], {}) == 0

@@ -540,11 +540,17 @@ Two behaviours to script against deliberately:
   itself only warns here, and `ciu check` cannot see the S5 configfile
   consumption channel without rendering — so treating it as red would both
   contradict the real pipeline and produce false positives.
-- **Registry validation is not implemented yet.** `ciu check` covers stack
-  shape, secrets, provisioning, governance, configfiles, hooks, the compose
-  render, the leak scan and consumption — it does **not** validate your
-  `[registry]` tables against built-in models. Do not read a green `ciu check`
-  as "my registry shape is correct".
+- **Registry validation covers the two fields CIU itself reads — and only
+  those** (S13.4b, stage 7): `[registry.postgresql].database` and
+  `[registry.consul].token_vault_path`. CIU ships **no** model for your
+  Redis/MinIO/Vault/PostgreSQL-users registry tables — it has never read one,
+  so it has no shape to check and does not invent one. Do not read a green
+  stage 7 as "my whole registry shape is correct". To validate the rest,
+  declare `[ciu].registry_validator = "infra/registry_validate.py"` with a
+  module-level `validate_registry(config) -> list[str]`; its findings fail the
+  check the same way. Model validation needs the optional extra
+  `pip install 'ciu[registry]'` — with a validated table declared and the
+  extra missing, `ciu check` fails loudly naming it rather than skipping.
 
 Under `--json` the check itself prints only the document, but the
 orchestrator's own `[INFO]` lines still precede it on stdout (as with

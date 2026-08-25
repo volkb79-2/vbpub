@@ -2398,8 +2398,12 @@ def test_check_json_envelope_is_versioned_and_ordered(tmp_path, capsys):
     assert doc["profile"] is None
     assert [s["stage"] for s in doc["stages"]] == list(deploy.CHECK_STAGES)
     assert all({"stage", "status", "findings", "notes"} <= set(s) for s in doc["stages"])
-    # Stage 7 (registry) is deliberately absent — ciu-P19 owns it.
-    assert "registry" not in deploy.CHECK_STAGES
+    # Stage 7 (registry) landed in ciu-P19 at the position ciu-P18 predicted.
+    # This assertion was ciu-P18's forward marker for the gap ("registry" NOT
+    # in CHECK_STAGES) and is flipped here by the package that closed it; its
+    # positional contract is pinned in test_ciu_provisioning.py's
+    # test_check_stage7_is_between_configfile_and_hooks_load.
+    assert "registry" in deploy.CHECK_STAGES
     assert "live" not in doc  # no --live in this run
 
 

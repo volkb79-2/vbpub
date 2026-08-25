@@ -1362,6 +1362,7 @@ Stages, in order, each reusing the same function the real pipeline
 | `provisioning` | `requires`/`provides` grammar (S13), graph lint, cycles | 2 |
 | `governance` | governance table shape and layering (S15.2/S15.10). Resolution only — no cgroup is created and no systemd slice is probed | 2 |
 | `configfile` | per-configfile declaration shape, template file existence, absolute `target`, declared `schema` file existence (S5.1). **Existence only — nothing is rendered** | 2 |
+| `registry` | the two `[registry.*]` values CIU itself reads, plus any consumer-declared `validate_registry` (S13.4b). **Global scope: runs once per run, not once per stack** — its findings are the only ones carrying no `stack` key | 2 |
 | `hooks-load` | every declared hook file exists and exports `run` or a `Hook` class with `run` (S9.1/S9.2). Each file is imported **exactly once per run**, and `run` is located but never called | 2 |
 | `hooks-preflight` | each hook's optional `validate_config(config, ctx)` (S9.5) | 2 |
 | `compose-render` | full compose-template render against the S4.21-guarded config, in memory. A template that stringifies a secret aborts here | 2 |
@@ -1383,11 +1384,9 @@ not belong in the exit-2 configuration taxonomy. A hostdir declaration whose
 shape is unusable is left untouched for the real pipeline's own Step-8 error
 to name — `ciu check` has no S6 stage.
 
-**Not yet implemented:** the V8 proposal's stage 7 (registry validation
-against built-in Pydantic models) is **deliberately absent**. `ciu check`
-today implements proposal stages 1-6 and 8-12 only; it does **not** validate
-registry shapes. That stage is a separate unit of work and will be added by
-its own package.
+**Stage coverage:** `ciu check` implements the V8 proposal's stages 1-12.
+Stage 7 (`registry`) is scoped to what CIU actually reads — see S13.4b, which
+states plainly what it does and does **not** check.
 
 Every stage failure above is exit `2`. Exit `1` is reserved for `--live`'s
 live probe failures and is never produced by a static stage; when a static
@@ -1409,6 +1408,67 @@ on stdout, exactly as for `ciu graph --format json`.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+
+### S13.4b — `[registry.*]` schema validation (`ciu check` stage 7)
+
+`[registry.*]` is free-form, project-specific cross-stack metadata (S3.7
+reserves the namespace; CONFIG.md documents the tables). CIU reads **exactly
+two values** out of it, and validates **exactly those two**:
+
+| Key | Type | Constraint | Read by |
+|---|---|---|---|
+| `[registry.postgresql].database` | string | non-empty | `_probe_pg` — the `psql -d` target of a `pg:schema/<name>` probe (S13.2) |
+| `[registry.consul].token_vault_path` | string | non-empty; a valid `str.format` template whose only placeholder is `{svc}` | `_probe_consul` — the Vault path of a `consul:token/<svc>` probe (S13.2) |
+
+Both keys are OPTIONAL; a table may carry any number of other keys, which are
+**never** constrained. Every constraint above is grounded in what the probe
+does with the value: an unbalanced brace raises `ValueError` from
+`str.format`, which the probe does not catch (the probe run dies); any other
+placeholder raises `KeyError`/`IndexError`, which the probe catches and then
+silently substitutes the default `consul/acl/tokens/{svc}`, reading a
+different Vault path than the operator declared. The presence of `{svc}` is
+deliberately **not** required — a constant path substitutes cleanly and the
+probe demands nothing more.
+
+**CIU ships no model for any other registry table.** The V8 proposal §2.6
+sketched models for five provisioning kinds (PostgreSQL, Redis, MinIO,
+Consul, Vault); CIU has never read a Redis, MinIO, Vault, or
+PostgreSQL-users registry shape, so there is nothing in this repo to validate
+against and no model is invented. A guessed schema that is wrong REJECTS
+legitimate consumer configs, which is strictly worse than no schema.
+
+**Consumer-owned shapes** (the proposal's Option C) get one additive
+extension point. The global config declares a module:
+
+```toml
+[ciu]
+registry_validator = "infra/registry_validate.py"
+```
+
+whose module-level `validate_registry(config) -> list[str]` receives the
+whole global config and returns error strings (empty list — or `None` — means
+OK). It is imported with bytecode writing suppressed, so stage 7 keeps
+S13.4a's side-effect-freedom; `run()`-style execution never happens. A
+missing file, an import-time exception, a missing or non-callable
+`validate_registry`, a raising validator, or a non-list return are each
+reported as a finding rather than aborting the run — including the
+`str`-is-iterable trap S9.5 names (a bare string is ONE malformed return, not
+one finding per character).
+
+**Optional dependency.** Model validation requires `pydantic >= 2`, shipped
+as the optional extra `ciu[registry]`. The import is lazy: when neither
+validated table is declared, pydantic is never imported. When one IS declared
+and pydantic is absent, `ciu check` FAILS with a finding naming the extra and
+its install command — never a silent skip (the same rule S5.7 applies to
+`ciu[schema]`). The consumer extension point does not depend on pydantic and
+runs either way.
+
+**Scope.** Stage 7 is a GLOBAL-config stage: `registry` is an S3.7 reserved
+global namespace (a stack config carrying its own top-level `[registry]`
+table already fails S3.5 at stage 2, as a second non-reserved root key), and
+the probes read it off the profile config. It therefore runs **once per
+`ciu check` run**, including when the selection is empty, and its findings
+carry no `stack` key. Failures are exit `2`, like every other static stage.
 
 ### S13.6 — Cross-profile producer declaration (`produced_by`, CIU-42)
 
