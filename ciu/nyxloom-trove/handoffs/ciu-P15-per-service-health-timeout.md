@@ -17,6 +17,12 @@ scope:
     - "src/ciu/deploy.py"
     - "tests/tests/test_ciu_deploy_health.py"
     - "tests/tests/test_ciu_deploy_phases.py"
+    - "tests/tests/test_ciu_deploy_actions.py"
+    - "tests/tests/test_ciu_deploy_branch103.py"
+    - "tests/tests/test_ciu_deploy_deeper6.py"
+    - "tests/tests/test_ciu_deploy_deeper9.py"
+    - "tests/tests/test_ciu_deploy_direct72.py"
+    - "tests/tests/test_ciu_deploy_health_boundaries.py"
     - "docs/SPEC.md"
     - "docs/CONFIG.md"
     - "CHANGES.md"
@@ -58,6 +64,27 @@ review_focus:
 ---
 
 # ciu-P15 — per-service health-timeout override (CIU-QOL-8)
+
+## Amendment (controller, after a first BLOCKED attempt)
+
+O1+O2 landed clean (`7a1ca22b`). O3's mandated interface change
+(`resolve_selection_health_containers` returning `dict[str, float]` instead of
+`list[str]`; `run_container_health_gate` taking `container_timeouts: dict`
+instead of `container_names: list` + `timeout_s`) correctly broke 19
+pre-existing tests across 6 files that pinned the old signatures — the
+implementer correctly reverted rather than ship a red gate, per BLOCKED
+discipline, and reported two paths. **Controller decision: take the
+mechanical path.** `resolve_selection_health_containers`/
+`run_container_health_gate` are internal `deploy.py` helpers, not part of
+ciu's public CLI/config contract (no consumer calls them directly; the
+public surface — CLI flags, config keys, JSON envelopes — is unaffected by
+this change). Updating their 6 dependent test files' fakes/assertions to
+match the new interface is an ordinary internal refactor, not a breaking
+change worth avoiding with a compatibility shim (this codebase's own
+convention, e.g. ciu-P12's deletion of a dead compat alias rather than
+keeping one, is to change the code rather than grow a shim). `scope.touch`
+above has been widened to include the 6 named test files. Redo O3 against
+the ALREADY-LANDED O1/O2 primitives; do not re-implement or revert them.
 
 ## Context to read first
 1. `docs/BACKLOG-2026-08-24.md#CIU-QOL-8` (already in your context via
