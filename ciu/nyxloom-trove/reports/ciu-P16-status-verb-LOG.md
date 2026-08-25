@@ -253,5 +253,9 @@ above.
 
 ## Result
 
-Not blocked. `git log -1 --format=%H` → `7d3f0e0d2e668f7b4870e882893f60e16199cdd9`
-(implementation commit; this LOG is committed separately as instructed).
+Not blocked. Commit hashes (both real, read via `git log -1 --format=%H`
+after each commit — not predicted):
+- `7d3f0e0d2e668f7b4870e882893f60e16199cdd9` — implementation (deploy.py,
+  cli.py, tests, docs, CHANGES.md, backlog row)
+- `758e8324ba18e2c5bb2045b0b91a621f0705cc87` — this LOG, committed
+  separately as instructed
