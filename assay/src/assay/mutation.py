@@ -685,15 +685,67 @@ def _default_executor_factory(jobs: int) -> Executor:
 
 @contextmanager
 def progress_writer(path: Path) -> Iterator[ProgressWriter]:
-    """Append one compact JSON object per line and flush every record."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as stream:
+    """Append one compact JSON object per line and flush every record.
 
-        def write(event: Mapping[str, Any]) -> None:
-            stream.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
-            stream.flush()
+    Round-2 review (blocker 2): a bad destination -- an existing directory,
+    or an empty ``--progress ""`` (which resolves to ``.``, the CWD, itself
+    a directory) -- used to raise a bare ``IsADirectoryError``/``OSError``
+    here. That escaped uncaught past this function, up through
+    :func:`run_mutation`, and got caught by ``runner.run_lane``'s broad
+    ``except OSError:`` far up the call stack, which relabels ANY escaped
+    OSError as ``ERROR``/``GIT_FAILED`` -- a cause that has nothing to do
+    with what actually happened. That is exactly the mislabelled-cause
+    class B032 was filed to close, reopened here on the new ``--progress``
+    flag: A-320 claims ``--progress`` behaves "exactly like
+    ``--verdict-json``'s" destination handling, but ``--verdict-json`` gives
+    an honest named refusal (``ERROR``/``OUTPUT_WRITE_FAILED``) for the
+    identical mistake and ``--progress`` did not. Both now raise the same
+    typed :class:`AssayError`, naming the path.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AssayError(
+            f"cannot create the parent directory of the progress "
+            f"destination {str(path)!r}: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
+        ) from exc
+    try:
+        stream = path.open("a", encoding="utf-8")
+    except OSError as exc:
+        raise AssayError(
+            f"cannot open the progress destination {str(path)!r} for "
+            f"appending: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
+        ) from exc
+    try:
+        with stream:
 
-        yield write
+            def write(event: Mapping[str, Any]) -> None:
+                try:
+                    stream.write(
+                        json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n"
+                    )
+                    stream.flush()
+                except OSError as exc:
+                    raise AssayError(
+                        f"cannot write to the progress destination "
+                        f"{str(path)!r}: {exc}",
+                        outcome=Outcome.ERROR,
+                        reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
+                    ) from exc
+
+            yield write
+    except OSError as exc:
+        # `stream`'s own `__exit__` (flush + close) can still raise, e.g. a
+        # filesystem that only surfaces ENOSPC on close.
+        raise AssayError(
+            f"cannot close the progress destination {str(path)!r}: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
+        ) from exc
 
 
 def _progress_event(

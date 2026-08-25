@@ -296,6 +296,7 @@ def _report_probe_refusal(
     status: Outcome,
     reason_code: ReasonCode,
     diagnostics: "TextIO | None",
+    probe_timeout: float = PROBE_BUDGET_SECONDS,
 ) -> None:
     """B010's own stated deliverable, finally shipped (B032/A-322).
 
@@ -319,10 +320,17 @@ def _report_probe_refusal(
         # NOT B010's message: a probe that never finished proved nothing
         # about the environment either way, so claiming a mismatch would be
         # an invented fact. The lane's own command still never started.
+        #
+        # The window actually enforced is `min(PROBE_BUDGET_SECONDS,
+        # deadline.remaining())` (B032/A-322's `probe_timeout`, passed in by
+        # the caller) -- when the lane's own remaining budget is the
+        # tighter bound, hardcoding the fixed 30s cap here would be a false
+        # claim about which bound actually fired (round-2 review finding).
         cause = (
-            f"its declared environment_command did not finish within the "
-            f"{PROBE_BUDGET_SECONDS:g}s preflight cap, so the lane's own "
-            f"command never started"
+            f"its declared environment_command did not finish within its "
+            f"{probe_timeout:g}s preflight window (the lesser of the "
+            f"{PROBE_BUDGET_SECONDS:g}s probe cap and the lane's remaining "
+            f"budget), so the lane's own command never started"
         )
     else:
         detail = {
@@ -2930,6 +2938,7 @@ def run_lane(
                 status=probe_status,
                 reason_code=probe_reason,
                 diagnostics=diagnostics,
+                probe_timeout=probe_timeout,
             )
             return refuse_lane(
                 lane,

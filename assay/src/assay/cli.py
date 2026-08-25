@@ -64,7 +64,7 @@ from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .output import VerdictOutput, reserve_verdict_output
+from .output import VerdictOutput, reserve_verdict_output, validate_progress_destination
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
@@ -347,10 +347,22 @@ def _cmd_run(
     # `None` is A-028's deliberate no-artifact mode and reserves nothing:
     # the exit code alone still gates correctly, so a caller that never asked
     # for a file is never refused on account of one.
+    #
+    # B031/A-320 round 2 (blocker 2): `--progress` shares this same OUTPUT
+    # RESERVATION step for the two mistakes visible without opening
+    # anything (a directory, an empty/unparseable path) -- an unwritable
+    # `--progress <destination>` used to run the whole lane and only THEN
+    # surface as an unrelated `ERROR`/`GIT_FAILED`, deep inside R2
+    # execution. `validate_progress_destination` does not reserve a
+    # descriptor the way `reserve_verdict_output` does: the progress file is
+    # opened once, later, only if the lane reaches R2, and its own writer
+    # creates missing parent directories on demand -- see its docstring.
     destination: VerdictOutput | None = None
     if args.verdict_json is not None:
         destination = reserve_verdict_output(args.verdict_json, stdout=out)
     try:
+        if (progress_arg := getattr(args, "progress", None)) is not None:
+            validate_progress_destination(progress_arg)
         return _run_reserved(args, lane, lane_file, appended, destination, out, err)
     finally:
         if destination is not None:

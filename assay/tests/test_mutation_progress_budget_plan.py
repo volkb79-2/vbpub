@@ -12,7 +12,7 @@ from conftest import GitRepo, Project, make_deadline, make_lane, make_plan, prep
 
 from assay.adapters.python import PythonAdapter
 from assay.config import LaneConfigError, parse_duration
-from assay.errors import Outcome
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
 from assay import mutation
 from assay.mutation import (
@@ -111,6 +111,55 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
         assert isinstance(event["elapsed_seconds"], float)
     assert events[1]["outcome_bucket"] == "killed"
     assert events[2]["outcome_bucket"] == "survived"
+
+
+def test_progress_writer_refuses_a_directory_destination_with_output_write_failed(
+    tmp_path,
+):
+    """B031/A-320 round 2, blocker 2. A bad `--progress` destination -- most
+    commonly an existing directory, which `--progress ""` resolves to (the
+    CWD is itself a directory) -- used to raise a bare `IsADirectoryError`
+    from `path.open("a")` here. Uncaught, that escaped as a plain `OSError`
+    all the way up through `run_mutation` to `runner.run_lane`'s broad
+    `except OSError:`, which relabels ANY escaped OSError as
+    `ERROR`/`GIT_FAILED` -- a cause that has nothing to do with what
+    actually happened; the exact mislabelled-cause class B032 was filed to
+    close, reopened on this new flag. `progress_writer` now raises the same
+    typed refusal `--verdict-json` gives for the identical mistake, naming
+    the path -- so a consumer who calls it directly (never through the
+    CLI's own early `validate_progress_destination` preflight, see
+    test_environment_preflight.py) still gets an honest cause.
+    """
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+
+    with pytest.raises(AssayError) as excinfo:
+        with mutation.progress_writer(directory):
+            pass  # pragma: no cover - never reached; open() itself refuses
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert str(directory) in str(excinfo.value)
+
+
+def test_progress_writer_refuses_when_its_parent_cannot_be_created(tmp_path):
+    """Sibling of the directory-destination case above: the OTHER OSError
+    site in `progress_writer` (`path.parent.mkdir(parents=True,
+    exist_ok=True)`, needed because -- unlike `--verdict-json` -- a progress
+    destination's parent tree is created on demand) gets the same typed
+    refusal, not a bare `NotADirectoryError`.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    bad_path = blocker / "child" / "progress.jsonl"
+
+    with pytest.raises(AssayError) as excinfo:
+        with mutation.progress_writer(bad_path):
+            pass  # pragma: no cover - never reached; mkdir() itself refuses
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert str(bad_path) in str(excinfo.value)
 
 
 def test_resume_reuses_completed_records_without_rerunning(tmp_path):

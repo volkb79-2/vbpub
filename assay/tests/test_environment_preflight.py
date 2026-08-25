@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import math
+import re
+import time
 from pathlib import Path
 
 from conftest import GitRepo
@@ -138,8 +141,18 @@ def test_a_probe_that_exhausts_its_budget_reports_a_timeout_not_a_config_error(
     Reproduced through the installed CLI before the fix:
       `budget = "30s"`, `environment_command = sleep 45`
       -> `ERROR`/`BAD_LANE_CONFIG`, exit 2.
+
+    Round-2 review (blocker 1): this is also the exact fixture that exposed
+    `_report_probe_refusal` hardcoding the fixed 30s `PROBE_BUDGET_SECONDS`
+    into the rendered message even when the LANE's own remaining budget (2s
+    here) was the tighter, actually-enforced bound -- a false claim about
+    which cap fired. A real subprocess is driven end to end (not a source
+    grep, see the sibling test below): the wall-clock elapsed time proves
+    the process was killed near the 2s lane budget, nowhere near the 30s
+    cap, and the message's own rendered number must track that.
     """
     err = io.StringIO()
+    started = time.monotonic()
     code, document = _run(
         git_repo,
         tmp_path,
@@ -147,6 +160,7 @@ def test_a_probe_that_exhausts_its_budget_reports_a_timeout_not_a_config_error(
         budget="2s",
         stderr=err,
     )
+    elapsed = time.monotonic() - started
 
     assert (code, document["outcome"], document["reason_code"]) == (
         4,
@@ -155,6 +169,20 @@ def test_a_probe_that_exhausts_its_budget_reports_a_timeout_not_a_config_error(
     )
     assert "LANE_TIMEOUT" in err.getvalue()
     assert "the lane's own command never started" in err.getvalue()
+
+    # Behavioral proof, not a cosmetic one: killed near the 2s lane budget,
+    # nowhere near the 45s sleep or the 30s probe cap.
+    assert elapsed < 15.0, f"probe ran {elapsed:.1f}s -- the 2s lane budget did not bind"
+
+    match = re.search(r"within its ([0-9.]+)s preflight window", err.getvalue())
+    assert match, f"no preflight-window number rendered: {err.getvalue()!r}"
+    rendered = float(match.group(1))
+    # The lane's remaining budget (~2s), NOT the fixed 30s probe cap -- a
+    # tolerance is required because `deadline.remaining()` is measured wall
+    # time, minus whatever setup overhead ran before the probe started.
+    assert rendered < 30.0, f"rendered {rendered}s -- looks like the fixed cap, not the budget"
+    assert math.isclose(rendered, 2.0, abs_tol=1.0), f"rendered {rendered}s, expected ~2s"
+    assert "the 30s probe cap" in err.getvalue()
 
 
 def test_a_probe_refusal_writes_b010s_clear_message_to_stderr(
@@ -215,23 +243,61 @@ def test_a_probe_that_cannot_be_executed_says_so_and_stays_bad_lane_config(
     assert "the probe command could not be executed" in err.getvalue()
 
 
-def test_the_probe_cap_is_enforced_where_execute_plan_actually_reads_it():
-    """B032/A-322's dead-cap half, at the seam rather than by elapsed time.
+def test_the_probe_cap_is_enforced_where_execute_plan_actually_reads_it(
+    git_repo: GitRepo, tmp_path, monkeypatch
+):
+    """B032/A-322's dead-cap half, driven behaviorally (round-2 review N1).
 
-    `runner.py` set `budget_seconds=min(30.0, deadline.remaining())` on the
-    probe plan and then passed `timeout=deadline.remaining()` -- the FULL
-    lane budget -- to `execute_plan`, which reads its `timeout=` ARGUMENT and
-    ignores `plan.budget_seconds` entirely. Measured on `main`: an
-    `environment_command` of `sleep 45` under `budget = "5m"` ran the whole
-    45 s and then PASSED. Both values now come from the same expression.
+    `runner.py` used to set `budget_seconds=min(30.0, deadline.remaining())`
+    on the probe plan and then pass `timeout=deadline.remaining()` -- the
+    FULL lane budget -- to `execute_plan`, which reads its `timeout=`
+    ARGUMENT and ignores `plan.budget_seconds` entirely. Measured on `main`:
+    an `environment_command` of `sleep 45` under `budget = "5m"` ran the
+    whole 45s and then PASSED.
+
+    Round-1's fix test proved this at the seam by grepping `runner.py`'s
+    source text for the three literals that make both values come from the
+    same expression -- a text oracle, green on a fix that is correct in
+    text but wrong in effect (the exact failure shape B032's audit report
+    called out). This drives a REAL subprocess instead: `PROBE_BUDGET_
+    SECONDS` is patched down so the CAP -- not the lane's own much larger
+    remaining budget -- is unambiguously the binding constraint, and the
+    real elapsed wall-clock time and exit code are asserted, not just the
+    rendered message.
     """
     from assay import runner
 
-    assert runner.PROBE_BUDGET_SECONDS == 30.0
-    source = Path(runner.__file__).read_text(encoding="utf-8")
-    assert "probe_timeout = min(PROBE_BUDGET_SECONDS, deadline.remaining())" in source
-    assert source.count("budget_seconds=probe_timeout") == 1
-    assert source.count("timeout=probe_timeout") == 1
+    assert runner.PROBE_BUDGET_SECONDS == 30.0  # the real, unpatched default
+    monkeypatch.setattr(runner, "PROBE_BUDGET_SECONDS", 3.0)
+
+    err = io.StringIO()
+    started = time.monotonic()
+    code, document = _run(
+        git_repo,
+        tmp_path,
+        # Sleeps well past the 3s (patched) cap; the lane budget below is
+        # nearly 7x that, so ONLY the cap can be what stops this.
+        probe='environment_command = ["/bin/sh", "-c", "sleep 20"]',
+        budget="20s",
+        stderr=err,
+    )
+    elapsed = time.monotonic() - started
+
+    assert (code, document["outcome"], document["reason_code"]) == (
+        4,
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    # Killed near the 3s cap, nowhere near the 20s sleep or the 20s lane
+    # budget -- proves the cap (not the budget, not the sleep) fired.
+    assert elapsed < 12.0, f"probe ran {elapsed:.1f}s -- the 3s cap did not bind"
+
+    message = err.getvalue()
+    # remaining() at probe time is comfortably > 3.0 (20s budget, one probe
+    # dispatch's worth of setup), so min(3.0, remaining) is EXACTLY 3.0 --
+    # unlike the budget-bound case, no float-tolerance is needed here.
+    assert "within its 3s preflight window" in message, message
+    assert "the 3s probe cap" in message, message
 
 
 _R2_LANE = """\
@@ -335,3 +401,109 @@ def test_progress_goes_exactly_where_the_consumer_asked_and_nowhere_else(
     assert events[0]["event"] == "run"
     assert len(events[0]["commit"]) == 40
     assert [event["event"] for event in events[:2]] == ["run", "baseline"]
+
+
+def test_a_progress_destination_that_is_a_directory_refuses_before_any_repository_work(
+    git_repo: GitRepo, tmp_path
+):
+    """B031/A-320 round 2, blocker 2.
+
+    `$ assay run nested --progress /an/existing/directory` used to run the
+    ENTIRE lane and only then surface `ERROR`/`GIT_FAILED` -- a cause with
+    nothing to do with what actually happened (the `IsADirectoryError` from
+    `progress_writer`'s `path.open("a")`, deep inside R2 execution, escaping
+    into `run_lane`'s broad `except OSError:`). A-320 claims `--progress`
+    behaves "exactly like `--verdict-json`'s" destination handling; the CLI
+    now validates it at the SAME OUTPUT-RESERVATION step, before HEAD is
+    even resolved, and gives the same typed `ERROR`/`OUTPUT_WRITE_FAILED`
+    `--verdict-json` gives for the identical mistake against a directory.
+    """
+    _r2_repo(git_repo)
+    existing_directory = tmp_path / "already-here"
+    existing_directory.mkdir()
+
+    err = io.StringIO()
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--progress",
+            str(existing_directory),
+        ],
+        stderr=err,
+    )
+
+    assert code == 2
+    message = err.getvalue()
+    assert "OUTPUT_WRITE_FAILED" in message
+    assert "GIT_FAILED" not in message
+    assert str(existing_directory) in message
+    assert "not an ordinary regular file" in message
+    # Never got as far as writing anything to the destination -- refused
+    # before the lane's command, or even HEAD resolution, ran at all.
+    assert list(existing_directory.iterdir()) == []
+
+
+def test_an_empty_progress_destination_refuses_cleanly_not_as_zero_bytes_of_silence(
+    git_repo: GitRepo, tmp_path
+):
+    """B031/A-320 round 2, blocker 2.
+
+    `$ assay run nested --progress ""` resolved to `.`, the invoking CWD --
+    itself an existing directory -- and produced ZERO bytes of diagnosis
+    (measured) before this fix: a bare `ERROR`/`GIT_FAILED` with no message
+    at all reaching the operator. It is now refused with the same clear,
+    named cause as any other bad `--progress` destination.
+    """
+    _r2_repo(git_repo)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--progress",
+            "",
+        ],
+        stderr=err,
+    )
+
+    assert code == 2
+    message = err.getvalue()
+    assert message, "an empty --progress destination must not be zero bytes of diagnosis"
+    assert "OUTPUT_WRITE_FAILED" in message
+    assert "GIT_FAILED" not in message
+
+
+def test_a_progress_destination_whose_parent_does_not_yet_exist_is_still_created(
+    git_repo: GitRepo, tmp_path
+):
+    """The early `validate_progress_destination` preflight (blocker 2's fix)
+    must not regress the documented, pre-existing behavior that
+    `progress_writer` creates missing parent directories on demand -- unlike
+    `--verdict-json`, which requires its parent to already exist. A
+    destination that does not exist YET is not a mistake; only an existing
+    NON-regular destination is.
+    """
+    _r2_repo(git_repo)
+    destination = tmp_path / "not" / "yet" / "created" / "progress.jsonl"
+    assert not destination.parent.exists()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--progress",
+            str(destination),
+        ]
+    )
+
+    assert code in (0, 1)  # PASS or FAIL are both fine; only refusal is wrong here
+    assert destination.exists()
+    assert destination.read_text(encoding="utf-8").strip() != ""
