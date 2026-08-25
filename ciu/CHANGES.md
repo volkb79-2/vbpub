@@ -10,6 +10,48 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu)!: unified `instances = N` fan-out for compose enumeration +
+  configfile mounts (SPEC S7.5d/S7.5e, V8-PREP-6, ciu-P24,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.19). A service MAY declare
+  `[<root>.<service>] instances = N` (sibling of its `configfile` table):
+  - A configfile under the service that ALSO declares its own `instances`
+    must AGREE with the service-level value — a disagreement refuses,
+    naming the service, the configfile, and both values (never a silent
+    preference of one over the other).
+  - `render_compose`'s template context gains `ciu.instances` — a
+    `{service: N}` map (merged into `ciu` the same way
+    `ciu.selected_profiles`/`ciu.deployed_stacks` already are, S3.12) — for
+    every service resolving to N > 1, service-level or configfile-level.
+    Absent entirely when nothing anywhere resolves above 1. A compose
+    template loops `{% for i in range(1, ciu.instances.api + 1) %}` naming
+    `api-{{ i }}` instead of hand-maintaining the count; CIU does not
+    generate compose service blocks itself, this only unifies the count.
+  - A new post-render assertion refuses (naming the service, the declared
+    count, and what compose keys were actually found) when a service in
+    `ciu.instances` renders a bare `<service>` key instead of enumerating
+    `<service>-1`..`<service>-N` — the duplicate-mount trap, where a
+    forgotten loop would otherwise silently mount every instance's config
+    onto ONE shared container. This is separate from, and does not change,
+    the pre-existing S5.3 base-selector `[WARN]` for the opposite direction.
+  - **Migration-safety refusal (S7.5e), added mid-review:** a configfile
+    that OMITS its own `instances` key, under a service that DOES declare
+    one > 1, now REFUSES instead of silently inheriting the service-level
+    value — naming the service, the configfile, and the declared value,
+    with both remedies (restate `instances` explicitly on the configfile,
+    or don't declare one on the service). **Upgrade note:** before this
+    package, such a configfile had exactly one way to end up mounted into
+    every replica: a single shared render, fanned out at overlay time by
+    the pre-existing S5.3 base-selector mechanism. Any stack ALREADY shaped
+    this way — a service-level `instances` key used only to drive its own
+    hand-rolled compose loop, paired with a configfile that never restated
+    `instances` — will now REFUSE at render time instead of silently
+    starting to render that configfile N independent times. Nothing that
+    genuinely worked breaks silently; add the matching `instances = N` to
+    the configfile (the new, unified behavior) or remove the service-level
+    key (keeps the old single-shared-render behavior) to resolve it. The
+    `applications/workers` test-repo demo had exactly this shape and was
+    migrated to the new pattern as part of landing this package — see its
+    `ciu.defaults.toml.j2` for a live before/after reference.
 - feat(ciu): one-shot completion semantics for the `requires`/`provides`
   provisioning model (SPEC S13.2/S7.7, V8-PREP-5, ciu-P23,
   docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.18) — fully additive, all existing

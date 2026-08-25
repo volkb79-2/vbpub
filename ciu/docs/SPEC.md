@@ -947,6 +947,71 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   transport is opened. `ciu layouts` lists declared layouts (name,
   environment, ordered hosts) without validating them — `ciu up --layout` is
   the validating consumer.
+- **S7.5d** *Unified `instances` fan-out (V8-PREP-6, ciu-P24).* A service MAY
+  declare `[<root>.<service>] instances = N` (positive integer), a sibling of
+  its `configfile` table, not inside it — validated identically to S7.5b's
+  per-configfile `instances` (positive int, not a bool). It serves two
+  purposes:
+  - **Agreement anchor:** a configfile under the service that ALSO declares
+    its own `instances` value (S7.5b) must AGREE with the service-level
+    value. A disagreement is a `[S7.5d]`-tagged `ValueError` naming the
+    service, the configfile, and both conflicting values — never a silent
+    preference of one over the other. Agreement (equal values), or the
+    absence of a service-level value, leaves the configfile-level value's
+    existing S7.5b behavior byte-identical.
+  - **`ciu.instances` compose context (O2):** `render_compose`'s template
+    context gains `ciu.instances` — a `{service_name: N}` mapping, merged
+    into the `ciu` table the same way `ciu.selected_profiles`/
+    `ciu.deployed_stacks` already are (S3.12/CIU-44). A service is a key in
+    this mapping when EITHER its service-level value, or (absent that) the
+    largest of its own configfiles' declared values, resolves to N > 1 — a
+    service resolving to N ≤ 1, or declaring nothing at all anywhere, is
+    simply ABSENT (never present with a value of 1). `ciu.instances` itself
+    is likewise absent from context entirely when NO service anywhere
+    resolves above 1 (S3.12's existing fail-loud pattern: a template
+    referencing `ciu.instances` with nothing declared gets a Jinja
+    `UndefinedError`, not a silently empty mapping). A compose template
+    checking `'api' in ciu.instances` is the sanctioned way to ask "does
+    this service fan out at all"; `{% for i in range(1, ciu.instances.api +
+    1) %}` naming `api-{{ i }}` is the sanctioned loop (matching S7.5b's own
+    1-based `<service>-<index>` convention exactly — CIU does not generate
+    compose service blocks itself; the template author's own loop still
+    does, now driven by one CIU-resolved count instead of a hand-maintained
+    value).
+  - **Duplicate-mount post-render refusal (O3):** immediately after a
+    compose render whose `ciu.instances` is non-empty, CIU asserts, for
+    EVERY service in that mapping, that the rendered compose document
+    contains exactly `<service>-1`..`<service>-N` and does **not** also
+    contain a bare `<service>` key. A violation is a `[S7.5d]`-tagged
+    `ValueError` naming the service, the declared count, and what compose
+    keys were actually found instead. This is deliberately narrower than,
+    and the OPPOSITE direction of, S5.3's existing base-selector `[WARN]`
+    (which fires when a configfile selector names a service compose does
+    not have at all) — that check is unaffected. This assertion runs only
+    for services that are keys in `ciu.instances`; an ordinary
+    single-instance service with a numeric-looking name is never touched.
+- **S7.5e** *Migration-safety refusal: a configfile can never silently
+  inherit the service-level default (V8-PREP-6, ciu-P24).* A configfile
+  section that OMITS its own `instances` key, under a service that DOES
+  declare an explicit S7.5d `instances` value > 1, is a `[S7.5e]`-tagged
+  refusal naming the service, the configfile, and the declared value — it
+  is never silently treated as "use the service-level count." **Why:**
+  before V8-PREP-6, a configfile omitting `instances` had exactly ONE way to
+  end up correctly mounted into every compose replica of a multi-instance
+  service: a single shared render, fanned out at overlay time by the S5.3
+  base-selector mechanism. The moment a service's `instances` key becomes a
+  meaningful S7.5d declaration, that same omission is genuinely ambiguous —
+  does the author want to opt into the new per-instance render (S7.5b), or
+  keep the old single-shared-render behavior? Silently picking the new
+  reading would be a silent behavior change for any consumer already shaped
+  this way (this is precisely the shape the `applications/workers`
+  test-repo demo had before its ciu-P24 migration — see CHANGES.md). The
+  remedy is always one of: declare the SAME `instances` value explicitly on
+  the configfile (opts into the new per-instance render), or don't declare
+  a service-level value at all (keeps the configfile's existing S5.3
+  base-selector behavior, unaffected). A service-level value of exactly `1`
+  never triggers this refusal (below the fan-out threshold, indistinguishable
+  from no default at all).
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —

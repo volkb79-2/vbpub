@@ -749,10 +749,11 @@ data = { path = "", seed = "seed-dir", uid = 1000, mode = "0750" }   # seed [S6.
 
 ```toml
 [app_config.app.configfile.main]
-template = "config.toml.j2"           # relative to stack dir
-target   = "/etc/app/config.toml"     # absolute path in container
-mode     = "0440"                     # optional; default 0440
-schema   = "config.schema.json"       # optional; JSON Schema for the rendered config [S5.7]
+template  = "config.toml.j2"          # relative to stack dir
+target    = "/etc/app/config.toml"    # absolute path in container
+mode      = "0440"                    # optional; default 0440
+instances = 3                         # optional; positive int — S7.5b/S7.5d
+schema    = "config.schema.json"      # optional; JSON Schema for the rendered config [S5.7]
 ```
 
 Optional `schema` [S5.7]: a JSON Schema (Draft 2020-12) **relative to the
@@ -767,6 +768,49 @@ a silent skip.
 Validation runs on the **up/dev path** (engine step 12, where configfiles
 render); `ciu render` renders TOML configs only and does not run configfile
 validation.
+
+Optional `instances` [S7.5b]: a positive integer. When present,
+`render_configfiles` renders the template N times (1-based) and emits N
+mounts named `<name>-<index>`/`<service>-<index>`, each with `instance_index`/
+`instance_id` in its render context. Omitted (or `1`) behaves as a single
+render, unchanged.
+
+#### `[<root>.<service>] instances = N` — unified fan-out default [S7.5d/S7.5e, V8-PREP-6]
+
+```toml
+[app_config.app]
+instances = 3    # drives ciu.instances AND validates agreement with any
+                  # configfile-level `instances` under this service
+
+[app_config.app.configfile.main]
+template  = "config.toml.j2"
+target    = "/etc/app/config.toml"
+instances = 3     # REQUIRED restatement if this configfile wants to opt
+                   # into per-instance rendering — see the S7.5e box below
+```
+
+A service MAY declare `instances = N` as a sibling of its `configfile`
+table (not inside it). It does two things: (1) any configfile under the
+service that ALSO declares its own `instances` must AGREE with this value —
+a disagreement refuses, naming the service, the configfile, and both
+values; (2) it makes the service a key in the compose template's
+`ciu.instances` context (see the worked example in
+[CONSUMERS.md §16](CONSUMERS.md#16-fan-a-service-out-by-instances-instead-of-hand-rolling-a-compose-loop-v8-prep-6)),
+so the compose template's own replica loop reads ONE CIU-resolved count
+instead of a hand-maintained value.
+
+> **S7.5e — this is NOT a silent default.** A configfile that OMITS its own
+> `instances` key while the service declares one > 1 REFUSES — it does not
+> quietly inherit the service value. Before this key existed, an omitted
+> configfile-level `instances` meant "single shared render, fanned out by
+> the S5.3 base-selector mechanism" — silently reinterpreting that as "N
+> independent renders" the moment a service declares `instances` would be a
+> silent behavior change on upgrade for any existing stack shaped this way.
+> Restate the same value explicitly on the configfile to opt in, or don't
+> declare a service-level value if the configfile is intentionally a single
+> shared render. See [SPEC.md S7.5e](SPEC.md#s7--orchestration-ciu-up) for the full rule and
+> [CHANGES.md](../CHANGES.md) for the migration this forced on the
+> `applications/workers` test-repo demo.
 
 ### `[state]` — persisted hook state [S3.4, S9.4]
 
