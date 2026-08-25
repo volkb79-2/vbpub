@@ -1036,11 +1036,16 @@ def render_configfiles(
             name: count for name, count in resolved_instances.items() if count > 1
         }
         # V8-PREP-6/O2: engine.py reuses ONE `ciu_context` object across
-        # every stack in a single `ciu up` run (S3.12's existing channel) —
-        # ALWAYS resolve the key for THIS stack (set when non-empty, POP
-        # when empty) rather than only ever setting it, or an earlier
-        # stack's fan-out counts would silently leak into a later stack's
-        # compose render that declares no instances of its own.
+        # every stack in a single `ciu up` run — the SAME cross-stack-
+        # contamination hazard `selected_profiles`/`deployed_stacks` (S3.12)
+        # was built to guard against, now recurring for `instances` because
+        # this key is threaded through the identical shared object. ALWAYS
+        # resolve the key for THIS stack: a FRESH assignment when non-empty
+        # (never `setdefault(...).update(...)` / any other accumulate-style
+        # write — that would keep a PRIOR stack's service keys alongside
+        # this stack's own, not just when this stack has none), POP when
+        # empty. Either half done wrong lets an earlier stack's fan-out
+        # counts silently leak into a later stack's compose render.
         if instances_for_ciu:
             ciu_context["instances"] = instances_for_ciu
         else:

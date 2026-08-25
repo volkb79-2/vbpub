@@ -1808,6 +1808,68 @@ class TestCiuInstancesContextInjection:
         # Unrelated S3.12 facts survive untouched.
         assert shared_ciu_context["selected_profiles"] == []
 
+    def test_cross_stack_reuse_replaces_not_merges_when_both_declare(
+        self, tmp_path: Path
+    ) -> None:
+        """Review-caught gap: the prior test only pins the pop-when-empty
+        half. This pins the OTHER half -- when the SECOND stack ALSO
+        declares its own (different) non-empty instances, its own map must
+        REPLACE the first stack's entirely, not accumulate alongside it.
+        This is the same shared-object hazard class `selected_profiles`/
+        `deployed_stacks` (S3.12) exists to guard against; a mutant that
+        turns the fresh assignment into
+        `ciu_context.setdefault("instances", {}).update(...)` passes every
+        OTHER test in this file but fails this one (stack B would see
+        `{'worker': 3, 'other': 2}` instead of just its own `{'other': 2}`).
+        """
+        stack_a = tmp_path / "stack_a"
+        stack_a.mkdir()
+        (stack_a / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_a = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+
+        stack_b = tmp_path / "stack_b"
+        stack_b.mkdir()
+        (stack_b / "other.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_b = {
+            "mystack": {
+                "other": {
+                    "instances": 2,
+                    "configfile": {
+                        "cfg": {
+                            "template": "other.conf.j2",
+                            "target": "/etc/other/other.conf",
+                            "instances": 2,
+                        }
+                    },
+                }
+            }
+        }
+
+        shared_ciu_context: dict = {"selected_profiles": [], "deployed_stacks": []}
+        render_configfiles(
+            stack_a, "mystack", config_a, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        assert shared_ciu_context["instances"] == {"worker": 3}
+
+        render_configfiles(
+            stack_b, "mystack", config_b, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        # Stack B's own map only -- NOT {'worker': 3, 'other': 2}.
+        assert shared_ciu_context["instances"] == {"other": 2}
+
 
 # ---------------------------------------------------------------------------
 # V8-PREP-6 (ciu-P24) — O3: duplicate-mount post-render refusal.
