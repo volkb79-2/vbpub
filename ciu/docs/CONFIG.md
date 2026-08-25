@@ -186,10 +186,11 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
   (after the committed chain and the worktree overlay, same timing as
   `[deploy].landscape_id`, S3.11) must be either one of CIU's own
   `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`, `topology`, `vault`,
-  `registry`, `governance`, `service`, `auto_generated` — the tables CIU
-  itself reads at global scope today) or a name listed in
-  `ciu.user_tables`. An unlisted table is a configuration error naming
-  every offending key.
+  `registry`, `governance`, `service`, `auto_generated`,
+  `infrastructure` — the tables CIU itself reads at global scope today;
+  `infrastructure` backs `[infrastructure].public_fqdn`, S2.7/CIU-47) or a
+  name listed in `ciu.user_tables`. An unlisted table is a configuration
+  error naming every offending key.
 - Each declared name must be a bare-key-safe string (`^[A-Za-z0-9_-]+$`),
   unique within the list, and must not repeat one of CIU's own
   `RESERVED_GLOBAL_TABLES` names (that would be redundant/misleading —

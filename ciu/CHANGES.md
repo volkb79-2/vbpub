@@ -17,11 +17,20 @@ gate runs; the commit subjects remain the traceable source of detail.
   `[deploy].landscape_id`, S3.11) and flags any top-level key that is
   neither one of CIU's own `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`,
   `topology`, `vault`, `registry`, `governance`, `service`,
-  `auto_generated` — a new, narrower set distinct from S3.7's
-  `RESERVED_GLOBAL_NAMESPACES`) nor listed in the declaration, in one
+  `auto_generated`, `infrastructure` — a new, narrower set distinct from
+  S3.7's `RESERVED_GLOBAL_NAMESPACES`) nor listed in the declaration, in one
   collective error naming every offending key. This is the additive
   groundwork only; the eventual V8 breaking step (defaulting
-  `ciu.user_tables` to empty) is deferred.
+  `ciu.user_tables` to empty) is deferred. **Corrected at review:**
+  `infrastructure` was initially omitted — `workspace_env.py` reads a
+  top-level `[infrastructure].public_fqdn` directly off the RENDERED global
+  config (S2.7/CIU-47), bypassing `render_global_chain` entirely, which the
+  original grep-every-call-site methodology missed. Now added to both
+  `RESERVED_GLOBAL_TABLES` and (necessarily, to keep the subset relationship
+  honest) `RESERVED_GLOBAL_NAMESPACES` — the latter as a side effect newly
+  forbids `infrastructure` as a stack root key, matching the existing
+  `vault`/`topology` precedent; no existing stack (in this repo or dstdns)
+  uses it as one.
 - feat(ciu): `validate_stack_shape` recognizes `local_stack` as a
   preferred stack root key name (SPEC S3.5/S3.7, V8-PREP-4 groundwork) — a
   stack MAY name its root table `[local_stack]` instead of a

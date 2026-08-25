@@ -71,6 +71,7 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
     "auto_generated",
     "secrets",
     "governance",
+    "infrastructure",
 })
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,12 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
 # Membership determined by tracing every `render_global_chain` call site and
 # every place its result (or a downstream still-global-scope value derived
 # from it, e.g. `profile.config`) is read with `.get(<name>)` / `[<name>]`,
-# never by guessing from RESERVED_GLOBAL_NAMESPACES's membership:
+# never by guessing from RESERVED_GLOBAL_NAMESPACES's membership — AND (fix
+# added at review, ciu-P21) every direct reader of the RENDERED
+# `GLOBAL_CONFIG_RENDERED` file that bypasses `render_global_chain` entirely
+# (grep `GLOBAL_CONFIG_RENDERED` across src/ciu/*.py: the only such bypass
+# is workspace_env.py's own `tomllib.load` of `ciu.global.toml`; every other
+# hit is the writer in this module, a log message, or an unused import):
 #   - "ciu"        engine.py (auto_connect_network, log_level via ciu.*),
 #                  deploy.py (resolve_profiles' ciu.instance.*), worktree.py
 #                  (ciu.worktree cap, S16.3), warn_policy.py, provisioning.py
@@ -121,6 +127,14 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
 #                  onto the merged config every run — a consumer's OWN
 #                  top-level `[auto_generated]` table would be silently
 #                  clobbered by that write.
+#   - "infrastructure" workspace_env.py:325 —
+#                  `config.get("infrastructure", {}).get("public_fqdn", "")`,
+#                  read directly off the RENDERED `ciu.global.toml` (a raw
+#                  `tomllib.load`, not through `render_global_chain`) inside
+#                  `_detect_public_fqdn` (S2.7/CIU-47's PUBLIC_FQDN
+#                  derivation). This bypass is exactly why membership here
+#                  cannot be determined from `render_global_chain` call
+#                  sites alone — see the methodology note above.
 #
 # Explicitly EXCLUDED, despite being in RESERVED_GLOBAL_NAMESPACES, because
 # grepping every call site found no code that reads a literal TOP-LEVEL
@@ -149,6 +163,7 @@ RESERVED_GLOBAL_TABLES: frozenset[str] = frozenset({
     "governance",
     "service",
     "auto_generated",
+    "infrastructure",
 })
 
 # ---------------------------------------------------------------------------

@@ -303,8 +303,11 @@ requirements are marked *(withdrawn)*.
   the code behavior is ratified).
 - **S3.7** The stack root key MUST NOT collide with a reserved global
   namespace: `ciu`, `deploy`, `topology`, `registry`, `vault`, `consul`,
-  `service`, `env`, `state`, `auto_generated`, `secrets`, `governance`
-  (S15.10). Collision = abort. (dstdns's vault stack root key `vault`
+  `service`, `env`, `state`, `auto_generated`, `secrets`, `governance`,
+  `infrastructure` (S15.10; `infrastructure` added at ciu-P21 review —
+  `workspace_env.py`'s `_detect_public_fqdn` reads a top-level
+  `[infrastructure].public_fqdn` directly off the rendered global config,
+  S2.7/CIU-47). Collision = abort. (dstdns's vault stack root key `vault`
   collides with global `[vault.paths]` and must be renamed, e.g. `vault_core`
   — see Appendix B.2.) `local_stack` (V8-PREP-4 groundwork; see
   [CIU-V8-TESTING-GATE-PROPOSAL.md §1.16](CIU-V8-TESTING-GATE-PROPOSAL.md))
@@ -380,7 +383,13 @@ requirements are marked *(withdrawn)*.
   (`^[A-Za-z0-9_-]+$`), MUST be unique within the list, and MUST NOT already
   be one of `RESERVED_GLOBAL_TABLES` — the top-level tables CIU itself reads
   at global scope today: `ciu`, `deploy`, `topology`, `vault`, `registry`,
-  `governance`, `service`, `auto_generated`. `RESERVED_GLOBAL_TABLES` is a
+  `governance`, `service`, `auto_generated`, `infrastructure` (the last
+  added at ciu-P21 review: `workspace_env.py` reads a top-level
+  `[infrastructure].public_fqdn` directly off the rendered global config,
+  bypassing `render_global_chain` entirely — a reminder that this set's
+  membership must be traced through every reader of the RENDERED config,
+  not only `render_global_chain`'s own call sites).
+  `RESERVED_GLOBAL_TABLES` is a
   narrower, purpose-specific set, DISTINCT from S3.7's
   `RESERVED_GLOBAL_NAMESPACES` (which instead governs stack ROOT KEY
   collisions — a different question). When `ciu.user_tables` is declared,
