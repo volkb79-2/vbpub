@@ -1678,6 +1678,9 @@ def _run_prepared_lane(
     r2_declared: bool,
     r3_declared: bool,
     resolved_base: str | None,
+    resume: bool = False,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
     still-live seed. Never lets an :class:`~assay.errors.AssayError` escape
@@ -1703,7 +1706,6 @@ def _run_prepared_lane(
     progress_path = (
         Path(".assay") / f"{lane.name}.progress.jsonl" if r2_declared else None
     )
-
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
@@ -1975,6 +1977,10 @@ def _run_prepared_lane(
                         else None
                     ),
                     progress_artifact=progress_path,
+                    state_project_root=project_root if resume else None,
+                    resume=resume,
+                    shard_index=None if shard_index is None else shard_index - 1,
+                    shard_count=shard_count,
                 )
             except AssayError as exc:
                 r2_orchestration_fault = exc
@@ -1991,7 +1997,11 @@ def _run_prepared_lane(
                 r2_claim = mutation.build_mutation_claim(result, mutation_result)
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
-                    judgment_r2 = _build_judgment_r2(lane)
+                    judgment_r2 = _build_judgment_r2(
+                        lane,
+                        shard_index=lane.judge.mutation.shard_index,
+                        shard_count=lane.judge.mutation.shard_count,
+                    )
         ended = iso_utc(clock())
 
     judgment_r3: JudgmentR3 | None = None
@@ -2117,7 +2127,9 @@ def _build_judgment_resolved(
     )
 
 
-def _build_judgment_r2(lane: Lane) -> JudgmentR2:
+def _build_judgment_r2(
+    lane: Lane, *, shard_index: int | None = None, shard_count: int | None = None
+) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
     A-223(b): the single declared source is
@@ -2149,6 +2161,8 @@ def _build_judgment_r2(lane: Lane) -> JudgmentR2:
         ),
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=getattr(mutation_config, "equivalence_artifact", None),
+        shard_index=shard_index,
+        shard_count=shard_count,
     )
 
 
@@ -2206,6 +2220,9 @@ def _run_higher_rigor_lane(
     r2_declared: bool,
     r3_declared: bool,
     snapshot_policy: IsolationConfig,
+    resume: bool = False,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
 ) -> Verdict:
@@ -2300,6 +2317,9 @@ def _run_higher_rigor_lane(
                         r2_declared=r2_declared,
                         r3_declared=r3_declared,
                         resolved_base=resolved_base,
+                        resume=resume,
+                        shard_index=shard_index,
+                        shard_count=shard_count,
                     )
                 )
     except AssayError as exc:
@@ -2360,6 +2380,8 @@ def run_lane(
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     deadline: LaneDeadline | None = None,
+    resume: bool = False,
+    shard: str | None = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -2555,6 +2577,21 @@ def run_lane(
     r2_declared = "R2" in lane.rigor
     r3_declared = "R3" in lane.rigor
 
+    shard_index: int | None = None
+    shard_count: int | None = None
+    if shard is not None:
+        try:
+            raw_index, raw_count = shard.split("/", 1)
+            shard_index = int(raw_index)
+            shard_count = int(raw_count)
+        except (ValueError, AttributeError) as exc:
+            raise AssayError(
+                f"invalid mutation shard spelling {shard!r}; expected INDEX/COUNT",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ) from exc
+        mutation.select_mutation_shard((), index=shard_index - 1, count=shard_count)
+
     if r1_declared or r2_declared or r3_declared:
         # A-189: exact R0 alone stays on the direct live-tree path below;
         # every higher-rigor lane uses P22's committed-snapshot state
@@ -2579,6 +2616,9 @@ def run_lane(
             r2_declared=r2_declared,
             r3_declared=r3_declared,
             snapshot_policy=snapshot_policy,
+            resume=resume,
+            shard_index=shard_index,
+            shard_count=shard_count,
             evidence=evidence,
             declared_evidence=declared_evidence,
         )

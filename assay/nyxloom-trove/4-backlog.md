@@ -1210,11 +1210,12 @@ halves).
 ## B012 — mutation execution observability, planning, resume/sharding, and per-candidate budgets
 
 **Filed 2026-08-23 (dstdns repair program; consumer evidence from P127 admission mutation lanes and the SQL mutation blocker).**
-**Status:** **PARTIALLY IMPLEMENTED 2026-08-24.** Shipped: baseline/per-candidate progress NDJSON,
+**Status:** **IMPLEMENTED 2026-08-25 (worker identity remains executor-internal).** Shipped: baseline/per-candidate progress NDJSON,
 `mutation.progress_artifact` in the v6 payload, `assay plan`, deterministic plan IDs, per-file/operator
-counts and runtime estimates, and optional `budget_per_candidate`. Still open: worker identity,
-resume/checkpointing, native filtering/sharding with merge validation, and the remaining acceptance
-items below.
+counts and runtime estimates, optional `budget_per_candidate`, bounded state records under
+`.assay/mutation-state/`, stale-record refusal, CLI operator filtering, zero-based deterministic
+sharding, and manifest merge validation. Worker identity is supplied by the executor boundary when
+present; it is not invented as a public lane option.
 
 ### The observation
 
@@ -1239,9 +1240,11 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 
 - [x] progress events emitted and referenced from verdict;
 - [x] `assay plan` reports deterministic totals/IDs/runtime estimate;
-- [ ] interrupted lane resumes without rerunning completed candidates;
-- [ ] shards are provably disjoint and exhaustive;
+- [x] interrupted lane resumes without rerunning completed candidates;
+- [x] shards are provably disjoint and exhaustive;
 - [x] per-candidate timeouts do not abort unrelated candidates.
+- [x] stale mutation-state records are refused when source hashes change;
+- [x] shard manifests refuse duplicate or missing coverage.
 
 ## B013 — repository-only snapshots cannot provide infrastructure facts required by SQL mutation lanes
 

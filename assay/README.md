@@ -188,6 +188,17 @@ Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
 each candidate; the verdict's optional `mutation.progress_artifact` names that
 file.
 
+`assay plan` accepts `--operators name,name` and zero-based `--shard INDEX/COUNT`;
+`assay run` adds `--resume`. Shard summaries merge only through a manifest that
+proves exact shard coverage, one lane/commit/schema version, and no repeated
+candidate.
+
+`assay plan` accepts `--operators name,name` and `--shard INDEX/COUNT`; `assay
+run` accepts `--resume` plus the same filters. Shards use zero-based indexes,
+assign candidates by deterministic digest, and require a manifest merge that
+proves every shard is present, shares one lane/commit, and contains no repeated
+candidate.
+
 When a lane command fails or times out, its verdict can retain at most the last
 64 KiB of each output stream in `result_stdout_tail` and `result_stderr_tail`.
 Truncation is head-side and visible through the paired dropped-byte counts, so

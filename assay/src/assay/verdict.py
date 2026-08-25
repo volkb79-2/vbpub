@@ -1239,6 +1239,9 @@ class Mutation:
     #: (B012) Optional NDJSON progress artifact. Present only when the run
     #: emitted progress; omitted, never null, for compatibility with v6.
     progress_artifact: str | None = None
+    #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
+    #: never empty, so non-shard v6 payloads are unchanged.
+    candidate_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         for name in ("candidate_count", "total"):
@@ -1257,6 +1260,19 @@ class Mutation:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
         if self.progress_artifact is not None:
             _check_wire_path(self.progress_artifact, "mutation.progress_artifact")
+        if self.candidate_ids is not None:
+            if not self.candidate_ids:
+                raise ValueError("mutation.candidate_ids must be omitted when empty")
+            if len(self.candidate_ids) != len(set(self.candidate_ids)):
+                raise ValueError("mutation.candidate_ids contains a duplicate")
+            for candidate in self.candidate_ids:
+                if not isinstance(candidate, str) or len(candidate) != 64 or any(
+                    character not in "0123456789abcdef" for character in candidate
+                ):
+                    raise ValueError(
+                        f"mutation.candidate_ids entry must be a 64-character "
+                        f"hexadecimal digest, got {candidate!r}"
+                    )
         self._check_identities_are_unique()
         self._check_arithmetic()
         self._check_kill_signal_is_killed_only()
@@ -1346,6 +1362,8 @@ class Mutation:
             payload[name] = [item.to_dict() for item in getattr(self, name)]
         if self.progress_artifact is not None:
             payload["progress_artifact"] = self.progress_artifact
+        if self.candidate_ids is not None:
+            payload["candidate_ids"] = list(self.candidate_ids)
         return payload
 
 
@@ -1574,6 +1592,11 @@ class JudgmentR2:
     #: command-written artifacts is what keeps A-215's no-DSN boundary
     #: exactly where it is -- assay never connects to a database.
     equivalence_artifact: str | None = None
+    #: (B012) The declared zero-based shard position. ``None`` with
+    #: :attr:`shard_count` means the whole workload.
+    shard_index: int | None = None
+    #: (B012) The declared shard cardinality. Required with ``shard_index``.
+    shard_count: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
@@ -1645,6 +1668,29 @@ class JudgmentR2:
             _check_nonempty(
                 self.equivalence_artifact, "judgment.r2.equivalence_artifact"
             )
+        shard_specified = self.shard_index is not None or self.shard_count is not None
+        if shard_specified and (
+            self.shard_index is None
+            or self.shard_count is None
+            or isinstance(self.shard_index, bool)
+            or isinstance(self.shard_count, bool)
+            or not isinstance(self.shard_index, int)
+            or not isinstance(self.shard_count, int)
+        ):
+            raise ValueError(
+                "judgment.r2 requires integer shard_index and shard_count together"
+            )
+        if shard_specified and self.shard_count is not None:
+            if not 1 <= self.shard_count <= 10_000:
+                raise ValueError(
+                    f"judgment.r2.shard_count must be in 1..10,000, got {self.shard_count}"
+                )
+            assert self.shard_index is not None
+            if not 0 <= self.shard_index < self.shard_count:
+                raise ValueError(
+                    f"judgment.r2.shard_index {self.shard_index} is outside "
+                    f"0..{self.shard_count - 1}"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1658,6 +1704,9 @@ class JudgmentR2:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
         if self.equivalence_artifact is not None:
             payload["equivalence_artifact"] = self.equivalence_artifact
+        if self.shard_index is not None and self.shard_count is not None:
+            payload["shard_index"] = self.shard_index
+            payload["shard_count"] = self.shard_count
         return payload
 
 

@@ -101,23 +101,30 @@ and avoids re-opening the same cycle purely for a type hint.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import math
+import os
+import re
+import tempfile
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Mapping, Sequence
-
-import hashlib
-from typing import Literal
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 from . import git, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
-from .verdict import MAX_CANDIDATE_CEILING, Claim, Mutation, MutantOutcome
+from .verdict import (
+    MUTATION_BUCKETS,
+    MAX_CANDIDATE_CEILING,
+    Claim,
+    Mutation,
+    MutantOutcome,
+)
 from .vocabulary import MUTATION_OPERATORS
 
 __all__ = [
@@ -132,13 +139,19 @@ __all__ = [
     "MutationSite",
     "MutationTarget",
     "ProgressWriter",
+    "MutationStateError",
     "build_mutation_claim",
     "byte_offset",
     "collect_mutation_sites",
+    "candidate_id",
     "judge_mutation",
     "line_for_offset",
+    "merge_mutations",
+    "merge_mutation_shards",
+    "mutation_state_record_path",
     "resolve_mutation_targets",
     "run_mutation",
+    "select_mutation_shard",
 ]
 
 #: (P21/A-183) the adapter-wide capability sentinel, retained from the old
@@ -146,6 +159,11 @@ __all__ = [
 #: implementation at all -- never a parse failure, never an unrecognised
 #: individual construct, never a valid analysis that found nothing.
 UNSUPPORTED = "UNSUPPORTED"
+
+_CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
+MUTATION_STATE_SCHEMA_VERSION = 1
 
 #: (P34/§3.6) the equivalence artifact's own byte ceiling -- a schema dump
 #: is comparable measurement output to a coverage artifact, so this reuses
@@ -188,6 +206,17 @@ class MutationDiscoveryError(AssayError):
             message,
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.MUTATION_DISCOVERY_FAILED,
+        )
+
+
+class MutationStateError(AssayError):
+    """A persisted mutation record or shard summary cannot be trusted."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         )
 
 
@@ -659,14 +688,254 @@ def _progress_event(
     original_bytes = job.original_text.encode("utf-8")
     replacement_bytes = job.site.apply(original_bytes)
     return {
+        "candidate_id": candidate_id(job),
         "candidate_index": candidate_index,
         "candidate_total": candidate_total,
+        "description": job.site.description,
+        "lineno": job.site.lineno,
         "path": job.path,
         "operator": job.site.operator,
         "start_byte": job.site.start_byte,
         "end_byte": job.site.end_byte,
         "replacement_sha256": hashlib.sha256(replacement_bytes).hexdigest(),
     }
+
+
+def candidate_id(job: MutantJob) -> str:
+    """Return the stable digest identity shared by plans, state and shards."""
+    original_bytes = job.original_text.encode("utf-8")
+    replacement_bytes = job.site.apply(original_bytes)
+    identity = "\0".join(
+        (
+            job.path,
+            hashlib.sha256(original_bytes).hexdigest(),
+            str(job.site.start_byte),
+            str(job.site.end_byte),
+            hashlib.sha256(replacement_bytes).hexdigest(),
+            job.site.operator,
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def mutation_state_record_path(candidate: str) -> str:
+    """Return the canonical project-relative state-file spelling."""
+    if not isinstance(candidate, str) or _CANDIDATE_ID_RE.fullmatch(candidate) is None:
+        raise ValueError(
+            f"candidate id must be a 64-character hexadecimal digest, got {candidate!r}"
+        )
+    return f".assay/mutation-state/{candidate.lower()}.json"
+
+
+def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any]) -> None:
+    relative_path = PurePosixPath(mutation_state_record_path(payload["candidate_id"]))
+    parent = project_root.joinpath(*relative_path.parts[:-1])
+    destination = parent / relative_path.parts[-1]
+    parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+        os.replace(temporary_name, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _load_validated_state_record(
+    project_root: Path, job: MutantJob
+) -> Mapping[str, Any] | None:
+    identity = candidate_id(job)
+    raw = safeio.read_bounded_input(
+        project_root,
+        mutation_state_record_path(identity),
+        limit=MUTATION_STATE_RECORD_LIMIT,
+    )
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MutationStateError(f"mutation-state record {identity} is not valid UTF-8 JSON") from exc
+    required = {
+        "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+        "candidate_id": identity,
+        "path": job.path,
+        "replacement_sha256": hashlib.sha256(job.site.replacement).hexdigest(),
+        "operator": job.site.operator,
+        "source_sha256": hashlib.sha256(job.original_text.encode("utf-8")).hexdigest(),
+    }
+    for key, expected in required.items():
+        if key not in payload:
+            raise MutationStateError(f"mutation-state record {identity} is missing {key}")
+        if key == "source_sha256" and payload[key] != expected:
+            return None
+        if payload[key] != expected:
+            raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    if "outcome_bucket" not in payload:
+        raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
+    if payload["outcome_bucket"] not in MUTATION_BUCKETS:
+        raise MutationStateError(
+            f"mutation-state record {identity} has unknown outcome bucket "
+            f"{payload['outcome_bucket']!r}"
+        )
+    return payload
+
+
+def merge_mutations(current: Mutation, records: Iterable[Mapping[str, Any]]) -> Mutation:
+    """Fold already-validated resumed records into a completed shard run."""
+    buckets: dict[str, list[MutantOutcome]] = {
+        name: list(getattr(current, name)) for name in MUTATION_BUCKETS
+    }
+    for record in records:
+        buckets[record["outcome_bucket"]].append(_outcome_from_record(record))
+    identities = [
+        outcome.identity for name in MUTATION_BUCKETS for outcome in buckets[name]
+    ]
+    duplicate_count = len(identities) - len(set(identities))
+    normalized = {
+        name: tuple(sorted(buckets[name], key=lambda item: item.identity))
+        for name in MUTATION_BUCKETS
+    }
+    payload = Mutation(
+        candidate_count=len(identities),
+        total=len(identities),
+        killed=normalized["killed"],
+        survived=normalized["survived"],
+        crashed=normalized["crashed"],
+        budget_exceeded=normalized["budget_exceeded"],
+        equivalent=normalized["equivalent"],
+    )
+    if duplicate_count:
+        raise MutationStateError(
+            f"resumed records repeat {duplicate_count} candidate identity"
+        )
+    return payload
+
+
+def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
+    try:
+        return MutantOutcome(
+            path=record["path"],
+            lineno=int(record["lineno"]),
+            start_byte=int(record["start_byte"]),
+            end_byte=int(record["end_byte"]),
+            replacement_sha256=record["replacement_sha256"],
+            operator=record["operator"],
+            description=record["description"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MutationStateError(f"invalid resumed mutation record field: {exc}") from exc
+
+
+def select_mutation_shard(candidates: Sequence[str], *, index: int, count: int) -> list[int]:
+    """Return deterministic positions whose opaque IDs assign to *index*."""
+    if isinstance(index, bool) or isinstance(count, bool):
+        raise ValueError("shard index and count must be integers")
+    if not isinstance(index, int) or not isinstance(count, int):
+        raise ValueError("shard index and count must be integers")
+    if not 1 <= count <= MAX_CANDIDATE_CEILING:
+        raise ValueError(
+            f"shard count must be in 1..{MAX_CANDIDATE_CEILING}, got {count}"
+        )
+    if not 0 <= index < count:
+        raise ValueError(f"shard index {index} is outside 0..{count - 1}")
+    return [
+        position
+        for position, candidate in enumerate(candidates)
+        if int.from_bytes(
+            hashlib.blake2b(candidate.encode("ascii"), digest_size=4).digest(), "big"
+        )
+        % count
+        == index
+    ]
+
+
+_SHARD_REQUIRED_KEYS = frozenset(
+    {"schema_version", "lane", "commit", "shard_index", "shard_count", "candidate_ids"}
+)
+_SHARD_OPTIONAL_KEYS = frozenset({"operators", "jobs"})
+
+
+def merge_mutation_shards(documents: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+    """Validate exact shard coverage and return their duplicate-free union."""
+    documents = list(documents)
+    if not documents:
+        raise MutationStateError("cannot merge zero mutation shards")
+    seen_candidates: set[str] = set()
+    lanes: set[str] = set()
+    commits: set[str] = set()
+    covered_pairs: set[tuple[int, int]] = set()
+    merged_candidates: list[str] = []
+    for document in documents:
+        keys = set(document)
+        missing = sorted(_SHARD_REQUIRED_KEYS - keys)
+        unknown = sorted(keys - _SHARD_REQUIRED_KEYS - _SHARD_OPTIONAL_KEYS)
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append(f"missing keys {missing}")
+            if unknown:
+                details.append(f"unknown keys {unknown}")
+            raise MutationStateError(f"invalid shard summary: {'; '.join(details)}")
+        version = document["schema_version"]
+        lane = document["lane"]
+        commit = document["commit"]
+        shard_index = document["shard_index"]
+        shard_count = document["shard_count"]
+        if version != MUTATION_STATE_SCHEMA_VERSION:
+            raise MutationStateError(
+                f"unsupported shard schema_version {version!r}; expected "
+                f"{MUTATION_STATE_SCHEMA_VERSION}"
+            )
+        if not isinstance(lane, str) or not lane or not isinstance(commit, str) or not commit:
+            raise MutationStateError("shard lane and commit must be non-empty strings")
+        if (
+            isinstance(shard_index, bool)
+            or isinstance(shard_count, bool)
+            or not isinstance(shard_index, int)
+            or not isinstance(shard_count, int)
+        ):
+            raise MutationStateError("shard index and count must be integers")
+        if not 1 <= shard_count <= MAX_CANDIDATE_CEILING or not 0 <= shard_index < shard_count:
+            raise MutationStateError(f"invalid shard pair ({shard_index}, {shard_count})")
+        candidate_ids = document["candidate_ids"]
+        if not isinstance(candidate_ids, list):
+            raise MutationStateError("shard candidate_ids must be an array")
+        for candidate in candidate_ids:
+            try:
+                normalized_path = mutation_state_record_path(candidate)
+            except ValueError as exc:
+                raise MutationStateError(str(exc)) from exc
+            if normalized_path in seen_candidates:
+                raise MutationStateError(
+                    f"non-disjoint shard input repeats candidate {normalized_path}"
+                )
+            seen_candidates.add(normalized_path)
+            merged_candidates.append(candidate.lower())
+        lanes.add(lane)
+        commits.add(commit)
+        covered_pairs.add((shard_index, shard_count))
+    if len(lanes) > 1 or len(commits) > 1:
+        raise MutationStateError("all shards must share exactly one lane and commit")
+    counts = {pair[1] for pair in covered_pairs}
+    if len(counts) != 1:
+        raise MutationStateError("all shards must declare the same shard_count")
+    declared_count = next(iter(counts))
+    required_pairs = {(index, declared_count) for index in range(declared_count)}
+    missing_pairs = sorted(required_pairs - covered_pairs)
+    if missing_pairs:
+        rendered = ", ".join(f"{index}/{declared_count}" for index, _ in missing_pairs)
+        raise MutationStateError(f"non-exhaustive shard input is missing {rendered}")
+    extra_pairs = sorted(covered_pairs - required_pairs)
+    if extra_pairs:
+        raise MutationStateError(f"inconsistent shard pairs present: {extra_pairs}")
+    return tuple(merged_candidates)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -879,6 +1148,10 @@ def run_mutation(
     baseline_equivalence: bytes | None = None,
     budget_per_candidate_seconds: float | None = None,
     progress_artifact: Path | str | None = None,
+    state_project_root: Path | str | None = None,
+    resume: bool = False,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -972,6 +1245,20 @@ def run_mutation(
             "run_mutation budget_per_candidate_seconds must be a positive "
             f"finite number or None, got {budget_per_candidate_seconds!r}"
         )
+    if not isinstance(resume, bool):
+        raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
+    shard_specified = shard_index is not None or shard_count is not None
+    if state_project_root is None and (resume or shard_specified):
+        raise ValueError(
+            "run_mutation resume requires the caller's authoritative "
+            "state_project_root; an ephemeral snapshot cannot own resume evidence"
+        )
+    if shard_specified and (shard_index is None or shard_count is None):
+        raise ValueError("run_mutation requires both shard_index and shard_count")
+    if shard_specified:
+        select_mutation_shard((), index=shard_index, count=shard_count)
+    if state_project_root is not None:
+        Path(state_project_root).mkdir(parents=True, exist_ok=True)
 
     if baseline.outcome is not Outcome.PASS:
         return None
@@ -999,6 +1286,48 @@ def run_mutation(
         if total == 0:
             return Mutation(candidate_count=0, total=0)
 
+        selected_indices = list(range(total))
+        if shard_specified:
+            assert shard_index is not None and shard_count is not None
+            selected_indices = select_mutation_shard(
+                [candidate_id(job) for job in job_list],
+                index=shard_index,
+                count=shard_count,
+            )
+            if write_progress is not None:
+                write_progress(
+                    {
+                        "candidate_total": total,
+                        "event": "shard",
+                        "selected_total": len(selected_indices),
+                        "shard_index": shard_index,
+                        "shard_count": shard_count,
+                    }
+                )
+
+        selected_jobs = tuple(job_list[index] for index in selected_indices)
+        resumed_records: list[Mapping[str, Any]] = []
+        if resume:
+            assert isinstance(state_project_root, Path)
+            for job in selected_jobs:
+                record = _load_validated_state_record(state_project_root, job)
+                if record is not None:
+                    resumed_records.append(record)
+            resumed_ids = {record["candidate_id"] for record in resumed_records}
+            pending_jobs = tuple(
+                job for job in selected_jobs if candidate_id(job) not in resumed_ids
+            )
+            if write_progress is not None and resumed_records:
+                write_progress(
+                    {
+                        "candidate_total": total,
+                        "event": "resume",
+                        "resumed_total": len(resumed_records),
+                    }
+                )
+        else:
+            pending_jobs = selected_jobs
+
         if write_progress is not None:
             write_progress(
                 {
@@ -1013,8 +1342,8 @@ def run_mutation(
                 }
             )
 
-        return _execute_mutation_jobs(
-            job_list=job_list,
+        result_payload = _execute_mutation_jobs(
+            job_list=pending_jobs,
             deadline=deadline,
             jobs=jobs,
             prepared=prepared,
@@ -1028,9 +1357,16 @@ def run_mutation(
             budget_per_candidate_seconds=budget_per_candidate_seconds,
             execute_plan=execute_plan,
             write_progress=write_progress,
-            total=total,
-            candidate_count=candidate_count,
+            total=len(pending_jobs),
+            candidate_count=len(pending_jobs),
+            state_project_root=state_project_root,
         )
+
+        if resumed_records:
+            result_payload = merge_mutations(result_payload, resumed_records)
+        if write_progress is not None and resumed_records:
+            write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
+        return result_payload
 
 
 def _execute_mutation_jobs(
@@ -1051,6 +1387,7 @@ def _execute_mutation_jobs(
     execute_plan: Callable[..., CommandResult],
     total: int,
     candidate_count: int,
+    state_project_root: Path | str | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -1193,7 +1530,18 @@ def _execute_mutation_jobs(
                     elif fatal is None:
                         fatal = exc
                 run = results[position]
-                if write_progress is not None and run is not None:
+                if run is None:
+                    continue
+                if equivalence_artifact is None:
+                    outcome_bucket = _classify_mutant_result(run.result)
+                else:
+                    assert baseline_equivalence is not None
+                    outcome_bucket = _classify_mutant_result_with_equivalence(
+                        run.result,
+                        equivalence_bytes=run.equivalence_bytes,
+                        baseline_equivalence=baseline_equivalence,
+                    )
+                if write_progress is not None:
                     write_progress(
                         {
                             **_progress_event(
@@ -1201,10 +1549,31 @@ def _execute_mutation_jobs(
                                 candidate_total=total,
                                 job=job_list[position],
                             ),
-                            "outcome_bucket": _classify_mutant_result(run.result),
+                            "outcome_bucket": outcome_bucket,
                             "elapsed_seconds": round(run.elapsed_seconds, 3),
                         }
                     )
+                if state_project_root is not None:
+                    _write_mutation_state_record(
+                        Path(state_project_root),
+                        {
+                            **_progress_event(
+                                candidate_index=position,
+                                candidate_total=total,
+                                job=job_list[position],
+                            ),
+                                "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+                                "source_sha256": hashlib.sha256(
+                                    job_list[position].original_text.encode("utf-8")
+                                ).hexdigest(),
+                                "replacement_sha256": job_list[
+                                    position
+                                ].site.replacement_sha256,
+                                "lineno": job_list[position].site.lineno,
+                                "description": job_list[position].site.description,
+                                "outcome_bucket": outcome_bucket,
+                            },
+                        )
             index = wave[-1] + 1
             if fatal is not None or wave_stopped:
                 for leftover in range(index, total):
