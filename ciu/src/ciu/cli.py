@@ -91,7 +91,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
 
   DEV-LOOP BUILDS
-    bake [targets ...] [--no-cache]      docker buildx bake --load
+    bake [targets ...] [--profile NAME] [--no-cache]
+                                          docker buildx bake --load
     ksm build [--force]                  build the KSM shim into .ciu/ksm/ (S15.17)
     dev <stack> [--profile NAME]          run a stack's live dev loop (HMR)
 
@@ -300,10 +301,19 @@ ciu status [--profile NAME] [--json]
 """,
     "bake": """\
 ciu bake [targets ...] [--no-cache]
-  Thin wrapper over `docker buildx bake --load`. No targets → bake `all`.
+ciu bake --profile NAME [--no-cache]
+  Thin wrapper over `docker buildx bake --load`. No targets, no --profile →
+  bake `all`. With --profile, the target list instead comes from the SAME
+  resolution chain `ciu up --profile` uses (host profile -> selected stacks
+  -> applications/tools/ path segments), so `ciu bake --profile X` builds
+  exactly the images `ciu up --profile X` would deploy. --profile and
+  explicit targets are mutually exclusive (pass one or the other).
   (For an iterative dev server with HMR, see `ciu dev`.)
 
-  --no-cache   pass --no-cache to buildx
+  --profile NAME   resolve targets from this host profile's selection
+                   (repeatable; comma-separated forms accepted, same as
+                   `ciu status`/`ciu up`)
+  --no-cache       pass --no-cache to buildx
 """,
     "dev": """\
 ciu dev <stack> [--profile NAME] [--no-prebuild]
@@ -792,6 +802,92 @@ def _status(rest: list[str]) -> int:
     except (RuntimeError, ValueError) as exc:
         print(f"[ERROR] ciu status: {exc}", file=sys.stderr)
         return 2
+
+
+def _bake(rest: list[str]) -> int:
+    """Handle `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile
+    NAME [--no-cache]` (CIU-QOL-7).
+
+    No `--profile`: byte-identical to the pre-existing v1 behaviour --- raw
+    positional targets go straight to `docker buildx bake --load`
+    (defaulting to `all` when none are given). This is an ADDITIVE flag, not
+    a replacement, so that path is untouched here.
+
+    With `--profile`, the target list instead comes from the SAME chain
+    `ciu up --profile` uses (`load_global_config` -> `resolve_profiles` ->
+    `build_selection`, mirroring `_status` above), fed through
+    `deploy.collect_bake_targets_from_selection` -- the same pure resolver
+    the internal (dead, CLI-unreachable) `action_build` path also uses.
+    Either way the result feeds the SAME `docker buildx bake ... --load`
+    invocation, with identical revision-stamping
+    (`engine.bake_revision_args()`) and `--no-cache` handling -- only the
+    target list's SOURCE changes.
+
+    `--profile` and explicit positional targets are mutually exclusive
+    (prefix-aware: `a == "--profile" or a.startswith("--profile=")`, so the
+    equals form is caught too -- mirrors the `up --layout` precedent's B2
+    fix). Silently picking a winner between the two would invite a
+    divergent-build bug, so this is a clear stderr error + exit 2 instead.
+    """
+    from .engine import bake_revision_args
+
+    no_cache = "--no-cache" in rest
+    positional = [a for a in rest if a != "--no-cache"]
+
+    has_profile_flag = any(
+        a == "--profile" or a.startswith("--profile=") for a in positional
+    )
+    if has_profile_flag:
+        import argparse as _ap
+
+        p = _ap.ArgumentParser(prog="ciu bake", add_help=False)
+        p.add_argument("--profile", action="append", default=None, metavar="NAME")
+        opts, remaining = p.parse_known_args(positional)
+        if remaining:
+            print(
+                "ciu bake: --profile is mutually exclusive with explicit "
+                "build targets -- --profile resolves the target list from "
+                "the selection model (the same chain `ciu up --profile` "
+                "uses); pass one or the other, not both.",
+                file=sys.stderr,
+            )
+            return 2
+
+        from .deploy import (
+            build_selection,
+            collect_bake_targets_from_selection,
+            load_global_config,
+            resolve_profiles,
+        )
+        from .dev import resolve_repo_root
+
+        expanded: list[str] = []
+        for entry in opts.profile:
+            for part in entry.split(","):
+                part = part.strip()
+                if part:
+                    expanded.append(part)
+        cli_profiles: list[str] | None = expanded if expanded else None
+
+        repo_root = resolve_repo_root(None, Path.cwd())
+        try:
+            global_cfg = load_global_config(repo_root)
+            profile = resolve_profiles(global_cfg, cli_profiles)
+            selection = build_selection(profile)
+        except (RuntimeError, ValueError) as exc:
+            print(f"[ERROR] ciu bake: {exc}", file=sys.stderr)
+            return 2
+        targets = collect_bake_targets_from_selection(selection)
+    else:
+        targets = positional
+
+    cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
+    # Provenance: stamp the source revision so a running container can be
+    # traced back to the commit it was built from (engine.bake_revision_args).
+    cmd += bake_revision_args()
+    if no_cache:
+        cmd.append("--no-cache")
+    return subprocess.call(cmd)
 
 
 def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
@@ -1436,16 +1532,7 @@ def main() -> None:
         raise SystemExit(init_main(rest))
 
     elif verb == "bake":
-        from .engine import bake_revision_args
-        no_cache = "--no-cache" in rest
-        targets = [a for a in rest if a != "--no-cache"]
-        cmd = ["docker", "buildx", "bake"] + (targets or ["all"]) + ["--load"]
-        # Provenance: stamp the source revision so a running container can be
-        # traced back to the commit it was built from (engine.bake_revision_args).
-        cmd += bake_revision_args()
-        if no_cache:
-            cmd.append("--no-cache")
-        raise SystemExit(subprocess.call(cmd))
+        raise SystemExit(_bake(rest))
 
     elif verb == "dev":
         import argparse as _ap

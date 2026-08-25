@@ -72,7 +72,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
-| `ciu bake` | `docker buildx bake --load` (production image) | `[targets …]`, `--no-cache` |
+| `ciu bake` | `docker buildx bake --load` (production image); with `--profile`, targets are resolved via the same selection chain as `ciu up --profile` (CIU-QOL-7) | `[targets …]` \| `--profile NAME`, `--no-cache` |
 | `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |

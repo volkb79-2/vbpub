@@ -10,6 +10,13 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): `ciu bake --profile NAME` — the target list can now be resolved
+  via the SAME selection chain `ciu up --profile` uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`), so `ciu
+  bake --profile X` builds exactly the images `ciu up --profile X` would
+  deploy; `ciu bake [targets ...]` with no `--profile` is unchanged, and
+  `--profile` is mutually exclusive with explicit positional targets
+  (CIU-QOL-7, SPEC S7.11)
 - feat(ciu): new read-only `ciu status [--profile NAME] [--json]` verb —
   reports every `--profile`-selected stack's resolved compose project,
   running containers, per-container health (`classify()`'s closed

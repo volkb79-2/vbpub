@@ -915,6 +915,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   never invokes `docker compose up/down/build/exec` — it is read-only by
   contract, not merely by default.
 
+- **S7.11** `ciu bake [targets ...] [--no-cache]` / `ciu bake --profile NAME
+  [--no-cache]` (CIU-QOL-7) unifies the two build entry points around ONE
+  selection model. With NO `--profile`, behaviour is byte-identical to the
+  pre-existing form: explicit positional targets (or `all`, when none are
+  given) go straight to `docker buildx bake ... --load`. With `--profile`,
+  the target list instead comes from the SAME selection chain S7.10 uses
+  (`load_global_config` → `resolve_profiles` → `build_selection`), reduced
+  to the final path component of every selected `applications/`/`tools/`
+  entry — so `ciu bake --profile X` builds exactly the images `ciu up
+  --profile X` would deploy (an empty resulting target list still bakes
+  `all`, matching the no-`--profile` default). `--profile` and explicit
+  positional targets are mutually exclusive (S10.3 exit 2) — which one
+  would silently "win" is not obvious to a reader and would invite a
+  divergent-build bug. `--no-cache` combines with either mode unchanged.
+  Every invocation still carries S17.1's revision stamp.
+
 ## S8 — Compose execution
 
 - **S8.1** Per stack, the compose invocation is
