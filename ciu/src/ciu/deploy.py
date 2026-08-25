@@ -118,6 +118,25 @@ _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smh]?)\s*$", re.IGNORECASE)
 _DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
 
+def parse_duration_seconds(value: str) -> float:
+    """Strict form of CIU's ONE duration grammar: ``"30s"``/``"2m"``/``"24h"``/
+    ``"45"`` (bare = seconds) -> seconds.
+
+    :func:`_seconds` is the LENIENT wrapper used for config values that have a
+    sane fallback; a duration typed on the command line has none, so it needs
+    a form that refuses instead of silently substituting a default. Both share
+    this single grammar so the two can never drift apart (S16.9's
+    ``ciu worktree lease --extend`` is the first caller of the strict form).
+    """
+    m = _DURATION_RE.match(value)
+    if not m:
+        raise ValueError(
+            f"not a duration: {value!r} (expected an integer optionally "
+            "suffixed with 's', 'm' or 'h', e.g. '24h')"
+        )
+    return float(int(m.group(1)) * _DURATION_UNITS[m.group(2).lower()])
+
+
 def _seconds(value: object, default: float = 30.0) -> float:
     """Parse a duration into seconds.
 
@@ -130,9 +149,10 @@ def _seconds(value: object, default: float = 30.0) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        m = _DURATION_RE.match(value)
-        if m:
-            return float(int(m.group(1)) * _DURATION_UNITS[m.group(2).lower()])
+        try:
+            return parse_duration_seconds(value)
+        except ValueError:
+            pass
     warn(f"could not parse duration {value!r}; using {default:g}s")
     return default
 
@@ -3374,6 +3394,27 @@ def action_clean(
         reason = next((r for n, r in blocked_nets if n == net), "survived removal")
         error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
         rc = 1
+
+    # S16.9 (CIU-25 substrate) — ON SUCCESS ONLY: a clean that verified its own
+    # post-clean invariant has removed exactly the resources the lease claimed,
+    # so the claim is dropped. A clean that failed ANY of the passes above
+    # leaves the lease exactly as it was: a lease over resources that may still
+    # be standing is the whole signal a future reap reads, and erasing it on a
+    # failed teardown would manufacture "unowned" out of "we don't know".
+    # A checkout with no instance record (PRIMARY/unmanaged) is untouched.
+    if rc == 0:
+        try:
+            worktree_pkg.release_own_lease(repo_root)
+        except worktree_pkg.WorktreeError as exc:
+            # WARN, not a clean failure. What `clean` certifies is that the
+            # project's containers/volumes/networks are gone, and they are —
+            # a record too malformed to parse is a pre-existing S16 defect
+            # (`ciu worktree inspect` reports it loudly) that this teardown
+            # neither caused nor can repair. Failing here would let one broken
+            # record block every future teardown. It is also the SAFE
+            # direction: an uncleared lease reads as "still owned", so a
+            # future reap refuses rather than destroys.
+            warn(f"S16.9 lease not cleared (record unreadable): {exc}")
 
     if rc == 0:
         # Name only what was verified present — claiming a keep of an absent

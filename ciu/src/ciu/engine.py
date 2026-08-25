@@ -725,6 +725,7 @@ def reset_service(
     print(f"[INFO] Resetting service: {service_name} (project: {project_name})", flush=True)
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
+    ownership_path = stack_dir / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
 
     # Step 1: docker compose down -v --remove-orphans (with overlay args when
     # present). --remove-orphans tears down one-shot init/sidecar containers
@@ -753,6 +754,11 @@ def reset_service(
     down_cmd = ["docker", "compose", "-p", compose_project, "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
+    # S16.9: the same file set `up` composed with, so `down` addresses exactly
+    # the project `up` created (a fragment silently dropped here would leave
+    # compose reasoning about a different merged model than the one running).
+    if ownership_path.exists():
+        down_cmd += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         result = procutil.run_cmd(down_cmd, check=False)
@@ -782,6 +788,7 @@ def reset_service(
         stack_dir / CIU_COMPOSE_OUTPUT,
         stack_dir / STACK_CONFIG_RENDERED,
         overlay_path,
+        ownership_path,
     ]
     removed = 0
     for f in targets:
@@ -1131,6 +1138,142 @@ def _build_image_revisions(compose_yaml_text: str) -> dict[str, str]:
         if revision:
             revisions[str(name)] = revision
     return revisions
+
+
+# ---------------------------------------------------------------------------
+# S16.9 (CIU-25 substrate) — ownership labels + instance lease on `ciu up`
+# ---------------------------------------------------------------------------
+
+# A SECOND, separately named compose fragment rather than more keys inside
+# ciu.compose.overlay.yml. The overlay is composefile.py's artifact and is
+# omitted entirely when a stack has no secrets/configfiles/governance/image
+# revisions to wire (composefile.generate_overlay returns None) — ownership
+# labels must be stamped on EVERY managed instance's resources, including the
+# plainest possible stack, so they cannot ride on a file that may not exist.
+# Keeping them separate also keeps the attribution honest in `docker inspect`:
+# one file, one purpose.
+OWNERSHIP_OVERLAY_NAME = "ciu.compose.ownership.yml"
+
+# The label pair a future `ciu worktree reap` (CIU-25 / ciu-P27) reads to
+# attribute a container, volume or network to a checkout. Closed vocabulary.
+OWNERSHIP_LABEL_INSTANCE = "ciu.instance"
+OWNERSHIP_LABEL_REPO_ROOT = "ciu.repo-root"
+
+
+def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
+    """The S16.9 ownership label pair for THIS checkout, or ``None``.
+
+    ``None`` — meaning "stamp nothing, behave exactly as before" — for any
+    checkout that is not a MANAGED worktree instance, i.e. that carries no
+    ``ciu.worktree-instance.json``. A PRIMARY checkout's resources are
+    deliberately left unlabeled by this package: labels are the input to a
+    future destructive verb, and widening what that verb can see to include
+    the primary workspace is a decision that needs its own package, not a
+    side effect of this one.
+
+    Both values are read from THIS workspace's OWN generated ``ciu.env`` by
+    EXACT PATH — never from the ambient process environment, which a shell
+    that sourced a sibling checkout's ciu.env carries (the CIU-41 species of
+    contamination). Mislabeling here would be worse than not labeling: it
+    would attribute one instance's containers to another checkout's root.
+    """
+    if not (repo_root / worktree.WORKTREE_INSTANCE_RECORD).is_file():
+        return None
+    env_path = repo_root / "ciu.env"
+    values = parse_workspace_env(env_path)
+    instance_id = values.get("INSTANCE_ID", "")
+    physical_root = values.get("PHYSICAL_REPO_ROOT", "")
+    if not instance_id or not physical_root:
+        raise ValueError(
+            f"[S16.9] {env_path} lacks INSTANCE_ID/PHYSICAL_REPO_ROOT — this "
+            "managed worktree instance cannot label the resources it creates. "
+            "Run `ciu env generate` in this checkout."
+        )
+    return {
+        OWNERSHIP_LABEL_INSTANCE: instance_id,
+        OWNERSHIP_LABEL_REPO_ROOT: physical_root,
+    }
+
+
+def _labelable_top_level(doc: dict, key: str) -> list[str]:
+    """Top-level ``volumes:``/``networks:`` entries compose actually CREATES.
+
+    An ``external: true`` entry is declared, not created — it exists before
+    this project and outlives it, so `ciu up` has nothing to claim there and
+    compose rejects extra keys on it anyway. The workspace network is exactly
+    such an entry (S2.6): it is created by ``ciu env generate``, not by up.
+    """
+    block = doc.get(key)
+    if not isinstance(block, dict):
+        return []
+    names = []
+    for name, body in block.items():
+        if isinstance(body, dict) and body.get("external"):
+            continue
+        names.append(str(name))
+    return names
+
+
+def write_ownership_overlay(
+    stack_dir: Path, compose_yaml_text: str, labels: dict[str, str]
+) -> Path | None:
+    """Write the S16.9 ownership fragment for one stack; ``None`` if nothing
+    to label.
+
+    Emitted on the ENGINE side and merged by compose as an extra ``-f``, so
+    composefile.py's overlay generation is untouched. Labels use the LIST
+    form (``- k=v``) the shipped compose templates already use, so the base
+    file and this fragment are the same shape for compose's merge.
+    """
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(compose_yaml_text) or {}
+    if not isinstance(doc, dict):
+        return None
+    entries = [f"{key}={value}" for key, value in sorted(labels.items())]
+    services = doc.get("services")
+    fragment: dict[str, Any] = {}
+    if isinstance(services, dict) and services:
+        fragment["services"] = {
+            str(name): {"labels": list(entries)} for name in services
+        }
+    for key in ("volumes", "networks"):
+        names = _labelable_top_level(doc, key)
+        if names:
+            fragment[key] = {name: {"labels": list(entries)} for name in names}
+    if not fragment:
+        return None
+
+    path = Path(stack_dir) / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = _yaml.safe_dump(fragment, sort_keys=False, default_flow_style=False)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+    return path
+
+
+def acquire_instance_lease(repo_root: Path) -> Any:
+    """S16.9 — acquire/renew this instance's ``held`` lease before `up` runs.
+
+    Two independent gates, both of which must pass, and either of which alone
+    means "do nothing at all":
+
+    1. ``[ciu.worktree].lease_ttl_hours`` is configured (no default — see
+       :func:`worktree.resolve_lease_ttl_hours`);
+    2. this checkout is a MANAGED worktree instance (it has a lifecycle
+       record). A PRIMARY/unmanaged checkout never acquires a lease.
+
+    Deliberately BEFORE the compose invocation, not after it: a run that
+    crashes halfway has still created containers, and the ownership claim
+    over them must already be on disk. Claiming slightly too early is
+    recoverable (`ciu clean` clears it); claiming too late is the orphaned-
+    resource hole CIU-25 exists to close.
+    """
+    ttl_hours = worktree.resolve_worktree_lease_ttl(repo_root)
+    if ttl_hours is None:
+        return None
+    return worktree.acquire_own_lease(repo_root, ttl_hours=ttl_hours)
 
 
 # ===========================================================================
@@ -1543,6 +1686,26 @@ def main_execution(
         if overlay_path is not None and overlay_path.exists():
             composefile.leak_scan(overlay_path.read_text(encoding="utf-8"), materialized)
 
+        # S16.9 (CIU-25 substrate): ownership labels for a MANAGED worktree
+        # instance only. Written next to the overlay, merged as a separate
+        # `-f` below, and removed by reset_service alongside every other
+        # generated artifact.
+        ownership_labels = workspace_ownership_labels(repo_root)
+        ownership_path = (
+            write_ownership_overlay(working_dir, rendered_compose, ownership_labels)
+            if ownership_labels is not None
+            else None
+        )
+        if ownership_path is not None:
+            print(
+                f"[INFO] [S16.9] ownership labels: "
+                f"{OWNERSHIP_LABEL_INSTANCE}={ownership_labels[OWNERSHIP_LABEL_INSTANCE]}",
+                flush=True,
+            )
+            composefile.leak_scan(
+                ownership_path.read_text(encoding="utf-8"), materialized
+            )
+
         # ---- Step 16: compose up (S8.1) ----
         if dry_run:
             print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
@@ -1552,6 +1715,12 @@ def main_execution(
                 specs, materialized, compose_profiles=compose_profiles
             )
             file_args = composefile.compose_file_args(working_dir, overlay_path)
+            if ownership_path is not None:
+                file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            # S16.9: claim ownership BEFORE anything is created (see
+            # acquire_instance_lease). A no-op unless lease_ttl_hours is
+            # configured AND this checkout is a managed instance.
+            acquire_instance_lease(repo_root)
             project = compose_project_name(global_config, working_dir)
             guard_legacy_compose_project(working_dir, project)
             # S16.3/CIU-24 — resolve the primary-worktree policy only for an
@@ -1760,6 +1929,14 @@ def run_shipped(
         # Same S16.3 boundary as the native path: only a genuine Compose start
         # reads the primary-worktree policy.  ``--dry-run`` returned above.
         worktree_cap = worktree.resolve_worktree_cap(repo_root)
+        # S16.9 — same claim-before-creation rule as the native path. A shipped
+        # stack's containers are exactly as orphanable as a rendered one's, and
+        # the lease is a pure record write with no generated artifact, so there
+        # is no reason for the two paths to differ here. (The OWNERSHIP LABELS
+        # deliberately do NOT follow: they are a generated compose fragment,
+        # and `clean` skips `reset_service` for a shipped stack — see S16.9's
+        # "Still open".)
+        acquire_instance_lease(repo_root)
         # S16.3/CIU-24 — same budget-slot wiring as main_execution's native
         # path (see the comment there): wraps ONLY the real Compose start.
         try:

@@ -42,7 +42,7 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +53,16 @@ from .paths import to_physical_path
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
-WORKTREE_INSTANCE_SCHEMA_VERSION = 1
+# S16.9 (CIU-25 substrate): v2 == "this record carries a `lease` field".
+# v1 records (no lease concept at all) stay readable forever and are NEVER
+# rewritten by a read; only an explicit lease mutation writes v2.
+WORKTREE_INSTANCE_SCHEMA_VERSION = 2
+WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
+WORKTREE_LEASE_KEYS = frozenset(
+    {"holder", "acquired_at_utc", "renewed_at_utc", "expires_at_utc", "mode"}
+)
 WORKTREE_LIFECYCLE_STATES = frozenset(
     {"allocating", "ready", "recovery-required"}
 )
@@ -82,12 +91,57 @@ class WorktreeInfo:
 
 
 @dataclass(frozen=True)
+class WorktreeLease:
+    """S16.9 — one EXPLICIT ownership lease on a managed worktree instance.
+
+    CIU-25's whole point: staleness is never inferred from age, basename or a
+    missing process. It is DECLARED, by this record, or it is not known. The
+    two modes are the closed vocabulary :data:`WORKTREE_LEASE_MODES`:
+
+    ``held``
+        a bounded claim — ``expires_at_utc`` is REQUIRED and is the only fact
+        a future reap may treat as "the operator's claim has lapsed".
+    ``perpetual``
+        an explicit, unbounded claim — ``expires_at_utc`` is FORBIDDEN (must
+        be ``null``). A perpetual lease can never lapse; it is the operator
+        saying "this instance is long-lived on purpose", which the backlog
+        entry names as the exact case an age heuristic gets wrong.
+
+    Every timestamp is ISO-8601 with an EXPLICIT UTC offset, written in
+    :func:`_utc_stamp`'s ``...Z`` form (the same form ``created_at_utc``
+    already uses). A naive, offset-less timestamp is a refusal, never a
+    lenient local-time parse — a lease whose expiry is ambiguous by up to a
+    day is worse than no lease at all when a destructive verb reads it.
+    """
+
+    holder: str
+    acquired_at_utc: str
+    renewed_at_utc: str
+    expires_at_utc: str | None
+    mode: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "holder": self.holder,
+            "acquired_at_utc": self.acquired_at_utc,
+            "renewed_at_utc": self.renewed_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "mode": self.mode,
+        }
+
+
+@dataclass(frozen=True)
 class WorktreeInstanceRecord:
-    """Schema-v1 durable identity for one CIU-managed linked worktree.
+    """Durable identity for one CIU-managed linked worktree (schema v1/v2).
 
     The record deliberately contains no current Git revision (derived during
     inspection) and no secret-bearing values.  It is written at the target
     CIU root, which can be below the Git worktree root in a monorepo.
+
+    ``schema_version`` is 1 until an explicit lease operation touches this
+    record; from then on it is 2 and the serialized form carries a ``lease``
+    key (``null`` after a release). A v1 record read from disk is a v1 record
+    in memory with ``lease=None`` — reading never upgrades it (S16.9).
     """
 
     logical_name: str
@@ -101,7 +155,8 @@ class WorktreeInstanceRecord:
     instance_id: str | None = None
     network: str | None = None
     recovery_status: str | None = None
-    schema_version: int = WORKTREE_INSTANCE_SCHEMA_VERSION
+    lease: WorktreeLease | None = None
+    schema_version: int = WORKTREE_INSTANCE_BASE_SCHEMA_VERSION
 
     @property
     def ciu_root(self) -> Path:
@@ -112,7 +167,7 @@ class WorktreeInstanceRecord:
         return self.ciu_root / WORKTREE_INSTANCE_RECORD
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
             "display_name": self.display_name,
@@ -128,6 +183,13 @@ class WorktreeInstanceRecord:
             },
             "recovery_status": self.recovery_status,
         }
+        # A v1 record serializes EXACTLY as it always did — no `lease` key at
+        # all. That is what makes "a read never rewrites the record" a
+        # structural property rather than a promise: there is no v2 shape to
+        # accidentally emit until a lease operation has set schema_version.
+        if self.schema_version >= 2:
+            doc["lease"] = self.lease.to_dict() if self.lease is not None else None
+        return doc
 
 
 def _validate_name(value: str, *, label: str) -> str:
@@ -139,6 +201,69 @@ def _validate_name(value: str, *, label: str) -> str:
     return value
 
 
+def _parse_utc_timestamp(value: Any, *, label: str, path: Path) -> datetime:
+    """One ISO-8601 instant that MUST carry an explicit UTC offset (S16.9).
+
+    ``datetime.fromisoformat`` happily returns a NAIVE datetime for
+    ``"2026-08-25T12:00:00"``; comparing that against an aware ``now`` raises,
+    and "fixing" it by assuming local time would make a lease expire at a
+    time nobody wrote down. So offset-less input is refused here, at the
+    parse boundary, rather than anywhere a comparison happens.
+    """
+    if not isinstance(value, str) or not value:
+        raise WorktreeError(f"[S16.9] malformed lease {label} in {path}: {value!r}")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} is not an ISO-8601 instant: "
+            f"{value!r} ({exc})"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} has no UTC offset: {value!r} — "
+            "a naive timestamp is refused, never parsed as local time"
+        )
+    return parsed
+
+
+def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
+    if not isinstance(raw, dict) or set(raw) != set(WORKTREE_LEASE_KEYS):
+        raise WorktreeError(
+            f"[S16.9] malformed lease in {path}: expected an object with keys "
+            f"{sorted(WORKTREE_LEASE_KEYS)}"
+        )
+    holder = raw["holder"]
+    if not isinstance(holder, str) or not holder:
+        raise WorktreeError(f"[S16.9] malformed lease holder in {path}: {holder!r}")
+    mode = raw["mode"]
+    if mode not in WORKTREE_LEASE_MODES:
+        raise WorktreeError(
+            f"[S16.9] unknown lease mode {mode!r} in {path}; closed vocabulary: "
+            f"{', '.join(sorted(WORKTREE_LEASE_MODES))}"
+        )
+    _parse_utc_timestamp(raw["acquired_at_utc"], label="acquired_at_utc", path=path)
+    _parse_utc_timestamp(raw["renewed_at_utc"], label="renewed_at_utc", path=path)
+    expires = raw["expires_at_utc"]
+    if mode == "held":
+        if expires is None:
+            raise WorktreeError(
+                f"[S16.9] lease mode 'held' in {path} requires expires_at_utc; "
+                "an unbounded claim must say so explicitly (mode 'perpetual')"
+            )
+        _parse_utc_timestamp(expires, label="expires_at_utc", path=path)
+    elif expires is not None:
+        raise WorktreeError(
+            f"[S16.9] lease mode 'perpetual' in {path} forbids expires_at_utc, "
+            f"got {expires!r} — a perpetual lease can never lapse"
+        )
+    return WorktreeLease(
+        holder=holder, acquired_at_utc=raw["acquired_at_utc"],
+        renewed_at_utc=raw["renewed_at_utc"], expires_at_utc=expires, mode=mode,
+    )
+
+
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     if not isinstance(raw, dict):
         raise WorktreeError(f"[S16] {path} must contain one JSON object")
@@ -147,17 +272,27 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "git_worktree_path", "ciu_root_offset", "created_at_utc", "base_ref",
         "state", "runtime", "recovery_status",
     }
+    # S16.9: the key set is SCHEMA-DEPENDENT — a v2 record must carry `lease`,
+    # a v1 record must NOT. Anything else is checked against the v1 set and
+    # then rejected by the version check below.
+    declared_version = raw.get("schema_version")
+    if declared_version == 2:
+        required = required | {"lease"}
     if set(raw) != required:
         missing = sorted(required - set(raw))
         unknown = sorted(set(raw) - required)
         raise WorktreeError(
-            f"[S16] malformed {path}: missing={missing}, unknown={unknown}"
+            f"[S16] malformed {path} (schema_version {declared_version!r}): "
+            f"missing={missing}, unknown={unknown}"
         )
-    if raw["schema_version"] != WORKTREE_INSTANCE_SCHEMA_VERSION:
+    if declared_version not in WORKTREE_INSTANCE_SCHEMA_VERSIONS:
         raise WorktreeError(
             f"[S16] unsupported worktree record schema_version "
             f"{raw['schema_version']!r} in {path}"
         )
+    lease = None
+    if declared_version == 2 and raw["lease"] is not None:
+        lease = _lease_from_dict(raw["lease"], path)
     runtime = raw["runtime"]
     if not isinstance(runtime, dict) or set(runtime) != {"instance_id", "network"}:
         raise WorktreeError(f"[S16] malformed runtime identity in {path}")
@@ -196,7 +331,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         ciu_root_offset=offset, created_at_utc=raw["created_at_utc"],
         base_ref=raw["base_ref"], state=state,
         instance_id=runtime["instance_id"], network=runtime["network"],
-        recovery_status=recovery,
+        recovery_status=recovery, lease=lease,
+        schema_version=declared_version,
     )
 
 
@@ -230,6 +366,165 @@ def _write_instance_record(record: WorktreeInstanceRecord) -> None:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _utc_stamp(instant: datetime) -> str:
+    """The record's ONE timestamp spelling — exactly what ``created_at_utc``
+    has always been written as (``...Z``), so a lease timestamp and an
+    allocation timestamp in the same file are the same format."""
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# S16.9 — explicit ownership lease (CIU-25 substrate, NOT the reap verb)
+# ---------------------------------------------------------------------------
+
+
+def _host_identity() -> str:
+    """This machine's name for a lease HOLDER string.
+
+    Deliberately not a new identity mechanism: this is the exact expression
+    ``workspace_env.py`` already uses twice (``_detect_host_mdt_tmp``,
+    ``_connect_devcontainer_to_network``) and records into ``ciu.env`` as
+    ``DEVCONTAINER_NAME`` — the devcontainer name when there is one, the
+    container/host ``HOSTNAME`` otherwise. Unlike the INSTANCE_ID half of the
+    holder string, this one is deliberately AMBIENT: it names the machine
+    holding the lease right now, not the workspace being leased.
+    """
+    return (
+        os.environ.get("DEVCONTAINER_NAME")
+        or os.environ.get("HOSTNAME", "")
+        or "unknown-host"
+    )
+
+
+def lease_holder(instance_id: str) -> str:
+    """``ciu@<hostname>:<INSTANCE_ID>`` — who holds a lease (S16.9)."""
+    return f"ciu@{_host_identity()}:{instance_id}"
+
+
+def acquire_lease(
+    record: WorktreeInstanceRecord,
+    *,
+    ttl_hours: float,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with a ``held`` lease acquired or RENEWED (S16.9).
+
+    A renewal preserves ``acquired_at_utc`` (when the claim first started)
+    and moves ``renewed_at_utc``/``expires_at_utc`` — losing the original
+    acquisition instant would erase the only evidence of how long an instance
+    has actually been owned.
+    """
+    if not ttl_hours > 0:
+        raise WorktreeError(
+            f"[S16.9] lease ttl must be a positive number of hours, got {ttl_hours!r}"
+        )
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    expires = _utc_stamp(instant + timedelta(hours=ttl_hours))
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=expires, mode="held",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def make_lease_perpetual(
+    record: WorktreeInstanceRecord,
+    *,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with an explicit unbounded (``perpetual``) lease."""
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=None, mode="perpetual",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def release_lease(record: WorktreeInstanceRecord) -> WorktreeInstanceRecord:
+    """Return *record* with no lease at all (``lease: null``).
+
+    The record STAYS at schema v2: "this instance participates in leasing and
+    currently claims nothing" is a different, more informative fact than "this
+    record predates leasing entirely", and a reader must be able to tell them
+    apart.
+    """
+    return replace(
+        record, lease=None, schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION
+    )
+
+
+def instance_record_path(ciu_root: Path) -> Path:
+    """The record of the checkout AT *ciu_root* — by exact path, never a
+    search that could climb to the PRIMARY checkout's record (S16)."""
+    return Path(ciu_root) / WORKTREE_INSTANCE_RECORD
+
+
+def read_own_instance_record(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """This checkout's OWN record, or ``None`` when it has none.
+
+    ``None`` is the PRIMARY / unmanaged-checkout answer and is what gates
+    every lease and ownership-label behavior in this package: a checkout with
+    no lifecycle record is not a managed worktree instance and is left
+    completely alone.
+    """
+    path = instance_record_path(ciu_root)
+    if not path.is_file():
+        return None
+    return read_instance_record(path)
+
+
+def acquire_own_lease(
+    ciu_root: Path, *, ttl_hours: float, now: datetime | None = None
+) -> WorktreeInstanceRecord | None:
+    """Acquire/renew the ``held`` lease on the checkout at *ciu_root*.
+
+    Returns ``None`` — writing nothing — when that checkout carries no
+    instance record (PRIMARY or unmanaged): `ciu up` there behaves exactly as
+    it did before this package existed.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    instance_id = record.instance_id or _runtime_identity(Path(ciu_root))[0]
+    updated = acquire_lease(
+        record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
+    )
+    _write_instance_record(updated)
+    return updated
+
+
+def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """Clear the lease on the checkout at *ciu_root* (``None`` when unmanaged).
+
+    Callers invoke this ONLY after a teardown they verified succeeded — a
+    failed clean must leave the lease exactly as it was, because the lease is
+    the evidence that something still owns those Docker resources.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    # Nothing claimed => nothing to clear, and in particular a v1 record is
+    # NOT dragged up to v2 by a teardown that had no lease to release.
+    if record.lease is None:
+        return record
+    updated = release_lease(record)
+    _write_instance_record(updated)
+    return updated
 
 
 def generated_worktree_name(prefix: str, feature: str, *, now: datetime | None = None) -> str:
@@ -1047,7 +1342,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 # recovery-required instance additionally carries a closed recovery_status
 # (WORKTREE_RECOVERY_STATUSES).
 WORKTREE_JSON_OPERATIONS = frozenset({
-    "add", "adopt", "create", "ensure", "inspect", "list", "remove",
+    "add", "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
 })
 WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 
@@ -1184,6 +1479,74 @@ def remove_document(
     if record is not None:
         doc["instance"] = record.to_dict()
     return doc
+
+
+def _lease_duration_hours(text: str) -> float:
+    """Parse one ``--extend`` duration into hours (S16.9).
+
+    Reuses the codebase's ONE duration grammar (``deploy.parse_duration_seconds``,
+    the strict form of what ``deploy._seconds`` has always accepted: ``24h``,
+    ``90m``, ``3600``) rather than inventing a second spelling. The import is
+    lazy because ``deploy`` imports this module.
+    """
+    from . import deploy as deploy_mod
+
+    try:
+        seconds = deploy_mod.parse_duration_seconds(text)
+    except ValueError as exc:
+        raise WorktreeError(f"[S16.9] invalid lease duration {text!r}: {exc}") from exc
+    if seconds <= 0:
+        raise WorktreeError(
+            f"[S16.9] lease duration must be positive, got {text!r}"
+        )
+    return seconds / 3600.0
+
+
+def apply_lease(
+    repo_root: Path,
+    logical_name: str,
+    *,
+    extend: str | None = None,
+    perpetual: bool = False,
+    release: bool = False,
+) -> WorktreeInstanceRecord:
+    """`ciu worktree lease LOGICAL (--extend D | --perpetual | --release)`.
+
+    The explicit operator verb behind S16.9. It touches the RECORD only: it
+    runs no Docker query and does not care whether the instance is currently
+    up. Extending or releasing a claim on a stopped instance is exactly as
+    meaningful as on a running one — the lease describes ownership of the
+    instance's resources, not their current run state.
+    """
+    repo_root = Path(repo_root).resolve()
+    if sum((extend is not None, perpetual, release)) != 1:
+        raise WorktreeError(
+            "[S16.9] `ciu worktree lease` needs exactly one of --extend "
+            "DURATION, --perpetual or --release"
+        )
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16.9] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    if release:
+        # Unconditional, unlike the teardown-driven clear: the operator asked
+        # for "claims nothing", so the record says so even if it said so
+        # already (and a v1 record is normalized to v2 by that statement).
+        updated = release_lease(record)
+    else:
+        instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
+        holder = lease_holder(instance_id)
+        updated = (
+            make_lease_perpetual(record, holder=holder)
+            if perpetual
+            else acquire_lease(
+                record, ttl_hours=_lease_duration_hours(str(extend)), holder=holder
+            )
+        )
+    _write_instance_record(updated)
+    return updated
 
 
 def capabilities_document() -> dict[str, Any]:
@@ -2459,6 +2822,15 @@ def remove(
             "problem)."
         )
 
+    # S16.9 — ON SUCCESS ONLY. The lease is the evidence that something still
+    # owns this instance's Docker resources, so it is cleared exactly when the
+    # clean that removed them SUCCEEDED (rc == 0). A failed clean reaching here
+    # means --force was passed: the checkout is about to be destroyed with
+    # resources possibly still standing, which is precisely when the ownership
+    # record must NOT be erased.
+    if rc == 0:
+        release_own_lease(ciu_root)
+
     res = _git(["worktree", "remove", str(wt.path)] + (["--force"] if force else []),
                repo_root)
     if res.returncode != 0:
@@ -2739,6 +3111,27 @@ _MAX_CONCURRENT_ENV = "CIU_MAX_CONCURRENT_WORKTREES"
 _MAX_CONCURRENT_DECIMAL_RE = re.compile(r"^[1-9][0-9]*$")
 _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 
+# The CLOSED key vocabulary of `[ciu.worktree]`. An unknown key here has
+# always been a hard refusal rather than a silent ignore, and stays one:
+# a misspelled capacity or lease policy that quietly does nothing is exactly
+# the "defaults are hazards" shape this estate refuses.
+WORKTREE_TABLE_KEYS = frozenset({"max_concurrent_instances", "lease_ttl_hours"})
+
+
+def _validate_worktree_table(raw: Any) -> None:
+    """Shape + closed-key check for one `[ciu.worktree]` table (S16.3/S16.9)."""
+    if not isinstance(raw, Mapping):
+        raise WorktreeError(
+            f"[S16.3] [ciu.worktree] must be a table, got "
+            f"{type(raw).__name__}: {raw!r}"
+        )
+    unknown = set(raw) - set(WORKTREE_TABLE_KEYS)
+    if unknown:
+        raise WorktreeError(
+            f"[S16.3] unknown key(s) in [ciu.worktree]: "
+            f"{', '.join(sorted(unknown))}"
+        )
+
 
 def primary_worktree_root(repo_root: Path) -> Path:
     """The registered PRIMARY **Git** worktree of *repo_root*'s family (S16.3).
@@ -2835,17 +3228,7 @@ def resolve_max_concurrent_instances(
     """
     file_value: int | None = None
     if raw is not None:
-        if not isinstance(raw, Mapping):
-            raise WorktreeError(
-                f"[S16.3] [ciu.worktree] must be a table, got "
-                f"{type(raw).__name__}: {raw!r}"
-            )
-        unknown = set(raw) - {"max_concurrent_instances"}
-        if unknown:
-            raise WorktreeError(
-                f"[S16.3] unknown key(s) in [ciu.worktree]: "
-                f"{', '.join(sorted(unknown))}"
-            )
+        _validate_worktree_table(raw)
         if "max_concurrent_instances" in raw:
             value = raw["max_concurrent_instances"]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -2884,20 +3267,61 @@ def resolve_worktree_cap(repo_root: Path) -> int | None:
     moment it tries to enumerate worktrees for a non-``None`` cap it cannot
     actually honour.
     """
+    return resolve_max_concurrent_instances(_primary_worktree_table(repo_root))
+
+
+def _primary_worktree_table(repo_root: Path) -> Any:
+    """The PRIMARY CIU root's raw ``[ciu.worktree]`` table, or ``None``.
+
+    One reader for the whole table, shared by the capacity cap (S16.3) and
+    the lease TTL (S16.9), so the two policies can never disagree about WHICH
+    checkout's configuration is authoritative.
+    """
     repo_root = Path(repo_root).resolve()
-    raw: Any = None
-    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode == 0:
-        root = primary_ciu_root(repo_root)
-        try:
-            root_global = config_model.render_global_chain(
-                root, root, write_rendered=False
-            )
-        except ValueError as exc:
-            if not str(exc).startswith("[ERROR] No global configuration found."):
-                raise
-            root_global = {}
-        raw = root_global.get("ciu", {}).get("worktree")
-    return resolve_max_concurrent_instances(raw)
+    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode != 0:
+        return None
+    root = primary_ciu_root(repo_root)
+    try:
+        root_global = config_model.render_global_chain(
+            root, root, write_rendered=False
+        )
+    except ValueError as exc:
+        if not str(exc).startswith("[ERROR] No global configuration found."):
+            raise
+        root_global = {}
+    return root_global.get("ciu", {}).get("worktree")
+
+
+def resolve_lease_ttl_hours(raw: Mapping[str, Any] | None) -> float | None:
+    """S16.9 — the declared ``[ciu.worktree].lease_ttl_hours``, or ``None``.
+
+    ``None`` (the key absent) means NO lease is ever acquired by ``ciu up``
+    for this project. That absence is the whole additive-safety story: a
+    consumer who configures nothing keeps exactly today's behavior and takes
+    on zero new expiry risk for anything already running. There is
+    deliberately no non-zero default — a default TTL would start silently
+    expiring leases on instances whose operators never opted in.
+    """
+    if raw is None:
+        return None
+    _validate_worktree_table(raw)
+    if "lease_ttl_hours" not in raw:
+        return None
+    value = raw["lease_ttl_hours"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        raise WorktreeError(
+            "[S16.9] [ciu.worktree] lease_ttl_hours must be a positive "
+            f"number of hours, got {value!r}"
+        )
+    return float(value)
+
+
+def resolve_worktree_lease_ttl(repo_root: Path) -> float | None:
+    """S16.9 — this family's lease TTL, from the PRIMARY CIU root's own
+    ``[ciu.worktree]`` table (same authority as the capacity cap). There is
+    no ambient override: a lease's lifetime is a repository policy, not
+    something a single shell can quietly shorten for one `ciu up`."""
+    return resolve_lease_ttl_hours(_primary_worktree_table(repo_root))
 
 
 @dataclass(frozen=True)

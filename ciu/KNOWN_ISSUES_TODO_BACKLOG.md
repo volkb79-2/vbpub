@@ -149,7 +149,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | ID | Summary | Severity | Status |
 |---|---|---:|---|
 | CIU-23 | PostgreSQL-specific worktree data-isolation provider was grounded in a false consumer premise | Medium | WITHDRAWN |
-| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22), **HOTFIXED 2026-08-25 (ciu-P28): four reproduced prune-safety defects in the released behaviour, see detail**; Docker-resource detector/reap remains OPEN (see detail) |
+| CIU-25 | No grounded stale worktree/stack detector and explicit reap transaction | Low | PARTIAL — git half SHIPPED (`ciu worktree branches`, S16.8 + `worktree.branches.v1`, 2026-08-22), **HOTFIXED 2026-08-25 (ciu-P28): four reproduced prune-safety defects in the released behaviour, see detail**; **Docker-resource SUBSTRATE shipped 2026-08-25 (ciu-P26): the explicit ownership lease (record schema v2) + `ciu.instance`/`ciu.repo-root` labels, S16.9** — the DETECTOR and the REAP verb themselves remain OPEN, carved as ciu-P27 (see detail) |
 | CIU-26 | No live proof for CIU-23's PostgreSQL provider | Low | OBSOLETE |
 | CIU-28 | Automation-safe worktree identity, allocation, adoption, and resume | Medium | FIXED — shipped `71f5ec79` (P04-P06), Assay-qualified in P07 (2026-08-20) |
 | CIU-29 | Structured worktree control, capability discovery, exact up, and exact execution | Medium | FIXED — **P04–P06 SHIPPED** (S16.5–S16.7, checkpoint-B review 2026-08-19) + P07 qualification (2026-08-20), closes this row |
@@ -172,6 +172,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 | CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
 | CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
+| CIU-55 | The 100% gate's coverage of `src/ciu/hook_templates/post_compose_db.py` is SCHEDULING LUCK, not measurement: a hook module loaded the way CIU actually loads hooks (`hooks_runner._load_hook_module`, `spec_from_file_location` under a synthetic non-`ciu` module name) is not measured by `--cov=ciu` at all unless the SAME file was also imported normally in that worker process. Under `-n auto --dist load`, xdist splits `test_ciu_scaffold_hooks.py` across workers, so the shipped template's `run()` body is sometimes measured and sometimes not — the gate flips to 99.85% on any change to the suite's test COUNT, with zero source changes | High | OPEN — filed by ciu-P26 (reproduced on the CLEAN baseline with a dummy 122-test file; ciu-P26's own +122 tests trip it). Fixing it needs a file outside that package's `scope.touch` — see detail |
 
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
@@ -537,7 +538,44 @@ It must not destroy resources based only on age, basename similarity, or a
 missing local process. CIU-28's identity record is a prerequisite substrate,
 not itself permission to reap.
 
-**Proposed SPEC ownership:** S16.4 after a separate product decision.
+**SUBSTRATE SHIPPED 2026-08-25 (ciu-P26, SPEC S16.9)** — the "explicit
+ownership/lease signal" this entry demanded now exists, and nothing else does.
+Shipped: record schema **v2**, adding one optional `lease` field
+(`holder`/`acquired_at_utc`/`renewed_at_utc`/`expires_at_utc`/`mode`) whose
+closed `mode` vocabulary GOVERNS the expiry — `held` REQUIRES
+`expires_at_utc`, `perpetual` FORBIDS it, so "long-lived on purpose" is a
+first-class declared state and never something an age heuristic has to guess
+(the exact hazard this entry names). Naive, offset-less lease timestamps are
+refused rather than parsed as local time. v1 records read forever and a READ
+never rewrites one — only an operation that legitimately mutates the lease
+writes v2. Policy key `[ciu.worktree].lease_ttl_hours`, with **no default**:
+absent means no lease is ever acquired, so nothing already running gains new
+expiry risk. `ciu up` acquires/renews for a MANAGED instance only (never a
+PRIMARY checkout, never a dry run), BEFORE the compose call; `ciu clean` and
+`ciu worktree rm` clear it **on success only** — a failed teardown, `--force`
+included, keeps the claim, because erasing it would manufacture "unowned" out
+of "unknown". `ciu worktree lease LOGICAL (--extend D | --perpetual |
+--release)` is the explicit operator verb and queries no Docker state, so it
+works on a stopped instance. Ownership labels `ciu.instance` /
+`ciu.repo-root` are stamped on every container, volume and network a managed
+`ciu up` creates, read from that workspace's own `ciu.env` by exact path
+(never ambient — CIU-41). See
+`nyxloom-trove/reports/ciu-P26-ciu25-lease-schema-and-labels-LOG.md`.
+
+**STILL OPEN — carved as ciu-P27:** the detector and the reap transaction
+themselves, plus one named substrate gap — `ciu up --shipped` leases but is
+not label-stamped (a generated fragment under a vendored stack would survive
+every `clean`, which skips `reset_service` for shipped stacks; closing it
+needs a shipped-stack artifact lifecycle). S16.9 supplies the substrate for
+exactly two of the five states above (owned-with-lease, lease-expired);
+checkout-missing,
+Docker-resources-without-a-CIU-identity and partially-failed-cleanup are
+untouched. Nothing shipped in ciu-P26 detects or destroys anything, and the
+ciu-P28 hotfix lesson binds the successor: a reap that touches a MANAGED
+instance goes through clean-then-remove, never a bare resource deletion.
+
+**SPEC ownership:** S16.9 (lease + labels, shipped); the reap verb's own
+section after ciu-P27.
 
 ## CIU-26 — deferred PostgreSQL proof
 
@@ -1397,6 +1435,79 @@ rather than trusting this list to stay current.
 **SPEC ownership:** S1.1 (repo-root resolution) — extending, not
 contradicting, CIU-53's corrected precedence to these sites' actual proposed
 contract, once designed.
+
+## CIU-55 — the gate's hook-template coverage is scheduling luck, not measurement
+
+**Filed by:** ciu-P26, 2026-08-25, after the 100% gate flipped to 99.85% on a
+change that touches no hook code whatsoever.
+
+### Observed mechanism (reproduced, not inferred)
+
+`hooks_runner._load_hook_module` loads a hook the way CIU really does — by
+FILE PATH, via `importlib.util.spec_from_file_location`, under a synthetic
+module name `_ciu_hook_<stem>_<id>` that is deliberately not inside the `ciu`
+package namespace. **`--cov=ciu` does not measure such a module at all**
+unless the same file was ALSO imported normally, as
+`ciu.hook_templates.post_compose_db`, earlier in that same worker process:
+
+```
+$ .venv/bin/python -m pytest \
+    "tests/tests/test_ciu_scaffold_hooks.py::test_shipped_template_run_defaults_ready_and_reports_missing_secret" \
+    --cov=ciu --cov-branch --cov-report=term-missing -q -n 0
+src/ciu/hook_templates/post_compose_db.py   19  19   4  0    0%   27-82
+1 passed
+
+$ # ... the SAME test, preceded in-process by the normal-import test:
+$ .venv/bin/python -m pytest \
+    ".../test_shipped_template_module_shape" \
+    ".../test_shipped_template_run_defaults_ready_and_reports_missing_secret" \
+    --cov=ciu --cov-branch -q -n 0 -p no:randomly
+src/ciu/hook_templates/post_compose_db.py   19   6   4  1   61%   46, 75-82
+```
+
+The test passes and `run()` genuinely executes in BOTH runs. Only the second
+one is measured. So the shipped template's `run()` body is not actually
+covered by the gate; it merely LOOKS covered whenever xdist happens to place
+the two kinds of test in one worker.
+
+`run-ciu-tests.py` runs `-n auto` with xdist's default `--dist load`, which
+distributes test-by-test and therefore SPLITS `test_ciu_scaffold_hooks.py`
+across workers. Whether the co-location happens is scheduling luck, and the
+luck changes with the suite's test COUNT.
+
+### Why this is a gate-integrity bug, not a flake to retry
+
+Reproduced on the **clean baseline** (`HEAD = 6f80e2cf`, zero source changes)
+by adding one file of 122 trivial `assert True` tests: 2 of 3 `-n auto` runs
+then reported `post_compose_db.py` at 17% and the gate at 99.85%. Removing
+that file restored 6/6 green. ciu-P26's own +122 real tests reproduce it 6/6.
+Every future package that adds tests will keep tripping it, and — worse — the
+15 statements in question have never really been measured.
+
+Green under `-n 0` (serial), and under `-n auto --dist loadfile`, which keeps
+a file's tests in one worker. `run-ciu-tests.py` forwards extra argv, so
+`.venv/bin/python run-ciu-tests.py --dist loadfile` is green today.
+
+### Proposed fix (needs a file outside ciu-P26's scope.touch)
+
+Either, or preferably both:
+
+1. `tests/tests/test_ciu_scaffold_hooks.py` — add a module-level
+   `import ciu.hook_templates.post_compose_db  # noqa: F401` so EVERY worker
+   that runs any test from that file has the module normally imported, making
+   the path-loaded execution measurable regardless of scheduling. One line,
+   no behavior change.
+2. `run-ciu-tests.py` — add `--dist loadfile`, so a test file's coverage can
+   never depend on cross-worker placement again. This is the general fix; the
+   same latent trap applies to any other file whose coverage needs two
+   different tests to share a process.
+
+A follow-up should also ask the broader question the reproducer exposes: is
+any OTHER path-loaded module (consumer hooks under `tests/`, scaffolded hook
+copies) silently unmeasured today?
+
+**SPEC ownership:** none — this is gate/test-infrastructure, not normative
+behavior.
 
 ## Compact resolved index
 

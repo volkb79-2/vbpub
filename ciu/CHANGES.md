@@ -10,6 +10,60 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): CIU-25 foundation — explicit worktree-instance ownership lease
+  + `ciu.instance`/`ciu.repo-root` resource labels (SPEC S16.9, ciu-P26).
+  **This is the substrate a future `ciu worktree reap` will read, not the
+  reaper**: nothing here detects or destroys anything.
+  - **Record schema v2.** `ciu.worktree-instance.json` gains ONE optional
+    field, `lease`: `{holder, acquired_at_utc, renewed_at_utc,
+    expires_at_utc, mode}` with a closed `mode` vocabulary. `expires_at_utc`
+    is REQUIRED for `mode = "held"` (a bounded claim) and FORBIDDEN for
+    `mode = "perpetual"` (an explicit unbounded one); a mismatch is a tagged
+    `[S16.9]` refusal. Every lease timestamp needs an explicit UTC offset —
+    a naive one is refused, never parsed as local time.
+  - **v1 records keep working forever, and a READ never rewrites one.** A
+    schema-v1 record (no `lease` key) reads as `lease: None` in memory;
+    `worktree inspect`/`list` leave it byte-identical on disk. A record
+    becomes v2 only when an operation that legitimately mutates the lease
+    writes it. The key-set check is schema-dependent: v2 must carry `lease`,
+    v1 must not.
+  - **`[ciu.worktree].lease_ttl_hours`** (positive number) joins the existing
+    closed, primary-root-only table. **Absent means no lease is ever
+    acquired — there is no default TTL**, so a consumer who configures
+    nothing keeps exactly today's behavior and takes on zero new expiry risk.
+  - **`ciu up`**, for a MANAGED worktree instance only and only when a TTL is
+    configured, acquires/renews a `held` lease BEFORE the compose invocation
+    (a crashed run has still created containers). Renewal preserves
+    `acquired_at_utc`. A PRIMARY/unmanaged checkout and every `--dry-run`
+    claim nothing.
+  - **`ciu clean` / `ciu worktree rm` clear the lease ON SUCCESS ONLY.** A
+    failed clean — including a `--force` removal over one — leaves it exactly
+    as it was: a lease over resources that may still be standing is the whole
+    signal, and erasing it would manufacture "unowned" out of "unknown".
+  - **New verb `ciu worktree lease LOGICAL (--extend DURATION | --perpetual
+    | --release) [--json]`.** Touches only the record, runs no Docker query,
+    and therefore works on a stopped instance exactly as on a running one.
+    `--extend` uses CIU's existing duration grammar (`24h`, `90m`, `3600`).
+  - **Ownership labels.** For a managed instance, `ciu up` stamps
+    `ciu.instance=<INSTANCE_ID>` and `ciu.repo-root=<PHYSICAL_REPO_ROOT>` on
+    every container, volume and network it creates, read from THAT
+    workspace's own generated `ciu.env` by exact path — never the ambient
+    process environment (the CIU-41 contamination species). Emitted as a
+    separate `<stack>/.ciu/ciu.compose.ownership.yml` compose fragment
+    (merged as an extra `-f`, removed by `reset_service`) because the main
+    overlay is legitimately absent for a stack with nothing else to wire.
+    `external: true` volumes/networks are not labeled — `ciu up` did not
+    create them — and neither are a PRIMARY checkout's resources.
+  - `ciu up --shipped` (S8.5) acquires/renews the lease too, but is
+    deliberately NOT label-stamped: the labels are a generated compose
+    fragment and `ciu clean` skips `reset_service` for a shipped stack, so
+    the fragment would never be removed from vendored content. Named as an
+    open item in SPEC S16.9.
+  - `deploy.parse_duration_seconds` — the strict, refusing form of the
+    grammar `deploy._seconds` has always accepted leniently; `_seconds` now
+    delegates to it, so there is still exactly ONE duration grammar.
+  - CIU-25 stays **PARTIAL**: the Docker-resource detector/reap verb itself
+    is a separate, later package (ciu-P27).
 - feat(ciu): optional `env_required = [...]` declaration + collective
   presence check (SPEC S8.2a, V8-PREP-7, ciu-P25,
   docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.20) — fully additive, zero

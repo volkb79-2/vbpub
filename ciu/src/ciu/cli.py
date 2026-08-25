@@ -70,6 +70,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
     worktree branches [--base REF] [-y] [--json]
                                 survey local branches; -y prunes exactly the
                                 fully-merged, clean, UNMANAGED ones (S16.8)
@@ -142,6 +143,7 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
 ciu worktree branches [--base REF] [-y] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
@@ -154,7 +156,11 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   prunes exactly the fully-merged, clean ones — never age-based, never the
   mainline, the primary or invoking checkout's branch, and never a checkout
   carrying a CIU-managed instance (use `worktree rm`, which cleans first);
-  mergedness is always judged from the PRIMARY worktree (S16.8). `up` starts the selected
+  mergedness is always judged from the PRIMARY worktree (S16.8). `lease` sets
+  this instance's EXPLICIT ownership claim (S16.9): --extend DURATION (e.g.
+  24h) renews a bounded `held` lease, --perpetual declares an unbounded one,
+  --release drops the claim. It reads no Docker state, so it works on a
+  stopped instance exactly as on a running one. `up` starts the selected
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
@@ -1205,6 +1211,18 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    # S16.9 — the explicit operator verb over the ownership lease. The three
+    # modes are mutually exclusive AND required: there is no "default" lease
+    # operation, because every one of them is a deliberate statement about
+    # who owns this instance's resources.
+    p_lease = sub.add_parser("lease", add_help=False)
+    p_lease.add_argument("logical_name")
+    p_lease_mode = p_lease.add_mutually_exclusive_group(required=True)
+    p_lease_mode.add_argument("--extend", default=None, metavar="DURATION")
+    p_lease_mode.add_argument("--perpetual", action="store_true", default=False)
+    p_lease_mode.add_argument("--release", action="store_true", default=False)
+    p_lease.add_argument("--json", action="store_true", default=False)
+
     p_branches = sub.add_parser("branches", add_help=False)
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
@@ -1222,7 +1240,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up, p_branches,
+        p_lease, p_up, p_branches,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -1317,6 +1335,28 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  branch: {git['branch']}")
                 print(f"  HEAD: {git['head']}")
                 print(f"  dirty: {git['dirty']}")
+            return 0
+
+        if opts.action == "lease":
+            record = wt_mod.apply_lease(
+                repo_root, opts.logical_name, extend=opts.extend,
+                perpetual=opts.perpetual, release=opts.release,
+            )
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.build_instance_document("lease", record),
+                    sort_keys=True,
+                ))
+            else:
+                lease = record.lease
+                print(f"worktree lease: {record.logical_name}")
+                if lease is None:
+                    print("  lease: none (released)")
+                else:
+                    print(f"  mode: {lease.mode}")
+                    print(f"  holder: {lease.holder}")
+                    print(f"  renewed: {lease.renewed_at_utc}")
+                    print(f"  expires: {lease.expires_at_utc or 'never (perpetual)'}")
             return 0
 
         if opts.action == "up":

@@ -2977,8 +2977,9 @@ already knows into one operation.
   `--force`.
 - **`worktree list`** — registered worktrees, primary marked.
 
-Every managed linked checkout has an atomic schema-v1, non-secret
-`<target-ciu-root>/ciu.worktree-instance.json`. It records the family-scoped
+Every managed linked checkout has an atomic, non-secret
+`<target-ciu-root>/ciu.worktree-instance.json` (schema v1, or v2 once it
+carries an explicit ownership lease — S16.9). It records the family-scoped
 logical identity, display/branch/Git-path facts, exact Git-root-to-CIU-root
 offset, allocation time, base reference, lifecycle state
 (`allocating | ready | recovery-required`), and runtime identity once derived.
@@ -3298,16 +3299,17 @@ becomes visible.
 ### S16.4 — Structured JSON documents (D-009)
 
 `ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
-lifecycle verbs (`create`/`ensure`/`adopt`/`add`) with `--json`, and
-`ciu worktree rm --json` each emit **exactly one JSON document on stdout**
-(`schema_version: 1`); diagnostics go to stderr. The `operation` vocabulary is
-closed (`create | ensure | adopt | add | inspect | list | remove`) and the
-`status` vocabulary is closed (`allocating | ready | recovery-required |
-removed`); a `recovery-required` instance additionally carries a closed
-`recovery_status` (`checkout-incomplete | env-generation-failed |
-runtime-collision`). The persisted schema-v1 instance record is nested under
-`instance` (`WorktreeInstanceRecord.to_dict()`); current Git facts are nested
-under `git`.
+lifecycle verbs (`create`/`ensure`/`adopt`/`add`) with `--json`,
+`ciu worktree lease --json` (S16.9) and `ciu worktree rm --json` each emit
+**exactly one JSON document on stdout** (`schema_version: 1`); diagnostics go
+to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
+add | inspect | lease | list | remove`) and the `status` vocabulary is closed
+(`allocating | ready | recovery-required | removed`); a `recovery-required`
+instance additionally carries a closed `recovery_status`
+(`checkout-incomplete | env-generation-failed | runtime-collision`). The
+persisted instance record is nested under `instance`
+(`WorktreeInstanceRecord.to_dict()` — v1, or v2 with a `lease` key per
+S16.9); current Git facts are nested under `git`.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
@@ -3490,8 +3492,155 @@ vocabulary, the same fail-closed rule S17.3 applies; operation `branches` /
 conventions; capability id `worktree.branches.v1`.
 
 The Docker-resource half of CIU-25 (containers/volumes of a crashed
-instance) remains OPEN: it needs the ownership/lease contract described in
-the backlog entry and is deliberately not approximated here.
+instance) remains OPEN as a DETECT/REAP verb. S16.9 below ships the two
+substrates it requires — an explicit ownership lease and attributable
+resource labels — and nothing else: no detector, no destructive verb.
+
+### S16.9 — Ownership lease and resource labels (CIU-25 substrate)
+
+CIU-25's constraint is that staleness must never be INFERRED from age,
+basename similarity or a missing local process: a long-lived worktree can be
+entirely legitimate. So ownership is DECLARED, in the instance's own record,
+or it is not known. This section defines what is declared and how resources
+are attributed. **It defines no destruction of anything.**
+
+#### The `lease` field — record schema v2
+
+The worktree-instance record (S16, `ciu.worktree-instance.json`) gains ONE
+optional field, `lease`, and with it a schema version 2:
+
+```json
+"lease": {
+  "holder":          "ciu@<hostname>:<INSTANCE_ID>",
+  "acquired_at_utc": "2026-08-25T12:00:00Z",
+  "renewed_at_utc":  "2026-08-25T12:00:00Z",
+  "expires_at_utc":  "2026-08-26T12:00:00Z",
+  "mode":            "held"
+}
+```
+
+`mode` is a closed two-value vocabulary and it GOVERNS the expiry:
+
+| `mode` | `expires_at_utc` | Meaning |
+|---|---|---|
+| `held` | **REQUIRED** (non-null) | a bounded claim; the only fact a future reap may read as "the operator's claim has lapsed" |
+| `perpetual` | **FORBIDDEN** (must be `null`) | an explicit unbounded claim — "this instance is long-lived on purpose" |
+
+A mismatch (`held` with a null expiry, `perpetual` with one) is a tagged
+`[S16.9]` validation refusal, not a repaired value. Every lease timestamp is
+ISO-8601 with an **explicit UTC offset**, written in the same `...Z` form
+`created_at_utc` already uses; a naive, offset-less timestamp anywhere in a
+lease is refused rather than parsed as local time, because a lease whose
+expiry is ambiguous by up to a day is worse than no lease at all once a
+destructive verb reads it. `holder` reuses the identity CIU already has: the
+`INSTANCE_ID` from the workspace's own `ciu.env` (S2) and the host name
+`ciu.env`'s `DEVCONTAINER_NAME` records — no new identity mechanism.
+
+**v1 and v2 coexist permanently, and a READ never upgrades a record.** A
+schema-v1 record (no `lease` key at all) is read successfully and is
+`lease: None` in memory; `worktree inspect`/`worktree list` leave it
+byte-identical on disk. `schema_version: 2` becomes true only when an
+operation that legitimately MUTATES the lease writes it (acquire/renew via
+`ciu up`, or the `ciu worktree lease` verb). A v2 record MUST carry `lease`
+and a v1 record must NOT — the key-set check is schema-dependent, so neither
+shape can be half-written. `lease: null` at v2 is meaningfully different from
+a v1 record: it says "this instance participates in leasing and currently
+claims nothing", where v1 says "this record predates leasing entirely".
+
+#### `[ciu.worktree].lease_ttl_hours`
+
+The existing repository-wide `[ciu.worktree]` table (S16.3, read from ONLY
+the primary CIU root, closed key set, unknown keys refused) gains ONE
+recognized key: `lease_ttl_hours`, a positive number.
+
+**Absent means no lease is ever acquired** — not "a default TTL". A consumer
+who configures nothing keeps exactly the pre-S16.9 behavior and takes on zero
+new expiry risk for anything already running. A default TTL would start
+silently expiring leases on instances whose operators never opted in, which
+is the failure mode this estate's "defaults are hazards" rule exists for.
+There is deliberately no ambient override: a lease's lifetime is repository
+policy, not something one shell can quietly shorten.
+
+#### Lifecycle
+
+- **`ciu up`** — when `lease_ttl_hours` IS configured AND this checkout is a
+  MANAGED worktree instance (it carries a lifecycle record), acquires or
+  RENEWS a `held` lease expiring at `now + lease_ttl_hours`. A renewal
+  preserves `acquired_at_utc`; losing it would erase the only evidence of how
+  long the instance has actually been owned. This happens BEFORE the compose
+  invocation: a run that crashes halfway has still created containers, and
+  claiming slightly too early is recoverable (`ciu clean` clears it) where
+  claiming too late is the orphaned-resource hole CIU-25 exists to close. A
+  PRIMARY or unmanaged checkout, and every `--dry-run`, claims nothing.
+- **`ciu clean`** and **`ciu worktree rm`** — clear the lease (`lease: null`)
+  **ON SUCCESS ONLY**. A clean that failed any pass, and a `--force` removal
+  over a failed clean, leave the lease exactly as it was: the lease is the
+  evidence that something may still own these resources, and erasing it on a
+  failed teardown would manufacture "unowned" out of "we do not know". An
+  instance that never leased is not dragged up to v2 by a teardown, and a
+  record too malformed to parse is a WARN, not a clean failure — the resources
+  clean certifies removed are removed, and an uncleared lease reads as still
+  owned, which is the safe direction.
+- **`ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release)
+  [--json]`** — the explicit operator verb. `--extend` sets `held` with a new
+  expiry `now + DURATION` (CIU's one duration grammar: `24h`, `90m`, `3600`),
+  `--perpetual` sets `mode: perpetual`, `--release` unconditionally sets
+  `lease: null`. Exactly one mode is required. It touches only the record and
+  runs NO Docker query, so it works identically on a stopped instance —
+  extending or dropping a claim is independent of whether containers happen to
+  be running. `--json` emits one S16.4 document with operation `lease`.
+
+#### Ownership labels
+
+For a MANAGED worktree instance, `ciu up` stamps two labels on every
+container, volume and network it CREATES:
+
+| Label | Value |
+|---|---|
+| `ciu.instance` | that workspace's `INSTANCE_ID` |
+| `ciu.repo-root` | that workspace's `PHYSICAL_REPO_ROOT` |
+
+Both are read from **that workspace's OWN generated `ciu.env`, by exact
+path** — never from the ambient process environment, which a shell that
+sourced a sibling checkout's `ciu.env` carries (the CIU-41 contamination
+species, closed repeatedly across this codebase). Mislabeling would be worse
+than not labeling: it attributes one instance's containers to another
+checkout's root, which is precisely the input a future destructive verb
+reads. A managed instance whose `ciu.env` names no `INSTANCE_ID`/
+`PHYSICAL_REPO_ROOT` REFUSES rather than stamping a guess.
+
+The labels are emitted as a separate compose fragment,
+`<stack>/.ciu/ciu.compose.ownership.yml`, merged as an additional `-f` and
+removed by `reset_service` alongside every other generated artifact. It is
+deliberately NOT folded into `ciu.compose.overlay.yml` (S4.17/S8.1): that
+overlay is omitted entirely when a stack has no secrets, configfiles,
+governance or image revisions to wire, and the plainest possible stack's
+containers still have to be attributable.
+
+Two things are deliberately NOT labeled. **A PRIMARY/unmanaged checkout's
+resources** — widening a future destructive verb's field of view to include
+the main workspace is a decision that needs its own package, not a side
+effect of this one. **`external: true` volumes and networks** — `ciu up` did
+not create them (the workspace network is created by `ciu env generate`,
+S2.6), they outlive the project, and compose rejects extra keys on them.
+
+#### Still open
+
+**Shipped-mode labels.** `ciu up --shipped` (S8.5) DOES acquire/renew the
+lease — a pure record write, with the same claim-before-creation rule — but is
+deliberately NOT label-stamped. The labels are a generated compose fragment,
+and `ciu clean` skips `reset_service` for a shipped stack (its compose file is
+maintainer-owned, S8.5/S8.6), so a fragment written under a vendored stack's
+`.ciu/` would never be removed. Closing this needs a shipped-stack artifact
+lifecycle, not a one-line addition here.
+
+**Detection and destruction.** A future `ciu worktree reap` must still
+distinguish the five states the CIU-25 backlog entry enumerates; this section
+supplies the substrate for exactly two of them (owned-with-lease,
+lease-expired). Checkout-missing, Docker-resources-without-a-CIU-identity and
+partially-failed-cleanup are untouched here. Per that entry's own hotfix
+lesson: any future reap that touches a MANAGED instance goes through
+clean-then-remove, never a bare resource deletion.
 
 ## S17 — Image provenance
 

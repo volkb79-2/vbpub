@@ -204,13 +204,30 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
   undeclared top-level table becomes an error even without an explicit
   opt-in.
 
-### `[ciu.worktree]` — repository-wide instance capacity [S16.3]
+### `[ciu.worktree]` — repository-wide instance capacity and lease policy [S16.3/S16.9]
 
 | Key | Default | Spec | Example |
 |---|---|---|---|
 | `max_concurrent_instances` | absent (no cap) | S16.3 | `3` — refuse a 4th simultaneous `ciu worktree` deployment |
+| `lease_ttl_hours` | absent (**no lease at all**) | S16.9 | `24` — `ciu up` claims a 24-hour `held` lease on this instance |
 
-Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
+`lease_ttl_hours` is a positive number of hours. **Absent means no lease is
+ever acquired — not "some default TTL".** A consumer who configures nothing
+keeps exactly the pre-S16.9 behavior and takes on zero new expiry risk for
+anything already running; a default here would start silently expiring leases
+on instances whose operators never opted in. When it IS set, `ciu up` acquires
+or renews a `held` lease on any checkout carrying a worktree-instance record
+(a PRIMARY/unmanaged checkout never leases), `ciu clean`/`ciu worktree rm`
+clear it on success only, and `ciu worktree lease LOGICAL (--extend DURATION |
+--perpetual | --release)` is the explicit operator verb. There is deliberately
+no ambient override: a lease's lifetime is repository policy. See
+[S16.9](SPEC.md#s169--ownership-lease-and-resource-labels-ciu-25-substrate)
+for the record schema (v2), the `held`/`perpetual` expiry rule, and the
+`ciu.instance`/`ciu.repo-root` ownership labels `ciu up` stamps on the
+resources it creates.
+
+Both keys share ONE closed table: an unknown key in `[ciu.worktree]` is a hard
+refusal, never a silent ignore. Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
 [S16.3](SPEC.md#s163--worktree-instance-concurrency-budget-ciu-24) for the
 full precedence, the git-root-to-CIU-root offset, and why this is
 deliberately not a `[governance]` value. `CIU_MAX_CONCURRENT_WORKTREES` is a
