@@ -6,11 +6,22 @@
 - Handoff `input_revision`: `370ea8141f7f69399a751f2d5731a8ccf5419921`
 - Starting HEAD (confirmed before any edit): `cdf01d5a5a9a566652fe2e9226f4420f516fe991`
   (ciu-P16's final LOG commit — matched the handoff's expected pointer).
-- Status: **O2, O3, O4(partial) DONE. O1 (action_build removal) BLOCKED —
-  a real blast-radius issue outside `scope.touch`, evidence below. Following
-  the ciu-P15 pattern: shipped everything independently gate-able, reverted
-  the risky change after gathering concrete evidence, documented rather than
-  silently widening scope.**
+- Status: **COMPLETE — O1-O4 all done.** Superseded the PARTIAL/BLOCKED
+  status below: the controller read the 3 dependent tests personally,
+  widened `scope.touch` to include the 2 files (handoff commit `8e2bc813`),
+  and directed a behavior-equivalence check before any deletion/porting —
+  see "Amendment — O1 redone and landed, O4 completed" at the end of this
+  file for the full second-pass account. The narrative below this point
+  (through the first "Gate output" section) is the ORIGINAL first-attempt
+  record, kept verbatim for the audit trail — do not read it as the current
+  state of the code.
+
+  *(Original first-attempt status, kept for the audit trail: O2, O3,
+  O4(partial) DONE. O1 (action_build removal) BLOCKED — a real
+  blast-radius issue outside `scope.touch`, evidence below. Following the
+  ciu-P15 pattern: shipped everything independently gate-able, reverted the
+  risky change after gathering concrete evidence, documented rather than
+  silently widening scope.)*
 
 ## Summary (read this first)
 
@@ -366,3 +377,196 @@ predicted):
 - LOG commit: `9f1548b4af0a3fed06414de5ab7ce869f7e1cb13` (recorded in this
   follow-up edit, per the ciu-P16 precedent — the LOG's own hash isn't
   knowable until after it's committed).
+
+---
+
+## Amendment — O1 redone and landed, O4 completed
+
+Controller reviewed the BLOCKED evidence above, read the 3 dependent tests
+personally (`test_ciu_deploy_deeper8.py:30,43`,
+`test_ciu_deploy_actions_remaining.py:164`), and widened `scope.touch`
+(handoff commit `8e2bc813`) to include both files, with an explicit
+instruction: before deleting or porting those 3 tests, determine whether
+the REAL behavior they assert (empty-selection-means-all,
+Docker-unavailable-is-red, revision-label stamping, `--no-cache`
+propagation, exact `commands` argv) is already equivalently covered for
+the actual reachable path (`cli._bake`'s shared `docker buildx bake`
+invocation tail), since that path — not `action_build`'s separate
+implementation — is what both `ciu bake` and `ciu bake --profile` actually
+run through.
+
+### Behavior-equivalence check (done BEFORE touching anything)
+
+1. **Revision-stamping + `--no-cache` propagation for the shared
+   invocation tail**: already proven, unconditionally on whether
+   `--profile` is given, by two PRE-EXISTING tests that this package never
+   touched and that stayed green throughout —
+   `test_ciu_cli_parser.py::test_bake_constructs_default_and_no_cache_argv`
+   (revision `--set` arg present, `--no-cache` appended, `subprocess.call`'s
+   return code (3) propagates) and
+   `test_ciu_final_branch112.py::test_bake_without_no_cache_omits_flag_and_propagates_exit`
+   (revision arg present, `--no-cache` correctly OMITTED, return code (9)
+   propagates). Both exercise the exact `cmd = [...]; cmd +=
+   bake_revision_args(); if no_cache: ...; return subprocess.call(cmd)`
+   tail `_bake` uses for BOTH modes — confirmed by reading the diff: there
+   is exactly one such tail in `_bake`, shared by both branches.
+2. **`--profile`'s target-resolution correctness against the same tail**:
+   already proven by this package's own `test_ciu_cli_bake.py` (15 tests,
+   landed in the first commit) — in particular
+   `test_resolves_via_the_same_chain_ciu_up_uses_in_order` (reuses the
+   deleted `action_build` test's OWN fixture shape —
+   `applications/api`/`tools/admin`/`infrastructure/network` ->
+   `["admin", "api"]` — proving identical target-selection semantics) and
+   `test_empty_buildable_selection_defaults_to_all` (empty selection ->
+   `all`, the direct analogue of `action_build`'s
+   `test_build_defaults_to_all_and_reports_success_when_bake_succeeds`).
+3. **"docker buildx bake command runs and returns nonzero" (the failure
+   mode `test_build_uses_selected_application_targets_and_propagates_docker_failure`
+   exercised via a fake returning `CompletedProcess(cmd, 1, ...)`)**:
+   already covered by the same two pre-existing argv tests above (both
+   assert the mocked `subprocess.call`'s nonzero return value propagates
+   through `SystemExit`).
+4. **GAP FOUND**: no test anywhere proved what happens on the real,
+   reachable path when the `docker` BINARY itself is missing (`procutil.docker`
+   raising `FileNotFoundError`, the scenario
+   `test_build_reports_red_when_docker_client_is_unavailable` covered for
+   `action_build` alone). `cli._bake`'s shared tail calls raw
+   `subprocess.call(cmd)` with no `try/except` around it (unchanged from
+   the pre-P17 `ciu bake` verb — this is a PRE-EXISTING characteristic, not
+   something this package introduced or is authorized to redesign, since
+   the no-`--profile` regression bar requires the argv-construction/
+   invocation code to stay byte-identical). Per the controller's option 3:
+   closed this gap with ONE new test rather than silently dropping it —
+   `TestCliBakeDockerUnavailable::test_missing_docker_binary_propagates_uncaught_rather_than_a_silent_success`
+   in `test_ciu_cli_bake.py`, using the same monkeypatch style as the
+   deleted test (patch the call site to raise `FileNotFoundError`), pinning
+   the REAL current contract: the error propagates uncaught rather than
+   being silently swallowed into an apparent success. This is a coverage
+   addition, not a behavior change — confirmed by not touching `_bake`'s
+   invocation tail at all in this amendment.
+
+Conclusion: per the controller's option 2, the 3 `action_build` tests
+assert behavior unique to its own private `procutil.docker` wrapper and
+distinct print-message contract (`"build complete"`, `"docker not
+available: docker"`) that the real CLI path never produced in the first
+place — there was nothing to port. Deleted them outright, alongside
+`action_build` itself, with the one genuine gap (item 4) closed instead of
+dropped.
+
+### O1 — redone (DONE)
+
+- `src/ciu/deploy.py`: deleted `action_build` (`repo_root, selection, *,
+  use_cache -> int`, its whole body) — re-verified immediately before
+  deletion, at this exact commit tip, that it had zero callers and no CLI
+  flag routing anywhere in `src/ciu/` (identical grep methodology as the
+  first attempt, same result). `collect_bake_targets_from_selection` kept
+  untouched (still reused by `cli._bake`'s `--profile` path — O2).
+  `collect_bake_targets_from_phases` also left untouched (re-grepped: still
+  has a direct test caller in `test_ciu_deploy_direct80.py`; the handoff
+  only ever asked me to delete `action_build`, never this function, so
+  leaving it alone is not scope creep in either direction).
+- `tests/tests/test_ciu_deploy_deeper8.py`: deleted the whole file (both of
+  its 2 tests existed solely to test `action_build`; nothing else in the
+  file).
+- `tests/tests/test_ciu_deploy_actions_remaining.py`: deleted only
+  `test_build_uses_selected_application_targets_and_propagates_docker_failure`
+  (the file's other 5 tests — preflight/clean/list-actions — are unrelated
+  and kept byte-for-byte unchanged); removed the now-unused `import
+  subprocess` (it was used only by the deleted test); trimmed the module
+  docstring's "clean/build" mention to "clean" (accurate — the file no
+  longer tests any build action).
+- `tests/tests/test_ciu_cli_bake.py`: added
+  `TestCliBakeDockerUnavailable` (1 test, the gap-closing test from item 4
+  above); no other changes.
+- `src/ciu/cli.py`: `_bake`'s own docstring updated from "the internal
+  (dead, CLI-unreachable) `action_build` path also uses" (accurate at the
+  time it was written, mid-BLOCKED) to "the removed internal `action_build`
+  path used to reuse" (accurate now that it's actually gone) — a comment
+  fix only, zero behavioral change (confirmed by the gate staying green
+  with the exact same pass count minus/plus only the test file deltas
+  described above).
+
+### Regression bar re-confirmed
+
+The no-`--profile` path's own tests
+(`test_bake_constructs_default_and_no_cache_argv`,
+`test_bake_without_no_cache_omits_flag_and_propagates_exit`, and this
+package's own `TestCliBakeNoProfileRegressionBar` class, 4 tests) all still
+pass with ZERO changes to their own files across both this package's
+commits — the byte-identical no-`--profile` contract was never touched by
+the O1 rework, only `deploy.py` (action_build) and the 2 dependent test
+files changed in this amendment.
+
+### O4 — docs (DONE, completing the deferred half)
+
+- **`docs/BACKLOG-2026-08-24.md`**: CIU-QOL-7's `**Status:**` line
+  `PARTIAL (ciu-P17) — public half shipped, internal cleanup blocked` ->
+  `✅ FIXED (ciu-P17)`, with the **Evidence** block rewritten to name BOTH
+  the target-resolution unification (unchanged from before) AND the
+  dead-code removal (new: what was deleted, why the 3 dependent tests were
+  deleted rather than ported, and the one coverage gap closed instead of
+  dropped).
+- **`CHANGES.md`**: extended the existing `ciu bake --profile NAME` bullet
+  (added in the first commit) with a closing sentence: the internal
+  `action_build`/`--build` path "had NO CLI surface (dead code,
+  unreachable from any verb or flag) and is removed as an internal-only
+  cleanup — not a breaking change for any user" — the exact framing O4's
+  negative constraint asked for (never describe an unreachable removal as
+  breaking).
+
+### Full gate — final state (real, pasted verbatim)
+
+```
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.14.6-final-0 ________________
+
+Name                                             Stmts   Miss Branch BrPart  Cover   Missing
+--------------------------------------------------------------------------------------------
+src/ciu/cli.py                                     730      0    262      0   100%
+src/ciu/deploy.py                                 1325      0    562      0   100%
+--------------------------------------------------------------------------------------------
+TOTAL                                             8156      0   3238      0   100%
+Coverage JSON written to file coverage.json
+Required test coverage of 100% reached. Total coverage: 100.00%
+============================ 2491 passed in 14.53s =============================
+```
+
+(Full 40-module coverage table omitted here for length — every module
+reports 100%, identical in shape to the first-attempt table except
+`src/ciu/deploy.py` shrank from 1345 (mid-attempt, before the first revert)
+back down to 1325 — 20 fewer statements than the pre-package 1345/1327-ish
+baseline lineage, i.e. `action_build`'s own body, permanently gone this
+time, no revert. Test count: 2493 (end of first commit) - 3
+(deleted `action_build` tests) + 1 (new `TestCliBakeDockerUnavailable`
+test) = 2491.)
+
+### Oracle table — final
+
+| Oracle | Status | Satisfied by |
+|---|---|---|
+| O1-dead-code-removal | **DONE** | `action_build` deleted from `src/ciu/deploy.py`, re-verified dead at this exact commit tip; `collect_bake_targets_from_selection` kept (O2 reuses it); its 3 dependent tests deleted (behavior was private to `action_build`'s own wrapper/messages, never reachable from any CLI path); the one genuine coverage gap (docker-binary-missing on the real path) closed with a new test instead of silently dropped. |
+| O2-profile-resolution | DONE | Unchanged from the first attempt — see above. |
+| O3-flag-conflict | DONE | Unchanged from the first attempt — see above. |
+| O4-docs | **DONE** | `docs/BACKLOG-2026-08-24.md` CIU-QOL-7 -> FIXED with full evidence naming both halves; `CHANGES.md` action_build removal framed correctly as a non-breaking internal cleanup; `docs/SPEC.md`/`docs/FEATURES.md` unchanged from the first commit (already accurate, described only the public contract). |
+
+### Files changed (this amendment)
+
+- `src/ciu/deploy.py` — `action_build` deleted.
+- `tests/tests/test_ciu_deploy_deeper8.py` — deleted (whole file).
+- `tests/tests/test_ciu_deploy_actions_remaining.py` — one test deleted,
+  unused import removed, docstring trimmed.
+- `tests/tests/test_ciu_cli_bake.py` — `TestCliBakeDockerUnavailable`
+  added (1 test).
+- `src/ciu/cli.py` — `_bake`'s docstring comment updated (no behavior
+  change).
+- `docs/BACKLOG-2026-08-24.md` — CIU-QOL-7 -> FIXED.
+- `CHANGES.md` — action_build removal note added to the existing bullet.
+
+No `scope.forbid` file was touched at any point in this package (both
+attempts) — confirmed by `git status --short` before each commit.
+
+### Commit hashes (this amendment, read back via `git log -1 --format=%H`,
+not predicted)
+
+- Dead-code removal + test updates + docs commit: `11f833ad933dad13341117e0d65e56c8b4103240`
+- LOG commit (this update): committed next, see repository history.
