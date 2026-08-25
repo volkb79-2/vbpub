@@ -306,7 +306,17 @@ requirements are marked *(withdrawn)*.
   `service`, `env`, `state`, `auto_generated`, `secrets`, `governance`
   (S15.10). Collision = abort. (dstdns's vault stack root key `vault`
   collides with global `[vault.paths]` and must be renamed, e.g. `vault_core`
-  — see Appendix B.2.)
+  — see Appendix B.2.) `local_stack` (V8-PREP-4 groundwork; see
+  [CIU-V8-TESTING-GATE-PROPOSAL.md §1.16](CIU-V8-TESTING-GATE-PROPOSAL.md))
+  is a recognized, **preferred** root key name — deliberately NOT a member
+  of this reserved set (membership here would make it forbidden, the
+  opposite of "preferred") — that a stack MAY use instead of a
+  directory-derived name. This is purely additive: naming a root table
+  `[local_stack]` requires no other change, and a stack that keeps its
+  existing directory-derived root key is completely unaffected. The eventual
+  V8 breaking step (deferred, not shipped here) is making `local_stack` the
+  ONLY accepted root key and relocating hooks to
+  `[local_stack.<svc>.hooks]`.
 - **S3.8** TOML keys use `snake_case`; hyphens in Docker names belong in
   `name` fields. The v1 directory→service auto-exposure
   (`[service.<cat>.<proj>.<svc>]` lifted to a top-level key by path
@@ -363,6 +373,27 @@ requirements are marked *(withdrawn)*.
      into the compose process env — the render context and the hook context
      are the only surfaces. A stale selection can therefore never masquerade
      as a fresh one.
+- **S3.13** (V8-PREP-1 groundwork, additive) A consumer MAY declare
+  `ciu.user_tables = [...]` in global config (opt-in; absence is legal) as
+  the list of top-level global-config tables that consumer domain templates
+  own. Each declared name MUST be a bare-key-safe string
+  (`^[A-Za-z0-9_-]+$`), MUST be unique within the list, and MUST NOT already
+  be one of `RESERVED_GLOBAL_TABLES` — the top-level tables CIU itself reads
+  at global scope today: `ciu`, `deploy`, `topology`, `vault`, `registry`,
+  `governance`, `service`, `auto_generated`. `RESERVED_GLOBAL_TABLES` is a
+  narrower, purpose-specific set, DISTINCT from S3.7's
+  `RESERVED_GLOBAL_NAMESPACES` (which instead governs stack ROOT KEY
+  collisions — a different question). When `ciu.user_tables` is declared,
+  CIU validates the FINAL merged global config (same timing as S3.11 —
+  after the committed chain and the worktree overlay): every top-level key
+  that is neither in `RESERVED_GLOBAL_TABLES` nor listed in
+  `ciu.user_tables` is a single collective `ValueError` naming every
+  offending key. Absence of `ciu.user_tables` is a complete no-op — a
+  config that never declares it is byte-for-byte unaffected, regardless of
+  what top-level tables it has. This is the additive V8 groundwork step
+  only; the eventual V8 breaking step (deferred, not shipped here) is
+  defaulting `ciu.user_tables` to empty so an undeclared table is ALWAYS an
+  error.
 
 ## S4 — Secrets
 

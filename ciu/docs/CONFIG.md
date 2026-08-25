@@ -168,6 +168,41 @@ though top-level reserved namespaces (S3.7) still apply.
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
 
+### `[ciu].user_tables` — declared consumer-owned global tables [S3.13]
+
+**V8-PREP-1 groundwork (additive; opt-in).** A consumer MAY declare which
+top-level global-config tables are its own, so CIU can flag an unexpected
+future collision immediately rather than silently merging it:
+
+```toml
+[ciu]
+user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
+```
+
+- Absence is legal and is a **complete no-op** — a config that never
+  declares `ciu.user_tables` sees zero behavior change, no matter what
+  top-level tables it has.
+- Once declared, every top-level key in the FINAL merged global config
+  (after the committed chain and the worktree overlay, same timing as
+  `[deploy].landscape_id`, S3.11) must be either one of CIU's own
+  `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`, `topology`, `vault`,
+  `registry`, `governance`, `service`, `auto_generated` — the tables CIU
+  itself reads at global scope today) or a name listed in
+  `ciu.user_tables`. An unlisted table is a configuration error naming
+  every offending key.
+- Each declared name must be a bare-key-safe string (`^[A-Za-z0-9_-]+$`),
+  unique within the list, and must not repeat one of CIU's own
+  `RESERVED_GLOBAL_TABLES` names (that would be redundant/misleading —
+  CIU already reserves those).
+- This is **not** the same set as the S3.7 `RESERVED_GLOBAL_NAMESPACES`
+  used to reject a STACK's root key — that set is intentionally broader and
+  defensive; `RESERVED_GLOBAL_TABLES` answers a narrower question ("what
+  does CIU itself actually read here today").
+- This is the additive groundwork step only. The eventual V8 breaking
+  step (deferred) is defaulting `ciu.user_tables` to empty, so every
+  undeclared top-level table becomes an error even without an explicit
+  opt-in.
+
 ### `[ciu.worktree]` — repository-wide instance capacity [S16.3]
 
 | Key | Default | Spec | Example |
@@ -471,6 +506,30 @@ finding rather than aborting the run.
 
 Exactly one non-reserved top-level key per stack config. Example root keys:
 `redis_core`, `db_core`, `vault_core`, `app_config`.
+
+**`local_stack` — a recognized, preferred root key name (V8-PREP-4
+groundwork).** A stack MAY name its root table `[local_stack]` instead of a
+directory-derived name:
+
+```toml
+[local_stack]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+```
+
+This is purely additive and opt-in: `local_stack` is deliberately absent
+from both S3.7's `RESERVED_GLOBAL_NAMESPACES` (membership there would make
+it *forbidden*, the opposite of "preferred") and S3.13's
+`RESERVED_GLOBAL_TABLES` (it is a stack-scope name, not a global one). A
+stack that renames its root table to `local_stack` needs no other change —
+every downstream consumer of the stack root key (secret discovery, hooks,
+configfile mounts, governance) already takes it as an opaque parameter. A
+stack that keeps its existing directory-derived root key is completely
+unaffected; its own name still hits the S3.7 collision check unchanged.
+This is the additive groundwork step only — the eventual V8 breaking step
+(deferred) is making `local_stack` the ONLY accepted root key and
+relocating hooks to `[local_stack.<svc>.hooks]` (no per-service
+`[local_stack.<svc>]` wiring or hook relocation ships here).
 
 #### `requires` and `provides` — provisioning dependencies [S13]
 

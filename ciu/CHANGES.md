@@ -10,6 +10,28 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): global config gains an optional `ciu.user_tables = [...]`
+  declaration (SPEC S3.13, V8-PREP-1 groundwork) — a consumer opt-in list of
+  top-level global-config tables it owns. Absence is a complete no-op; once
+  declared, CIU validates the FINAL merged global config (same timing as
+  `[deploy].landscape_id`, S3.11) and flags any top-level key that is
+  neither one of CIU's own `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`,
+  `topology`, `vault`, `registry`, `governance`, `service`,
+  `auto_generated` — a new, narrower set distinct from S3.7's
+  `RESERVED_GLOBAL_NAMESPACES`) nor listed in the declaration, in one
+  collective error naming every offending key. This is the additive
+  groundwork only; the eventual V8 breaking step (defaulting
+  `ciu.user_tables` to empty) is deferred.
+- feat(ciu): `validate_stack_shape` recognizes `local_stack` as a
+  preferred stack root key name (SPEC S3.5/S3.7, V8-PREP-4 groundwork) — a
+  stack MAY name its root table `[local_stack]` instead of a
+  directory-derived name. Purely additive: `local_stack` is deliberately
+  absent from both `RESERVED_GLOBAL_NAMESPACES` and `RESERVED_GLOBAL_TABLES`,
+  requires no other code change (every downstream reader of the stack root
+  key already treats it as an opaque parameter), and a stack that keeps its
+  existing root key is completely unaffected. No per-service
+  `[local_stack.<svc>]` wiring or hook relocation ships here — those remain
+  deferred to the eventual V8 breaking step.
 - feat(ciu): `ciu init` gains `--hooks NAME1,NAME2` (SPEC S19.1, CIU-QOL-13),
   copying hook implementations out of a new shipped template library
   (`ciu.hook_templates`, inside the wheel) into every stack that same `init`
