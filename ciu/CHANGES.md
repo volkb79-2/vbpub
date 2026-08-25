@@ -7,6 +7,32 @@ gate runs; the commit subjects remain the traceable source of detail.
 
 <!-- cmru: release history -->
 
+## [7.2.0] - 2026-08-25
+<!-- cmru: generated -->
+<!-- cmru: source-end=e85520a856fc4fa68b4f19d0d3588954f35546fa -->
+
+### Added
+- feat(ciu): S16.1a shared_infra.ref_services -- CIU-resolved reference-service addressing (CIU-52) (75f9fda2)
+- feat(ciu): CIU-48/CIU-49 -- qualified hostname: scaffold default + cockpit-alias guidance (cdb662bd)
+
+### Fixed
+- fix(ciu): dev.resolve_repo_root precedence -- define_root wins, walk-up beats ambient REPO_ROOT, refuse on disagreement (CIU-53) (ddb04723)
+
+### Changed
+- Merge branch 'feat/ciu-qol-v8prep-wave' (CIU-48/49/52/53/54) (e85520a8)
+
+### Documentation
+- docs(ciu): ciu-P32 LOG -- record controller-authorized scope widen and green gate (cdb4ba54)
+- docs(ciu): amend ciu-P32 -- widen scope to fix a test pinning the old buggy precedence (72135a8f)
+- docs(ciu): ciu-P32 LOG -- docs-vs-code contradiction, oracle evidence, BLOCKED blast-radius finding (739eb85c)
+- docs(ciu): ciu-P31 LOG -- schema/resolution/CLI decisions, 13-oracle evidence, gate output (9a859545)
+- docs(ciu): carve ciu-P32 -- resolve_repo_root precedence fix + docs (67c69ef8)
+- docs(ciu): ciu-P30 LOG -- O1 scoping finding, cross-branch backlog gap, gate output (e61df823)
+- docs(ciu): carve ciu-P30/P31 -- CIU-48/49/52 cockpit-alias family (5ae5b257)
+
+### Testing
+- test(ciu): update test_repo_root_precedence_and_marker_walk to the corrected S1.1 contract (3913afe9)
+
 ## [7.1.0] - 2026-08-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=ba7df850797580b0b987bb09516a73f6ca8aa5f9 -->
