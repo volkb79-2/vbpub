@@ -16,6 +16,14 @@ Normative contract: docs/SPEC.md
          governance injections
   S8.2   compose process env = base/os.environ + PWD + COMPOSE_PROFILES +
          expose_env secrets — nothing else
+  S8.2a  optional ``env_required = [...]`` per ``[<root>.<service>]``:
+         shape-validated (a list of valid env-var-name strings); when
+         ``compose_process_env`` is given the stack's ``config``/``root_key``,
+         every declared name is checked for presence in the SAME env dict
+         it just built (post-materialization, pre-invocation) — never
+         against ``os.environ`` alone, since an ``expose_env`` secret value
+         (S4.19) never touches the real process environment. All missing
+         (service, variable) pairs are collected into ONE error.
   S1.3/S1.4  bind sources handed to the daemon are physical paths
   S15    stack-wide resource governance ([<root>.governance]): overlay
          injects cgroup_parent/mem_limit/mem_reservation/blkio_config into
@@ -46,7 +54,9 @@ leak_scan(rendered_text, materialized) -> None
 validate_consumption(compose_yaml_text, declared, *, configfile_mounts=(), hook_consumed=()) -> list[str]
 render_configfiles(stack_dir, root_key, config, secret_value_fn) -> list[ConfigFileMount]
 generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text, governance, image_revisions) -> Path | None
-compose_process_env(specs, materialized, *, base, compose_profiles) -> dict
+compose_process_env(specs, materialized, *, base, compose_profiles, config, root_key) -> dict
+resolve_env_required(root) -> dict[str, list[str]]
+check_env_required(env_required, env) -> None
 compose_file_args(stack_dir, overlay_path) -> list[str]
 """
 
@@ -1397,6 +1407,112 @@ def generate_overlay(
 
 
 # ---------------------------------------------------------------------------
+# env_required (V8-PREP-7 / S8.2a)
+# ---------------------------------------------------------------------------
+
+_ENV_VAR_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def resolve_env_required(root: Mapping[str, Any]) -> dict[str, list[str]]:
+    """V8-PREP-7 (O1) — shape-validate every declared ``env_required`` list.
+
+    *root* is a stack's ``config[root_key]`` table. Every direct child value
+    that is itself a ``Mapping`` and declares an ``env_required`` key is
+    treated as a service declaration — the same opportunistic "any Mapping
+    child with the key I care about" convention :func:`_resolve_service_instances`
+    (V8-PREP-6) already uses for ``instances``. No separate reserved-key list
+    is needed: CIU's other reserved stack-level tables (``secrets``, ``hooks``,
+    ``governance``, ``env``, ...) never declare an ``env_required`` key of
+    their own, so they are silently skipped exactly like a service that
+    simply didn't declare one.
+
+    Each declared value must be a ``list`` of non-empty strings, each
+    matching ``^[A-Za-z_][A-Za-z0-9_]*$`` (a valid shell/env variable name),
+    with no duplicate entries within one service's own list. Any violation
+    raises :class:`ValueError` naming the service and the exact bad value —
+    never silently coerced, truncated, or skipped.
+
+    Returns ``{service_name: [var, ...]}`` for every service that declared
+    ``env_required``; a config with none declared anywhere returns ``{}``
+    (O1's "absent -> zero behavior change").
+    """
+    declared: dict[str, list[str]] = {}
+    for service_name, service_block in root.items():
+        if not isinstance(service_block, Mapping):
+            continue
+        raw = service_block.get("env_required", None)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"[V8-PREP-7] service '{service_name}' declares "
+                f"env_required = {raw!r}; expected a list of environment "
+                "variable name strings."
+            )
+        seen: set[str] = set()
+        names: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item:
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"entry {item!r} must be a non-empty string."
+                )
+            if not _ENV_VAR_NAME_RE.match(item):
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"entry {item!r} is not a valid environment variable "
+                    "name (must match ^[A-Za-z_][A-Za-z0-9_]*$)."
+                )
+            if item in seen:
+                raise ValueError(
+                    f"[V8-PREP-7] service '{service_name}' env_required "
+                    f"declares '{item}' more than once."
+                )
+            seen.add(item)
+            names.append(item)
+        declared[service_name] = names
+    return declared
+
+
+def check_env_required(
+    env_required: Mapping[str, Iterable[str]], env: Mapping[str, str]
+) -> None:
+    """V8-PREP-7 (O2/O3) — collective presence check against *env*.
+
+    *env* MUST be the dict :func:`compose_process_env` itself builds and
+    returns (i.e. AFTER secret materialization, IMMEDIATELY BEFORE the
+    compose invocation) — never ``os.environ`` or any pre-materialization
+    environment. Checking against ``os.environ`` produces false failures for
+    a variable supplied only via a secret's ``expose_env`` (S4.19): that
+    value is injected only into ``compose_process_env``'s returned dict, it
+    never touches the real process environment.
+
+    Collects every missing ``(service, variable)`` pair across ALL declared
+    services into ONE :class:`ValueError` — mirroring
+    :func:`config_model.expand_env_vars_or_fail`'s collective-error STYLE
+    (report everything the caller must fix, not just the first miss) —
+    rather than raising on the first miss and stopping. A variable present
+    in *env* but set to the empty string counts as missing, the same
+    convention ``expand_env_vars_or_fail`` uses.
+
+    A no-op when *env_required* is empty.
+    """
+    missing: list[str] = []
+    for service_name in sorted(env_required):
+        for var_name in env_required[service_name]:
+            if not env.get(var_name):
+                missing.append(f"{service_name}.{var_name}")
+    if missing:
+        raise ValueError(
+            "[V8-PREP-7] Missing required environment variable(s) declared "
+            f"via env_required: {', '.join(missing)}.\n"
+            "[V8-PREP-7] ciu.env is authoritative — run 'ciu env generate' "
+            "and source ciu.env before running CIU, or confirm any "
+            "expose_env secret this variable relies on actually materialized."
+        )
+
+
+# ---------------------------------------------------------------------------
 # compose_process_env (S8.2)
 # ---------------------------------------------------------------------------
 
@@ -1406,6 +1522,8 @@ def compose_process_env(
     *,
     base: Mapping[str, str] | None = None,
     compose_profiles: Iterable[str] | None = None,
+    config: Mapping[str, Any] | None = None,
+    root_key: str | None = None,
 ) -> dict[str, str]:
     """Build the compose process environment (S8.2) — and nothing more.
 
@@ -1422,6 +1540,19 @@ def compose_process_env(
     The ``expose_env`` value comes from ``materialized[spec.name].value``; if a
     spec declares ``expose_env`` but is not present in *materialized* (or its
     value is ``None``), it is skipped — there is nothing to expose.
+
+    V8-PREP-7 (S8.2a / O1-O3): when *config* and *root_key* are BOTH given,
+    every ``[<root_key>.<service>] env_required = [...]`` declaration found
+    in ``config[root_key]`` is shape-validated
+    (:func:`resolve_env_required`) and then checked for presence
+    (:func:`check_env_required`) against the env dict THIS call itself just
+    built above — i.e. after secret materialization, immediately before the
+    compose invocation this env is built for. Omitting either (or both,
+    the default) is a complete no-op — zero behavior change for every
+    existing caller. Wiring the real ``ciu up`` pipeline to pass its
+    already-merged stack ``config``/``root_key`` here is deferred to the V8
+    cutover (docs/BACKLOG-2026-08-24.md — this package's scope forbids
+    touching ``engine.py``, the only call site that has both in hand today).
     """
     env: dict[str, str] = dict(base if base is not None else os.environ)
     env["PWD"] = os.getcwd()
@@ -1441,6 +1572,13 @@ def compose_process_env(
         if value is None:
             continue
         env[spec.expose_env] = value if isinstance(value, str) else str(value)
+
+    if config is not None and root_key is not None:
+        root = config.get(root_key)
+        if isinstance(root, Mapping):
+            env_required = resolve_env_required(root)
+            if env_required:
+                check_env_required(env_required, env)
 
     return env
 

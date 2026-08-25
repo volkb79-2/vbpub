@@ -812,6 +812,56 @@ instead of a hand-maintained value.
 > [CHANGES.md](../CHANGES.md) for the migration this forced on the
 > `applications/workers` test-repo demo.
 
+#### `[<root>.<service>] env_required = [...]` — declared required env vars [S8.2a, V8-PREP-7]
+
+```toml
+[app_config.app]
+env_required = ["DATABASE_URL", "API_TOKEN"]   # every entry: ^[A-Za-z_][A-Za-z0-9_]*$
+```
+
+A service MAY declare `env_required` as a sibling of its `configfile`
+table. Each entry is a valid shell/env variable name; a non-list, an
+empty-string entry, an invalid-charset entry, or a duplicate within the
+same service's list all raise a tagged error naming the service and the
+exact bad value. Declaring nothing anywhere is a complete no-op — no
+existing config is affected.
+
+The check itself validates presence in the **actual environment `docker
+compose` will see** — the dict `compose_process_env` builds internally,
+which is `os.environ` + `PWD` + `COMPOSE_PROFILES` + every secret's
+`expose_env` value (S8.2), taken AFTER secret materialization and
+immediately before the compose invocation. Missing variables across every
+service declaring `env_required` are collected into ONE error naming every
+`service.VARIABLE` pair — never a stop on the first miss.
+
+> **Not a new way to read an env var.** `{{ env.* }}` in a compose or
+> configfile template already receives the full process environment today,
+> with or without this key — `env_required` adds a CHECK, not a second
+> access mechanism. A template MAY reference a variable via `{{ env.* }}`
+> whether or not it is also listed in `env_required`; declaring it here
+> only makes CIU refuse loudly, naming the variable, before compose ever
+> starts, instead of letting `docker compose` fail (or silently start with
+> an empty/default value) further downstream. It also does **not** change
+> `${VAR:-fallback}`/`${VAR:?msg}` interpolation inside compose templates —
+> withdrawing that is a separate, breaking item tracked for the real V8
+> gate.
+>
+> A template can already rely on the machine-identity keys in the
+> [`ciu.env` Key Provenance Table](#ciuenv-key-provenance-table-s27) below
+> (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`,
+> `CONTAINER_UID`, `DOCKER_GID`, `REPO_NAME`, `INSTANCE_ID`, `PUBLIC_FQDN`)
+> via `{{ env.* }}` without declaring them in `env_required` — they are
+> always present by construction once `ciu.env` is sourced.
+>
+> **Not yet wired to `ciu up`.** `compose_process_env` (the function this
+> check lives in) gains optional `config`/`root_key` parameters that
+> activate the check above when both are given; CIU's own `ciu up` call
+> site does not pass them yet (a one-line change deferred to the real V8
+> cutover — see [SPEC.md S8.2a](SPEC.md#s8--compose-execution)). A
+> malformed `env_required` declaration is caught by direct/library use of
+> `compose_process_env` today; the presence check is exercised the same
+> way until that wiring lands.
+
 ### `[state]` — persisted hook state [S3.4, S9.4]
 
 Written by hooks via `persist: "state"`. Preserved across re-renders; destroyed

@@ -1139,6 +1139,54 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   **TOML config flattening into env is withdrawn** — `flatten_dict` /
   `ENV_<KEY>` / `UPPER_SNAKE` placeholders no longer exist. All non-secret
   values reach the compose file via Jinja2 at render time.
+- **S8.2a** *`env_required` declarations (V8-PREP-7, additive).* A service
+  MAY declare `[<root>.<service>] env_required = [...]` — a list of
+  non-empty strings, each matching `^[A-Za-z_][A-Za-z0-9_]*$` (a valid
+  shell/env variable name), duplicates within one service's own list
+  rejected. Shape-validated whenever present (`composefile.resolve_env_required`);
+  absent anywhere is a complete no-op (zero behavior change). This adds NO
+  new Jinja context variable and NO new template-facing mechanism: `{{
+  env.* }}` already receives the full process environment on every render
+  path (`config_model.render_jinja2_text`'s callers,
+  `composefile.render_compose`, `composefile.render_configfiles` all build
+  `{"env": dict(os.environ)}` today) — the only new behavior is the
+  presence CHECK below, not variable access. This package deliberately does
+  **not** touch `${VAR:-fallback}` handling in compose templates — that
+  withdrawal is the separate, genuinely breaking QOL-10 item, out of scope
+  here.
+
+  The presence check (`composefile.check_env_required`) runs against the
+  dict `composefile.compose_process_env` itself builds and returns — i.e.
+  AFTER secret materialization, IMMEDIATELY BEFORE the compose invocation
+  (S8.3 step 16) — never against `os.environ` alone or any
+  pre-materialization environment: a variable supplied only via a secret's
+  `expose_env` (S4.19) is injected only into that returned dict, it never
+  touches the real process environment, so checking earlier or against
+  `os.environ` produces a false "missing" failure for exactly that case.
+  Missing variables across ALL declared services in one compose invocation
+  are collected into ONE error naming every missing `service.VARIABLE`
+  pair (mirroring `config_model.expand_env_vars_or_fail`'s collective-error
+  style) — never a stop on the first miss. A declared variable present but
+  set to the empty string counts as missing, the same convention
+  `expand_env_vars_or_fail` uses.
+
+  A template can already rely on the machine-identity keys
+  `workspace_env.REQUIRED_KEYS_CORE` (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
+  `DOCKER_NETWORK_INTERNAL`, `CONTAINER_UID`, `DOCKER_GID`) and
+  `workspace_env.GENERATED_IDENTITY_KEYS` (`REPO_NAME`, `INSTANCE_ID`,
+  `DOCKER_NETWORK_INTERNAL`, `PUBLIC_FQDN`) via `{{ env.* }}` without
+  declaring them in `env_required` — see the `ciu.env` Key Provenance Table
+  in docs/CONFIG.md.
+
+  **Not yet wired to the live `ciu up` pipeline.** `compose_process_env`
+  gains two new optional keyword-only parameters, `config` and `root_key` —
+  when BOTH are given, the shape validation and presence check above run;
+  omitted (the only way `engine.py`'s real call site invokes it today), it
+  is inert. `engine.py` is out of this package's scope (it is the ONLY call
+  site with both the merged stack config and the post-materialization env
+  in hand at the same point) — passing its already-computed `merged`/
+  `root_key` through to this call is a one-line change deferred to the real
+  V8 cutover.
 - **S8.3** Pipeline order per stack:
 
   1. load env (S2) → 2. render global chain → 3. render stack → 4. merge →

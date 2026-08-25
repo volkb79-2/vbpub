@@ -10,6 +10,38 @@ gate runs; the commit subjects remain the traceable source of detail.
 ## [Unreleased]
 
 ### Added
+- feat(ciu): optional `env_required = [...]` declaration + collective
+  presence check (SPEC S8.2a, V8-PREP-7, ciu-P25,
+  docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.20) — fully additive, zero
+  behavior change for every config that does not declare it:
+  - A service MAY declare `[<root>.<service>] env_required = [...]` — a
+    list of non-empty strings, each a valid shell/env variable name
+    (`^[A-Za-z_][A-Za-z0-9_]*$`), duplicates within one service's own list
+    rejected. Shape-validated via `composefile.resolve_env_required`; a
+    malformed declaration raises naming the service and the exact bad
+    value.
+  - `composefile.compose_process_env` gains optional `config`/`root_key`
+    keyword parameters. When both are given, every declared variable is
+    checked for presence in the SAME env dict the function itself just
+    built — i.e. after secret materialization, immediately before the
+    compose invocation — never against `os.environ` alone, since an
+    `expose_env` secret value (S4.19) never touches the real process
+    environment. Missing variables across ALL declared services are
+    collected into ONE error naming every `service.VARIABLE` pair
+    (mirroring `config_model.expand_env_vars_or_fail`'s collective-error
+    style), never a stop on the first miss.
+  - No new Jinja/template mechanism: `{{ env.* }}` already receives the
+    full process environment on every render path today; this package adds
+    only the presence CHECK, not a second way to read an env var. It also
+    does **not** touch `${VAR:-fallback}`/`${VAR:?msg}` handling in compose
+    templates — withdrawing that is the separate, genuinely breaking
+    QOL-10 item, deliberately out of scope here.
+  - **Not yet wired to `ciu up`.** `engine.py` — the only call site with
+    both the merged stack config and the post-materialization env in hand
+    — is out of this package's scope; passing its already-computed
+    `merged`/`root_key` through to `compose_process_env` is a one-line
+    change deferred to the real V8 cutover. Until then this is a tested,
+    ready-to-activate library capability, not a live check in `ciu up`.
 - feat(ciu)!: unified `instances = N` fan-out for compose enumeration +
   configfile mounts (SPEC S7.5d/S7.5e, V8-PREP-6, ciu-P24,
   docs/CIU-V8-TESTING-GATE-PROPOSAL.md §1.19). A service MAY declare

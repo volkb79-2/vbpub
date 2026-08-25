@@ -22,6 +22,7 @@ from ciu.composefile import (  # noqa: E402
     ConfigFileMount,
     SecretGuard,
     SecretLeakError,
+    check_env_required,
     compose_file_args,
     compose_process_env,
     generate_overlay,
@@ -30,6 +31,7 @@ from ciu.composefile import (  # noqa: E402
     redact_config,
     render_compose,
     render_configfiles,
+    resolve_env_required,
     validate_consumption,
 )
 from ciu import config_model  # noqa: E402
@@ -2024,3 +2026,258 @@ class TestEndToEndInstancesWiring:
         )
         out = render_compose(tmpl, {}, ciu_context=ciu_context)
         assert "worker-1" in out and "worker-2" in out
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-7 / S8.2a — env_required declarations
+# ---------------------------------------------------------------------------
+
+class TestResolveEnvRequired:
+    """O1 — [<root>.<service>] env_required = [...] shape validation."""
+
+    def test_absent_anywhere_returns_empty_zero_behavior_change(self) -> None:
+        root = {"worker": {"image": "myapp"}, "secrets": {"pw": {}}}
+        assert resolve_env_required(root) == {}
+
+    def test_single_service_valid_list(self) -> None:
+        root = {"postgres": {"env_required": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"]}}
+        assert resolve_env_required(root) == {
+            "postgres": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"]
+        }
+
+    def test_multiple_services_declared(self) -> None:
+        root = {
+            "postgres": {"env_required": ["POSTGRES_USER"]},
+            "redis": {"env_required": ["REDIS_URL"]},
+            "worker": {"image": "myapp"},  # no declaration -> absent from result
+        }
+        assert resolve_env_required(root) == {
+            "postgres": ["POSTGRES_USER"],
+            "redis": ["REDIS_URL"],
+        }
+
+    def test_non_mapping_service_block_skipped(self) -> None:
+        """A scalar/list value under root (never a service table) is simply
+        skipped, the same convention _resolve_service_instances uses."""
+        root = {"not_a_service": ["x"], "worker": {"env_required": ["X"]}}
+        assert resolve_env_required(root) == {"worker": ["X"]}
+
+    def test_reserved_looking_table_without_the_key_is_harmless(self) -> None:
+        """[<root>.secrets]/[<root>.hooks] are Mappings too, but never declare
+        env_required of their own -- no special-casing is needed."""
+        root = {
+            "secrets": {"pw": {"kind": "GEN_LOCAL"}},
+            "hooks": {"pre_compose": []},
+        }
+        assert resolve_env_required(root) == {}
+
+    def test_non_list_value_raises_naming_service_and_value(self) -> None:
+        root = {"postgres": {"env_required": "POSTGRES_USER"}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert "POSTGRES_USER" in msg
+
+    @pytest.mark.parametrize("bad_entry", ["", 123, None, True, 1.5, ["nested"]])
+    def test_invalid_entry_type_raises(self, bad_entry: object) -> None:
+        root = {"postgres": {"env_required": [bad_entry]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        assert "postgres" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "bad_name", ["1BAD", "bad-name", "bad name", "bad.name", "-lead"]
+    )
+    def test_invalid_charset_raises(self, bad_name: str) -> None:
+        root = {"postgres": {"env_required": [bad_name]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert bad_name in msg
+
+    def test_duplicate_entry_within_one_service_raises(self) -> None:
+        root = {"postgres": {"env_required": ["POSTGRES_USER", "POSTGRES_USER"]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert "POSTGRES_USER" in msg
+
+    def test_empty_list_is_valid_and_harmless(self) -> None:
+        root = {"postgres": {"env_required": []}}
+        assert resolve_env_required(root) == {"postgres": []}
+
+    def test_valid_names_underscore_and_digits(self) -> None:
+        root = {"svc": {"env_required": ["_PRIVATE", "VAR_2", "A"]}}
+        assert resolve_env_required(root) == {"svc": ["_PRIVATE", "VAR_2", "A"]}
+
+
+class TestCheckEnvRequired:
+    """O2/O3 — collective presence check against a *built* env dict."""
+
+    def test_all_present_no_raise(self) -> None:
+        check_env_required(
+            {"postgres": ["POSTGRES_USER"]}, {"POSTGRES_USER": "alice"}
+        )  # must not raise
+
+    def test_empty_env_required_is_a_no_op(self) -> None:
+        check_env_required({}, {})  # must not raise
+
+    def test_single_missing_names_service_and_variable(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required({"postgres": ["POSTGRES_USER"]}, {})
+        assert "postgres.POSTGRES_USER" in str(excinfo.value)
+
+    def test_empty_string_value_counts_as_missing(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required(
+                {"postgres": ["POSTGRES_USER"]}, {"POSTGRES_USER": ""}
+            )
+        assert "postgres.POSTGRES_USER" in str(excinfo.value)
+
+    def test_o3_collective_error_names_every_missing_pair_not_just_first(
+        self,
+    ) -> None:
+        """O3 — missing vars across ALL services collected into ONE error,
+        never a stop after the first miss."""
+        env_required = {
+            "postgres": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"],
+            "redis": ["REDIS_URL"],
+        }
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required(env_required, {"POSTGRES_USER": "alice"})
+        msg = str(excinfo.value)
+        # POSTGRES_USER was present -> not reported missing.
+        assert "postgres.POSTGRES_USER" not in msg
+        # Both remaining misses, across BOTH services, are named in ONE error.
+        assert "postgres.POSTGRES_PASSWORD_FILE" in msg
+        assert "redis.REDIS_URL" in msg
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-7 — the real integration point: compose_process_env(config=, root_key=)
+# ---------------------------------------------------------------------------
+
+class TestComposeProcessEnvRequired:
+    def test_config_and_root_key_both_omitted_is_zero_behavior_change(self) -> None:
+        """The default (and the ONLY way engine.py calls this today, S8.2a):
+        omitting config/root_key never even looks at env_required."""
+        env = compose_process_env([], {}, base={"A": "1"})
+        assert set(env.keys()) == {"A", "PWD"}
+
+    def test_only_root_key_given_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={}, root_key="mystack"
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_only_config_given_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={},
+            config={"mystack": {"worker": {"env_required": ["MISSING"]}}},
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_root_key_not_present_in_config_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={}, config={}, root_key="mystack"
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_no_service_declares_env_required_zero_behavior_change(self) -> None:
+        config = {"mystack": {"worker": {"image": "myapp"}}}
+        env = compose_process_env(
+            [], {}, base={"A": "1"}, config=config, root_key="mystack"
+        )
+        assert set(env.keys()) == {"A", "PWD"}
+
+    def test_o1_malformed_declaration_raises_through_this_entry_point(self) -> None:
+        config = {"mystack": {"worker": {"env_required": "NOT_A_LIST"}}}
+        with pytest.raises(ValueError, match="worker"):
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+
+    def test_all_required_present_via_base_passes(self) -> None:
+        config = {"mystack": {"worker": {"env_required": ["FOO"]}}}
+        env = compose_process_env(
+            [], {}, base={"FOO": "bar"}, config=config, root_key="mystack"
+        )
+        assert env["FOO"] == "bar"
+
+    def test_missing_required_raises_naming_service_and_variable(self) -> None:
+        config = {"mystack": {"worker": {"env_required": ["FOO"]}}}
+        with pytest.raises(ValueError) as excinfo:
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+        assert "worker.FOO" in str(excinfo.value)
+
+    def test_o2_expose_env_secret_satisfies_env_required_no_false_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """O2 -- the exact false-failure trap this package exists to avoid:
+        a required var supplied ONLY via a secret's expose_env must NOT be
+        flagged missing, even though it is absent from `base` entirely
+        (the pre-materialization / bare-process-environment state)."""
+        config = {"mystack": {"postgres": {"env_required": ["POSTGRES_PASSWORD"]}}}
+        spec = _spec("pgpw", expose_env="POSTGRES_PASSWORD")
+        mats = {
+            "pgpw": MaterializedLike(spec, "pgpw", "s3cr3t", tmp_path / "pgpw"),
+        }
+        # `base` deliberately does NOT contain POSTGRES_PASSWORD -- it is
+        # only ever produced by expose_env materialization below.
+        env = compose_process_env(
+            [spec], mats, base={}, config=config, root_key="mystack"
+        )
+        assert env["POSTGRES_PASSWORD"] == "s3cr3t"
+
+    def test_o2_negative_checking_the_pre_materialization_env_false_fails(
+        self,
+    ) -> None:
+        """O2's negative case, made concrete: checking env_required against
+        the BARE pre-materialization environment (here, `base` alone,
+        standing in for os.environ before compose_process_env runs) DOES
+        raise a false failure for an expose_env-supplied variable -- proving
+        the wrong check point is exactly the bug this package avoids by
+        checking compose_process_env's own OUTPUT instead (previous test)."""
+        pre_materialization_env: dict[str, str] = {}
+        with pytest.raises(ValueError, match="postgres.POSTGRES_PASSWORD"):
+            check_env_required(
+                {"postgres": ["POSTGRES_PASSWORD"]}, pre_materialization_env
+            )
+
+    def test_o3_missing_across_multiple_services_one_error(self) -> None:
+        config = {
+            "mystack": {
+                "postgres": {"env_required": ["POSTGRES_USER"]},
+                "redis": {"env_required": ["REDIS_URL"]},
+            }
+        }
+        with pytest.raises(ValueError) as excinfo:
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+        msg = str(excinfo.value)
+        assert "postgres.POSTGRES_USER" in msg
+        assert "redis.REDIS_URL" in msg
+
+
+class TestEnvRequiredNoNewJinjaMechanism:
+    """O4 — {{ env.* }} is unchanged: no new template-facing mechanism was
+    added or was needed to read a variable this package's check requires."""
+
+    def test_env_dot_star_already_renders_a_required_style_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABASE_URL", "postgres://example")
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n  app:\n    environment:\n"
+            "      DATABASE_URL: {{ env.DATABASE_URL }}\n",
+            encoding="utf-8",
+        )
+        out = render_compose(tmpl, {})
+        assert "postgres://example" in out
