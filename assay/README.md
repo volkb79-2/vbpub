@@ -27,7 +27,12 @@ that any assertion would have caught a wrong version of it.
 
 assay exists to close that gap mechanically, not by policy:
 
-- **You choose which question R1 asks: changed-line, or whole-target.** In
+- **You choose which question the judged tiers ask: changed-line, or
+  whole-target.** `judge.mode` is a lane-level scope that R1 and R2 read
+  together (A-325): under `whole_target`, R1 asserts its floor over the
+  declared files and R2 mutates those files whole rather than scoping
+  mutation to a diff — which is why `judge.base` is refused on such a lane
+  and absent from its verdict. In
   `mode = "changed_lines"` (the default — an existing lane needs no edit), a
   diff that touches 12 lines is judged on those 12 lines; a 0/0 result
   (nothing measurable changed) is reported honestly, with a `considered`
