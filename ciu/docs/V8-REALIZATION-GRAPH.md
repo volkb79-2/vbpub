@@ -213,6 +213,7 @@ sequenceDiagram
     rect rgb(243, 230, 216)
     Note over CIU,V: WAVE 0 — vault: genuinely self-contained
     CIU->>V: compose up + operator init (master key, unseal key, root token — all generated INSIDE vault)
+    Note over CIU: LOCAL WRITE, before unseal (Vault can't hold its own bootstrap credentials in itself): root_token+unseal_key → infra/vault/ciu.toml [state] (authoritative, S9.4) AND infra/vault/vault-init.json (hook-authored fallback, read only if [state] round-trips empty) — both gitignored, verified
     CIU->>V: unseal with the key share
     CIU->>V: enable KV v2 at secret/
     CIU->>V: post_compose hook mints per-service AppRoles (controller, webapp-server: role_id + secret_id)
@@ -224,6 +225,7 @@ sequenceDiagram
     Note over CIU,CS: WAVE 1 — db-core, redis-core, consul-server: each requires stack:infra/vault:healthy
     Note over CIU: dstdns@d1688765 — previously UNDECLARED; GEN_TO_VAULT silently needed a live vault, covered only by hand-placed phase numbers until this session
     CIU->>V: GEN_TO_VAULT redis/password
+    Note over CIU: LOCAL WRITE (every GEN_TO_VAULT/ASK_VAULT does this, one representative example): the resolved value also materializes to &lt;stack&gt;/.ciu/secrets/&lt;name&gt; (0440, S4.9) — the file Compose actually mounts, never a literal env value; `ciu clean` wipes it, `ciu down` does not
     CIU->>RD: compose up + post_compose hook: ACL SETUSER (5 svc users)
     CIU->>V: GEN_TO_VAULT db/postgres/*, minio/* (superuser + all app role passwords, incl. controller_ddl)
     CIU->>DBC: compose up; init-script 01-init-users.sh: DBA-layer roles + ALTER DEFAULT PRIVILEGES (no app schema)
