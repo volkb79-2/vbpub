@@ -669,6 +669,16 @@ gate runs; the commit subjects remain the traceable source of detail.
   state at every add and every join, versus a hand-typed value that goes
   stale — silently — the moment the reference instance is re-created under a
   new identity. Docs-only; no behavior changes.
+- docs(ciu): **README.md gains one consolidated "Optional extras" table**
+  (ciu-P35). Three rows — `ssh`/`schema`/`registry` — each naming the exact
+  `pip install 'ciu[<name>]'` command, the underlying package, and the one
+  ciu feature/verb that needs it, so a consumer can decide upfront instead of
+  discovering each extra reactively at its own runtime refusal. Version
+  floors are not repeated in the table — it points at `pyproject.toml` as the
+  single source of truth instead. The dev-only `test` extra is deliberately
+  excluded (it is for CIU's own contributors, not consumers). Purely
+  additive: the existing per-feature mentions in `docs/CONFIG.md` and
+  `docs/CONSUMERS.md` are unchanged. Docs-only; no behavior changes.
 
 ## [7.0.0] - 2026-08-23
 <!-- cmru: generated -->
