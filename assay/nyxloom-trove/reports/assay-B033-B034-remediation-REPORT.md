@@ -141,9 +141,11 @@ The `base` conditional had to be relaxed in `src/assay/schemas/verdict.schema.js
 (and its frozen twin `nyxloom-trove/carve-assets/W2/verdict.schema.v7.json`,
 kept byte-identical). Applying A-324's own test: this is a pure **widening** —
 every document that validated under the old v7 still validates, and no released
-`assay verify` rejects anything it previously accepted. Only whole-target R2
-documents become valid that were not before, and those could not be honestly
-produced at all under the old rule. **No version bump on that basis.**
+`assay verify` rejects anything it previously accepted. Documents become valid
+that were not before — including the whole-target R2 artifacts that could not
+be honestly produced at all under the old rule, and, unavoidably, some
+malformed ones (measured below, "The cost of that, stated plainly").
+**No version bump on that basis.**
 
 The narrowing half is now asserted only where the artifact can witness it.
 `judgment.r1.mode` is on the wire; `judgment.r2` records neither `mode` nor
@@ -151,6 +153,49 @@ The narrowing half is now asserted only where the artifact can witness it.
 diffed or mutated whole files. Rather than assert a rule the document cannot
 witness — which is exactly how the old rule came to reject honest artifacts —
 the gap is left open and **filed as B035**, whose fix is a v8 field.
+
+### The cost of that, stated plainly (round-2 review, finding 4)
+
+"A pure widening" is true, and it is only half the story. Widening a verifier
+means it **stops rejecting things**, and some of what it stops rejecting is
+genuinely malformed. Both directions, measured on the same two builds:
+
+```
+# the honest whole-target R2 artifact this wave exists to make producible
+$ assay verify after3.json          # released 2.4.1
+assay verify: judgment.resolved omits base while judgment records r2, or r1
+in changed-line mode, ...
+exit=1
+$ assay verify after3.json          # fixed build
+exit=0                                                    <- the intended gain
+
+# a DIFF-based R0,R2 artifact with its base deleted -- genuinely malformed
+$ assay verify diffr2-nobase.json   # released 2.4.1
+exit=1
+$ assay verify diffr2-nobase.json   # fixed build
+exit=0                                                    <- the cost
+```
+
+So: **for `R0,R2` documents the verifier is measurably weaker than 2.4.1 was.**
+A diff-based R2 that omits the base it was scoped against used to be caught and
+now is not. That is not a side effect to be discovered later — it is the direct,
+unavoidable price of B033(a), because one rule cannot both require and forbid
+the same field for two shapes the artifact does not distinguish. The old rule
+bought that strictness by making honest whole-target R2 artifacts impossible to
+emit, which is the worse failure: a verifier that rejects the truth teaches its
+consumers to stop believing it.
+
+Lanes declaring R1 are unaffected — `judgment.r1.mode` witnesses the lane's
+scope, so both halves are still enforced there, and the whole-target/base
+contradiction is now caught for `R1,R2` lanes where the old rule wrongly
+demanded a base.
+
+**This raises B035's priority rather than merely deferring it**, and the reason
+is concrete: dstdns's `cw2b_schema` — the only R2 lane it has, and the only
+known consumer of the whole-target R2 path — is exactly the `R0,R2` shape that
+lost enforcement. The window lasts until `judgment.r2` can record its own
+scope. B035 should ride the next schema-version bump, and this paragraph is the
+argument for not letting that bump drift.
 
 ---
 
