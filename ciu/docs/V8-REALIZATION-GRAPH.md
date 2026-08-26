@@ -115,20 +115,43 @@ once every cross-boundary edge routes through a fact or a logical name.
 Validated against dstdns's real fresh-bring-up chain (`ciu clean && ciu up`,
 2026-08-25) and re-checked under the stack-level model above.
 
-![Wave 0: vault, db-core, redis, and consul stacks are self-sufficient producers. Wave 1: db-init, authentik, controller, and webapp-server each consume wave-0 facts to start; db-init produces the schema but nothing in the graph requires it, shown in red as a missing edge. Wave 2: worker-io, which requires internal_dlq_token from controller — the one edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
+**Corrected after review — the first pass undercounted this.** An earlier
+version of this trace found three waves, computed as a topological sort of
+the *declared* graph. That graph is missing an entire class of edges: every
+stack that `GEN_TO_VAULT`s its own secrets needs Vault live to write them,
+and none of them declare it. Vault's own bootstrap (`post_compose_vault.py`)
+is the only genuinely self-contained node — it only ever `docker exec`s into
+its own container. Recomputed with that edge added:
 
-Three real waves, not the nine phase numbers dstdns happens to declare
-today — every declared phase sits at or after its computed wave, so the
-current hand-maintained list is safe, just more granular than the graph
-strictly demands.
+![Wave 0: vault alone, the only genuinely self-contained bootstrap. Wave 1: db-core, redis, and consul, each needing vault live to GEN_TO_VAULT their own secrets, an edge none of them declare. Wave 2: db-init and authentik, consuming wave-1 facts; db-init produces the schema but nothing downstream requires it, shown in red as a missing edge. Wave 3: controller, which needs db-init's schema in addition to db-core's roles. Wave 4: worker-io, which requires internal_dlq_token from controller — the edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
 
-**The one confirmed gap:** `db-init`'s schema creation
-(`pg:schema/dstdns`) is produced but required by nothing in the graph —
-`pg:schema/*` still isn't an expressible ref kind. Ordering today rests on a
-hand-placed phase number plus a runtime `schema_meta` poll as backstop, not
-on anything ciu's own preflight can see. This is the real edge §8.1 of
-`docs/spec/spec-ciu-provisioning-model.md` (dstdns) already asked for in
-2026-06-23 — still open.
+```
+wave 0: vault                                          (genuinely self-contained)
+wave 1: consul-server, db-core, redis-core, skywalking (GEN_TO_VAULT needs vault live)
+wave 2: authentik, db-init, docker-stats-exporter      (need wave-1 creds/tokens)
+wave 3: controller, webapp-server, worker-db           (need db-init's schema, not just db-core's roles)
+wave 4: worker-io                                      (needs controller's internal_dlq_token)
+```
+
+Five real waves, not the nine phase numbers dstdns happens to declare
+today — every declared phase still sits at or after its computed wave, so
+the current hand-maintained list stays safe, just more granular than even
+this corrected graph demands.
+
+**Two confirmed gaps, not one:**
+- `db-init`'s schema creation (`pg:schema/dstdns`) is produced but required
+  by nothing in the graph — `pg:schema/*` still isn't an expressible ref
+  kind. Ordering today rests on a hand-placed phase number plus a runtime
+  `schema_meta` poll as backstop. This is the edge §8.1 of dstdns's own
+  `docs/spec/spec-ciu-provisioning-model.md` already asked for in
+  2026-06-23 — still open.
+- **New, found on review:** a `GEN_TO_VAULT`/`ASK_VAULT` directive should
+  *automatically* imply `init_requires` on the vault store being live —
+  right now nothing does, and it silently works today only because the
+  hand-placed phase numbers happen to order vault first. This should be
+  derived by ciu from the directive itself, not authored per stack, the
+  same way an import implies build order without anyone writing it
+  down — the same class of fix as the schema gap, just upstream of it.
 
 **Checked and confirmed fine:** authentik's own OIDC client bootstrap
 (`oidc_client_id = "dstdns-ui"`) looked like it might be the same shape of
@@ -162,4 +185,6 @@ bug structurally impossible to declare, not just easier to catch.
 
 **Still open:**
 - **Contract conformance at config time** — checked the current proposal and both backlog files: **not planned anywhere yet**. Should be an explicit addition; the natural home is extending ciu's existing `validate_config()` static preflight (S9.5) from per-hook checks to the graph itself — does a realization's aggregate `init_provides` actually cover its logical service's `contract`, checked without a live probe.
-- **`pg:schema/*` ref kind** — the one confirmed real gap in dstdns's current graph, unchanged since dstdns's own spec first asked for it.
+- **`pg:schema/*` ref kind** — a confirmed real gap in dstdns's current graph, unchanged since dstdns's own spec first asked for it.
+- **Automatic vault-liveness dependency** — found on review, not in the first pass: `GEN_TO_VAULT`/`ASK_VAULT` directives should imply an `init_requires` on the vault store being live, derived by ciu itself. Currently every stack that mints its own secrets is missing this edge.
+- **Credential rotation** — a genuinely separate axis. §4.3.1 scopes the topological sort to initialization only; nothing re-runs it later, and dstdns's actual mechanism (`expose_env` baking a secret into an environment variable at container start) needs a full restart to pick up a rotated value. Not addressed anywhere in the proposal; needs its own design.
