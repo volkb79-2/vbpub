@@ -378,6 +378,18 @@ container names become `<project>-<instance>-<stack>-<service>[-<replica>]`.
 **Stack-level declaration** — defines WHAT CIU does with this stack and WHERE
 to find it:
 
+> **Note (2026-08-26, dstdns/vbpub joint design session):** the worked
+> examples below address a service by `<stack>.<service>` — its current
+> deployment location, not a stable identity. `V8-REALIZATION-GRAPH.md` in
+> this directory works through why that couples a logical name to wherever
+> it happens to run today (rename the stack, or move the database to a
+> managed provider, and every consumer's `init_requires` has to follow) and
+> resolves it against §1.16's flat-name `[local_stack.<name>]` join instead
+> — same session also re-validated §4.3's topological-sort claim against a
+> real fresh dstdns bring-up and found one confirmed gap (`pg:schema/*`,
+> §8.1 of dstdns's own `docs/spec/spec-ciu-provisioning-model.md`). Read it
+> before treating the `<stack>.<service>` addressing below as settled.
+
 ```toml
 # A CIU-managed stack containing multiple services
 [service.our_db_stack]
