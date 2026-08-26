@@ -469,6 +469,16 @@ equivalence_artifact = ".assay/schema-dump.sql"
 kill_signal_artifact = ".assay/kill-signal.txt"
 ```
 
+The lane above judges the `base..HEAD` diff, which is why it declares
+`judge.base`. To mutate whole schema files regardless of what changed — the
+shape a migration-reconciliation gate wants — declare `judge.mode =
+"whole_target"` and `judge.targets` instead, and **delete `judge.base`**: under
+whole-target scope R2 reads no comparison commit, so a declared base is inert
+config and is refused at load (A-325). Every declared target must resolve
+inside `judge.source_roots`, exist at the judged commit, and be
+adapter-recognised, non-test source; one that is not is refused by name rather
+than quietly skipped, so a `PASS` always covers the whole declared set.
+
 `scripts/schema-gate.sh` is yours to write, in the shape the two named
 sections above require: apply the (possibly mutated) DDL to a throwaway
 database, dump it with a pinned `--restrict-key` to
