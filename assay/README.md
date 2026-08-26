@@ -184,9 +184,14 @@ path grammar and must be gitignored, exactly like a coverage artifact.
 Every mutation lane may declare optional `budget_per_candidate` with the same
 duration grammar as `budget`. A candidate whose command exceeds it enters the
 existing `budget_exceeded` bucket while unrelated candidates continue.
-Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
-each candidate; the verdict's optional `mutation.progress_artifact` names that
-file.
+Progress is opt-in and consumer-directed: `assay run <lane> --progress PATH`
+appends a compact NDJSON event to PATH -- a `run` header naming the commit and
+start time, then one event after the baseline and one after each completed
+candidate, each flushed. Assay never picks this location itself and writes no
+progress file when the flag is omitted; point it OUTSIDE the repository (or at
+a gitignored path), since a progress file inside the work tree makes the next
+run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
+record the destination, exactly as it does not record `--verdict-json`'s.
 
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any

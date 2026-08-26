@@ -1073,6 +1073,14 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
 
 
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
+    # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
+    # not, from `7a4f6333` (which added them to the dataclass and the schema)
+    # until now -- so `assay verify` rejected a REAL `assay run --shard 0/N`
+    # artifact with `unknown judgment.r2 field(s): ['shard_count',
+    # 'shard_index']`, on a document that passed JSON Schema validation
+    # cleanly. Found by driving a real sharded run through the installed CLI
+    # while verifying B031's own `mutation.candidate_ids` fix, not by reading
+    # the diff -- the identical near-miss shape, one block over.
     r2 = JudgmentR2(
         jobs=raw["jobs"],
         max_mutants=raw["max_mutants"],
@@ -1080,6 +1088,8 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         kill_attribution=raw["kill_attribution"],
         kill_signal_artifact=raw.get("kill_signal_artifact"),
         equivalence_artifact=raw.get("equivalence_artifact"),
+        shard_index=raw.get("shard_index"),
+        shard_count=raw.get("shard_count"),
     )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
@@ -1135,9 +1145,19 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
 
 
 def _reconstruct_mutation(raw: dict) -> Mutation:
+    # B031/A-320: `candidate_ids` is REGISTERED here, not merely schema-legal.
+    # `assay.verify` reconstructs its own comparison object from the raw
+    # untrusted document rather than trusting it (A-182/A-317), so a field
+    # this function does not read is a field `_reject_unknown_keys` refuses
+    # below -- which is exactly what happened to `candidate_ids` between
+    # `7a4f6333` (which added it to the dataclass and the schema) and B031
+    # (`assay verify: schema: unknown mutation field(s): ['candidate_ids']`
+    # on a document that passed JSON Schema validation cleanly).
+    candidate_ids = raw.get("candidate_ids")
     mutation = Mutation(
         candidate_count=raw["candidate_count"],
         total=raw["total"],
+        candidate_ids=None if candidate_ids is None else tuple(candidate_ids),
         **{
             name: tuple(_reconstruct_mutant_outcome(item) for item in raw[name])
             for name in MUTATION_BUCKETS

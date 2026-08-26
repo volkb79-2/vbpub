@@ -1246,9 +1246,6 @@ class Mutation:
     #: :attr:`candidate_count` like every other attempted mutant — they WERE
     #: attempted; what they failed to do is change anything.
     equivalent: tuple[MutantOutcome, ...] = ()
-    #: (B012) Optional NDJSON progress artifact. Present only when the run
-    #: emitted progress; omitted, never null, for compatibility with v6.
-    progress_artifact: str | None = None
     #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
     #: never empty, so non-shard v6 payloads are unchanged.
     candidate_ids: tuple[str, ...] | None = None
@@ -1268,8 +1265,6 @@ class Mutation:
             )
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
-        if self.progress_artifact is not None:
-            _check_wire_path(self.progress_artifact, "mutation.progress_artifact")
         if self.candidate_ids is not None:
             if not self.candidate_ids:
                 raise ValueError("mutation.candidate_ids must be omitted when empty")
@@ -1370,8 +1365,6 @@ class Mutation:
         }
         for name in MUTATION_BUCKETS:
             payload[name] = [item.to_dict() for item in getattr(self, name)]
-        if self.progress_artifact is not None:
-            payload["progress_artifact"] = self.progress_artifact
         if self.candidate_ids is not None:
             payload["candidate_ids"] = list(self.candidate_ids)
         return payload

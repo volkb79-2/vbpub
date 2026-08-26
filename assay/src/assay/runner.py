@@ -72,6 +72,7 @@ from __future__ import annotations
 import fnmatch
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -82,7 +83,16 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Callable, ContextManager, Iterator, Mapping, Protocol, Sequence
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    TextIO,
+)
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
@@ -238,6 +248,114 @@ def default_process_runner(
 
 
 COMMAND_TAIL_BYTES = 64 * 1024
+
+#: (B032/A-322) The ceiling on one `environment_command` preflight probe.
+#: A probe answers a yes/no question about the INVOKING environment -- "is
+#: this the environment this lane declared?" -- before any repository,
+#: snapshot or lane work, so it has no legitimate reason to run long, and a
+#: probe that hangs must not be able to spend the lane's whole declared
+#: budget before the lane's own command has even started. The effective
+#: timeout is `min(this, deadline.remaining())`: the lane budget still wins
+#: when it is the smaller of the two.
+PROBE_BUDGET_SECONDS = 30.0
+
+
+def _probe_refusal_terminal(
+    probe_result: "CommandResult",
+) -> tuple[Outcome, ReasonCode]:
+    """The `(outcome, reason_code)` an `environment_command` probe failure
+    renders as (B032/A-321).
+
+    `8a2a4731` hardcoded `ERROR`/`BAD_LANE_CONFIG` for every probe failure
+    and discarded `execute_plan`'s own classification, so a probe that
+    genuinely exhausted its budget -- which `execute_plan` classifies
+    correctly as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` -- was recorded as an
+    operator config error, exit 2 instead of exit 4. A gate that retries a
+    timeout but hard-fails a config error (the estate's own run-gate shape)
+    then does exactly the wrong thing on a real timeout.
+
+    A-321's ruling: the timeout is the ONE distinction that must survive.
+    Every other probe failure -- a missing binary (`ERROR`/`EXEC_FAILED`), a
+    nonzero exit or a signal death (`FAIL`/`COMMAND_FAILED`) -- means the
+    same actionable thing to a consumer ("this lane's declared environment is
+    not the invoking one; the lane as declared cannot be honoured here"), so
+    those keep collapsing into `ERROR`/`BAD_LANE_CONFIG`. What separates them
+    is now carried as text on the diagnostics stream
+    (:func:`_report_probe_refusal`), not by widening the closed reason-code
+    vocabulary (A-138/A-170).
+    """
+    if probe_result.reason_code is ReasonCode.LANE_TIMEOUT:
+        return probe_result.outcome, ReasonCode.LANE_TIMEOUT
+    return Outcome.ERROR, ReasonCode.BAD_LANE_CONFIG
+
+
+def _report_probe_refusal(
+    lane: Lane,
+    probe_result: "CommandResult",
+    *,
+    status: Outcome,
+    reason_code: ReasonCode,
+    diagnostics: "TextIO | None",
+    probe_timeout: float = PROBE_BUDGET_SECONDS,
+) -> None:
+    """B010's own stated deliverable, finally shipped (B032/A-322).
+
+    B010 asked, verbatim, for a refusal that says "this lane's declared
+    environment does not match the invoking one; run via `<declared
+    wrapper>`" *instead of surfacing the suite's raw traceback*. What
+    `8a2a4731` shipped wrote **0 bytes** to stderr and emitted a generic
+    `BAD_LANE_CONFIG` whose `argv_effective` named the LANE's command --
+    which never executed -- so a consumer got neither the raw error B010
+    complained about nor the clear message B010 asked for.
+
+    The verdict artifact stays exactly as closed as it was: no free-text
+    field is added to it (A-138/A-170). The diagnosis goes to the caller's
+    own stream, which is where :mod:`assay.cli` already prints every other
+    typed refusal it catches.
+    """
+    if diagnostics is None:
+        return
+    wrapper = shlex.join(lane.environment_command or ())
+    if reason_code is ReasonCode.LANE_TIMEOUT:
+        # NOT B010's message: a probe that never finished proved nothing
+        # about the environment either way, so claiming a mismatch would be
+        # an invented fact. The lane's own command still never started.
+        #
+        # The window actually enforced is `min(PROBE_BUDGET_SECONDS,
+        # deadline.remaining())` (B032/A-322's `probe_timeout`, passed in by
+        # the caller) -- when the lane's own remaining budget is the
+        # tighter bound, hardcoding the fixed 30s cap here would be a false
+        # claim about which bound actually fired (round-2 review finding).
+        cause = (
+            f"its declared environment_command did not finish within its "
+            f"{probe_timeout:g}s preflight window (the lesser of the "
+            f"{PROBE_BUDGET_SECONDS:g}s probe cap and the lane's remaining "
+            f"budget), so the lane's own command never started"
+        )
+    else:
+        detail = {
+            ReasonCode.EXEC_FAILED: "the probe command could not be executed",
+            ReasonCode.COMMAND_FAILED: (
+                f"the probe exited {probe_result.returncode}"
+                if probe_result.returncode is not None
+                else "the probe was killed before it could exit"
+            ),
+        }.get(probe_result.reason_code, "the probe did not pass")
+        cause = (
+            f"its declared environment does not match the invoking one "
+            f"({detail}), so the lane's own command never started"
+        )
+    print(
+        f"assay: {status.value}/{reason_code.value}: lane {lane.name!r}: "
+        f"{cause}. Run via the declared wrapper: {wrapper}",
+        file=diagnostics,
+    )
+    for label, tail in (
+        ("stderr", probe_result.stderr_tail),
+        ("stdout", probe_result.stdout_tail),
+    ):
+        if tail:
+            print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
 
 
 def _decode_timeout_stream(raw: str | bytes | None) -> str | None:
@@ -1867,6 +1985,7 @@ def _run_prepared_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    progress_artifact: Path | None = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
     still-live seed. Never lets an :class:`~assay.errors.AssayError` escape
@@ -1889,9 +2008,19 @@ def _run_prepared_lane(
     kill_signal_artifact = (
         lane.judge.mutation.kill_signal_artifact if r2_declared else None
     )
-    progress_path = (
-        Path(".assay") / f"{lane.name}.progress.jsonl" if r2_declared else None
-    )
+    # B031/A-320. This used to be an UNCONDITIONAL
+    # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
+    # a CWD-relative path in the CONSUMER's live worktree, built by
+    # interpolating an unvalidated lane name. Three defects in one line: it
+    # broke B006(b)/A-292's "never the consumer's real worktree" rule (an R2
+    # lane passed once and then refused forever with
+    # `NO_MEASUREMENT`/`DIRTY_TREE`, reproduced), it let a lane named
+    # `"../../../pwned/esc"` write NDJSON outside the repository, and it was
+    # relative to the invoking CWD rather than to anything the verdict could
+    # name. Progress is now OPT-IN and consumer-directed: `assay run
+    # --progress PATH` (the same contract `--verdict-json` already has), and
+    # `None` -- write nothing at all -- is the default for every lane.
+    progress_path = progress_artifact if r2_declared else None
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
@@ -2433,6 +2562,7 @@ def _run_higher_rigor_lane(
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
+    progress_artifact: Path | None = None,
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
     R1, R2, or R3 reaches here instead of the direct live-tree path in
@@ -2565,6 +2695,7 @@ def _run_higher_rigor_lane(
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        progress_artifact=progress_artifact,
                     )
                 )
     except AssayError as exc:
@@ -2629,6 +2760,8 @@ def run_lane(
     shard: str | None = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
+    progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -2772,6 +2905,13 @@ def run_lane(
                 declared_evidence=declared_evidence,
                 clock=clock,
             )
+        # B032/A-322: `execute_plan` reads its `timeout=` ARGUMENT, never
+        # `plan.budget_seconds` -- so the cap below was dead code and a hung
+        # probe consumed the whole lane budget (measured: an
+        # `environment_command` of `sleep 45` under `budget = "5m"` ran for
+        # 45 s and then PASSED). The SAME value now reaches both, so the cap
+        # is enforced where it is actually read.
+        probe_timeout = min(PROBE_BUDGET_SECONDS, deadline.remaining())
         probe_plan = CommandPlan(
             argv_declared=tuple(lane.environment_command),
             argv_appended=(),
@@ -2780,22 +2920,31 @@ def run_lane(
             env_effective=probe_env_effective,
             env_passthrough=lane.env_passthrough,
             allow_argv_append=False,
-            budget_seconds=min(30.0, deadline.remaining()),
+            budget_seconds=probe_timeout,
             project_prefix=None,
         )
         probe_result = execute_plan(
             probe_plan,
             cwd=project_root,
-            timeout=deadline.remaining(),
+            timeout=probe_timeout,
             process_runner=process_runner,
             clock=clock,
         )
         if probe_result.outcome is not Outcome.PASS:
+            probe_status, probe_reason = _probe_refusal_terminal(probe_result)
+            _report_probe_refusal(
+                lane,
+                probe_result,
+                status=probe_status,
+                reason_code=probe_reason,
+                diagnostics=diagnostics,
+                probe_timeout=probe_timeout,
+            )
             return refuse_lane(
                 lane,
                 commit=commit,
-                status=Outcome.ERROR,
-                reason_code=ReasonCode.BAD_LANE_CONFIG,
+                status=probe_status,
+                reason_code=probe_reason,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
                 infrastructure_source=infrastructure_source,
@@ -2925,6 +3074,7 @@ def run_lane(
             shard_count=shard_count,
             evidence=evidence,
             declared_evidence=declared_evidence,
+            progress_artifact=progress_artifact,
         )
 
     # A-175 / work item 6: the post-command comparison is against the RESOLVED

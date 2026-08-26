@@ -890,3 +890,50 @@ def test_a_payload_free_r2_fail_stays_clean_at_the_raw_layer_too():
     assert "mutation" not in claim
     assert claim["status"] != "PASS"
     assert _raw(verify._check_a_judged_status_carries_its_own_payload, document) == []
+
+
+def test_verify_registers_the_b012_shard_fields_the_producer_actually_emits():
+    """B031/A-320 + A-323: the THIRD registration point, live on `main` until
+    this commit for two separate B012 fields.
+
+    `assay.verify` reconstructs its own comparison object from the raw
+    untrusted document rather than trusting it (A-182), so a field the
+    reconstruction functions do not read is a field `_reject_unknown_keys`
+    refuses -- even though it passes JSON Schema validation cleanly. Both of
+    B012's shard fields were in that state:
+
+        assay verify: schema: unknown mutation field(s): ['candidate_ids']
+        assay verify: schema: unknown judgment.r2 field(s):
+                              ['shard_count', 'shard_index']
+
+    The second was reproduced by driving a REAL `assay run <lane> --shard 0/1`
+    through the installed CLI and feeding its own artifact straight back to
+    `assay verify` -- the exact round-trip A-317 says `tests/` never
+    performs. Both are registered now; this test is the guard.
+    """
+    document = _fixture("r2_fail_mutants_survived.json")
+    assert verify.verify_document(document) == [], "the fixture must start clean"
+
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["candidate_ids"] = ["a" * 64, "b" * 64]
+    document["judgment"]["r2"]["shard_index"] = 0
+    document["judgment"]["r2"]["shard_count"] = 2
+
+    failures = verify.verify_document(document)
+    assert not any("unknown mutation field" in item for item in failures), failures
+    assert not any("unknown judgment.r2 field" in item for item in failures), failures
+
+
+def test_verify_still_refuses_a_field_no_registration_point_knows():
+    """The other half of the guard above: registering the two real fields must
+    not have loosened `_reject_unknown_keys` itself. `progress_artifact` --
+    removed from the dataclass AND the schema by B031/A-320 -- is the probe.
+    """
+    document = _fixture("r2_fail_mutants_survived.json")
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["progress_artifact"] = ".assay/package.progress.jsonl"
+
+    failures = verify.verify_document(document)
+    assert any(
+        "unknown mutation field(s): ['progress_artifact']" in item for item in failures
+    ), failures

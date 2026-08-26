@@ -64,7 +64,7 @@ from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .output import VerdictOutput, reserve_verdict_output
+from .output import VerdictOutput, reserve_verdict_output, validate_progress_destination
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
@@ -156,6 +156,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "write the verdict atomically to PATH, or '-' for stdout "
             "(A-028); omit to skip artifact emission entirely"
+        ),
+    )
+    run.add_argument(
+        "--progress",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "append the R2 mutation progress NDJSON stream to PATH, one "
+            "compact JSON object per line, flushed per event (B031/A-320). "
+            "Opt-in and consumer-directed, exactly like --verdict-json: "
+            "assay never chooses this location itself, and omitting the flag "
+            "writes no progress file at all. Point it OUTSIDE the repository "
+            "(or at a gitignored path) -- a progress file inside the work "
+            "tree makes the next run of the same lane refuse "
+            "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
         ),
     )
 
@@ -331,10 +347,22 @@ def _cmd_run(
     # `None` is A-028's deliberate no-artifact mode and reserves nothing:
     # the exit code alone still gates correctly, so a caller that never asked
     # for a file is never refused on account of one.
+    #
+    # B031/A-320 round 2 (blocker 2): `--progress` shares this same OUTPUT
+    # RESERVATION step for the two mistakes visible without opening
+    # anything (a directory, an empty/unparseable path) -- an unwritable
+    # `--progress <destination>` used to run the whole lane and only THEN
+    # surface as an unrelated `ERROR`/`GIT_FAILED`, deep inside R2
+    # execution. `validate_progress_destination` does not reserve a
+    # descriptor the way `reserve_verdict_output` does: the progress file is
+    # opened once, later, only if the lane reaches R2, and its own writer
+    # creates missing parent directories on demand -- see its docstring.
     destination: VerdictOutput | None = None
     if args.verdict_json is not None:
         destination = reserve_verdict_output(args.verdict_json, stdout=out)
     try:
+        if (progress_arg := getattr(args, "progress", None)) is not None:
+            validate_progress_destination(progress_arg)
         return _run_reserved(args, lane, lane_file, appended, destination, out, err)
     finally:
         if destination is not None:
@@ -482,6 +510,20 @@ def _run_reserved(
             shard=getattr(args, "shard", None),
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
+            # B031/A-320: opt-in, consumer-named, absent by default. Resolved
+            # against the invoking CWD (like every other CLI path argument),
+            # never against the project root, and never derived from the lane
+            # name.
+            progress_artifact=(
+                Path(progress_arg).expanduser()
+                if (progress_arg := getattr(args, "progress", None)) is not None
+                else None
+            ),
+            # B032/A-322: where the `environment_command` probe's refusal
+            # message goes. `run_lane` returns a Verdict and carries no
+            # free-text field for a cause (A-138/A-170), so B010's "refuse
+            # with a clear message" needs a stream, not a reason code.
+            diagnostics=err,
         )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:
@@ -566,11 +608,22 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             snapshot_policy=snapshot_policy,
         )
         with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
-            relocated = runner._relocate_source_roots(
-                lane,
-                project_root=lane_file.project_root,
-                scratch_project_root=(prepared.spec.scratch_root / "unused"),
-            )
+            # B030/A-319: source roots are NOT relocated here, on purpose.
+            # `_relocate_source_roots` respells `judge.source_root_paths`
+            # against a MATERIALIZED snapshot's own project root, and the two
+            # target resolvers below are handed
+            # `snapshot_repo_top=prepared.spec.repo_top` -- the CONSUMER's
+            # real repository top, since `plan` reads blobs out of the
+            # prepared seed (`_read_prepared_source_text`) and never
+            # materializes a snapshot at all. Relocating against a directory
+            # that does not exist made
+            # `resolve_mutation_targets`'s unconditional
+            # `is_relative_to(root)` containment gate unsatisfiable, so every
+            # lane planned as `candidate_count: 0`; a `whole_target` lane
+            # failed outright naming the phantom path. The roots the gate
+            # must be compared against here are the ones the lane actually
+            # declares.
+            source_root_paths = lane.judge.source_root_paths
             resolved_base = (
                 runner._resolve_declared_base(
                     lane_file.project_root,
@@ -587,7 +640,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                     project_prefix=project_prefix,
                     deadline=deadline,
                     adapter=adapter,
-                    source_root_paths=relocated.judge.source_root_paths,
+                    source_root_paths=source_root_paths,
                     targets=lane.judge.targets or (),
                 )
             else:
@@ -611,7 +664,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                     deadline=deadline,
                     adapter=adapter,
                     snapshot_repo_top=prepared.spec.repo_top,
-                    source_root_paths=relocated.judge.source_root_paths,
+                    source_root_paths=source_root_paths,
                 )
             jobs = mutation.collect_mutation_sites(
                 targets,
