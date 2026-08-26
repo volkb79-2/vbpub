@@ -49,8 +49,34 @@ from typing import Mapping
 __all__ = [
     "MUTATION_OPERATORS",
     "MUTATION_OPERATORS_BY_LANGUAGE",
+    "WITHDRAWN_MUTATION_OPERATORS",
     "operator_language",
 ]
+
+#: Operators that are still SPELLABLE in a schema-v7 artifact but that no
+#: lane may declare and no adapter produces (B034/A-326).
+#:
+#: B015's two "semantic" Python families shipped in 2.3.0 and were measured
+#: in the 2.1.0->2.3.0 review-gap audit to be a byte-identical SUBSET of
+#: ``python:compare-swap``'s own output: same span, same replacement bytes,
+#: 87 sites over ``src/assay/**.py``, zero of them new. Co-selecting them
+#: with ``compare-swap`` emitted every shared site twice, and the enum
+#: predicate matched any ``name.attr`` access rather than an enum member.
+#: They are withdrawn from the PRODUCER and from lane DECLARATION.
+#:
+#: They are NOT removed from :data:`MUTATION_OPERATORS_BY_LANGUAGE` or from
+#: the packaged schema's ``oneOf``, and that is a deliberate, reasoned
+#: asymmetry rather than an oversight (A-326, applying A-324's own test):
+#: released ``assay verify`` builds ACCEPT a v7 document naming either
+#: operator, and released ``assay run`` builds EMITTED such documents, so
+#: deleting the spellings would stop real artifacts from verifying -- the
+#: exact breakage A-324 requires a schema-version bump for. The spelling
+#: therefore stays until the next bump, where it is dropped; the BEHAVIOUR
+#: goes now. This module's own contract is unchanged by that: membership in
+#: the catalogue says a name is spellable, never that a lane may use it.
+WITHDRAWN_MUTATION_OPERATORS: frozenset[str] = frozenset(
+    {"python:uuid-equality-swap", "python:enum-comparison-swap"}
+)
 
 #: The closed per-language mutation catalogue (A-112/A-114/A-221). Ordered,
 #: and the order is normative for the shipped schema's own per-language
@@ -58,10 +84,12 @@ __all__ = [
 #:
 #: * ``python`` -- the original four, adopted verbatim from
 #:   ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`` and
-#:   DESIGN-GUIDE §11's own TOML example, now qualified. B015 adds two semantic
-#:   families: UUID-aware equality swapping and enum-member comparison swapping.
-#:   Both remain exact single-token comparisons; neither invents a replacement
-#:   object or mutates an unrelated operand.
+#:   DESIGN-GUIDE §11's own TOML example, now qualified. B015 added two
+#:   further "semantic" families, ``python:uuid-equality-swap`` and
+#:   ``python:enum-comparison-swap``; both are **withdrawn** (B034/A-326) and
+#:   listed here only so v7 artifacts that already name them keep verifying --
+#:   see :data:`WITHDRAWN_MUTATION_OPERATORS`. The four producible Python
+#:   operators are the original four.
 #: * ``go`` (A-221) -- three faithful analogues of the Python catalogue,
 #:   transcribed under A-112 rather than invented. There is deliberately NO
 #:   ``falsy-swap`` analogue: Python's exploits duck-typed truthiness, while

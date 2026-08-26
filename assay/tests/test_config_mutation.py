@@ -17,7 +17,10 @@ from assay import verdict as verdict_module
 from assay.config import load_lane_file
 from assay.errors import LaneConfigError
 from assay.mutation import MUTATION_OPERATORS
-from assay.vocabulary import MUTATION_OPERATORS_BY_LANGUAGE
+from assay.vocabulary import (
+    MUTATION_OPERATORS_BY_LANGUAGE,
+    WITHDRAWN_MUTATION_OPERATORS,
+)
 
 R2_JUDGE = """
 [lanes.package.judge]
@@ -67,6 +70,13 @@ def test_every_declared_operator_is_accepted(project: Project):
     this sweep still proves nothing about Python/Go's own table shape."""
     for language, operators in MUTATION_OPERATORS_BY_LANGUAGE.items():
         for operator in sorted(operators):
+            # B034/A-326: two `python:*` names are still SPELLABLE (so a v7
+            # artifact naming them keeps verifying) but no longer
+            # DECLARABLE. They are swept by
+            # `test_adapters_python_semantic_operators.py` instead, which
+            # asserts the refusal this sweep would otherwise trip over.
+            if operator in WITHDRAWN_MUTATION_OPERATORS:
+                continue
             extra = (
                 'equivalence_artifact = ".assay/schema-dump.sql"\n'
                 if language == "sql"
