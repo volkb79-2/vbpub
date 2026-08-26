@@ -21,6 +21,29 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.5.0] - 2026-08-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=4084c260131b0401f85c0d7430c9c48bf58c2378 -->
+
+### Added
+- feat(ciu): CIU-60 -- identity facts reach templates via a real file, + env print, + clean --vanilla (0854af81)
+
+### Fixed
+- fix(ciu): ciu-P33 review round 2 -- retract a wrong LOG claim, close env print's remaining traceback paths (3a7570e4)
+- fix(ciu): ciu-P33 review fixes -- env print error consistency, upsert docstring accuracy (ef275e01)
+
+### Changed
+- Merge branch 'feat/ciu-qol-v8prep-wave' (final checkpoint: identity facts, migration docs, extras table) (4084c260)
+
+### Documentation
+- docs(ciu): ciu-P35 review fix -- ssh's silent-fallback contract is not "fails loudly" (b81b06f6)
+- docs(ciu): ciu-P35 LOG -- record Optional extras table package (4c0da2c6)
+- docs(ciu): ciu-P35 -- README.md gains a consolidated "Optional extras" table (c9f3abe3)
+- docs(ciu): ciu-P34 LOG -- record CONSUMERS.md ref_services migration note (d3175625)
+- docs(ciu): ciu-P34 -- CONSUMERS.md gains a migration note from hand-rolled internal_host to --shared-infra-ref-services (5e2c3593)
+- docs(ciu): enrich CIU-62 with the reviewer's class-wide grep (6 sites, 4 shapes) (baa91ae5)
+- docs(ciu): update ciu-P33's stale backlog-number suggestion (CIU-55 -> CIU-60) (9ea11db5)
+
 ## [Unreleased]
 
 ### Adoption / Migration Notes
