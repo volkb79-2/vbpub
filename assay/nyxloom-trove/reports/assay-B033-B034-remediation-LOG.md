@@ -86,3 +86,13 @@ Round-2 finding 4, the one item that was about saying something rather than chan
 `bash tools/tester-unified-gate.sh ..` re-run at `6eb0f925`, green through
 `ASSAY_GATE_PHASE=independent-self-hosting-passed`; `GATE_EXIT=0` read in a
 separate step (LESSONS L4). Full phase transcript in the REPORT.
+
+Then run a second time at `a72f0d72` — the commit that added these round-2
+notes, and the branch tip — because "the gate is green at HEAD" was otherwise
+an inference from "the only later commit is reports-only" rather than a
+measurement, and this project has been bitten before by assuming which files a
+gate reads. Same eleven phases, `assay-2.4.2.dev9+ga72f0d72`,
+`GATE_EXIT=0` read in a separate step.
+
+That leaves this file's own final commit unlogged and ungated, as every
+append-only self-hashed log's last entry must be.
