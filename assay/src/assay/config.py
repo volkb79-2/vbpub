@@ -68,6 +68,7 @@ from .errors import LaneConfigError
 from .vocabulary import (
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
+    WITHDRAWN_MUTATION_OPERATORS,
     operator_language,
 )
 
@@ -1232,9 +1233,6 @@ def _load_judge(
     table: Any, rigor: Iterable[str], where: str, project_root: Path
 ) -> JudgeConfig | None:
     rigor = tuple(rigor)
-    declared_language = (
-        table.get("language") if isinstance(table, dict) else None
-    )
     required = list(_required_judge_fields(rigor))
 
     if table is None:
@@ -1268,11 +1266,13 @@ def _load_judge(
     # which is why it is folded into `required` below rather than treated
     # like its two siblings.
     r1_declared = "R1" in rigor
+    r2_declared = "R2" in rigor
     mode_declared = "mode" in table
-    if mode_declared and not r1_declared and declared_language != "sql":
+    if mode_declared and not (r1_declared or r2_declared):
         raise LaneConfigError(
-            f"{where}: declares 'judge.mode' but rigor {list(rigor)} does "
-            f"not include R1; mode selects the R1 judging strategy"
+            f"{where}: declares 'judge.mode' but rigor {list(rigor)} includes "
+            f"neither R1 nor R2; mode selects the judging SCOPE both tiers "
+            f"read (A-325), so on a lane with neither it reads nothing"
         )
     mode: str | None = None
     if mode_declared:
@@ -1296,7 +1296,7 @@ def _load_judge(
         )
 
     targets_declared = "targets" in table
-    if targets_declared and effective_mode != "whole_target" and declared_language != "sql":
+    if targets_declared and effective_mode != "whole_target":
         raise LaneConfigError(
             f"{where}: declares 'judge.targets' but judge.mode is not "
             f"'whole_target' -- a target list under changed-line mode does "
@@ -1304,16 +1304,25 @@ def _load_judge(
             f"believe a floor is enforced when it is not"
         )
 
-    if (r1_declared or declared_language == "sql") and effective_mode == "whole_target":
-        # A-260/§5: `base` resolves nothing for a whole-target lane with no
-        # R2, so it moves OUT of `required` here -- the generic surplus
-        # check below then refuses it as inert config if the lane still
-        # declares it (A6 addendum, extending A-062's own argument).
-        # `targets` moves IN: required and non-empty precisely in this mode.
-        # A SQL R2 lane has no diff to measure, but its baseline command still
-        # needs the declared base as provenance of what it judged; keep `base`
-        # required there.
-        if "base" in required and "R2" not in rigor and declared_language != "sql":
+    if effective_mode == "whole_target":
+        # A-260/§5 as corrected by A-325: `base` resolves nothing for a
+        # whole-target lane at EITHER tier, so it moves OUT of `required`
+        # here -- the generic surplus check below then refuses it as inert
+        # config if the lane still declares it (A6 addendum, extending
+        # A-062's own argument). `targets` moves IN: required and non-empty
+        # precisely in this mode.
+        #
+        # The two SQL carve-outs this branch used to carry are GONE (B033/
+        # A-325). The earlier `"R2" not in rigor and declared_language !=
+        # "sql"` guard forced a SQL R1-only whole-target lane to declare an
+        # inert `base` (the inverse of docs/CONSUMERS.md's own rule) while
+        # never firing on an R2 lane at all, and it left `judge.base`
+        # REQUIRED on a whole-target R2 lane that reads it nowhere:
+        # `whole_file_r2` skips both `check_base_is_head` and the `git diff`,
+        # and a whole-target R1 never resolves a base either (evaluate_r1's
+        # own docstring). Whole-target scope and a comparison commit are
+        # mutually exclusive by construction, in every language.
+        if "base" in required:
             required.remove("base")
         # `targets` is never a member of any `JUDGE_FIELDS_BY_RIGOR` tuple
         # (only this mode-specific branch ever requires it), so it can
@@ -1359,7 +1368,12 @@ def _load_judge(
     surplus = sorted(
         set(table)
         - set(required)
-        - {"attestation_dir", "evidence", "mode", "require_branch", "targets"}
+        # B033/A-325: `targets` is NOT exempt any more. It was added to this
+        # set alongside the SQL carve-out above, and with that carve-out gone
+        # the exemption is not merely unnecessary but wrong: `targets` is a
+        # member of `required` in the one mode that reads it, so exempting it
+        # could only ever hide a declaration nothing reads.
+        - {"attestation_dir", "evidence", "mode", "require_branch"}
     )
     if surplus:
         raise LaneConfigError(
@@ -1739,19 +1753,52 @@ def _load_mutation(
         and language is not None
         and operator_language(operator) != language
     )
+    # B034/A-326 round 2: what these two messages OFFER is not the same set as
+    # what the catalogue SPELLS. A withdrawn operator stays in
+    # `MUTATION_OPERATORS` so a v7 artifact naming it still verifies, but
+    # suggesting it to a consumer who just mistyped an operator name would
+    # walk them straight into a second refusal one line later. The
+    # suggestion lists are therefore the DECLARABLE set, the membership
+    # checks above and below stay the spellable one.
+    declarable_for_language = tuple(
+        operator
+        for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
+        if operator not in WITHDRAWN_MUTATION_OPERATORS
+    )
+    declarable = tuple(
+        operator
+        for operator in MUTATION_OPERATORS
+        if operator not in WITHDRAWN_MUTATION_OPERATORS
+    )
     if foreign:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
             f"which belong to another language; this lane declares "
             f"judge.language = {language!r}, and its operators are: "
-            f"{', '.join(MUTATION_OPERATORS_BY_LANGUAGE.get(language, ()))}"
+            f"{', '.join(declarable_for_language)}"
         )
     unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
     if unknown_operators:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names unknown operator(s): "
             f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(MUTATION_OPERATORS)}"
+            f"{', '.join(declarable)}"
+        )
+    # B034/A-326: withdrawn operators are still SPELLABLE in a v7 artifact
+    # (see `vocabulary.WITHDRAWN_MUTATION_OPERATORS` for why the spelling
+    # outlives the behaviour), so they are neither "unknown" nor foreign --
+    # and they must still be refused here, loudly and by name. Selecting
+    # them silently would leave a lane declaring mutation coverage that no
+    # adapter can produce, which is this project's own named defect class.
+    withdrawn = sorted(set(operators) & WITHDRAWN_MUTATION_OPERATORS)
+    if withdrawn:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names withdrawn "
+            f"operator(s): {', '.join(withdrawn)}. Every site they ever "
+            f"produced was already produced by python:compare-swap at the "
+            f"same byte span with the same replacement, so declaring both "
+            f"emitted each shared site twice and added no coverage. Delete "
+            f"them; python:compare-swap already covers ==/!= swapping"
         )
     # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
     # carve's single most consequential config decision (§4.3): without it,

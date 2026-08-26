@@ -654,15 +654,81 @@ def test_model_clause_operator_language_the_PER_OUTCOME_half_alone():
         verify._reconstruct_verdict(broken)
 
 
-def test_raw_layer_clause_base_is_required_when_r1_or_r2_is_present():
-    """Invariant, A-223a's `if` half."""
+def test_raw_layer_clause_base_is_required_when_r1_judges_changed_lines():
+    """Invariant, A-223a's `if` half, NARROWED by B033/A-325 to the case the
+    document can witness: `judgment.r1.mode`. An `r2` with no `r1` no longer
+    forces a base -- a whole-target R2 legitimately has none, and v7 records
+    nothing that distinguishes it (B035)."""
     check = verify._check_base_matches_the_tiers_present
-    clean = _sql_r2_document()
-    assert _raw(lambda d, f: check(d["judgment"], f), clean) == []
-    broken = _sql_r2_document()
-    del broken["judgment"]["resolved"]["base"]
-    failures = _raw(lambda d, f: check(d["judgment"], f), broken)
+    changed_lines = {
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "9" * 40,
+        },
+        "r1": {
+            "coverage_format": "cobertura",
+            "coverage_artifact": "cov.xml",
+            "fail_under": 0.0,
+            "allow_excluded": False,
+            "mode": "changed_lines",
+            "require_branch": False,
+        },
+    }
+    assert _raw(lambda d, f: check(d, f), changed_lines) == []
+    broken = json.loads(json.dumps(changed_lines))
+    del broken["resolved"]["base"]
+    failures = _raw(lambda d, f: check(d, f), broken)
     assert failures and any("omits base" in f for f in failures), failures
+
+
+def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
+    """B033/A-325's new only-if half: whole-target scope replaces the diff at
+    EVERY tier, so a base recorded alongside a whole-target r1 describes a
+    comparison nothing made -- even when an r2 is present, which the old
+    rule treated as licence to record one."""
+    check = verify._check_base_matches_the_tiers_present
+    whole = {
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "9" * 40,
+        },
+        "r1": {
+            "coverage_format": "cobertura",
+            "coverage_artifact": "cov.xml",
+            "fail_under": 0.0,
+            "allow_excluded": False,
+            "mode": "whole_target",
+            "targets": ["pkg/mod.py"],
+            "require_branch": False,
+        },
+        "r2": {
+            "jobs": 1,
+            "max_mutants": 50,
+            "operators": ["python:compare-swap"],
+            "kill_attribution": "unattributed",
+        },
+    }
+    failures = _raw(lambda d, f: check(d, f), whole)
+    assert failures and any("whole-target mode" in f for f in failures), failures
+    clean = json.loads(json.dumps(whole))
+    del clean["resolved"]["base"]
+    assert _raw(lambda d, f: check(d, f), clean) == []
+
+
+def test_raw_layer_clause_leaves_an_r2_only_base_unconstrained():
+    """The deliberate gap B035 exists to close: with no `r1` on the wire the
+    document cannot say whether its R2 diffed or mutated whole files, so the
+    raw layer asserts neither direction rather than rejecting one of the two
+    honest shapes."""
+    check = verify._check_base_matches_the_tiers_present
+    with_base = _sql_r2_document()["judgment"]
+    without_base = _sql_r2_document()["judgment"]
+    del without_base["resolved"]["base"]
+
+    assert _raw(lambda d, f: check(d, f), with_base) == []
+    assert _raw(lambda d, f: check(d, f), without_base) == []
 
 
 def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
@@ -678,7 +744,7 @@ def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
     broken = json.loads(json.dumps(r3_only))
     broken["resolved"]["base"] = "9" * 40
     failures = _raw(lambda d, f: check(d, f), broken)
-    assert failures and any("neither r2 nor r1" in f for f in failures), failures
+    assert failures and any("neither r1 nor r2" in f for f in failures), failures
 
 
 def test_verify_document_accepts_a_real_base_resolution_value():

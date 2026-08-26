@@ -718,7 +718,8 @@ fail_under = 0.0
 allow_excluded = false
 require_branch = false
 mode = "whole_target"
-base = "base"
+# No `base`: B033/A-325 refuses it as inert config on a whole-target lane at
+# every rigor, R2 included -- neither tier resolves a comparison commit.
 targets = ["pkg/flags.py"]
 
 [lanes.whole.judge.coverage]
@@ -749,6 +750,95 @@ operators = ["python:bool-const-flip"]
     # sees only the one restored line).
     assert payload["candidate_count"] == 2
     assert payload["by_file"] == {"pkg/flags.py": 2}
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("pkg/tests/test_flags.py", "is a test path"),
+        ("pkg/notes.md", "not adapter-recognised source"),
+        ("pkg/gone.py", "does not exist as a regular file"),
+        # Round-2 review: R2 had no symlink gate of its own and fell through
+        # to `read_regular_file`, which refuses a symlink as
+        # ERROR/GIT_FAILED -- a repository failure for what is a lane-config
+        # mistake. R1 has always named it; R2 now does too, first, before
+        # anything that resolves.
+        ("pkg/alias.py", "is a symlink"),
+    ],
+)
+def test_a_whole_target_entry_that_fails_a_gate_is_refused_not_dropped(
+    tmp_path, target, expected
+):
+    """B033/A-325: `_mutation_targets_whole` used to `continue` silently past
+    an excluded directory, a non-matching source glob and a test path, so a
+    lane declaring two targets could report PASS having mutated one -- and
+    nothing in the verdict named the other. It now refuses by name, exactly
+    as R1's `evaluate._resolve_whole_target` always did. Driven through
+    `assay plan`, which calls the same resolver.
+    """
+    project = Project(root=tmp_path / "proj")
+    project.root.mkdir()
+    (project.root / "pkg").mkdir()
+    (project.root / "pkg" / "tests").mkdir()
+    (project.root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+    (project.root / "pkg" / "tests" / "test_flags.py").write_text(
+        _TEXT, encoding="utf-8"
+    )
+    (project.root / "pkg" / "notes.md").write_text("notes\n", encoding="utf-8")
+    (project.root / "pkg" / "alias.py").symlink_to("flags.py")
+    repo = GitRepo(path=project.root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write(
+        "assay.toml",
+        f"""
+schema_version = 2
+
+[lanes.whole]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "-q"]
+env = {{ MOCK_MODE = "true" }}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.whole.isolation]
+snapshot_selection = "repository"
+
+[lanes.whole.judge]
+language = "python"
+source_roots = ["pkg"]
+mode = "whole_target"
+targets = ["pkg/flags.py", "{target}"]
+
+[lanes.whole.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+""",
+    )
+    repo.commit_all("add sources")
+
+    from assay.cli import main
+
+    out = io.StringIO()
+    err = io.StringIO()
+    exit_code = main(
+        ["plan", "whole", "--file", str(project.root / "assay.toml")],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert exit_code != 0
+    message = err.getvalue()
+    assert "BAD_LANE_CONFIG" in message
+    assert expected in message
+    # The refusal NAMES the declared target -- the whole point: a bare
+    # BAD_LANE_CONFIG leaves the consumer guessing which of N entries failed.
+    assert target in message
 
 
 def _write_plan_fixture(tmp_path: Path) -> Path:

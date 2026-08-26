@@ -1895,7 +1895,34 @@ def _mutation_targets_whole(
     source_root_paths: Sequence[Path],
     targets: Sequence[str],
 ) -> tuple[mutation.MutationTarget, ...]:
-    """Build whole-file R2 targets from the lane's declared target list."""
+    """Build whole-file R2 targets from the lane's declared target list.
+
+    Every containment gate REFUSES ``ERROR``/``BAD_LANE_CONFIG`` naming the
+    target and the gate it failed -- never a silent ``continue`` (B033/
+    A-325). This is R1's own rule, one tier down: :func:`assay.evaluate.
+    _resolve_whole_target` refuses the identical shapes, and its docstring
+    states why -- "a directory target expanding to N files of which only one
+    is measured would PASS while leaving the rest unjudged, which is
+    precisely the vacuity hole this whole mode exists to close". R2 narrowing
+    the same declaration silently is that hole reopened: ``judgment.r2``
+    carries no ``targets`` field at all, so from the artifact alone a target
+    that was judged and clean is indistinguishable from one that was never
+    mutated. A partially-narrowed target set renders a real PASS/FAIL over
+    scope the consumer never agreed to.
+
+    The gates run in R1's own order -- symlink, then containment, then
+    existence, then excluded directory, then source globs, then test path --
+    so a consumer who moves one lane from R1 to R2 sees the same failure
+    named first. The symlink gate is R2's own, not a delegation to
+    :meth:`assay.isolation.SnapshotRepository.read_regular_file` one layer
+    down (round-2 review): that layer does refuse a symlink, but as
+    ``ERROR``/``GIT_FAILED``, which reads as a repository failure when the
+    actual mistake is in the lane's own declaration.
+
+    A duplicate spelling is the one thing still collapsed rather than
+    refused: two identical entries request exactly the same work, so
+    de-duplicating narrows nothing.
+    """
     resolved: list[mutation.MutationTarget] = []
     seen: set[str] = set()
     for raw_target in targets:
@@ -1903,7 +1930,19 @@ def _mutation_targets_whole(
         if path in seen:
             continue
         seen.add(path)
-        abs_path = (snapshot_repo_top / path).resolve()
+        candidate = snapshot_repo_top / path
+        # Checked BEFORE anything that resolves, exactly as R1 does:
+        # `is_symlink` never raises for a non-existent path, and `.resolve()`
+        # below would silently follow the link and then report gates about
+        # the TARGET's location rather than the declared entry's.
+        if candidate.is_symlink():
+            raise AssayError(
+                f"mutation target {raw_target!r} is a symlink; a "
+                f"whole-target entry must be a real, ordinary source file",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        abs_path = candidate.resolve()
         if not any(abs_path.is_relative_to(root) for root in source_root_paths):
             raise AssayError(
                 f"mutation target {raw_target!r} is outside judge.source_roots "
@@ -1911,14 +1950,43 @@ def _mutation_targets_whole(
                 outcome=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
+        if not abs_path.is_file():
+            raise AssayError(
+                f"mutation target {raw_target!r} does not exist as a regular "
+                f"file at the judged commit (looked for {path!r} inside the "
+                f"snapshot); a whole-target entry is always a regular file, "
+                f"never a directory and never absent",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if any(part in adapter.excluded_dir_names for part in PurePosixPath(path).parts[:-1]):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} sits inside an excluded "
+                f"directory ({sorted(adapter.excluded_dir_names)})",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if not any(fnmatch.fnmatch(path, pattern) for pattern in adapter.source_globs):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} is not adapter-recognised "
+                f"source ({list(adapter.source_globs)})",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if adapter.is_test_path(path):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} is a test path per the "
+                f"adapter's own convention",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         text = _read_prepared_source_text(prepared, path, deadline=deadline)
-        lines = frozenset(range(1, text.count("\n") + 2))
+        # Every line the file actually has. A trailing newline TERMINATES the
+        # last line rather than starting another, so `count("\n") + 2` (the
+        # shipped spelling) claimed one line that does not exist for the
+        # newline-terminated files essentially every source file is.
+        line_count = text.count("\n") + (0 if text.endswith("\n") else 1)
+        lines = frozenset(range(1, line_count + 1))
         resolved.append(mutation.MutationTarget(path=path, text=text, lines=lines))
     return tuple(resolved)
 
@@ -1986,6 +2054,7 @@ def _run_prepared_lane(
     shard_index: int | None = None,
     shard_count: int | None = None,
     progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
     still-live seed. Never lets an :class:`~assay.errors.AssayError` escape
@@ -2216,6 +2285,20 @@ def _run_prepared_lane(
                         targets=lane.judge.targets or (),
                     )
                 except AssayError as exc:
+                    # B033/A-325: the verdict stays as closed as it was --
+                    # `judgment.r2` has no `targets` field and gains none
+                    # (A-138/A-170) -- so WHICH declared target failed WHICH
+                    # gate is written to the caller's diagnostics stream,
+                    # exactly as A-322 does for a probe refusal. Without
+                    # this, a whole-target R2 refusal is a bare
+                    # `BAD_LANE_CONFIG` and the consumer has to guess which
+                    # of N declared targets it names.
+                    if diagnostics is not None:
+                        print(
+                            f"assay: lane {lane.name}: R2 whole-target "
+                            f"resolution refused: {exc}",
+                            file=diagnostics,
+                        )
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
@@ -2416,12 +2499,25 @@ def _run_prepared_lane(
 
     judgment: Judgment | None = None
     if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
+        # B033/A-325: "a tier ABOVE R0 ran" is not the same question as "a
+        # tier that READS a base ran", and whole-target scope is exactly
+        # where the two diverge. A whole-target R1 never resolves a base
+        # (`on_base_resolved` is never called on that path), and a
+        # whole-target R2 skips both `check_base_is_head` and the `git diff`
+        # -- so on a whole-target lane NEITHER tier compares against a
+        # comparison commit, and recording one would be the invented fact
+        # `_build_judgment_resolved`'s own docstring forbids.
+        whole_target_scope = lane.judge.mode == "whole_target"
+        r1_reads_base = judgment_r1 is not None and not whole_target_scope
+        r2_reads_base = judgment_r2 is not None and not (
+            whole_target_scope and lane.judge.targets is not None
+        )
         judgment = Judgment(
             resolved=_build_judgment_resolved(
                 lane,
                 resolved_base=resolved_base,
                 base_resolution=base_resolution,
-                compares_a_base=judgment_r1 is not None or judgment_r2 is not None,
+                compares_a_base=r1_reads_base or r2_reads_base,
             ),
             r1=judgment_r1,
             r2=judgment_r2,
@@ -2452,7 +2548,10 @@ def _build_judgment_resolved(
       repository, and it is present exactly when a tier that reads one is
       (A-223a/A-227). An ``R0,R3`` lane genuinely has no comparison commit:
       ``JUDGE_FIELDS_BY_RIGOR`` gives R3 none, so recording one would be an
-      invented fact rather than a missing one.
+      invented fact rather than a missing one. The same is true of a
+      ``mode = "whole_target"`` lane at EVERY rigor (B033/A-325): whole-target
+      scope replaces the diff outright, so neither R1 nor R2 reads a base
+      there and ``judge.base`` is refused as inert config at load.
     """
     return JudgmentResolved(
         language=lane.judge.language,
@@ -2563,6 +2662,7 @@ def _run_higher_rigor_lane(
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
     R1, R2, or R3 reaches here instead of the direct live-tree path in
@@ -2696,6 +2796,7 @@ def _run_higher_rigor_lane(
                         shard_index=shard_index,
                         shard_count=shard_count,
                         progress_artifact=progress_artifact,
+                        diagnostics=diagnostics,
                     )
                 )
     except AssayError as exc:
@@ -3075,6 +3176,7 @@ def run_lane(
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_artifact=progress_artifact,
+            diagnostics=diagnostics,
         )
 
     # A-175 / work item 6: the post-command comparison is against the RESOLVED

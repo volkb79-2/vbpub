@@ -17,7 +17,10 @@ from assay import verdict as verdict_module
 from assay.config import load_lane_file
 from assay.errors import LaneConfigError
 from assay.mutation import MUTATION_OPERATORS
-from assay.vocabulary import MUTATION_OPERATORS_BY_LANGUAGE
+from assay.vocabulary import (
+    MUTATION_OPERATORS_BY_LANGUAGE,
+    WITHDRAWN_MUTATION_OPERATORS,
+)
 
 R2_JUDGE = """
 [lanes.package.judge]
@@ -67,6 +70,13 @@ def test_every_declared_operator_is_accepted(project: Project):
     this sweep still proves nothing about Python/Go's own table shape."""
     for language, operators in MUTATION_OPERATORS_BY_LANGUAGE.items():
         for operator in sorted(operators):
+            # B034/A-326: two `python:*` names are still SPELLABLE (so a v7
+            # artifact naming them keeps verifying) but no longer
+            # DECLARABLE. They are swept by
+            # `test_adapters_python_semantic_operators.py` instead, which
+            # asserts the refusal this sweep would otherwise trip over.
+            if operator in WITHDRAWN_MUTATION_OPERATORS:
+                continue
             extra = (
                 'equivalence_artifact = ".assay/schema-dump.sql"\n'
                 if language == "sql"
@@ -116,7 +126,13 @@ def test_an_operator_belonging_to_another_language_is_refused(project: Project):
 
 def test_an_unknown_operator_is_rejected(project: Project):
     """Direction 2: a name outside the closed vocabulary is refused, and
-    the message names both the offender and the known set."""
+    the message names both the offender and the DECLARABLE set.
+
+    Narrowed from "the known set" by the B034 round-2 review: a withdrawn
+    operator is still spellable in a v7 artifact, so it stays in
+    `MUTATION_OPERATORS` — but offering it to someone who just mistyped an
+    operator name would hand them a second refusal. The suggestion list and
+    the membership check are deliberately different sets now."""
     lane = _lane_with_mutation(
         '\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\noperators = ["typo-swap"]\n'
     )
@@ -124,7 +140,10 @@ def test_an_unknown_operator_is_rejected(project: Project):
         load_lane_file(project.write(lane))
     assert "typo-swap" in str(exc.value)
     for operator in sorted(MUTATION_OPERATORS):
-        assert operator in str(exc.value)
+        if operator in WITHDRAWN_MUTATION_OPERATORS:
+            assert operator not in str(exc.value)
+        else:
+            assert operator in str(exc.value)
 
 
 def test_operators_is_order_preserving(project: Project):

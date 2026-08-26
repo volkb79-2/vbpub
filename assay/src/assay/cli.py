@@ -66,7 +66,7 @@ from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_durati
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import VerdictOutput, reserve_verdict_output, validate_progress_destination
 from .verdict import Evidence, EvidenceDeclaration, Verdict
-from .vocabulary import MUTATION_OPERATORS
+from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
@@ -327,6 +327,20 @@ def _cmd_run(
         unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
         if unknown or not requested:
             raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
+        # B034/A-326: the same refusal `config._load_mutation` gives a
+        # DECLARED withdrawn operator. `--operators` is an override of that
+        # declaration, so it has to close the same door -- otherwise the
+        # withdrawal is enforced only for lanes that spell it in TOML.
+        withdrawn = tuple(
+            name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
+        )
+        if withdrawn:
+            raise LaneConfigError(
+                f"withdrawn mutation operators: {', '.join(withdrawn)}; every "
+                f"site they produced was already produced by "
+                f"python:compare-swap at the same span with the same "
+                f"replacement"
+            )
         mutation_config = replace(
             lane.judge.mutation, operators=requested
         )
@@ -573,6 +587,20 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
         if unknown or not requested:
             raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
+        # B034/A-326: the same refusal `config._load_mutation` gives a
+        # DECLARED withdrawn operator. `--operators` is an override of that
+        # declaration, so it has to close the same door -- otherwise the
+        # withdrawal is enforced only for lanes that spell it in TOML.
+        withdrawn = tuple(
+            name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
+        )
+        if withdrawn:
+            raise LaneConfigError(
+                f"withdrawn mutation operators: {', '.join(withdrawn)}; every "
+                f"site they produced was already produced by "
+                f"python:compare-swap at the same span with the same "
+                f"replacement"
+            )
         operators = requested
     if args.shard:
         try:
