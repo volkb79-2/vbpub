@@ -657,6 +657,19 @@ gate runs; the commit subjects remain the traceable source of detail.
   only when that run's own `--layout`/exec/provenance command invokes the
   specific feature (CIU-QOL-11, SPEC S7.5c/S16.7/S17.5)
 
+### Documentation
+- docs(ciu): **CONSUMERS.md §17 — migrating a hand-rolled `internal_host`
+  override to `--shared-infra-ref-services`** (ciu-P34, CIU-49/CIU-52). Shows
+  the real before/after: the exact hand-maintained override CIU-49's filed
+  text quotes verbatim from dstdns's `dstdns-mstest` template, and the
+  equivalent `--shared-infra-ref-services` invocation plus resulting native
+  `[topology.services.<alias>]` block, cross-referencing (not duplicating)
+  CONFIG.md's existing S16.1a worked example. Names concretely what the
+  migration buys: re-derivation and re-authentication against live Docker
+  state at every add and every join, versus a hand-typed value that goes
+  stale — silently — the moment the reference instance is re-created under a
+  new identity. Docs-only; no behavior changes.
+
 ## [7.0.0] - 2026-08-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=037f858cf2f46b5db13a387273124ef4e3ad6f2d -->

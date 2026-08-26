@@ -869,3 +869,74 @@ Declaring a service-level default and a configfile-level value that
 DISAGREE (e.g. `instances = 3` on `[myapp.api]` but `instances = 5` on its
 configfile) refuses too, naming both values — the two mechanisms can never
 silently drift apart.
+
+## 17. Migrate a hand-rolled `internal_host` override to `--shared-infra-ref-services` (S16.1a, CIU-49/CIU-52)
+
+Before CIU-52 shipped the reference-service addressing described in
+[CONFIG.md's shared-infra join example](CONFIG.md#shared-infra-join-example-s161)
+(specifically its `--shared-infra-ref-services` sub-section, S16.1a), a
+consumer joining a reference instance's shared infra could reach it —
+`--shared-infra` connects the network — but had no CIU-derived NAME to call
+its service by. The one real case on file (CIU-49) is dstdns's
+`dstdns-mstest` worktree template, which hand-types the reference vault's
+already-qualified container name straight into its own override:
+
+```toml
+internal_host = "dstdns-mstest-f2d1cb-vault"  # instance config: scoped (GUIDE 3.6)
+```
+
+That value is correct on the day someone types it and never checked again.
+If the reference instance is ever re-created under a new identity — a new
+`INSTANCE_ID`, a new network, the ordinary result of a `ciu worktree rm`
+followed by a fresh `add` — the container this string names is simply gone,
+and nothing here re-checks it: the frozen literal ships forward unchanged,
+and every worktree template copied from `dstdns-mstest` afterward carries
+the same stale name one copy-paste further from the instance it was
+actually true for.
+
+`--shared-infra-ref-services` replaces the hand-typed literal with a
+CIU-derived, re-authenticated one. Joining the same reference and addressing
+its vault by the alias `vault` (values below are illustrative — the fixture
+used to verify this example, not the mstest environment's own actual
+project/instance identity):
+
+```console
+$ ciu worktree add mstest --base main --profile core \
+    --shared-infra primary-ref \
+    --shared-infra-services api \
+    --shared-infra-ref-projects idp-dev-idp \
+    --shared-infra-ref-services vault
+worktree ready: /repo/.worktrees/mstest
+  next: cd /repo/.worktrees/mstest && ciu up
+```
+
+produces this instance's own `[topology.services.vault]` block, derived —
+never hand-typed — from the reference's live, rendered configuration:
+
+```toml
+[topology.services.vault]
+internal_host = "dstdns-aaaaaa-vault"
+internal_port = 8200
+```
+
+The exact flag grammar, the `[ciu.instance.shared_infra.ref_services.vault]`
+sub-table this is derived from, and the full derivation/authentication
+mechanism are CONFIG.md's material (cross-referenced above), not repeated
+here.
+
+> **What the migration buys you.** The hand-typed override is checked
+> exactly once — by whoever typed it, against whatever was running that
+> day. `ref_services` is re-derived at every `add`/`create`/`ensure`/`adopt`
+> that declares it, and re-authenticated against live Docker state again at
+> every `ciu up` that joins the network: CIU re-renders the reference's own
+> config, re-derives its qualified container name, and re-proves that exact
+> container is live on the reference's network before writing or trusting
+> it. A reference re-created under a new identity fails loudly at the next
+> `ciu up` (CONFIG.md's "never hand-edit the recorded `container`" note); a
+> hand-typed override instead fails silently, whenever the application next
+> happens to need that connection.
+
+This is specifically the case of naming a REFERENCE instance's service
+after joining its network (S16.1a). Qualifying a stack's OWN
+`internal_host`/`hostname:` default — no shared-infra join involved — is
+the separate case covered in §5e above.
