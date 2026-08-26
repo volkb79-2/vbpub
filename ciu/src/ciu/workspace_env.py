@@ -959,10 +959,20 @@ def upsert_generated_facts(repo_root: Path, facts: Mapping[str, str]) -> Path:
     ``tomllib`` parse + ``tomli_w`` dump round-trip. The overlay is documented
     operator-editable (S3.1b): a full-file round-trip would round-trip every
     VALUE correctly while silently discarding every comment and reformatting
-    every table an operator hand-authored. The bytes CIU owns are exactly the
-    region from the ``[ciu.instance.generated]`` header line up to (not
-    including) the next line beginning a table at column 0 — nothing else in
-    the file is read, rewritten, or reordered.
+    every table an operator hand-authored.
+
+    **The bytes CIU owns**, stated exactly, because the boundary is narrower
+    than "up to the next table" and the narrowness is the safety property:
+    from the ``[ciu.instance.generated]`` header line, up to and including the
+    last line this writer itself emits — its own banner comments and its own
+    ``key = value`` lines. The scan finds the next line beginning a table at
+    column 0 and then walks BACK over that region's trailing run of blank and
+    comment lines, which is never ours (the last line rendered is always a
+    ``key = value``) and which in TOML's ordinary reading introduces the
+    FOLLOWING table. That run is carried across untouched. So a comment
+    written immediately below the generated block survives, exactly like one
+    written above it. Nothing outside those owned lines is read, rewritten, or
+    reordered.
 
     Behaviour:
 
@@ -970,9 +980,10 @@ def upsert_generated_facts(repo_root: Path, facts: Mapping[str, str]) -> Path:
       ``worktree._worktree_overlay_text`` writes, then the block;
     * table absent → block appended at EOF, one blank line after whatever was
       already there;
-    * table present → its region replaced in place, keeping the blank-line
-      separator when another table follows, so a second run over an unchanged
-      workspace produces a byte-identical file.
+    * table present → its owned lines replaced in place, with the trailing
+      blank/comment run preserved verbatim (and a single blank separator
+      manufactured only when the region carried none at all), so a second run
+      over an unchanged workspace produces a byte-identical file.
 
     Unlike ``worktree._write_worktree_overlay`` — which correctly REFUSES an
     existing file, because its only call site is worktree creation on day zero

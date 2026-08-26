@@ -7,9 +7,10 @@ handoff's own stale-backlog-number correction), confirmed with
 `git status --porcelain && git log --oneline -3` before any edit — tree was
 clean, HEAD as briefed.
 
-**Status: COMPLETE.** All seven oracles met. **3258 tests pass; coverage
-100.00% line + branch** under the real gate (`.venv/bin/python
-run-ciu-tests.py`). No `scope.forbid` file touched. No `escalate_if`
+**Status: COMPLETE — reviewed ACCEPT-conditional, both fixes applied (§4b).**
+All seven oracles met. **3259 tests pass; coverage 100.00% line + branch**
+under the real gate (`.venv/bin/python run-ciu-tests.py`).
+No `scope.forbid` file touched. No `escalate_if`
 condition hit — both were evaluated explicitly against the shipped code and
 neither fired (§3). One design refinement was made INSIDE the mandated
 algorithm rather than around it, because the mandate as written lost a byte
@@ -76,9 +77,19 @@ re-verify". Verified against both checkouts, live:
 
 So the naive "next free" answer from inside this worktree (CIU-59) would have
 collided on merge with an unrelated entry. **CIU-60 was confirmed absent from
-both** and used. The handoff's suggestion was right, but only by luck of
-being re-checked — recording the mechanism here because it will recur while
-this wave and main are both open.
+both** and used; CIU-61 (the follow-up in §4a) was verified the same way.
+
+The handoff's suggestion was right, but only by luck of being re-checked —
+recording the mechanism here because it kept recurring: the reviewer
+subsequently found the divergence had widened AGAIN across CIU-55–59 (main
+independently gained another new CIU-55 filing), shifting the range by one
+more. **The controller is reconciling this at merge time**, the same way the
+P26/P27 merge was reconciled; nothing in this package depends on the
+intermediate numbers, only on CIU-60/CIU-61 being free, which they were and
+are. The durable lesson for this wave is narrower than "re-verify the
+number": while a long-lived worktree and `main` are both accepting backlog
+filings, the two files' ID spaces drift continuously and neither is
+authoritative on its own.
 
 ## 3. The two `escalate_if` conditions — evaluated, neither fired
 
@@ -239,6 +250,53 @@ Flagging both explicitly for the controller's ruling: the `.gitignore` edit
 can be reverted if it should have been an escalation instead, but the gate
 does not pass without it.
 
+## 4b. Review fixes (ACCEPT-conditional, applied on top of `0854af81`)
+
+Both findings were correct and are fixed. Neither changed a design decision;
+both were the implementation failing to match what the package already
+claimed.
+
+### 4b.1 `_env_print`'s third failure mode escaped as a traceback
+
+`parse_workspace_env(env_file)` sat OUTSIDE the function's own `try`, so a
+malformed `ciu.env` — a hand-edited line, an unquoted value — produced a raw
+`WorkspaceEnvError` traceback, while the two adjacent failure modes in the
+same function (unresolvable root, absent file) both returned a clean
+`[ERROR] …` and exit 1. Three failure modes, two presentations. This wave has
+held new verbs to exactly this bar before (P16's `ciu status`).
+
+The parse (and the existence check) now sit inside the same `try`, so all
+three are identical to an operator. One consequence worth naming: the loop
+that prints is now AFTER the parse completes, not interleaved with it, so a
+malformed entry halfway down the file emits **nothing** on stdout rather than
+a partial environment. That matters more than the cosmetics — `eval` over a
+half-printed environment succeeds silently, which is the worst of the three
+outcomes. Pinned by
+`test_env_print_reports_a_malformed_ciu_env_without_a_traceback`, which
+asserts rc=1, an `[ERROR]`-prefixed stderr, no `Traceback`, and an **empty
+stdout**. Verified against the real CLI too:
+
+```console
+$ ciu env print
+[ERROR] Invalid ciu.env entry: 'this is not a valid entry'
+rc=1
+```
+
+### 4b.2 `upsert_generated_facts`' docstring overstated what CIU owns
+
+The docstring still described the UN-narrowed algorithm ("up to (not
+including) the next line beginning a table at column 0") — the version §4.1
+records replacing, because it eats a comment written below the block. The
+inline comment at the `keep` loop was correct; the docstring was the stale
+copy, and it overstated CIU's blast radius, which is the one direction a
+docstring about this function must never be wrong in.
+
+Rewritten to state the actual boundary: from the header line up to and
+including the last line **this writer itself emits**, with the trailing
+blank/comment run walked back over and carried across untouched. The
+"Behaviour" list's third bullet was corrected in the same pass (it also
+described only the blank-separator case). No code change.
+
 ## 5. Files changed
 
 **Source (5)**
@@ -251,11 +309,11 @@ does not pass without it.
 | `src/ciu/config_model.py` | comment only (§4.7) |
 | `.gitignore` | one entry, out of `scope.touch` — see §4a |
 
-**Tests (2 new files, 52 tests)**
+**Tests (2 new files, 53 tests)**
 
 | File | Covers |
 |---|---|
-| `tests/tests/test_ciu_workspace_env.py` (37) | O1, O2, O3, O4, O5 |
+| `tests/tests/test_ciu_workspace_env.py` (38) | O1, O2, O3, O4, O5 |
 | `tests/tests/test_ciu_deploy_clean_vanilla.py` (15) | O6 |
 
 `tests/tests/test_ciu_workspace_env.py` did not previously exist despite
@@ -295,7 +353,7 @@ sections, which is where a reader following that thread arrives.
 | **O2** byte-for-byte preservation | `test_hand_authored_content_survives_byte_for_byte`, `test_content_before_between_and_after_the_block_all_survive` (literal line-by-line assertions on the surrounding text, incl. a comment BELOW the block, plus a re-run byte-identity check), `test_a_full_toml_round_trip_would_have_failed_this` (four exact comment strings, incl. an inline trailing comment, asserted verbatim — the mutant-killer for a parse-and-dump shortcut) |
 | **O3** facts reach templates via the existing merge | `test_generated_facts_land_in_the_merged_global_config`, `test_a_jinja_template_can_read_the_facts_like_any_other_value` (renders `{{ ciu.instance.generated.physical_repo_root }}` through `render_toml_template`), `test_the_facts_are_not_injected_as_a_bespoke_context_field` (negative) |
 | **O4** main checkout covered | `test_primary_checkout_with_no_instance_record_is_covered` (asserts `read_own_instance_record(...) is None` first, then that the overlay is created from nothing), `test_write_does_not_consult_the_instance_record_at_all` (spy: zero calls — the negative), `test_a_worktree_instance_shaped_overlay_is_extended_not_replaced` |
-| **O5** `env print` | `test_env_print_emits_export_lines_and_nothing_else` (+ empty stderr, + every `REQUIRED_KEYS_CORE` key), `test_env_print_has_no_side_effects` (byte-compares every file before/after), `test_env_print_refuses_loudly_when_ciu_env_is_missing` (rc=1, empty stdout, names `ciu env generate`), `test_eval_of_env_print_populates_a_real_shell` (real bash), `test_shell_export_value_quoting` (5 cases), `test_env_verb_help_text_names_print_and_is_honest_about_eval` (asserts the words "apply"/"source" do NOT appear — O5's negative) |
+| **O5** `env print` | `test_env_print_emits_export_lines_and_nothing_else` (+ empty stderr, + every `REQUIRED_KEYS_CORE` key), `test_env_print_has_no_side_effects` (byte-compares every file before/after), `test_env_print_refuses_loudly_when_ciu_env_is_missing` (rc=1, empty stdout, names `ciu env generate`), `test_env_print_reports_a_malformed_ciu_env_without_a_traceback` (§4b.1 — rc=1, `[ERROR]` stderr, no traceback, empty stdout), `test_eval_of_env_print_populates_a_real_shell` (real bash), `test_shell_export_value_quoting` (5 cases), `test_env_verb_help_text_names_print_and_is_honest_about_eval` (asserts the words "apply"/"source" do NOT appear — O5's negative) |
 | **O6** `clean --vanilla` | Default half: `test_plain_clean_leaves_all_three_files_untouched` (byte-compares), `test_plain_clean_is_the_default_when_vanilla_is_not_passed` (signature default), `test_plain_clean_prints_nothing_about_vanilla`, `test_main_defaults_vanilla_false_for_a_plain_clean`. New-flag half: `test_vanilla_removes_exactly_the_three_files` (+ asserts committed inputs survive), `test_vanilla_on_an_already_clean_workspace_succeeds`, `test_vanilla_tolerates_any_single_file_already_absent` (×3), `test_vanilla_reports_a_removal_that_failed`, `test_vanilla_is_skipped_when_the_teardown_failed`, `test_deploy_argparse_accepts_vanilla_and_defaults_it_false`, `test_main_forwards_vanilla_to_action_clean` |
 | **O7** docs + `--help` | SPEC S3.1b/S6.4b/S10.1, CONFIG.md, CIU.md, CONSUMERS.md, DESIGN-GUIDE.md as listed in §5. `--help` pinned by test: `test_env_verb_help_text_names_print_and_is_honest_about_eval`, `test_cli_clean_help_documents_vanilla` (requires all three filenames), `test_env_print_help_is_reachable_and_names_eval` |
 
@@ -317,22 +375,24 @@ the installed `ciu` entrypoint:
 
 ## 8. Gate output (read in a separate step from the run itself)
 
+Final run, after the §4b review fixes:
+
 ```
 $ .venv/bin/python run-ciu-tests.py
 ...
-src/ciu/cli.py                                     836      0    304      0   100%
+src/ciu/cli.py                                     837      0    304      0   100%
 src/ciu/config_model.py                            336      0    166      0   100%
-src/ciu/deploy.py                                 1627      0    706      0   100%
+src/ciu/deploy.py                                  1627     0    706      0   100%
 src/ciu/workspace_env.py                           509      0    202      0   100%
 src/ciu/worktree.py                               1702      0    696      0   100%
 --------------------------------------------------------------------------------------------
-TOTAL                                             9683      0   3948      0   100%
+TOTAL                                             9684      0   3948      0   100%
 Coverage JSON written to file coverage.json
 Required test coverage of 100% reached. Total coverage: 100.00%
-============================ 3258 passed in 20.66s =============================
+====================== 3259 passed, 6 warnings in 22.00s =======================
 ```
 
-3206 → 3258 tests (+52). Every one of the four modules this package touches
+3206 → 3259 tests (+53). Every one of the four modules this package touches
 is at 100% line AND branch. Two intermediate iterations were needed to reach
 it: the first full run was 99.96% with three uncovered spots — `cli.py:1617`
 (the `env print` dispatch line, needing a test through the public
@@ -340,7 +400,8 @@ dispatcher), and in `workspace_env.py` the `1013->1015` branch (appending
 after a file already ending in a blank line) and line `1036` (a generated
 block butted directly against the next table with no separator). All three
 now have named tests; **no existing test needed changing**, and nothing was
-xfail'd or excluded.
+xfail'd or excluded. The §4b review fixes added one more test and one more
+statement to `cli.py`, and the gate stayed at 100.00% across that change too.
 
 ## 9. Notes for the reviewer
 
@@ -358,6 +419,12 @@ xfail'd or excluded.
    occur in a conforming file; overrule if you disagree.
 4. The CIU-60 numbering was verified against BOTH checkouts (§2), because
    the "next free" number inside this worktree would have collided. CIU-61
-   (the scaffold follow-up) was verified free in both the same way.
+   (the scaffold follow-up) was verified free in both the same way. The
+   CIU-55–59 divergence the reviewer found is the controller's to reconcile
+   at merge; this package does not depend on those numbers.
 5. **§4a — one out-of-scope file (`.gitignore`) was touched**, because the
    gate does not pass without it. Ruling welcome.
+6. **§4b records the two review fixes**, both applied: `_env_print`'s
+   malformed-`ciu.env` traceback (now a clean `[ERROR]` + exit 1, and
+   nothing partial on stdout) and `upsert_generated_facts`' stale docstring
+   (now states the narrower, actual ownership boundary).

@@ -527,6 +527,27 @@ def test_env_print_refuses_loudly_when_ciu_env_is_missing(
     assert "ciu env generate" in out.err
 
 
+def test_env_print_reports_a_malformed_ciu_env_without_a_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    """All THREE of this verb's failure modes look the same to an operator:
+    a clean `[ERROR]` on stderr and exit 1, never a raw Python traceback."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    (tmp_path / "ciu.env").write_text(
+        'export REPO_ROOT="/repo"\nthis is not a valid entry\n', encoding="utf-8"
+    )
+
+    rc = _run_env_print(monkeypatch, tmp_path)
+    out = capsys.readouterr()
+
+    assert rc == 1
+    assert out.err.startswith("[ERROR] ")
+    assert "Traceback" not in out.err
+    # Nothing partial reached stdout: half an environment fed to `eval` is
+    # worse than none, because it succeeds.
+    assert out.out == ""
+
+
 def test_env_print_reports_a_bad_define_root(monkeypatch, tmp_path, capsys):
     rc = _run_env_print(
         monkeypatch, tmp_path, ["--define-root", str(tmp_path / "nope")]

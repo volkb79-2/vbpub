@@ -772,20 +772,28 @@ def _env_print(rest: list[str]) -> int:
         parse_workspace_env,
         resolve_env_root,
     )
+    # All THREE failure modes — unresolvable root, absent ciu.env, and a
+    # malformed entry inside it — return a clean `[ERROR]` + exit 1. The parse
+    # belongs inside this try for that reason: a hand-edited ciu.env is an
+    # ordinary operator mistake, not an internal fault, and a raw traceback
+    # would be the only inconsistent one of the three.
     try:
         root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+        env_file = root / WORKSPACE_ENV
+        if not env_file.exists():
+            print(
+                f"[ERROR] No {WORKSPACE_ENV} at {root} — nothing to print. "
+                f"Run: ciu env generate",
+                file=sys.stderr,
+            )
+            return 1
+        entries = parse_workspace_env(env_file)
     except WorkspaceEnvError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
-    env_file = root / WORKSPACE_ENV
-    if not env_file.exists():
-        print(
-            f"[ERROR] No {WORKSPACE_ENV} at {root} — nothing to print. "
-            f"Run: ciu env generate",
-            file=sys.stderr,
-        )
-        return 1
-    for key, value in parse_workspace_env(env_file).items():
+    # Printing happens only after the WHOLE file parsed: a malformed entry
+    # halfway down must not leave half an environment on stdout for `eval`.
+    for key, value in entries.items():
         print(f"export {key}={_shell_export_value(value)}")
     return 0
 
