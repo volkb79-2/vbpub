@@ -378,17 +378,36 @@ container names become `<project>-<instance>-<stack>-<service>[-<replica>]`.
 **Stack-level declaration** — defines WHAT CIU does with this stack and WHERE
 to find it:
 
-> **Note (2026-08-26, dstdns/vbpub joint design session):** the worked
-> examples below address a service by `<stack>.<service>` — its current
-> deployment location, not a stable identity. `V8-REALIZATION-GRAPH.md` in
-> this directory works through why that couples a logical name to wherever
-> it happens to run today (rename the stack, or move the database to a
-> managed provider, and every consumer's `init_requires` has to follow) and
-> resolves it against §1.16's flat-name `[local_stack.<name>]` join instead
-> — same session also re-validated §4.3's topological-sort claim against a
-> real fresh dstdns bring-up and found one confirmed gap (`pg:schema/*`,
-> §8.1 of dstdns's own `docs/spec/spec-ciu-provisioning-model.md`). Read it
-> before treating the `<stack>.<service>` addressing below as settled.
+> **Note (2026-08-26, dstdns/vbpub joint design session — updated after
+> further verification the same day): the `<stack>.<service>` addressing
+> below is flawed, not merely worth reconsidering.** It couples a logical
+> service's identity to wherever it physically runs today — rename the
+> stack, or move the database to a managed provider, and every consumer's
+> `init_requires` has to change with it, even though nothing about what the
+> consumer *wants* changed. `V8-REALIZATION-GRAPH.md` in this directory
+> works through the fix: split the logical service (`[service.<name>]`,
+> stable) from its realization (`[ciu_stack.<name>]` / `[external.<name>]`,
+> physical), joined by a `realized_by` pointer on a per-realness-level
+> variant — the same flat-name-join shape §1.16's `[local_stack.<name>]`
+> already establishes for a different purpose, reused here as precedent.
+>
+> Same session also re-validated §4.3's topological-sort claim against a
+> real fresh dstdns bring-up and initially found what looked like two
+> genuine ciu gaps (an undeclared vault-liveness dependency for every
+> `GEN_TO_VAULT` consumer; `pg:schema/dstdns`'s completion having no
+> expressible ref kind). Both turned out, on further verification, to be
+> the same class of mistake as ciu's own withdrawn **CIU-45**: a working
+> mechanism (`stack:<name>:healthy|completed`, resolved by a live
+> docker-inspect probe) already existed and dstdns simply never declared
+> it — fixed in dstdns's own config (dstdns@d1688765), not a ciu defect.
+> What *is* a real, newly-filed ciu gap: `ciu check`'s static graph lint
+> doesn't know `stack:*` refs resolve by live probe rather than a
+> `provides` declaration (**CIU-63**), `ciu check` doesn't run automatically
+> before `ciu up` (**CIU-64**), and `validate_config()` findings have no
+> WARN/ERROR severity (**CIU-65**) — all three in
+> `KNOWN_ISSUES_TODO_BACKLOG.md`. Read `V8-REALIZATION-GRAPH.md` in full
+> before treating the `<stack>.<service>` addressing below as settled — this
+> note is deliberately not a substitute for it.
 
 ```toml
 # A CIU-managed stack containing multiple services

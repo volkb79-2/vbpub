@@ -94,9 +94,17 @@ realized_by = "db-init"  # NOT db_core
 
 [ciu_stack.db-init]
 init_requires = ["our_db_infra"]  # needs db-core's admin access first
-init_provides = ["pg:role/controller", "vault:secret/db/postgres/controller_password"]
-# pg:schema/dstdns is ALSO produced here but can't be declared — no ref
-# kind exists yet. Ordering rests on the hand-placed phase number.
+init_provides = [
+  "pg:role/controller", "vault:secret/db/postgres/controller_password",
+  "stack:infra/db-init:completed",  # stands in for pg:schema/dstdns — no such
+                                     # ref kind exists (see "Full system trace"),
+                                     # but this shipped one-shot-exit-0 probe
+                                     # (verified live, not just documented) does
+                                     # the same ordering job. Self-declared here
+                                     # only because ciu's static lint requires
+                                     # it (CIU-63) — the actual resolution never
+                                     # reads this line.
+]
 
 # ── vault: mints the AppRole controller authenticates with ──
 [service.our_vault]
@@ -129,24 +137,42 @@ controller has no reason to know it exists.
 
 ## Full system trace
 
-Validated against dstdns's real fresh-bring-up chain (`ciu clean && ciu up`,
-2026-08-25) and re-checked under the stack-level model above.
+Validated against dstdns's real fresh-bring-up chain (`ciu clean && ciu up`)
+and re-checked under the stack-level model above. This section went through
+three corrections; the trail matters more than usual here because the third
+one reverses the second and first's own conclusion, so it's kept in full
+rather than silently collapsed.
 
-**Corrected twice after review.** First pass: three waves, computed as a
-topological sort of the *declared* graph — missing the fact that every
-`GEN_TO_VAULT` user needs Vault live first (Vault's own bootstrap,
-`post_compose_vault.py`, is the only node that only ever `docker exec`s into
-its own container). Second pass: db-core and db-init were still splitting
-ownership of the same database contract — db-core minted controller's role
-and password directly (wave 1) while only the schema routed through db-init
-(wave 2), letting controller cheat down a wave for half its dependency.
-Consolidating onto one producer — db-core shrinks to generic infra + admin
-access, db-init owns every application-facing fact (role, password, *and*
-schema) — moves authentik, webapp-server, and worker-db from wave 2 to
-wave 3, alongside controller. The wave *count* stays five; the membership
-doesn't:
+**Correction history (fold if you only want the current state):**
+1. *Three waves.* First pass computed a topological sort of the *declared*
+   graph — missing that every `GEN_TO_VAULT` user needs Vault live to write
+   to, an edge none of them declared.
+2. *Five waves, membership wrong.* db-core and db-init were splitting
+   ownership of the database contract — db-core minted controller's
+   role/password directly while only the schema routed through db-init,
+   letting controller cheat down a wave for half its dependency.
+   Consolidating onto db-init as the sole producer moved authentik/
+   webapp-server/worker-db up a wave.
+3. **Reversed on verification, not just re-derived:** both "confirmed ciu
+   gaps" from passes 1 and 2 — vault-liveness, schema-completion — were
+   claimed to be *inexpressible* in ciu. Neither is. `stack:<name>:healthy`
+   and `stack:<name>:completed` are shipped, docker-inspect-based probes
+   (`provisioning.py::_probe_stack`) — checked live against a real dstdns
+   checkout's own running containers before trusting this, not inferred
+   from source alone: `stack:infra/vault:healthy` and
+   `stack:infra/db-init:completed` both resolved `satisfied=True` against
+   real container state. This is the exact shape of ciu's own **CIU-45**
+   (withdrawn 2026-08-21): "ciu can't express X" turning out to mean
+   "dstdns never used the mechanism that already exists." **Both are now
+   fixed in dstdns's own config** (dstdns@d1688765), not filed as ciu bugs.
+   What *did* get filed (CIU-63) is narrower and real: `ciu check`'s static
+   graph lint doesn't know `stack:*` refs resolve by live probe rather than
+   a `provides` declaration, so using one forces the referenced stack to
+   redundantly self-declare `provides = ["stack:X:..."]`, undocumented
+   anywhere. The wave *structure* below is unchanged by this correction —
+   only which mechanism explains each edge is.
 
-![Wave 0: vault alone, the only genuinely self-contained bootstrap. Wave 1: db-core, redis, and consul, each needing vault live to GEN_TO_VAULT their own secrets, an edge none of them declare. Wave 2: db-init, now the sole producer of application-facing database facts, and docker-stats-exporter, which never touches the database. Wave 3: controller and authentik, both waiting on db-init rather than db-core directly. Wave 4: worker-io, which requires internal_dlq_token from controller — the edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
+![Wave 0: vault alone, the only genuinely self-contained bootstrap. Wave 1: db-core, redis, and consul, each needing vault live to GEN_TO_VAULT their own secrets, now declared via stack:infra/vault:healthy. Wave 2: db-init, now the sole producer of application-facing database facts, and docker-stats-exporter, which never touches the database. Wave 3: controller and authentik, both waiting on db-init rather than db-core directly, via stack:infra/db-init:completed. Wave 4: worker-io, which requires internal_dlq_token from controller — the edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
 
 ```
 wave 0: vault                                          (genuinely self-contained)
@@ -159,48 +185,134 @@ wave 4: worker-io                                      (needs controller's inter
 Five real waves, not the nine phase numbers dstdns happens to declare
 today — every declared phase still sits at or after its computed wave, so
 the current hand-maintained list stays safe, just more granular than even
-this corrected graph demands.
+this graph demands.
 
-**Two confirmed gaps, not one — deliberately distinguished:** role and
-password ARE expressible in ciu today (real ref kinds; the fix was purely
-which stack's config declares them). Schema is NOT expressible at all —
-that's the genuine ciu limitation, unchanged by the ownership fix. A
-residual race survives even after consolidating ownership: if db-init
-writes role/password to Vault before its own schema migration finishes,
-ciu's preflight would see the expressible facts satisfied and let
-controller start anyway. Fixing who owns a fact and fixing whether ciu can
-check it are two separate problems.
-- `db-init`'s schema creation (`pg:schema/dstdns`) is produced but required
-  by nothing in the graph — `pg:schema/*` still isn't an expressible ref
-  kind. Ordering today rests on a hand-placed phase number plus a runtime
-  `schema_meta` poll as backstop. This is the edge §8.1 of dstdns's own
-  `docs/spec/spec-ciu-provisioning-model.md` already asked for in
-  2026-06-23 — still open.
-- **New, found on review:** a `GEN_TO_VAULT`/`ASK_VAULT` directive should
-  *automatically* imply `init_requires` on the vault store being live —
-  right now nothing does, and it silently works today only because the
-  hand-placed phase numbers happen to order vault first. This should be
-  derived by ciu from the directive itself, not authored per stack, the
-  same way an import implies build order without anyone writing it
-  down — the same class of fix as the schema gap, just upstream of it.
+### What is actually happening, in order, on a clean start
+
+The wave list above says *what depends on what*; it doesn't say what runs.
+Reconstructed and verified against dstdns's own live containers
+(2026-08-26), correcting the ownership this session started with:
+
+```
+wave 0  vault:
+        container up → `vault operator init` (master key + unseal key
+        share(s) + root token, generated entirely inside vault — the one
+        node with no external dependency of any kind) → unseal with the
+        first key share → enable the KV v2 secrets engine → post_compose
+        hook mints per-service AppRoles (controller, webapp-server:
+        role_id + secret_id, written into Vault) → self-declares
+        provides = ["stack:infra/vault:healthy"] (CIU-63: required only to
+        satisfy ciu check's static lint, never read by the actual probe).
+
+wave 1  db-core, redis-core, consul-server, skywalking:
+        NOW requires = ["stack:infra/vault:healthy"] each (dstdns@d1688765) —
+        a real, previously-undeclared dependency: GEN_TO_VAULT needs a live,
+        unsealed vault to write to, silently covered before only by
+        hand-placed phase numbers.
+        containers up → each stack's OWN init sub-container (Compose's
+        depends_on, never ciu's graph) → GEN_TO_VAULT: db-core mints its own
+        superuser password + minio root credentials; redis-core mints the
+        shared redis password; consul-server's post_compose hook mints
+        per-service ACL tokens; skywalking mints its own postgres password
+        (this one also had NO `provides` declared at all until this session
+        — dormant, since nothing yet requires it, but the same CIU-45-shaped
+        omission vault's own AppRole credentials once had).
+
+wave 2  db-init:
+        requires wave-1's db (`pg:db/dstdns`) + db-core's admin/superuser
+        access → connects as superuser → creates the application's OWN
+        roles (controller, workerdb, webapp, authentik) + GENERATES +
+        GEN_TO_VAULTs each role's password → runs schema migrations,
+        writes the `schema_meta` marker row.
+        self-declares provides = ["stack:infra/db-init:completed"] — the
+        one-shot-exit-0 probe standing in for the still-nonexistent
+        `pg:schema/*` ref kind (CIU-63 applies here too).
+
+wave 3  authentik, controller, webapp-server, worker-db:
+        NOW require = [..., "stack:infra/db-init:completed"] each
+        (dstdns@d1688765) in addition to db-init's role/password facts —
+        closing the schema-ordering gap for real, not leaving it as a noted
+        risk. Each connects using its own db-init-minted role/password +
+        redis-core's password + consul-server's token; controller
+        additionally reads vault's AppRole (role_id/secret_id, wave 0) to
+        authenticate for any live Authentik API call later; controller
+        GEN_TO_VAULTs internal_dlq_token. Authentik does NOT need db-init's
+        schema — it owns its own database via django_tenants, and only
+        needs its own role/password from db-init.
+
+wave 4  worker-io:
+        reads redis-core's password (wave 1) + controller's
+        internal_dlq_token (wave 3) — the exact edge that broke this
+        session when both were declared in the same hand-placed phase.
+```
+
+**A residual race not closed by any of this:** if db-init writes
+role/password to Vault before its own schema migration finishes, ciu's
+preflight sees the expressible facts satisfied and lets a wave-3 consumer
+start anyway — `stack:infra/db-init:completed` only fires once the whole
+job exits, so this is closed for the *specific* case verified here, but
+would reopen for any stack whose init job writes a checkable fact partway
+through its own work rather than only at the very end. Worth naming as a
+design constraint on init-job authors (finish all `provides`-relevant work
+before exiting) rather than assuming the mechanism alone prevents it.
 
 **Checked and confirmed fine:** authentik's own OIDC client bootstrap
 (`oidc_client_id = "dstdns-ui"`) looked like it might be the same shape of
-gap, but isn't — controller and webapp-server fetch the bootstrap token
-*lazily*, at the point of an actual Authentik-backed API call, and fail
-loudly then if it isn't ready (a deliberate P120 design choice, not an
-oversight). Unlike db-init's schema, this one correctly needs no graph edge
-at all.
+gap as db-init's schema, but isn't — controller and webapp-server fetch the
+bootstrap token *lazily*, at the point of an actual Authentik-backed API
+call, and fail loudly then if it isn't ready (a deliberate P120 design
+choice, not an oversight). It correctly needs no graph edge at all.
 
-**The original bug this model was built to prevent:** `controller`
+**Two things flagged as not-yet-modeled, deliberately kept rather than
+dropped (operator, 2026-08-26) — neither confirmed as a live dstdns gap,
+both worth not losing:**
+- **Multi-host VPN/transport readiness.** dstdns is single-host today —
+  `infra/tailscale-node` sits at phase_0, disabled by default ("invoked by
+  SPEC F's bootstrap action, not the standard `ciu up` phases"). The moment
+  a host-profile-based multi-host deploy (§1.7/§4.2) is real, "is the
+  transport mesh up between hosts" becomes its own wave-0-shaped
+  dependency, structurally identical to vault's own bootstrap — nothing in
+  this graph or the current V8 proposal models cross-host transport
+  readiness as an init dependency at all.
+- **Consul loading a "worker profile" before worker-io's own bootstrap.**
+  Searched concretely for this and did not find a hard, boot-blocking read
+  of Consul KV in worker-io's own code — dstdns's config hierarchy's L2
+  (Consul KV) layer is live-watched and optional-override, not a hard
+  read-before-start dependency, so this does not currently appear to be a
+  real gap. Recorded as *checked, not confirmed* rather than dropped, since
+  it was raised from broader system knowledge this investigation may not
+  have fully reached.
+
+**The original bug this whole model was built to prevent:** `controller`
 (provides `internal_dlq_token`) and `worker-io` (requires it) were declared
-in the *same* phase on 2026-08-25 — ciu's phase-wide preflight validates a
-phase's requirements before any stack in that phase deploys, so a same-phase
+in the *same* phase — ciu's phase-wide preflight validates a phase's
+requirements before any stack in that phase deploys, so a same-phase
 producer/consumer pair can never be satisfied. A long-lived vault instance
 had masked this for weeks by already holding the secret from an earlier
 generation; the first genuinely fresh bring-up in a long time surfaced it
 for real. §4.3's computed topological sort (once built) makes this class of
-bug structurally impossible to declare, not just easier to catch.
+bug structurally impossible to declare, not just easier to catch — and that
+sort can only be trusted once the graph it's computed from is known
+complete, which is exactly what CIU-64's "run check before up" and a future
+automatic contract-conformance check (below) would establish.
+
+## The check IS the prerequisite for dropping `[deploy.phases]`
+
+Worth stating plainly since it's easy to read "extend `validate_config`" as
+a nice-to-have alongside §4.3's phase-elimination ambition rather than a
+dependency of it: a topological sort computed from the requires/provides
+graph is only as trustworthy as the graph is *complete*. Every real bug this
+session found (vault-liveness, schema-completion, the CIU-63 lint gap
+itself) was a case of the graph silently NOT containing an edge that
+mattered — and dstdns's hand-maintained `[deploy.phases]` happened to get
+the ordering right anyway, masking the gap for weeks. Drop `[deploy.phases]`
+before the graph-completeness check exists, and the topological sort
+inherits every one of those silent gaps with nothing left to mask them.
+`ciu check` extended to verify graph completeness (a realization's
+aggregate `init_provides` actually covers its logical service's `contract`,
+computed automatically, not hand-written per hook — see "Resolved/open"
+below) is not a parallel nice-to-have; it is the thing that makes §4.3 safe
+to ship at all.
 
 ## Resolved / open
 
@@ -213,13 +325,12 @@ bug structurally impossible to declare, not just easier to catch.
 - `kind = "init"` dropped — `one_shot` is the only field that changes ciu's actual behavior.
 - Fact strings stay literal, validated by a dedicated cross-check, not Jinja references.
 - Port/endpoint lives on the Realization, resolved per-consumer the same way `topology.services.*.internal_host` already works today.
+- db-core and db-init consolidated onto one producer for the application-facing database contract (role, password, schema).
+- The purpose of the init graph itself, clarified: not resilience to slow starts, but turning a real misconfiguration into an immediate, named failure at deploy time instead of a retry loop that can't distinguish "8 seconds from ready" from "never going to exist" — both look identical, a timeout. Same fail-fast principle as dstdns's own `AGENTS.md` §4.2, applied to bring-up ordering specifically.
+- **Reversed, not just resolved:** vault-liveness and schema-completion are NOT ciu limitations — both already expressible via shipped `stack:*:healthy|completed` probes, live-verified, now applied in dstdns's own config (dstdns@d1688765). Filed instead: CIU-63 (the static lint's blindness to how `stack:*` actually resolves), CIU-64 (`ciu check` should run automatically before `ciu up`), CIU-65 (`validate_config` findings need WARN/ERROR severity, reusing `warn_policy.py`'s existing `exit_on` vocabulary) — all three in `KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 **Still open:**
-- **Contract conformance at config time** — checked the current proposal and both backlog files: **not planned anywhere yet**. Should be an explicit addition; the natural home is extending ciu's existing `validate_config()` static preflight (S9.5) from per-hook checks to the graph itself — does a realization's aggregate `init_provides` actually cover its logical service's `contract`, checked without a live probe.
-- **`pg:schema/*` ref kind** — a confirmed real gap in dstdns's current graph, unchanged since dstdns's own spec first asked for it.
-- **Automatic vault-liveness dependency** — found on review, not in the first pass: `GEN_TO_VAULT`/`ASK_VAULT` directives should imply an `init_requires` on the vault store being live, derived by ciu itself. Currently every stack that mints its own secrets is missing this edge.
+- **Contract conformance at config time** — checked the current proposal and both backlog files: **not planned anywhere yet**. Should be an explicit addition; the natural home is extending ciu's existing `validate_config()` static preflight (S9.5) from per-hook checks to the graph itself — does a realization's aggregate `init_provides` actually cover its logical service's `contract`, checked without a live probe. This is also the actual prerequisite for §4.3 dropping `[deploy.phases]` — see the section above.
+- **`pg:schema/*` ref kind** — `stack:infra/db-init:completed` is a working substitute for dstdns's specific case, but the underlying ref kind still doesn't exist; a stack whose completion doesn't map 1:1 to "the fact I actually care about" (e.g. a job that produces two independent facts at different points in its own run) still can't express the finer-grained dependency.
 - **Credential rotation** — a genuinely separate axis. §4.3.1 scopes the topological sort to initialization only; nothing re-runs it later, and dstdns's actual mechanism (`expose_env` baking a secret into an environment variable at container start) needs a full restart to pick up a rotated value. Not addressed anywhere in the proposal; needs its own design.
-
-**Resolved on second review:**
-- db-core and db-init consolidated onto one producer for the application-facing database contract (role, password, schema) — see "Full system trace" above.
-- The purpose of the init graph itself, clarified: not resilience to slow starts, but turning a real misconfiguration into an immediate, named failure at deploy time instead of a retry loop that can't distinguish "8 seconds from ready" from "never going to exist" — both look identical, a timeout. Same fail-fast principle as dstdns's own `AGENTS.md` §4.2, applied to bring-up ordering specifically rather than config values generally.
+- **Multi-host VPN/transport readiness** and **Consul worker-profile loading** — see the two callouts above. Neither confirmed as a live dstdns gap; both flagged so the question isn't lost once multi-host or a Consul-KV-dependent bootstrap actually lands.
