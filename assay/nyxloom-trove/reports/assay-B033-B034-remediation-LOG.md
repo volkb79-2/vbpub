@@ -30,3 +30,30 @@ Decisions, backlog and consumer documentation. A-325 and A-326 recorded in `deci
 
 **entry-sha256:** `85005fc588dfe5b13a7003a7051eb26e9d184ac7ac17c7423831ca2230053afa`
 (over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### `949cac2f`
+
+This LOG, plus one README correction the doc sweep had missed: the opening bullet still said `judge.mode` chooses "which question R1 asks", which is the same R1-only framing A-325 corrects everywhere else and the reason `judge.base` is now refused on such a lane.
+
+**entry-sha256:** `f01f276cf631300f43c7868dbba101ea9412abafa7da517464859ae3ed305d28`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### `40127f76`
+
+`docs/CONSUMERS.md`'s SQL section gains the paragraph it never had: its pasteable lane is a DIFF-mode R2 lane and correctly declares `judge.base`, while dstdns's real lane is whole-target and must not. Written after re-reading the section rather than assumed — the shipped example needed no change, only the missing alternative did.
+
+**entry-sha256:** `f484c780ec97f5452de2976f1b6188521cfb2827b5cdbc467bc7ec7abc94671d`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### `b3648130`
+
+The registered-gate transcript in the REPORT: green at `40127f76`, through `ASSAY_GATE_PHASE=independent-self-hosting-passed`, with `GATE_EXIT=0` read in a separate step per LESSONS L4. Two earlier attempts are recorded as aborted rather than quietly dropped: both refused `NO_MEASUREMENT`/`DIRTY_TREE` because an uncommitted file of mine left the worktree dirty, which is the gate working, not failing. The REPORT also records the consumer notification this wave owes dstdns.
+
+**entry-sha256:** `3e6cdc7400b1e1b88c3561eb962face45a5968775737aad84ae7a95720f991a5`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+---
+
+The three entries above were written after their own commits landed, so this
+file's final commit is not itself logged — the same shape every append-only
+self-hashed log ends on.
