@@ -1753,19 +1753,36 @@ def _load_mutation(
         and language is not None
         and operator_language(operator) != language
     )
+    # B034/A-326 round 2: what these two messages OFFER is not the same set as
+    # what the catalogue SPELLS. A withdrawn operator stays in
+    # `MUTATION_OPERATORS` so a v7 artifact naming it still verifies, but
+    # suggesting it to a consumer who just mistyped an operator name would
+    # walk them straight into a second refusal one line later. The
+    # suggestion lists are therefore the DECLARABLE set, the membership
+    # checks above and below stay the spellable one.
+    declarable_for_language = tuple(
+        operator
+        for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
+        if operator not in WITHDRAWN_MUTATION_OPERATORS
+    )
+    declarable = tuple(
+        operator
+        for operator in MUTATION_OPERATORS
+        if operator not in WITHDRAWN_MUTATION_OPERATORS
+    )
     if foreign:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
             f"which belong to another language; this lane declares "
             f"judge.language = {language!r}, and its operators are: "
-            f"{', '.join(MUTATION_OPERATORS_BY_LANGUAGE.get(language, ()))}"
+            f"{', '.join(declarable_for_language)}"
         )
     unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
     if unknown_operators:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names unknown operator(s): "
             f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(MUTATION_OPERATORS)}"
+            f"{', '.join(declarable)}"
         )
     # B034/A-326: withdrawn operators are still SPELLABLE in a v7 artifact
     # (see `vocabulary.WITHDRAWN_MUTATION_OPERATORS` for why the spelling

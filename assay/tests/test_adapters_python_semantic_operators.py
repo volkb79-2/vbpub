@@ -123,6 +123,50 @@ def test_a_lane_declaring_a_withdrawn_operator_is_refused_at_load(tmp_path):
     assert "python:enum-comparison-swap" in message
 
 
+def test_an_unknown_operator_is_never_offered_a_withdrawn_one_as_a_suggestion(
+    tmp_path,
+):
+    """Round-2 review: the "known operators:" list rendered
+    `MUTATION_OPERATORS`, which still SPELLS the withdrawn names -- so a
+    consumer who mistyped an operator was handed two of them as suggestions
+    and walked straight into a second refusal. What the message OFFERS is
+    now the declarable set; what the membership checks READ is still the
+    spellable one."""
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        "schema_version = 2\n\n"
+        "[lanes.pylane]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R2"]\n'
+        'enforcement = "gate"\n'
+        'argv = ["true"]\n'
+        'env_passthrough = ["PATH"]\n'
+        "env = {}\n"
+        'budget = "1m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.pylane.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["src"]\n'
+        'base = "origin/main"\n\n'
+        "[lanes.pylane.judge.mutation]\n"
+        "jobs = 1\n"
+        "max_mutants = 10\n"
+        'operators = ["python:compare-swapp"]\n',
+        encoding="utf-8",
+    )
+    from assay.config import load_lane_file
+
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(lane_file)
+
+    message = str(excinfo.value)
+    assert "unknown operator(s): python:compare-swapp" in message
+    assert "python:compare-swap;" in message or "python:compare-swap," in message
+    for name in WITHDRAWN:
+        assert name not in message
+
+
 def test_the_spelling_survives_in_the_v7_vocabulary_on_purpose():
     """A-326's deliberate asymmetry: behaviour withdrawn, spelling kept.
 

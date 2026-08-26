@@ -165,7 +165,7 @@ for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
 The two B015 semantic families, `python:uuid-equality-swap` and
-`python:enum-comparison-swap`, are **withdrawn** as of 2.4.2 (A-326). Measured
+`python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
 over assay's own source they produced 87 sites, none of which
 `python:compare-swap` did not already produce at the same byte span with the
 same replacement bytes — so a lane declaring both families ran every shared

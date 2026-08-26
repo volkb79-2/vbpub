@@ -758,6 +758,12 @@ operators = ["python:bool-const-flip"]
         ("pkg/tests/test_flags.py", "is a test path"),
         ("pkg/notes.md", "not adapter-recognised source"),
         ("pkg/gone.py", "does not exist as a regular file"),
+        # Round-2 review: R2 had no symlink gate of its own and fell through
+        # to `read_regular_file`, which refuses a symlink as
+        # ERROR/GIT_FAILED -- a repository failure for what is a lane-config
+        # mistake. R1 has always named it; R2 now does too, first, before
+        # anything that resolves.
+        ("pkg/alias.py", "is a symlink"),
     ],
 )
 def test_a_whole_target_entry_that_fails_a_gate_is_refused_not_dropped(
@@ -779,6 +785,7 @@ def test_a_whole_target_entry_that_fails_a_gate_is_refused_not_dropped(
         _TEXT, encoding="utf-8"
     )
     (project.root / "pkg" / "notes.md").write_text("notes\n", encoding="utf-8")
+    (project.root / "pkg" / "alias.py").symlink_to("flags.py")
     repo = GitRepo(path=project.root)
     repo.git("init", "-q", "-b", "main")
     repo.git("config", "user.email", "assay-tests@example.com")

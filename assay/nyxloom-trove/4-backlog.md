@@ -1463,7 +1463,7 @@ the enum predicate matched any `name.attr` access rather than an enum member.
 The one acceptance box that would have caught this — "a real R2 lane
 demonstrates kills attributable to each admitted family" — is the one that was
 left unchecked while the item was marked IMPLEMENTED. Both operators are
-withdrawn from the producer and from lane declaration in 2.4.2; the two names
+withdrawn from the producer and from lane declaration in the next release; the two names
 remain spellable in a schema-v7 artifact until the next schema-version bump so
 that verdicts already emitted by 2.3.0/2.4.x keep verifying (A-326). The ask
 itself — operators that catch UUID/enum-specific defects `compare-swap` cannot
@@ -2843,7 +2843,10 @@ written, plus the actual message text B010 asked for in the first place.
 `ba8908d6` (2026-08-22, whole-target SQL mutation targets). This commit
 shipped with zero tests, zero doc updates, and zero decision records
 (`decisions.md`'s sessions jump 2026-08-16 → 2026-08-25 across it).**
-**Status:** **FIXED 2026-08-26 (A-325)**, released in assay-v2.4.2. All three
+**Status:** **FIXED 2026-08-26 (A-325)**, on branch
+`fix/assay-b033-b034-sql-mutation-operators`, unmerged and unreleased at the
+time of writing — it ships in the next release, and this line deliberately
+names no version until one exists. All three
 defects plus both MINORs; see
 `reports/assay-B033-B034-remediation-REPORT.md` for the before/after CLI
 transcripts. **Consumer action required:** a whole-target lane may no longer
@@ -2947,8 +2950,11 @@ scope. The model, the raw verifier and the JSON Schema therefore enforce the
 correction note on B015 above). This is the fix-needed successor to B015
 itself, filed separately per this project's own convention (cf. B021 out of
 B012).**
-**Status:** **FIXED 2026-08-26 by WITHDRAWAL (A-326)**, released in
-assay-v2.4.2. See `reports/assay-B033-B034-remediation-REPORT.md` for the
+**Status:** **FIXED 2026-08-26 by WITHDRAWAL (A-326)**, on branch
+`fix/assay-b033-b034-sql-mutation-operators`, unmerged and unreleased at the
+time of writing — it ships in the next release, and this line deliberately
+names no version until one exists.
+See `reports/assay-B033-B034-remediation-REPORT.md` for the
 before/after CLI transcripts and for why the redesign path was evaluated and
 rejected on A-112/A-221 grounds rather than on difficulty.
 
@@ -3041,6 +3047,14 @@ which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
 
 **Filed 2026-08-26 from B033's own fix (A-325).**
 **Status:** open. Not a live defect — a gap in what the artifact can prove.
+**Priority note (round-2 review of the B033 wave):** this is not a neutral
+deferral. A-325 had to STOP enforcing the old `base` rule for `R0,R2`
+documents to make honest whole-target R2 artifacts verifiable at all, so a
+diff-based `R0,R2` verdict that omits the base it was scoped against is
+accepted today where 2.4.1 refused it (both directions measured in
+`reports/assay-B033-B034-remediation-REPORT.md`). dstdns's `cw2b_schema` —
+its only R2 lane — is exactly that shape. B035 should ride the next
+schema-version bump rather than wait for one to happen along.
 
 ### Problem
 

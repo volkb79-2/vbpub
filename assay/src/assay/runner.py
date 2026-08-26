@@ -1910,12 +1910,14 @@ def _mutation_targets_whole(
     mutated. A partially-narrowed target set renders a real PASS/FAIL over
     scope the consumer never agreed to.
 
-    The gates run in R1's own order -- containment, then existence, then
-    excluded directory, then source globs, then test path -- so a consumer
-    who moves one lane from R1 to R2 sees the same failure named first.
-    Symlinks are refused one layer down, by
-    :meth:`assay.isolation.SnapshotRepository.read_regular_file`, which this
-    function reads every target through.
+    The gates run in R1's own order -- symlink, then containment, then
+    existence, then excluded directory, then source globs, then test path --
+    so a consumer who moves one lane from R1 to R2 sees the same failure
+    named first. The symlink gate is R2's own, not a delegation to
+    :meth:`assay.isolation.SnapshotRepository.read_regular_file` one layer
+    down (round-2 review): that layer does refuse a symlink, but as
+    ``ERROR``/``GIT_FAILED``, which reads as a repository failure when the
+    actual mistake is in the lane's own declaration.
 
     A duplicate spelling is the one thing still collapsed rather than
     refused: two identical entries request exactly the same work, so
@@ -1928,7 +1930,19 @@ def _mutation_targets_whole(
         if path in seen:
             continue
         seen.add(path)
-        abs_path = (snapshot_repo_top / path).resolve()
+        candidate = snapshot_repo_top / path
+        # Checked BEFORE anything that resolves, exactly as R1 does:
+        # `is_symlink` never raises for a non-existent path, and `.resolve()`
+        # below would silently follow the link and then report gates about
+        # the TARGET's location rather than the declared entry's.
+        if candidate.is_symlink():
+            raise AssayError(
+                f"mutation target {raw_target!r} is a symlink; a "
+                f"whole-target entry must be a real, ordinary source file",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        abs_path = candidate.resolve()
         if not any(abs_path.is_relative_to(root) for root in source_root_paths):
             raise AssayError(
                 f"mutation target {raw_target!r} is outside judge.source_roots "
