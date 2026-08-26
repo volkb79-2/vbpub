@@ -897,6 +897,20 @@ this — the only mode that existed before wave 1, so no existing lane needs an
 edit) measures the `base..HEAD` diff; `mode = "whole_target"` measures one or
 more explicitly declared files (§5, above), with no base and no diff at all.
 
+**`mode` is a LANE-level scope, read by R1 and R2 alike (A-325).** A lane
+declaring `mode = "whole_target"` and `judge.targets` scopes BOTH tiers to
+those declared files: R1 asserts its floor over them, and R2 mutates them
+whole instead of scoping mutation to the `base..HEAD` diff. That is why
+`judge.base` is refused as inert config on a whole-target lane of any rigor
+and any language, and why `judgment.resolved.base` is absent from a
+whole-target verdict — no tier resolved a comparison commit. A declared target
+that fails a containment gate (outside `source_roots`, absent at the judged
+commit, inside an excluded directory, not adapter-recognised source, or a test
+path) is REFUSED `ERROR`/`BAD_LANE_CONFIG` at both tiers, naming the target
+and the gate on the diagnostics stream; neither tier silently narrows the
+declared set, because a PASS over a silently narrowed set is the vacuity hole
+this mode exists to close.
+
 **This is a MODE of the one R1 claim, not a second rigor level, and not an
 "R1.5".** `claims[]` carries exactly one computed entry per `declared_rigor`
 level ("Computed rigor and external evidence are separate axes", above), and
@@ -911,12 +925,14 @@ optional in the lane file — the lane file records what a human declared, the
 artifact records what actually judged, and that asymmetry is `judgment`'s
 whole reason for existing (P16).
 
-`judge.base` is forbidden under `whole_target` unless the lane also declares
-R2: a whole-target claim resolves no diff, so recording a `base` would imply a
-comparison that never happened. `JUDGE_FIELDS_BY_RIGOR` stays the single
-source for this — R1's required-field set becomes mode-dependent rather than
-duplicated into a second table, so an `R0,R1,R2` lane in whole-target mode
-still declares and records a `base` for R2's own sake.
+`judge.base` is forbidden under `whole_target`, full stop (A-325 — this
+paragraph previously carved out "unless the lane also declares R2", which was
+already false when `whole_file_r2` shipped). A whole-target claim resolves no
+diff at any tier, so recording a `base` would imply a comparison that never
+happened. `JUDGE_FIELDS_BY_RIGOR` stays the single source for this — the
+required-field set becomes mode-dependent rather than duplicated into a second
+table — and an `R0,R1,R2` lane in whole-target mode declares no `base` and
+records none.
 
 ### Branch coverage is judged whenever the artifact reports it (A-258)
 
@@ -1495,7 +1511,7 @@ fail_under = 100.0
 allow_excluded = false
 base = "origin/main"
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
-mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap","python:uuid-equality-swap","python:enum-comparison-swap"] }
+mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 attestation_dir = ".assay/attestations"
 evidence = [{source = "attested", key = "adversarial-review"}]

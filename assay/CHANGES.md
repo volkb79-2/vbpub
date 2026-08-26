@@ -11,7 +11,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
 - feat(assay): infrastructure fact injection (`required-env:`/`derived:`) for isolated lanes (B013)
 
+### Changed
+- **BREAKING (lane config):** a lane declaring `judge.mode = "whole_target"` may no longer
+  declare `judge.base` — no tier reads one under whole-target scope, so it is now refused as
+  inert config, in every language and at every rigor. A whole-target R2 lane that declared a
+  base (dstdns's `cw2b_schema` is the known one) must delete that line (B033/A-325)
+- **BREAKING (lane config):** a SQL lane declaring `judge.targets` must now also declare
+  `judge.mode = "whole_target"`, exactly as every other language always had to; the
+  `declared_language != "sql"` carve-out on the vacuity guard is gone, and `targets` no longer
+  sits in the surplus exemption (B033/A-325)
+- **BREAKING (lane config):** `python:uuid-equality-swap` and `python:enum-comparison-swap` are
+  withdrawn — a lane declaring either, or an `--operators` override naming either, is refused at
+  load. The two names stay legal in a schema-v7 artifact, so verdicts already emitted by
+  2.3.0/2.4.x keep verifying; nothing produces them (B034/A-326)
+
 ### Fixed
+- fix(assay): R2 whole-target mutation silently dropped a declared `judge.targets` entry that
+  failed a containment gate (excluded directory, non-matching source glob, test path) and
+  reported PASS/FAIL over the narrowed set, where R1's own resolver refuses the identical
+  shapes by name; R2 now refuses `ERROR`/`BAD_LANE_CONFIG` naming the target and the gate on
+  the diagnostics stream, and also names a target that is absent at the judged commit instead
+  of surfacing an unnamed `GIT_FAILED` (B033/A-325)
+- fix(assay): a whole-target verdict recorded `judgment.resolved.base`/`base_resolution` for a
+  comparison that never ran — whole-target R2 skips both the base check and the diff, and
+  whole-target R1 resolves no base either; both fields are now omitted. The model, `verify.py`
+  and the packaged schema are relaxed in step (a pure widening: no document that validated
+  before stops validating, and schema v7 is not bumped) (B033/A-325)
+- fix(assay): B015's two "semantic" Python operators produced a byte-identical subset of
+  `python:compare-swap`'s own sites (87 sites measured over `src/assay/**.py`, zero new), so
+  co-selecting them ran every shared mutation twice for no added coverage, inflated
+  `mutation.total`/`candidate_count`, halved the effective `--max-mutants` budget and
+  misattributed kills; the enum predicate matched any `name.attr` access rather than an enum
+  member. Both are withdrawn (B034/A-326)
 - fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
 - fix(assay): `assay plan` reported `candidate_count: 0` for every lane, unconditionally, and a
   `mode = "whole_target"` lane failed outright naming a scratch directory that never existed;

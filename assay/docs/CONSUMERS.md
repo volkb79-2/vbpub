@@ -116,8 +116,11 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = ["libs/common/src/common/redirect_chain.py"]
-# judge.base is FORBIDDEN here (no R2 declared) -- a whole-target claim
-# resolves no diff, so recording one would imply a comparison that never ran.
+# judge.base is FORBIDDEN here -- a whole-target lane resolves no diff at ANY
+# tier, so recording one would imply a comparison that never ran. This holds
+# for every language and every rigor, R2 included (A-325): `mode` selects the
+# SCOPE both R1 and R2 judge under, so a whole-target R2 mutates the declared
+# files whole and never reads a comparison commit either.
 
 [lanes.redirect_chain.judge.coverage]
 format = "coverage-py-json"
@@ -535,10 +538,14 @@ operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
 
-Add `python:uuid-equality-swap` when changed code compares an in-place UUID
-construction, and `python:enum-comparison-swap` when it compares an enum member
-such as `Color.RED`. Both flip only `==`/`!=`; generic ordering swaps remain the
-jurisdiction of `python:compare-swap`.
+`python:uuid-equality-swap` and `python:enum-comparison-swap` are **withdrawn**
+(A-326). They shipped in 2.3.0 and were measured to produce a byte-identical
+subset of `python:compare-swap`'s own sites — same span, same replacement — so
+declaring them alongside `compare-swap` emitted every shared site twice and
+added no coverage. A lane still naming either is now refused at load; delete
+them and keep `python:compare-swap`, which already covers `==`/`!=` swapping.
+The two names remain spellable in a schema-v7 artifact so that verdicts already
+emitted by 2.3.0/2.4.x keep verifying; nothing produces them.
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.

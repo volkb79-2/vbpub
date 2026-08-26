@@ -1453,11 +1453,23 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 ## B015 — UUID/equality/enum-aware Python mutation operators
 
 **Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
-**Status:** **IMPLEMENTED 2026-08-24** as two bounded families:
-`python:uuid-equality-swap` and `python:enum-comparison-swap`. Eligibility is
-syntactic and conservative: an in-place UUID construction or a
-`Class.MEMBER` enum access must supply semantic evidence, and only the exact
-`==`/`!=` token is spliced.
+**Status:** **WITHDRAWN 2026-08-26 (A-326).** Previously marked
+`IMPLEMENTED 2026-08-24` as two bounded families,
+`python:uuid-equality-swap` and `python:enum-comparison-swap`. That status was
+wrong: the 2.1.0→2.3.0 review-gap audit measured the two families to produce a
+byte-identical SUBSET of `python:compare-swap`'s own output (87 sites over
+`src/assay/**.py`, zero new), co-selection emitted every shared site twice, and
+the enum predicate matched any `name.attr` access rather than an enum member.
+The one acceptance box that would have caught this — "a real R2 lane
+demonstrates kills attributable to each admitted family" — is the one that was
+left unchecked while the item was marked IMPLEMENTED. Both operators are
+withdrawn from the producer and from lane declaration in 2.4.2; the two names
+remain spellable in a schema-v7 artifact until the next schema-version bump so
+that verdicts already emitted by 2.3.0/2.4.x keep verifying (A-326). The ask
+itself — operators that catch UUID/enum-specific defects `compare-swap` cannot
+— is NOT satisfied and is not carried forward: A-326 records why no such
+operator is expressible under A-112's reuse-only rule without new,
+unmeasured mutation-testing design. See B034.
 
 **Scope boundary:** `budget_per_candidate` (shipped in `assay-v2.2.0`, see B012)
 partially mitigates the other P127 blocker — a hanging comparison mutant — by
@@ -2831,8 +2843,12 @@ written, plus the actual message text B010 asked for in the first place.
 `ba8908d6` (2026-08-22, whole-target SQL mutation targets). This commit
 shipped with zero tests, zero doc updates, and zero decision records
 (`decisions.md`'s sessions jump 2026-08-16 → 2026-08-25 across it).**
-**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects, one
-feature (`_mutation_targets_whole`, `src/assay/runner.py`).
+**Status:** **FIXED 2026-08-26 (A-325)**, released in assay-v2.4.2. All three
+defects plus both MINORs; see
+`reports/assay-B033-B034-remediation-REPORT.md` for the before/after CLI
+transcripts. **Consumer action required:** a whole-target lane may no longer
+declare `judge.base` (it is refused as inert config) — dstdns's `cw2b_schema`
+lane must delete its `base = "origin/main"` line.
 
 ### Problem
 
@@ -2899,18 +2915,29 @@ doesn't require weakening the guard's own stated purpose.
 
 ### Acceptance
 
-- [ ] a decision recorded on whether R2 whole-target should refuse
+- [x] a decision recorded on whether R2 whole-target should refuse
       (matching R1) or silently narrow (current, rejected) declared targets
-      that fail its containment gates;
-- [ ] `judgment_resolved.base`/`base_resolution` is omitted when no tier
+      that fail its containment gates — **A-325: refuse, matching R1**;
+- [x] `judgment_resolved.base`/`base_resolution` is omitted when no tier
       that reads a base actually ran;
-- [ ] the SQL `judge.mode`/`judge.targets` carve-out no longer permits an
-      inert, artifact-advertised `targets` declaration with no enforcement;
-- [ ] `whole_file_r2`'s language scope (SQL-only vs. any language) is a
-      recorded decision and matches the shipped documentation;
-- [ ] a real SQL whole-target R2 lane, driven through the CLI, with one
+- [x] the SQL `judge.mode`/`judge.targets` carve-out no longer permits an
+      inert, artifact-advertised `targets` declaration with no enforcement —
+      the carve-out is deleted; `targets` also leaves the surplus exemption;
+- [x] `whole_file_r2`'s language scope (SQL-only vs. any language) is a
+      recorded decision and matches the shipped documentation — **A-325:
+      `mode` is a lane-level scope read by R1 and R2 in EVERY language**,
+      documented in `README.md`, `docs/CONSUMERS.md` and
+      `docs/DESIGN-GUIDE.md`;
+- [x] a real SQL whole-target R2 lane, driven through the CLI, with one
       target inside scope and one outside, either refuses naming both or
-      records both in the verdict — never silently reports on one alone.
+      records both in the verdict — never silently reports on one alone —
+      it refuses `ERROR`/`BAD_LANE_CONFIG`, naming the target and the gate
+      on the diagnostics stream (transcript in the REPORT).
+
+**Not closed here, filed as B035:** `judgment.r2` still carries no `mode` or
+`targets` field, so an `R0,R2` whole-target artifact cannot witness its own
+scope. The model, the raw verifier and the JSON Schema therefore enforce the
+`base` rule only where `judgment.r1.mode` is present to witness it.
 
 ## B034 — B015's two "semantic" Python mutation operators add zero mutation coverage beyond `compare-swap`, mislabel ordinary attribute comparisons as enum comparisons, and double-count every co-selected site
 
@@ -2920,8 +2947,10 @@ doesn't require weakening the guard's own stated purpose.
 correction note on B015 above). This is the fix-needed successor to B015
 itself, filed separately per this project's own convention (cf. B021 out of
 B012).**
-**Status:** open, not fixed. **LIVE ON MAIN**, three compounding defects, one
-feature (`python:uuid-equality-swap` / `python:enum-comparison-swap`).
+**Status:** **FIXED 2026-08-26 by WITHDRAWAL (A-326)**, released in
+assay-v2.4.2. See `reports/assay-B033-B034-remediation-REPORT.md` for the
+before/after CLI transcripts and for why the redesign path was evaluated and
+rejected on A-112/A-221 grounds rather than on difficulty.
 
 ### Problem
 
@@ -2986,17 +3015,73 @@ which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
 
 ### Acceptance
 
-- [ ] a decision recorded (A-numbered) on whether
+- [x] a decision recorded (A-numbered) on whether
       `python:uuid-equality-swap`/`python:enum-comparison-swap` remain in the
       vocabulary, are redesigned to produce genuinely distinct sites, or are
-      withdrawn;
-- [ ] if kept: `_is_enum_member_expression` is tightened to actual enum
-      member access (not any dotted attribute), and a real R2 lane
-      demonstrates a kill attributable to the family that `compare-swap`
-      alone cannot attribute — the B015 acceptance box left unchecked;
-- [ ] co-selection with `compare-swap` no longer double-counts a shared
-      site (`MutationSite.identity` or `_candidate_sites` de-duplicates
-      across families sharing a byte span/replacement);
-- [ ] if withdrawn: schema `oneOf`, `MUTATION_OPERATORS_BY_LANGUAGE`, and
-      `docs/DESIGN-GUIDE.md`'s example are reverted together, and B015's own
-      status is corrected to reflect the withdrawal.
+      withdrawn — **A-326: withdrawn**;
+- [x] if kept: n/a — not kept;
+- [x] co-selection with `compare-swap` no longer double-counts a shared
+      site — the family produces no sites at all, so the shared span is
+      emitted exactly once, by `compare-swap`, guarded by a test that
+      compares the identity list of `compare-swap` alone against
+      `compare-swap` + both withdrawn names;
+- [~] if withdrawn: `docs/DESIGN-GUIDE.md`'s example and
+      `MUTATION_OPERATORS_BY_LANGUAGE`'s PRODUCER role are reverted, and
+      B015's status is corrected. The schema `oneOf` and the catalogue
+      MEMBERSHIP are deliberately **not** reverted in this wave — A-326
+      applies A-324's own test and finds the opposite answer to A-320's:
+      released `assay verify` builds ACCEPT a v7 document naming either
+      operator (re-measured, exit 0, transcript in the REPORT), so removing
+      the spellings would invalidate real artifacts and needs the next
+      schema-version bump. The names are inert (`vocabulary.
+      WITHDRAWN_MUTATION_OPERATORS`), refused at load and by `--operators`,
+      and produced by nothing.
+
+## B035 — an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there
+
+**Filed 2026-08-26 from B033's own fix (A-325).**
+**Status:** open. Not a live defect — a gap in what the artifact can prove.
+
+### Problem
+
+`judge.mode` is a lane-level scope: a whole-target lane judges declared files
+whole at R1 and R2 alike and reads no comparison commit at either tier, so
+`judgment.resolved.base` must be ABSENT (A-325). `judgment.r1` records its
+`mode` on the wire, so for any lane declaring R1 the model
+(`Judgment.__post_init__`), the raw verifier
+(`verify._check_base_matches_the_tiers_present`) and the packaged JSON Schema
+can all enforce both halves of that rule — required under `changed_lines`,
+forbidden under `whole_target`.
+
+`judgment.r2` records neither `mode` nor `targets`. So for an `R0,R2` lane —
+every SQL lane, and dstdns's `cw2b_schema` specifically — nothing on the wire
+distinguishes a diff-based R2 (which MUST carry a base) from a whole-target R2
+(which must NOT). All three layers therefore enforce neither half for that
+shape, and a foreign document can record either way. The producer is correct;
+nothing downstream can check it.
+
+Second, smaller half of the same gap: a whole-target R2 verdict names the files
+it mutated only through `mutation.*[].path` entries, so a target that produced
+zero sites is invisible. R1 records `judgment.r1.targets`; R2 records nothing
+equivalent. A-325's refusal makes a silently NARROWED set impossible, but a
+declared target that legitimately yields no mutants still cannot be told from
+one that was never considered.
+
+### Why this needs a schema change, not a patch
+
+Both halves need a new field on `judgment.r2` (`mode`, and `targets`
+mirroring `judgment.r1.targets`). The packaged schema sets
+`additionalProperties: false` on that object, so a released consumer holding a
+v7 schema copy would reject any document carrying it: this is a
+schema-version bump (v7→v8), not an additive fix — the same rule B014's own
+6→7 bump followed for four optional fields. It should ride the next bump
+alongside whatever else needs one, not force one on its own.
+
+### Acceptance
+
+- [ ] `judgment.r2` records the mode it judged under, and the declared
+      target set when that mode is `whole_target`;
+- [ ] the model, `verify.py` and the schema enforce the `base` rule for an
+      `R0,R2` lane, not only for lanes declaring R1;
+- [ ] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
+      the bump.
