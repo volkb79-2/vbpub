@@ -160,9 +160,12 @@ ciu host-secrets <host> --materialize            # pre-Vault local secrets per h
 
 The base install above covers everything `ciu` does out of the box. Three
 extras add a runtime dependency each, only for the specific feature that
-needs it; without an extra installed, that one feature fails loudly at the
-point of use with this same `pip install` remedy — nothing else is affected.
-This table is an upfront index so you can decide proactively instead of
+needs it; without `schema` or `registry` installed, that feature fails
+loudly at the point of use with this same `pip install` remedy — nothing
+else is affected. `ssh` is different by design (S14.5): its feature has a
+working default (the subprocess `ssh`/`rsync` transport), so without the
+extra it degrades silently to that default rather than failing — see the
+`ssh` row below. This table is an upfront index so you can decide proactively instead of
 discovering each extra reactively, one at a time (see `docs/CONFIG.md` and
 `docs/CONSUMERS.md` for the full per-feature documentation of each). Version
 floors are pinned once, in [`pyproject.toml`](pyproject.toml)'s
