@@ -47,7 +47,7 @@ common verbs are:
 
 | Verb | Purpose |
 |---|---|
-| `ciu env [generate]` | show / regenerate `ciu.env` |
+| `ciu env [generate\|print]` | show / regenerate `ciu.env` / print it as shell `export` lines |
 | `ciu render` | render global + stack config (TOML only) |
 | `ciu up [--profile N \| --dir PATH]` | render + secrets + `compose up` |
 | `ciu down` | stop containers (volumes preserved) |
@@ -66,10 +66,10 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 
 | Command | Relevant options |
 |---|---|
-| `ciu env generate` | `--define-root PATH` (alias: `--root-folder`) |
+| `ciu env generate` · `ciu env print` | `--define-root PATH` (alias: `--root-folder`) |
 | `ciu render` | `--profile NAME`, `--define-root PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors` |
+| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.worktree.toml.j2`) |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
@@ -521,8 +521,22 @@ not project configuration [S2.7]. Generate it once:
 
 ```bash
 ciu env generate
-source ciu.env
+source ciu.env                 # or, without hand-writing the source call:
+eval "$(ciu env print)"
 ```
+
+`ciu env print` is read-only: it prints the ALREADY-WRITTEN `ciu.env` as
+`export KEY='value'` lines and generates nothing. It is deliberately not
+called `apply` or `source` — a subprocess cannot mutate its parent shell's
+environment, so `eval` around it is where that actually happens. If `ciu.env`
+does not exist it refuses and names `ciu env generate`.
+
+`ciu env generate` also writes the identity tuple into this checkout's
+`ciu.global.worktree.toml.j2` under `[ciu.instance.generated]` (S3.1b /
+CIU-60), so **templates** read these facts from the merged config chain —
+`{{ ciu.instance.generated.physical_repo_root }}` — rather than from ambient
+environment. See [CONFIG.md](CONFIG.md) for the table and the
+preservation rules; `ciu clean --vanilla` is the only command that removes it.
 
 Always-required keys [S2.2]:
 

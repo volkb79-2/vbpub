@@ -268,8 +268,46 @@ requirements are marked *(withdrawn)*.
   committed global layer and before stack defaults. Managed lifecycle commands
   may create its initial `ciu.instance.service_profiles` and
   `ciu.instance.shared_infra` values; operators may add ordinary sparse global
-  overrides afterward. `ciu clean` and `ciu env generate` MUST preserve it.
+  overrides afterward. `ciu clean` and `ciu env generate` MUST preserve it
+  (`ciu clean --vanilla`, S6.4b, is the one explicit opt-in that removes it).
   Worktree configuration MUST NOT be appended to generated `ciu.env`.
+
+  **CIU-owned `[ciu.instance.generated]` (CIU-60, normative).** `ciu env
+  generate` MUST additionally upsert one table into this file, named
+  `[ciu.instance.generated]`, carrying exactly six snake_case keys —
+  `repo_name`, `instance_id`, `network`, `physical_repo_root`, `repo_root`,
+  `public_fqdn` — from the SAME in-memory values that invocation wrote into
+  `ciu.env`. They are never re-derived and `ciu.env` is never read back to
+  produce them: a second derivation could disagree with the first, and nothing
+  would catch it. The table exists so a Jinja TEMPLATE can read these facts
+  from the merged config chain (`{{ ciu.instance.generated.physical_repo_root }}`,
+  like any other config value) instead of from ambient process environment —
+  S3.2's `env` context is still raw `os.environ`, which hooks stopped trusting
+  in S9.3 and templates never did. There is deliberately NO bespoke Jinja
+  global for these facts: every value is backed by a file an operator can
+  `cat`. Rules:
+  1. **CIU owns exactly this table.** It is rewritten in full on every
+     `env generate`, so a hand-edit to a key INSIDE it is silently
+     overwritten — mirroring S16.1a's "do not hand-edit" precedent, and unlike
+     every other byte of the file. The block carries that warning inline.
+  2. **Every other byte is preserved verbatim.** The write is a text-level
+     surgical replace of the region from the `[ciu.instance.generated]` header
+     line to the next line beginning a table at column 0, MINUS that region's
+     trailing run of blank/comment lines (which belongs to the following
+     table). Hand-authored comments, blank-line spacing, key ordering and
+     unrelated tables anywhere else in the file survive unchanged. A
+     parse-whole-file-then-re-serialize round-trip is NOT permitted: it would
+     round-trip every value correctly while destroying every comment in a file
+     this section documents as operator-editable.
+  3. **Idempotent.** A second `env generate` over an unchanged workspace
+     produces a byte-identical file — upsert, never append; never two tables.
+  4. **Not gated on an S16 instance record.** The read side
+     (`render_global_chain`) reads this file unconditionally by exact path for
+     every `repo_root`, so the write side MUST NOT gate either; gating would
+     leave the primary/main checkout — the common case — on the old
+     ambient-environment path.
+  5. The file is created if absent, carrying the same header comment the
+     managed-lifecycle writer uses.
 
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
@@ -809,6 +847,24 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      with volumes/networks) — it is never folded into "nothing to remove";
      the TAGGED post-clean check keeps its pre-CIU-46 docker-gone-mid-clean
      degradation to a warning, documented S6.4 behavior.
+
+  **Workspace reset: `clean --vanilla` (S6.4b, CIU-60, normative).** `ciu
+  clean` without `--vanilla` MUST leave `ciu.global.toml` (rendered), `ciu.env`
+  and `ciu.global.worktree.toml.j2` completely untouched — S3.1b already makes
+  preserving the last of those a requirement, and the other two are the
+  workspace's rendered config and machine identity. `--vanilla` is a purely
+  ADDITIVE opt-in that removes exactly those three, and nothing else, for a
+  full reset to freshly-CLONED state (committed inputs — the defaults and the
+  committed override — are never in scope). Semantics:
+  1. It runs LAST, after every pass S6.4/S6.4a describes.
+  2. It runs ONLY when those passes all succeeded. A clean that failed keeps
+     all three and says so: `ciu.env` is the workspace identity a retry and
+     any manual cleanup resolve from, and removing it over a half-torn-down
+     workspace would take away the record naming what is still standing.
+  3. An already-absent file is a silent no-op for that file — `--vanilla` over
+     an already-vanilla workspace succeeds. A file that is present and cannot
+     be removed is an ERROR and fails the clean: a `--vanilla` that left one
+     standing did not do what it said.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container
@@ -1358,7 +1414,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
   and `--print-context`). Profile-based orchestration is `ciu up --profile
   NAME`; environment generation is `ciu env generate`. Flat `ciu -d …` forms
-  are not a public surface.
+  are not a public surface. `ciu env print` (CIU-60) is the read-only
+  companion to `ciu env generate`: it prints the ALREADY-WRITTEN `ciu.env` as
+  shell `export KEY='value'` lines for `eval "$(ciu env print)"`, generates
+  nothing, and refuses loudly (naming `ciu env generate`) when `ciu.env` is
+  absent. It is NOT named `apply` or `source` and MUST NOT be documented as
+  applying the environment into the calling shell: a subprocess structurally
+  cannot mutate its parent shell's environment, and naming it that way would
+  document a capability that cannot exist.
 - **S10.2** Profile selection is `ciu up --profile <name>` (S7.5); `--groups`
   does not exist (S7.5, greenfield). Per-service `shipped = true` (S8.6)
   routes a stack through its pre-shipped `docker-compose.yml`.

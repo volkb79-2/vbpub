@@ -156,6 +156,32 @@ ciu host-secrets <host> --materialize            # pre-Vault local secrets per h
 
 `ciu --help` and `ciu <verb> --help` list the public commands and their options.
 
+## Optional extras
+
+The base install above covers everything `ciu` does out of the box. Three
+extras add a runtime dependency each, only for the specific feature that
+needs it; without `schema` or `registry` installed, that feature fails
+loudly at the point of use with this same `pip install` remedy — nothing
+else is affected. `ssh` is different by design (S14.5): its feature has a
+working default (the subprocess `ssh`/`rsync` transport), so without the
+extra it degrades silently to that default rather than failing — see the
+`ssh` row below. This table is an upfront index so you can decide proactively instead of
+discovering each extra reactively, one at a time (see `docs/CONFIG.md` and
+`docs/CONSUMERS.md` for the full per-feature documentation of each). Version
+floors are pinned once, in [`pyproject.toml`](pyproject.toml)'s
+`[project.optional-dependencies]` — the source of truth; not repeated here so
+this table cannot drift out of sync with it.
+
+| Extra | Install | Package | Unlocks |
+|---|---|---|---|
+| `ssh` | `pip install 'ciu[ssh]'` | `paramiko` | The optional paramiko transport for `ciu ssh` / `ciu up --host` (`CIU_SSH_TRANSPORT=paramiko`, S14.5) — the default subprocess `ssh`/`rsync` transport needs no extra install. |
+| `schema` | `pip install 'ciu[schema]'` | `jsonschema` | JSON Schema validation of a `[<root>.<service>.configfile.<name>]` block's optional `schema = "..."` key, on the up/dev render path (S5.7). |
+| `registry` | `pip install 'ciu[registry]'` | `pydantic` | `ciu check`'s stage 7 validation of `[registry.postgresql].database` and `[registry.consul].token_vault_path` (S13.4b). |
+
+The dev-only `test` extra (pytest plus the same jsonschema/pydantic pins, for
+CIU's own test suite) is not listed here — it exists for CIU's own
+contributors, not for consumers.
+
 ## Release: portable CMRU project contract
 
 [`cmru.toml`](cmru.toml) travels with CIU. It declares CIU's identity, SemVer policy,
