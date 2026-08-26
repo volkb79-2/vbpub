@@ -130,6 +130,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.4.2] - 2026-08-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=fd6cbb5fafcec4255f2d9b74d098fc559ab9957d -->
+
+### Fixed
+- fix(assay): B033/B034 round-2 review fixes (blocker + findings 2, 3, 5) (a667862c)
+- fix(assay): B033 whole-target scope + B034 operator withdrawal (A-325, A-326) (6e0dca84)
+
+### Documentation
+- docs(assay): record the second round-2 gate run, at the actual branch tip (5fe87fa2)
+- docs(assay): round-2 notes in the LOG and REPORT, with the re-run gate (a72f0d72)
+- docs(assay): state B033(a)'s verifier-weakening cost outright (round-2 finding 4) (6eb0f925)
+- docs(assay): complete the B033/B034 LOG (entries for the three doc commits) (f2283598)
+- docs(assay): fill in the B033/B034 registered-gate transcript (green at 40127f76) (b3648130)
+- docs(assay): say in the SQL consumer section how a whole-target SQL lane differs (40127f76)
+- docs(assay): B033/B034 LOG, and correct README's "which question R1 asks" (949cac2f)
+- docs(assay): record A-325/A-326, correct B015, file B035, update consumer docs (1fedb8fa)
+
 ## [2.4.1] - 2026-08-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=d0d2f25bb1978b729cceba76e59d7052021e691d -->
