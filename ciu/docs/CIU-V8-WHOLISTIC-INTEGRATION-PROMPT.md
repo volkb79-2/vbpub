@@ -37,18 +37,24 @@ patches and contradictory or duplicated across the seams:
   **named** as open questions in `V8-REALIZATION-GRAPH.md` but never actually
   walked through against the proposed schema to see whether it would work.
 
-**Your job is not to invent a new design from scratch.** It is an editorial
-and analytical integration pass: read everything that already exists (in
-full — this is load-bearing, see §1), reconcile it against what the three
-tools *actually do today* (not just what earlier proposals assumed), resolve
-the contradictions you find, name what still needs to be built, name what
-should be dropped, and write ONE coherent, internally-consistent, validated
-schema and feature set as the output artifact described in §4.
+**Your job is not bounded by any of the sources above.** Every document
+named in §1 — including dstdns's own specs like
+`spec-ciu-provisioning-model.md`, which reads like a settled design but is
+one operator's proposed idea from before most of the rest of this existed —
+is **one proposed answer among several, never a constraint**. Nothing in
+any of these sources is settled. If the best answer to a scenario is
+something none of them proposed — a different split, a different
+unification, a mechanism nobody here has named — propose it. Reconciling
+existing proposals is the FLOOR, not the ceiling, of what this task wants.
+§2 spells out exactly how far this freedom extends (including breaking
+changes) and what principles should guide you when you use it.
 
 Treat every existing document as evidence, not authority. Two docs
-disagreeing means at least one is wrong or stale — your job is to determine
-which, using the tools' actual source and SPEC as the tiebreaker, and to say
-so explicitly rather than picking one silently.
+disagreeing means at least one is wrong, stale, or simply not the best
+available answer — your job is to determine which, using the tools' actual
+source and SPEC as one input among several (not an automatic tiebreaker:
+the source shows what ships TODAY, not what SHOULD ship), and to say so
+explicitly rather than picking one silently.
 
 ---
 
@@ -158,11 +164,24 @@ assay has no separate `SPEC.md`; treat these as its normative surface:
 
 ### 1.6 dstdns's actual, live usage — the concrete substrate every proposal must survive contact with
 
-- **`dstdns/docs/spec/spec-ciu-provisioning-model.md`** — dstdns's own spec for
-  the `requires`/`provides` model this whole integration builds on; its §8.3
-  already tracks one v8-relevant limitation as RESOLVED (per-phase preflight,
-  confirmed live in ciu 7.3) — check whether anything else in it is now stale
-  the same way, given how much has changed since it was drafted (2026-06-22).
+**Read the sub-bullets below as evidence of what dstdns needs and what it
+tried, never as a spec you are implementing.** `spec-ciu-provisioning-model.md`
+in particular reads like a settled design (it has a `Status: spec` header),
+but it is one dstdns operator's proposed idea from 2026-06-22, written before
+most of what §1.1–1.5 describes existed — nothing in it is load-bearing on
+your own design unless you independently conclude it's still the right
+answer. The same goes for every other dstdns doc in this section: they tell
+you what was tried and why, not what must survive into your integration.
+
+- **`dstdns/docs/spec/spec-ciu-provisioning-model.md`** — dstdns's own
+  proposal for the `requires`/`provides` model, one input among several
+  (`requires`/`provides` itself has since shipped and evolved well past what
+  this doc describes — e.g. `stack:*:healthy|completed`, CIU-63 through
+  CIU-66 — so treat it as a historical record of the ORIGINAL idea, not the
+  current shape). Its §8.3 already tracks one limitation as RESOLVED
+  (per-phase preflight, confirmed live in ciu 7.3) — check whether anything
+  else in it is now stale, superseded, or was simply the wrong call in
+  hindsight, the same way.
 - **`dstdns/docs/spec/spec-ciu-remote-ssh-deploy.md`** (SPEC J, 295 lines) —
   ciu's remote-SSH transport (`ciu ssh`, `ciu up --host`), the actual
   mechanism for scenario 2 in §5 below. Its header cross-references "SPEC H
@@ -203,30 +222,114 @@ assay has no separate `SPEC.md`; treat these as its normative surface:
 
 ## 2. What "wholistic integration" means here — the standard to hold yourself to
 
-Not a rewrite from scratch, and not a summary of the existing docs. A
-**synthesis** that:
+**Not** a summary of the existing docs, and **not** bounded by them either.
+Every source in §1 is one proposed answer to a problem, written by someone
+who did not see the whole picture you now have. Your synthesis is free to:
 
-1. Is internally consistent — no two sections of your output document may
-   propose incompatible schemas for the same concept. If the sources you
-   read disagree, you resolve it and say how, or you name it as an open
-   product decision (§7) — you never let both survive unreconciled in your
-   own output the way the current sources do.
-2. Is checked against what the three tools **actually do**, not just what
-   earlier proposals assumed they do or should do. Every claim of the form
-   "ciu can't do X" or "assay doesn't support Y" must be verified by reading
-   the actual source/SPEC named in §1, not inherited from a prior document.
-   `V8-REALIZATION-GRAPH.md` and the withdrawn `CIU-45` both document real
-   cases of this exact mistake happening in this project before — do not
-   repeat it a third time.
-3. Names what is genuinely new work versus what already exists and only
-   needs adopting, connecting, or documenting. Conflating these two is how a
-   design document ends up proposing to "build" something that already
-   shipped (this happened once already this session, with the vault-liveness
-   and schema-completion "gaps" — see §6).
-4. Is walked through end-to-end against real scenarios (§5), not validated
-   only at the schema-definition level. A schema that looks complete in the
-   abstract and fails the first time someone traces a real deployment
-   through it is not actually complete.
+- **Propose something none of the sources named** — a different entity
+  split, a different unification of two things the sources kept separate, a
+  mechanism nobody here has written down. "All the proposed solutions could
+  be bad" is a live possibility you must actually consider, not a rhetorical
+  disclaimer — if you conclude that after honestly weighing them, say so and
+  propose your own.
+- **Make breaking changes.** v8 exists specifically because dstdns's own
+  `AGENTS.md` §4.1 (greenfield only, no dual-naming, no deprecated paths
+  left running) makes clean cutovers the norm here, not the exception. A
+  correct design that requires every consumer to migrate is preferable to
+  an incorrect one that's backward-compatible. Where you propose a breaking
+  change, say what breaks and roughly what a consumer's migration looks
+  like (this is a completeness requirement on your reasoning, not a reason
+  to avoid the change) — do not implement the migration.
+- **Question mechanisms that already exist, not just gaps.** A tool being
+  *used* today is not evidence it's being used *well*. Concretely: dstdns
+  renders every config surface through Jinja2 templates
+  (`ciu.*.toml.j2`) — is that mechanism actually being used to its
+  potential (declarative, DRY, single-source-of-truth generation), or is it
+  mostly plumbing bare values through unchanged, with the real logic living
+  elsewhere (Python hooks, hand-maintained per-stack repetition — see
+  CIU-51's `qname()` proposal, which exists specifically because the current
+  templates DON'T use Jinja to eliminate repetition)? Answer this
+  concretely, with evidence from the actual templates in §1.6, not in the
+  abstract — and apply the same question to any other existing mechanism you
+  find yourself tempted to keep just because it's already there.
+- **Re-derive the whole schema's shape, not patch around the parts v8's
+  sources happened to name.** The gaps found this session (vault-liveness,
+  schema-completion, container naming, the `<stack>.<service>` addressing
+  coupling) were found because someone happened to trace a specific
+  scenario. There is no reason to believe they're the only ones. §4.5's
+  validation table (full schema, every key, argued from first principles —
+  not just the keys v8's sources happen to touch) exists precisely to catch
+  what scenario-tracing alone would miss.
+
+### Guiding principles — hold every design choice to these, and name which one(s) justify it
+
+These aren't a checklist to run once at the end; they're the lens for every
+decision in §4.3. Where a principle and an existing mechanism conflict,
+the principle wins and the mechanism is a **candidate to drop** (§4.8) or
+change, not a constraint the principle has to fit around.
+
+1. **Single source of truth.** A fact that two config surfaces (or two keys
+   within one surface) can independently state is a fact that WILL drift —
+   this session found exactly this (`run-gate.toml`'s `pins.assay.version`
+   and its `.pyz` filename encoding the same release in two shapes that
+   share no substring, D-211). Every fact should have exactly one place it's
+   declared; everywhere else derives it or references it.
+2. **Fail fast, not fail eventually.** A missing or wrong value should
+   refuse loudly at the earliest point it CAN be checked (ideally: authoring
+   time via schema validation; failing that, `ciu check`; failing that,
+   deploy time) — never silently substitute a default that happens to work
+   until it doesn't, and never let a wrong value surface only as a confusing
+   runtime symptom three layers away from its cause.
+3. **Explicitness over magic.** If a value is derived, the derivation should
+   be visible/discoverable (in rendered config, in `ciu check` output, in
+   `--help`), not an implicit behavior a reader has to already know about or
+   find by reading source. This is dstdns's own `AGENTS.md` §4.2a stated as
+   a general design principle: a default is a hazard the moment it
+   substitutes for a fact that exists somewhere else — apply that test to
+   every implicit/derived value you propose.
+4. **Mechanical checkability.** Prefer a schema shape a program can validate
+   completely (types, referential integrity, graph completeness) over one
+   that relies on a human reading carefully. If two facts must agree (a lane
+   referencing a stack that must exist; an assay lane a run-gate lane
+   references), that agreement should be something `ciu check` or an
+   equivalent can verify, not something only a careful reviewer catches —
+   §4.6 (spec/schema check) is where you make this concrete.
+5. **Full preflight validation.** Everything checkable without side effects
+   should be checked before anything with side effects runs — this is
+   CIU-64's finding (`ciu check` should run automatically before `ciu up`)
+   generalized: the principle isn't "add one more check," it's "no class of
+   error that COULD be caught statically should ever be discovered by a
+   live deploy instead."
+6. **One authoritative derivation per identity, used everywhere.** Where the
+   same identity fact needs to appear in multiple forms (a container name, a
+   DNS hostname, a compose service key, a config-referenced `internal_host`),
+   there should be one function/mechanism computing all of them, not several
+   independent reimplementations that can individually go stale — CIU-66
+   names exactly this problem for the current container-naming layer.
+7. **Minimize special-casing per mechanism kind.** A generic check that's
+   blind to a specific kind's real semantics is a smell (CIU-63: the static
+   graph lint doesn't know `stack:*` refs resolve by live probe, so it wrongly
+   demands a `provides` declaration nothing reads). Prefer a schema/validator
+   shape where adding a new kind of reference, secret directive, or
+   dependency doesn't require hand-adding a carve-out to every consumer of
+   that shape.
+8. **Separate declaration from resolution.** The LogicalService/Realization
+   split is one instance of a more general principle: declaring that
+   something is NEEDED should be a different concern from declaring HOW it's
+   currently satisfied. Look for other places in the schema where these two
+   are currently fused, and consider whether splitting them the same way
+   would help (or whether it would just add indirection for no benefit —
+   this principle can be over-applied).
+9. **Config as data, not a place for logic to hide.** Templates should
+   generate declarative data; if a `.j2` file's control flow IS the
+   business logic (not just value substitution), that's a sign the logic
+   belongs in the tool, not the template. This is the concrete form of the
+   Jinja2 question above.
+
+Add more if, while doing the work, you find yourself repeatedly justifying a
+choice the same way and it isn't on this list — name the principle
+explicitly when you do, the same way you'd name any other tool in your
+reasoning.
 
 ---
 
@@ -235,14 +338,18 @@ Not a rewrite from scratch, and not a summary of the existing docs. A
 1. Read every source in §1, in full, as specified.
 2. Build an inventory of every distinct mechanism/idea proposed anywhere in
    the sources (both V8 docs, the four supporting docs, every CIU-45..66
-   backlog entry, every relevant decision). Tag each one: **SHIPPED**
-   (already works, verify how), **PROPOSED — NOT BUILT**, **CONTRADICTED**
-   (conflicts with another source — name both), or **SUPERSEDED** (an
-   earlier idea a later document already replaced, but the earlier document
-   was never updated to say so — `V8-REALIZATION-GRAPH.md`'s own git history
-   this session is full of these; you are looking for the same pattern
-   across documents that a single document's revision history usually
-   catches).
+   backlog entry, every relevant decision) — AND of every existing schema
+   key/mechanism in ciu/assay/run-gate's actual current config surface,
+   whether or not any v8 source mentions it (§4.5 requires you to argue for
+   or against every one, not just the ones already under discussion). Tag
+   each one: **SHIPPED** (already works, verify how), **PROPOSED — NOT
+   BUILT**, **CONTRADICTED** (conflicts with another source — name both),
+   **SUPERSEDED** (an earlier idea a later document already replaced, but
+   the earlier document was never updated to say so — `V8-REALIZATION-GRAPH.md`'s
+   own git history this session is full of these), or **QUESTIONABLE**
+   (exists and works, but §2's principles suggest it may be the wrong shape
+   — this tag is new work you're doing, not something any source will have
+   already flagged).
 3. For every **CONTRADICTED** item: determine which side is actually
    correct by checking the tool's real source/SPEC (§1.3–1.5), and write the
    resolution into your reasoning (§4's elongated-reasoning requirement) —
@@ -257,15 +364,31 @@ Not a rewrite from scratch, and not a summary of the existing docs. A
    its rough shape, which tool owns it) and what to **drop** (name the
    specific proposed idea and why it's wrong, superseded, or not worth its
    complexity) — both with reasoning, not just a verdict.
-6. Write the full per-key validation tables (§4.5) for every config surface
-   the integrated schema touches.
+6. Write the full per-key validation tables (§4.5) for **every key in
+   ciu's entire config schema** (stack-level, global, and every other
+   surface named in §1) **at every nesting level** — not only the keys the
+   v8 sources happen to discuss. A key that's fine as-is still needs its row
+   (reason for existence, argued from §2's principles); a key you can't
+   justify is a finding (§4.8 drop candidate), not something to silently
+   omit from the table.
 7. Do the spec/schema check (§4.6): validate the integrated proposal against
    the real upstream mechanisms named in §1.3–1.5, and sketch how the
    proposal's own schema would itself become a checkable schema (tie this to
    ciu's existing S5.7 schema-validated configfile render and S9.5
    `validate_config`, extended per CIU-63/64/65's findings — see §6).
-8. Write `ciu/docs/CIU-V8-PROPOSAL-WHOLISTIC-INTEGRATION-1.md` per the
-   structure in §4.
+8. If, anywhere in steps 1–7, you find an actual defect in ciu, assay, or
+   run-gate's shipped behavior (not a design gap the integration itself is
+   meant to resolve — a real bug: wrong behavior against the tool's own
+   documented contract) — file it upstream using the `backlog` skill/
+   convention (search the target tool's `KNOWN_ISSUES_TODO_BACKLOG.md`
+   first, write it with enough mechanism + reproduction + proposed contract
+   that an implementer doesn't have to re-derive your reasoning, the same
+   discipline CIU-63/64/65/66 in this session's own backlog entries used).
+   File as you find them, don't batch them for the end. Design gaps and
+   "this mechanism is the wrong shape" findings do NOT go to the backlog —
+   those are exactly what §4 is for.
+9. Write `ciu/docs/CIU-V8-PROPOSAL-WHOLISTIC-INTEGRATION-1.md` per the
+   structure in §4, including §4.11 (non-breaking improvements).
 
 ---
 
@@ -281,8 +404,8 @@ supersedes/refines, revision, date.
 
 ### 4.2 Inventory
 The tagged mechanism inventory from Work step 2, as a table: mechanism |
-source doc(s) | tag (SHIPPED/PROPOSED/CONTRADICTED/SUPERSEDED) | one-line
-disposition.
+source doc(s) | tag (SHIPPED/PROPOSED/CONTRADICTED/SUPERSEDED/QUESTIONABLE) |
+one-line disposition.
 
 ### 4.3 Elongated reasoning — the integrated design, walked through
 
@@ -307,18 +430,27 @@ re-implementations of "qualify with project+instance"?); the
 graph-completeness check it depends on (§4.6) is actually specified, not
 just gestured at; the shared-infra join mechanism (S16.1/CIU-22/CIU-52)
 versus realness-variant selection — are these the same axis or two that
-interact, and how does a joining instance pick both at once.
+interact, and how does a joining instance pick both at once; the
+access/transport layer as its own first-class schema concern (scenario 3,
+§5 — not folded silently into whatever entity happens to need it first);
+and, explicitly, whether Jinja2 templating is the right mechanism used well
+or a crutch for something ciu itself should own (§2's principle 9) — with a
+real verdict, not a deferral.
 
 ### 4.4 What still needs to be built
 Concrete list: mechanism name, which tool owns it, rough shape, why it
 doesn't already exist (checked against §1.3–1.5's real source, not assumed).
 
-### 4.5 Validation — every schema key, every level
+### 4.5 Validation — every key, every level, the entire schema
 
-This is not optional and not abbreviable. For **every** config surface the
-integrated proposal touches (ciu stack-level TOML, ciu global TOML, assay
-lane TOML, run-gate lane TOML, and any new v8 table you propose), produce a
-table with these columns for every key at every nesting level:
+This is not optional and not abbreviable, and it is **not scoped to what
+this integration changes** — it is scoped to ciu's (and, where relevant,
+assay's and run-gate's) **entire config schema as your integration leaves
+it**, including every key that survives unchanged from before v8. For
+**every** config surface the integrated schema uses (ciu stack-level TOML,
+ciu global TOML, assay lane TOML, run-gate lane TOML, and any new v8 table
+you propose), produce a table with these columns for every key at every
+nesting level:
 
 | key | table / level | type | reason for existence | owner (who writes it / who reads it) | example |
 |---|---|---|---|---|---|
@@ -367,6 +499,21 @@ project's own convention throughout this design work has been to never
 overclaim completeness — hold yourself to the same bar your output will be
 reviewed against.
 
+### 4.11 Non-breaking improvements to the existing tools
+
+A separate list from §4.4 ("what still needs to be built" is v8/breaking).
+This section names improvements or additions to ciu, assay, or run-gate that
+would help NOW, independent of whether or when the full v8 cutover happens
+— things a maintainer could ship incrementally on the current schema without
+waiting for this integration to land. Pull genuinely non-breaking candidates
+out of everything you found in §4.3/§4.4/§4.8 (a principle violation that
+has a backward-compatible fix belongs here even if the FULL fix you're
+proposing for v8 is breaking) and name any new ones this exercise surfaced.
+For each: mechanism, tool, why it's safe to ship without breaking existing
+consumers, and what it unblocks or improves. This is the section a
+maintainer reads first if they want value before committing to v8 at all —
+write it so it stands alone.
+
 ---
 
 ## 5. Scenarios to walk through — mandatory, plus your own additions
@@ -393,13 +540,34 @@ you're folding back in, or reveals an open product decision.
    readiness as an init dependency at all" — confirm whether that is still
    true once SPEC J's actual mechanism is accounted for, or whether it was
    an overclaim made without checking this spec.
-3. **VPN, host-based vs. sidecar.** dstdns has a disabled-by-default
-   `infra/tailscale-node` stack at phase_0. Walk through both a host-level
-   VPN (the node itself joins a mesh) and a sidecar-container VPN (a
-   per-stack proxy container) against the integrated schema's dependency
-   model — does either shape fit the `requires`/`provides` graph as
-   currently proposed, or does "network transport readiness" need to be a
-   distinct ref kind from `stack:*:healthy`?
+3. **The access/transport layer, as one question, not four.** This is
+   broader than "does VPN fit the schema" — the real question is: does the
+   integrated schema hold **elegantly** (one coherent concept, not four
+   independent ad hoc mechanisms bolted on separately) how any two services
+   actually reach each other, across every distance they might be apart?
+   Walk through all of these against the SAME schema concept and check
+   whether it's actually one mechanism wearing different clothes or
+   genuinely four:
+   - same-stack, same-instance (trivial — Compose's own network);
+   - different stack, same instance (today: bare Docker DNS aliasing, the
+     whole CIU-48/49/51/66 hazard family this session found);
+   - different instance, shared-infra join (CIU-52/S16.1's `ref_services` —
+     crosses an instance boundary but stays on one host);
+   - different host entirely — dstdns's disabled-by-default
+     `infra/tailscale-node` stack (host-level VPN mesh) versus a
+     per-stack sidecar proxy container, and SPEC J's `ciu ssh`/`ciu up
+     --host` transport (§1.6) as the actual shipped remote-execution path.
+   For each: does the consumer-facing config look and feel the same
+   regardless of which case it turns out to be (the way a well-designed
+   schema should make "how far away is this dependency" an implementation
+   detail, not something every consumer re-derives), or does the distance
+   leak into how a dependency is declared? If it leaks, is that a real,
+   necessary distinction (some cases genuinely need different guarantees) or
+   an accident of how each mechanism was built separately? Also check: does
+   `requires`/`provides` need a distinct ref kind for "transport readiness"
+   at all (`stack:*:healthy` doesn't obviously mean "and the network path to
+   it is up"), or does the current model already cover it once identity and
+   location are properly separated?
 4. **Remote proxy with firewall rules limiting traffic to own hosts.** A
    reverse-proxy or edge component that must only accept/forward traffic
    to/from a specific set of hosts (not "anyone who can reach the network").
@@ -427,12 +595,24 @@ you're folding back in, or reveals an open product decision.
    stacks both declaring a service named `postgres` (CIU-66) — walk through
    whether the integrated schema's container-naming/identity scheme
    structurally prevents this or merely makes it less likely.
-8. **Credential rotation.** `V8-REALIZATION-GRAPH.md` names this as a
-   genuinely separate, unaddressed axis (the topological sort only covers
-   initialization; nothing re-runs it; dstdns's actual mechanism needs a
-   full restart to pick up a rotated secret). Does the integrated schema
-   address this, or is it correctly out of scope — and if out of scope,
-   say so explicitly rather than silently dropping it.
+8. **Credential rotation — verify non-obstruction, don't design a
+   mechanism.** Settled (operator directive): rotation is an APP-LEVEL
+   concern, handled through Consul (a service watches its own KV path live
+   and picks up a rotated value without a restart) — this is not ciu's
+   mechanism to build. What ciu's schema DOES need to get right: does
+   anything in the current or integrated config model quietly work against
+   that? Concretely — check `expose_env`-style secret directives (baking a
+   value into a container's environment at start time is inherently
+   NOT rotation-friendly, restart-required by construction) against
+   Consul-KV-backed delivery (rotation-friendly, no restart) for the same
+   kind of secret, and check whether the schema makes clear to an author
+   which they're choosing and why, or whether `expose_env` is silently the
+   default/easy path even for a secret that will need live rotation later.
+   `V8-REALIZATION-GRAPH.md`'s framing of this as "a genuinely separate,
+   unaddressed axis" needs re-examination in this light — unaddressed by
+   ciu is correct BY DESIGN, not a gap, provided the schema doesn't get in
+   the way; confirm that's actually true rather than restating the earlier
+   framing.
 9. **assay lane referencing a ciu stack that doesn't exist, or a run-gate
    lane referencing an assay lane that doesn't exist.** Walk through what
    happens today (nothing catches it until run time) versus what the
@@ -526,8 +706,8 @@ against actual source before being trusted, and this list is no exception.
   satisfies it (Realization), rather than trying to flatten everything into
   one TOML table shape first and reasoning about it informally. Bring the
   same discipline to any NEW entity you find yourself needing (e.g. for
-  multi-host transport readiness, or credential rotation, if you decide
-  either needs first-class modeling): name the entities and relationships
+  transport readiness, per scenario 3, if you decide it needs first-class
+  modeling): name the entities and relationships
   before you name the TOML keys, the same way `V8-REALIZATION-GRAPH.md`'s
   own entity table precedes its worked TOML example.
 
@@ -554,8 +734,12 @@ read more carefully before writing it into §4.9.
 
 ## 8. Scope
 
-**Touch:** create `ciu/docs/CIU-V8-PROPOSAL-WHOLISTIC-INTEGRATION-1.md`.
-Nothing else.
+**Touch:** create `ciu/docs/CIU-V8-PROPOSAL-WHOLISTIC-INTEGRATION-1.md`. Per
+Work step 8, you MAY also create new backlog entries in the relevant tool's
+`KNOWN_ISSUES_TODO_BACKLOG.md` (ciu, assay, or run-gate-project) — but only
+for genuine tool defects (wrong behavior against the tool's own documented
+contract), never for design gaps or "wrong shape" findings, which belong in
+your output document instead. Nothing else.
 
 **Forbid:** do not edit `CIU-V8-TESTING-GATE-PROPOSAL.md` or
 `V8-REALIZATION-GRAPH.md` — they are sources, and their own edit history is
@@ -563,7 +747,7 @@ part of the record this integration is reasoning over. Do not write or
 modify any code, config, or test in `ciu/`, `assay/`, `run-gate-project/`,
 or `dstdns/` — this is a design-synthesis task; implementation is explicitly
 out of scope and belongs to whatever handoffs get carved from your output
-afterward. Do not file or edit backlog entries — if your integration work
-surfaces a genuinely new finding distinct from the design synthesis itself,
-name it in §4.10 (Known gaps) for a human to triage, rather than filing it
-yourself.
+afterward. Do not edit or re-file an EXISTING backlog entry beyond what the
+search-before-file step of a genuinely new finding requires (a `note` on a
+match you found, not a rewrite) — you are filing new defects you found,
+not auditing the backlog itself.
