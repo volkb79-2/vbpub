@@ -275,4 +275,58 @@ wheel install and is the authority; its transcript is below.
 `bash tools/tester-unified-gate.sh ..` from the assay project root, exit code
 read in a separate step.
 
-<!-- GATE TRANSCRIPT -->
+Run at `40127f76`, the branch tip. The gate builds its own wheel from an
+exact-OID, no-local sparse clone of that commit and self-hosts through it, so
+the throwaway-venv failures above are not in scope for it.
+
+```
+$ bash tools/tester-unified-gate.sh ..
+...
+Successfully built assay
+Processing ./tmp/tmp.mCqw9jRNTc/dist/assay-2.4.2.dev4+g40127f76-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-2.4.2.dev4+g40127f76
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.46s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 18.07s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.81s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+23 passed in 0.73s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 40127f76bec681d268c1e68508817564c195efdc
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py \
+        --override-ini=pythonpath=
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 10.41s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+```
+
+Exit code read in a separate step, never from a pipe tail:
+
+```
+$ grep "GATE_EXIT=" gate3.txt
+GATE_EXIT=0
+```
+
+Two earlier gate attempts were aborted before they could produce a verdict,
+both for the same self-inflicted reason and neither for a code failure: an
+uncommitted file (first the LOG, then a `docs/CONSUMERS.md` addition) left the
+worktree dirty, and the self-hosted lane correctly refused
+`NO_MEASUREMENT`/`DIRTY_TREE`. The transcript above is the run on a clean tree.
+
+## Consumer notification owed
+
+`dstdns`'s `cw2b_schema` lane (`/workspaces/dstdns/assay.toml`) declares
+`mode = "whole_target"` **and** `base = "origin/main"`, and will be refused at
+load by this build until that one line is deleted. It is the only known
+consumer of the whole-target R2 path. This belongs in the next
+assay→dstdns release-notify alongside A-324's own outstanding cross-reference.
+
