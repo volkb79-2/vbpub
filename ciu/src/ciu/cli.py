@@ -772,27 +772,44 @@ def _env_print(rest: list[str]) -> int:
         parse_workspace_env,
         resolve_env_root,
     )
-    # All THREE failure modes — unresolvable root, absent ciu.env, and a
-    # malformed entry inside it — return a clean `[ERROR]` + exit 1. The parse
-    # belongs inside this try for that reason: a hand-edited ciu.env is an
-    # ordinary operator mistake, not an internal fault, and a raw traceback
-    # would be the only inconsistent one of the three.
+    # EVERY way this can fail — an unresolvable root, an absent/unreadable/
+    # non-regular ciu.env, a malformed entry, a non-UTF-8 byte — returns a
+    # clean `[ERROR]` + exit 1. A hand-edited or mis-created ciu.env is an
+    # ordinary operator mistake, not an internal fault, so none of them
+    # deserves a traceback.
+    #
+    # `is_file()` rather than `exists()`: a DIRECTORY named ciu.env satisfies
+    # exists(), and the read then raises IsADirectoryError.
+    #
+    # The except clause follows worktree.py's `(OSError, WorkspaceEnvError)`
+    # reader but adds `UnicodeDecodeError` explicitly, because that pattern
+    # alone does NOT cover a non-UTF-8 byte: UnicodeDecodeError derives from
+    # ValueError, not OSError, so `read_text(encoding="utf-8")` escapes both
+    # arms. Named rather than folded into a bare `ValueError` so the reason
+    # it is listed separately stays visible.
     try:
         root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
-        env_file = root / WORKSPACE_ENV
-        if not env_file.exists():
-            print(
-                f"[ERROR] No {WORKSPACE_ENV} at {root} — nothing to print. "
-                f"Run: ciu env generate",
-                file=sys.stderr,
-            )
-            return 1
-        entries = parse_workspace_env(env_file)
     except WorkspaceEnvError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
-    # Printing happens only after the WHOLE file parsed: a malformed entry
-    # halfway down must not leave half an environment on stdout for `eval`.
+    env_file = root / WORKSPACE_ENV
+    if not env_file.is_file():
+        print(
+            f"[ERROR] No readable {WORKSPACE_ENV} at {root} — nothing to "
+            f"print. Run: ciu env generate",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        entries = parse_workspace_env(env_file)
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        print(f"[ERROR] could not read {env_file}: {exc}", file=sys.stderr)
+        return 1
+    # `parse_workspace_env` returns a fully-built dict, so nothing reaches
+    # stdout unless the WHOLE file parsed. Keeping the print loop outside the
+    # try preserves that (and keeps a BrokenPipeError from `ciu env print |
+    # head` out of the error path, where it would be misreported as a
+    # ciu.env problem).
     for key, value in entries.items():
         print(f"export {key}={_shell_export_value(value)}")
     return 0

@@ -7,8 +7,9 @@ handoff's own stale-backlog-number correction), confirmed with
 `git status --porcelain && git log --oneline -3` before any edit — tree was
 clean, HEAD as briefed.
 
-**Status: COMPLETE — reviewed ACCEPT-conditional, both fixes applied (§4b).**
-All seven oracles met. **3259 tests pass; coverage 100.00% line + branch**
+**Status: COMPLETE — two ACCEPT-conditional review rounds, all fixes applied
+(§4b), one claim in this LOG retracted as measurably wrong (§4b.1).**
+All seven oracles met. **3261 tests pass; coverage 100.00% line + branch**
 under the real gate (`.venv/bin/python run-ciu-tests.py`).
 No `scope.forbid` file touched. No `escalate_if`
 condition hit — both were evaluated explicitly against the shipped code and
@@ -265,22 +266,33 @@ same function (unresolvable root, absent file) both returned a clean
 `[ERROR] …` and exit 1. Three failure modes, two presentations. This wave has
 held new verbs to exactly this bar before (P16's `ciu status`).
 
-The parse (and the existence check) now sit inside the same `try`, so all
-three are identical to an operator. One consequence worth naming: the loop
-that prints is now AFTER the parse completes, not interleaved with it, so a
-malformed entry halfway down the file emits **nothing** on stdout rather than
-a partial environment. That matters more than the cosmetics — `eval` over a
-half-printed environment succeeds silently, which is the worst of the three
-outcomes. Pinned by
-`test_env_print_reports_a_malformed_ciu_env_without_a_traceback`, which
-asserts rc=1, an `[ERROR]`-prefixed stderr, no `Traceback`, and an **empty
-stdout**. Verified against the real CLI too:
+The parse now sits inside a `try`, so all of them are identical to an
+operator. Verified against the real CLI:
 
 ```console
 $ ciu env print
 [ERROR] Invalid ciu.env entry: 'this is not a valid entry'
 rc=1
 ```
+
+**Correction (second review round).** The first version of this section — and
+the commit message of `ef275e01` — claimed a second benefit that does not
+exist: that printing was previously "interleaved" with parsing, so a
+malformed entry halfway down used to leave a partial environment on stdout.
+That is wrong. `parse_workspace_env` returns a fully-built `Dict`, so the
+pre-fix `for key, value in parse_workspace_env(env_file).items():` evaluated
+the call to completion before the loop began; a malformed file printed
+nothing then either. Measured directly against the pre-fix expression to
+confirm rather than re-reasoned: **0 bytes** of stdout.
+
+The empty-stdout assertion in
+`test_env_print_reports_a_malformed_ciu_env_without_a_traceback` is therefore
+a **regression PIN, not evidence of a fix** — worth keeping, because it would
+catch a future refactor of `parse_workspace_env` into a generator, which
+genuinely WOULD start leaking half an environment into
+`eval "$(ciu env print)"`. The test docstring now says so explicitly, so the
+next reader is not misled the way this LOG was. The only real change in this
+finding is the traceback → `[ERROR]` one.
 
 ### 4b.2 `upsert_generated_facts`' docstring overstated what CIU owns
 
@@ -297,6 +309,66 @@ blank/comment run walked back over and carried across untouched. The
 "Behaviour" list's third bullet was corrected in the same pass (it also
 described only the blank-separator case). No code change.
 
+### 4b.3 "All THREE failure modes" was not exhaustive (second review round)
+
+The §4b.1 comment and test docstring both claimed `ciu env print` returned a
+clean `[ERROR]` for all its failure modes. It did not. Three more still
+raw-tracebacked, all reachable by an ordinary operator:
+
+| Case | Why it escaped |
+|---|---|
+| `ciu.env` is a **directory** | the guard was `exists()`, which is true for a directory; the read then raises `IsADirectoryError` |
+| `ciu.env` is **unreadable** | `PermissionError` — an `OSError`, never in the except clause |
+| `ciu.env` has a **non-UTF-8 byte** | `UnicodeDecodeError` from `read_text(encoding="utf-8")` |
+
+Fixed with the in-repo precedent the reviewer cited
+(`worktree.py`'s `_resolve_budget_candidates`: `is_file()` plus
+`except (OSError, WorkspaceEnvError)`) — **plus one addition, because that
+precedent does not actually close the third case.** `UnicodeDecodeError`
+derives from `ValueError`, not `OSError`, and `WorkspaceEnvError` is a
+*different* `ValueError` subclass, so a non-UTF-8 byte escapes both arms.
+Confirmed rather than assumed:
+
+```
+WorkspaceEnvError MRO: ['WorkspaceEnvError', 'ValueError', 'Exception', ...]
+UnicodeDecodeError is OSError?           False
+UnicodeDecodeError is ValueError?        True
+UnicodeDecodeError is WorkspaceEnvError? False
+```
+
+So the except clause is `(OSError, UnicodeDecodeError, WorkspaceEnvError)`,
+with `UnicodeDecodeError` named explicitly rather than folded into a bare
+`ValueError` so the surprising reason it is listed stays visible.
+
+Two structural notes on the fix:
+
+- The `resolve_env_root` failure kept its **own** `try` and its own message.
+  Folding it into one block with the read would have made a bad
+  `--define-root` report as `could not read ciu.env: Repository root does not
+  exist: …`, which names the wrong thing. Each error now says what actually
+  failed.
+- The print loop stays OUTSIDE the `try`. `parse_workspace_env` returns a
+  complete dict (§4b.1), so nothing is lost by that, and it keeps a
+  `BrokenPipeError` from `ciu env print | head` out of the error path, where
+  it would be misreported as a `ciu.env` problem.
+
+Three new/updated tests:
+`test_env_print_reports_a_directory_named_ciu_env`,
+`test_env_print_reports_an_unreadable_ciu_env` (the non-UTF-8 case — the one
+that proves the precedent's tuple is insufficient), and the corrected
+docstring on the malformed-entry test.
+
+**Follow-up filed: CIU-62.** `worktree.py:_resolve_budget_candidates` has the
+identical latent gap — it reads every registered *sibling* worktree's
+`ciu.env` during `ciu up`'s S16.3 budget check, so one bad byte in any
+sibling escapes as a traceback, defeating that function's own documented
+promise of "a loud `[S16.3]` failure". The fix is the same one token. It was
+FILED rather than applied: `worktree.py` is in `scope.touch`, but making an
+unrequested behavioural change in a different subsystem during a
+record-level fix round is how a clean round turns into another one. One word
+from the controller and it is a one-line commit. Worth grepping the whole
+repo for the same pair at that point — this is a class, not a site.
+
 ## 5. Files changed
 
 **Source (5)**
@@ -309,11 +381,11 @@ described only the blank-separator case). No code change.
 | `src/ciu/config_model.py` | comment only (§4.7) |
 | `.gitignore` | one entry, out of `scope.touch` — see §4a |
 
-**Tests (2 new files, 53 tests)**
+**Tests (2 new files, 55 tests)**
 
 | File | Covers |
 |---|---|
-| `tests/tests/test_ciu_workspace_env.py` (38) | O1, O2, O3, O4, O5 |
+| `tests/tests/test_ciu_workspace_env.py` (40) | O1, O2, O3, O4, O5 |
 | `tests/tests/test_ciu_deploy_clean_vanilla.py` (15) | O6 |
 
 `tests/tests/test_ciu_workspace_env.py` did not previously exist despite
@@ -327,7 +399,8 @@ S6.4b; S10.1 extended), `docs/CONFIG.md` (file-role row + a new
 (what clean does NOT remove + `--vanilla`; new §11a on reading identity in
 templates and shells), `docs/DESIGN-GUIDE.md` (new section, §6),
 `CHANGES.md`, `KNOWN_ISSUES_TODO_BACKLOG.md` (CIU-60 row + detail, including
-its `.gitignore` side-finding; plus the CIU-61 follow-up row + detail).
+its `.gitignore` side-finding; plus the CIU-61 and CIU-62 follow-up rows,
+CIU-61 with detail).
 
 No `scope.forbid` file touched: `src/ciu/dev.py`, `src/ciu/engine.py`,
 `src/ciu/composefile.py`, `nyxloom-trove/{backlog,decisions,roadmap}.md` are
@@ -353,7 +426,7 @@ sections, which is where a reader following that thread arrives.
 | **O2** byte-for-byte preservation | `test_hand_authored_content_survives_byte_for_byte`, `test_content_before_between_and_after_the_block_all_survive` (literal line-by-line assertions on the surrounding text, incl. a comment BELOW the block, plus a re-run byte-identity check), `test_a_full_toml_round_trip_would_have_failed_this` (four exact comment strings, incl. an inline trailing comment, asserted verbatim — the mutant-killer for a parse-and-dump shortcut) |
 | **O3** facts reach templates via the existing merge | `test_generated_facts_land_in_the_merged_global_config`, `test_a_jinja_template_can_read_the_facts_like_any_other_value` (renders `{{ ciu.instance.generated.physical_repo_root }}` through `render_toml_template`), `test_the_facts_are_not_injected_as_a_bespoke_context_field` (negative) |
 | **O4** main checkout covered | `test_primary_checkout_with_no_instance_record_is_covered` (asserts `read_own_instance_record(...) is None` first, then that the overlay is created from nothing), `test_write_does_not_consult_the_instance_record_at_all` (spy: zero calls — the negative), `test_a_worktree_instance_shaped_overlay_is_extended_not_replaced` |
-| **O5** `env print` | `test_env_print_emits_export_lines_and_nothing_else` (+ empty stderr, + every `REQUIRED_KEYS_CORE` key), `test_env_print_has_no_side_effects` (byte-compares every file before/after), `test_env_print_refuses_loudly_when_ciu_env_is_missing` (rc=1, empty stdout, names `ciu env generate`), `test_env_print_reports_a_malformed_ciu_env_without_a_traceback` (§4b.1 — rc=1, `[ERROR]` stderr, no traceback, empty stdout), `test_eval_of_env_print_populates_a_real_shell` (real bash), `test_shell_export_value_quoting` (5 cases), `test_env_verb_help_text_names_print_and_is_honest_about_eval` (asserts the words "apply"/"source" do NOT appear — O5's negative) |
+| **O5** `env print` | `test_env_print_emits_export_lines_and_nothing_else` (+ empty stderr, + every `REQUIRED_KEYS_CORE` key), `test_env_print_has_no_side_effects` (byte-compares every file before/after), `test_env_print_refuses_loudly_when_ciu_env_is_missing` (rc=1, empty stdout, names `ciu env generate`), `test_env_print_reports_a_malformed_ciu_env_without_a_traceback` (§4b.1), `test_env_print_reports_a_directory_named_ciu_env` + `test_env_print_reports_an_unreadable_ciu_env` (§4b.3 — every failure mode is `[ERROR]` + rc=1 + empty stdout, none a traceback), `test_eval_of_env_print_populates_a_real_shell` (real bash), `test_shell_export_value_quoting` (5 cases), `test_env_verb_help_text_names_print_and_is_honest_about_eval` (asserts the words "apply"/"source" do NOT appear — O5's negative) |
 | **O6** `clean --vanilla` | Default half: `test_plain_clean_leaves_all_three_files_untouched` (byte-compares), `test_plain_clean_is_the_default_when_vanilla_is_not_passed` (signature default), `test_plain_clean_prints_nothing_about_vanilla`, `test_main_defaults_vanilla_false_for_a_plain_clean`. New-flag half: `test_vanilla_removes_exactly_the_three_files` (+ asserts committed inputs survive), `test_vanilla_on_an_already_clean_workspace_succeeds`, `test_vanilla_tolerates_any_single_file_already_absent` (×3), `test_vanilla_reports_a_removal_that_failed`, `test_vanilla_is_skipped_when_the_teardown_failed`, `test_deploy_argparse_accepts_vanilla_and_defaults_it_false`, `test_main_forwards_vanilla_to_action_clean` |
 | **O7** docs + `--help` | SPEC S3.1b/S6.4b/S10.1, CONFIG.md, CIU.md, CONSUMERS.md, DESIGN-GUIDE.md as listed in §5. `--help` pinned by test: `test_env_verb_help_text_names_print_and_is_honest_about_eval`, `test_cli_clean_help_documents_vanilla` (requires all three filenames), `test_env_print_help_is_reachable_and_names_eval` |
 
@@ -380,19 +453,19 @@ Final run, after the §4b review fixes:
 ```
 $ .venv/bin/python run-ciu-tests.py
 ...
-src/ciu/cli.py                                     837      0    304      0   100%
+src/ciu/cli.py                                     841      0    304      0   100%
 src/ciu/config_model.py                            336      0    166      0   100%
-src/ciu/deploy.py                                  1627     0    706      0   100%
+src/ciu/deploy.py                                 1627      0    706      0   100%
 src/ciu/workspace_env.py                           509      0    202      0   100%
 src/ciu/worktree.py                               1702      0    696      0   100%
 --------------------------------------------------------------------------------------------
-TOTAL                                             9684      0   3948      0   100%
+TOTAL                                             9688      0   3948      0   100%
 Coverage JSON written to file coverage.json
 Required test coverage of 100% reached. Total coverage: 100.00%
-====================== 3259 passed, 6 warnings in 22.00s =======================
+============================ 3261 passed in 19.07s =============================
 ```
 
-3206 → 3259 tests (+53). Every one of the four modules this package touches
+3206 → 3261 tests (+55). Every one of the four modules this package touches
 is at 100% line AND branch. Two intermediate iterations were needed to reach
 it: the first full run was 99.96% with three uncovered spots — `cli.py:1617`
 (the `env print` dispatch line, needing a test through the public
@@ -400,8 +473,9 @@ dispatcher), and in `workspace_env.py` the `1013->1015` branch (appending
 after a file already ending in a blank line) and line `1036` (a generated
 block butted directly against the next table with no separator). All three
 now have named tests; **no existing test needed changing**, and nothing was
-xfail'd or excluded. The §4b review fixes added one more test and one more
-statement to `cli.py`, and the gate stayed at 100.00% across that change too.
+xfail'd or excluded. The §4b review fixes added three more tests and four
+more statements to `cli.py` across two rounds; the gate stayed at 100.00%
+through both.
 
 ## 9. Notes for the reviewer
 
@@ -424,7 +498,18 @@ statement to `cli.py`, and the gate stayed at 100.00% across that change too.
    at merge; this package does not depend on those numbers.
 5. **§4a — one out-of-scope file (`.gitignore`) was touched**, because the
    gate does not pass without it. Ruling welcome.
-6. **§4b records the two review fixes**, both applied: `_env_print`'s
-   malformed-`ciu.env` traceback (now a clean `[ERROR]` + exit 1, and
-   nothing partial on stdout) and `upsert_generated_facts`' stale docstring
-   (now states the narrower, actual ownership boundary).
+6. **§4b records the review fixes**, all applied. Round one: `_env_print`'s
+   malformed-`ciu.env` traceback (now `[ERROR]` + exit 1) and
+   `upsert_generated_facts`' stale docstring (now states the narrower,
+   actual ownership boundary). Round two: §4b.1's "no longer prints
+   partially" claim was **wrong and is retracted in place** (measured: the
+   pre-fix code printed 0 bytes too — the assertion is a pin, not a fix),
+   and §4b.3 closes the three failure modes that still tracebacked
+   (directory, unreadable, non-UTF-8).
+7. **§4b.3's last paragraph is the one thing still open.** The
+   `(OSError, WorkspaceEnvError)` precedent I was pointed at does not itself
+   cover `UnicodeDecodeError` (it is a `ValueError`, not an `OSError`), so
+   the precedent SITE — `worktree.py:_resolve_budget_candidates`, which reads
+   every sibling worktree's `ciu.env` during `ciu up` — has the same latent
+   traceback. Filed as **CIU-62** rather than fixed unrequested. One word and
+   it is a one-line commit.

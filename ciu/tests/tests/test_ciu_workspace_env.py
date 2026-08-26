@@ -530,8 +530,17 @@ def test_env_print_refuses_loudly_when_ciu_env_is_missing(
 def test_env_print_reports_a_malformed_ciu_env_without_a_traceback(
     monkeypatch, tmp_path, capsys
 ):
-    """All THREE of this verb's failure modes look the same to an operator:
-    a clean `[ERROR]` on stderr and exit 1, never a raw Python traceback."""
+    """A malformed entry is an operator mistake, not an internal fault: clean
+    `[ERROR]` + exit 1, never a raw traceback.
+
+    The empty-stdout assertion is a PIN, not a fix: `parse_workspace_env`
+    already returns a fully-built dict, so the pre-fix
+    `for k, v in parse_workspace_env(f).items()` could not print partially
+    either. It is worth keeping because it would catch a future refactor of
+    that function into a generator, which WOULD start leaking half an
+    environment into `eval "$(ciu env print)"` — and half an environment is
+    worse than none, because `eval` succeeds on it.
+    """
     (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     (tmp_path / "ciu.env").write_text(
         'export REPO_ROOT="/repo"\nthis is not a valid entry\n', encoding="utf-8"
@@ -543,9 +552,43 @@ def test_env_print_reports_a_malformed_ciu_env_without_a_traceback(
     assert rc == 1
     assert out.err.startswith("[ERROR] ")
     assert "Traceback" not in out.err
-    # Nothing partial reached stdout: half an environment fed to `eval` is
-    # worse than none, because it succeeds.
     assert out.out == ""
+
+
+def test_env_print_reports_a_directory_named_ciu_env(monkeypatch, tmp_path, capsys):
+    """`exists()` is true for a DIRECTORY, so the guard has to be `is_file()`
+    or the read below raises IsADirectoryError as a traceback."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    (tmp_path / "ciu.env").mkdir()
+
+    rc = _run_env_print(monkeypatch, tmp_path)
+    out = capsys.readouterr()
+
+    assert rc == 1
+    assert out.out == ""
+    assert out.err.startswith("[ERROR] ")
+    assert "Traceback" not in out.err
+    assert "ciu env generate" in out.err
+
+
+def test_env_print_reports_an_unreadable_ciu_env(monkeypatch, tmp_path, capsys):
+    """A read that fails is an `[ERROR]` too, not a traceback.
+
+    A non-UTF-8 byte is the case that proves the except clause needs
+    `UnicodeDecodeError` named explicitly: it derives from ValueError, NOT
+    from OSError, so the `(OSError, WorkspaceEnvError)` pattern this was
+    modelled on does not catch it.
+    """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    (tmp_path / "ciu.env").write_bytes(b'export A="\xff\xfe"\n')
+
+    rc = _run_env_print(monkeypatch, tmp_path)
+    out = capsys.readouterr()
+
+    assert rc == 1
+    assert out.out == ""
+    assert out.err.startswith("[ERROR] could not read ")
+    assert "Traceback" not in out.err
 
 
 def test_env_print_reports_a_bad_define_root(monkeypatch, tmp_path, capsys):
