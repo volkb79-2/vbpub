@@ -57,3 +57,32 @@ The registered-gate transcript in the REPORT: green at `40127f76`, through `ASSA
 The three entries above were written after their own commits landed, so this
 file's final commit is not itself logged — the same shape every append-only
 self-hashed log ends on.
+
+## Round 2 — 2026-08-26, independent adversarial review (ACCEPT-conditional)
+
+One blocker, four findings; all addressed. The blocker is worth naming here as
+well as in the REPORT, because of what it was: two `4-backlog.md` status lines
+claimed B033/B034 were "released in assay-v2.4.2", a tag that does not exist on
+a branch that is not merged. This wave's own remit included correcting B015's
+status from a claim that outran its acceptance state — shipping the same shape
+one notch further out would have been a self-inflicted repeat.
+
+### `a667862c`
+
+Round-2 blocker plus findings 2, 3 and 5. Blocker: both backlog status lines now name the branch and say unmerged/unreleased, and the two further stray "2.4.2" claims go with them (B015's own status line, README's "as of 2.4.2"); the `assay-2.4.2.devN+g<sha>` strings in the REPORT are deliberately untouched, being literal `git describe` output from the wheel the gate built rather than claims about a release. Finding 2: the "known operators:" and per-language suggestion lists rendered the full catalogue, which still SPELLS the withdrawn names, so a mistyped operator was answered with a withdrawn suggestion and a second refusal on the retry; both messages now render the declarable set while the membership checks either side keep reading the spellable one — A-326's asymmetry, now load-bearing in both directions. Finding 3: taken as a code fix rather than a wording softening — R2's whole-target resolver gains R1's symlink gate as its own first check, eight lines mirroring `evaluate.py`, replacing a fall-through to `read_regular_file` that refused a symlink as `ERROR`/`GIT_FAILED` (a repository failure for a lane-config mistake) and making this LOG's own "gate for gate, order for order" claim true rather than qualified. Finding 5: A-326 cited `go:*`/`sql:*` together as precedent for "legal to spell, impossible to produce"; `adapters/go.py` returns `UNSUPPORTED` unconditionally and holds, `adapters/sql.py`'s own docstring reads "Never `UNSUPPORTED`" and does not — both read in the source before editing, the false half withdrawn in place with the correction recorded, the ruling left standing on `go:*` alone.
+
+**entry-sha256:** `7d825592f2b9120836158cfc4911f49eda7a9f5027317101a04517e570dc0c39`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### `6eb0f925`
+
+Round-2 finding 4, the one item that was about saying something rather than changing something. "A pure widening" was true and half the story: widening a verifier means it stops rejecting things, and some of what it stops rejecting is malformed. Measured on both builds in both directions and recorded in the REPORT — the honest whole-target R2 artifact 2.4.1 refused now verifies (the intended gain), and a diff-based `R0,R2` verdict with its `base` deleted now verifies too (the cost). One rule cannot both require and forbid `base` for two shapes the artifact does not distinguish, which is precisely what B035 exists to fix; B035's backlog entry now carries that argument, naming dstdns's `cw2b_schema` as the live instance, instead of reading as a neutral deferral.
+
+**entry-sha256:** `21e74ede2389dc8aa2fc1761b6144993d860527a7372f3c6b78d07fab0ba8124`
+(over `"{commit}\n{body}\n"`, UTF-8, this entry's own text)
+
+### Round-2 gate
+
+`bash tools/tester-unified-gate.sh ..` re-run at `6eb0f925`, green through
+`ASSAY_GATE_PHASE=independent-self-hosting-passed`; `GATE_EXIT=0` read in a
+separate step (LESSONS L4). Full phase transcript in the REPORT.

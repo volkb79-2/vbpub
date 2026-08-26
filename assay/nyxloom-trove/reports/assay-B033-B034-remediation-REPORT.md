@@ -367,6 +367,96 @@ uncommitted file (first the LOG, then a `docs/CONSUMERS.md` addition) left the
 worktree dirty, and the self-hosted lane correctly refused
 `NO_MEASUREMENT`/`DIRTY_TREE`. The transcript above is the run on a clean tree.
 
+## Round 2 — 2026-08-26, after the independent adversarial review
+
+Verdict was **ACCEPT-conditional**: every headline claim reproduced
+independently, including a from-scratch re-derivation of B034's core finding
+with a timeline check across v2.3.0/v2.4.0/v2.4.1, and A-326's retention call
+accepted as correctly reasoned. Five items came back; all five are addressed.
+
+**Blocker — a release claim that outran reality.** `4-backlog.md` said B033
+and B034 were "released in assay-v2.4.2". There is no such tag
+(`git tag -l 'assay-v2.4*'` → `assay-v2.4.0`, `assay-v2.4.1`) and this branch
+is unmerged; `CHANGES.md` had it right under `[Unreleased]` the whole time.
+Both status lines now name the branch and say unreleased, and two further
+stray claims went with them — B015's own status line ("withdrawn … in 2.4.2")
+and `README.md`'s "withdrawn as of 2.4.2". The build strings elsewhere in this
+report (`assay-2.4.2.dev4+g40127f76`) are left alone: those are literal
+`git describe` output from the wheel the gate built, not claims about a
+release. Correcting a status that outran its acceptance state is the job this
+wave was dispatched to do for B015; shipping the same shape one notch further
+out was the one thing it could not do.
+
+**Finding 2 — withdrawn operators were still being advertised.** The "known
+operators:" list and the per-language suggestion list both rendered the full
+catalogue, which still *spells* the two withdrawn names, so a consumer who
+mistyped an operator got one of them suggested and hit a second refusal on the
+retry. Both messages now render the declarable set. The membership checks on
+either side still read the spellable one — that asymmetry is A-326's whole
+point and is now load-bearing in two directions rather than one.
+
+**Finding 3 — R2's symlink gate.** Taken as a code fix rather than a wording
+softening. R1 refuses a symlink target first, by name; R2 had no gate of its
+own and fell through to `read_regular_file`, which refuses it as
+`ERROR`/`GIT_FAILED` — a repository failure for what is a lane-config mistake.
+Eight lines mirroring `evaluate.py` make the LOG's "gate for gate, order for
+order" claim true rather than qualified. Measured through the CLI:
+
+```
+$ assay run sqllane        # targets = [..., "db/alias.sql"], a symlink
+assay: lane sqllane: R2 whole-target resolution refused: mutation target
+'db/alias.sql' is a symlink; a whole-target entry must be a real, ordinary
+source file
+sqllane: ERROR/BAD_LANE_CONFIG (exit 2)
+```
+
+The pre-existing `GIT_FAILED` behaviour is as the reviewer measured it on
+2.4.1; it is not re-derived here, because 2.4.1 refuses this lane earlier for
+an unrelated reason (it still demands `judge.base`).
+
+**Finding 4 — the verifier-weakening cost.** Stated outright in its own
+section above ("The cost of that, stated plainly"), with both directions
+measured on both builds, and B035's backlog entry now carries the priority
+argument rather than reading as a neutral deferral.
+
+**Finding 5 — a false supporting claim inside A-326.** The ruling cited
+`go:*`/`sql:*` together as precedent for a name legal to spell and impossible
+to produce. `go:*` holds — `adapters/go.py`'s `generate_mutation_sites`
+returns `"UNSUPPORTED"` unconditionally. `sql:*` does not: its own docstring
+reads "Never `UNSUPPORTED` — SQL has an engine (the lexer)", dstdns declares
+all seven, and the registered gate qualifies them. Both were checked in the
+source before editing. The false half is withdrawn in place with the
+correction recorded (this file is append-only); the ruling stands on `go:*`
+alone, which carries it by itself.
+
+### Round-2 gate
+
+Re-run at `6eb0f925`, the round-2 tip:
+
+```
+Successfully installed assay-2.4.2.dev8+g6eb0f925
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.28s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 17.21s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.68s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+23 passed in 0.75s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 6eb0f9254f138c64af7f9856acbcfb4ad38f7afd
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 10.32s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+```
+
+Exit code read in a separate step: `GATE_EXIT=0`.
+
 ## Consumer notification owed
 
 `dstdns`'s `cw2b_schema` lane (`/workspaces/dstdns/assay.toml`) declares
