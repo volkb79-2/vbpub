@@ -59,29 +59,44 @@ worker-db, and docker-stats-exporter.
 
 ## Worked example (dstdns)
 
-```toml
-# ── logical: what "the database" means, regardless of backend ──
-[service.our_main_db]
-contract = ["pg:db/dstdns", "pg:role/controller"]
+**Corrected — db-core does not create the role.** An earlier version of
+this example had db-core both minting controller's role/password *and*
+being the sole realization for `our_main_db`, with db-init only contributing
+the schema as a separate edge. That splits ownership of one contract across
+two producers and lets a consumer's dependency cheat down a wave for half
+of it. One producer now: db-core shrinks to generic infra + admin access;
+db-init owns every application-facing database fact — role, password, *and*
+schema — matching "db-init seeds the schema and the application's own
+users, and persists their credentials in Vault; only then can the
+controller read the credential from Vault."
 
-[service.our_main_db.live]
+```toml
+# ── db-core: generic infra only. No app roles, no app passwords. ──
+[service.our_db_infra]
+contract = ["pg:db/dstdns"]  # an empty database + admin access — nothing app-facing
+
+[service.our_db_infra.live]
 realized_by = "db_core"
 
-# ── realization: how it's deployed today ──
 [ciu_stack.db_core]
 location = "infra/db-core"
-init_provides = ["pg:db/dstdns", "pg:role/controller"]
-# produced internally by postgres_init, a one-shot job — ciu only needs
-# the aggregate above, not which container inside db-core earned it.
+init_provides = ["pg:db/dstdns", "vault:secret/db/postgres/superuser_password"]
+# db-core's OWN GEN_TO_VAULT still needs vault live — an undeclared edge
+# today (see "Full system trace" below), omitted here for clarity.
 
-[ciu_stack.db_core.postgres]
-image = "timescale/timescaledb-ha:pg18"
-port = 5432
+# ── our_main_db: what "the application's database" means — role,
+#    password, AND schema, one producer, never db-core directly ──
+[service.our_main_db]
+contract = ["pg:role/controller", "vault:secret/db/postgres/controller_password", "pg:schema/dstdns"]
 
-[ciu_stack.db_core.postgres_init]
-one_shot = true
-# postgres_init's dependency on the postgres container being up is
-# Compose's depends_on inside infra/db-core's own compose file.
+[service.our_main_db.live]
+realized_by = "db-init"  # NOT db_core
+
+[ciu_stack.db-init]
+init_requires = ["our_db_infra"]  # needs db-core's admin access first
+init_provides = ["pg:role/controller", "vault:secret/db/postgres/controller_password"]
+# pg:schema/dstdns is ALSO produced here but can't be declared — no ref
+# kind exists yet. Ordering rests on the hand-placed phase number.
 
 # ── vault: mints the AppRole controller authenticates with ──
 [service.our_vault]
@@ -93,7 +108,7 @@ realized_by = "vault_stack"
 [ciu_stack.vault_stack]
 init_provides = ["vault:secret/vault/controller/role_id", "vault:secret/vault/controller/secret_id"]
 
-# ── controller: names only logical services, never db_core or vault_stack ──
+# ── controller: names only logical services, never db_core, db-init, or vault_stack ──
 [ciu_stack.controller_stack.controller]
 init_requires = ["our_main_db", "our_vault", "vault:secret/redis/password"]
 init_provides = ["vault:secret/internal/internal_dlq_token"]  # self-generated; not required, provided
@@ -103,33 +118,41 @@ init_provides = ["vault:secret/internal/internal_dlq_token"]  # self-generated; 
 init_requires = ["vault:secret/internal/internal_dlq_token", "vault:secret/redis/password"]
 ```
 
-The bare `"our_main_db"` / `"our_vault"` entries in controller's
-`init_requires` are a coarse reference, resolved as "everything that logical
-service's currently-selected realness variant needs to be considered
-ready," recursively. They only ever name a *logical* service; the compound
+The bare `"our_main_db"` / `"our_vault"` / `"our_db_infra"` entries are a
+coarse reference, resolved as "everything that logical service's
+currently-selected realness variant needs to be considered ready,"
+recursively. Each only ever names a *logical* service; the compound
 `<stack>.<service>` form from §3.1's worked examples has no remaining use
 once every cross-boundary edge routes through a fact or a logical name.
+`our_db_infra` only ever appears in *db-init's own* `init_requires` —
+controller has no reason to know it exists.
 
 ## Full system trace
 
 Validated against dstdns's real fresh-bring-up chain (`ciu clean && ciu up`,
 2026-08-25) and re-checked under the stack-level model above.
 
-**Corrected after review — the first pass undercounted this.** An earlier
-version of this trace found three waves, computed as a topological sort of
-the *declared* graph. That graph is missing an entire class of edges: every
-stack that `GEN_TO_VAULT`s its own secrets needs Vault live to write them,
-and none of them declare it. Vault's own bootstrap (`post_compose_vault.py`)
-is the only genuinely self-contained node — it only ever `docker exec`s into
-its own container. Recomputed with that edge added:
+**Corrected twice after review.** First pass: three waves, computed as a
+topological sort of the *declared* graph — missing the fact that every
+`GEN_TO_VAULT` user needs Vault live first (Vault's own bootstrap,
+`post_compose_vault.py`, is the only node that only ever `docker exec`s into
+its own container). Second pass: db-core and db-init were still splitting
+ownership of the same database contract — db-core minted controller's role
+and password directly (wave 1) while only the schema routed through db-init
+(wave 2), letting controller cheat down a wave for half its dependency.
+Consolidating onto one producer — db-core shrinks to generic infra + admin
+access, db-init owns every application-facing fact (role, password, *and*
+schema) — moves authentik, webapp-server, and worker-db from wave 2 to
+wave 3, alongside controller. The wave *count* stays five; the membership
+doesn't:
 
-![Wave 0: vault alone, the only genuinely self-contained bootstrap. Wave 1: db-core, redis, and consul, each needing vault live to GEN_TO_VAULT their own secrets, an edge none of them declare. Wave 2: db-init and authentik, consuming wave-1 facts; db-init produces the schema but nothing downstream requires it, shown in red as a missing edge. Wave 3: controller, which needs db-init's schema in addition to db-core's roles. Wave 4: worker-io, which requires internal_dlq_token from controller — the edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
+![Wave 0: vault alone, the only genuinely self-contained bootstrap. Wave 1: db-core, redis, and consul, each needing vault live to GEN_TO_VAULT their own secrets, an edge none of them declare. Wave 2: db-init, now the sole producer of application-facing database facts, and docker-stats-exporter, which never touches the database. Wave 3: controller and authentik, both waiting on db-init rather than db-core directly. Wave 4: worker-io, which requires internal_dlq_token from controller — the edge that broke when both were declared in the same phase, shown highlighted.](assets/realization-graph/system-trace.svg)
 
 ```
 wave 0: vault                                          (genuinely self-contained)
 wave 1: consul-server, db-core, redis-core, skywalking (GEN_TO_VAULT needs vault live)
-wave 2: authentik, db-init, docker-stats-exporter      (need wave-1 creds/tokens)
-wave 3: controller, webapp-server, worker-db           (need db-init's schema, not just db-core's roles)
+wave 2: db-init, docker-stats-exporter                 (db-init: sole producer of role/password/schema)
+wave 3: authentik, controller, webapp-server, worker-db (all wait on db-init, never db-core directly)
 wave 4: worker-io                                      (needs controller's internal_dlq_token)
 ```
 
@@ -138,7 +161,15 @@ today — every declared phase still sits at or after its computed wave, so
 the current hand-maintained list stays safe, just more granular than even
 this corrected graph demands.
 
-**Two confirmed gaps, not one:**
+**Two confirmed gaps, not one — deliberately distinguished:** role and
+password ARE expressible in ciu today (real ref kinds; the fix was purely
+which stack's config declares them). Schema is NOT expressible at all —
+that's the genuine ciu limitation, unchanged by the ownership fix. A
+residual race survives even after consolidating ownership: if db-init
+writes role/password to Vault before its own schema migration finishes,
+ciu's preflight would see the expressible facts satisfied and let
+controller start anyway. Fixing who owns a fact and fixing whether ciu can
+check it are two separate problems.
 - `db-init`'s schema creation (`pg:schema/dstdns`) is produced but required
   by nothing in the graph — `pg:schema/*` still isn't an expressible ref
   kind. Ordering today rests on a hand-placed phase number plus a runtime
@@ -188,3 +219,7 @@ bug structurally impossible to declare, not just easier to catch.
 - **`pg:schema/*` ref kind** — a confirmed real gap in dstdns's current graph, unchanged since dstdns's own spec first asked for it.
 - **Automatic vault-liveness dependency** — found on review, not in the first pass: `GEN_TO_VAULT`/`ASK_VAULT` directives should imply an `init_requires` on the vault store being live, derived by ciu itself. Currently every stack that mints its own secrets is missing this edge.
 - **Credential rotation** — a genuinely separate axis. §4.3.1 scopes the topological sort to initialization only; nothing re-runs it later, and dstdns's actual mechanism (`expose_env` baking a secret into an environment variable at container start) needs a full restart to pick up a rotated value. Not addressed anywhere in the proposal; needs its own design.
+
+**Resolved on second review:**
+- db-core and db-init consolidated onto one producer for the application-facing database contract (role, password, schema) — see "Full system trace" above.
+- The purpose of the init graph itself, clarified: not resilience to slow starts, but turning a real misconfiguration into an immediate, named failure at deploy time instead of a retry loop that can't distinguish "8 seconds from ready" from "never going to exist" — both look identical, a timeout. Same fail-fast principle as dstdns's own `AGENTS.md` §4.2, applied to bring-up ordering specifically rather than config values generally.
