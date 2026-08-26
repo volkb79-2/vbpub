@@ -99,6 +99,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [2.4.1] - 2026-08-26
+<!-- cmru: generated -->
+<!-- cmru: source-end=d0d2f25bb1978b729cceba76e59d7052021e691d -->
+
+### Fixed
+- fix(assay): round-2 review fixes -- honest probe-timeout bound, honest --progress refusal (B031/B032) (3f47d5fa)
+- fix(assay): guard A-320's candidate_ids producer against an empty shard (d58265bc)
+- fix(assay): B031/B032 -- opt-in progress artifact, registered verify fields, honest probe refusals (A-320..A-323) (ae09425d)
+- fix(assay): B030 -- assay plan discovers against the real project root (A-319) (6a0f9a04)
+
+### Documentation
+- docs(assay): fill in the B030-B032 round-2 gate transcript (registered gate green) (775d44cb)
+- docs(assay): B030-B032 round-2 LOG and REPORT (235a6f2e)
+- docs(assay): round-2 review bookkeeping -- tick B030/B031/B032 acceptance boxes, restate A-320's no-bump argument, CHANGES.md (D1) (7cf34c2f)
+- docs(assay): fill in the B030-B032 gate transcript (registered gate green) (fcdfde92)
+- docs(assay): B030-B032 remediation LOG and REPORT (0e6cab39)
+- docs(assay): file the 2.1.0->2.3.0 review-gap audit and its backlog (B030-B034, RG-23) (142143a4)
+
 ## [2.4.0] - 2026-08-25
 <!-- cmru: generated -->
 <!-- cmru: source-end=f0f063e642abb88dc7d349b93d373029f42f25c1 -->
