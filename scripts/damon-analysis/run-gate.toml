@@ -1,0 +1,60 @@
+# =============================================================================
+# damon-analysis gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# All three tiers are host-scoped: this project analyzes DAMON sysfs output
+# already captured to disk/JSON — it never touches DAMON itself, never
+# starts a container, and its own suite (like cgroup-profiler's, per
+# DESIGN.md there) works entirely against fixture data. No environment
+# beyond a plain python3 + pytest is required.
+# =============================================================================
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/damon-analysis && python3 -m compileall -q . && python3 -m pytest tests -q --cov=. --cov-branch --cov-report=term-missing",
+]
+clean_tree = false
+budget = "5m"
+
+# Mutation testing via a live, worktree-installed assay (never a pinned
+# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). The
+# judge policy (source roots, operators, budget) lives in this project's own
+# assay.toml [lanes.r2]; this lane just installs and invokes it.
+[lanes.r2]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/damon-analysis && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "30m"
+artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+
+# Proves the gate REJECTS known-bad code — each canary breaks exactly one
+# contract a named test claims to assert, and that test must go red.
+[lanes.r3]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/damon-analysis && exec tools/canary-run.sh",
+]
+clean_tree = false
+budget = "5m"
+
+# The implementation/release gate: every consumer (release steps, agents,
+# humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
+# sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
+# is the reference shape).
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+]
+clean_tree = false
+budget = "1h"

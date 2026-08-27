@@ -1,0 +1,43 @@
+# damon-analysis's assay lane declarations. Consumed by run-gate.toml's
+# [lanes.r2] via a live, worktree-installed assay (assay/docs/
+# INTERNAL-CONSUMERS.md) — no pinned zipapp for an in-repo consumer.
+schema_version = 2
+
+[lanes.r2]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["python3", "-m", "pytest", "tests", "-q"]
+env = { PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+# This is a monorepo lane: assay's snapshot walks the whole resolved commit,
+# not just this project's own source roots, so a tracked hostile symlink
+# anywhere else in vbpub (Topos's fixtures) would otherwise refuse every
+# lane in every unrelated project. See assay/docs/CONSUMERS.md's "A
+# monorepo lane: omitting declared unsafe symlinks" for the full mechanism
+# and the maintenance obligation this list creates.
+[lanes.r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.r2.judge]
+language = "python"
+source_roots = ["."]
+base = "origin/main"
+
+[lanes.r2.judge.mutation]
+jobs = 2
+max_mutants = 400
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
