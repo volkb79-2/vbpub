@@ -31,6 +31,7 @@ def fmt_bytes(b):
         if abs(b) < 1024:
             return f'{b:.1f} {unit}' if unit != 'B' else f'{int(b)} B'
         b /= 1024
+    return f'{b:.1f} PiB'
 
 
 def analyze_one(pid: int, duration_s: int = 15):

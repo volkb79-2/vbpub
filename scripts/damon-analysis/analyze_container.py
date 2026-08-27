@@ -287,13 +287,10 @@ def main():
             'aggr_us': args.aggr_us,
         }
 
-    # Aggregate summary across all processes (for process mode)
-    if args.mode == 'process':
-        summary = classifier.summary(classified)
-        total_bytes = sum(s['bytes'] for s in summary.values())
-    else:
-        summary = classifier.summary(classified)
-        total_bytes = sum(s['bytes'] for s in summary.values())
+    # Aggregate summary across all processes (for process mode) or the
+    # single physical-mode collection — same computation either way.
+    summary = classifier.summary(classified)
+    total_bytes = sum(s['bytes'] for s in summary.values())
 
     # Generate output
     if args.output == 'json':

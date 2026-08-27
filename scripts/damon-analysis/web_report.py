@@ -13,11 +13,12 @@ Usage:
 import sys, os
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _VENV_SITE = os.path.join(_SCRIPT_DIR, 'venv', 'lib')
-for _d in os.listdir(_VENV_SITE):
-    _sp = os.path.join(_VENV_SITE, _d, 'site-packages')
-    if os.path.isdir(_sp):
-        sys.path.insert(0, _sp)
-        break
+if os.path.isdir(_VENV_SITE):
+    for _d in os.listdir(_VENV_SITE):
+        _sp = os.path.join(_VENV_SITE, _d, 'site-packages')
+        if os.path.isdir(_sp):
+            sys.path.insert(0, _sp)
+            break
 
 import argparse
 import json

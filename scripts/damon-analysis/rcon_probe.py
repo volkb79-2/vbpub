@@ -30,8 +30,11 @@ import time
 # ── Source RCON protocol ────────────────────────────────────────────────────
 
 def _pack(req_id: int, pkt_type: int, body: str) -> bytes:
+    # req_id is a signed int32 on the wire: the auth-failure sentinel is -1,
+    # which an unsigned format can neither pack nor, when unpacked, ever
+    # compare equal to -1 (it decodes as 4294967295 instead).
     payload = body.encode() + b'\x00\x00'
-    header = struct.pack('<III', 4 + 4 + len(payload), req_id, pkt_type)
+    header = struct.pack('<Iii', 4 + 4 + len(payload), req_id, pkt_type)
     return header + payload
 
 
@@ -39,7 +42,7 @@ def _recv_packet(sock: socket.socket) -> tuple[int, int, str]:
     raw_len = _recvn(sock, 4)
     length = struct.unpack('<I', raw_len)[0]
     data = _recvn(sock, length)
-    req_id, pkt_type = struct.unpack('<II', data[:8])
+    req_id, pkt_type = struct.unpack('<ii', data[:8])
     body = data[8:-2].decode('utf-8', errors='replace')
     return req_id, pkt_type, body
 
