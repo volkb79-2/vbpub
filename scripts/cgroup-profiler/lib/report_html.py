@@ -298,7 +298,14 @@ def build_figure(
                 seen_other_in_panel[row] = True
             resampled = _resample_series(s)
             colors = (_color_for(slot, 0), _color_for(slot, 1))
-            legend_name = "Other" if is_other else s.label
+            # s.label is untrusted (a cgroup path or container name): plotly's
+            # JSON encoder only escapes the </script>-boundary characters, not
+            # HTML tags — plotly.js itself renders trace names through a
+            # pseudo-HTML pipeline that interprets <a href=...> as a real,
+            # clickable link. Every other surface this label reaches
+            # (hovertemplate below, the endpoint annotation, the table row)
+            # already escapes it; this one must too.
+            legend_name = "Other" if is_other else html.escape(s.label)
             for res in RESOLUTIONS:
                 t, v = resampled[res]
                 trace = go.Scatter(
@@ -405,13 +412,14 @@ def _add_events_row(add, events: Sequence[Event], *, row: int) -> None:
 # ── surrounding hand-written HTML ───────────────────────────────────────────
 
 def _fmt_value(value: Optional[float], unit: str) -> str:
-    # NaN is not the same thing as None in model.py's vocabulary — nothing in
-    # this package's own contract puts one in a Series — but pandas arithmetic
-    # upstream (a 0-count resample bucket, a 0/0 rate) can leak one in without
-    # going through the documented "None means unmeasurable" convention. Both
-    # get the same "—": the alternative is `int(round(nan))` raising
-    # ValueError and taking the whole report down over one bad sample.
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+    # NaN/±inf are not the same thing as None in model.py's vocabulary —
+    # nothing in this package's own contract puts one in a Series — but
+    # pandas arithmetic upstream (a 0-count resample bucket, a 0/0 or x/0
+    # rate) can leak one in without going through the documented "None means
+    # unmeasurable" convention. All get the same "—": the alternative is
+    # `int(round(nan))`/`int(round(inf))` raising ValueError/OverflowError
+    # and taking the whole report down over one bad sample.
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
         return "—"
     if unit == "bytes":
         return util.fmt_bytes(int(round(value)))
@@ -431,13 +439,14 @@ def _fmt_value(value: Optional[float], unit: str) -> str:
 
 
 def _finite_no_nan(s: Series) -> List[float]:
-    """``Series.finite()`` minus any NaN that slipped in under the ``None``
-    convention's radar (see :func:`_fmt_value`) — excluded here rather than
-    left for ``min``/``max``/``statistics.fmean`` to trip over: ``fmean``
-    propagates a single NaN into the whole mean, and ``min``/``max`` give an
-    answer that silently depends on whether the NaN happened to sort first.
+    """``Series.finite()`` minus any NaN/±inf that slipped in under the
+    ``None`` convention's radar (see :func:`_fmt_value`) — excluded here
+    rather than left for ``min``/``max``/``statistics.fmean`` to trip over:
+    ``fmean`` propagates a single NaN into the whole mean, ``min``/``max``
+    give an answer that silently depends on whether the NaN happened to sort
+    first, and either one would happily accept an infinity as a real value.
     """
-    return [x for x in s.finite() if not math.isnan(x)]
+    return [x for x in s.finite() if math.isfinite(x)]
 
 
 def _series_stats_row(s: Series) -> str:

@@ -96,7 +96,11 @@ def in_container() -> bool:
     if os.path.exists("/.dockerenv"):
         return True
     try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as fh:
+        # This process's own cgroup, not PID 1's: under --pid=host (exactly
+        # the mode the helper container runs in), /proc/1 is the HOST's real
+        # init, so reading /proc/1/cgroup would report the host's cgroup
+        # instead of this container's own.
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
         return False

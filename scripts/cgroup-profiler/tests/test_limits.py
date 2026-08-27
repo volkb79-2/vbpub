@@ -311,6 +311,23 @@ def test_effective_no_flags_defaults_to_strict(cgroup_root):
     assert eff.protection_mode == "strict"
 
 
+def test_effective_memory_high_tightest_wins_with_two_real_competing_values(cgroup_root):
+    # Regression test: every other memory_high/memory_max/cpu_cores/pids_max
+    # "tightest wins" assertion in this file only ever has ONE non-None
+    # declaration in the relevant ancestor chain (every other ancestor
+    # declares "max"/leaves it unset), so _tightest_by's comparison direction
+    # is never actually exercised by them — it takes the first non-None value
+    # unconditionally regardless of whether the comparison itself picks min
+    # or max. This fixture's LEAF chain has two genuinely different real
+    # declarations: wings.slice declares memory.high=14G, its child
+    # wings-prod.slice declares memory.high=6G — the correct tightest-wins
+    # answer (6G, attributed to wings-prod.slice) differs from the wrong
+    # "loosest wins" answer (14G), so this actually distinguishes the two.
+    eff = limits.effective(LEAF, root=str(cgroup_root))
+    assert eff.memory_high == 6 * GIB
+    assert eff.memory_high_by == "/wings.slice/wings-prod.slice"
+
+
 # ── fingerprint / describe ────────────────────────────────────────────────────
 
 

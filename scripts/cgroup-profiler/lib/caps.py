@@ -27,7 +27,7 @@ from .util import MAX, read_text
 class CapChange:
     cgroup: str
     file: str
-    old: Optional[str]     # None means "was max" (or unreadable) — see TempCaps
+    old: Optional[str]     # None means "was max" — see TempCaps
     new: str
 
 
@@ -181,12 +181,18 @@ class TempCaps:
     def _apply_one(self, cgroup: str, file: str, new_value: str) -> None:
         path = _file_path(self.root, cgroup, file)
         old_text = read_text(path)
-        # None here covers two cases the same way: the file genuinely reads
-        # back "max" (util's own sentinel convention), or it could not be
-        # read at all (raced out from under us between the refuse-check and
-        # here). Either way _restore below must write back the literal
-        # string "max", never a stale number.
-        old = None if old_text is None or old_text.strip() == MAX else old_text.strip()
+        # A read failure here is NOT the same as the file genuinely reading
+        # back "max" — conflating the two would make _restore() write back
+        # the literal string "max" for a transient read race (the cgroup
+        # briefly unreadable, then readable again by write time), silently
+        # erasing whatever real limit production actually had. Refuse this
+        # one change instead; __enter__'s exception handler rolls back
+        # everything already applied.
+        if old_text is None:
+            raise CapsError(
+                f"cannot read prior value of {cgroup}:{file} — refusing to apply"
+            )
+        old = None if old_text.strip() == MAX else old_text.strip()
         _write(path, new_value)
         self.applied.append(CapChange(cgroup=cgroup, file=file, old=old, new=new_value))
 

@@ -88,12 +88,24 @@ def test_sample_cgroup_vanished_directory_is_fully_absent(cgroup_root):
 
 
 def test_sample_cgroup_memev_uses_local_not_hierarchical(cgroup_root):
-    # cgroup_files() writes the same high/max counts into both
-    # memory.events and memory.events.local for every fixture cgroup, so
-    # this only pins down *which key exists*, not which file wins the
-    # value — that guards against silently switching files later.
-    sample = metrics.sample_cgroup(str(cgroup_root / "wings.slice"), groups={"memev"})
-    assert sample["memev"]["low"] == 0
+    # cgroup_files() writes identical content into both memory.events and
+    # memory.events.local by default, so a version of this test using the
+    # fixture as-is could not actually tell which file sample_cgroup reads —
+    # only that the expected key exists. Give the two files genuinely
+    # different values here so the assertion actually distinguishes them: if
+    # sample_cgroup ever regressed to reading the hierarchical
+    # memory.events (which double-counts at every ancestor level) instead of
+    # the per-cgroup memory.events.local, this would read 999, not 5.
+    target = cgroup_root / "wings.slice"
+    (target / "memory.events").write_text(
+        "low 0\nhigh 999\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    )
+    (target / "memory.events.local").write_text(
+        "low 0\nhigh 5\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+    )
+
+    sample = metrics.sample_cgroup(str(target), groups={"memev"})
+    assert sample["memev"]["high"] == 5
     assert "oom_kill" in sample["memev"]
 
 

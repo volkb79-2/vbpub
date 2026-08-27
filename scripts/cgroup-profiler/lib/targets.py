@@ -39,7 +39,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from . import util
 from .access import CGROUP_ROOT, docker_bin
 
-_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12,64}$")
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 # Both cgroup drivers docker can be configured with: systemd names the leaf
 # "docker-<id>.scope", cgroupfs names it plain "<id>" under a "docker" parent.
 _SCOPE_RES = (
@@ -144,6 +144,8 @@ def resolve_label(selector: str) -> List[Tuple[str, str]]:
         timeout=30,
         check=False,
     )
+    if result.returncode != 0:
+        raise TargetError(f"docker ps failed: {result.stderr.strip() or 'unknown error'}")
     out: List[Tuple[str, str]] = []
     for line in result.stdout.splitlines():
         if not line.strip():
@@ -195,7 +197,9 @@ def find_container_cgroup(container_id: str, root: str = CGROUP_ROOT) -> Optiona
         # Container scopes are never more than a few levels deep; walking the
         # whole tree costs little, but prune the leaf scopes' own children
         # (each holds no further containers) to keep it cheap on a busy host.
-        dirnames[:] = [d for d in dirnames if not d.endswith(".scope")] or dirnames
+        # An empty result here is the correct prune-everything outcome (every
+        # sibling was a scope) — it must not fall back to the unfiltered list.
+        dirnames[:] = [d for d in dirnames if not d.endswith(".scope")]
     return None
 
 
@@ -367,7 +371,7 @@ def parse_target(
 
 
 def _looks_like_slice(value: str) -> bool:
-    return bool(re.match(r"^[A-Za-z0-9_.\\-]+$", value)) and "/" not in value
+    return bool(re.match(r"^[A-Za-z0-9_.-]+$", value)) and "/" not in value
 
 
 def _key_for(cgroup: str, label: str) -> str:

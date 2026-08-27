@@ -133,7 +133,18 @@ class RunDir:
             line = gzip.compress(line, compresslevel=6, mtime=0)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
-            os.write(fd, line)
+            written = os.write(fd, line)
+            if written != len(line):
+                # A second os.write() call to finish the line would itself be
+                # a second, independently-interleavable syscall — exactly the
+                # hazard the single-write contract above exists to avoid. The
+                # partial write already landed, so the honest response is to
+                # surface the failure, not to paper over it with a write that
+                # could still corrupt a concurrent writer's line.
+                raise OSError(
+                    f"short write appending to {path}: wrote {written} of "
+                    f"{len(line)} bytes"
+                )
         finally:
             os.close(fd)
 

@@ -668,16 +668,17 @@ def test_malicious_label_escaped_across_every_surface(tmp_path: Path, synthetic_
 
     single = _html_mod.escape(payload)
     double = _double_escaped(payload)
-    plain_json = _plotly_json_escape(payload)
 
     # Header target table: hand-written HTML, single html.escape.
     assert single in text
-    # Legend / trace name: passed to plotly RAW (this module never
-    # pre-escapes it) — protection comes entirely from plotly's own encoder.
-    assert plain_json in text
-    # Hovertemplate, event hovertext, and the phase-band annotation are all
-    # pre-escaped by this module and then re-serialized into the figure's
-    # JSON by plotly — both layers apply.
+    # Legend/trace name, hovertemplate, event hovertext, and the phase-band
+    # annotation are all pre-escaped by this module (html.escape) and then
+    # re-serialized into the figure's JSON by plotly — both layers apply.
+    # The legend name must NOT reach plotly raw: plotly.js's own pseudo-HTML
+    # text pipeline renders an unescaped <a href=...> in a trace name as a
+    # real, clickable link (a documented plotly.js feature, not a plotly bug),
+    # so relying on plotly's JSON encoder alone (which only protects the
+    # </script> boundary) is not enough.
     assert double in text
 
 
