@@ -32,7 +32,7 @@ cp -rv "$HERE/files/usr/local/sbin/." /usr/local/sbin/
 chmod +x /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-setup.sh /usr/local/sbin/soulmask-pak-ramdisk-toggle.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-teardown.sh \
-         /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-zswap-monitor.py \
+         /usr/local/sbin/soulmask-monitor.sh /usr/local/sbin/soulmask-monitor.py \
          /usr/local/sbin/soulmask-mempress.sh /usr/local/sbin/soulmask-pak-mempress.sh \
          /usr/local/sbin/container-mempress.sh
 # soulmask-instance-lib.sh is sourced only (not directly executed) — no +x needed.
@@ -53,8 +53,13 @@ udevadm control --reload-rules && udevadm trigger --action=change \
   --subsystem-match=block 2>/dev/null && echo "udev rules reloaded" || true
 
 echo "== installing scripts =="
-install -m 0755 "$HERE/scripts/exec-soulmask-rcon.sh" /usr/local/sbin/exec-soulmask-rcon.sh
-install -m 0755 "$HERE/scripts/partition-editor.py"   /usr/local/sbin/partition-editor.py
+# exec-soulmask-rcon.sh/.py are installed by the files/usr/local/sbin/ copy
+# above, not here — this line used to point at a $HERE/scripts/ copy of the
+# script that no longer exists (it moved into files/usr/local/sbin/ with the
+# soulmask_rcon.py split), so it always failed `install` and aborted the
+# script under `set -e`. Left removed rather than restored.
+# moved to `debian-install`
+#install -m 0755 "$HERE/scripts/partition-editor.py"   /usr/local/sbin/partition-editor.py
 install -m 0755 "$HERE/scripts/swap-health.sh"        /usr/local/bin/swap-health
 
 echo "== sysctl =="
@@ -93,9 +98,11 @@ swapon --show 2>/dev/null || echo "(no swap yet — create partitions, step 1 be
 cat <<'NEXT'
 
 == NEXT (manual — see README.md) ==
+  Note: partition-editor.py moved to `debian-install` and was renamed
+        inuse-partition-editor.py (it edits a disk that's currently in use)
   1) Create swap partitions (dry-run, then --commit):
-       partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2
-       partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2 --commit
+       inuse-partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2
+       inuse-partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2 --commit
   2) GRUB: ensure GRUB_CMDLINE_LINUX has NO zswap.* tokens (handled post-boot now);
      optionally add `preempt=full` for lower game-tick latency. update-grub if changed.
   3) Per-server memory floors/weights are set via patched Wings itself now

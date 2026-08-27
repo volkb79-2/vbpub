@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Soulmask cgroup memory monitor — zswap pressure, tmpfs slices, disk swap.
+"""Soulmask host monitor — cgroup memory (zswap pressure, tmpfs slices, disk
+swap) plus a per-server RCON `fps` column (game-thread tick rate).
 
 WHY THIS EXISTS — splitting refault sources
 --------------------------------------------
@@ -42,255 +43,73 @@ no zswap for file pages), and a sustained rate means the kernel is dropping
 needed file pages (often the game binary's own code). This is the
 swappiness-validation signal from MEASUREMENTS.md M5.
 
-Run with --legend for the full column-by-column guide.
+RCON `fps` column: sampled over ONE persistent RCON connection per server,
+held open for the life of this process (see `soulmask_rcon.py`'s module
+docstring for why a fresh connection per sample would be wrong — every RCON
+connection ends with the server logging a benign-but-noisy
+"Receive error: SE_EWOULDBLOCK" on close, confirmed live). RCON needs root +
+`nsenter`; if either is unavailable, or the relay child errors, `fps` shows
+'—' for that server without affecting any other column — RCON is a
+nice-to-have next to this file's real job of memory monitoring, never a
+reason to stall or crash it. Disable entirely with --no-rcon.
+
+Run with --help (works standalone, no root/docker needed) or --legend (same
+text, printed at startup right before the live table) for the full
+column-by-column guide, including how these per-cgroup numbers relate to
+htop's per-process RES/CODE/SHR view.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
 import time
 from datetime import datetime
+from pathlib import Path
+
+RCON_ENGINE = Path(__file__).resolve().parent / "soulmask_rcon.py"
+RCON_CONNECT_TIMEOUT_S = 5.0
+RCON_POLL_TIMEOUT_S = 2.0
+RCON_RESPAWN_BACKOFF_S = 30.0
+_FPS_RE = re.compile(r"Average FPS:\s*([\d.]+)")
+
+# How often the monitor rechecks which WSServer containers exist, while it
+# already has at least one healthy server (see discover_live_servers /
+# rescan_servers). Decoupled from --interval (which can be sub-second) since
+# a rescan is a `docker ps` plus one `docker top` per running container on
+# the host — on a host with many unrelated containers that's real overhead
+# to pay every sample tick just to notice a new Soulmask server. A missed
+# server only means a wait of up to this long before it shows up; a server
+# that disappears is still caught immediately by the per-sample
+# FileNotFoundError path in run(), not gated on this interval.
+RESCAN_INTERVAL_S = 30.0
 
 TMPFS0_CG = "/sys/fs/cgroup/soulmask_tmpfs.slice/soulmask_tmpfs-ZSwapMax0.slice"  # incompressible (pak, MemoryZSwapMax=0)
 TMPFS1_CG = "/sys/fs/cgroup/soulmask_tmpfs.slice/soulmask_tmpfs-ZSwapMax1.slice"  # compressible (binaries, Steam, libs, zswap-eligible)
 PROC_ROOT = "/proc"
 LEGEND_WIDTH = 160
 
-COLUMN_GUIDE = """
-Column guide
-============
-
-GAME cgroup (each selected Soulmask WSServer-Linux-Shipping container):
-
-  RAM      memory.current             physical RAM used by the cgroup: anon
-                                       + file cache + kernel structures +
-                                       the zswap compressed pool itself.
-  anon     memory.stat 'anon'         resident anonymous RAM only (live
-                                       heap/stack pages not reclaimed) —
-                                       excludes the zswap pool.
-  file     memory.stat 'file'         page cache charged to the cgroup:
-           [table: --wide only;        binary/library text, mmap'd data
-            --json: always]            files, and tmpfs/shmem. Evicting
-                                       these is "free" for the kernel but
-                                       re-reading them always costs a real
-                                       disk read — watch rf_f/s.
-  zpool    memory.zswap.current       compressed bytes currently held in
-                                       the zswap pool.
-  ratio    zswapped / zpool          uncompressed-equivalent bytes divided
-                                       by compressed bytes. `2.74x` means
-                                       2.74 original bytes per compressed
-                                       byte. `—` means the pool is empty.
-  rfz/s    Δzswpin / Δt               zswap refaults/s: pages decompressed
-                                       FROM ZSWAP (RAM-speed, microseconds/
-                                       page). Rises during area loads and
-                                       decays — normal and healthy.
-  rfd/s    Δ(workingset_refault_anon
-             − zswpin) / Δt           disk refaults/s: anon pages faulted
-                                       back in from the REAL swap device
-                                       (milliseconds/page). Sustained >0 is
-                                       the column that predicts in-game lag.
-  rff/s    Δworkingset_refault_file
-             / Δt                     file-cache refaults/s: pages evicted
-                                       from page cache and re-read from
-                                       their backing file. EVERY file
-                                       refault is a disk read — there is no
-                                       zswap for file pages. Sustained >0
-                                       means needed file pages are repeatedly
-                                       evicted and later faulted back in
-                                       (often the game binary's own code).
-                                       This is the
-                                       swappiness-validation signal
-                                       (MEASUREMENTS.md M5): rf_f/s ≈ 0
-                                       with modest rf_z/s and rf_d/s ≈ 0
-                                       confirms swappiness=100 is the
-                                       right trade for this host.
-
-  KSM status is printed in the row1 server info (e.g. "KSM:m=51285z=8297+174M").
-  merge    ksm_merging_pages         pages currently merged by KSM.
-  zero     ksm_zero_pages            pages mapped to the kernel zero page.
-  profit   ksm_process_profit        approximate process memory saved.
-            The startup inventory also prints rmap items, full merge state,
-            host-wide KSM profit/scans, and `cow_ksm`/`ksm_swpin_copy` event
-            counters. KSM merges anonymous pages only; it never deduplicates
-            file-backed page cache.
-
-  KSM host rates
-            pages_scanned is a cumulative ksmd counter. scan/s is the
-            monitor's derived Δpages_scanned / Δt rate; it is not a native
-            per-second kernel counter. full_scans is the cumulative number of
-            completed full KSM scans. cow/s and swpin/s are derived rates for
-            the corresponding host-wide KSM COW and swap-in-copy counters.
-
-  KSM status and '?'
-            `on` means both ksm_merge_any and ksm_mergeable are `yes`;
-            `any` means the process opted in via PR_SET_MEMORY_MERGE;
-            `vma` means at least one VMA is mergeable; `off` means neither
-            is active. `?` means UNKNOWN/UNAVAILABLE, never zero: the PID
-            was not found, /proc/<pid>/ksm_stat could not be read, CONFIG_KSM
-            or the field is unavailable, or permission/process-exit timing
-            prevented a read. A numeric `0` is a successful read of zero.
-
-TMPFS ZSwapMax0 slice (soulmask_tmpfs-ZSwapMax0.slice — incompressible
-pak/IO-store files, MemoryZSwapMax=0; may be absent):
-
-  T0_RAM    memory.current            tmpfs pages resident in RAM (shmem).
-  T0_z      memory.zswap.current      bytes compressed in zswap (should be
-                                       ~0 — MemoryZSwapMax=0 bypasses zswap).
-  T0_disk   memory.swap.current −
-           memory.stat 'zswapped' −
-           memory.stat 'swapcached'   pages actually on the real disk,
-                                       clamped >= 0. >0 means zswap was
-                                       full or bypassed when these pages
-                                       were evicted.
-  T0_rfz/s  Δzswpin / Δt              zswap refaults/s (~0 on this slice).
-  T0_rfd/s  Δ(workingset_refault_anon
-             − zswpin) / Δt           disk refaults/s.
-
-TMPFS ZSwapMax1 slice (soulmask_tmpfs-ZSwapMax1.slice — compressible
-binaries, Steam runtime, libraries, steamcmd; zswap-eligible; may be absent):
-
-  T1_RAM    memory.current            tmpfs pages resident in RAM (shmem).
-  T1_z      memory.zswap.current      bytes compressed in zswap.
-  T1_disk   memory.swap.current −
-           memory.stat 'zswapped' −
-           memory.stat 'swapcached'   pages actually on the real disk,
-                                       clamped >= 0.
-  T1_rfz/s  Δzswpin / Δt              zswap refaults/s.
-  T1_rfd/s  Δ(workingset_refault_anon
-             − zswpin) / Δt           disk refaults/s.
-
-SYSTEM-WIDE:
-
-  disk_sw  /proc/swaps 'Used' total
-           − /proc/meminfo SwapCached
-           − zswap stored_pages*4096
-             (root/debugfs only)      total pages on REAL disk swap across
-                                       the whole host (every cgroup, not
-                                       just Soulmask), clamped >= 0.
-                                       /proc/swaps 'Used' counts pages with
-                                       an allocated swap slot even when the
-                                       data currently lives in zswap (RAM)
-                                       or in SwapCached (RAM) — both must be
-                                       subtracted or disk_sw is wildly
-                                       inflated. If /sys/kernel/debug/zswap
-                                       is unreadable, the zswap term is
-                                       dropped and the value is an
-                                       overestimate — marked with a
-                                       trailing '*'.
-
-How these columns relate to htop's process view
-================================================
-htop's M_VIRT / RES / SHR / CODE / DATA are PER-PROCESS numbers, read from
-/proc/<pid>/status. Every column above is PER-CGROUP: it aggregates ALL
-processes in the container PLUS kernel memory and tmpfs/page cache charged
-to the cgroup. The mapping:
-
-  RAM (memory.current)   = anon + file (page cache incl. charged tmpfs)
-                           + kernel structures + the cgroup's compressed
-                           zswap pool. It is therefore typically LARGER
-                           than the sum of the processes' RES: RES never
-                           counts kernel structures or the zswap pool, and
-                           summing RES across processes double-counts
-                           shared pages.
-
-  anon (memory.stat)     ≈ Σ private anonymous resident memory of the
-                           cgroup's processes ≈ the DATA-ish portion of
-                           htop's RES (heap + stack). htop RES additionally
-                           contains file-backed pages — binary text and
-                           shared libraries — which in cgroup terms are
-                           our 'file' (overlapping htop's CODE and SHR).
-
-  file (memory.stat)     ≈ the file-backed part of RES (CODE/SHR overlap)
-                           PLUS page cache the processes touched that is
-                           charged to this cgroup even when no process
-                           currently maps it, PLUS charged tmpfs.
-
-  z_pool / z_eq / zswpin and the zswap-vs-disk refault split (rf_z/s vs
-  rf_d/s): NO process-level tool exposes these. Nothing in htop, free,
-  vmstat, or docker stats can show how much of a workload sits compressed
-  in zswap, or whether a refault was served from zswap (µs) or the disk
-  (ms). Per-cgroup memory.stat is the ONLY source — that is the reason
-  this monitor exists.
-
-Multi-instance selection (-c/--container)
-=========================================
-More than one Soulmask server can run on this host (Wings names each
-container after its server UUID). By default the monitor follows EVERY
-container running WSServer-Linux-Shipping. Use -c/--container with a
-server-UUID prefix, container-id prefix, or any substring of the container
-name to monitor only one. The selector is also honoured when re-discovering
-after a container restart. --json output includes a `games` array with every
-selected container (and retains the singular `game` object when only one is
-selected).
-
-Applied cgroup controls (GAME min/low/high/max, CPU weight, BFQ I/O weight):
-  The controls are read from each server's Wings slice at startup and once
-  every sample thereafter. Reads are silent. If a value drifts, a stderr note
-  names the changed value and prints the complete current control set for
-  direct comparison. The shared PAK slice continues to be sampled separately.
-  Inventory names are the actual cgroup files: memory.min, memory.low,
-  memory.high, memory.max, cpu.weight, io.bfq.weight, and
-  memory.zswap.writeback. Memory values are rendered as G/M; the raw values
-  remain available in --json.
-
-Row layout and math
-===================
-  Each row is: time | S1 GAME + S1 KSM | S2 GAME + S2 KSM | shared KSM |
-  TMPFS0 | TMPFS1 | disk_sw. With -c/--container there may be only one server
-  block. `—` is an intentionally unavailable rate (first sample, counter
-  reset, or absent PAK), whereas `?` is an unavailable state/value read.
-
-  z_eq / z_pool                  approximate uncompressed-to-compressed
-                                 zswap ratio (when z_pool > 0).
-  rf_z/s = Δzswpin / Δt          anonymous pages refaulted from zswap.
-  rf_d/s = max(0, Δwra−Δzswpin) / Δt
-                                 anonymous pages refaulted from disk swap.
-  rf_f/s = Δworkingset_refault_file / Δt
-                                 file-cache pages refaulted from storage.
-  p_disk = max(0, swap_current − zswapped − swapcached)
-                                 shared PAK pages actually on disk swap.
-  disk_sw = max(0, swaps_used − SwapCached − zswap_stored_pages×4096)
-                                 host-wide disk swap, not Soulmask-only.
-  KSM saved pages ≈ ksm_merging_pages + ksm_zero_pages; process profit is
-  the kernel's approximate saved bytes minus KSM metadata overhead. The
-  k_rmap count is that metadata; a high k_rmap/(merged pages) ratio means
-  scanning effort is likely not paying for itself.
-  scan/s = Δpages_scanned / Δt; pages_scanned is cumulative and the kernel
-  exposes no native rate. full_scans counts completed full scans. cow/s and
-  swpin/s use the same delta-over-time calculation for KSM COW and swap-in
-  copy counters.
-
-  `*` after disk_sw means debugfs zswap counters were unreadable, so the
-  value is an overestimate. Rates are rounded to whole pages/second. JSON
-  uses the same names in `games[]` and adds raw KSM/cgroup values plus the
-  `ksm_global` object.
-
-KSM process information:
-  Each server block also shows the process's KSM opt-in/mergeable state,
-  merged pages, zero-page merges, and process profit. The startup inventory
-  includes the full `/proc/<pid>/ksm_stat` view, host KSM counters, and
-  actionable suggestions when KSM is disabled, not opted in, unprofitable, or
-  showing an excessive rmap-to-merged ratio.
-
-Rates and resets:
-  - The first sample after start (or after any reconnect) prints '-' for
-    every rate column — there is no previous reading yet to diff against.
-  - A negative delta (a counter reading lower than the previous sample)
-    means the cgroup/container was recreated and its counters reset to 0.
-    This is detected, printed as '-' for that one sample, and resynced
-    silently — it will never print a bogus negative or huge rate.
-"""
+# The full column-by-column guide used to be duplicated here as a second,
+# hand-formatted copy of what's now in LEGEND_SECTIONS below (rendered via
+# legend_for_width(), shown by both --help and --legend) — two texts that
+# could silently drift apart, which is exactly how the old copy ended up
+# describing columns ("p_RAM", "p_z", "p_disk"...) that no longer exist
+# anywhere in the code (a pre-tmpfs-split "PAK" naming leftover). Removed in
+# favor of one source of truth: run --help or --legend for the real thing.
 
 GAME_COLUMNS = (("ram", "RAM", 5), ("anon", "anon", 5), ("file", "file", 5),
                 ("zpool", "zpool", 6), ("zeq", "ratio", 6), ("rfz", "rfz/s", 7),
                 ("rfd", "rfd/s", 7), ("rff", "rff/s", 7))
 KSM_COLUMNS = (("kmerge", "merge", 6),
                ("kzero", "zero", 5), ("kprofit", "profit", 7))
+RCON_COLUMNS = (("fps", "fps", 5),)
 KSM_HOST_COLUMNS = (("kfull", "Kfull/s", 8), ("kcow", "Kcow/s", 7),
                     ("kswp", "Kswp/s", 7))
 TMPFS0_COLUMNS = (("t0ram", "T0_RAM", 6), ("t0z", "T0_z", 6),
@@ -329,23 +148,41 @@ LEGEND_SECTIONS = (
         ("`k_zero`", "Current `ksm_zero_pages`: pages mapped to the kernel's shared zero page through KSM."),
         ("`k_profit`", "Current `ksm_process_profit`: the kernel's approximate bytes saved by this process's KSM mappings minus KSM metadata overhead. Negative means the metadata cost is larger."),
     )),
-    ("Shared host KSM columns (between server and PAK blocks)", (
+    ("Per-server RCON columns", (
+        ("`fps`", "Average server tick rate from RCON `ServerFPS`, read over one persistent connection held open for this monitor's whole run (not reconnected per sample). `—` means RCON is currently unavailable for that server — missing root/nsenter, a bad `RCON_PASSWORD`, or the relay child backing off after a failure. Disable entirely with `--no-rcon`."),
+    )),
+    ("Shared host KSM columns (between server and TMPFS blocks)", (
         ("`ΔK_full/s`", "Derived `Δfull_scans / Δt`: completed full KSM passes per second. It is shown with one decimal place; `0.2/s` means one completed pass about every five seconds. `—` means no previous valid sample or a counter reset."),
         ("`K_cow/s`", "Derived rate from the host-wide `cow_ksm` counter in `/proc/vmstat`: copy-on-write events involving KSM pages per second."),
         ("`K_swp/s`", "Derived rate from `/proc/vmstat` `ksm_swpin_copy`: KSM-related swap-in copies per second."),
     )),
-    ("Shared PAK columns", (
-        ("`p_RAM`", "PAK cgroup `memory.current`: resident RAM used by the pak/DLC ramdisk and its source file cache."),
-        ("`p_z`", "PAK cgroup `memory.zswap.current`: pak bytes compressed in zswap."),
-        ("`p_disk`", "`max(0, memory.swap.current − zswapped − swapcached)`: pak pages actually on disk swap."),
-        ("`p_rfz/s`", "PAK `Δzswpin / Δt`: pak pages refaulted from zswap per second."),
-        ("`p_rfd/s`", "PAK `max(0, Δworkingset_refault_anon − Δzswpin) / Δt`: pak anonymous pages refaulted from disk swap per second."),
+    ("Shared TMPFS ZSwapMax0 columns (`T0_*` — incompressible pak/IO-store files, MemoryZSwapMax=0; may be absent)", (
+        ("`T0_RAM`", "`soulmask_tmpfs-ZSwapMax0.slice` `memory.current`: tmpfs pages resident in RAM (shmem)."),
+        ("`T0_z`", "`memory.zswap.current`: bytes compressed in zswap for this slice. Should stay near 0 here — `MemoryZSwapMax=0` is meant to bypass zswap for this slice."),
+        ("`T0_disk`", "`max(0, memory.swap.current − zswapped − swapcached)`: pages actually on real disk swap. Non-zero means zswap was full or bypassed when these pages were evicted."),
+        ("`T0_rfz/s`", "`Δzswpin / Δt`: zswap refaults/s on this slice (expected ≈0, since this slice targets a zswap bypass)."),
+        ("`T0_rfd/s`", "`max(0, Δworkingset_refault_anon − Δzswpin) / Δt`: disk refaults/s on this slice."),
+    )),
+    ("Shared TMPFS ZSwapMax1 columns (`T1_*` — compressible binaries, Steam runtime, libraries; zswap-eligible; may be absent)", (
+        ("`T1_RAM`", "`soulmask_tmpfs-ZSwapMax1.slice` `memory.current`: tmpfs pages resident in RAM (shmem)."),
+        ("`T1_z`", "`memory.zswap.current`: bytes compressed in zswap for this slice."),
+        ("`T1_disk`", "`max(0, memory.swap.current − zswapped − swapcached)`: pages actually on real disk swap."),
+        ("`T1_rfz/s`", "`Δzswpin / Δt`: zswap refaults/s on this slice."),
+        ("`T1_rfd/s`", "`max(0, Δworkingset_refault_anon − Δzswpin) / Δt`: disk refaults/s on this slice."),
+    )),
+    ("Multi-instance selection, appearing/disappearing, rates, and resets", (
+        ("`-c`/`--container`", "Selects one Soulmask WSServer container by server-UUID prefix, container-ID prefix, or any substring of the container name (Wings names each container after its server UUID). Without it, every running WSServer container is monitored. The selector is honoured every time the monitored set is rechecked."),
+        ("appearing / disappearing", "The set of monitored servers is rechecked periodically while running (not only reactively): a new WSServer container is picked up within one rescan interval, and a container that stops is dropped without disturbing any other server's row that same tick. A server that is UNCHANGED across a rescan keeps its existing RCON connection and rate-tracking state untouched — a rescan never forces a reconnect."),
+        ("WSServer process restart", "If a server's container keeps running but its WSServer process itself restarts with a new PID, that is detected on the next rescan and the affected server's RCON relay reconnects (its memory/cgroup rate tracking is unaffected, since the cgroup itself did not change)."),
+        ("first sample / `—`", "The first sample after start (or right after a server is added, or after its cgroup is recreated) prints `—` for every rate column — there is no previous reading yet to diff against."),
+        ("counter reset", "A tracked counter reading LOWER than its previous value means the cgroup/container was recreated and its counters reset to 0. This is detected, printed as `—` for that one sample, and resynced silently — it will never print a bogus negative or huge rate."),
     )),
     ("System, controls, and notation", (
         ("`disk_sw`", "`max(0, /proc/swaps Used − SwapCached − zswap_stored_pages × 4096)`: host-wide disk swap, not Soulmask-only. A trailing `*` means zswap debugfs was unreadable and the value is an overestimate."),
         ("cgroup controls", "Startup inventory shows each server's actual `memory.min`, `memory.low`, `memory.high`, `memory.max`, `cpu.weight`, `io.bfq.weight`, and `memory.zswap.writeback`. They are re-read silently every sample; drift prints the old, new, and complete current values."),
-        ("`—`", "Unavailable rate: first sample, counter reset, or absent PAK."),
+        ("`—`", "Unavailable rate: first sample, counter reset, or an absent TMPFS slice."),
         ("`?`", "Unknown or unavailable value: PID/process file could not be found or read, `CONFIG_KSM`/a field is unavailable, or process-exit timing prevented a read. Numeric `0` is a successful read of zero."),
+        ("table vs. JSON names", "The live table uses compact abbreviated headers (e.g. `rfz/s`, `zpool`, `ratio` — see the header row printed at startup and every 40 rows for the exact spelling). `--json` uses longer, explicit field names instead (e.g. `rf_z_per_s`, `zpool_bytes`); the ratio itself is not precomputed in JSON — derive it from `zeq_bytes / zpool_bytes` the same way the table's `ratio` column does."),
         ("JSON", "`--json` emits one object per sample. Per-server values are in `games[]`; host KSM values are in `ksm_global`. With one server, the compatibility field `game` is also present."),
     )),
 )
@@ -651,6 +488,10 @@ def fmt_rate_fraction(v) -> str:
     return f"{v:.1f}/s"
 
 
+def fmt_fps(v) -> str:
+    return DASH if v is None else f"{v:.1f}"
+
+
 def fmt_zswap_ratio(z_eq, z_pool) -> str:
     uncompressed = int_value(z_eq)
     compressed = int_value(z_pool)
@@ -702,6 +543,24 @@ def docker_ps() -> list:
         if len(parts) == 2:
             out.append((parts[0], parts[1]))
     return out
+
+
+def env_of(cid: str, key: str) -> str:
+    """One env var from a container's config (RCON_PORT/RCON_PASSWORD,
+    injected by Wings) — same pattern used by exec-soulmask-rcon.py."""
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", cid],
+            capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return ""
+    if r.returncode != 0:
+        return ""
+    prefix = key + "="
+    for line in r.stdout.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return ""
 
 
 def container_has_wsserver(cid: str) -> bool:
@@ -815,28 +674,48 @@ def list_wsserver_containers(selector=None) -> list:
     return out
 
 
+def _build_server_record(cid: str, name: str):
+    """Resolve one candidate WSServer container into a server record, or
+    None if its cgroup can't be resolved right now (container mid-teardown
+    — or, confirmed in this project's own devcontainer test environment, a
+    sandbox that doesn't share the real Docker host's PID/cgroup
+    namespaces at all, the same limitation already documented for nsenter
+    in exec-soulmask-rcon.py). Shared by find_game_cgroups (bootstrap) and
+    discover_live_servers (ongoing rescans) so both agree on what counts as
+    a valid server."""
+    cg = container_cgroup_path(cid)
+    if not cg or not os.path.isdir(cg):
+        return None
+    return {
+        "cid": cid,
+        "name": name,
+        "uuid": name,
+        "pid": container_server_pid(cid, cg),
+        "metrics_cgroup": cg,
+        "slice": server_slice_path(cg),
+    }
+
+
 def find_game_cgroups(selector=None, poll_s: float = 2) -> list:
     """Poll docker for WSServer-Linux-Shipping containers (optionally
     narrowed by -c/--container). Blocks (printing a wait message once)
     until at least one appears. Returns a list of server records, each with
     the container scope used for metrics and the Wings slice used for control
-    verification."""
+    verification.
+
+    This is the BOOTSTRAP/total-loss path only — it deliberately blocks.
+    Once at least one server is running, run() switches to the non-blocking
+    discover_live_servers()/rescan_servers() pair to notice further servers
+    appearing or disappearing without ever stalling an already-healthy
+    monitor loop."""
     sel_msg = f" matching -c '{selector}'" if selector else ""
     waited = False
     while True:
-        cands = list_wsserver_containers(selector)
         servers = []
-        for cid, name in cands:
-            cg = container_cgroup_path(cid)
-            if cg and os.path.isdir(cg):
-                servers.append({
-                    "cid": cid,
-                    "name": name,
-                    "uuid": name,
-                    "pid": container_server_pid(cid, cg),
-                    "metrics_cgroup": cg,
-                    "slice": server_slice_path(cg),
-                })
+        for cid, name in list_wsserver_containers(selector):
+            record = _build_server_record(cid, name)
+            if record is not None:
+                servers.append(record)
         if servers:
             servers = sort_servers(servers)
             if waited:
@@ -848,6 +727,116 @@ def find_game_cgroups(selector=None, poll_s: float = 2) -> list:
                  "Ctrl-C to abort")
             waited = True
         time.sleep(poll_s)
+
+
+def discover_live_servers(selector=None) -> list:
+    """Non-blocking snapshot of currently-live WSServer containers, as plain
+    [{'cid','name','pid','metrics_cgroup','slice'}] records (no 'uuid',
+    'tracker', 'rcon', etc. — this is raw discovery input for
+    rescan_servers(), not a server record on its own). Never blocks and
+    never raises for "nothing found" — returns an empty list."""
+    out = []
+    for cid, name in list_wsserver_containers(selector):
+        record = _build_server_record(cid, name)
+        if record is not None:
+            out.append(record)
+    return out
+
+
+def rescan_servers(servers: list, live: list, rcon_enabled: bool) -> tuple[list, bool]:
+    """Diff `live` (from discover_live_servers) against the currently
+    tracked `servers`, updating `servers` incrementally in place where
+    possible. Returns (updated_servers, changed).
+
+    The one rule that matters most here: a server present in both lists is
+    NEVER rebuilt. Same dict, same RconRelay, same RateTracker — an
+    untouched server's persistent RCON connection and rate-tracking
+    baseline survive every rescan. That's the entire point of this
+    function existing separately from "just call find_game_cgroups()
+    again": that call always throws away and rebuilds everything, which
+    silently defeated the persistent-connection work this monitor's RCON
+    integration depends on.
+
+    A server whose WSServer PID changed (process restarted, container
+    didn't) has its pid updated in place — this is what makes RconRelay's
+    own pid-change handling in poll_fps() actually reachable, and also
+    fixes a real (if minor) staleness bug: without this, KSM stats would
+    keep being read from a since-exited (or worse, since-reused) PID
+    forever after any in-container process restart.
+    """
+    live_by_cid = {r["cid"]: r for r in live}
+    changed = False
+
+    still_alive = []
+    for server in servers:
+        entry = live_by_cid.get(server["cid"])
+        if entry is None:
+            note(f"Soulmask server gone: {server['uuid']} — dropping from monitor")
+            rcon = server.get("rcon")
+            if rcon is not None:
+                rcon.close()
+            changed = True
+            continue
+        if entry["pid"] != server["pid"]:
+            note(f"Soulmask server {server['uuid']}: WSServer process restarted "
+                 f"(pid {server['pid']} -> {entry['pid']})")
+            server["pid"] = entry["pid"]
+            changed = True
+        still_alive.append(server)
+    servers = still_alive
+
+    tracked_cids = {server["cid"] for server in servers}
+    for cid, entry in live_by_cid.items():
+        if cid in tracked_cids:
+            continue
+        server = {
+            "cid": entry["cid"], "name": entry["name"], "uuid": entry["name"],
+            "pid": entry["pid"], "metrics_cgroup": entry["metrics_cgroup"],
+            "slice": entry["slice"],
+            "tracker": RateTracker(["wra", "zswpin", "wrf"]),
+            "rcon": RconRelay(entry["cid"], entry["pid"]) if rcon_enabled else None,
+        }
+        initialize_server_controls([server])
+        servers.append(server)
+        note(f"Soulmask server appeared: {entry['name']} — adding to monitor")
+        changed = True
+
+    if changed:
+        servers = sort_servers(servers)
+    return servers, changed
+
+
+def sample_all_servers(servers: list, ts: float) -> list:
+    """Sample every server INDEPENDENTLY: one server's cgroup disappearing
+    (FileNotFoundError — container removed/restarted between rescans) drops
+    only that server (closing its RconRelay) and must never prevent any
+    other, still-healthy server from being sampled and rendered this same
+    tick. Returns the possibly-shorter list of servers that sampled
+    successfully, each with 'sample'/'rates' populated.
+
+    This replaces the old design, where ALL servers' sampling shared one
+    try/except around the whole loop — a single server's disappearance
+    silently skipped that tick's output for every OTHER server too."""
+    alive = []
+    for server in servers:
+        try:
+            g = sample_game(server["metrics_cgroup"], server["slice"], server.get("pid"))
+        except FileNotFoundError:
+            note(f"Soulmask cgroup disappeared for {server['uuid']} "
+                 "(container removed/restarted?) — dropping from monitor")
+            rcon = server.get("rcon")
+            if rcon is not None:
+                rcon.close()
+            continue
+        report_control_drift(server, g["controls"])
+        rates = server["tracker"].update(
+            ts, {"wra": g["wra"], "zswpin": g["zswpin"], "wrf": g["wrf"]})
+        rf_z, rf_d = split_rates(rates)
+        g["fps"] = server["rcon"].poll_fps(ts, server.get("pid")) if server.get("rcon") else None
+        server["sample"] = g
+        server["rates"] = {"rfz": rf_z, "rfd": rf_d, "rff": rates.get("wrf")}
+        alive.append(server)
+    return alive
 
 
 def _container_cmdline(pid: int | None) -> str:
@@ -883,6 +872,147 @@ def sort_servers(servers: list) -> list:
         if label:
             s["role_label"] = label
     return servers
+
+
+# ─── RCON (ServerFPS) ──────────────────────────────────────────────────────────
+
+class RconRelay:
+    """One persistent `soulmask_rcon.py --relay` child per server, reused for
+    this monitor's whole run so ServerFPS polling doesn't pay a fresh
+    connect+auth (and the server's own SE_EWOULDBLOCK-on-close log line —
+    confirmed live, see soulmask_rcon.py) on every sample.
+
+    Never raises: any failure (no root/nsenter, bad password, dead child,
+    a hung reply) is swallowed and reported as fps=None, with a bounded
+    respawn backoff so a persistently-broken RCON connection can't turn into
+    a respawn-every-tick loop. `poll_fps` never blocks longer than
+    RCON_POLL_TIMEOUT_S — a stuck RCON reply must never stall memory
+    sampling, which is this file's actual job.
+    """
+
+    def __init__(self, cid: str, pid: int | None):
+        self.cid = cid
+        self.pid = pid
+        self.proc: subprocess.Popen | None = None
+        self.last_attempt = 0.0
+        self.last_error: str | None = None
+
+    def _readline(self, timeout: float) -> str | None:
+        if self.proc is None or self.proc.stdout is None:
+            return None
+        ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
+        if not ready:
+            return None
+        return self.proc.stdout.readline()
+
+    def _kill(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _spawn(self, ts: float) -> bool:
+        self.last_attempt = ts
+        if self.pid is None:
+            self.last_error = "WSServer PID unknown"
+            return False
+        port = env_of(self.cid, "RCON_PORT") or "19000"
+        password = env_of(self.cid, "RCON_PASSWORD")
+        if not password:
+            self.last_error = "RCON_PASSWORD empty on container env"
+            return False
+        argv = ["nsenter", f"--net=/proc/{self.pid}/ns/net", "--",
+                sys.executable, str(RCON_ENGINE),
+                "--port", port, "--password", password, "--relay"]
+        try:
+            self.proc = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except OSError as e:
+            self.last_error = f"spawn failed: {e}"
+            self.proc = None
+            return False
+
+        line = self._readline(RCON_CONNECT_TIMEOUT_S)
+        if not line:
+            self.last_error = "relay did not respond to connect"
+            self._kill()
+            return False
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            self.last_error = f"unexpected relay output: {line.strip()!r}"
+            self._kill()
+            return False
+        if not event.get("ok"):
+            self.last_error = event.get("error", "connect failed")
+            self._kill()
+            return False
+        self.last_error = None
+        return True
+
+    def poll_fps(self, ts: float, pid: int | None) -> float | None:
+        if pid != self.pid:
+            # Container restarted under us — the old netns is gone. Reset
+            # last_attempt too: the backoff below must not apply the OLD
+            # pid's timer to a respawn against a brand new pid.
+            self._kill()
+            self.pid = pid
+            self.last_attempt = 0.0
+
+        if self.proc is None or self.proc.poll() is not None:
+            self.proc = None
+            if ts - self.last_attempt < RCON_RESPAWN_BACKOFF_S:
+                return None
+            if not self._spawn(ts):
+                return None
+
+        try:
+            self.proc.stdin.write("ServerFPS\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            self.last_error = str(e)
+            self._kill()
+            return None
+
+        line = self._readline(RCON_POLL_TIMEOUT_S)
+        if not line:
+            self.last_error = "no reply from relay (hung or dead)"
+            self._kill()
+            return None
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            self.last_error = f"unexpected relay output: {line.strip()!r}"
+            return None
+        if not event.get("ok"):
+            self.last_error = event.get("error", "command failed")
+            self._kill()
+            return None
+        match = _FPS_RE.search(event.get("reply", ""))
+        return float(match.group(1)) if match else None
+
+    def close(self) -> None:
+        self._kill()
+
+
+def attach_rcon(servers: list, enabled: bool) -> None:
+    for server in servers:
+        server["rcon"] = RconRelay(server["cid"], server["pid"]) if enabled else None
+
+
+def close_rcon(servers: list) -> None:
+    for server in servers:
+        rcon = server.get("rcon")
+        if rcon is not None:
+            rcon.close()
 
 
 # ─── rate tracking (handles counter resets on container restart) ─────────────
@@ -1016,7 +1146,7 @@ def sample_tmpfs(cg_path):
 
 def disk_swap_bytes():
     """System-wide pages actually on the real disk swap device(s).
-    See COLUMN_GUIDE 'disk_sw' for the full derivation."""
+    See LEGEND_SECTIONS 'disk_sw' (--help / --legend) for the full derivation."""
     used_kib = 0
     try:
         with open("/proc/swaps") as f:
@@ -1082,8 +1212,11 @@ def table_format(server_count: int, wide: bool) -> str:
     game_columns = GAME_COLUMNS if wide else tuple(c for c in GAME_COLUMNS if c[0] != "file")
     groups = ["{ts:<8}"]
     for index in range(server_count):
-        # Combine game + KSM columns into one group (no separator)
-        groups.append(_column_group(game_columns, f"s{index + 1}_") + " " + _column_group(KSM_COLUMNS, f"s{index + 1}_"))
+        # Combine game + KSM + RCON columns into one group (no separator)
+        prefix = f"s{index + 1}_"
+        groups.append(_column_group(game_columns, prefix) + " " +
+                      _column_group(KSM_COLUMNS, prefix) + " " +
+                      _column_group(RCON_COLUMNS, prefix))
     groups.append(_column_group(KSM_HOST_COLUMNS))
     groups.append(_column_group(TMPFS0_COLUMNS))
     groups.append(_column_group(TMPFS1_COLUMNS))
@@ -1140,13 +1273,17 @@ def header_lines(server_count: int, wide: bool, servers=None):
                     f"max={cv('max')} cpu={cv('cpu')} io={cv('bfq')} {ksm_str}")
         label = f"S{index + 1}{role_str}: {ctrl_str}".strip()
 
-        # Combined game + KSM columns
-        gw = _group_width(game_columns, f"s{index + 1}_")
-        kw = _group_width(KSM_COLUMNS, f"s{index + 1}_")
-        total_w = gw + 1 + kw  # 1 space between game and KSM
-        row2_fmt = _column_group(game_columns, f"s{index + 1}_") + " " + _column_group(KSM_COLUMNS, f"s{index + 1}_")
+        # Combined game + KSM + RCON columns
+        prefix = f"s{index + 1}_"
+        gw = _group_width(game_columns, prefix)
+        kw = _group_width(KSM_COLUMNS, prefix)
+        rw = _group_width(RCON_COLUMNS, prefix)
+        total_w = gw + 1 + kw + 1 + rw  # 1 space between each sub-group
+        row2_fmt = (_column_group(game_columns, prefix) + " " +
+                    _column_group(KSM_COLUMNS, prefix) + " " +
+                    _column_group(RCON_COLUMNS, prefix))
         group_info.append((label,
-            [(game_columns, f"s{index + 1}_"), (KSM_COLUMNS, f"s{index + 1}_")],
+            [(game_columns, prefix), (KSM_COLUMNS, prefix), (RCON_COLUMNS, prefix)],
             total_w, row2_fmt))
 
     # KSM host group
@@ -1295,6 +1432,7 @@ def server_json(server, g, rf_z, rf_d, rf_f):
         "cpu_weight": controls["cpu"], "io_bfq_weight": controls["bfq"],
         "zswap_writeback": controls["writeback"],
         "ksm": g["ksm"],
+        "fps": g.get("fps"),
     }
 
 
@@ -1323,6 +1461,7 @@ def table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmp
             f"s{index}_kmerge": fmt_pages(ksm.get("ksm_merging_pages")),
             f"s{index}_kzero": fmt_pages(ksm.get("ksm_zero_pages")),
             f"s{index}_kprofit": fmt_signed_bytes(ksm.get("ksm_process_profit")),
+            f"s{index}_fps": fmt_fps(g.get("fps")),
     })
     values.update({
         "kfull": fmt_rate_fraction(global_ksm.get("full_scans_per_s")),
@@ -1356,6 +1495,7 @@ def table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmp
 def run(args):
     servers = find_game_cgroups(args.container)
     initialize_server_controls(servers)
+    attach_rcon(servers, not args.no_rcon)
     global_ksm = read_ksm_global()
     for server in servers:
         server["tracker"] = RateTracker(["wra", "zswpin", "wrf"])
@@ -1368,6 +1508,7 @@ def run(args):
     last_tmpfs1_band = None
     row_i = 0
     header_needed = False
+    next_rescan_ts = time.time() + RESCAN_INTERVAL_S
 
     if not args.json:
         print_intro(args, servers, global_ksm)
@@ -1378,115 +1519,146 @@ def run(args):
         if args.legend:
             print_startup_legend(sys.stderr)
 
-    while True:
-        ts = time.time()
-        try:
-            for server in servers:
-                g = sample_game(server["metrics_cgroup"], server["slice"], server.get("pid"))
-                report_control_drift(server, g["controls"])
-                rates = server["tracker"].update(
-                    ts, {"wra": g["wra"], "zswpin": g["zswpin"], "wrf": g["wrf"]})
-                rf_z, rf_d = split_rates(rates)
-                server["sample"] = g
-                server["rates"] = {"rfz": rf_z, "rfd": rf_d, "rff": rates.get("wrf")}
-        except FileNotFoundError:
-            note("Soulmask cgroup disappeared (container restarted?) — re-discovering all servers...")
-            servers = find_game_cgroups(args.container)
-            initialize_server_controls(servers)
-            for server in servers:
-                server["tracker"] = RateTracker(["wra", "zswpin", "wrf"])
-            ksm_rate_tracker.reset()
+    try:
+        while True:
+            ts = time.time()
+
+            # Non-blocking periodic membership recheck: pick up newly
+            # appeared servers, drop ones docker no longer lists, and
+            # notice a WSServer PID change on an otherwise-unchanged
+            # server. An UNCHANGED server's dict — and therefore its
+            # RconRelay/RateTracker — is never touched here; see
+            # rescan_servers()'s docstring for why that matters.
+            if ts >= next_rescan_ts:
+                live = discover_live_servers(args.container)
+                servers, changed = rescan_servers(servers, live, not args.no_rcon)
+                if changed:
+                    header_needed = True
+                next_rescan_ts = ts + RESCAN_INTERVAL_S
+
+            if not servers:
+                # Every server is gone, not just one — this is the same
+                # "nothing to monitor" state as a cold start, so reuse the
+                # same blocking bootstrap rather than spinning on an empty
+                # table. Immediate (not gated on RESCAN_INTERVAL_S): there
+                # is nothing else useful for this loop to do in the
+                # meantime anyway.
+                note("all Soulmask servers gone — waiting for one to (re)appear...")
+                servers = find_game_cgroups(args.container)
+                initialize_server_controls(servers)
+                attach_rcon(servers, not args.no_rcon)
+                for server in servers:
+                    server["tracker"] = RateTracker(["wra", "zswpin", "wrf"])
+                ksm_rate_tracker.reset()
+                global_ksm = read_ksm_global()
+                header_needed = True
+                next_rescan_ts = time.time() + RESCAN_INTERVAL_S
+                continue
+
+            # Each server is sampled in isolation — one disappearing here
+            # (its cgroup vanished between rescans) drops only that server
+            # and never blocks this tick's row for anyone else.
+            sampled = sample_all_servers(servers, ts)
+            if len(sampled) != len(servers):
+                header_needed = True
+            servers = sampled
+
+            if not servers:
+                # The server(s) we had all disappeared reactively, mid-tick
+                # (rather than being caught by the proactive rescan above).
+                # Skip rendering this tick; the top-of-loop "all gone"
+                # branch picks it up on the very next iteration.
+                continue
+
             global_ksm = read_ksm_global()
-            header_needed = True
-            continue
-
-        global_ksm = read_ksm_global()
-        global_ksm = add_ksm_rates(
-            global_ksm, ksm_rate_tracker.update(ts, global_ksm))
-        tmpfs0 = sample_tmpfs(TMPFS0_CG)
-        if tmpfs0 is None:
-            tmpfs0_tracker.reset()
-            tmpfs0_was_present = False
-            tmpfs0_rf_z = tmpfs0_rf_d = None
-        else:
-            if not tmpfs0_was_present:
+            global_ksm = add_ksm_rates(
+                global_ksm, ksm_rate_tracker.update(ts, global_ksm))
+            tmpfs0 = sample_tmpfs(TMPFS0_CG)
+            if tmpfs0 is None:
                 tmpfs0_tracker.reset()
-            tmpfs0_was_present = True
-            t0_rates = tmpfs0_tracker.update(ts, {"wra": tmpfs0["wra"], "zswpin": tmpfs0["zswpin"]})
-            tmpfs0_rf_z, tmpfs0_rf_d = split_rates(t0_rates)
+                tmpfs0_was_present = False
+                tmpfs0_rf_z = tmpfs0_rf_d = None
+            else:
+                if not tmpfs0_was_present:
+                    tmpfs0_tracker.reset()
+                tmpfs0_was_present = True
+                t0_rates = tmpfs0_tracker.update(ts, {"wra": tmpfs0["wra"], "zswpin": tmpfs0["zswpin"]})
+                tmpfs0_rf_z, tmpfs0_rf_d = split_rates(t0_rates)
 
-        tmpfs1 = sample_tmpfs(TMPFS1_CG)
-        if tmpfs1 is None:
-            tmpfs1_tracker.reset()
-            tmpfs1_was_present = False
-            tmpfs1_rf_z = tmpfs1_rf_d = None
-        else:
-            if not tmpfs1_was_present:
+            tmpfs1 = sample_tmpfs(TMPFS1_CG)
+            if tmpfs1 is None:
                 tmpfs1_tracker.reset()
-            tmpfs1_was_present = True
-            t1_rates = tmpfs1_tracker.update(ts, {"wra": tmpfs1["wra"], "zswpin": tmpfs1["zswpin"]})
-            tmpfs1_rf_z, tmpfs1_rf_d = split_rates(t1_rates)
-
-        disk_sw, disk_sw_degraded = disk_swap_bytes()
-
-        if not args.json:
-            if tmpfs0 is not None:
-                if last_tmpfs0_band is not None and last_tmpfs0_band != tmpfs0["band"]:
-                    note(f"T0 band changed: {band_str(last_tmpfs0_band)}  ->  {band_str(tmpfs0['band'])}")
-                last_tmpfs0_band = tmpfs0["band"]
+                tmpfs1_was_present = False
+                tmpfs1_rf_z = tmpfs1_rf_d = None
             else:
-                last_tmpfs0_band = None
-            if tmpfs1 is not None:
-                if last_tmpfs1_band is not None and last_tmpfs1_band != tmpfs1["band"]:
-                    note(f"T1 band changed: {band_str(last_tmpfs1_band)}  ->  {band_str(tmpfs1['band'])}")
-                last_tmpfs1_band = tmpfs1["band"]
+                if not tmpfs1_was_present:
+                    tmpfs1_tracker.reset()
+                tmpfs1_was_present = True
+                t1_rates = tmpfs1_tracker.update(ts, {"wra": tmpfs1["wra"], "zswpin": tmpfs1["zswpin"]})
+                tmpfs1_rf_z, tmpfs1_rf_d = split_rates(t1_rates)
+
+            disk_sw, disk_sw_degraded = disk_swap_bytes()
+
+            if not args.json:
+                if tmpfs0 is not None:
+                    if last_tmpfs0_band is not None and last_tmpfs0_band != tmpfs0["band"]:
+                        note(f"T0 band changed: {band_str(last_tmpfs0_band)}  ->  {band_str(tmpfs0['band'])}")
+                    last_tmpfs0_band = tmpfs0["band"]
+                else:
+                    last_tmpfs0_band = None
+                if tmpfs1 is not None:
+                    if last_tmpfs1_band is not None and last_tmpfs1_band != tmpfs1["band"]:
+                        note(f"T1 band changed: {band_str(last_tmpfs1_band)}  ->  {band_str(tmpfs1['band'])}")
+                    last_tmpfs1_band = tmpfs1["band"]
+                else:
+                    last_tmpfs1_band = None
+
+                if header_needed or (row_i and row_i % 40 == 0):
+                    row1, row2, dash = header_lines(len(servers), args.wide, servers)
+                    print(row1)
+                    print(row2)
+                    print(dash)
+                    header_needed = False
+
+                print(table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmpfs1_rf_z, tmpfs1_rf_d, disk_sw, disk_sw_degraded,
+                                args.wide), flush=True)
             else:
-                last_tmpfs1_band = None
+                games = [server_json(server, server["sample"], server["rates"]["rfz"],
+                                     server["rates"]["rfd"], server["rates"]["rff"])
+                         for server in servers]
+                obj = {
+                    "ts": now_iso(),
+                    "epoch": ts,
+                    "interval_s": args.interval,
+                    "games": games,
+                    "ksm_global": global_ksm,
+                    "tmpfs_zswapmax0": None if tmpfs0 is None else {
+                        "cgroup": TMPFS0_CG,
+                        "ram_bytes": tmpfs0["ram"], "zpool_bytes": tmpfs0["zpool"],
+                        "disk_bytes": tmpfs0["disk"],
+                        "rf_z_per_s": tmpfs0_rf_z, "rf_d_per_s": tmpfs0_rf_d,
+                        "memory_min": tmpfs0["band"]["min"], "memory_high": tmpfs0["band"]["high"],
+                        "zswap_writeback": tmpfs0["band"]["writeback"],
+                    },
+                    "tmpfs_zswapmax1": None if tmpfs1 is None else {
+                        "cgroup": TMPFS1_CG,
+                        "ram_bytes": tmpfs1["ram"], "zpool_bytes": tmpfs1["zpool"],
+                        "disk_bytes": tmpfs1["disk"],
+                        "rf_z_per_s": tmpfs1_rf_z, "rf_d_per_s": tmpfs1_rf_d,
+                        "memory_min": tmpfs1["band"]["min"], "memory_high": tmpfs1["band"]["high"],
+                        "zswap_writeback": tmpfs1["band"]["writeback"],
+                    },
+                    "disk_sw_bytes": disk_sw,
+                    "disk_sw_estimated": disk_sw_degraded,
+                }
+                if len(games) == 1:
+                    obj["game"] = games[0]
+                print(json.dumps(obj), flush=True)
 
-            if header_needed or (row_i and row_i % 40 == 0):
-                row1, row2, dash = header_lines(len(servers), args.wide, servers)
-                print(row1)
-                print(row2)
-                print(dash)
-                header_needed = False
-
-            print(table_row(servers, global_ksm, tmpfs0, tmpfs0_rf_z, tmpfs0_rf_d, tmpfs1, tmpfs1_rf_z, tmpfs1_rf_d, disk_sw, disk_sw_degraded,
-                            args.wide), flush=True)
-        else:
-            games = [server_json(server, server["sample"], server["rates"]["rfz"],
-                                 server["rates"]["rfd"], server["rates"]["rff"])
-                     for server in servers]
-            obj = {
-                "ts": now_iso(),
-                "epoch": ts,
-                "interval_s": args.interval,
-                "games": games,
-                "ksm_global": global_ksm,
-                "tmpfs_zswapmax0": None if tmpfs0 is None else {
-                    "cgroup": TMPFS0_CG,
-                    "ram_bytes": tmpfs0["ram"], "zpool_bytes": tmpfs0["zpool"],
-                    "disk_bytes": tmpfs0["disk"],
-                    "rf_z_per_s": tmpfs0_rf_z, "rf_d_per_s": tmpfs0_rf_d,
-                    "memory_min": tmpfs0["band"]["min"], "memory_high": tmpfs0["band"]["high"],
-                    "zswap_writeback": tmpfs0["band"]["writeback"],
-                },
-                "tmpfs_zswapmax1": None if tmpfs1 is None else {
-                    "cgroup": TMPFS1_CG,
-                    "ram_bytes": tmpfs1["ram"], "zpool_bytes": tmpfs1["zpool"],
-                    "disk_bytes": tmpfs1["disk"],
-                    "rf_z_per_s": tmpfs1_rf_z, "rf_d_per_s": tmpfs1_rf_d,
-                    "memory_min": tmpfs1["band"]["min"], "memory_high": tmpfs1["band"]["high"],
-                    "zswap_writeback": tmpfs1["band"]["writeback"],
-                },
-                "disk_sw_bytes": disk_sw,
-                "disk_sw_estimated": disk_sw_degraded,
-            }
-            if len(games) == 1:
-                obj["game"] = games[0]
-            print(json.dumps(obj), flush=True)
-
-        row_i += 1
-        time.sleep(args.interval)
+            row_i += 1
+            time.sleep(args.interval)
+    finally:
+        close_rcon(servers)
 
 
 # ─── CLI ───────────────────────────────────────────────────────────────────────
@@ -1501,14 +1673,36 @@ def _interval_type(s):
     return v
 
 
+def help_description() -> str:
+    """-h/--help's full text: works standalone (no root/docker/running
+    instance needed — argparse handles -h before main()'s root/docker
+    checks) and pulls the column-by-column guide from the SAME
+    LEGEND_SECTIONS/legend_for_width() that --legend prints at startup, so
+    the two can never drift apart the way the old COLUMN_GUIDE docstring
+    copy eventually did (see its removal note above)."""
+    intro = (
+        "Soulmask host monitor — cgroup memory (zswap pressure, tmpfs slices,\n"
+        "disk swap) plus a per-server RCON 'fps' column (game-thread tick rate).\n"
+        "\n"
+        "Every number below is a PER-CGROUP metric (memory.stat, memory.zswap.current,\n"
+        "memory.swap.current for the whole container), not a per-process number like\n"
+        "top/htop/free/ps show. The most important consequence: this file's 'RAM'\n"
+        "column (memory.current) is typically LARGER than top's RES for the same\n"
+        "workload, because memory.current also counts kernel/slab structures and the\n"
+        "compressed zswap pool that RES never includes — see 'How these columns\n"
+        "relate to htop's process view' below for the full mapping.\n"
+    )
+    return intro + "\n" + legend_for_width()
+
+
 def parse_args(argv=None):
     class WideRawDescriptionHelpFormatter(argparse.RawDescriptionHelpFormatter):
         def __init__(self, prog):
             super().__init__(prog, max_help_position=36, width=LEGEND_WIDTH)
 
     p = argparse.ArgumentParser(
-        prog="soulmask-zswap-monitor.py",
-        description="Soulmask cgroup memory monitor — zswap pressure, tmpfs slices, disk swap.",
+        prog="soulmask-monitor.py",
+        description=help_description(),
         formatter_class=WideRawDescriptionHelpFormatter,
     )
     p.add_argument("interval", nargs="?", default=5.0, type=_interval_type,
@@ -1524,6 +1718,8 @@ def parse_args(argv=None):
                     help="select which WSServer container to monitor when several run: "
                          "server-UUID prefix, container-id prefix, or any substring of "
                          "the container name (Wings names containers by server UUID)")
+    p.add_argument("--no-rcon", action="store_true",
+                    help="skip the RCON 'fps' column entirely (no nsenter/RCON calls at all)")
     return p.parse_args(argv)
 
 
@@ -1535,6 +1731,10 @@ def main(argv=None):
             "counters requires root.")
     if not shutil.which("docker"):
         die("docker not found in PATH.")
+
+    # SIGTERM (systemd stop, etc.) must also drain into run()'s try/finally so
+    # RCON relay children get terminated explicitly rather than orphaned.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
 
     try:
         run(args)

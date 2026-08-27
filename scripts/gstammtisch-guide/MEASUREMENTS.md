@@ -6,7 +6,7 @@ exact commands, how to read the numbers, and which knob the result feeds.
 
 Prereqs: `vmtouch`, `fio` (both via `install.sh`), damo toolkit at
 `../damon-analysis/` (venv), the Python zswap monitor
-(`soulmask-zswap-monitor.sh`), root.
+(`soulmask-monitor.sh`), root.
 
 ---
 

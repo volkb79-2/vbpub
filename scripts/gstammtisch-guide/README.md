@@ -62,12 +62,12 @@ gstammtisch-guide/
 │   │                             soulmask-static-ramdisk-{setup,teardown}.sh
 │   └── usr/local/sbin/soulmask-shutdown.sh  soulmask-instance-lib.sh  wings-ps.sh
 │                         soulmask_tmpfs-{setup,teardown,toggle,restart-wings}.sh
-│                         soulmask-zswap-monitor.{sh,py}  soulmask-mempress.sh
+│                         soulmask-monitor.{sh,py}  soulmask-mempress.sh
 │                         soulmask-pak-mempress.sh  container-mempress.sh
+│                         exec-soulmask-rcon.{sh,py}  soulmask_rcon.py  # RCON admin helper + engine
 └── scripts/
     ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor
-    ├── exec-soulmask-rcon.sh      # RCON admin helper
     └── swap-health.sh             # one-glance monitoring
 ```
 

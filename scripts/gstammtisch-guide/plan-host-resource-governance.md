@@ -100,7 +100,7 @@ buildkit running; no test stack). Supersedes parts of §1.
 | Soulmask band | min=7G, high=8000M | **min=6G, low=12G, high=8G** (live). 5G/6G band caused **player-login failures** (login loads the player region → transient demand above the 6G ceiling → throttle + refault storm; retries eventually warmed the pages). Repo `setup-cgroups.sh` + `soulmask-startup-cgroup.sh` updated to 6G/8G |
 | `vm.swappiness` | 5 (unpersisted) | **100** live — matches `99-gstammtisch-memory.conf` (plan §1.1 row is stale) |
 | zswap `max_pool_percent` | 50 | **30** live; shrinker=Y; debugfs: stored 6.7G uncompressed in 3.35G pool (≈2.0× system-wide), written_back_pages=626 |
-| Monitor | — | repo `soulmask-zswap-monitor.sh` deployed to host (identical) |
+| Monitor | — | repo `soulmask-monitor.sh` deployed to host (identical) |
 | Snapshot | load 74, swap 53G | swap 11.3G used / 69G; MemFree 3.0G; buff/cache 3.1G (of which ~0.9G is resident pak shmem); game RAM 6.4G, z_pool 1.67G, z_eq 5.2G (**3.1×**), rflt 0–2/s |
 
 **⚠ Finding A — memory.min protection chain is broken (affects §1.3 "✅ applied").**
@@ -404,7 +404,7 @@ Rationale: the host is RAM-starved — adding cadvisor+Prometheus+node_exporter+
 (option b) would cost 0.5–1 GB+ of the very RAM we are trying to protect, and the
 existing SkyWalking OAP (option c) is itself a ~2 GB best-effort hog we intend to *cap*,
 not lean on. A ~15 MB Python process reading sysfs is the right footprint. It also
-subsumes the two existing scripts (`swap-health.sh` system-wide, `soulmask-zswap-monitor.sh`
+subsumes the two existing scripts (`swap-health.sh` system-wide, `soulmask-monitor.sh`
 game+pak) into one per-container at-a-glance view — the user's explicit pain (htop/vmstat/sar
 each show only a slice).
 
@@ -490,7 +490,7 @@ risk and need a build to validate):
 - After step 5: run a full `docker build` / test-runner suite and watch Soulmask
   `io.pressure full avg10` and `mflt/s` stay low while the build's `io.stat` rate sits at
   the cap. Confirm builds still complete in acceptable time.
-- Ongoing: `rflt/s` on Soulmask should sit 0–100/s steady (per `soulmask-zswap-monitor.sh`
+- Ongoing: `rflt/s` on Soulmask should sit 0–100/s steady (per `soulmask-monitor.sh`
   calibration); sustained >500/s ⇒ raise `memory.min`.
 
 **Rollback:** each mechanism is independent and reversible — remove a `mem_limit` /
@@ -588,7 +588,7 @@ yet applied.
 
 Tooling exists: `scripts/damon-analysis/` (damo v3.2.9 venv, `damon_cli.py
 timeseries-pid`, `rcon_probe.py` RCON-latency correlator), `vmtouch` (to
-install), cgroup counters via `soulmask-zswap-monitor.sh`.
+install), cgroup counters via `soulmask-monitor.sh`.
 
 **SLOs to tune against** (from SOULMASK.md calibration history):
 game rflt/s ≤ 20/s sustained during play (spikes on area load OK);
