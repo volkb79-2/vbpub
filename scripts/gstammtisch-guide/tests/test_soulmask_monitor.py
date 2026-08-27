@@ -60,7 +60,10 @@ def test_env_of_returns_empty_on_docker_failure(monkeypatch):
     def fake_run(argv, **kw):
         class R:
             returncode = 1
-            stdout = ""
+            # Non-empty and matching, so a reader that ignored returncode
+            # would incorrectly return "1234" instead of "" — the fixture
+            # must give the wrong-path code something real to return.
+            stdout = "RCON_PORT=1234\n"
         return R()
     monkeypatch.setattr(mon.subprocess, "run", fake_run)
     assert mon.env_of("cid", "RCON_PORT") == ""

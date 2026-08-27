@@ -1,0 +1,62 @@
+# =============================================================================
+# gstammtisch-guide gate lanes — parsed ONLY by run-gate.py (one parser,
+# D-110). All three tiers are host-scoped: the modules under test load via
+# importlib.util.spec_from_file_location against fixture data (fake_rcon_
+# server.py, a local socketpair, monkeypatched subprocess/docker calls) —
+# the one file that talks to a real Docker daemon
+# (tests/test_soulmask_monitor_docker.py) already self-skips gracefully
+# without one (pytest.mark.skipif on shutil.which("docker")), so a plain
+# python3 + pytest on the host is sufficient for every tier here.
+# =============================================================================
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/gstammtisch-guide && python3 -m compileall -q files/usr/local/sbin && python3 -m pytest tests -q --cov=files/usr/local/sbin --cov-branch --cov-report=term-missing",
+]
+clean_tree = false
+budget = "5m"
+
+# Mutation testing via a live, worktree-installed assay (never a pinned
+# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). The
+# judge policy (source roots, operators, budget) lives in this project's own
+# assay.toml [lanes.r2]; this lane just installs and invokes it.
+[lanes.r2]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/gstammtisch-guide && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "20m"
+artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+
+# Proves the gate REJECTS known-bad code — each canary breaks exactly one
+# contract a named test claims to assert, and that test must go red.
+[lanes.r3]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/gstammtisch-guide && exec tools/canary-run.sh",
+]
+clean_tree = false
+budget = "5m"
+
+# The implementation/release gate: every consumer (release steps, agents,
+# humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
+# sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
+# is the reference shape).
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+]
+clean_tree = false
+budget = "1h"
