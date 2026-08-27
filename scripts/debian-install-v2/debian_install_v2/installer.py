@@ -1,0 +1,660 @@
+from __future__ import annotations
+
+import re
+from dataclasses import replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import time
+import urllib.parse
+import urllib.request
+
+from .actions import HostActions
+from .config import Config, ConfigError
+from .state import StateStore
+from .templates import (
+    APT_CUSTOM,
+    APT_PRIORITIES,
+    APT_SOURCES,
+    STAGE2_SERVICE,
+    THP_SERVICE,
+    ZSWAP_SERVICE,
+)
+
+
+SUPPORTED_RELEASES = {"trixie", "forky"}
+SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+
+
+class Installer:
+    def __init__(self, config: Config, actions: HostActions):
+        self.config = config
+        self.actions = actions
+        self.state = StateStore(config.state_dir)
+        self.state.dry_run = actions.dry_run
+        self.release = self._detect_release()
+        self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
+
+    def _run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str:
+        output = self.actions.run(argv, description=description, dangerous=dangerous)
+        return (output or "").strip()
+
+    def _detect_release(self) -> str:
+        os_release = Path("/etc/os-release")
+        values: dict[str, str] = {}
+        if not self.actions.dry_run:
+            for line in os_release.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    values[key] = value.strip().strip('"')
+        release = values.get("VERSION_CODENAME", "trixie" if self.actions.dry_run else "")
+        if release not in SUPPORTED_RELEASES:
+            raise ConfigError(f"unsupported or undetected Debian release: {release!r}")
+        return release
+
+    def _discover_root(self) -> tuple[str, str, int]:
+        if self.actions.dry_run:
+            return "vda", "/dev/vda3", 3
+        root = self._run(["/usr/bin/findmnt", "-n", "-o", "SOURCE", "/"], "find root device")
+        if not root.startswith("/dev/"):
+            raise RuntimeError(f"root is not a plain block-device mount: {root!r}")
+        match = re.fullmatch(r"/dev/(?P<disk>.+?)(?:p)?(?P<number>[0-9]+)", root)
+        if not match:
+            raise RuntimeError(f"cannot derive root disk and partition number from {root!r}")
+        return match.group("disk"), root, int(match.group("number"))
+
+    @property
+    def _partition_base(self) -> str:
+        return f"/dev/{self.root_disk}p" if any(char.isdigit() for char in self.root_disk) else f"/dev/{self.root_disk}"
+
+    def install(self) -> None:
+        self.state.save_new(StateStore.new(self.config))
+        self._stage1()
+
+    def resume(self) -> None:
+        saved = self.state.load()
+        persisted = saved.get("config", {})
+        allowed = set(self.config.__dataclass_fields__)
+        self.config = replace(self.config, **{key: value for key, value in persisted.items() if key in allowed})
+        if self.config.credential_mode == "systemd":
+            credential_dir = Path("/run/credentials/vbpub-bootstrap-stage2.service")
+        else:
+            credential_dir = Path(self.config.state_dir) / "credentials"
+        token_file = credential_dir / "telegram_bot_token"
+        chat_file = credential_dir / "telegram_chat_id"
+        if not self.actions.dry_run and token_file.is_file() and chat_file.is_file():
+            token = token_file.read_text(encoding="utf-8").strip()
+            chat_id = chat_file.read_text(encoding="utf-8").strip()
+            if token and chat_id:
+                self.config = replace(self.config, telegram_bot_token=token, telegram_chat_id=chat_id)
+        thread_file = Path(self.config.state_dir) / "telegram_thread_id"
+        if not self.actions.dry_run and thread_file.is_file():
+            thread_id = thread_file.read_text(encoding="utf-8").strip()
+            if thread_id.isdigit():
+                self.state.save(telegram_thread_id=thread_id)
+        self.state.save(phase="stage2", status="running")
+        try:
+            self._stage2()
+            self.state.save(status="success", phase="done")
+            if not self.actions.dry_run:
+                Path(self.config.state_dir, "stage2_done").touch(mode=0o600)
+        except BaseException as exc:
+            self.state.save(status="failed", phase="stage2", last_error=str(exc))
+            raise
+
+    def status(self) -> dict[str, object]:
+        state = self.state.load()
+        log_dir = Path(self.config.log_dir)
+        logs = sorted(str(path) for path in (log_dir.rglob("*") if log_dir.exists() else []) if path.is_file())
+        return {
+            **state,
+            "logs": logs[-20:],
+            "dry_run": self.actions.dry_run,
+            "planned_action_count": len(self.actions.planned),
+        }
+
+    def show_plan(self) -> dict[str, object]:
+        partitions, new_root_size = self._plan_swap_partitions()
+        plan_path = Path(self.config.state_dir) / "partition-plan.sfdisk"
+        if plan_path.is_file():
+            plan_text = plan_path.read_text(encoding="utf-8")
+        else:
+            if self.actions.dry_run:
+                current_dump = "\n".join([
+                    "label: gpt",
+                    f"device: /dev/{self.root_disk}",
+                    "",
+                    f"{self._partition_base}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
+                ])
+            else:
+                current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+            plan_text = self._write_sfdisk_plan(partitions, new_root_size)
+        return {
+            "run_id": self.state.load().get("run_id") if (Path(self.config.state_dir) / "state.json").is_file() else "",
+            "release": self.release,
+            "root_device": self.root_partition_path,
+            "new_root_size_sectors": new_root_size,
+            "swap_partitions": [
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size}
+                for number, (start, size) in enumerate(partitions, start=self.root_number + 1)
+            ],
+            "sfdisk_plan": plan_text,
+        }
+
+    def verify(self) -> None:
+        transaction_path = Path(self.config.state_dir) / "disk-transaction.json"
+        if not transaction_path.is_file():
+            raise RuntimeError(f"disk transaction manifest does not exist: {transaction_path}")
+        manifest = json.loads(transaction_path.read_text(encoding="utf-8"))
+        backup = Path(manifest["backup"])
+        checksum = Path(manifest["checksum"])
+        if not backup.is_file() or not checksum.is_file():
+            raise RuntimeError("backup or checksum is missing")
+        expected = checksum.read_text(encoding="utf-8").split()[0]
+        actual = hashlib.sha256(backup.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"backup checksum mismatch: expected {expected}, got {actual}")
+        self._health_gate_swap_devices()
+
+    def disable_stage2(self) -> None:
+        self._run(["/usr/bin/systemctl", "disable", "vbpub-bootstrap-stage2.service"], "disable stage2 unit")
+        marker = Path(self.config.state_dir) / "stage2_done"
+        if not self.actions.dry_run:
+            marker.touch(mode=0o600)
+        self.state.mark_step("stage2", "disabled", "unit disabled and completion marker set")
+
+    def _packages(self, packages: list[str], stage: str) -> None:
+        self._run(["/usr/bin/apt-get", "update", "-qq"], f"{stage}: refresh apt metadata")
+        argv = ["/usr/bin/apt-get", "install", "-y", "--no-install-recommends", *packages]
+        self._run(argv, f"{stage}: install packages", dangerous=True)
+        self.state.mark_step(f"{stage}_packages", "success", " ".join(packages))
+
+    def _configure_apt(self) -> None:
+        sources_path = Path("/etc/apt/sources.list.d/debian.sources")
+        backup = Path(f"/etc/apt/sources.list.v2-backup-{int(time.time())}")
+        if sources_path.is_file() and not self.actions.dry_run:
+            shutil.copy2(sources_path, backup)
+        self.actions.write_file("/etc/apt/sources.list.d/debian.sources", APT_SOURCES.format(release=self.release))
+        self.actions.write_file("/etc/apt/apt.conf.d/custom.conf", APT_CUSTOM)
+        self.actions.write_file("/etc/apt/preferences.d/debian-priorities", APT_PRIORITIES.format(release=self.release))
+        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
+        if not self.actions.dry_run:
+            policy = self._run(["/usr/bin/apt-cache", "policy"], "verify apt suites resolve")
+            expected = [self.release, f"{self.release}-updates", f"{self.release}-security", f"{self.release}-backports", "testing", "unstable"]
+            missing = [suite for suite in expected if suite not in policy]
+            if missing:
+                raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+        self.state.mark_step("apt_config", "success", self.release)
+
+    def _configure_users(self) -> None:
+        packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]
+        self._packages(packages, "users")
+        nanorc = "\n".join([
+            "set tabsize 4", "set softwrap", "set tabstospaces", "set mouse",
+            "set linenumbers", "set smooth", "set autoindent", "set boldtext",
+            'include /usr/share/nano/*.nanorc', "",
+        ])
+        aliases = "\n".join([
+            "alias ll='ls -alF'", "alias la='ls -A'", "alias l='ls -CF'",
+            "alias ls='ls --color=auto'", "alias grep='grep --color=auto'", "",
+        ])
+        self.actions.write_file("/root/.nanorc", nanorc, 0o600)
+        self.actions.write_file("/root/.bash_aliases", aliases, 0o600)
+        self.state.mark_step("user_config", "success", ", ".join(packages))
+
+    def _configure_journald(self) -> None:
+        content = """[Journal]
+Storage=persistent
+Compress=yes
+SystemMaxUse=200M
+SystemKeepFree=500M
+SystemMaxFileSize=100M
+MaxRetentionSec=12month
+MaxFileSec=1month
+"""
+        self.actions.write_file("/etc/systemd/journald.conf.d/99-vbpub-v2.conf", content)
+        self._run(["/usr/bin/systemctl", "restart", "systemd-journald"], "restart journald", dangerous=True)
+        self.state.mark_step("journald_config", "success", "persistent 200M journal")
+
+    def _install_docker(self) -> None:
+        arch = platform.machine()
+        if arch == "x86_64":
+            apt_arch = "amd64"
+        elif arch == "aarch64":
+            apt_arch = "arm64"
+        else:
+            raise RuntimeError(f"unsupported architecture for Docker installation: {arch}")
+        self._packages(["ca-certificates", "curl", "gnupg"], "docker-prereqs")
+        self.actions.mkdir("/etc/apt/keyrings")
+        parsed = urllib.parse.urlparse("https://download.docker.com/linux/debian/gpg")
+        if parsed.scheme != "https":
+            raise RuntimeError("Docker GPG URI must use HTTPS")
+        if self.actions.dry_run:
+            self.actions.write_file("/etc/apt/keyrings/docker.asc", "dry-run-gpg-key\n", 0o644)
+        else:
+            with urllib.request.urlopen("https://download.docker.com/linux/debian/gpg", timeout=30) as response:
+                key = response.read()
+            self.actions.write_file("/etc/apt/keyrings/docker.asc", key.decode("utf-8"), 0o644)
+        docker_sources = "\n".join([
+            "Types: deb",
+            "URIs: https://download.docker.com/linux/debian",
+            f"Suites: {self.release}",
+            "Components: stable",
+            "Signed-By: /etc/apt/keyrings/docker.asc",
+            f"Architectures: {apt_arch}",
+            "",
+        ])
+        self.actions.write_file("/etc/apt/sources.list.d/docker.sources", docker_sources)
+        self._packages(["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"], "docker")
+        daemon = json.dumps({
+            "features": {"buildkit": True},
+            "live-restore": True,
+            "log-driver": "local",
+            "log-opts": {"max-file": "3", "max-size": "10m"},
+            "metrics-addr": "127.0.0.1:9323",
+            "storage-driver": "overlay2",
+            "userland-proxy": False,
+        }, indent=2) + "\n"
+        self.actions.write_file("/etc/docker/daemon.json", daemon, 0o644)
+        self._run(["/usr/bin/systemctl", "enable", "--now", "docker"], "enable Docker", dangerous=True)
+        self.state.mark_step("docker_install", "success", apt_arch)
+
+    def _configure_zswap(self) -> None:
+        self.actions.write_file(
+            "/etc/systemd/system/zswap-config.service",
+            ZSWAP_SERVICE.format(
+                compressor=self.config.zswap_compressor,
+                zpool=self.config.zswap_zpool,
+                pool_percent=self.config.zswap_pool_percent,
+            ),
+        )
+        self.actions.write_file("/etc/modules-load.d/vbpub-zstd.conf", "zstd\n")
+        self.actions.write_file(
+            "/etc/sysctl.d/99-vbpub-swap.conf",
+            "\n".join([
+                "vm.swappiness = 80",
+                "vm.page-cluster = 0",
+                "vm.vfs_cache_pressure = 50",
+                "vm.watermark_scale_factor = 125",
+                "vm.dirty_ratio = 15",
+                "vm.dirty_background_ratio = 5",
+                "",
+            ]),
+        )
+        self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(["/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service"], "enable early tuning units")
+        self.state.mark_step("zswap_config", "success", self.config.zswap_compressor)
+
+    def _disk_facts(self) -> tuple[int, int, int]:
+        if self.actions.dry_run:
+            def gib_to_sectors(size_gib: int) -> int:
+                return size_gib * 1024 * 1024 * 1024 // 512
+            return gib_to_sectors(512), 2500608, gib_to_sectors(8)
+        size_output = self._run(["/usr/sbin/blockdev", "--getsize64", f"/dev/{self.root_disk}"])
+        dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"])
+        start = size = 0
+        prefix = self._partition_base
+        for line in dump.splitlines():
+            fields = line.split()
+            if fields and fields[0] == f"{prefix}{self.root_number}":
+                for item in fields[1:]:
+                    key, _, value = item.strip(",").partition("=")
+                    if key == "start":
+                        start = int(value)
+                    elif key == "size":
+                        size = int(value)
+        if size <= 0:
+            raise RuntimeError(f"could not parse current root partition from sfdisk dump")
+        return int(size_output) // 512, start, size
+
+    def _preflight_disk_transaction(self) -> dict[str, object]:
+        if self.actions.dry_run:
+            return {"mode": "dry-run", "holders": [], "mounts": []}
+        holders = Path("/sys/block") / self.root_disk / "holders"
+        holder_names = sorted(path.name for path in holders.iterdir()) if holders.is_dir() else []
+        if holder_names:
+            raise RuntimeError(
+                f"refusing disk transaction: {self.root_disk} has active holder mappings: {', '.join(holder_names)}"
+            )
+        findmnt = self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"], "enumerate mounted sources")
+        forbidden = []
+        prefix = f"{self._partition_base}"
+        for line in findmnt.splitlines():
+            source = line.split()[0] if line.split() else ""
+            if source == f"/dev/{self.root_disk}" or (source.startswith(prefix) and source[len(prefix):].isdigit()):
+                forbidden.append(line)
+        allowed = {self.root_partition_path}
+        unexpected_mounts = [line for line in forbidden if line.split()[0] not in allowed]
+        if unexpected_mounts:
+            raise RuntimeError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
+        return {"holders": holder_names, "mounts": forbidden}
+
+    def _parse_partition_entries(self, dump: str) -> dict[int, dict[str, str]]:
+        entries: dict[int, dict[str, str]] = {}
+        prefix = self._partition_base
+        for line in dump.splitlines():
+            columns = line.split()
+            if not columns or not columns[0].startswith(prefix):
+                continue
+            suffix = columns[0][len(prefix):]
+            if not suffix.isdigit():
+                continue
+            values: dict[str, str] = {}
+            for item in columns[1:]:
+                key, _, value = item.strip(",").partition("=")
+                if value:
+                    values[key] = value
+            entries[int(suffix)] = values
+        return entries
+
+    def _validate_plan_geometry(
+        self,
+        current: dict[int, dict[str, str]],
+        plan: dict[int, dict[str, str]],
+        new_root_size: int,
+    ) -> None:
+        root_current = current.get(self.root_number)
+        root_plan = plan.get(self.root_number)
+        if not root_current or not root_plan:
+            raise RuntimeError("partition plan does not preserve the root partition")
+        before_end = int(root_current["start"]) + int(root_current["size"])
+        after_end = int(root_plan["start"]) + int(root_plan["size"])
+        if after_end > before_end:
+            raise RuntimeError("partition plan unexpectedly grows the root partition")
+        for number, entry in current.items():
+            if number > self.root_number:
+                raise RuntimeError(
+                    f"fresh-install contract violated: existing partition {number} follows root and would be dropped"
+                )
+        ordered = sorted(plan.items())
+        previous_start = -1
+        previous_end = -1
+        for number, entry in ordered:
+            start = int(entry["start"])
+            size = int(entry["size"])
+            end = start + size
+            if previous_end >= 0 and start < previous_end:
+                raise RuntimeError(f"partition plan overlap detected at partition {number}")
+            previous_start, previous_end = start, end
+        swap_numbers = [number for number in plan if number > self.root_number]
+        expected_numbers = list(range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1))
+        if swap_numbers != expected_numbers:
+            raise RuntimeError(f"partition plan has unexpected swap numbering: {swap_numbers!r}")
+
+    def _plan_swap_partitions(self) -> tuple[list[tuple[int, int]], int]:
+        disk_sectors, root_start, root_size = self._disk_facts()
+        total_sectors = self.config.swap_disk_total_gb * 1024 * 1024 * 1024 // 512
+        per_device = total_sectors // self.config.swap_file_count
+        alignment = 2048
+        per_device -= per_device % alignment
+        if per_device <= 0:
+            raise RuntimeError(f"swap target too small for {self.config.swap_file_count} devices")
+        actual_total = per_device * self.config.swap_file_count
+        end_buffer = 2048
+        new_root_size = max(root_size, self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // 512)
+        first_swap_start = ((root_start + new_root_size + alignment - 1) // alignment) * alignment
+        required_end = first_swap_start + actual_total + end_buffer
+        if required_end > disk_sectors:
+            needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
+            raise RuntimeError(f"disk lacks space for known swap shape; reduce swap by about {needed_gib} GiB")
+        start = first_swap_start
+        partitions = [(start + index * per_device, per_device) for index in range(self.config.swap_file_count)]
+        return partitions, new_root_size
+
+    def _write_sfdisk_plan(self, partitions: list[tuple[int, int]], new_root_size: int) -> str:
+        prefix = self._partition_base
+        if self.actions.dry_run:
+            dump = "\n".join([
+                "label: gpt",
+                f"device: /dev/{self.root_disk}",
+                "",
+                f"{prefix}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
+            ])
+        else:
+            dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+        header_lines = [
+            line for line in dump.splitlines()
+            if ":" in line and not line.startswith(f"{prefix}{self.root_number}")
+        ]
+        kept: list[str] = []
+        for line in dump.splitlines():
+            columns = line.split()
+            if not columns or not columns[0].startswith(prefix):
+                continue
+            try:
+                number = int(columns[0][len(prefix):])
+            except ValueError:
+                continue
+            if number < self.root_number:
+                kept.append(line)
+        lines = [*header_lines, ""]
+        for line in kept:
+            lines.append(line)
+        root_line = next(
+            line for line in dump.splitlines()
+            if line.startswith(f"{prefix}{self.root_number} ") or line.startswith(f"{prefix}{self.root_number}, ")
+        )
+        device, separator, attributes = root_line.partition(":")
+        root_parts = [part.strip(",") for part in attributes.split()]
+        rebuilt = []
+        inserted = False
+        for part in root_parts:
+            key = part.partition("=")[0]
+            if key == "size":
+                rebuilt.append(f"size={new_root_size}")
+                inserted = True
+            else:
+                rebuilt.append(part)
+        if not inserted:
+            rebuilt.append(f"size={new_root_size}")
+        lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
+        for index, (start, size) in enumerate(partitions, start=self.root_number + 1):
+            lines.append(f"{prefix}{index} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
+        return "\n".join(lines) + "\n"
+
+    def _apply_known_swap_shape(self) -> None:
+        partitions, new_root_size = self._plan_swap_partitions()
+        preflight = self._preflight_disk_transaction()
+        if self.actions.dry_run:
+            current_dump = "\n".join([
+                "label: gpt",
+                f"device: /dev/{self.root_disk}",
+                "",
+                f"{self._partition_base}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
+            ])
+        else:
+            current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+        current_entries = self._parse_partition_entries(current_dump)
+        plan_text = self._write_sfdisk_plan(partitions, new_root_size)
+        plan_entries = self._parse_partition_entries(plan_text)
+        self._validate_plan_geometry(current_entries, plan_entries, new_root_size)
+        backup_dir = Path(self.config.state_dir) / "backups"
+        timestamp = int(time.time())
+        backup_name = f"ptable-{timestamp}.sfdisk"
+        checksum_name = f"{backup_name}.sha256"
+        plan_path = str(Path(self.config.state_dir) / "partition-plan.sfdisk")
+        if self.actions.dry_run:
+            self.actions.write_file(plan_path, plan_text)
+        else:
+            self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
+            backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
+            self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
+            self.actions.write_file(plan_path, plan_text)
+            self._run(["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"], dangerous=True)
+            self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel partition view")
+            readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+            readback_entries = self._parse_partition_entries(readback)
+            if readback_entries != plan_entries:
+                self._run(
+                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}", str(backup_dir / backup_name)],
+                    description="rollback failed partition write",
+                    dangerous=True,
+                )
+                self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel view after rollback")
+                raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
+        manifest = {
+            "preflight": preflight,
+            "plan": plan_text,
+            "current": current_dump,
+            "backup": str(backup_dir / backup_name),
+            "checksum": str(backup_dir / checksum_name),
+            "new_root_size_sectors": new_root_size,
+        }
+        self.actions.write_file(
+            str(Path(self.config.state_dir) / "disk-transaction.json"),
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            0o600,
+        )
+        self.state.mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+
+    def _health_gate_swap_devices(self) -> None:
+        expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
+        prefix = self._partition_base
+        swaps_output = self._run(["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"], dangerous=False) if not self.actions.dry_run else ""
+        active_names = {line.split()[0] for line in swaps_output.splitlines() if line.strip()}
+        fstab_path = Path("/etc/fstab")
+        fstab_lines = fstab_path.read_text(encoding="utf-8").splitlines() if fstab_path.is_file() else []
+        fstab_partuuids = {
+            line.split()[0].removeprefix("PARTUUID=")
+            for line in fstab_lines
+            if len(line.split()) >= 3 and line.split()[2].lower() == "swap" and line.split()[0].startswith("PARTUUID=")
+        }
+        for number in expected_numbers:
+            path = f"{prefix}{number}"
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            if not partuuid:
+                raise RuntimeError(f"health gate failed: missing PARTUUID on {path}")
+            if not self.actions.dry_run and path not in active_names:
+                raise RuntimeError(f"health gate failed: {path} is formatted but not active")
+            if not self.actions.dry_run and partuuid not in fstab_partuuids:
+                raise RuntimeError(f"health gate failed: {path} PARTUUID is absent from fstab")
+        compressor = "zstd" if self.actions.dry_run else Path("/sys/module/zswap/parameters/compressor").read_text(encoding="utf-8").strip()
+        if compressor != self.config.zswap_compressor:
+            raise RuntimeError(f"health gate failed: zswap compressor is {compressor!r}, expected {self.config.zswap_compressor!r}")
+        output_file = Path(self.config.stage2_output)
+        if not self.actions.dry_run and not (output_file.is_file() and output_file.stat().st_size >= 0):
+            raise RuntimeError(f"health gate failed: stage2 log does not exist: {output_file}")
+        self.state.mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
+
+    def _activate_swap_partitions(self) -> None:
+        prefix = self._partition_base
+        first_number = self.root_number + 1
+        last_number = self.root_number + self.config.swap_file_count
+        fstab_entries = []
+        if not self.actions.dry_run:
+            self._run(["/usr/sbin/swapoff", "-a"], "disable existing swap before formatting fresh devices", True)
+        for number in range(first_number, last_number + 1):
+            path = f"{prefix}{number}"
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            if not self.actions.dry_run and not partuuid:
+                raise RuntimeError(f"expected swap partition has no PARTUUID after partitioning: {path}")
+            self._run(["/usr/sbin/mkswap", path], f"format {path}", dangerous=True)
+            self._run(["/usr/bin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
+            refreshed = partuuid if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            if not refreshed:
+                raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
+            fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority} 0 0")
+        self._persist_fstab(fstab_entries)
+        self.state.mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps")
+
+    def _persist_fstab(self, entries: list[str]) -> None:
+        fstab_path = Path("/etc/fstab")
+        existing_lines = fstab_path.read_text(encoding="utf-8").splitlines() if fstab_path.is_file() else []
+        retained = [
+            line for line in existing_lines
+            if not (line.strip() and len(line.split()) >= 3 and line.split()[2].lower() == "swap")
+        ]
+        content = "\n".join(retained + entries + [""])
+        self.actions.write_file("/etc/fstab", content, 0o644)
+
+    def _install_stage2(self) -> None:
+        python = shutil.which("python3") or "/usr/bin/python3"
+        working_directory = str(Path(__file__).resolve().parents[2])
+        env_file = "/etc/vbpub/bootstrap.env"
+        credentials_line = "-"
+        if self.config.telegram_bot_token and self.config.telegram_chat_id:
+            if self.config.credential_mode == "root-storage":
+                credential_dir = Path(self.config.state_dir) / "credentials"
+                self.actions.write_file(str(credential_dir / "telegram_bot_token"), self.config.telegram_bot_token + "\n", 0o600)
+                self.actions.write_file(str(credential_dir / "telegram_chat_id"), self.config.telegram_chat_id + "\n", 0o600)
+                credential_note = "root-only Telegram credentials installed"
+            else:
+                credentials_line = (
+                    f"telegram_bot_token:/etc/vbpub/credentials/telegram_bot_token "
+                    f"telegram_chat_id:/etc/vbpub/credentials/telegram_chat_id"
+                )
+                self.actions.write_file("/etc/vbpub/credentials/telegram_bot_token", self.config.telegram_bot_token + "\n", 0o600)
+                self.actions.write_file("/etc/vbpub/credentials/telegram_chat_id", self.config.telegram_chat_id + "\n", 0o600)
+                credential_note = "systemd LoadCredential Telegram credentials configured"
+        else:
+            credential_note = "Telegram disabled"
+        env = "\n".join([
+            f"VBPUB_STATE_DIR={self.config.state_dir}",
+            f"VBPUB_STAGE2_OUTPUT={self.config.stage2_output}",
+            f"PYTHONUNBUFFERED=1",
+            "",
+        ])
+        self.actions.write_file(env_file, env, 0o600)
+        service = STAGE2_SERVICE.format(
+            state_dir=self.config.state_dir,
+            env_file=env_file,
+            python=python,
+            output=self.config.stage2_output,
+            working_directory=working_directory,
+            credentials_line=credentials_line,
+        )
+        self.actions.write_file("/etc/systemd/system/vbpub-bootstrap-stage2.service", service)
+        marker = Path(self.config.state_dir) / "stage1_done"
+        if not self.actions.dry_run:
+            marker.touch(mode=0o600)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload stage2 unit")
+        self._run(["/usr/bin/systemctl", "enable", "vbpub-bootstrap-stage2.service"], "enable stage2 unit")
+        self.state.mark_step("stage2_unit", "success", f"{self.config.stage2_output}; {credential_note}")
+
+    def _notify(self, message: str) -> None:
+        token = self.config.telegram_bot_token
+        chat_id = self.config.telegram_chat_id
+        if not token or not chat_id or self.actions.dry_run:
+            return
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }).encode("utf-8")
+        request = urllib.request.Request(f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage", data=data)
+        try:
+            urllib.request.urlopen(request, timeout=15).close()
+        except OSError as exc:
+            print(f"[WARN] Telegram notification failed: {exc}", flush=True)
+
+    def _reboot(self) -> None:
+        if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
+            self.state.mark_step("reboot", "deferred", "disabled by configuration")
+            return
+        self.state.mark_step("reboot", "scheduled", "stage2 resumes on next boot")
+        self._run(["/usr/bin/systemctl", "reboot"], "reboot into stage2", dangerous=True)
+
+    def _stage1(self) -> None:
+        if self.config.run_apt_config:
+            self._configure_apt()
+        self._packages(["python3"], "stage1")
+        if self.config.run_user_config:
+            self._configure_users()
+        if self.config.run_journald_config:
+            self._configure_journald()
+        if self.config.run_docker_install:
+            self._install_docker()
+        self._install_stage2()
+        self._reboot()
+
+    def _stage2(self) -> None:
+        self._packages(["e2fsprogs", "util-linux"], "stage2")
+        self._configure_zswap()
+        self._apply_known_swap_shape()
+        self._activate_swap_partitions()
+        self._health_gate_swap_devices()
+        self.state.save(phase="done", status="success")
