@@ -1,3 +1,15 @@
+# Root-level scratch/log artifacts explicitly out of scope for the
+# debian-install-v2 move (left untracked by design, not by omission) —
+# gitignored rather than committed or deleted so they stop appearing as
+# untracked noise in `git status` and, more importantly, so they stop
+# tripping assay's own repo-wide dirty-tree check (assay has no
+# --allow-dirty escape hatch; an untracked file anywhere in the repo
+# blocks every project's R1+/R2 lane, not just the one it happens to sit
+# next to).
+/DEBIAN-INSTALL-REVIEW.md
+/DEBIAN-INSTALLv2-REVIEW.md
+/custom_script.output
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
