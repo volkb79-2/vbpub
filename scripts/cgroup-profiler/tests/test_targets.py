@@ -122,6 +122,21 @@ class TestDockerLookups:
         with pytest.raises(t.TargetError, match="docker CLI not found"):
             t.resolve_label("app=gate")
 
+    def test_resolve_label_raises_on_nonzero_docker_ps_returncode(self, monkeypatch):
+        # A real docker failure (daemon down, permission denied) must surface
+        # as its own error, not be silently read as "no matching containers".
+        import subprocess as _sp
+
+        monkeypatch.setattr(t, "docker_bin", lambda: "/usr/bin/docker")
+        monkeypatch.setattr(
+            t.subprocess, "run",
+            lambda *a, **k: _sp.CompletedProcess(
+                args=["docker"], returncode=1, stdout="", stderr="permission denied"
+            ),
+        )
+        with pytest.raises(t.TargetError, match="docker ps failed: permission denied"):
+            t.resolve_label("app=gate")
+
     def test_resolve_label_lists_matching_containers_and_skips_blank_lines(self, monkeypatch):
         monkeypatch.setattr(t, "docker_bin", lambda: "/usr/bin/docker")
         monkeypatch.setattr(

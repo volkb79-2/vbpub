@@ -1303,6 +1303,43 @@ class TestStartRun:
 
         assert spawned["child"].terminated is True
 
+    def test_ready_wait_timeout_kills_child_when_terminate_does_not_land_in_time(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # Same leak as above, one step further: terminate() alone is not
+        # always enough (a wedged process can ignore SIGTERM), so the
+        # cleanup's own wait(timeout=10) must fall back to kill() rather
+        # than leaving the process running because ITS wait blocked too.
+        class StubbornPopen(FakePopen):
+            def wait(self, timeout=None):
+                if timeout is not None and not self.killed:
+                    raise cg.subprocess.TimeoutExpired(cmd="collector", timeout=timeout)
+                return super().wait(timeout)
+
+        spawned = {}
+
+        def never_ready_popen(*args, **kwargs):
+            child = StubbornPopen()
+            spawned["child"] = child
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", never_ready_popen)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "direct")
+        clock = {"t": 0.0}
+        monkeypatch.setattr(cg.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(cg.time, "sleep", lambda dt: clock.__setitem__("t", clock["t"] + dt))
+        args = argparse.Namespace(
+            target=["cgroup:/dev.slice"], observe=[], out_dir=str(tmp_path), run_id="run-stubborn",
+            mode="auto", hot_interval=0.25, idle_interval=2.0, discovery_interval=2.0, max_depth=4,
+            duration=None, follow_children=False, damon=False, cap=[], helper_image=None,
+            start_timeout=1.0,
+        )
+        with pytest.raises(SystemExit):
+            cg._start_run(args)
+
+        assert spawned["child"].terminated is True
+        assert spawned["child"].killed is True
+
     def test_helper_mode_with_no_cgroup_parent_attribute_passes_none(self, monkeypatch, tmp_path: Path):
         # _add_common always defines --helper-cgroup-parent, but _start_run
         # reads it via getattr(..., None) so it degrades gracefully if a
