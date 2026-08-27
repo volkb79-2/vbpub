@@ -80,12 +80,61 @@ def test_judge_modes_is_the_closed_two_value_vocabulary():
 # --- mode: legality, defaulting, and its own closed vocabulary ---------------
 
 
-def test_mode_declared_without_r1_is_refused():
+def test_mode_declared_without_r1_or_r2_is_refused():
+    """B033/A-325 narrowed this from "R1" to "R1 or R2": `mode` is a
+    LANE-level judging scope both tiers read, so it is inert only when
+    NEITHER is declared."""
+    lane = R0_LANE + '\n[lanes.package.judge]\nmode = "whole_target"\n'
+    with pytest.raises(LaneConfigError, match="neither R1 nor R2"):
+        _load(lane)
+
+
+def test_mode_declared_on_an_r2_only_lane_is_legal_and_scopes_r2():
+    """B033/A-325: an `R0,R2` whole-target lane is exactly dstdns's SQL
+    shape. It declares `targets` (required in this mode) and NO `base` --
+    whole-target R2 mutates the declared files whole and reads no
+    comparison commit."""
     lane = R2_ONLY_LANE.replace(
         'source_roots = ["src"]\nbase = "main"',
-        'source_roots = ["src"]\nbase = "main"\nmode = "whole_target"',
+        'source_roots = ["src"]\nmode = "whole_target"\ntargets = ["src/mod.py"]',
     )
-    with pytest.raises(LaneConfigError, match="does not include R1"):
+    judge = _load(lane).lane("package").judge
+
+    assert judge is not None
+    assert judge.mode == "whole_target"
+    assert judge.targets == ("src/mod.py",)
+    assert judge.base is None
+
+
+def test_a_whole_target_r2_lane_declaring_base_is_refused_as_inert():
+    """B033/A-325(c): `judge.base` reaches only `evaluate_r1` (which ignores
+    it under whole-target mode), the skipped `check_base_is_head`/`git
+    diff`, and the artifact. Under whole-target scope nothing reads it, so
+    it is inert config in EVERY language and at EVERY rigor -- the carve-out
+    that kept it required for SQL and for R2 is gone."""
+    lane = R2_ONLY_LANE.replace(
+        'source_roots = ["src"]\nbase = "main"',
+        'source_roots = ["src"]\nbase = "main"\nmode = "whole_target"\n'
+        'targets = ["src/mod.py"]',
+    )
+    with pytest.raises(LaneConfigError, match=r"reads none of judge.\{base\}"):
+        _load(lane)
+
+
+def test_a_sql_lane_declaring_targets_without_whole_target_mode_is_refused():
+    """B033/A-325(d): the `declared_language != "sql"` carve-out on the
+    vacuity guard is deleted. A SQL lane declaring an inert `targets` list
+    was the one shape this guard's own error message describes and the one
+    shape it stopped refusing."""
+    lane = R2_ONLY_LANE.replace(
+        'language = "python"\nsource_roots = ["src"]\nbase = "main"',
+        'language = "sql"\nsource_roots = ["src"]\nbase = "main"\n'
+        'targets = ["src/schema.sql"]',
+    ).replace(
+        'operators = ["python:compare-swap"]',
+        'operators = ["sql:drop-check"]\nequivalence_artifact = ".assay/e.sql"',
+    )
+    with pytest.raises(LaneConfigError, match="judge.mode is not 'whole_target'"):
         _load(lane)
 
 
@@ -229,23 +278,31 @@ def test_whole_target_mode_with_base_and_no_r2_is_refused_as_inert(project: Proj
 _WHOLE_TARGET_WITH_R2_MUTATION = "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 10\noperators = [\"python:compare-swap\"]\n"
 
 
-def test_whole_target_mode_with_r2_requires_and_accepts_base(project: Project):
+def test_whole_target_mode_with_r2_refuses_base_as_inert(project: Project):
+    """INVERTED by B033/A-325. This pair of tests used to assert that an
+    `R0,R1,R2` whole-target lane REQUIRED `judge.base` "for R2's own sake".
+    That was already false when the assertion was written: `whole_file_r2`
+    skips both `check_base_is_head` and the `git diff`, so a whole-target R2
+    reads no comparison commit either -- the lane was being forced to
+    declare a value nothing consumed, and the verdict then recorded it as
+    though a comparison had happened."""
     lane = (
         _lane_with_rigor('["R0", "R1", "R2"]').replace(
             'targets = ["src/mod.py"]', 'targets = ["src/mod.py"]\nbase = "main"'
         )
         + _WHOLE_TARGET_WITH_R2_MUTATION
     )
-    judge = load_lane_file(project.write(lane)).lane("package").judge
-    assert judge is not None
-    assert judge.base == "main"
-    assert judge.mode == "whole_target"
-
-
-def test_whole_target_mode_with_r2_and_no_base_is_refused(project: Project):
-    lane = _lane_with_rigor('["R0", "R1", "R2"]') + _WHOLE_TARGET_WITH_R2_MUTATION
-    with pytest.raises(LaneConfigError, match="judge.base"):
+    with pytest.raises(LaneConfigError, match=r"reads none of judge.\{base\}"):
         load_lane_file(project.write(lane))
+
+
+def test_whole_target_mode_with_r2_and_no_base_loads_clean(project: Project):
+    lane = _lane_with_rigor('["R0", "R1", "R2"]') + _WHOLE_TARGET_WITH_R2_MUTATION
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None
+    assert judge.base is None
+    assert judge.mode == "whole_target"
 
 
 # --- require_branch: legality and parsing -------------------------------------

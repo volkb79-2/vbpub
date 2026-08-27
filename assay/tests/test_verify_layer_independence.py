@@ -654,15 +654,81 @@ def test_model_clause_operator_language_the_PER_OUTCOME_half_alone():
         verify._reconstruct_verdict(broken)
 
 
-def test_raw_layer_clause_base_is_required_when_r1_or_r2_is_present():
-    """Invariant, A-223a's `if` half."""
+def test_raw_layer_clause_base_is_required_when_r1_judges_changed_lines():
+    """Invariant, A-223a's `if` half, NARROWED by B033/A-325 to the case the
+    document can witness: `judgment.r1.mode`. An `r2` with no `r1` no longer
+    forces a base -- a whole-target R2 legitimately has none, and v7 records
+    nothing that distinguishes it (B035)."""
     check = verify._check_base_matches_the_tiers_present
-    clean = _sql_r2_document()
-    assert _raw(lambda d, f: check(d["judgment"], f), clean) == []
-    broken = _sql_r2_document()
-    del broken["judgment"]["resolved"]["base"]
-    failures = _raw(lambda d, f: check(d["judgment"], f), broken)
+    changed_lines = {
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "9" * 40,
+        },
+        "r1": {
+            "coverage_format": "cobertura",
+            "coverage_artifact": "cov.xml",
+            "fail_under": 0.0,
+            "allow_excluded": False,
+            "mode": "changed_lines",
+            "require_branch": False,
+        },
+    }
+    assert _raw(lambda d, f: check(d, f), changed_lines) == []
+    broken = json.loads(json.dumps(changed_lines))
+    del broken["resolved"]["base"]
+    failures = _raw(lambda d, f: check(d, f), broken)
     assert failures and any("omits base" in f for f in failures), failures
+
+
+def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
+    """B033/A-325's new only-if half: whole-target scope replaces the diff at
+    EVERY tier, so a base recorded alongside a whole-target r1 describes a
+    comparison nothing made -- even when an r2 is present, which the old
+    rule treated as licence to record one."""
+    check = verify._check_base_matches_the_tiers_present
+    whole = {
+        "resolved": {
+            "language": "python",
+            "source_roots": ["pkg"],
+            "base": "9" * 40,
+        },
+        "r1": {
+            "coverage_format": "cobertura",
+            "coverage_artifact": "cov.xml",
+            "fail_under": 0.0,
+            "allow_excluded": False,
+            "mode": "whole_target",
+            "targets": ["pkg/mod.py"],
+            "require_branch": False,
+        },
+        "r2": {
+            "jobs": 1,
+            "max_mutants": 50,
+            "operators": ["python:compare-swap"],
+            "kill_attribution": "unattributed",
+        },
+    }
+    failures = _raw(lambda d, f: check(d, f), whole)
+    assert failures and any("whole-target mode" in f for f in failures), failures
+    clean = json.loads(json.dumps(whole))
+    del clean["resolved"]["base"]
+    assert _raw(lambda d, f: check(d, f), clean) == []
+
+
+def test_raw_layer_clause_leaves_an_r2_only_base_unconstrained():
+    """The deliberate gap B035 exists to close: with no `r1` on the wire the
+    document cannot say whether its R2 diffed or mutated whole files, so the
+    raw layer asserts neither direction rather than rejecting one of the two
+    honest shapes."""
+    check = verify._check_base_matches_the_tiers_present
+    with_base = _sql_r2_document()["judgment"]
+    without_base = _sql_r2_document()["judgment"]
+    del without_base["resolved"]["base"]
+
+    assert _raw(lambda d, f: check(d, f), with_base) == []
+    assert _raw(lambda d, f: check(d, f), without_base) == []
 
 
 def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
@@ -678,7 +744,34 @@ def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():
     broken = json.loads(json.dumps(r3_only))
     broken["resolved"]["base"] = "9" * 40
     failures = _raw(lambda d, f: check(d, f), broken)
-    assert failures and any("neither r2 nor r1" in f for f in failures), failures
+    assert failures and any("neither r1 nor r2" in f for f in failures), failures
+
+
+def test_verify_document_accepts_a_real_base_resolution_value():
+    """(B008 round 3, found by the registered release gate, not by any test
+    in this file) `_reconstruct_judgment_resolved` built a `JudgmentResolved`
+    without passing `base_resolution` through, so `verify_document` on a
+    REAL producer artifact carrying it (`"merge-base"`/`"first-parent"`)
+    rejected it as `"unknown judgment.resolved field(s): ['base_resolution']"`
+    -- the field round-tripped fine through the JSON Schema (optional,
+    additive) but not through this hand-written reconstruction layer, which
+    only `assay verify`/`verify_document` exercises. Every other test that
+    proved `base_resolution` schema-valid used the JSON Schema validator
+    alone, never this one."""
+    document = _sql_r2_document()
+    document["judgment"]["resolved"]["base_resolution"] = "merge-base"
+    assert verify.verify_document(document) == []
+
+
+def test_verify_document_accepts_a_real_env_effective_incomplete_value():
+    """(B025 round 3, same class of gap as base_resolution above)
+    `_reconstruct_verdict`'s `lane_kwargs` never forwarded
+    `env_effective_incomplete`, so a real degraded-refusal artifact carrying
+    it was rejected as an unknown top-level field by this same
+    reconstruction layer."""
+    document = _sql_r2_document()
+    document["env_effective_incomplete"] = True
+    assert verify.verify_document(document) == []
 
 
 def test_raw_layer_clause_equivalent_entries_require_a_declared_artifact():
@@ -863,3 +956,50 @@ def test_a_payload_free_r2_fail_stays_clean_at_the_raw_layer_too():
     assert "mutation" not in claim
     assert claim["status"] != "PASS"
     assert _raw(verify._check_a_judged_status_carries_its_own_payload, document) == []
+
+
+def test_verify_registers_the_b012_shard_fields_the_producer_actually_emits():
+    """B031/A-320 + A-323: the THIRD registration point, live on `main` until
+    this commit for two separate B012 fields.
+
+    `assay.verify` reconstructs its own comparison object from the raw
+    untrusted document rather than trusting it (A-182), so a field the
+    reconstruction functions do not read is a field `_reject_unknown_keys`
+    refuses -- even though it passes JSON Schema validation cleanly. Both of
+    B012's shard fields were in that state:
+
+        assay verify: schema: unknown mutation field(s): ['candidate_ids']
+        assay verify: schema: unknown judgment.r2 field(s):
+                              ['shard_count', 'shard_index']
+
+    The second was reproduced by driving a REAL `assay run <lane> --shard 0/1`
+    through the installed CLI and feeding its own artifact straight back to
+    `assay verify` -- the exact round-trip A-317 says `tests/` never
+    performs. Both are registered now; this test is the guard.
+    """
+    document = _fixture("r2_fail_mutants_survived.json")
+    assert verify.verify_document(document) == [], "the fixture must start clean"
+
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["candidate_ids"] = ["a" * 64, "b" * 64]
+    document["judgment"]["r2"]["shard_index"] = 0
+    document["judgment"]["r2"]["shard_count"] = 2
+
+    failures = verify.verify_document(document)
+    assert not any("unknown mutation field" in item for item in failures), failures
+    assert not any("unknown judgment.r2 field" in item for item in failures), failures
+
+
+def test_verify_still_refuses_a_field_no_registration_point_knows():
+    """The other half of the guard above: registering the two real fields must
+    not have loosened `_reject_unknown_keys` itself. `progress_artifact` --
+    removed from the dataclass AND the schema by B031/A-320 -- is the probe.
+    """
+    document = _fixture("r2_fail_mutants_survived.json")
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    claim["mutation"]["progress_artifact"] = ".assay/package.progress.jsonl"
+
+    failures = verify.verify_document(document)
+    assert any(
+        "unknown mutation field(s): ['progress_artifact']" in item for item in failures
+    ), failures

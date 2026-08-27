@@ -584,25 +584,68 @@ def test_judgment_to_dict_includes_only_the_populated_members():
 # --- Judgment: the conditional base (P33/A-223a, A-227) ----------------------
 
 
-def test_judgment_requires_a_base_when_r1_or_r2_is_present():
-    """Both tiers scope a diff to a resolved comparison commit, so a judgment
-    that carries one and records no base is unre-derivable."""
-    for tier in (
-        {"r1": JudgmentR1(**BASE_R1_POLICY)},
-        {
-            "r2": JudgmentR2(
+def test_judgment_requires_a_base_when_r1_judges_changed_lines():
+    """A changed-line R1 scopes its arithmetic to a resolved comparison
+    commit, so a judgment carrying one and recording no base is
+    unre-derivable.
+
+    NARROWED by B033/A-325: `r2` alone no longer forces a base. `mode` is a
+    lane-level scope, so a whole-target R2 mutates declared files whole and
+    reads no comparison commit -- and v7 gives `judgment.r2` no `mode` field,
+    so an r2-with-no-r1 document cannot witness which of the two it is. See
+    `test_judgment_leaves_an_r2_only_base_unconstrained` below and B035.
+    """
+    with pytest.raises(ValueError, match="records no base"):
+        Judgment(
+            resolved=JudgmentResolved(language="python", source_roots=("src",)),
+            r1=JudgmentR1(**BASE_R1_POLICY),
+        )
+
+
+def test_judgment_forbids_a_base_when_r1_judges_whole_targets():
+    """B033/A-325's other half, now enforced for an R1,R2 lane too: under
+    whole-target scope NEITHER tier resolves a comparison commit, so
+    recording one is the invented fact `_build_judgment_resolved`'s own
+    docstring forbids."""
+    with pytest.raises(ValueError, match="whole-target mode"):
+        Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r1=JudgmentR1(
+                **{
+                    **BASE_R1_POLICY,
+                    "mode": "whole_target",
+                    "targets": ("pkg/mod.py",),
+                }
+            ),
+            r2=JudgmentR2(
                 jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 **BASE_R2_POLICY,
-            )
-        },
-    ):
-        with pytest.raises(ValueError, match="records no base"):
-            Judgment(
-                resolved=JudgmentResolved(language="python", source_roots=("src",)),
-                **tier,
-            )
+            ),
+        )
+
+
+def test_judgment_leaves_an_r2_only_base_unconstrained():
+    """B033/A-325 + B035: a diff-based R2 requires a base and a whole-target
+    R2 forbids one, and v7 puts nothing on the wire that tells them apart
+    when no `r1` is present. So the model constrains NEITHER direction here
+    rather than asserting a rule the document cannot witness -- which is how
+    the old rule came to reject honest whole-target artifacts."""
+    r2 = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        **BASE_R2_POLICY,
+    )
+
+    with_base = Judgment(resolved=JudgmentResolved(**BASE_RESOLVED), r2=r2)
+    without_base = Judgment(
+        resolved=JudgmentResolved(language="python", source_roots=("src",)), r2=r2
+    )
+
+    assert with_base.resolved.base is not None
+    assert without_base.resolved.base is None
 
 
 def test_judgment_forbids_a_base_when_only_r3_is_present():
@@ -611,7 +654,7 @@ def test_judgment_forbids_a_base_when_only_r3_is_present():
     made. Unreachable for this producer -- A-062 refuses `judge.base` on an
     R0,R3 lane as inert config -- and reachable for any foreign document,
     which is the population `verify.py` exists for."""
-    with pytest.raises(ValueError, match="neither r2 nor r1"):
+    with pytest.raises(ValueError, match="neither r1 nor r2"):
         Judgment(
             resolved=JudgmentResolved(**BASE_RESOLVED),
             r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),

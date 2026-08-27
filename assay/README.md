@@ -27,7 +27,12 @@ that any assertion would have caught a wrong version of it.
 
 assay exists to close that gap mechanically, not by policy:
 
-- **You choose which question R1 asks: changed-line, or whole-target.** In
+- **You choose which question the judged tiers ask: changed-line, or
+  whole-target.** `judge.mode` is a lane-level scope that R1 and R2 read
+  together (A-325): under `whole_target`, R1 asserts its floor over the
+  declared files and R2 mutates those files whole rather than scoping
+  mutation to a diff — which is why `judge.base` is refused on such a lane
+  and absent from its verdict. In
   `mode = "changed_lines"` (the default — an existing lane needs no edit), a
   diff that touches 12 lines is judged on those 12 lines; a 0/0 result
   (nothing measurable changed) is reported honestly, with a `considered`
@@ -89,9 +94,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 6` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v5 verdict exactly as it refuses
-v4 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 7` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v6 verdict exactly as it refuses
+v5 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -159,11 +164,14 @@ itself declares. See
 for why, and [the consumer guide](docs/CONSUMERS.md#sqlddl-lanes-r2-only) for
 a worked, pasteable lane.
 
-Python mutation lanes may also declare the two B015 semantic families,
-`python:uuid-equality-swap` and `python:enum-comparison-swap`. They flip only
-`==`/`!=` at sites where an in-place UUID construction or an enum-member
-access supplies semantic evidence; unlike generic `compare-swap`, they never
-perturb ordering or identity operators.
+The two B015 semantic families, `python:uuid-equality-swap` and
+`python:enum-comparison-swap`, are **withdrawn** (A-326). Measured
+over assay's own source they produced 87 sites, none of which
+`python:compare-swap` did not already produce at the same byte span with the
+same replacement bytes — so a lane declaring both families ran every shared
+mutation twice for no additional coverage. A lane naming either is refused at
+load; the spellings stay valid in a schema-v7 artifact so verdicts emitted by
+2.3.0/2.4.x still verify.
 
 The seven closed `judge.mutation.operators` values a SQL lane may declare:
 
@@ -184,9 +192,14 @@ path grammar and must be gitignored, exactly like a coverage artifact.
 Every mutation lane may declare optional `budget_per_candidate` with the same
 duration grammar as `budget`. A candidate whose command exceeds it enters the
 existing `budget_exceeded` bucket while unrelated candidates continue.
-Progress is appended to `.assay/<lane>.progress.jsonl` after the baseline and
-each candidate; the verdict's optional `mutation.progress_artifact` names that
-file.
+Progress is opt-in and consumer-directed: `assay run <lane> --progress PATH`
+appends a compact NDJSON event to PATH -- a `run` header naming the commit and
+start time, then one event after the baseline and one after each completed
+candidate, each flushed. Assay never picks this location itself and writes no
+progress file when the flag is omitted; point it OUTSIDE the repository (or at
+a gitignored path), since a progress file inside the work tree makes the next
+run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
+record the destination, exactly as it does not record `--verdict-json`'s.
 
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any

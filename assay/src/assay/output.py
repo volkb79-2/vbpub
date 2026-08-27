@@ -42,7 +42,11 @@ from typing import TextIO
 
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["VerdictOutput", "reserve_verdict_output"]
+__all__ = [
+    "VerdictOutput",
+    "reserve_verdict_output",
+    "validate_progress_destination",
+]
 
 #: Reservation states. ``RESERVED`` accepts exactly one :meth:`
 #: VerdictOutput.emit`; both terminals accept only :meth:`VerdictOutput.close`.
@@ -350,3 +354,56 @@ def _probe_parent_is_writable(parent_fd: int, target: str) -> None:
         ) from exc
     os.close(handle)
     _unlink_own(parent_fd, probe_name)
+
+
+def validate_progress_destination(target: str) -> None:
+    """Cheap, non-reserving preflight check for ``--progress`` (B031/A-320
+    round 2, blocker 2).
+
+    Deliberately NOT :func:`reserve_verdict_output`: that function holds an
+    open parent descriptor across the whole run so a single atomic
+    end-of-run replace can revalidate against it, and it REQUIRES the parent
+    directory to already exist. A progress destination is opened once, near
+    the start of R2 execution (if the lane even reaches R2 -- this flag is
+    ignored otherwise), appended to incrementally for the run's duration,
+    and its own writer (:func:`assay.mutation.progress_writer`) already
+    creates missing parent directories on demand. Holding a descriptor here
+    would be pure overhead for a file that might never be written, and
+    requiring the parent to preexist would refuse a legitimate, not-yet-
+    created directory tree that :func:`~assay.mutation.progress_writer`
+    would have happily created.
+
+    This function exists to catch the two mistakes an operator can make
+    that are visible WITHOUT opening anything -- an existing non-regular
+    destination (most commonly a directory, as in ``--progress
+    /an/existing/directory``), and a spelling that does not name a file at
+    all (most commonly ``--progress ""``, which resolves to ``.``, the
+    current directory) -- immediately, before any repository work, exactly
+    like ``--verdict-json``'s reservation does for the identical mistakes.
+    A destination that does not yet exist, or that fails for some other
+    reason at actual write time (permissions, a full filesystem), is left
+    to :func:`~assay.mutation.progress_writer`'s own typed refusal --
+    correctly labelled ``OUTPUT_WRITE_FAILED`` either way, just not
+    necessarily this early.
+    """
+    absolute = _normalized_absolute(os.path.expanduser(target))
+    directory, name = os.path.split(absolute)
+    if not name or name in (os.curdir, os.pardir):
+        raise _refuse(
+            f"the progress destination {target!r} does not name a file "
+            f"(resolved to {absolute!r})"
+        )
+    try:
+        info: os.stat_result | None = os.stat(absolute, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise _refuse(
+            f"cannot inspect the progress destination {target!r}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise _refuse(
+            f"the progress destination {target!r} exists and is not an "
+            f"ordinary regular file; assay only appends to a file it can "
+            f"account for"
+        )

@@ -12,7 +12,7 @@ from conftest import GitRepo, Project, make_deadline, make_lane, make_plan, prep
 
 from assay.adapters.python import PythonAdapter
 from assay.config import LaneConfigError, parse_duration
-from assay.errors import Outcome
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
 from assay import mutation
 from assay.mutation import (
@@ -88,6 +88,14 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert result is not None and not isinstance(result, str)
     lines = progress_path.read_text(encoding="utf-8").splitlines()
     events = [json.loads(line) for line in lines]
+    # B031/A-320: a `run` header opens the stream. The file is opened for
+    # APPEND and never truncated, so without a per-run commit/timestamp a
+    # tailing monitor cannot attribute a `candidate_index: 0` to a run.
+    assert events[0]["event"] == "run"
+    assert len(events[0]["commit"]) == 40
+    assert events[0]["started"].startswith("20")
+    assert events[0]["candidate_total"] == 2
+    events = events[1:]
     assert [event["candidate_index"] for event in events] == [-1, 0, 1]
     assert all(event["candidate_total"] == 2 for event in events[1:])
     assert events[0]["event"] == "baseline"
@@ -95,10 +103,63 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
         assert event["path"] == "pkg/flags.py"
         assert len(event["candidate_id"]) == 64
         assert event["operator"] == "python:bool-const-flip"
-        assert event["replacement_sha256"]
+        # B031/A-320: this is the WHOLE MUTATED FILE's digest, and is named
+        # for what it is. Under `replacement_sha256` it collided with the
+        # verdict's own same-named field, which digests the replacement TEXT.
+        assert event["mutated_file_sha256"]
+        assert "replacement_sha256" not in event
         assert isinstance(event["elapsed_seconds"], float)
     assert events[1]["outcome_bucket"] == "killed"
     assert events[2]["outcome_bucket"] == "survived"
+
+
+def test_progress_writer_refuses_a_directory_destination_with_output_write_failed(
+    tmp_path,
+):
+    """B031/A-320 round 2, blocker 2. A bad `--progress` destination -- most
+    commonly an existing directory, which `--progress ""` resolves to (the
+    CWD is itself a directory) -- used to raise a bare `IsADirectoryError`
+    from `path.open("a")` here. Uncaught, that escaped as a plain `OSError`
+    all the way up through `run_mutation` to `runner.run_lane`'s broad
+    `except OSError:`, which relabels ANY escaped OSError as
+    `ERROR`/`GIT_FAILED` -- a cause that has nothing to do with what
+    actually happened; the exact mislabelled-cause class B032 was filed to
+    close, reopened on this new flag. `progress_writer` now raises the same
+    typed refusal `--verdict-json` gives for the identical mistake, naming
+    the path -- so a consumer who calls it directly (never through the
+    CLI's own early `validate_progress_destination` preflight, see
+    test_environment_preflight.py) still gets an honest cause.
+    """
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+
+    with pytest.raises(AssayError) as excinfo:
+        with mutation.progress_writer(directory):
+            pass  # pragma: no cover - never reached; open() itself refuses
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert str(directory) in str(excinfo.value)
+
+
+def test_progress_writer_refuses_when_its_parent_cannot_be_created(tmp_path):
+    """Sibling of the directory-destination case above: the OTHER OSError
+    site in `progress_writer` (`path.parent.mkdir(parents=True,
+    exist_ok=True)`, needed because -- unlike `--verdict-json` -- a progress
+    destination's parent tree is created on demand) gets the same typed
+    refusal, not a bare `NotADirectoryError`.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    bad_path = blocker / "child" / "progress.jsonl"
+
+    with pytest.raises(AssayError) as excinfo:
+        with mutation.progress_writer(bad_path):
+            pass  # pragma: no cover - never reached; mkdir() itself refuses
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert str(bad_path) in str(excinfo.value)
 
 
 def test_resume_reuses_completed_records_without_rerunning(tmp_path):
@@ -174,7 +235,20 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
     }
 
 
-def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
+def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_filename(
+    tmp_path,
+):
+    """(B021) The record's filename IS its candidate id, which is itself
+    derived from (among other things) the source hash -- so a record whose
+    own `source_sha256` field disagrees with what its filename encodes is
+    contradicting the identity it is filed under, which is corruption or
+    hand-editing, never a routine event. A GENUINE source change never
+    reaches this code path at all: it produces a different candidate id,
+    hence a different filename, hence the old record is simply absent
+    (silently reruns, as it always has). This test hand-tampers a record's
+    `source_sha256` field while keeping its filename -- the exact shape of
+    corruption, and the pre-B021 disposition here was backwards: it treated
+    this as a silent rerun and, in doing so, was blind to tampering."""
     repo = _repo(tmp_path)
     state_root = tmp_path / "state-root"
     state_root.mkdir()
@@ -213,6 +287,72 @@ def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
     stale["source_sha256"] = "0" * 64
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
 
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(mutation.MutationStateError, match="stale source_sha256"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=2,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                state_project_root=state_root,
+                resume=True,
+            )
+
+
+def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_path):
+    """(B021) The other half of the corrected disposition: `schema_version`
+    is the one required key NOT folded into the candidate id, so it is the
+    only one that can legitimately mismatch without the record being
+    corrupt -- a routine bump of `MUTATION_STATE_SCHEMA_VERSION`. That must
+    be a silent rerun (a cache miss), never a lane-wide failure -- the
+    pre-B021 disposition raised here, which meant every consumer's existing
+    `.assay/mutation-state/` became `ERROR`/`UNREADABLE_ARTIFACT` on their
+    very next `--resume` after an upgrade, until they manually deleted it."""
+    repo = _repo(tmp_path)
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    lane = make_lane(argv=("pytest", "-q"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in text:
+            return subprocess.CompletedProcess(list(argv), returncode=1)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=2,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            state_project_root=state_root,
+            resume=True,
+        )
+
+    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale = json.loads(stale_path.read_text(encoding="utf-8"))
+    stale["schema_version"] = stale["schema_version"] + 1000
+    stale_path.write_text(json.dumps(stale), encoding="utf-8")
+
     calls: list[str] = []
 
     def deciding_recorder(*args, **kwargs):
@@ -237,7 +377,7 @@ def test_resume_ignores_a_stale_record_when_source_changes(tmp_path):
             resume=True,
         )
 
-    assert calls != [], "a stale source hash must be rerun, never trusted"
+    assert calls != [], "a schema_version bump must rerun, never fail the whole lane"
     assert result.total == 2
 
 
@@ -318,7 +458,22 @@ def test_shard_merge_refuses_duplicate_or_missing_input(documents):
         mutation_module.merge_mutation_shards(documents())
 
 
-def test_progress_artifact_path_is_constrained_in_verdict_model():
+def test_mutation_carries_no_progress_artifact_field_anywhere(tmp_path):
+    """B031/A-320: `mutation.progress_artifact` is GONE -- dataclass, wire
+    payload and JSON Schema together, not left as an inert field.
+
+    `8a2a4731` added it to the dataclass and the schema and never wrote a
+    single producer for it, so every real verdict this build has ever emitted
+    omitted it while `.assay/<lane>.progress.jsonl` sat on disk unreferenced.
+    Its only schema-legal spelling was a repo-tree-relative path -- i.e.
+    exactly the consumer-worktree location B006(b)/A-292 forbid and B031(a)
+    reproduced as a live `DIRTY_TREE` defect. The progress destination is now
+    named by the consumer (`assay run --progress PATH`), the way
+    `--verdict-json`'s destination already is, and assay does not record a
+    destination its caller chose.
+    """
+    import json as _json
+
     outcome = MutantOutcome(
         path="pkg/mod.py",
         lineno=1,
@@ -328,8 +483,21 @@ def test_progress_artifact_path_is_constrained_in_verdict_model():
         operator="python:bool-const-flip",
         description="True->False",
     )
-    with pytest.raises(ValueError, match="progress_artifact"):
-        Mutation(candidate_count=1, total=1, killed=(outcome,), progress_artifact="../escape.jsonl")
+    assert "progress_artifact" not in Mutation.__dataclass_fields__
+    with pytest.raises(TypeError):
+        Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(outcome,),
+            progress_artifact="../escape.jsonl",
+        )
+    payload = Mutation(candidate_count=1, total=1, killed=(outcome,)).to_dict()
+    assert "progress_artifact" not in payload
+
+    from conftest import SCHEMA_PATH
+
+    assert "progress_artifact" not in SCHEMA_PATH.read_text(encoding="utf-8")
+    del _json
 
 
 def test_shard_candidate_ids_are_validated_for_disjointness_and_shape():
@@ -466,15 +634,211 @@ budget_per_candidate = "30s"
     exit_code = main(["plan", "package", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
+    # B030/A-319. This fixture genuinely yields ONE `python:bool-const-flip`
+    # candidate (`pkg/flags.py`'s `a = True`, restored on `feature` against a
+    # `base` that flipped it) -- the assertions below asserted `0`/`{}`/`[]`
+    # until B030, having been written to match observed output rather than
+    # the requirement, and so froze `_cmd_plan`'s phantom-scratch-root bug as
+    # correct behaviour. The one candidate here is the SAME candidate a real
+    # `assay run` of this lane kills.
     assert exit_code == 0
     assert payload["status"] == "ok"
-    assert payload["candidate_count"] == 0
-    assert payload["by_operator"] == {}
-    assert payload["by_file"] == {}
-    assert payload["estimated_wall_seconds"] == 0.0
-    assert payload["estimated_serial_seconds"] == 0.0
-    assert payload["estimated_wall_seconds"] == 0.0
-    assert payload["candidates"] == []
+    assert payload["candidate_count"] == 1
+    assert payload["by_operator"] == {"python:bool-const-flip": 1}
+    assert payload["by_file"] == {"pkg/flags.py": 1}
+    assert payload["estimated_serial_seconds"] == 30.0
+    assert payload["estimated_wall_seconds"] == 15.0
+    assert [candidate["path"] for candidate in payload["candidates"]] == ["pkg/flags.py"]
+    assert [candidate["operator"] for candidate in payload["candidates"]] == [
+        "python:bool-const-flip"
+    ]
+    assert [candidate["description"] for candidate in payload["candidates"]] == [
+        "True->False"
+    ]
+    assert len(payload["candidates"][0]["id"]) == 64
+    # The SAME identity `assay.mutation.candidate_id` derives for the job a
+    # real run of this lane executes -- plan's answer is the run's answer,
+    # which is the whole point of the verb.
+    from assay import mutation as _mutation
+    from assay.adapters.python import PythonAdapter
+
+    source = (project.root / "pkg" / "flags.py").read_text(encoding="utf-8")
+    target = _mutation.MutationTarget(
+        path="pkg/flags.py",
+        text=source,
+        lines=frozenset(range(1, source.count("\n") + 2)),
+    )
+    jobs = _mutation.collect_mutation_sites(
+        (target,),
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=11,
+    )
+    assert payload["candidates"][0]["id"] == _mutation.candidate_id(jobs[0])
+
+
+def test_plan_whole_target_lane_plans_its_declared_target(tmp_path):
+    """B030/A-319's second oracle: a `mode = "whole_target"` lane must PLAN,
+    not fail naming a scratch directory that never existed.
+
+    Before the fix this refused with `ERROR`/`BAD_LANE_CONFIG`: "mutation
+    target 'pkg/flags.py' is outside judge.source_roots
+    ['/tmp/assay-plan-seed-.../unused/pkg']".
+    """
+    project = Project(root=tmp_path / "proj")
+    project.root.mkdir()
+    (project.root / "pkg").mkdir()
+    (project.root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+    repo = GitRepo(path=project.root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write(
+        "assay.toml",
+        """
+schema_version = 2
+
+[lanes.whole]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = ["pytest", "-q"]
+env = { MOCK_MODE = "true" }
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.whole.isolation]
+snapshot_selection = "repository"
+
+[lanes.whole.judge]
+language = "python"
+source_roots = ["pkg"]
+fail_under = 0.0
+allow_excluded = false
+require_branch = false
+mode = "whole_target"
+# No `base`: B033/A-325 refuses it as inert config on a whole-target lane at
+# every rigor, R2 included -- neither tier resolves a comparison commit.
+targets = ["pkg/flags.py"]
+
+[lanes.whole.judge.coverage]
+format = "cobertura"
+artifact = "cov.xml"
+
+[lanes.whole.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+""",
+    )
+    repo.write("pkg/flags.py", _TEXT)
+    repo.commit_all("add flags")
+    repo.git("checkout", "-q", "-b", "base")
+    repo.git("checkout", "-q", "-b", "feature")
+
+    from assay.cli import main
+
+    out = io.StringIO()
+    exit_code = main(["plan", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
+    payload = json.loads(out.getvalue())
+
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    # BOTH of `_TEXT`'s bool constants: whole-target mode judges the whole
+    # declared file, not a diff's changed lines (the diff-mode fixture above
+    # sees only the one restored line).
+    assert payload["candidate_count"] == 2
+    assert payload["by_file"] == {"pkg/flags.py": 2}
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("pkg/tests/test_flags.py", "is a test path"),
+        ("pkg/notes.md", "not adapter-recognised source"),
+        ("pkg/gone.py", "does not exist as a regular file"),
+        # Round-2 review: R2 had no symlink gate of its own and fell through
+        # to `read_regular_file`, which refuses a symlink as
+        # ERROR/GIT_FAILED -- a repository failure for what is a lane-config
+        # mistake. R1 has always named it; R2 now does too, first, before
+        # anything that resolves.
+        ("pkg/alias.py", "is a symlink"),
+    ],
+)
+def test_a_whole_target_entry_that_fails_a_gate_is_refused_not_dropped(
+    tmp_path, target, expected
+):
+    """B033/A-325: `_mutation_targets_whole` used to `continue` silently past
+    an excluded directory, a non-matching source glob and a test path, so a
+    lane declaring two targets could report PASS having mutated one -- and
+    nothing in the verdict named the other. It now refuses by name, exactly
+    as R1's `evaluate._resolve_whole_target` always did. Driven through
+    `assay plan`, which calls the same resolver.
+    """
+    project = Project(root=tmp_path / "proj")
+    project.root.mkdir()
+    (project.root / "pkg").mkdir()
+    (project.root / "pkg" / "tests").mkdir()
+    (project.root / "pkg" / "flags.py").write_text(_TEXT, encoding="utf-8")
+    (project.root / "pkg" / "tests" / "test_flags.py").write_text(
+        _TEXT, encoding="utf-8"
+    )
+    (project.root / "pkg" / "notes.md").write_text("notes\n", encoding="utf-8")
+    (project.root / "pkg" / "alias.py").symlink_to("flags.py")
+    repo = GitRepo(path=project.root)
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write(
+        "assay.toml",
+        f"""
+schema_version = 2
+
+[lanes.whole]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "-q"]
+env = {{ MOCK_MODE = "true" }}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.whole.isolation]
+snapshot_selection = "repository"
+
+[lanes.whole.judge]
+language = "python"
+source_roots = ["pkg"]
+mode = "whole_target"
+targets = ["pkg/flags.py", "{target}"]
+
+[lanes.whole.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+""",
+    )
+    repo.commit_all("add sources")
+
+    from assay.cli import main
+
+    out = io.StringIO()
+    err = io.StringIO()
+    exit_code = main(
+        ["plan", "whole", "--file", str(project.root / "assay.toml")],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert exit_code != 0
+    message = err.getvalue()
+    assert "BAD_LANE_CONFIG" in message
+    assert expected in message
+    # The refusal NAMES the declared target -- the whole point: a bare
+    # BAD_LANE_CONFIG leaves the consumer guessing which of N entries failed.
+    assert target in message
 
 
 def _write_plan_fixture(tmp_path: Path) -> Path:

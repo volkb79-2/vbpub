@@ -86,6 +86,11 @@
     "env_effective": {
       "$ref": "#/$defs/env"
     },
+    "env_effective_incomplete": {
+      "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
+      "type": "boolean",
+      "const": true
+    },
     "scope": {
       "$ref": "#/$defs/scope"
     },
@@ -280,6 +285,18 @@
       "env_declared",
       "env_effective",
       "scope"
+    ],
+    "env_effective_incomplete": [
+      "declared_rigor",
+      "declared_evidence",
+      "argv_declared",
+      "argv_appended",
+      "argv_effective",
+      "argv_modified",
+      "env_declared",
+      "env_effective",
+      "scope",
+      "enforcement"
     ]
   },
   "allOf": [
@@ -1279,11 +1296,6 @@
             ]
           }
         },
-        "progress_artifact": {
-          "description": "Optional B012 NDJSON progress artifact emitted after the baseline and each completed candidate.",
-          "type": "string",
-          "minLength": 1
-        },
         "candidate_ids": {
           "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
           "$ref": "#/$defs/mutation_candidate_ids"
@@ -1538,18 +1550,15 @@
           ]
         },
         {
-          "description": "A-227, widened by wave-1 §6/A-260: base is required IF r2, OR r1 in changed-line mode.",
+          "description": "A-227/A-260, CORRECTED by B033/A-325: base is required IF r1 is present in changed-line mode. r2 no longer forces one: mode is a LANE-level scope, so a whole-target r2 mutates whole declared files and reads no comparison commit, exactly as a whole-target r1 does -- under the old rule an honest whole-target R2 artifact could not be produced at all. Where r1 is absent, v7 puts nothing on the wire that distinguishes a diff-based r2 from a whole-target one (r2 has no mode/targets field), so this document cannot witness the rule and does not assert it (B035).",
           "if": {
-            "anyOf": [
-              {
-                "required": [
-                  "r2"
-                ]
-              },
+            "allOf": [
               {
                 "required": [
                   "r1"
-                ],
+                ]
+              },
+              {
                 "properties": {
                   "r1": {
                     "properties": {
@@ -1575,29 +1584,17 @@
           }
         },
         {
-          "description": "A-227, widened by wave-1 §6/A-260: base is forbidden UNLESS r2, or r1 in changed-line mode -- a whole-target r1 with no r2 resolves nothing against a base. Closes the only-if half, so a foreign artifact cannot record a comparison commit for a tier that reads none.",
+          "description": "A-227/A-260, CORRECTED by B033/A-325: base is forbidden IF r1 is present in whole-target mode (whole-target scope replaces the diff at EVERY tier, r2 included), and forbidden when neither r1 nor r2 is present (R3 alone reads none). Closes the only-if half for every case this document can witness, so a foreign artifact cannot record a comparison commit for a tier that reads none.",
           "if": {
-            "allOf": [
+            "anyOf": [
               {
-                "not": {
-                  "required": [
-                    "r2"
-                  ]
-                }
-              },
-              {
-                "anyOf": [
-                  {
-                    "not": {
-                      "required": [
-                        "r1"
-                      ]
-                    }
-                  },
+                "allOf": [
                   {
                     "required": [
                       "r1"
-                    ],
+                    ]
+                  },
+                  {
                     "properties": {
                       "r1": {
                         "properties": {
@@ -1606,6 +1603,24 @@
                           }
                         }
                       }
+                    }
+                  }
+                ]
+              },
+              {
+                "allOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "r1"
+                      ]
+                    }
+                  },
+                  {
+                    "not": {
+                      "required": [
+                        "r2"
+                      ]
                     }
                   }
                 ]
@@ -2260,7 +2275,7 @@
       "additionalProperties": false
     },
     "judgment_resolved": {
-      "description": "What was judged, shared by every computed tier above R0. Hoisted out of judgment.r1 in v5 because an R0,R2 lane -- legal since A-192 -- renders no r1 and would otherwise record no language, source roots, or comparison base at all, even though R2 scopes mutation to changed lines against exactly that base. `base` is REQUIRED ONLY when r1 or r2 is present (A-223a): JUDGE_FIELDS_BY_RIGOR carries `base` for R1 and R2 and not for R3, so an R0,R3 lane genuinely has no comparison commit and must not be made to invent one. That conditional lives on `judgment`, which can see its own tiers. `source_roots` is the DECLARED project-relative spelling (A-049), never the relocated absolute scratch paths (A-149); `base` is the pre-snapshot consumer-repository resolution, which R1's in-snapshot resolution must equal (A-223f). Both are cross-object and belong to the model and raw verifier.",
+      "description": "What was judged, shared by every computed tier above R0. Hoisted out of judgment.r1 in v5 because an R0,R2 lane -- legal since A-192 -- renders no r1 and would otherwise record no language, source roots, or comparison base at all, even though R2 scopes mutation to changed lines against exactly that base. `base` is present exactly when a tier that READS one ran (A-223a, corrected by B033/A-325): an R0,R3 lane genuinely has no comparison commit, and neither does any lane in `mode = \"whole_target\"`, where whole-file scope replaces the diff at R1 and R2 alike and `judge.base` is refused as inert config at load. That conditional lives on `judgment`, which can see its own tiers -- and only as far as they are witnessable: an r2 with no r1 does not record its own mode in v7 (B035). `source_roots` is the DECLARED project-relative spelling (A-049), never the relocated absolute scratch paths (A-149); `base` is the pre-snapshot consumer-repository resolution, which R1's in-snapshot resolution must equal (A-223f). Both are cross-object and belong to the model and raw verifier.",
       "type": "object",
       "required": [
         "language",
@@ -2283,6 +2298,13 @@
           "description": "The full resolved comparison commit, never a symbolic ref.",
           "type": "string",
           "minLength": 1
+        },
+        "base_resolution": {
+          "description": "(B008) Which of resolve_base's two branches produced base: first-parent on a merge-commit HEAD (the branch's own pre-merge tip -- silently narrows the changed-line floor/any R2 lane to the merge's own payload), or merge-base otherwise. Optional for v7 compatibility; never present without base.",
+          "enum": [
+            "merge-base",
+            "first-parent"
+          ]
         }
       },
       "additionalProperties": false

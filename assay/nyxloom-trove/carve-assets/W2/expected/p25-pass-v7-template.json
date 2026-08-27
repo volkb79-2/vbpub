@@ -70,7 +70,8 @@
       "source_roots": [
         "topos/src/topos"
       ],
-      "base": "2222222222222222222222222222222222222222"
+      "base": "2222222222222222222222222222222222222222",
+      "base_resolution": "merge-base"
     }
   },
   "claims": [

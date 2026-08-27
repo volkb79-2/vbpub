@@ -193,10 +193,24 @@ orchestrator to get a coverage floor.
 
 This boundary remains one-way by construction. A lane may declare an optional
 `environment_command` probe: `assay run` executes that zero-exit argv in the
-invoking environment *before* repository, snapshot, or lane work and refuses
-`ERROR`/`BAD_LANE_CONFIG` on failure. The probe lets a lane name "this command
-is meaningful here" without giving assay container mechanics or letting a wrong
-dependency closure masquerade as a product failure.
+invoking environment *before* repository, snapshot, or lane work and refuses on
+failure. The probe lets a lane name "this command is meaningful here" without
+giving assay container mechanics or letting a wrong dependency closure
+masquerade as a product failure.
+
+The refusal keeps ONE distinction (B032/A-321): a probe that exhausts its own
+preflight cap reports `BUDGET_EXCEEDED`/`LANE_TIMEOUT` (exit 4), because gates
+routinely retry a timeout and hard-fail a config error, and collapsing the two
+makes them do the wrong thing on a real timeout. Every other probe failure -- a
+missing binary, a nonzero exit, a signal death -- means the same actionable
+thing and keeps rendering `ERROR`/`BAD_LANE_CONFIG` (exit 2). What separates
+those is written to stderr as free text rather than widening the closed
+reason-code vocabulary (A-138/A-170): the refusal names the lane, the cause, and
+the declared wrapper to run via, which is what B010 asked for and what
+`8a2a4731` shipped as 0 bytes. The cap itself is `runner.PROBE_BUDGET_SECONDS`
+(30 s), applied as `execute_plan`'s `timeout=` argument -- the value it actually
+reads -- so a hung probe can no longer spend the lane's whole declared budget
+before the lane's own command starts.
 
 Note also that ciu's gate currently reaches into a sibling project's source
 tree — `PYTHONPATH=../nyxloom/src python -m nyxloom.coverage_gate` — which is
@@ -293,6 +307,15 @@ asserted by whoever ran it. Two caveats that matter:
 * **Pass identities through, never secrets.** Everything in `env_passthrough`
   that is present lands in the artifact in cleartext. That is the point for an
   instance id and a disaster for a token.
+* **(B025) One exception, flagged rather than silent.** A refusal whose OWN
+  cause is an unresolvable infrastructure declaration cannot safely record
+  the real `env_effective` — neither the infrastructure fact nor any
+  `env_passthrough` name could be completed — so it falls back to exactly
+  `lane.env` (a true, if partial, subset) and sets a sibling top-level
+  `env_effective_incomplete: true`. Every other verdict, including every
+  other refusal, implicitly means `false`; this is the one case where
+  "every outcome where the lane resolved" is honest about `env_effective`
+  only alongside that flag.
 
 ### A whole-target `target` names a regular file, never a directory (A-260)
 
@@ -365,6 +388,34 @@ must stop and ask, never invent one:
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
+**(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
+alone — never a free-text field — and that is deliberate, not an
+oversight, even though it produces a three-way asymmetry a consumer must
+know about:**
+
+- `assay run` refused **before** output reservation (a bad `--operators`
+  value) prints a one-line diagnostic to stderr and writes **no** artifact
+  (A-181).
+- `assay run` refused **after** output reservation but before the command
+  runs (a bad `--shard`, an unresolvable infrastructure declaration) writes
+  a real, schema-valid artifact and prints **nothing** to stderr — the
+  artifact's `reason_code` is the only cause a consumer gets.
+- `assay plan`'s equivalent refusals still raise `LaneConfigError`, printed
+  via `main()`'s own handler — a third shape again.
+
+No single invocation gives a consumer both the exit code and a free-text
+cause. Closing this would mean either widening the closed `ReasonCode`
+enum above (a **deliberate**, non-quick decision per A-138/A-170 — every
+consumer's own schema copy would have to accept the new member) or
+plumbing a detail string out of `run_lane`, whose public return type is
+`Verdict` alone, through every caller that treats it as such. Both are real
+API commitments, not one-line fixes; a consumer that needs the cause
+today already has it — the reason vocabulary above is closed precisely so
+every member is a real, previously-decided fact, and `BAD_LANE_CONFIG`
+already says enough to know which lane-declaration class of problem this
+is even without the free-text string a `LaneConfigError` would have
+carried.
+
 ### Bounded command-output tails
 
 A non-PASS terminal that captured process output may carry four optional
@@ -375,6 +426,19 @@ applies. The bound is measured after decoding because `subprocess.run(text=True)
 is the production boundary; undecodable bytes are already replacement characters
 by then. This is diagnosis, not proof: claim status still comes from exit status,
 declared artifacts, and the existing rigor pipeline.
+
+**(B027) The one path `text=True` does not decode for you is a timeout.**
+`subprocess.TimeoutExpired.stdout`/`.stderr` is `bytes`, not `str`, even under
+`text=True` — CPython does not run the exception path through the same
+text-decode step a normal `communicate()` return gets. The timeout handler
+tolerantly decodes (`errors="replace"`, matching the policy above) before
+building the tail, so a mutant-induced timeout reaches `BUDGET_EXCEEDED`/
+`LANE_TIMEOUT` with a real verdict artifact rather than an uncaught
+`AttributeError`. A caller reserving `--verdict-json` must still check the
+invoking `assay` process's own exit status, not artifact presence alone, to
+tell a fresh terminal from a stale one left by an earlier run at the same
+path — a non-zero exit means whatever is on disk did not come from this
+invocation.
 
 **(A-277) `ALL_MUTANTS_EQUIVALENT` was missing from this table from the moment
 v5 introduced it (A-223d) until wave 2 found it.** It fires when `killed +
@@ -473,10 +537,13 @@ snapshot.
 Mutation state lives outside each ephemeral replacement snapshot. One bounded
 JSON record per completed candidate is keyed by the same deterministic digest as
 the plan; resume treats an absent record as pending and refuses a stale source
-identity rather than sampling changed source with an old result. Shards assign
-by keyed digest of the candidate ID. Their merge is a manifest-level set proof:
-exact index coverage, one schema/lane/commit/count, and duplicate-free IDs—not
-bucket-count arithmetic.
+identity rather than sampling changed source with an old result. A stale
+`schema_version` is the one required field NOT folded into that digest, so it
+gets the opposite disposition (B021): treated as absent and silently rerun, a
+routine format bump never fails the whole lane the way a genuinely tampered
+record does. Shards assign by keyed digest of the candidate ID. Their merge is
+a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
+and duplicate-free IDs—not bucket-count arithmetic.
 
 ### Infrastructure fact injection (B013)
 
@@ -484,8 +551,13 @@ Infrastructure declarations are resolved at the plan boundary, in the invoking
 process, before repository or snapshot work. The two closed sources are the
 ambient environment and rendered CIU state; both are explicit, bounded, and fail
 loudly on absence, emptiness, or a malformed dotted path. Injection is
-declared-only: an injected name cannot collide with fixed or passthrough names,
-and no ambient value reaches the child unless the infrastructure table names it.
+declared-only: an injected name cannot collide with fixed or passthrough names
+— enforced both at lane-load time and, since B022, again at plan-resolution
+time, so a `Lane` built without going through the loader cannot reach the
+runtime unprotected — and no ambient value reaches the child unless the
+infrastructure table names it. A resolved value is also bounded in length
+(`MAX_INFRASTRUCTURE_VALUE_BYTES`, B022): a value this large would otherwise
+fail late and opaquely at `E2BIG` on exec instead of refusing by name.
 
 ### Rollup precedence
 
@@ -516,7 +588,11 @@ the first real integration adds its payload and registry behavior.
 ### Transparency of what actually ran
 
 The verdict records `argv_declared`, `argv_appended`, `argv_effective`,
-`env_declared` and `env_effective` on **every** outcome. A run with a non-empty
+`env_declared` and `env_effective` on **every** outcome — with one flagged
+exception (B025, §"Inject infrastructure facts" above): a refusal whose OWN
+cause is an unresolvable infrastructure declaration records `env_effective`
+as `lane.env` alone, paired with `env_effective_incomplete: true`, since
+the real value could not be safely completed. A run with a non-empty
 `argv_appended` sets `argv_modified: true`, and the lane must carry
 `allow_argv_append` explicitly for appending to be permitted at all. **assay
 never derives flags** — they come from the lane or the caller, never from assay
@@ -821,6 +897,20 @@ this — the only mode that existed before wave 1, so no existing lane needs an
 edit) measures the `base..HEAD` diff; `mode = "whole_target"` measures one or
 more explicitly declared files (§5, above), with no base and no diff at all.
 
+**`mode` is a LANE-level scope, read by R1 and R2 alike (A-325).** A lane
+declaring `mode = "whole_target"` and `judge.targets` scopes BOTH tiers to
+those declared files: R1 asserts its floor over them, and R2 mutates them
+whole instead of scoping mutation to the `base..HEAD` diff. That is why
+`judge.base` is refused as inert config on a whole-target lane of any rigor
+and any language, and why `judgment.resolved.base` is absent from a
+whole-target verdict — no tier resolved a comparison commit. A declared target
+that fails a containment gate (outside `source_roots`, absent at the judged
+commit, inside an excluded directory, not adapter-recognised source, or a test
+path) is REFUSED `ERROR`/`BAD_LANE_CONFIG` at both tiers, naming the target
+and the gate on the diagnostics stream; neither tier silently narrows the
+declared set, because a PASS over a silently narrowed set is the vacuity hole
+this mode exists to close.
+
 **This is a MODE of the one R1 claim, not a second rigor level, and not an
 "R1.5".** `claims[]` carries exactly one computed entry per `declared_rigor`
 level ("Computed rigor and external evidence are separate axes", above), and
@@ -835,12 +925,14 @@ optional in the lane file — the lane file records what a human declared, the
 artifact records what actually judged, and that asymmetry is `judgment`'s
 whole reason for existing (P16).
 
-`judge.base` is forbidden under `whole_target` unless the lane also declares
-R2: a whole-target claim resolves no diff, so recording a `base` would imply a
-comparison that never happened. `JUDGE_FIELDS_BY_RIGOR` stays the single
-source for this — R1's required-field set becomes mode-dependent rather than
-duplicated into a second table, so an `R0,R1,R2` lane in whole-target mode
-still declares and records a `base` for R2's own sake.
+`judge.base` is forbidden under `whole_target`, full stop (A-325 — this
+paragraph previously carved out "unless the lane also declares R2", which was
+already false when `whole_file_r2` shipped). A whole-target claim resolves no
+diff at any tier, so recording a `base` would imply a comparison that never
+happened. `JUDGE_FIELDS_BY_RIGOR` stays the single source for this — the
+required-field set becomes mode-dependent rather than duplicated into a second
+table — and an `R0,R1,R2` lane in whole-target mode declares no `base` and
+records none.
 
 ### Branch coverage is judged whenever the artifact reports it (A-258)
 
@@ -1158,10 +1250,17 @@ or whole-deployed-schema audit. Language-specific operator catalogues and an
 R2-without-R1 adapter remain explicit product-design questions, not values an
 adapter may invent locally (A-215).
 
-Execution is observable without becoming a second verdict. After the baseline
-and after every candidate completes, R2 appends a compact NDJSON event to
-`.assay/<lane>.progress.jsonl` and records that project-relative path in the
-optional `mutation.progress_artifact` field. An optional
+Execution is observable without becoming a second verdict. When the caller asks
+for it with `assay run --progress PATH` (B031/A-320), R2 appends a compact
+NDJSON event to PATH after the baseline and after every candidate completes.
+The destination is the CONSUMER's, never derived: `8a2a4731` wrote
+`.assay/<lane>.progress.jsonl` into the live worktree unconditionally, which
+broke assay's own clean-tree precondition on the very next run of the same
+lane, and interpolated an unvalidated lane name while doing it. Nor does the
+verdict name the destination back: the caller chose it, the same way it chooses
+`--verdict-json`'s, and the one grammar a verdict path field can carry
+(repo-tree-relative) can only express the location this design forbids. An
+optional
 `judge.mutation.budget_per_candidate` bounds one candidate's command; its
 timeout uses the existing `budget_exceeded` bucket rather than widening the
 closed reason-code vocabulary. The separate `assay plan` command performs the
@@ -1412,7 +1511,7 @@ fail_under = 100.0
 allow_excluded = false
 base = "origin/main"
 coverage = { format = "coverage-py-json", artifact = "cov.json" }
-mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap","python:uuid-equality-swap","python:enum-comparison-swap"] }
+mutation = { jobs = 4, max_mutants = 200, operators = ["python:compare-swap","python:boolop-swap","python:bool-const-flip","python:falsy-swap"] }
 canary = { mechanism = "uncovered-line", target = "libs/common/src/pkg/mod.py" }
 attestation_dir = ".assay/attestations"
 evidence = [{source = "attested", key = "adversarial-review"}]

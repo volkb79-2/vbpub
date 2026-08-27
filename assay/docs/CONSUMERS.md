@@ -1,5 +1,11 @@
 # Consuming Assay from another repository
 
+**Inside vbpub?** This doc is for a genuinely separate repository. A project
+living in this same monorepo (cmru, ciu, anything under `scripts/`) should
+read [`INTERNAL-CONSUMERS.md`](INTERNAL-CONSUMERS.md) instead — it installs
+from the bind-mounted worktree with no pin, for reasons that doc states
+plainly. The rest of this file assumes you are outside that boundary.
+
 Assay is a release artifact, not an estate-only source import. A consumer can use either
 the wheel or the matching zipapp from one immutable `assay-v*` GitHub Release. The wheel is
 the normal integration; the zipapp is the zero-install option for a gate image that already
@@ -116,8 +122,11 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = ["libs/common/src/common/redirect_chain.py"]
-# judge.base is FORBIDDEN here (no R2 declared) -- a whole-target claim
-# resolves no diff, so recording one would imply a comparison that never ran.
+# judge.base is FORBIDDEN here -- a whole-target lane resolves no diff at ANY
+# tier, so recording one would imply a comparison that never ran. This holds
+# for every language and every rigor, R2 included (A-325): `mode` selects the
+# SCOPE both R1 and R2 judge under, so a whole-target R2 mutates the declared
+# files whole and never reads a comparison commit either.
 
 [lanes.redirect_chain.judge.coverage]
 format = "coverage-py-json"
@@ -183,13 +192,17 @@ Completed candidates persist under `.assay/mutation-state/`, keyed by a
 deterministic candidate id derived from the mutated file's path, its exact
 source bytes, the mutated byte span, the replacement bytes, and the operator.
 A real source change therefore produces a different id: `--resume` finds no
-record under it and re-executes that candidate silently, rather than
-detecting or reporting that the source moved on. A record that contradicts
-the identity it is filed under — a mismatched operator, byte span,
-replacement, or candidate id, not the source itself — fails the whole lane as
-`ERROR`/`UNREADABLE_ARTIFACT` rather than being silently skipped; this is a
-signal of a corrupted or hand-edited state file, not an expected outcome of
-normal use. To combine shard manifests, every manifest must declare the same
+record under it and re-executes that candidate, rather than detecting or
+reporting that the source moved on. A record that contradicts the identity
+it is filed under — a mismatched path, source hash, byte span, replacement,
+operator, or candidate id, every field folded into the id above — fails the
+whole lane as `ERROR`/`UNREADABLE_ARTIFACT` rather than being silently
+skipped; this is a signal of a corrupted or hand-edited state file, not an
+expected outcome of normal use. `schema_version` is the one required field
+NOT folded into the candidate id, so it alone gets the opposite disposition:
+a mismatch there is a routine format bump, not corruption, and is treated as
+an absent record — silently rerun, without failing the lane. To combine shard
+manifests, every manifest must declare the same
 schema version, lane, commit, and shard count, cover every zero-based index
 exactly once, and contain disjoint candidate IDs whose deterministic
 assignment is independently re-verified against the claimed shard index.
@@ -219,6 +232,27 @@ only rendered CIU state at the project root (`ciu.global.toml`). Missing, empty,
 or malformed facts refuse before any snapshot or command runs; resolved values
 are injected as environment variables named exactly by the table key. The
 snapshot itself never receives caller state.
+
+A resolved value must be a non-empty **string** — a `derived:` dotted path
+landing on a TOML integer, float, boolean, array, or table refuses rather than
+being silently coerced to text (a source's own type choice, e.g. a port
+declared as an integer, should not become an env-string fact with no record
+that a coercion happened); a consumer wanting a numeric fact as an env var
+renders it as a string at the source instead. A resolved value is also bounded
+at 64 KiB — well above any real infrastructure fact (ports, hostnames, tokens,
+small rendered JSON blobs) and well below where an oversized value would fail
+late and opaquely at `E2BIG` on exec. An infrastructure name colliding with a
+declared `env` or `env_passthrough` name refuses at load time; the same
+collision is refused again at run time as defence-in-depth, so a `Lane`
+constructed directly (bypassing the loader) cannot reach it unprotected.
+
+**If the infrastructure declaration itself is what's unresolvable**, a refusal
+that was ALREADY going to happen for some other reason (a bad `--shard`, an
+unrelated adapter refusal) still writes a real, schema-valid verdict — but
+`env_effective` in that one case is only `lane.env` (never infrastructure or
+passthrough values, since neither could be safely completed), and the verdict
+carries a sibling `env_effective_incomplete: true` so a consumer never
+mistakes that partial value for the real one.
 
 ## A monorepo lane: omitting declared unsafe symlinks
 
@@ -441,6 +475,16 @@ equivalence_artifact = ".assay/schema-dump.sql"
 kill_signal_artifact = ".assay/kill-signal.txt"
 ```
 
+The lane above judges the `base..HEAD` diff, which is why it declares
+`judge.base`. To mutate whole schema files regardless of what changed — the
+shape a migration-reconciliation gate wants — declare `judge.mode =
+"whole_target"` and `judge.targets` instead, and **delete `judge.base`**: under
+whole-target scope R2 reads no comparison commit, so a declared base is inert
+config and is refused at load (A-325). Every declared target must resolve
+inside `judge.source_roots`, exist at the judged commit, and be
+adapter-recognised, non-test source; one that is not is refused by name rather
+than quietly skipped, so a `PASS` always covers the whole declared set.
+
 `scripts/schema-gate.sh` is yours to write, in the shape the two named
 sections above require: apply the (possibly mutated) DDL to a throwaway
 database, dump it with a pinned `--restrict-key` to
@@ -491,7 +535,15 @@ assay plan worker_lane --file assay.toml
 ```
 
 The JSON output reports deterministic candidate IDs, total/per-file/per-operator counts, declared
-worker concurrency, and runtime estimates. Use those facts to choose an optional per-candidate bound:
+worker concurrency, and runtime estimates. The candidate IDs and counts are the SAME ones a real
+`assay run` of that lane executes — plan resolves them against the same declared source roots, the
+same adapter, and the same `max_mutants`/operator selection.
+
+`estimated_serial_seconds`/`estimated_wall_seconds` are a **declaration-derived upper bound, not a
+measurement**: they are `candidate_count x budget_per_candidate` (falling back to 60 s per candidate
+when the lane declares no bound), divided by declared `jobs` for the wall figure. Assay never times a
+baseline to produce them. Treat them as "no longer than", not "about". Use those facts to choose an
+optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
@@ -502,15 +554,26 @@ operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
 
-Add `python:uuid-equality-swap` when changed code compares an in-place UUID
-construction, and `python:enum-comparison-swap` when it compares an enum member
-such as `Color.RED`. Both flip only `==`/`!=`; generic ordering swaps remain the
-jurisdiction of `python:compare-swap`.
+`python:uuid-equality-swap` and `python:enum-comparison-swap` are **withdrawn**
+(A-326). They shipped in 2.3.0 and were measured to produce a byte-identical
+subset of `python:compare-swap`'s own sites — same span, same replacement — so
+declaring them alongside `compare-swap` emitted every shared site twice and
+added no coverage. A lane still naming either is now refused at load; delete
+them and keep `python:compare-swap`, which already covers `==`/`!=` swapping.
+The two names remain spellable in a schema-v7 artifact so that verdicts already
+emitted by 2.3.0/2.4.x keep verifying; nothing produces them.
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
-candidates. Progress is appended to `.assay/worker_lane.progress.jsonl` after the baseline and after
-every completed candidate, and the verdict names that file under
-`claims[].mutation.progress_artifact`.
+candidates.
+
+Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
+JSON object per line -- a `run` header naming the commit and start time, then one event after the
+baseline and one after every completed candidate, each flushed as it is written, so a monitor can
+tail it live. Without the flag no progress file is written at all, and assay never chooses the
+location itself. Choose a path OUTSIDE the repository (or a gitignored one): assay's own clean-tree
+precondition refuses `NO_MEASUREMENT`/`DIRTY_TREE` on the next run of that lane if the progress file
+lands in the work tree. The verdict does not name the destination -- the caller already chose it,
+the same way it does for `--verdict-json`.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.
@@ -602,6 +665,21 @@ fails loudly rather than degrading quietly.
 | `BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED` | discovery hit `max_mutants` and **stopped before submitting** | a refusal, not a truncated sample. Raise the cap or narrow the change |
 | `NO_MEASUREMENT`/… | assay declined to claim anything | fix the environment; re-running unchanged will refuse again |
 | `ERROR`/`EXEC_FAILED` | your command failed in a way that is not a kill | read the command's own output; a crashed mutant outranks every other bucket |
+
+### Check `judgment.resolved.base_resolution` after a pre-gate merge
+
+If your workflow merges the base branch into a feature branch before gating
+(a routine pre-merge sync), an R1 or R2 lane's `HEAD` is a merge commit.
+`judgment.resolved.base_resolution` says which of two ways `judge.base` was
+resolved against that HEAD: `"merge-base"` (the usual case — `git merge-base
+<declared-base> HEAD`) or `"first-parent"` (HEAD's own pre-merge tip, when
+HEAD is itself a merge commit). The two can differ enormously: a lane judged
+right after merging main in can see its changed-line/mutation scope narrow to
+"whatever the merge itself touched" rather than the branch's own accumulated
+work, with no other signal that anything unusual happened. `base_resolution`
+is present only when `judgment.resolved.base` is (a lane with no `judge.base`
+declared has nothing to classify); a consumer that gates on "did R1/R2 see the
+whole change" should check it rather than assume `base` alone tells the story.
 
 ### A green run over an empty subject is not a pass
 

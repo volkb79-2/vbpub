@@ -362,6 +362,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
                 "source_roots": ["pkg"],
                 # the SYMBOLIC `control-baseline` above, resolved.
                 "base": base_rev,
+                "base_resolution": "merge-base",
             },
             "r1": {
                 "coverage_format": "coverage-py-json",
@@ -623,6 +624,7 @@ def _expected_r2_artifact(
                 "language": "python",
                 "source_roots": ["src"],
                 "base": base_rev,
+                "base_resolution": "merge-base",
             },
             "r2": {
                 "jobs": jobs,
@@ -1418,6 +1420,7 @@ def _r1_r3_expected(
                 "language": "python",
                 "source_roots": ["pkg"],
                 "base": base_rev,
+                "base_resolution": "merge-base",
             },
             "r1": {
                 "coverage_format": "coverage-py-json",

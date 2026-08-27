@@ -1057,6 +1057,52 @@ intentional, surface it loudly in the verdict (a `base_resolution:
 scope. **Workaround used:** re-run the gate after merging to main, where
 first-parent and merge-base coincide.
 
+**Second reproduction, 2026-08-25 (dstdns P132 implementer, priority
+evidence — same mechanism, different judge kind).** Confirms the bug also
+collapses **R2 mutation lanes**, not only R1 changed-line coverage as
+originally scoped. Reproduced by merging `main` into
+`feat/dstdns-P132-worker-io-execution-repair` (`git merge main --no-edit` →
+`039d9679`, HEAD now a merge commit), then re-running the four
+`worker-execution-admission-r2-*` lanes: all four read
+`INCONCLUSIVE/NO_MUTANTS`, down from real PASS/kill counts (9/9 boolop, 8/9
+flips) measured on the same source pre-merge. Confirmed directly:
+`git diff --stat 55c41dac..039d9679 -- applications/worker-io/src` is empty
+— `resolve_base` used HEAD's first parent (the branch's own pre-merge tip,
+`55c41dac`) instead of the lane-declared `judge.base`, so the diff assay
+measured is "what did pulling main in change" (nothing in the package's own
+source), not the branch's actual accumulated work. Same root cause as the
+R1 case above (`assay/git.py::resolve_base`), same fix would close both.
+**Not a workaround this time** — confirmed self-resolving at final-merge
+time (when the branch lands ON main, main's own pre-package tip becomes the
+first parent, restoring a real diff), but real evidence quietly went from
+"9/9 mutants killed" to "nothing to measure" with zero warning in between,
+on a source tree that hadn't actually lost any coverage. Provenance:
+`dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md` §1a/§1b/§2/§2a.
+
+**Status: RESOLVED 2026-08-25 (stabilization wave), by transparency not by
+changing `resolve_base`.** The first-parent-on-merge-commit behavior is
+documented, deliberate design in `resolve_base`'s own docstring, not an
+oversight — so the ask's second option ("surface it loudly") is what shipped:
+a new `git.base_resolution_mode(repo)` and an additive `base_resolution:
+"merge-base" | "first-parent"` field on `JudgmentResolved`, present exactly
+when `base` is. A consumer can now tell which branch fired instead of having
+to re-derive it from `git rev-list --parents` themselves. See A-301. The
+frozen W3 witness was re-witnessed for the new field (A-304).
+
+**The ask's own wording was "a `base_resolution` field + a WARN"; only the
+field shipped, and this is a deliberate scope decision, not an oversight —
+recorded here after round 2 review flagged the gap.** This project's outcome
+vocabulary has no severity channel between a decided `(outcome, reason_code)`
+and silence; a literal "WARN" would mean either a new `Outcome`/`ReasonCode`
+(the same "deliberate, not a quick add" bar B026 N-4's closed-enum reasoning
+already applies) or a free-text field this project's refusals deliberately
+don't carry (B026 N-4, again). `docs/CONSUMERS.md`'s new "Check
+`judgment.resolved.base_resolution` after a pre-gate merge" section is the
+substitute: not a runtime alert, but the loud, explicit, worked-example
+documentation a human reader needs to know to check the field at all — which
+is what was actually missing before this round (`base_resolution` appeared in
+no consumer-facing doc, only the schema).
+
 ## B009 — document assay.toml's estate role + the image-baked distribution model (operator decision 2026-08-20)
 
 Operator interview (dstdns Fable controller session, dstdns ledger D-110), after
@@ -1150,6 +1196,24 @@ the wrong behavior with a green verdict.
 
 Cross-references: B009 (image-baked distribution + assay.toml's estate role),
 ciu CIU-40 (gate-layering refactor / run-gate mini-project).
+
+**Correction 2026-08-25 (review-gap audit, `reports/assay-review-gap-audit-2026-08-25.md`
+finding 8a-E):** the "PARTIALLY IMPLEMENTED" `environment_command` mechanism
+does not ship the clear-message deliverable this item asked for — a probe
+refusal writes **0 bytes of stderr**, not the "this lane's declared
+environment does not match the invoking one; run via `<declared wrapper>`"
+text quoted above. The consumer gets neither the original raw traceback nor
+the promised clear message. Filed separately as **B032**, which also covers
+the same probe's budget/outcome misclassification.
+
+**Follow-up 2026-08-25 (B032 remediation, A-321/A-322):** the clear-message
+deliverable now ships. A probe refusal writes the lane name, the specific cause
+(nonzero exit and its code, an unexecutable command, or a preflight-cap
+timeout), and `Run via the declared wrapper: <argv>` to stderr, verified
+non-empty through the installed CLI. B010's own status stays **PARTIALLY
+IMPLEMENTED**: the image-baking/orchestration half (B009/run-gate) is still
+unaddressed and always was a separate direction; what is closed is the
+fail-fast probe plus its diagnosis.
 
 ## B011 — CONSUMERS.md's cross-tool wiring example teaches the superseded pre-run-gate integration
 
@@ -1246,8 +1310,30 @@ Split lanes by operator group, retain separate verdicts, and require a combined 
 
 ### Acceptance
 
-- [x] progress events emitted and referenced from verdict;
-- [x] `assay plan` reports deterministic totals/IDs/runtime estimate;
+- [x] progress events emitted and referenced from verdict — **correction
+      2026-08-25 (review-gap audit): false.** `mutation.progress_artifact` is
+      dead code (no path populates it), unregistered in `verify.py`'s
+      reconstruction layer (a real verdict carrying it fails `assay verify`
+      as an unknown field), and the NDJSON it writes lands in the consumer's
+      live worktree, poisoning the dirty-tree precondition on the next run —
+      see **B031**. **Resolved 2026-08-25 (B031/A-320), NARROWED:** progress
+      events are emitted, opt-in, to a consumer-named path
+      (`assay run --progress PATH`) and are NOT referenced from the verdict —
+      `mutation.progress_artifact` was removed rather than wired, because its
+      only legal spelling named the worktree location A-292 forbids and the
+      `--verdict-json` precedent is that assay does not record back a
+      destination its caller chose. This half of requirement 1 is deliberately
+      unmet, not met;
+- [x] `assay plan` reports deterministic totals/IDs/runtime estimate —
+      **correction 2026-08-25 (review-gap audit): false.** `assay plan`
+      returns `candidate_count: 0` for every lane unconditionally (a source-
+      root relocation bug), and its own test asserts the bug — see **B030**.
+      **Re-verified true 2026-08-25 (B030/A-319)** by driving the installed
+      CLI against a real lane: `plan`'s `candidate_count` and candidate id
+      now equal `assay run`'s own, on the same commit. The runtime estimate
+      remains a declaration-derived upper bound, never a measured baseline —
+      now documented as such in `docs/CONSUMERS.md` rather than implied to be
+      a measurement;
 - [x] interrupted lane resumes without rerunning completed candidates;
 - [x] shards are provably disjoint and exhaustive;
 - [x] per-candidate timeouts do not abort unrelated candidates.
@@ -1367,11 +1453,23 @@ When a lane command exits non-zero, the verdict records `FAIL/COMMAND_FAILED` wi
 ## B015 — UUID/equality/enum-aware Python mutation operators
 
 **Filed 2026-08-24 from the post-`assay-v2.2.0` release review.**
-**Status:** **IMPLEMENTED 2026-08-24** as two bounded families:
-`python:uuid-equality-swap` and `python:enum-comparison-swap`. Eligibility is
-syntactic and conservative: an in-place UUID construction or a
-`Class.MEMBER` enum access must supply semantic evidence, and only the exact
-`==`/`!=` token is spliced.
+**Status:** **WITHDRAWN 2026-08-26 (A-326).** Previously marked
+`IMPLEMENTED 2026-08-24` as two bounded families,
+`python:uuid-equality-swap` and `python:enum-comparison-swap`. That status was
+wrong: the 2.1.0→2.3.0 review-gap audit measured the two families to produce a
+byte-identical SUBSET of `python:compare-swap`'s own output (87 sites over
+`src/assay/**.py`, zero new), co-selection emitted every shared site twice, and
+the enum predicate matched any `name.attr` access rather than an enum member.
+The one acceptance box that would have caught this — "a real R2 lane
+demonstrates kills attributable to each admitted family" — is the one that was
+left unchecked while the item was marked IMPLEMENTED. Both operators are
+withdrawn from the producer and from lane declaration in the next release; the two names
+remain spellable in a schema-v7 artifact until the next schema-version bump so
+that verdicts already emitted by 2.3.0/2.4.x keep verifying (A-326). The ask
+itself — operators that catch UUID/enum-specific defects `compare-swap` cannot
+— is NOT satisfied and is not carried forward: A-326 records why no such
+operator is expressible under A-112's reuse-only rule without new,
+unmeasured mutation-testing design. See B034.
 
 **Scope boundary:** `budget_per_candidate` (shipped in `assay-v2.2.0`, see B012)
 partially mitigates the other P127 blocker — a hanging comparison mutant — by
@@ -1453,8 +1551,20 @@ discipline.
 - [x] new operators register through the existing adapter protocol;
 - [x] their vocabulary is documented and schema-enforced;
 - [x] generated mutants are valid single-site Python programs;
-- [x] synthetic fixtures prove each eligible/ineligible AST boundary;
-- [ ] a real R2 lane demonstrates kills attributable to each admitted family;
+- [x] synthetic fixtures prove each eligible/ineligible AST boundary —
+      **correction 2026-08-25 (review-gap audit): false.** The shipped suite
+      never tests an ordinary attribute comparison (`cfg.debug == True`) —
+      the entire false-positive class the "eligible/ineligible boundary" is
+      supposed to cover. `_is_enum_member_expression` matches any dotted
+      attribute access, not enum members;
+- [ ] a real R2 lane demonstrates kills attributable to each admitted family
+      — **still unmet, and the reason why: both operators produce a strict,
+      byte-identical subset of `compare-swap`'s own sites (87 measured, zero
+      exceptions), so no kill can be attributed to either family alone.**
+      This is the exact overlap this item's own "Required before dispatch"
+      section asked to be decided explicitly before shipping, and was not.
+      Filed as the fix-needed successor, **B034**, which also covers
+      double-counted co-selected sites;
 - [ ] P126's deferred debt is re-evaluated and its disposition recorded.
 
 ## B016 — repository snapshot omits committed source files when `__pycache__` exists in the tree
@@ -1774,12 +1884,19 @@ candidate id and their current "raise" disposition needs no change.
 
 ### Acceptance
 
-- [ ] a tampered `source_sha256` on an otherwise-valid record raises
+- [x] a tampered `source_sha256` on an otherwise-valid record raises
       `MutationStateError`, not a silent rerun;
-- [ ] a `schema_version` mismatch treats the record as absent and reruns the
+- [x] a `schema_version` mismatch treats the record as absent and reruns the
       candidate, without failing the lane;
-- [ ] `decisions.md`/`README.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md`
-      are updated to state the corrected disposition.
+- [x] `decisions.md`/`docs/CONSUMERS.md`/`docs/DESIGN-GUIDE.md` are updated
+      to state the corrected disposition. **Narrowed from the original
+      filing, which also named `README.md`** (flagged, not silently
+      dropped, by round 2 review of this wave): `README.md`'s mutation
+      section is high-level enough to have never asserted the wrong
+      disposition, so there was nothing there to correct — checked
+      separately, not assumed.
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-302.
 
 ---
 
@@ -1819,15 +1936,19 @@ because B013 is unsafe as shipped.
 
 ### Acceptance
 
-- [ ] a decision recorded on whether to add a dangerous-ambient-name
+- [x] a decision recorded on whether to add a dangerous-ambient-name
       denylist, or explicitly accept the `env_passthrough`-equivalence
-      argument above;
-- [ ] runtime passthrough-vs-infrastructure collision refuses instead of
-      silently overwriting;
-- [ ] numeric/boolean `derived:` handling is either documented as refused or
-      given an explicit, tested coercion;
-- [ ] a bound (or an explicit decision not to bound) resolved infrastructure
-      value length.
+      argument above — decided: no denylist (A-303);
+- [x] runtime passthrough-vs-infrastructure collision refuses instead of
+      silently overwriting (A-303);
+- [x] numeric/boolean `derived:` handling is either documented as refused or
+      given an explicit, tested coercion — decided: stays refused, documented,
+      not coerced (A-305);
+- [x] a bound (or an explicit decision not to bound) resolved infrastructure
+      value length — bounded at `MAX_INFRASTRUCTURE_VALUE_BYTES` (A-306).
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** All four items closed;
+see A-303/A-305/A-306.
 
 ---
 
@@ -1923,8 +2044,47 @@ undetected.
 - [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
       phase, failing the gate on any finding not in an explicit, dated
       baseline (if the ratchet approach is chosen);
-- [ ] the pre-existing findings above are either fixed or explicitly listed
-      in that baseline with a reason each stays open.
+- [x] the pre-existing findings above are either fixed or explicitly listed
+      in that baseline with a reason each stays open — **fixed, all of
+      them**: `python -m pyflakes` over the whole `src/assay/` tree
+      (recursively, not just the top-level `*.py` this filing's own sweep
+      checked — one more finding turned up in `coverage_parsers/model.py`)
+      is clean, 0 findings, as of 2026-08-25.
+
+**Status: PARTIALLY RESOLVED 2026-08-25 (stabilization wave) — sweep done,
+gate-wiring deferred, on purpose, as its own follow-up.** All 30 pre-existing
+findings fixed (round 2 review independently recounted the parent commit and
+confirmed 30 — the exact figure, not an approximation): four unused imports
+(`dataclasses.replace` in `canary.py`, `hashlib` in `cli.py`,
+`typing.TextIO` in `runner.py`, `types.MappingProxyType` in
+`coverage_parsers/model.py`), one needless `f"..."` prefix with no placeholder
+(`runner.py`), one genuinely dead local variable
+(`per_candidate_timeout_positions` in `mutation.py`, assigned, never read or
+written to again — deleted, not just silenced), and 24 annotation-only
+undefined names in `canary.py`/`mutation.py` (real gaps for a type checker,
+harmless at runtime only because `from __future__ import annotations` defers
+evaluation) — resolved with real imports where safe
+(`canary.py`→`.runner`/`.isolation`, no cycle) and `TYPE_CHECKING`-guarded
+imports where not (`mutation.py`↔`.runner`/`.adapters.base` import each
+other already, so a real import would be circular).
+
+**Gate-wiring deliberately NOT done in this wave.** No project here already
+depends on `pyflakes`/`ruff`, so wiring a lint phase into
+`tester-unified-gate.sh` means adding the tool to the **shared**
+`tester-unified` Docker image (`tester-unified/Dockerfile`'s dependency
+closure is currently derived entirely from ciu/cmru/topos/nyxloom/
+cgroup-profiler's own `pyproject.toml` extras — assay contributes nothing to
+it today) and rebuilding + re-validating that image, which every project
+gating through `tester-unified:local` depends on — a cross-project,
+shared-infrastructure change, not a local one, and out of scope for a
+same-day stabilization pass by this project's own risk posture. Filed as a
+narrower, scoped follow-up: add `pyflakes` (zero dependencies itself, matching
+assay's own purity bar) to the image, add a phase to
+`tester-unified-gate.sh` running it over `$worktree/assay/src/assay`
+(static AST analysis — needs no venv, no wheel build, can run early and
+cheaply, before any of the wheel-isolation machinery), and confirm no other
+consuming project's gate regresses. The sweep above means that phase would
+pass clean on day one; nothing here blocks it from landing next.
 
 ---
 
@@ -2011,14 +2171,40 @@ any round. Close this alongside whichever acceptance item below lands next.
       `infrastructure_source`/`infrastructure_environment` (round 3, both
       passes — see A-298/A-299);
 - [ ] the `cli.py` attestation-`LANE_TIMEOUT` forward gets its own test
-      (currently unguarded — see "Known gap" above);
-- [ ] a decision recorded on which of options 1-3 handles the remaining case
-      (infrastructure itself unresolvable);
-- [ ] `assay run` on a lane whose OWN infrastructure declaration is
-      unresolvable writes a verdict artifact to a reserved `--verdict-json`,
-      not just a stderr message;
-- [ ] a test drives this through the installed CLI (not `resolve_command_plan`
-      directly) and asserts the artifact exists and is schema-valid.
+      (currently unguarded — see "Known gap" above; still open, needs a real
+      attestation-deadline timeout to trigger, not attempted this wave
+      either — a known, accepted, narrow gap, not a regression);
+- [x] a decision recorded on which of options 1-3 handles the remaining case
+      (infrastructure itself unresolvable) — decided: a refined option 1
+      (A-308) — `env_effective` becomes exactly `lane.env`, paired with a new
+      additive `env_effective_incomplete: true` flag, rather than omitting
+      `env_effective` outright (`LANE_RESOLVED_FIELDS`'s own "all present or
+      all absent" contract rules that out);
+- [x] `assay run` on a lane whose OWN infrastructure declaration is
+      unresolvable writes a verdict artifact to a reserved `--verdict-json`
+      — fixed at all FOUR crash sites found across two rounds (round 1,
+      A-308: `_run_higher_rigor_lane`'s primary `resolve_command_plan` call,
+      infra is the ONLY thing wrong; `refuse_lane`'s own second,
+      recording-only call, infra co-occurs with an unrelated refusal cause
+      — round 1's own "BOTH places" claim was wrong, round 2 review found
+      two more: `run_lane`'s direct R0-only path, and the `environment_command`
+      probe's plan resolution, which never even forwarded infrastructure
+      params at all, unconditionally broken for a `derived:` fact regardless
+      of resolvability). None gained a stderr message — all four join the
+      same silent-on-stderr bucket the `--shard`/`--operators` refusals
+      already occupy (B026 N-4), the existing, accepted asymmetry, not a
+      new one;
+- [x] a test drives this through the installed CLI (not `resolve_command_plan`
+      directly) and asserts the artifact exists and is schema-valid — one
+      test per crash site (four total, two per round), all verified
+      red-first.
+
+**Status: RESOLVED 2026-08-25 (stabilization wave, both rounds), except the
+one known, narrow, pre-existing gap noted above (attestation-timeout
+forward test) and the DIFFERENT, wider "lane-wide `LANE_TIMEOUT` also
+writes no verdict" gap round 2 review found and filed separately as
+B028 (same family, bigger blast radius, needs its own design pass).**
+See A-308.
 
 ---
 
@@ -2086,11 +2272,830 @@ drift apart the next time either constant changes for its own reason.
 
 ### Acceptance
 
-- [ ] a decision recorded on N-4 (new `ReasonCode` vs. a stderr-only
+- [x] a decision recorded on N-4 (new `ReasonCode` vs. a stderr-only
       diagnostic reusing `cli.py`'s existing print pattern vs. accept and
       document the three-way asymmetry between `run`+operators, `run`+shard,
-      and `plan`);
-- [ ] a decision recorded on N-5 (wire / remove / document reserved), and
-      `config.py`/`CONSUMERS.md` updated to match;
-- [ ] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
-      bound is switched to `MAX_SHARD_COUNT` in the same change.
+      and `plan`) — decided: accept and document (A-309); both alternatives
+      are real API commitments (widening a closed enum, or changing
+      `run_lane`'s `Verdict`-only return contract), not stabilization-wave
+      fixes;
+- [x] a decision recorded on N-5 (wire / remove / document reserved), and
+      `config.py`/`CONSUMERS.md` updated to match — decided: document
+      reserved (A-310), on the `MutationConfig.shard_index`/`shard_count`
+      fields directly in `config.py`; `CONSUMERS.md` never mentioned these
+      fields, so nothing there was stale;
+- [x] if N-5 is resolved by wiring, `config.py:1784`'s `MAX_MAX_MUTANTS`
+      bound is switched to `MAX_SHARD_COUNT` in the same change — done
+      regardless of the wiring decision (A-310): a new `MAX_SHARD_COUNT`
+      constant in `config.py` closes the drift risk either way.
+
+**Status: PARTIALLY RESOLVED 2026-08-25 (stabilization wave), matching
+B024's own precedent for a decided-but-not-eliminated defect.** N-4's own
+heading names two defects — "a bad `--shard` refusal names no cause" and
+"`shard_index`/`shard_count` are dead config" — and BOTH remain true by
+design after A-309/A-310: N-4 was decided as an accepted, documented
+asymmetry rather than closed, and N-5 was decided as accepted-and-documented
+reserved config rather than wired or removed. Only the coincidental
+`MAX_MAX_MUTANTS`/`MAX_SHARD_COUNT` ceiling coupling round 3 flagged is an
+actual code fix (A-310). Marking this `RESOLVED` outright would overstate
+what changed; round 2 review of this wave caught the overstatement.
+
+## B027 — a mutant-induced pytest timeout crashes `execute_plan` instead of reaching `BUDGET_EXCEEDED`/`LANE_TIMEOUT`
+
+**Filed 2026-08-25 (dstdns P132 phase-1 code review; provenance below).**
+
+### Observed mechanism (live-reproduced, 5×, deterministic — not a fluke)
+
+`assay run <r2-lane>` for a lane whose `judge.mutation.budget_per_candidate`
+elapses on a real mutant (the mutated code genuinely hangs — e.g. an
+off-by-one on a `while` loop's guard condition that never terminates) hits
+`subprocess.TimeoutExpired` inside `execute_plan`'s `default_process_runner`
+call, and assay's OWN handling of that timeout then crashes:
+
+```
+subprocess.TimeoutExpired: Command '[... pytest ...]' timed out after 30.0 seconds
+  (during handling of the above exception)
+AttributeError: 'bytes' object has no attribute 'encode'. Did you mean: 'decode'?
+  at assay/runner.py:239 in _bounded_tail, called from assay/runner.py:386 in execute_plan
+    (deployed assay-2.3.0.pyz line numbers; current vbpub/assay/src/assay/runner.py
+    has the same call at :458 inside `except subprocess.TimeoutExpired as exc:`,
+    calling `_bounded_tail(exc.stdout)`)
+```
+
+`_bounded_tail(raw: str | None)` (`runner.py:229`) is documented and typed to
+receive an already-decoded `str` — its own docstring says *"The input is
+decoded by `subprocess` under `text=True`"* — and DESIGN-GUIDE.md's "Bounded
+command-output tails" section states the same assumption verbatim: *"The
+bound is measured after decoding because `subprocess.run(text=True)` is the
+production boundary."* That assumption holds for the NORMAL completion path
+(`execute_plan:493-494`, `_bounded_tail(proc.stdout)` off a
+`CompletedProcess`) but **not** for the timeout path
+(`execute_plan:457-459`): `subprocess.TimeoutExpired.stdout`/`.stderr`
+carries whatever partial output `Popen._communicate` had buffered at the
+moment the timeout fired, and on that exception path CPython does not run it
+through the same text-decode step `communicate()`'s normal return does —
+so `exc.stdout` is `bytes`, not `str`, even though `text=True` was passed to
+`subprocess.run`. `_bounded_tail` calls `.encode("utf-8")` unconditionally
+(line 239/458), which only exists on `str` — `bytes` has `.decode()`, not
+`.encode()` — hence the `AttributeError`.
+
+**Reproduced 5 times across two independent contexts** (dstdns P132's
+`worker-execution-admission-r2-compare` lane, identically on both unmodified
+`main` and a feature branch — a mutant on `admission.py`'s `while not
+has_capacity():` guard genuinely hangs past the 30 s
+`budget_per_candidate`).
+
+### Consequences (why this is worse than "a lane sometimes reports FAIL")
+
+1. **No verdict is produced.** The process exits 1 (Python's uncaught-exception
+   exit code), indistinguishable on exit code alone from a legitimate
+   `FAIL/MUTANTS_SURVIVED`.
+2. **A stale verdict JSON is left on disk from a PRIOR run**, at the same
+   path the crashed run would have written to. A caller that reads
+   `.assay/verdict-<lane>.json` without separately checking the invoking
+   process's own exit code / stderr will read an old commit's result and
+   believe it is current. In dstdns P132's own case this was caught only
+   because a human/reviewer compared the verdict's embedded `commit` field
+   against the actual `git rev-parse HEAD` and found a mismatch — a
+   consumer that trusts the artifact alone has no such tripwire.
+3. **A real, documented terminal state exists and is bypassed.**
+   DESIGN-GUIDE.md's outcome/reason-code table (the table right above the
+   "Bounded command-output tails" section this bug lives in) already
+   declares `BUDGET_EXCEEDED`/`LANE_TIMEOUT` for exactly this case — a
+   mutant-induced timeout is supposed to be a clean, artifact-producing
+   terminal, not a crash that skips the whole verdict pipeline.
+
+### Why assay owns this (not the dstdns consumer)
+
+The crash is entirely inside `assay/runner.py`'s own exception-handling path,
+triggered by assay's own subprocess invocation and assay's own bounded-tail
+helper — no lane configuration, mutation operator choice, or consumer code
+can avoid it once a mutant happens to hang past budget. `budget_per_candidate`
+existing at all (B012) means a hanging mutant is an EXPECTED, designed-for
+case, not an edge condition a lane author failed to anticipate.
+
+### Proposed contract
+
+1. `_bounded_tail` should accept `str | bytes | None` and decode `bytes`
+   itself (`.decode("utf-8", errors="replace")`, matching the tolerant
+   decode policy the docstring already describes for the normal path),
+   OR the `except subprocess.TimeoutExpired` handler should decode
+   `exc.stdout`/`exc.stderr` before calling `_bounded_tail`, so the
+   function's documented `str`-only contract stays accurate and the fix is
+   localized to the one path that actually receives `bytes`.
+2. A timeout must always reach `BUDGET_EXCEEDED`/`LANE_TIMEOUT` per the
+   already-published reason-code table — never an uncaught exception.
+3. A crashed lane invocation must never leave a verdict artifact from a
+   PRIOR run sitting at the current run's expected output path without at
+   least a companion signal (a non-zero process exit code already exists,
+   but the design-guide should say explicitly that a caller must check it
+   rather than trusting a discovered artifact's mere presence — or,
+   stronger, the artifact could be removed/renamed before the crashing
+   attempt so its absence is unambiguous).
+
+### Behavioral oracle (including a controlled wrong implementation)
+
+A unit test constructing a `subprocess.TimeoutExpired` with a `bytes` `.stdout`/
+`.stderr` (reproducing the exact object CPython hands back on this path) and
+calling `execute_plan`'s timeout branch (or `_bounded_tail` directly with a
+`bytes` argument) must return a `BUDGET_EXCEEDED`/`LANE_TIMEOUT` `Verdict`
+carrying decoded tails — not raise. **Controlled wrong implementation this
+must catch:** reverting the fix (removing the `bytes`-handling branch, or
+re-introducing the bare `.encode("utf-8")` call) must make that exact test
+raise `AttributeError` again — i.e., the test must be shown to fail against
+today's shipped code before the fix, not just pass against the fixed code.
+
+### Spec section that owns this behavior
+
+`docs/DESIGN-GUIDE.md` — the outcome/reason-code table (`BUDGET_EXCEEDED` /
+`LANE_TIMEOUT`) and the immediately-following "Bounded command-output tails"
+section, whose stated assumption ("the production boundary" always decodes)
+this bug violates on exactly the one path — timeout — that section's own
+prose does not carve out an exception for.
+
+### Provenance
+
+Found during dstdns P132 (worker-io execution path repair) phase-1 code
+review, confirmed independently by the reviewer:
+`dstdns/nyxloom-trove/reviews/dstdns-P132-code-review-phase1-r1.md` §F
+("NEW upstream finding — assay 2.3.0 crashes on a mutant-induced pytest
+timeout"), disposition `dstdns/nyxloom-trove/decisions.md` D-201 ("file
+upstream, not this package's problem"). First independently noticed by the
+P132 implementer in an earlier round of the same package
+(`dstdns/nyxloom-trove/reports/dstdns-P132-REPORT.md` §1b), then confirmed
+as a real (not implementation-caused) defect by the phase-1 reviewer working
+from a blind, independent reproduction.
+
+### Acceptance
+
+- [x] `_bounded_tail` (or its timeout-path caller) handles `bytes` input
+      without raising;
+- [x] a mutant-induced timeout reaches `BUDGET_EXCEEDED`/`LANE_TIMEOUT` with
+      a real verdict artifact, never an uncaught exception;
+- [x] the regression test constructing a `bytes`-carrying `TimeoutExpired`
+      is shown red against pre-fix code, green after;
+- [x] a crashed/refused lane run never leaves an ambiguous stale artifact
+      at its expected output path (or DESIGN-GUIDE.md documents explicitly
+      that callers must check the invoking process's own exit status, not
+      artifact presence alone) — documented (the softer option; a crashing
+      run's own output path is unchanged, but DESIGN-GUIDE.md's "Bounded
+      command-output tails" section now says explicitly that exit status,
+      not artifact presence, is what a caller must check).
+
+**Status: RESOLVED 2026-08-25 (stabilization wave).** See A-300.
+
+---
+
+## B028 — a lane-wide `LANE_TIMEOUT` also writes no verdict artifact
+
+**Filed 2026-08-25 (round 2 review of the stabilization wave, finding
+N-W3).** Same family as B025 ("a post-HEAD-resolution terminal path emits
+no artifact"), a different trigger — filed separately rather than folded
+into B025 because the mechanism and the blast radius are both different.
+
+### Problem
+
+`LaneDeadline.remaining()` (`runner.py`) raises a bare `AssayError`/
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT` directly whenever the lane-wide deadline
+has expired — it is the ONE seam every higher-rigor timing check in this
+codebase reads through. Measured: a lane whose command simply runs past
+`budget_seconds` (a plain `sleep 30` against a 1s budget, no mutation, no
+infrastructure, nothing B025 touches) exits non-zero with **no verdict
+artifact** even when one was reserved — identical before and after this
+wave's B025 fix, confirmed by driving both trees.
+
+**Wider blast radius than B025's fix reaches.** B025 wrapped four specific
+`resolve_command_plan` call sites. `deadline.remaining()` itself is called
+from roughly 16 separate sites across `runner.py` (7), `mutation.py` (6),
+and `canary.py` (3) — every one of them a place the SAME uncaught-`AssayError`
+crash could fire, not just the plan-resolution moment. A general fix likely
+means catching `AssayError`/`LANE_TIMEOUT` at ONE outer boundary per
+higher-rigor entry point (`_run_higher_rigor_lane`, direct R0's own loop)
+rather than wrapping every individual call site the way B025 did for a
+narrower, single-cause failure.
+
+### Why this needs its own design pass, not a quick patch
+
+Unlike B025 (where every `resolve_command_plan` raise is knowably
+`BAD_LANE_CONFIG`, always the same shape), a `LaneDeadline.remaining()`
+raise can fire from inside a Git call, a subprocess wait, or a snapshot
+operation already partway through side effects (a materialized snapshot, a
+half-written mutation-state record) — an outer catch-and-refuse needs to
+reason about what state exists at the moment of the timeout, not just build
+a degraded `CommandPlan` the way B025's fallback does. That reasoning has
+not been done yet.
+
+### Acceptance
+
+- [ ] a decision recorded on where the outer catch boundary belongs (one
+      per higher-rigor entry point vs. per call site);
+- [ ] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
+      and a genuinely slow command) writes a real, schema-valid verdict
+      artifact to a reserved `--verdict-json`, driven through the installed
+      CLI;
+- [ ] a test proving the fix is shown red against pre-fix code (matching
+      B025's own red-first discipline).
+
+---
+
+## B029 — R3's canary side-run has no infrastructure wiring at all; a resolvable-elsewhere fact reports a misattributed R3 claim
+
+**Filed 2026-08-25 (round 2 review of the stabilization wave, in the course
+of verifying B025).** Not B025 itself — B025's four sites all crashed
+uncaught with no verdict; this one produces a real, schema-valid verdict
+with the wrong cause, which is arguably worse to leave undiagnosed.
+
+### Problem
+
+`canary.py`'s R3 side-run resolves a **second**, independent `CommandPlan`
+via `runner.execute_command`, which accepts no `infrastructure_source`/
+`infrastructure_environment` parameters at all (`execute_command`'s own
+docstring now says so explicitly, corrected in the stabilization wave's
+round 2 — see `runner.py`'s step-1 note). This is not a missing forward
+the way B025's environment-probe site was; `execute_command` has never had
+anywhere to forward these params TO. Confirmed reachable: nothing in
+`config.py` forbids an `[infrastructure]` table on an R3 lane, and R3 forces
+R1 alongside it, so the lane's MAIN command plan (built through
+`_run_higher_rigor_lane`) resolves its infrastructure facts correctly — only
+the canary's own side-run plan does not.
+
+**The failure mode is a misattributed claim, not a crash.** `_run_higher_rigor_lane`
+already catches `AssayError` from `run_isolated_canary` (`runner.py` around
+`:2262`) and converts it into an R3 `Claim` carrying the exception's own
+`outcome`/`reason_code` — so a lane declaring a `derived:` fact that resolves
+perfectly everywhere else reports `ERROR`/`BAD_LANE_CONFIG` on its R3 claim,
+naming the infrastructure declaration as the cause when nothing about it is
+actually broken. Worse: a `required-env:` fact would silently SUCCEED on
+this path (`resolve_command_plan`'s own default falls back to `os.environ`
+when `infrastructure_environment` is `None`), so the two source kinds behave
+differently on the exact same lane shape — a `derived:` fact fails, a
+`required-env:` fact doesn't, for reasons that have nothing to do with
+either fact's own resolvability.
+
+### Why this needs a design decision, not a quick patch
+
+Unlike B025 (where every crash site needed the SAME fallback shape:
+"forward the params, or refuse cleanly if that fails"), this is a genuine
+missing-feature question: should the canary side-run see the same
+infrastructure world as the lane's main command at all? If yes, threading
+*infrastructure_source*/*infrastructure_environment* through
+`execute_command` into `canary.py`'s two callers needs its own test
+coverage (a real R3 lane with a resolvable `derived:` fact, driven through
+the CLI, asserting the R3 claim is `PASS`/`FAIL` on the actual canary
+outcome, not `ERROR`/`BAD_LANE_CONFIG` on an infrastructure cause that isn't
+real). If no — R3 canaries are documented as infrastructure-blind — that
+needs stating explicitly in `docs/CONSUMERS.md` and `DESIGN-GUIDE.md` rather
+than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
+
+### Acceptance
+
+- [ ] a decision recorded on whether R3's canary side-run should resolve
+      infrastructure facts at all;
+- [ ] if yes: `execute_command`/`canary.py`'s two call sites thread
+      *infrastructure_source*/*infrastructure_environment* through, and a
+      CLI-driven test proves a resolvable `derived:` fact no longer produces
+      a false `ERROR`/`BAD_LANE_CONFIG` R3 claim;
+- [ ] if no: documented explicitly as a known limitation in `docs/CONSUMERS.md`
+      and `docs/DESIGN-GUIDE.md`, so a consumer hitting the misattributed
+      claim has somewhere to learn why.
+
+## B030 — `assay plan` reports zero candidates for every lane; its own test asserts the bug
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, finding 8a-A) — the first
+independent review of `8a2a4731` (shipped in assay-v2.2.0 as part of B012).**
+**Status:** RESOLVED 2026-08-25 (A-319). Fixed by deleting `_cmd_plan`'s
+`_relocate_source_roots` call outright -- `plan` never materializes a snapshot,
+so there is no snapshot project root to relocate against. Verified through the
+installed CLI on a real repository: `plan` `candidate_count` `0` -> `1`,
+matching `assay run`'s own count and its candidate id byte-for-byte, and a
+`mode = "whole_target"` lane plans instead of failing. The frozen test
+assertion is corrected to the true count. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
+
+### Problem
+
+`_cmd_plan` (`src/assay/cli.py`) calls `runner._relocate_source_roots(lane,
+project_root=lane_file.project_root, scratch_project_root=(prepared.spec.scratch_root
+/ "unused"))` — a directory literally named `"unused"` that is never created.
+The real `run` path passes `baseline_snapshot.project_root`
+(`runner.py:2077`/`:2101`) instead. `resolve_mutation_targets`'s containment
+gate (`mutation.py:459`) is an unconditional `is_relative_to(root)` check
+against the relocated (nonexistent) roots, so it can never be satisfied —
+`assay plan <lane>` returns `candidate_count: 0` for every lane, unconditionally,
+and a `mode = "whole_target"` lane fails outright naming a temp dir that never
+existed. Root cause confirmed by suppressing only the relocation call, which
+makes plan's answer match a real `run`'s candidate count and IDs byte-for-byte.
+
+**The commit's own test asserts the bug as correct behavior:**
+`test_plan_reports_candidates_without_executing`
+(`tests/test_mutation_progress_budget_plan.py:550`) asserts
+`payload["candidate_count"] == 0` against a fixture that genuinely yields one
+candidate — it was written to match observed output, not the requirement.
+`docs/CONSUMERS.md:517` (added after the bug, in the remediation wave) states
+plan "reports deterministic candidate IDs, total/per-file/per-operator counts
+… and runtime estimates" — false on `main` today. B012's own acceptance box
+"`assay plan` reports deterministic totals/IDs/runtime estimate" is unmet
+despite being checked `[x]` — see the correction note on B012 above.
+
+Two later review rounds (`45ea7d0b`, `b97f3aaf`, `21205b78`) touched
+`_cmd_plan`'s argument parsing and never once ran it against a real lane with
+source roots, so this was never caught.
+
+Beyond the headline bug: `_cmd_plan` never runs `lane.environment_command`
+(plans a lane a real `run` would refuse) and plans against HEAD without
+`run`'s clean-tree precondition; its runtime estimate falls back to a
+fabricated `60.0` s/candidate when `budget_per_candidate` is absent (reported
+to three false decimals of precision), and uses the timeout — an upper bound —
+as the "estimate" when the key is declared, which is not what B012 requirement
+2 ("measured/estimated baseline runtime") asked for.
+
+### Oracle
+
+- `test_plan_reports_candidates_without_executing`'s fixture must assert the
+  TRUE candidate count (1, given its current fixture), not 0 — fix the test
+  before the code, or the fix will read as a regression;
+- a real R2 lane with declared `source_root_paths`, driven through the
+  installed CLI, must show `assay plan <lane>` reporting the same
+  `candidate_count`/candidate IDs as `assay run <lane> --verdict-json` on the
+  same commit;
+- a `mode = "whole_target"` lane must plan successfully rather than naming a
+  scratch path that never existed.
+
+### Acceptance
+
+- [x] `_relocate_source_roots` (or plan's call site) uses the same project
+      root a real run uses — the call was deleted outright (`plan` never
+      materializes a snapshot); `assay plan`'s `candidate_count`/candidate
+      IDs now match `assay run --verdict-json`'s byte-for-byte on the same
+      commit, verified through the installed CLI (A-319);
+- [x] the fixture-matching test assertion is corrected to the true count —
+      `test_plan_reports_candidates_without_executing`
+      (`tests/test_mutation_progress_budget_plan.py:646`) now asserts
+      `candidate_count == 1` against its genuinely-one-candidate fixture,
+      with a comment recording the correction;
+- [x] `docs/CONSUMERS.md`'s plan description is verified true against a real
+      run, not left aspirational — `docs/CONSUMERS.md:518-524` states the
+      candidate IDs/counts match a real `assay run` and that the runtime
+      estimates are a declaration-derived upper bound, never a measurement;
+- [x] B012's "assay plan reports deterministic totals/IDs/runtime estimate"
+      acceptance box is re-verified, not just re-checked — see B012's own
+      corrected box above ("**Re-verified true 2026-08-25 (B030/A-319)**").
+
+## B031 — the R2 progress artifact is written into the consumer's live worktree and poisons assay's own clean-tree precondition; the field is dead and unregistered in `verify.py`
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-B/8a-C/8a-F) —
+`8a2a4731` (assay-v2.2.0, part of B012).**
+**Status:** RESOLVED 2026-08-25 (A-320, plus A-323 for a fourth instance of
+the same registration drift found while verifying the fix). Progress is now
+opt-in and consumer-directed (`assay run --progress PATH`), absent by default;
+`mutation.progress_artifact` is REMOVED from the dataclass, the wire payload
+and the JSON Schema together (it never had a producer, and its only legal
+grammar could name nothing but the forbidden worktree location);
+`candidate_ids` is registered in `verify.py` AND given its first real producer
+on the `--shard` path; `judgment.r2.shard_index`/`shard_count` were found to
+have the identical `verify.py` gap and are registered too. The lane-name
+traversal gap closes by construction. Verified through the installed CLI: an
+R2 lane runs twice in a row clean, and a real sharded verdict round-trips
+`assay run` -> `assay verify` green. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
+
+### Problem
+
+**(a) Worktree pollution — the R2 lane passes once, then refuses forever.**
+`src/assay/runner.py:1892-1894` writes `.assay/<lane>.progress.jsonl`
+unconditionally for every R2 lane into `Path(".assay")` — the consumer's real,
+live worktree, not the private snapshot. Reproduced on a fresh repo with no
+`.assay/` gitignore entry: run 1 passes and leaves `.assay/unit.progress.jsonl`
+untracked; run 2, with nothing else changed, fails
+`NO_MEASUREMENT/DIRTY_TREE` because `git.dirty_paths()` now returns that path.
+This directly contradicts the project's own B006(b) rule ("never the
+consumer's real worktree", `runner.py:1895`, `cli.py:29`) and the later A-292
+ruling (written for resume state, while this progress artifact was already
+doing exactly what A-292 forbids, unreviewed).
+
+**(b) Dead field.** No code path anywhere constructs
+`Mutation(progress_artifact=...)` — a real run emits a `mutation` block with
+no `progress_artifact` key while the `.progress.jsonl` file sits on disk
+unreferenced. B012 requirement 1's "Summarize the artifact path in the
+verdict" and its acceptance box "progress events emitted **and referenced
+from verdict**" are unmet — see the correction note on B012 above.
+
+**(c) Unregistered in `verify.py` — the exact near-miss shape this audit was
+commissioned to look for, LIVE.** `src/assay/verify.py`'s `_reconstruct_mutation`
+never reads `progress_artifact` (nor `candidate_ids`, added later by
+`7a4f6333`), so `_reject_unknown_keys` rejects any verdict that carries either
+field even though both pass JSON Schema validation cleanly:
+`assay verify` on such a document fails `schema: unknown mutation field(s):
+['progress_artifact']`. The schema `$defs/mutation` placement bug from the
+same commit (misfiled onto `$defs/coverage`/`$defs/claim`, not `$defs/mutation`)
+was fixed by `7941fdcb`; this reconstruction-layer gap was not.
+
+**Related, same feature (MINOR):** the write path
+(`runner.py:1892`, via `progress_writer`, `mutation.py:688`) interpolates the
+raw lane name with no path validation and no lane-name grammar in
+`config.py` — a lane named `"../../../pwned/esc"` (a legal quoted TOML key)
+writes NDJSON three directories above the project root, PASS reported anyway.
+The path is also CWD-relative rather than project-relative despite the
+schema typing the field as `repo_tree_path`, and the file is opened `"a"` and
+never truncated, so successive runs leave one growing file with no run
+id/commit/timestamp to disambiguate which run a `candidate_index` belongs to.
+Separately, `_progress_event`'s `replacement_sha256` (whole-mutated-file
+digest) and the verdict's `MutantOutcome.replacement_sha256` (replacement-text
+digest) disagree for the same candidate under the same field name — `plan`'s
+digest agrees with the progress artifact, not with the verdict.
+
+### Why this needs a design decision, not a quick patch
+
+Unlike a pure bugfix, "where does R2 progress state live" is the same class
+of question A-292 already ruled on for resume state (never the consumer's
+real worktree) — this feature needs the same answer applied to itself, plus a
+decision on whether `progress_artifact` is worth keeping as a wired,
+consumer-visible field (requiring `verify.py` registration + a real
+population path) or should be removed from the schema/dataclass entirely
+since nothing populates it today.
+
+### Acceptance
+
+- [x] a decision recorded on where progress NDJSON lives (private
+      snapshot/scratch area, consistent with A-292, never the real worktree)
+      — decided differently than framed: NOT a private snapshot/scratch
+      area either, but a consumer-named path (`assay run --progress PATH`),
+      absent by default, exactly like `--verdict-json`'s own destination.
+      Recorded as A-320, restated (load-bearing verifier-rejection argument)
+      as A-324;
+- [x] if `progress_artifact` is kept: a real code path populates
+      `Mutation(progress_artifact=...)`, `verify.py`'s `_reconstruct_mutation`
+      registers it (and `candidate_ids`), and a real `assay run` → `assay
+      verify` round-trip is proven green through the installed CLI —
+      **N/A: the "if dropped" branch below was taken instead**; `candidate_ids`
+      alone got the registration + producer + round-trip treatment this box
+      describes;
+- [x] if dropped: removed from the schema/dataclass together, not left as an
+      inert, unpopulatable field — `mutation.progress_artifact` removed from
+      the dataclass, `to_dict`, the JSON Schema and the W2 frozen lock
+      together (A-320); schema v7 left unbumped, on the load-bearing
+      argument that no released `assay verify` ever accepted a document
+      carrying the field either (A-324), not merely that no producer ever
+      emitted it;
+- [x] a real R2 lane run twice in a row, with nothing else changed, passes
+      both times (the DIRTY_TREE regression test) —
+      `test_an_r2_lane_run_twice_with_nothing_changed_passes_both_times`
+      (`tests/test_environment_preflight.py`), driven through the installed
+      CLI;
+- [x] the lane-name path-traversal gap is closed (validate against the
+      existing lane-name grammar, or add one) — closed by construction: no
+      lane name is interpolated into any path any more, since the
+      destination is now the consumer's own CLI argument;
+      `test_progress_goes_exactly_where_the_consumer_asked_and_nowhere_else`
+      covers it.
+
+## B032 — the preflight probe added by B010/B012 discards its own outcome, misreports budget overruns, and B010's "clear message" refusal ships 0 bytes of stderr
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §6, findings 8a-D/8a-E) —
+`8a2a4731` (assay-v2.2.0, B010's `environment_command` mechanism + part of
+B012).**
+**Status:** RESOLVED 2026-08-25 (A-321 scope, A-322 fix). A probe that
+exhausts its cap now reports `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, exit 4; every
+other probe failure keeps `ERROR`/`BAD_LANE_CONFIG`, exit 2, with the cause on
+stderr rather than in a widened reason-code vocabulary. The 30 s cap is applied
+as `execute_plan`'s `timeout=` argument -- the value it actually reads -- and a
+probe refusal writes B010's clear message (lane, cause, declared wrapper) to
+stderr, non-empty. All three verified through the installed CLI. See
+`reports/assay-B030-B032-remediation-REPORT.md`.
+
+### Problem
+
+**(a) Four structurally different probe failures collapse into one
+indistinguishable, mislabeled verdict.** `src/assay/runner.py:2786-2807`:
+`execute_plan` correctly classifies the probe outcome, then
+`probe_result` is discarded and the refusal is hardcoded to
+`ERROR`/`BAD_LANE_CONFIG` regardless of what actually happened, with
+`argv_effective` recording the lane's real command — which never ran.
+Measured: a nonexistent binary, a nonzero exit, and a signal death all report
+identically (arguably defensible); but a probe that genuinely exhausts its
+own budget (`sh -c "sleep 45"`, `budget = "30s"`) — which `execute_plan`
+correctly classifies as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` — is *also* forced
+into `ERROR`/`BAD_LANE_CONFIG`, exit 2 instead of the correct exit 4. A gate
+that retries on `BUDGET_EXCEEDED` but hard-fails on `BAD_LANE_CONFIG` (the
+estate's own run-gate shape) does the wrong thing on a real timeout.
+
+**(b) The probe's own 30s cap is dead code.** `runner.py:2783` sets
+`budget_seconds=min(30.0, deadline.remaining())` on the plan, but
+`execute_plan` ignores `plan.budget_seconds` and uses its `timeout=` argument,
+which is passed the **full** `deadline.remaining()` — a hung probe consumes
+the entire lane budget, not the intended 30s cap.
+
+**(c) B010's entire stated deliverable is missing.** B010's ask, verbatim:
+"refusing with 'this lane's declared environment does not match the invoking
+one; run via `<declared wrapper>`' instead of surfacing the suite's raw
+traceback" — a clear message. Reproduced: stderr is **0 bytes** on a probe
+refusal. The consumer gets neither the raw traceback (B010's original
+complaint) nor a clear message (B010's fix) — just a bare
+`BAD_LANE_CONFIG` pointing at the never-run lane argv, which actively
+misleads. B010's status should not read as fully addressing its own ask —
+see the correction note on B010 above.
+
+### Why this needs a design decision, not a quick patch
+
+The four collapsed causes need a decision on how many distinguishable
+outcomes the probe refusal should expose (at minimum: config/exec error vs.
+timeout, since gates already branch on that distinction) before the fix is
+written, plus the actual message text B010 asked for in the first place.
+
+### Acceptance
+
+- [x] a decision recorded on which probe outcomes must remain
+      distinguishable in the emitted verdict (at minimum BUDGET_EXCEEDED vs.
+      BAD_LANE_CONFIG) — recorded as A-321: exactly ONE distinction survives
+      (timeout vs. everything else), the one gates already branch on; the
+      other three causes collapse into `BAD_LANE_CONFIG` deliberately, with
+      the diagnosis carried as stderr text (A-322) rather than a
+      reason-code widening (A-138/A-170);
+- [x] a probe that exhausts its own budget reports `BUDGET_EXCEEDED`/
+      `LANE_TIMEOUT`, exit 4, not `BAD_LANE_CONFIG`/exit 2 — verified
+      through the installed CLI (A-322);
+- [x] `execute_plan` honors `plan.budget_seconds` (or the 30s cap is removed
+      from the code, not left silently unenforced) — via its own escape
+      hatch: `execute_plan` still never reads `plan.budget_seconds` directly
+      (it reads its separate required `timeout=` argument), but the caller
+      now derives BOTH `budget_seconds=probe_timeout` and `timeout=
+      probe_timeout` from the same `min(PROBE_BUDGET_SECONDS,
+      deadline.remaining())` expression, so the cap is enforced where it is
+      actually read and is no longer "silently unenforced" — measured: a
+      `sleep 45` probe under a `5m` budget went from PASS-after-46s to
+      BUDGET_EXCEEDED-after-30s;
+- [x] a probe refusal writes B010's actual clear-message text to stderr,
+      driven through the installed CLI, non-empty — measured 171-215 bytes
+      per lane in the remediation REPORT's before/after transcripts, and the
+      timeout message now names whichever bound (the 30s cap or the lane's
+      own tighter remaining budget) actually fired, not always the cap
+      (round-2 review fix; see the REPORT's Round 2 section);
+- [x] B010's status is corrected to reflect what's actually shipped — see
+      the correction note on B010 above.
+
+## B033 — SQL whole-target R2 silently drops declared targets that R1 refuses, records a `base` for a comparison that never ran, and a `judge.mode` toggle silently enables/disables the SQL vacuity guard
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §5, findings ba-A/ba-B/ba-C) —
+`ba8908d6` (2026-08-22, whole-target SQL mutation targets). This commit
+shipped with zero tests, zero doc updates, and zero decision records
+(`decisions.md`'s sessions jump 2026-08-16 → 2026-08-25 across it).**
+**Status:** **FIXED 2026-08-26 (A-325)**, on branch
+`fix/assay-b033-b034-sql-mutation-operators`, unmerged and unreleased at the
+time of writing — it ships in the next release, and this line deliberately
+names no version until one exists. All three
+defects plus both MINORs; see
+`reports/assay-B033-B034-remediation-REPORT.md` for the before/after CLI
+transcripts. **Consumer action required:** a whole-target lane may no longer
+declare `judge.base` (it is refused as inert config) — dstdns's `cw2b_schema`
+lane must delete its `base = "origin/main"` line.
+
+### Problem
+
+**(a) `judgment_resolved.base` is recorded for a comparison R2 never runs.**
+`whole_file_r2` (`runner.py:2047-2050`) skips both `check_base_is_head` and
+the `git diff` for whole-target R2, but `compares_a_base`
+(`runner.py:2295`) remains `judgment_r1 is not None or judgment_r2 is not
+None`, so `_build_judgment_resolved` (`runner.py:2328-2332`) still writes a
+resolved `base`/`base_resolution` into the artifact. `_build_judgment_resolved`'s
+own docstring forbids exactly this ("recording one would be an invented fact
+rather than a missing one"). Reproduced against a repo where `HEAD ==
+origin/main` (no diff a diff-based R2 would find): the emitted verdict still
+carries `base`/`base_resolution: "merge-base"` on an R2 that mutated the
+whole file regardless.
+
+**(b) The SQL carve-out reopens the vacuity hole its own error message
+names.** `src/assay/config.py:1299` appended `and declared_language != "sql"`
+to the guard whose own message reads "a target list under changed-line mode
+does nothing and silently declaring one is how a consumer comes to believe a
+floor is enforced when it is not." A SQL lane declaring `judge.targets`
+**without** `judge.mode = "whole_target"` now loads clean and silently routes
+to the diff path — same lane, one line of TOML different, and the inert
+`targets` list still reaches the artifact via `JudgeConfig.as_declared()`,
+advertising a floor that was never applied. `targets` was also added to the
+unconditional surplus exemption (`config.py:1362`), so nothing downstream
+catches it.
+
+**(c) R2's whole-target resolver silently drops declared targets; R1's own
+resolver refuses the identical shape.** `_mutation_targets_whole`
+(`runner.py:1770-1806`) `continue`s silently past an excluded dir, a
+non-matching `source_globs`, or a test path. Its R1 counterpart
+`_resolve_whole_target` (`evaluate.py:715-780`) **refuses** every one of
+those with a named `ERROR`/`BAD_LANE_CONFIG`, and its own docstring explains
+why: a target expanding to N files of which only one is measured would PASS
+while leaving the rest unjudged — "precisely the vacuity hole this whole mode
+exists to close." R2 reopened it one tier down. Reproduced: a lane declaring
+`targets = ["db/schema.sql", "db/tests/fixtures.sql"]` mutates only
+`db/schema.sql`, reports `FAIL`/`MUTANTS_SURVIVED`, and nothing in the
+verdict names the dropped target (`judgment.r2` carries no `targets` field at
+all, only `judgment.r1` does) — "judged and clean" is indistinguishable from
+"silently skipped" from the artifact alone. A declared target absent at the
+judged commit also yields unnamed `ERROR`/`GIT_FAILED`, where R1 names the
+target.
+
+**Related (MINOR):** `runner.py:1316` (`config.py:1316` guard requiring
+`base` for SQL R1-only lanes) is gated on `"R2" not in rigor`, so it can never
+fire on an R2 lane — its only live effect is forcing an R1-only SQL
+whole-target lane to declare an inert `base`, inverting the
+`docs/CONSUMERS.md:119` rule ("`judge.base` is FORBIDDEN here") for one
+language. `whole_file_r2` is also not language-gated — a **Python**
+`R0,R1,R2` whole-target lane (a shape `DESIGN-GUIDE.md:904-905` blesses)
+silently switches R2 from diff-based to whole-file mutation, undocumented
+anywhere (every shipped doc still describes `mode`/`targets` as R1-only).
+
+### Why this needs a design decision, not a quick patch
+
+(a) and (c) both need the SAME kind of ruling B006(b)/A-292 already gave
+elsewhere in this codebase (never invent a fact; never silently narrow
+scope) applied consistently to R2's whole-target path — a design decision on
+what R2's own docstring/contract should say, not just a local patch. (b) is a
+scope question: should the vacuity-hole guard apply per-language at all, or
+should SQL's whole-target carve-out be expressed a different way that
+doesn't require weakening the guard's own stated purpose.
+
+### Acceptance
+
+- [x] a decision recorded on whether R2 whole-target should refuse
+      (matching R1) or silently narrow (current, rejected) declared targets
+      that fail its containment gates — **A-325: refuse, matching R1**;
+- [x] `judgment_resolved.base`/`base_resolution` is omitted when no tier
+      that reads a base actually ran;
+- [x] the SQL `judge.mode`/`judge.targets` carve-out no longer permits an
+      inert, artifact-advertised `targets` declaration with no enforcement —
+      the carve-out is deleted; `targets` also leaves the surplus exemption;
+- [x] `whole_file_r2`'s language scope (SQL-only vs. any language) is a
+      recorded decision and matches the shipped documentation — **A-325:
+      `mode` is a lane-level scope read by R1 and R2 in EVERY language**,
+      documented in `README.md`, `docs/CONSUMERS.md` and
+      `docs/DESIGN-GUIDE.md`;
+- [x] a real SQL whole-target R2 lane, driven through the CLI, with one
+      target inside scope and one outside, either refuses naming both or
+      records both in the verdict — never silently reports on one alone —
+      it refuses `ERROR`/`BAD_LANE_CONFIG`, naming the target and the gate
+      on the diagnostics stream (transcript in the REPORT).
+
+**Not closed here, filed as B035:** `judgment.r2` still carries no `mode` or
+`targets` field, so an `R0,R2` whole-target artifact cannot witness its own
+scope. The model, the raw verifier and the JSON Schema therefore enforce the
+`base` rule only where `judgment.r1.mode` is present to witness it.
+
+## B034 — B015's two "semantic" Python mutation operators add zero mutation coverage beyond `compare-swap`, mislabel ordinary attribute comparisons as enum comparisons, and double-count every co-selected site
+
+**Filed 2026-08-25, from the 2.1.0→2.3.0 review-gap audit
+(`reports/assay-review-gap-audit-2026-08-25.md` §1, findings B015-A/B/C) —
+`126ef577`/`6324548d` (B015, marked IMPLEMENTED 2026-08-24; see the
+correction note on B015 above). This is the fix-needed successor to B015
+itself, filed separately per this project's own convention (cf. B021 out of
+B012).**
+**Status:** **FIXED 2026-08-26 by WITHDRAWAL (A-326)**, on branch
+`fix/assay-b033-b034-sql-mutation-operators`, unmerged and unreleased at the
+time of writing — it ships in the next release, and this line deliberately
+names no version until one exists.
+See `reports/assay-B033-B034-remediation-REPORT.md` for the
+before/after CLI transcripts and for why the redesign path was evaluated and
+rejected on A-112/A-221 grounds rather than on difficulty.
+
+### Problem
+
+**(a) Zero new mutations.** `_semantic_comparison_sites`
+(`src/assay/adapters/python.py:712-761`) flips `ast.Eq`/`ast.NotEq` exactly
+the way `_compare_swap_sites` already does for the same two operators, with
+no operand-type restriction on either side. Measured over `src/assay/**.py`:
+87 B015 sites, **zero** that `compare-swap` does not already produce
+identically (same byte span, same replacement bytes). A consumer adopting
+both families — the shape `docs/DESIGN-GUIDE.md:1477`'s own example now
+declares — gets no additional mutation coverage of any kind. B015's own
+"Required before dispatch" list explicitly asked to "decide explicitly
+whether any proposed site overlaps `compare-swap` enough to be
+indistinguishable evidence; reject or split accordingly" — no such decision
+exists (no A-number, no carve, no review report), and the one acceptance box
+that would have caught this ("a real R2 lane demonstrates kills attributable
+to each admitted family") is the one left unchecked while the item was
+marked IMPLEMENTED.
+
+**(b) Every co-selected site is emitted twice.** `_candidate_sites`
+(`python.py:779-784`) concatenates `_compare_swap_sites` and
+`_semantic_comparison_sites` results with no de-duplication;
+`MutationSite.identity` (`mutation.py:317-322`) includes the operator name,
+so the duplicate-identity guard does not fire. A real R2 lane declaring both
+families on a one-line change (`if cfg.debug == True:`) produces `total: 2`
+for one distinct mutation — identical span, identical replacement digest,
+attributed to two different operators — accepted cleanly by `assay verify`.
+Consequence: inflated `mutation.total`/`candidate_count`, a `--max-mutants`
+budget consumed roughly 2x, lane wall-clock roughly doubled on eligible
+sites, and a verdict that misreports which operator family actually
+killed/survived a mutant.
+
+**(c) The enum predicate matches any attribute access, not enum members.**
+`_is_enum_member_expression` (`python.py:705-710`) is `Attribute(value=Name)`
+and nothing more — matches `self.count`, `cfg.debug`, `path.suffix`, `os.sep`;
+its own docstring's second example (`enums.Color.RED`,
+`Attribute(value=Attribute)`) is in fact *rejected* by the predicate it
+documents. All 87 measured B015 sites in assay's own source are this
+false-positive class — the project's own code compares no enum member
+anywhere. The shipped test suite never tests an ordinary attribute
+comparison (only a true-positive enum access and a rejected `Call`), so the
+entire false-positive class is untested.
+
+**Related (MINOR, same feature):** a stale `left` carried across loop
+iterations (`python.py:761`) mis-splices the wrong `==` token in a mixed
+comparison chain (`f() == g() == cfg.x`) — `_compare_swap_sites` recomputes
+`left` per index and does not have this bug. No decision record exists for
+this vocabulary extension (`grep -c "B015" decisions.md` = 0), despite
+`vocabulary.py`'s own docstring describing the per-language operator set as
+closed by construction and governed by A-numbered rulings.
+
+### Why this needs a design decision, not a quick patch
+
+This is the exact question B015's own filing required be answered before
+dispatch and wasn't: do these operator families earn a place in the closed
+`python:*` vocabulary at all? A local fix to (b)/(c) does not resolve (a) —
+if the sites are a strict subset of `compare-swap`'s output, no
+de-duplication or predicate tightening produces new coverage; the operators
+either need a genuinely distinct site rule (e.g., something `compare-swap`
+provably cannot express) or should be withdrawn from the schema/vocabulary,
+which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
+
+### Acceptance
+
+- [x] a decision recorded (A-numbered) on whether
+      `python:uuid-equality-swap`/`python:enum-comparison-swap` remain in the
+      vocabulary, are redesigned to produce genuinely distinct sites, or are
+      withdrawn — **A-326: withdrawn**;
+- [x] if kept: n/a — not kept;
+- [x] co-selection with `compare-swap` no longer double-counts a shared
+      site — the family produces no sites at all, so the shared span is
+      emitted exactly once, by `compare-swap`, guarded by a test that
+      compares the identity list of `compare-swap` alone against
+      `compare-swap` + both withdrawn names;
+- [~] if withdrawn: `docs/DESIGN-GUIDE.md`'s example and
+      `MUTATION_OPERATORS_BY_LANGUAGE`'s PRODUCER role are reverted, and
+      B015's status is corrected. The schema `oneOf` and the catalogue
+      MEMBERSHIP are deliberately **not** reverted in this wave — A-326
+      applies A-324's own test and finds the opposite answer to A-320's:
+      released `assay verify` builds ACCEPT a v7 document naming either
+      operator (re-measured, exit 0, transcript in the REPORT), so removing
+      the spellings would invalidate real artifacts and needs the next
+      schema-version bump. The names are inert (`vocabulary.
+      WITHDRAWN_MUTATION_OPERATORS`), refused at load and by `--operators`,
+      and produced by nothing.
+
+## B035 — an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there
+
+**Filed 2026-08-26 from B033's own fix (A-325).**
+**Status:** open. Not a live defect — a gap in what the artifact can prove.
+**Priority note (round-2 review of the B033 wave):** this is not a neutral
+deferral. A-325 had to STOP enforcing the old `base` rule for `R0,R2`
+documents to make honest whole-target R2 artifacts verifiable at all, so a
+diff-based `R0,R2` verdict that omits the base it was scoped against is
+accepted today where 2.4.1 refused it (both directions measured in
+`reports/assay-B033-B034-remediation-REPORT.md`). dstdns's `cw2b_schema` —
+its only R2 lane — is exactly that shape. B035 should ride the next
+schema-version bump rather than wait for one to happen along.
+
+### Problem
+
+`judge.mode` is a lane-level scope: a whole-target lane judges declared files
+whole at R1 and R2 alike and reads no comparison commit at either tier, so
+`judgment.resolved.base` must be ABSENT (A-325). `judgment.r1` records its
+`mode` on the wire, so for any lane declaring R1 the model
+(`Judgment.__post_init__`), the raw verifier
+(`verify._check_base_matches_the_tiers_present`) and the packaged JSON Schema
+can all enforce both halves of that rule — required under `changed_lines`,
+forbidden under `whole_target`.
+
+`judgment.r2` records neither `mode` nor `targets`. So for an `R0,R2` lane —
+every SQL lane, and dstdns's `cw2b_schema` specifically — nothing on the wire
+distinguishes a diff-based R2 (which MUST carry a base) from a whole-target R2
+(which must NOT). All three layers therefore enforce neither half for that
+shape, and a foreign document can record either way. The producer is correct;
+nothing downstream can check it.
+
+Second, smaller half of the same gap: a whole-target R2 verdict names the files
+it mutated only through `mutation.*[].path` entries, so a target that produced
+zero sites is invisible. R1 records `judgment.r1.targets`; R2 records nothing
+equivalent. A-325's refusal makes a silently NARROWED set impossible, but a
+declared target that legitimately yields no mutants still cannot be told from
+one that was never considered.
+
+### Why this needs a schema change, not a patch
+
+Both halves need a new field on `judgment.r2` (`mode`, and `targets`
+mirroring `judgment.r1.targets`). The packaged schema sets
+`additionalProperties: false` on that object, so a released consumer holding a
+v7 schema copy would reject any document carrying it: this is a
+schema-version bump (v7→v8), not an additive fix — the same rule B014's own
+6→7 bump followed for four optional fields. It should ride the next bump
+alongside whatever else needs one, not force one on its own.
+
+### Acceptance
+
+- [ ] `judgment.r2` records the mode it judged under, and the declared
+      target set when that mode is `whole_target`;
+- [ ] the model, `verify.py` and the schema enforce the `base` rule for an
+      `R0,R2` lane, not only for lanes declaring R1;
+- [ ] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
+      the bump.

@@ -646,36 +646,58 @@ def _check_resolved_language_owns_every_operator(
 
 
 def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -> None:
-    """(P33/A-223a/A-227, widened by wave-1 §6/A-260) ``judgment.resolved.
-    base`` is required IF ``r2`` is present, or ``r1`` is present with
-    ``mode == "changed_lines"`` -- and forbidden UNLESS one of those holds.
-    A whole-target ``r1`` with no ``r2`` resolves nothing against a base
-    (B005's whole point).
+    """(P33/A-223a/A-227, widened by wave-1 §6/A-260, CORRECTED by
+    B033/A-325) ``judgment.resolved.base`` is required IF ``r1`` is present
+    with ``mode == "changed_lines"``, forbidden IF ``r1`` is present with
+    ``mode == "whole_target"``, and forbidden when neither tier is present.
+
+    The old rule made ``r2`` alone force a base. That was false as soon as
+    ``whole_file_r2`` shipped: ``mode`` is a LANE-level scope, so a
+    whole-target R2 mutates whole declared files and reads no comparison
+    commit, exactly as a whole-target R1 does. Under the old rule an honest
+    whole-target R2 artifact could not be produced at all -- the producer
+    had to record a base nothing compared against.
+
+    Where ``r1`` is present its ``mode`` witnesses the LANE's mode, so both
+    halves are enforceable for both tiers. Where ``r1`` is absent and ``r2``
+    present, v7 puts nothing on the wire that distinguishes a diff-based R2
+    from a whole-target one (``judgment.r2`` has no ``mode``/``targets``
+    field), so neither half is enforceable and neither is claimed -- see
+    B035. Asserting a rule this document cannot witness is how a verifier
+    starts rejecting honest artifacts, which is the defect being fixed here,
+    not one to re-introduce facing the other way.
 
     The producer cannot reach the forbidden half for an ordinary
     ``changed_lines`` lane -- A-062 refuses ``judge.base`` on an ``R0,R3``
-    lane as inert config, and this loader-level widening does the same for
-    a whole-target R1 with no R2 -- but this verifier exists for FOREIGN
-    documents, which is exactly the population that can.
+    lane as inert config, and the loader now does the same for every
+    whole-target lane -- but this verifier exists for FOREIGN documents,
+    which is exactly the population that can.
     """
     resolved = judgment.get("resolved")
     if not isinstance(resolved, dict):
         return
     r1 = judgment.get("r1")
-    r1_changed_lines = isinstance(r1, dict) and r1.get("mode") == "changed_lines"
-    compares_a_base = "r2" in judgment or r1_changed_lines
     has_base = "base" in resolved
-    if compares_a_base and not has_base:
-        failures.append(
-            "judgment.resolved omits base while judgment records r2, or r1 "
-            "in changed-line mode, both of which judge a diff against a "
-            "resolved comparison commit"
-        )
-    if not compares_a_base and has_base:
+    if isinstance(r1, dict):
+        if r1.get("mode") == "changed_lines" and not has_base:
+            failures.append(
+                "judgment.resolved omits base while judgment records r1 in "
+                "changed-line mode, which judges a diff against a resolved "
+                "comparison commit"
+            )
+        if r1.get("mode") == "whole_target" and has_base:
+            failures.append(
+                "judgment.resolved records a base although judgment records "
+                "r1 in whole-target mode; whole-target scope replaces the "
+                "diff at every tier, so no tier here reads a comparison "
+                "commit"
+            )
+        return
+    if "r2" not in judgment and has_base:
         failures.append(
             "judgment.resolved records a base although judgment carries "
-            "neither r2 nor r1 in changed-line mode; no tier present here "
-            "reads a comparison commit"
+            "neither r1 nor r2; no tier present here reads a comparison "
+            "commit"
         )
 
 
@@ -1052,6 +1074,7 @@ def _reconstruct_judgment_resolved(raw: dict) -> JudgmentResolved:
         language=raw["language"],
         source_roots=tuple(raw["source_roots"]),
         base=raw.get("base"),
+        base_resolution=raw.get("base_resolution"),
     )
     _reject_unknown_keys(raw, resolved.to_dict(), "judgment.resolved")
     return resolved
@@ -1072,6 +1095,14 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
 
 
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
+    # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
+    # not, from `7a4f6333` (which added them to the dataclass and the schema)
+    # until now -- so `assay verify` rejected a REAL `assay run --shard 0/N`
+    # artifact with `unknown judgment.r2 field(s): ['shard_count',
+    # 'shard_index']`, on a document that passed JSON Schema validation
+    # cleanly. Found by driving a real sharded run through the installed CLI
+    # while verifying B031's own `mutation.candidate_ids` fix, not by reading
+    # the diff -- the identical near-miss shape, one block over.
     r2 = JudgmentR2(
         jobs=raw["jobs"],
         max_mutants=raw["max_mutants"],
@@ -1079,6 +1110,8 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         kill_attribution=raw["kill_attribution"],
         kill_signal_artifact=raw.get("kill_signal_artifact"),
         equivalence_artifact=raw.get("equivalence_artifact"),
+        shard_index=raw.get("shard_index"),
+        shard_count=raw.get("shard_count"),
     )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
@@ -1134,9 +1167,19 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
 
 
 def _reconstruct_mutation(raw: dict) -> Mutation:
+    # B031/A-320: `candidate_ids` is REGISTERED here, not merely schema-legal.
+    # `assay.verify` reconstructs its own comparison object from the raw
+    # untrusted document rather than trusting it (A-182/A-317), so a field
+    # this function does not read is a field `_reject_unknown_keys` refuses
+    # below -- which is exactly what happened to `candidate_ids` between
+    # `7a4f6333` (which added it to the dataclass and the schema) and B031
+    # (`assay verify: schema: unknown mutation field(s): ['candidate_ids']`
+    # on a document that passed JSON Schema validation cleanly).
+    candidate_ids = raw.get("candidate_ids")
     mutation = Mutation(
         candidate_count=raw["candidate_count"],
         total=raw["total"],
+        candidate_ids=None if candidate_ids is None else tuple(candidate_ids),
         **{
             name: tuple(_reconstruct_mutant_outcome(item) for item in raw[name])
             for name in MUTATION_BUCKETS
@@ -1229,6 +1272,8 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             scope=document["scope"],
             enforcement=document["enforcement"],
         )
+        if document.get("env_effective_incomplete"):
+            lane_kwargs["env_effective_incomplete"] = True
 
     judgment_kwargs: dict[str, Any] = {}
     if "judgment" in document:

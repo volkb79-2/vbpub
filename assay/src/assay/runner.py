@@ -72,6 +72,7 @@ from __future__ import annotations
 import fnmatch
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -82,11 +83,25 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Callable, ContextManager, Iterator, Mapping, Protocol, Sequence, TextIO
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    TextIO,
+)
 
 from . import coverage, diff, git, isolation, measurability, mutation, safeio
 from .adapters.base import LanguageAdapter
-from .config import IsolationConfig, Lane, parse_duration
+from .config import (
+    MAX_INFRASTRUCTURE_VALUE_BYTES,
+    IsolationConfig,
+    Lane,
+    parse_duration,
+)
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, Outcome, ReasonCode
@@ -212,6 +227,14 @@ def default_process_runner(
     never merges a non-``None`` ``env`` with the parent's -- which is what
     makes "the child receives exactly lane env plus declared passthrough, and
     no ambient sentinel" true by construction rather than by convention (O2).
+
+    ``errors="replace"`` (B027 round 2 finding N-W2): without it, undecodable
+    child output raised an uncaught ``UnicodeDecodeError`` here -- on the
+    NORMAL completion path, not the timeout path B027 fixed -- contradicting
+    ``_bounded_tail``'s own docstring ("undecodable bytes have already
+    become U+FFFD by then") and the claim B027's ``_decode_timeout_stream``
+    makes about matching this path's policy. Tolerant decoding here is what
+    makes both of those true instead of aspirational.
     """
     return subprocess.run(
         list(argv),
@@ -220,10 +243,132 @@ def default_process_runner(
         timeout=timeout,
         capture_output=True,
         text=True,
+        errors="replace",
     )
 
 
 COMMAND_TAIL_BYTES = 64 * 1024
+
+#: (B032/A-322) The ceiling on one `environment_command` preflight probe.
+#: A probe answers a yes/no question about the INVOKING environment -- "is
+#: this the environment this lane declared?" -- before any repository,
+#: snapshot or lane work, so it has no legitimate reason to run long, and a
+#: probe that hangs must not be able to spend the lane's whole declared
+#: budget before the lane's own command has even started. The effective
+#: timeout is `min(this, deadline.remaining())`: the lane budget still wins
+#: when it is the smaller of the two.
+PROBE_BUDGET_SECONDS = 30.0
+
+
+def _probe_refusal_terminal(
+    probe_result: "CommandResult",
+) -> tuple[Outcome, ReasonCode]:
+    """The `(outcome, reason_code)` an `environment_command` probe failure
+    renders as (B032/A-321).
+
+    `8a2a4731` hardcoded `ERROR`/`BAD_LANE_CONFIG` for every probe failure
+    and discarded `execute_plan`'s own classification, so a probe that
+    genuinely exhausted its budget -- which `execute_plan` classifies
+    correctly as `BUDGET_EXCEEDED`/`LANE_TIMEOUT` -- was recorded as an
+    operator config error, exit 2 instead of exit 4. A gate that retries a
+    timeout but hard-fails a config error (the estate's own run-gate shape)
+    then does exactly the wrong thing on a real timeout.
+
+    A-321's ruling: the timeout is the ONE distinction that must survive.
+    Every other probe failure -- a missing binary (`ERROR`/`EXEC_FAILED`), a
+    nonzero exit or a signal death (`FAIL`/`COMMAND_FAILED`) -- means the
+    same actionable thing to a consumer ("this lane's declared environment is
+    not the invoking one; the lane as declared cannot be honoured here"), so
+    those keep collapsing into `ERROR`/`BAD_LANE_CONFIG`. What separates them
+    is now carried as text on the diagnostics stream
+    (:func:`_report_probe_refusal`), not by widening the closed reason-code
+    vocabulary (A-138/A-170).
+    """
+    if probe_result.reason_code is ReasonCode.LANE_TIMEOUT:
+        return probe_result.outcome, ReasonCode.LANE_TIMEOUT
+    return Outcome.ERROR, ReasonCode.BAD_LANE_CONFIG
+
+
+def _report_probe_refusal(
+    lane: Lane,
+    probe_result: "CommandResult",
+    *,
+    status: Outcome,
+    reason_code: ReasonCode,
+    diagnostics: "TextIO | None",
+    probe_timeout: float = PROBE_BUDGET_SECONDS,
+) -> None:
+    """B010's own stated deliverable, finally shipped (B032/A-322).
+
+    B010 asked, verbatim, for a refusal that says "this lane's declared
+    environment does not match the invoking one; run via `<declared
+    wrapper>`" *instead of surfacing the suite's raw traceback*. What
+    `8a2a4731` shipped wrote **0 bytes** to stderr and emitted a generic
+    `BAD_LANE_CONFIG` whose `argv_effective` named the LANE's command --
+    which never executed -- so a consumer got neither the raw error B010
+    complained about nor the clear message B010 asked for.
+
+    The verdict artifact stays exactly as closed as it was: no free-text
+    field is added to it (A-138/A-170). The diagnosis goes to the caller's
+    own stream, which is where :mod:`assay.cli` already prints every other
+    typed refusal it catches.
+    """
+    if diagnostics is None:
+        return
+    wrapper = shlex.join(lane.environment_command or ())
+    if reason_code is ReasonCode.LANE_TIMEOUT:
+        # NOT B010's message: a probe that never finished proved nothing
+        # about the environment either way, so claiming a mismatch would be
+        # an invented fact. The lane's own command still never started.
+        #
+        # The window actually enforced is `min(PROBE_BUDGET_SECONDS,
+        # deadline.remaining())` (B032/A-322's `probe_timeout`, passed in by
+        # the caller) -- when the lane's own remaining budget is the
+        # tighter bound, hardcoding the fixed 30s cap here would be a false
+        # claim about which bound actually fired (round-2 review finding).
+        cause = (
+            f"its declared environment_command did not finish within its "
+            f"{probe_timeout:g}s preflight window (the lesser of the "
+            f"{PROBE_BUDGET_SECONDS:g}s probe cap and the lane's remaining "
+            f"budget), so the lane's own command never started"
+        )
+    else:
+        detail = {
+            ReasonCode.EXEC_FAILED: "the probe command could not be executed",
+            ReasonCode.COMMAND_FAILED: (
+                f"the probe exited {probe_result.returncode}"
+                if probe_result.returncode is not None
+                else "the probe was killed before it could exit"
+            ),
+        }.get(probe_result.reason_code, "the probe did not pass")
+        cause = (
+            f"its declared environment does not match the invoking one "
+            f"({detail}), so the lane's own command never started"
+        )
+    print(
+        f"assay: {status.value}/{reason_code.value}: lane {lane.name!r}: "
+        f"{cause}. Run via the declared wrapper: {wrapper}",
+        file=diagnostics,
+    )
+    for label, tail in (
+        ("stderr", probe_result.stderr_tail),
+        ("stdout", probe_result.stdout_tail),
+    ):
+        if tail:
+            print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
+
+
+def _decode_timeout_stream(raw: str | bytes | None) -> str | None:
+    """(B027) `subprocess.TimeoutExpired.stdout`/`.stderr` are `bytes`, even
+    under `text=True` -- the one path CPython does not text-decode for us.
+    Tolerant decode (never raises on undecodable bytes), matching the
+    replacement-character policy `_bounded_tail`'s own docstring already
+    describes for the normal completion path, so a hung mutant's tail reads
+    the same way a completed one's does.
+    """
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
 
 
 def _bounded_tail(raw: str | None) -> tuple[str, int]:
@@ -400,10 +545,37 @@ def resolve_command_plan(
                         reason_code=ReasonCode.BAD_LANE_CONFIG,
                     )
                 value = node
+            if len(value.encode("utf-8")) > MAX_INFRASTRUCTURE_VALUE_BYTES:
+                # (B022 item 4) a resolved value this large would otherwise
+                # fail late and opaquely at `E2BIG` on exec, or silently
+                # inflate every child process's environment.
+                raise AssayError(
+                    f"infrastructure fact {name!r} resolved to a value of "
+                    f"{len(value.encode('utf-8'))} bytes, exceeding the "
+                    f"{MAX_INFRASTRUCTURE_VALUE_BYTES}-byte bound",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
             env_effective[name] = value
     for name in lane.env_passthrough:
-        if name in source:
-            env_effective[name] = source[name]
+        if name not in source:
+            continue
+        if name in env_effective:
+            # (B022) `config.py` already refuses an `env_passthrough` name
+            # that collides with a declared `infrastructure` fact at LOAD
+            # time -- this can only fire if that loader check is ever
+            # weakened, but the runtime had no defence of its own: an
+            # unconditional overwrite here would let a passthrough value
+            # silently win over an infrastructure-injected one, the exact
+            # opposite of A-293's "every injected fact has exactly one
+            # owner". Refuse loudly instead of silently overwriting.
+            raise AssayError(
+                f"env_passthrough name {name!r} collides with a declared "
+                f"infrastructure fact of the same name",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        env_effective[name] = source[name]
     argv_declared = tuple(lane.argv)
     argv_appended = tuple(argv_append)
     return CommandPlan(
@@ -455,8 +627,16 @@ def execute_plan(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout_tail, stdout_dropped_bytes = _bounded_tail(exc.stdout)
-        stderr_tail, stderr_dropped_bytes = _bounded_tail(exc.stderr)
+        # (B027) `TimeoutExpired.stdout`/`.stderr` carry whatever partial
+        # bytes `Popen._communicate` had buffered when the timeout fired --
+        # CPython does NOT run this exception path through the same
+        # text-decode step a normal `CompletedProcess` return does, even
+        # though `text=True` was passed to `subprocess.run`. `_bounded_tail`
+        # is documented and typed to receive an already-decoded `str`; decode
+        # here, at the one call site that actually receives `bytes`, so its
+        # contract stays accurate everywhere else.
+        stdout_tail, stdout_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stdout))
+        stderr_tail, stderr_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stderr))
         return CommandResult(
             plan=plan,
             outcome=Outcome.BUDGET_EXCEEDED,
@@ -521,7 +701,16 @@ def execute_command(
 
     Ordering, all before anything launches:
 
-    1. :func:`resolve_command_plan` -- pure, cannot fail.
+    1. :func:`resolve_command_plan` -- pure, but CAN raise
+       :class:`~assay.errors.AssayError` since B013: this function accepts no
+       *infrastructure_source*/*infrastructure_environment* of its own, so a
+       lane declaring any infrastructure fact reaches :func:`resolve_command_plan`
+       with neither -- a ``derived:`` fact always raises here regardless of
+       whether it is actually resolvable elsewhere (B029, filed rather than
+       fixed: this function's only caller, :mod:`assay.canary`'s R3 side-run,
+       catches the raise and reports a misattributed ``ERROR``/
+       ``BAD_LANE_CONFIG`` R3 claim rather than crashing, but the claim's own
+       cause is wrong on a lane whose infrastructure resolves everywhere else).
     2. the append-permission gate (A-095): if *argv_append* is non-empty and
        ``lane.allow_argv_append`` is false, this returns
        ``ERROR``/``EXEC_FAILED`` WITHOUT calling *process_runner* at all --
@@ -734,11 +923,11 @@ def evaluate_r1(
 
         if effective_require_branch and derive_branch_capability(profile) == "unavailable":
             raise AssayError(
-                f"judge.require_branch is true but the coverage artifact's "
-                f"branch capability is 'unavailable' -- this format cannot "
-                f"report branch arcs at all, so judging on lines alone would "
-                f"be exactly the silent rigor downgrade require_branch "
-                f"exists to refuse",
+                "judge.require_branch is true but the coverage artifact's "
+                "branch capability is 'unavailable' -- this format cannot "
+                "report branch arcs at all, so judging on lines alone would "
+                "be exactly the silent rigor downgrade require_branch "
+                "exists to refuse",
                 outcome=Outcome.NO_MEASUREMENT,
                 reason_code=ReasonCode.BRANCH_UNAVAILABLE,
             )
@@ -875,6 +1064,7 @@ def assemble_verdict(
     mutation_claim: Claim | None = None,
     judgment: Judgment | None = None,
     ended: str | None = None,
+    env_effective_incomplete: bool = False,
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -1007,6 +1197,7 @@ def assemble_verdict(
         argv_effective=plan.argv_effective,
         env_declared=plan.env_declared,
         env_effective=plan.env_effective,
+        env_effective_incomplete=env_effective_incomplete,
         scope=lane.scope,
         enforcement=lane.enforcement,
         result_stdout_tail=result.stdout_tail,
@@ -1092,18 +1283,47 @@ def refuse_lane(
     still owes every declared evidence identity a complete artifact entry.
     """
     _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
-    plan = resolve_command_plan(
-        lane,
-        argv_append=argv_append,
-        passthrough_source=passthrough_source,
-        project_prefix=project_prefix,
-        infrastructure_source=infrastructure_source,
-        infrastructure_environment=infrastructure_environment,
-    )
+    env_effective_incomplete = False
+    try:
+        plan = resolve_command_plan(
+            lane,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=project_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+        )
+    except AssayError:
+        # (B025) This call exists only to RECORD the attempted plan on an
+        # ALREADY-DECIDED refusal (A-036) -- every raise inside
+        # `resolve_command_plan` is over its own infrastructure/
+        # `env_passthrough` declarations (BAD_LANE_CONFIG), so a failure
+        # here means the infrastructure declaration itself, not *status*/
+        # *reason_code* above, is what's unresolvable. The caller's own
+        # refusal cause must still produce an artifact, so this falls back
+        # to what's always safe to record -- argv never touches
+        # infrastructure -- and reports env_effective as exactly `lane.env`
+        # (the one thing known for certain, never infrastructure or
+        # `env_passthrough` values, neither of which could be safely
+        # completed), flagged honestly incomplete rather than invented.
+        argv_effective = tuple(lane.argv) + tuple(argv_append)
+        plan = CommandPlan(
+            argv_declared=tuple(lane.argv),
+            argv_appended=tuple(argv_append),
+            argv_effective=argv_effective,
+            env_declared=MappingProxyType(dict(lane.env)),
+            env_effective=MappingProxyType(dict(lane.env)),
+            env_passthrough=tuple(lane.env_passthrough),
+            allow_argv_append=lane.allow_argv_append,
+            budget_seconds=lane.budget_seconds,
+            project_prefix=project_prefix,
+        )
+        env_effective_incomplete = True
     return _refuse_lane_with_plan(
         lane,
         commit=commit,
         plan=plan,
+        env_effective_incomplete=env_effective_incomplete,
         status=status,
         reason_code=reason_code,
         assay_version=assay_version,
@@ -1124,12 +1344,18 @@ def _refuse_lane_with_plan(
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
+    env_effective_incomplete: bool = False,
 ) -> Verdict:
     """The identical shape :func:`refuse_lane` builds, given an
     ALREADY-RESOLVED *plan* (P23/A-193): the higher-rigor path resolves its
     one immutable plan before any dirt/HEAD/snapshot work, so a pre-baseline
     refusal must record that exact plan rather than resolving a second one
     (O1's "no repeated unit receives lane... as a source of command truth").
+
+    *env_effective_incomplete* (B025) is `refuse_lane`'s own signal that
+    *plan* is the degraded fallback built when infrastructure resolution
+    itself failed -- always `False` for every OTHER caller, whose *plan* is
+    always a real, fully-resolved one.
     """
     started = clock()
     ended = clock()
@@ -1160,6 +1386,7 @@ def _refuse_lane_with_plan(
         assay_version=assay_version,
         evidence=evidence,
         declared_evidence=declared_evidence,
+        env_effective_incomplete=env_effective_incomplete,
     )
 
 
@@ -1668,7 +1895,34 @@ def _mutation_targets_whole(
     source_root_paths: Sequence[Path],
     targets: Sequence[str],
 ) -> tuple[mutation.MutationTarget, ...]:
-    """Build whole-file R2 targets from the lane's declared target list."""
+    """Build whole-file R2 targets from the lane's declared target list.
+
+    Every containment gate REFUSES ``ERROR``/``BAD_LANE_CONFIG`` naming the
+    target and the gate it failed -- never a silent ``continue`` (B033/
+    A-325). This is R1's own rule, one tier down: :func:`assay.evaluate.
+    _resolve_whole_target` refuses the identical shapes, and its docstring
+    states why -- "a directory target expanding to N files of which only one
+    is measured would PASS while leaving the rest unjudged, which is
+    precisely the vacuity hole this whole mode exists to close". R2 narrowing
+    the same declaration silently is that hole reopened: ``judgment.r2``
+    carries no ``targets`` field at all, so from the artifact alone a target
+    that was judged and clean is indistinguishable from one that was never
+    mutated. A partially-narrowed target set renders a real PASS/FAIL over
+    scope the consumer never agreed to.
+
+    The gates run in R1's own order -- symlink, then containment, then
+    existence, then excluded directory, then source globs, then test path --
+    so a consumer who moves one lane from R1 to R2 sees the same failure
+    named first. The symlink gate is R2's own, not a delegation to
+    :meth:`assay.isolation.SnapshotRepository.read_regular_file` one layer
+    down (round-2 review): that layer does refuse a symlink, but as
+    ``ERROR``/``GIT_FAILED``, which reads as a repository failure when the
+    actual mistake is in the lane's own declaration.
+
+    A duplicate spelling is the one thing still collapsed rather than
+    refused: two identical entries request exactly the same work, so
+    de-duplicating narrows nothing.
+    """
     resolved: list[mutation.MutationTarget] = []
     seen: set[str] = set()
     for raw_target in targets:
@@ -1676,7 +1930,19 @@ def _mutation_targets_whole(
         if path in seen:
             continue
         seen.add(path)
-        abs_path = (snapshot_repo_top / path).resolve()
+        candidate = snapshot_repo_top / path
+        # Checked BEFORE anything that resolves, exactly as R1 does:
+        # `is_symlink` never raises for a non-existent path, and `.resolve()`
+        # below would silently follow the link and then report gates about
+        # the TARGET's location rather than the declared entry's.
+        if candidate.is_symlink():
+            raise AssayError(
+                f"mutation target {raw_target!r} is a symlink; a "
+                f"whole-target entry must be a real, ordinary source file",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        abs_path = candidate.resolve()
         if not any(abs_path.is_relative_to(root) for root in source_root_paths):
             raise AssayError(
                 f"mutation target {raw_target!r} is outside judge.source_roots "
@@ -1684,14 +1950,43 @@ def _mutation_targets_whole(
                 outcome=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
+        if not abs_path.is_file():
+            raise AssayError(
+                f"mutation target {raw_target!r} does not exist as a regular "
+                f"file at the judged commit (looked for {path!r} inside the "
+                f"snapshot); a whole-target entry is always a regular file, "
+                f"never a directory and never absent",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if any(part in adapter.excluded_dir_names for part in PurePosixPath(path).parts[:-1]):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} sits inside an excluded "
+                f"directory ({sorted(adapter.excluded_dir_names)})",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if not any(fnmatch.fnmatch(path, pattern) for pattern in adapter.source_globs):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} is not adapter-recognised "
+                f"source ({list(adapter.source_globs)})",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         if adapter.is_test_path(path):
-            continue
+            raise AssayError(
+                f"mutation target {raw_target!r} is a test path per the "
+                f"adapter's own convention",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
         text = _read_prepared_source_text(prepared, path, deadline=deadline)
-        lines = frozenset(range(1, text.count("\n") + 2))
+        # Every line the file actually has. A trailing newline TERMINATES the
+        # last line rather than starting another, so `count("\n") + 2` (the
+        # shipped spelling) claimed one line that does not exist for the
+        # newline-terminated files essentially every source file is.
+        line_count = text.count("\n") + (0 if text.endswith("\n") else 1)
+        lines = frozenset(range(1, line_count + 1))
         resolved.append(mutation.MutationTarget(path=path, text=text, lines=lines))
     return tuple(resolved)
 
@@ -1754,9 +2049,12 @@ def _run_prepared_lane(
     r2_declared: bool,
     r3_declared: bool,
     resolved_base: str | None,
+    base_resolution: str | None = None,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
     still-live seed. Never lets an :class:`~assay.errors.AssayError` escape
@@ -1779,9 +2077,19 @@ def _run_prepared_lane(
     kill_signal_artifact = (
         lane.judge.mutation.kill_signal_artifact if r2_declared else None
     )
-    progress_path = (
-        Path(".assay") / f"{lane.name}.progress.jsonl" if r2_declared else None
-    )
+    # B031/A-320. This used to be an UNCONDITIONAL
+    # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
+    # a CWD-relative path in the CONSUMER's live worktree, built by
+    # interpolating an unvalidated lane name. Three defects in one line: it
+    # broke B006(b)/A-292's "never the consumer's real worktree" rule (an R2
+    # lane passed once and then refused forever with
+    # `NO_MEASUREMENT`/`DIRTY_TREE`, reproduced), it let a lane named
+    # `"../../../pwned/esc"` write NDJSON outside the repository, and it was
+    # relative to the invoking CWD rather than to anything the verdict could
+    # name. Progress is now OPT-IN and consumer-directed: `assay run
+    # --progress PATH` (the same contract `--verdict-json` already has), and
+    # `None` -- write nothing at all -- is the default for every lane.
+    progress_path = progress_artifact if r2_declared else None
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
@@ -1977,6 +2285,20 @@ def _run_prepared_lane(
                         targets=lane.judge.targets or (),
                     )
                 except AssayError as exc:
+                    # B033/A-325: the verdict stays as closed as it was --
+                    # `judgment.r2` has no `targets` field and gains none
+                    # (A-138/A-170) -- so WHICH declared target failed WHICH
+                    # gate is written to the caller's diagnostics stream,
+                    # exactly as A-322 does for a probe refusal. Without
+                    # this, a whole-target R2 refusal is a bare
+                    # `BAD_LANE_CONFIG` and the consumer has to guess which
+                    # of N declared targets it names.
+                    if diagnostics is not None:
+                        print(
+                            f"assay: lane {lane.name}: R2 whole-target "
+                            f"resolution refused: {exc}",
+                            file=diagnostics,
+                        )
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
@@ -2177,11 +2499,25 @@ def _run_prepared_lane(
 
     judgment: Judgment | None = None
     if judgment_r1 is not None or judgment_r2 is not None or judgment_r3 is not None:
+        # B033/A-325: "a tier ABOVE R0 ran" is not the same question as "a
+        # tier that READS a base ran", and whole-target scope is exactly
+        # where the two diverge. A whole-target R1 never resolves a base
+        # (`on_base_resolved` is never called on that path), and a
+        # whole-target R2 skips both `check_base_is_head` and the `git diff`
+        # -- so on a whole-target lane NEITHER tier compares against a
+        # comparison commit, and recording one would be the invented fact
+        # `_build_judgment_resolved`'s own docstring forbids.
+        whole_target_scope = lane.judge.mode == "whole_target"
+        r1_reads_base = judgment_r1 is not None and not whole_target_scope
+        r2_reads_base = judgment_r2 is not None and not (
+            whole_target_scope and lane.judge.targets is not None
+        )
         judgment = Judgment(
             resolved=_build_judgment_resolved(
                 lane,
                 resolved_base=resolved_base,
-                compares_a_base=judgment_r1 is not None or judgment_r2 is not None,
+                base_resolution=base_resolution,
+                compares_a_base=r1_reads_base or r2_reads_base,
             ),
             r1=judgment_r1,
             r2=judgment_r2,
@@ -2192,7 +2528,11 @@ def _run_prepared_lane(
 
 
 def _build_judgment_resolved(
-    lane: Lane, *, resolved_base: str | None, compares_a_base: bool
+    lane: Lane,
+    *,
+    resolved_base: str | None,
+    base_resolution: str | None = None,
+    compares_a_base: bool,
 ) -> JudgmentResolved:
     """(P33/V5-1) the lane facts every computed tier above R0 consumes.
 
@@ -2208,12 +2548,16 @@ def _build_judgment_resolved(
       repository, and it is present exactly when a tier that reads one is
       (A-223a/A-227). An ``R0,R3`` lane genuinely has no comparison commit:
       ``JUDGE_FIELDS_BY_RIGOR`` gives R3 none, so recording one would be an
-      invented fact rather than a missing one.
+      invented fact rather than a missing one. The same is true of a
+      ``mode = "whole_target"`` lane at EVERY rigor (B033/A-325): whole-target
+      scope replaces the diff outright, so neither R1 nor R2 reads a base
+      there and ``judge.base`` is refused as inert config at load.
     """
     return JudgmentResolved(
         language=lane.judge.language,
         source_roots=lane.judge.source_roots,
         base=resolved_base if compares_a_base else None,
+        base_resolution=base_resolution if compares_a_base else None,
     )
 
 
@@ -2317,6 +2661,8 @@ def _run_higher_rigor_lane(
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
+    progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
     R1, R2, or R3 reaches here instead of the direct live-tree path in
@@ -2336,28 +2682,40 @@ def _run_higher_rigor_lane(
     """
     repo_top = git.repo_top(repo, remaining=deadline.remaining)
     project_prefix = _resolved_project_prefix(repo_top, project_root)
-    # NOTE (B013 remediation, filed as a new backlog item rather than fixed
-    # here): an `AssayError` from an unresolvable infrastructure declaration
-    # propagates uncaught past this point to `main()`'s outer handler, which
-    # prints a clean one-line message and exits non-zero but writes NO
-    # verdict artifact even when one was reserved -- unlike every other
-    # post-HEAD-resolution refusal in this module (`missing_required`, the
-    # bad-`--shard` refusal, adapter resolution), which all route through
-    # `refuse_lane`. It cannot simply be wrapped the same way here:
-    # `refuse_lane` itself calls `resolve_command_plan` a second time to
-    # record the attempted plan (A-036), which hits the identical
-    # infrastructure failure and raises again from inside `refuse_lane`.
-    # Resolving this needs a real verdict-shape decision (can a refusal
-    # honestly omit `argv_effective` when the plan itself could not be
-    # built?), not a quick catch here.
-    plan = resolve_command_plan(
-        lane,
-        argv_append=argv_append,
-        passthrough_source=passthrough_source,
-        project_prefix=project_prefix,
-        infrastructure_source=infrastructure_source,
-        infrastructure_environment=infrastructure_environment,
-    )
+    try:
+        plan = resolve_command_plan(
+            lane,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=project_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+        )
+    except AssayError as exc:
+        # (B025) An unresolvable infrastructure declaration is refused here,
+        # through the same `refuse_lane` every other post-HEAD-resolution
+        # refusal in this module already uses (`missing_required`, the
+        # bad-`--shard` refusal, adapter resolution) -- rather than
+        # propagating uncaught to `main()`'s outer handler with no verdict
+        # artifact at all. `refuse_lane`'s own second `resolve_command_plan`
+        # call hits this identical failure and falls back to a degraded
+        # plan (`env_effective_incomplete=True`, see its own docstring)
+        # instead of raising again from inside the refusal path itself.
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=project_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
     rigor_levels = tuple(lane.rigor)
 
     def refuse_all(status: Outcome, reason_code: ReasonCode) -> Verdict:
@@ -2387,6 +2745,14 @@ def _run_higher_rigor_lane(
         resolved_base = _resolve_declared_base(
             repo, lane.judge.base if lane.judge is not None else None,
             remaining=deadline.remaining,
+        )
+        # (B008) Sibling to resolved_base, not derived from it -- a lane
+        # declaring no base has nothing to classify, and this must reflect
+        # HEAD's shape at the SAME pre-snapshot point resolved_base did.
+        base_resolution = (
+            git.base_resolution_mode(repo, remaining=deadline.remaining)
+            if lane.judge is not None and lane.judge.base is not None
+            else None
         )
         with scratch_root_factory() as scratch_root:
             spec = isolation.SnapshotSpec(
@@ -2425,9 +2791,12 @@ def _run_higher_rigor_lane(
                         r2_declared=r2_declared,
                         r3_declared=r3_declared,
                         resolved_base=resolved_base,
+                        base_resolution=base_resolution,
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        progress_artifact=progress_artifact,
+                        diagnostics=diagnostics,
                     )
                 )
     except AssayError as exc:
@@ -2492,6 +2861,8 @@ def run_lane(
     shard: str | None = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
+    progress_artifact: Path | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
     dispatch on declared rigor, then either run the direct R0-only clean-tree
@@ -2598,36 +2969,83 @@ def run_lane(
     # refuse loudly on a nonzero exit, rather than surfacing an unrelated
     # suite failure from the wrong dependency closure.
     if lane.environment_command is not None:
-        probe_plan = CommandPlan(
-            argv_declared=tuple(lane.environment_command),
-            argv_appended=(),
-            argv_effective=tuple(lane.environment_command),
-            env_declared=MappingProxyType(dict(lane.env)),
-            env_effective=resolve_command_plan(
+        # (B025) This resolution used to never forward *infrastructure_source*/
+        # *infrastructure_environment* at all -- unconditionally crashing on
+        # any lane pairing `environment_command` with a `derived:` fact,
+        # resolvable or not (the one call site in this function that was
+        # broken by a missing forward, not just a missing refusal). Both are
+        # in scope here already; there is no reason for the probe's own plan
+        # to see a different infrastructure world than the real command's.
+        try:
+            probe_env_effective = resolve_command_plan(
                 lane,
                 argv_append=(),
                 passthrough_source=(
                     os.environ if passthrough_source is None else passthrough_source
                 ),
-            ).env_effective,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+            ).env_effective
+        except AssayError as exc:
+            # An unresolvable infrastructure declaration, refused the same
+            # way every other post-HEAD-resolution refusal in this function
+            # is -- `project_prefix` stays `None`, matching the
+            # MISSING_EXTERNAL_TOOL refusal just above, which resolves no
+            # repository identity at this point either.
+            return refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=assay_version,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                clock=clock,
+            )
+        # B032/A-322: `execute_plan` reads its `timeout=` ARGUMENT, never
+        # `plan.budget_seconds` -- so the cap below was dead code and a hung
+        # probe consumed the whole lane budget (measured: an
+        # `environment_command` of `sleep 45` under `budget = "5m"` ran for
+        # 45 s and then PASSED). The SAME value now reaches both, so the cap
+        # is enforced where it is actually read.
+        probe_timeout = min(PROBE_BUDGET_SECONDS, deadline.remaining())
+        probe_plan = CommandPlan(
+            argv_declared=tuple(lane.environment_command),
+            argv_appended=(),
+            argv_effective=tuple(lane.environment_command),
+            env_declared=MappingProxyType(dict(lane.env)),
+            env_effective=probe_env_effective,
             env_passthrough=lane.env_passthrough,
             allow_argv_append=False,
-            budget_seconds=min(30.0, deadline.remaining()),
+            budget_seconds=probe_timeout,
             project_prefix=None,
         )
         probe_result = execute_plan(
             probe_plan,
             cwd=project_root,
-            timeout=deadline.remaining(),
+            timeout=probe_timeout,
             process_runner=process_runner,
             clock=clock,
         )
         if probe_result.outcome is not Outcome.PASS:
+            probe_status, probe_reason = _probe_refusal_terminal(probe_result)
+            _report_probe_refusal(
+                lane,
+                probe_result,
+                status=probe_status,
+                reason_code=probe_reason,
+                diagnostics=diagnostics,
+                probe_timeout=probe_timeout,
+            )
             return refuse_lane(
                 lane,
                 commit=commit,
-                status=Outcome.ERROR,
-                reason_code=ReasonCode.BAD_LANE_CONFIG,
+                status=probe_status,
+                reason_code=probe_reason,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
                 infrastructure_source=infrastructure_source,
@@ -2757,6 +3175,8 @@ def run_lane(
             shard_count=shard_count,
             evidence=evidence,
             declared_evidence=declared_evidence,
+            progress_artifact=progress_artifact,
+            diagnostics=diagnostics,
         )
 
     # A-175 / work item 6: the post-command comparison is against the RESOLVED
@@ -2794,14 +3214,38 @@ def run_lane(
     # P26/A-212: direct R0 executes the already-resolved plan with the
     # deadline's CURRENT remainder, never a fresh `lane.budget_seconds` --
     # evidence/HEAD/dirt work already spent from the same singular budget.
-    plan = resolve_command_plan(
-        lane,
-        argv_append=argv_append,
-        passthrough_source=passthrough_source,
-        project_prefix=direct_prefix,
-        infrastructure_source=infrastructure_source,
-        infrastructure_environment=infrastructure_environment,
-    )
+    try:
+        plan = resolve_command_plan(
+            lane,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+        )
+    except AssayError as exc:
+        # (B025) The direct R0-only path's own plan resolution -- the third
+        # of the sites an unresolvable infrastructure declaration could
+        # crash from, alongside `_run_higher_rigor_lane`'s and
+        # `refuse_lane`'s own (see those two sites' identical comments).
+        # `docs/CONSUMERS.md`'s own B013 example lane declares `rigor =
+        # ["R0"]`, so this is not a rare corner of the dispatch -- it is the
+        # documented shape for the feature.
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
     result = execute_plan(
         plan,
         cwd=project_root,

@@ -1246,9 +1246,6 @@ class Mutation:
     #: :attr:`candidate_count` like every other attempted mutant — they WERE
     #: attempted; what they failed to do is change anything.
     equivalent: tuple[MutantOutcome, ...] = ()
-    #: (B012) Optional NDJSON progress artifact. Present only when the run
-    #: emitted progress; omitted, never null, for compatibility with v6.
-    progress_artifact: str | None = None
     #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
     #: never empty, so non-shard v6 payloads are unchanged.
     candidate_ids: tuple[str, ...] | None = None
@@ -1268,8 +1265,6 @@ class Mutation:
             )
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
-        if self.progress_artifact is not None:
-            _check_wire_path(self.progress_artifact, "mutation.progress_artifact")
         if self.candidate_ids is not None:
             if not self.candidate_ids:
                 raise ValueError("mutation.candidate_ids must be omitted when empty")
@@ -1370,8 +1365,6 @@ class Mutation:
         }
         for name in MUTATION_BUCKETS:
             payload[name] = [item.to_dict() for item in getattr(self, name)]
-        if self.progress_artifact is not None:
-            payload["progress_artifact"] = self.progress_artifact
         if self.candidate_ids is not None:
             payload["candidate_ids"] = list(self.candidate_ids)
         return payload
@@ -1414,6 +1407,13 @@ class JudgmentResolved:
     #: the full resolved comparison commit, never a symbolic ref; absent on a
     #: judgment that carries neither r1 nor r2
     base: str | None = None
+    #: (B008) which of `resolve_base`'s two branches produced `base`:
+    #: `"first-parent"` on a merge-commit HEAD (the branch's own pre-merge
+    #: tip -- a common pre-gate `git merge <base>` silently narrows the
+    #: changed-line floor and any R2 lane to "what did the merge itself
+    #: change"), or `"merge-base"` otherwise. Optional for v7 compatibility;
+    #: never present without `base`.
+    base_resolution: str | None = None
 
     def __post_init__(self) -> None:
         _check_nonempty(self.language, "judgment.resolved.language")
@@ -1426,6 +1426,16 @@ class JudgmentResolved:
             _check_nonempty(root, "judgment.resolved.source_roots entry")
         if self.base is not None:
             _check_nonempty(self.base, "judgment.resolved.base")
+        if self.base_resolution is not None:
+            if self.base is None:
+                raise ValueError(
+                    "judgment.resolved.base_resolution requires judgment.resolved.base"
+                )
+            if self.base_resolution not in ("merge-base", "first-parent"):
+                raise ValueError(
+                    f"judgment.resolved.base_resolution must be 'merge-base' or "
+                    f"'first-parent', got {self.base_resolution!r}"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1434,6 +1444,8 @@ class JudgmentResolved:
         }
         if self.base is not None:
             payload["base"] = self.base
+        if self.base_resolution is not None:
+            payload["base_resolution"] = self.base_resolution
         return payload
 
 
@@ -1789,29 +1801,59 @@ class Judgment:
                 "judgment declares none of r1/r2/r3 -- an empty judgment "
                 "records no policy and should be omitted (None) instead"
             )
-        # A-223a/A-227, widened by wave-1 §6 (A-260): `base` is required IF
-        # r2, OR r1 with mode="changed_lines" -- and forbidden UNLESS one of
-        # those. A whole-target R1 with no R2 resolves NOTHING against a
-        # base (B005's whole point: judgeable from any commit including a
-        # post-merge main), so recording one there would imply a comparison
-        # that never happened; R2 still requires it independently, so an
-        # R0,R1,R2 lane in whole-target mode still declares and records one.
-        compares_a_base = self.r2 is not None or (
-            self.r1 is not None and self.r1.mode == "changed_lines"
-        )
-        if compares_a_base and self.resolved.base is None:
-            raise ValueError(
-                "judgment carries r2, or r1 in changed-line mode, but "
-                "judgment.resolved records no base -- both are scoped to "
-                "changed lines against a resolved comparison commit, so "
-                "omitting it leaves the judgment unre-derivable"
-            )
-        if not compares_a_base and self.resolved.base is not None:
+        # A-223a/A-227, widened by wave-1 §6 (A-260) and CORRECTED by
+        # B033/A-325.
+        #
+        # `mode` is a LANE-level scope, not an R1-level one: whichever mode
+        # a lane declares, R1 and R2 both judge under it. The rule this
+        # check used to encode -- "R2 always compares a base" -- was
+        # therefore false from the moment `whole_file_r2` shipped: a
+        # whole-target R2 mutates whole declared files and skips both
+        # `check_base_is_head` and the `git diff`, exactly as a whole-target
+        # R1 resolves nothing against a base. So on a whole-target lane
+        # NEITHER tier compares a base, and A-223a's own "present exactly
+        # when a tier that reads one is" makes the base FORBIDDEN there.
+        #
+        # What the artifact can WITNESS is narrower than what is true, and
+        # this check is deliberately written to the witnessable part only:
+        # `judgment.r1.mode` is on the wire, `judgment.r2`'s scope is not
+        # (v7 gives r2 no `mode`/`targets` field of its own -- filed as
+        # B035, since adding one is a schema-version change, not a fix).
+        # Hence three cases rather than two:
+        #
+        # * r1 present -- its `mode` IS the lane's mode, so the base is
+        #   required for `changed_lines` and forbidden for `whole_target`,
+        #   for both tiers together. This is now enforced for an R1,R2 lane
+        #   too, where the old rule wrongly demanded a base.
+        # * r1 absent, r2 present -- unwitnessable: a diff-based R2 requires
+        #   a base and a whole-target R2 forbids one, and nothing on the
+        #   wire distinguishes them. Neither is enforced; the producer
+        #   (`runner._run_prepared_lane`) decides, and B035 is what would
+        #   let this object check the producer's work.
+        # * neither -- R3 alone never has a base.
+        if self.r1 is not None:
+            r1_compares_a_base = self.r1.mode == "changed_lines"
+            if r1_compares_a_base and self.resolved.base is None:
+                raise ValueError(
+                    "judgment carries r1 in changed-line mode but "
+                    "judgment.resolved records no base -- a changed-line "
+                    "judgment is scoped to a resolved comparison commit, so "
+                    "omitting it leaves the judgment unre-derivable"
+                )
+            if not r1_compares_a_base and self.resolved.base is not None:
+                raise ValueError(
+                    f"judgment.resolved records base {self.resolved.base!r} "
+                    f"but judgment carries r1 in whole-target mode -- "
+                    f"whole-target scope replaces the diff at EVERY tier, so "
+                    f"neither R1 nor R2 resolved anything against that "
+                    f"commit and recording it would imply a comparison that "
+                    f"never happened"
+                )
+        elif self.r2 is None and self.resolved.base is not None:
             raise ValueError(
                 f"judgment.resolved records base {self.resolved.base!r} but "
-                f"judgment carries neither r2 nor r1 in changed-line mode -- "
-                f"a whole-target R1 with no R2 resolves nothing against a "
-                f"base, and R3 alone never has one either"
+                f"judgment carries neither r1 nor r2 -- R3 alone never "
+                f"resolves anything against a base"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -2368,6 +2410,15 @@ class Verdict:
     argv_effective: tuple[str, ...] | None = None
     env_declared: Mapping[str, str] | None = None
     env_effective: Mapping[str, str] | None = None
+    #: (B025) True exactly when `env_effective` above is NOT the real
+    #: resolved environment -- a refusal whose own infrastructure
+    #: declaration was itself unresolvable falls back to `lane.env` alone
+    #: (never infrastructure or `env_passthrough` values, since neither
+    #: could be safely completed) rather than leaving the whole refusal an
+    #: uncaught exception with no artifact at all. `False` (the default)
+    #: means `env_effective` is the real, fully-resolved environment, as
+    #: every verdict before this field existed already implied.
+    env_effective_incomplete: bool = False
     #: (P16) the lane's own declared scope/enforcement — join the
     #: lane-resolved group (:data:`LANE_RESOLVED_FIELDS`), always known the
     #: moment a lane loads.
@@ -2420,6 +2471,11 @@ class Verdict:
             raise ValueError(
                 f"schema_version must be {VERDICT_SCHEMA_VERSION}, got "
                 f"{self.schema_version!r}"
+            )
+        if self.env_effective_incomplete and self.declared_rigor is None:
+            raise ValueError(
+                "env_effective_incomplete requires the lane-resolved group "
+                "(declared_rigor and friends) to be present"
             )
         if self.scope is not None and self.scope not in SCOPES:
             raise ValueError(f"scope must be one of {sorted(SCOPES)}, got {self.scope!r}")
@@ -3002,6 +3058,8 @@ class Verdict:
             payload["argv_modified"] = bool(self.argv_modified)
             payload["env_declared"] = dict(self.env_declared or {})
             payload["env_effective"] = dict(self.env_effective or {})
+            if self.env_effective_incomplete:
+                payload["env_effective_incomplete"] = True
             payload["scope"] = self.scope
             payload["enforcement"] = self.enforcement
         if self.judgment is not None:
