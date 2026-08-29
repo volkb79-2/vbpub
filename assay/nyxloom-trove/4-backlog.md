@@ -1760,6 +1760,21 @@ regression in this mechanism.
 (the black-box symptom, found first, from a different worktree),
 `dstdns/nyxloom-trove/decisions.md` D-193, `dstdns@08b789f5` (the shipped fix).
 
+**Recurrence 2026-08-29 (dstdns P138 code review), priority evidence — same
+mechanism, second filename, same one-line fix.** `run-gate assay`/`assay-dlq`
+false-refused `NO_MEASUREMENT/DIRTY_TREE` on `ciu.global.worktree.toml.j2`, a
+different CIU-generated per-worktree render input than `ciu.worktree-instance.json`
+above, same untracked-outside-committed-`.gitignore` shape. Confirmed the file
+is genuinely absent from `.gitignore` before fixing. Fixed identically:
+`dstdns@5c8c14c6` adds the line to dstdns's committed `.gitignore`. No new
+mechanism, no assay-side change needed — filed here as the anticipated
+recurrence this entry's own closing note called for ("if the symptom recurs,
+re-verify... most likely cause is a stale/different commit, not a
+regression"). Worth CIU's own attention (not filed there, dstdns provenance
+only): every new CIU-generated per-worktree render-input filename repeats
+this exact gap until it's added to the ignore file by hand, one file at a
+time, after someone hits it.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
