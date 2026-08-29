@@ -438,6 +438,37 @@ redis_password = "demo/redis_password"   # KV2 path; referenced in directives
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — `[vault]` and `[vault.paths]`.
 
+#### What CIU natively does with Vault, vs. what hooks do (clarified 2026-08-27)
+
+Three separate declarations together constitute "the vault" for a project —
+there is no single table that says it — and it's worth being explicit about
+which is which, and about the narrower boundary underneath all three:
+
+| Declaration | Answers | Read by |
+|---|---|---|
+| `[vault].stack_path` | Where's the vault *stack*, for `[state]` token fallback? | Token resolution (S4.16) |
+| `[vault.paths]` | Which KV2 path does secret name X live at? | `GEN_TO_VAULT`/`ASK_VAULT` directive resolution |
+| `[topology.services.vault]` | What's the network *address* to actually connect to? | S4.16's address resolution |
+
+**CIU's own native code (`src/ciu/secrets/providers.py`'s `VaultKV2`) does
+exactly one thing: KV2 read/write against a given address, using a given
+token.** It has no concept of "this container is running real Vault" beyond
+that — no init, no unseal, no policy/mount/AppRole provisioning. Those are
+entirely a project-authored `post_compose_vault.py`-style hook (using
+`hvac` or the raw Vault HTTP API), invoked through CIU's generic
+`post_compose_*` hook mechanism — the same mechanism any stack's hook uses,
+not a Vault-specific code path. The hook happens to persist Vault's own
+bootstrap credentials (`root_token`/`unseal_key`) through the generic
+`[state]` primitive (S9.4), because it's a general "hook remembers a
+value" channel, not because `[state]` is Vault-aware.
+
+So the boundary is: **CIU natively speaks KV2-over-a-known-address; every
+other fact about what makes that address "actually Vault" — that it needs
+initializing, that it needs unsealing, that a mount exists at a given path
+— lives entirely in project-authored hook code.** Nothing in CIU's own
+source asserts "the vault container is Vault" as a special case; it's
+special only insofar as a project's own hooks choose to treat it that way.
+
 ### `[topology.services.<name>]` — service addressing [S4.16, S7.4]
 
 Used by CIU to reach Vault and (informatively) by other tooling:
