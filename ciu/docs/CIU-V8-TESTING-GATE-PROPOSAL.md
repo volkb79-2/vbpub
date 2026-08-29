@@ -5,8 +5,15 @@
 **Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
 **Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
 
-**Proposal revision:** 1.5
-**Updated:** 2026-08-24
+**Proposal revision:** 1.10 (§10.14/§11.7 added: M7 shared-infra sharpened, still open)
+**Updated:** 2026-08-27 (§10.3 secrets architecture resolved + realization-kind
+addressing corrected; §10.11 instance run mutex + §10.12 concurrency model +
+§10.13 realness immutability added; B1 addressing debt reconciled throughout
+§1.5/§1.15/§3.1–3.3/§4.1–4.2/§8 to `V8-REALIZATION-GRAPH.md`'s
+entity/realization split; §11 bookkeeping corrected for M3/M8/M11; CIU's
+native-vs-hook Vault boundary clarified in CONFIG.md; §1.17/§4.2/§8 topology
+schema reconciled onto one key naming (`transport`/`address`) with CIU's
+declarative-only scope stated — dstdns/vbpub joint session)
 ---
 
 ## 0. Why this proposal exists
@@ -192,12 +199,24 @@ default).
 4. `[testing.realness_defaults]` → type-level fallback
 5. Error if no variant exists at any level for the service
 
+**Realness is fixed at deploy time for an already-running instance — this
+resolution order never re-runs against a live one (added 2026-08-27, see
+§10.13).** Everything above resolves what to select on THIS `ciu up`. It
+does not describe (and previously left ambiguous) what happens if the
+instance is already up under a different selection — §10.13 closes that
+gap: `ciu up` refuses rather than silently reconfiguring.
+
 ### 1.5 Why named sub-tables for realness variants
+
+*Updated 2026-08-27 for consistency with §3.1's entity/realization split —
+the field shown is `realized_by` (a RealnessVariant pointing at its
+Realization), not connection details inlined on the variant itself; the
+schema-design point below is unaffected by that change, only the example is.*
 
 ```toml
 # Option A (CHOSEN): level name IS the key
 [service.payment-api.live]
-base_url = "https://api.stripe.com"
+realized_by = "external.payment_api_stripe"
 
 [service.payment-api.mock]
 implementation = "tests/mocks/payment_mock.py"
@@ -205,14 +224,14 @@ implementation = "tests/mocks/payment_mock.py"
 # Option B (REJECTED): array with realness field
 [[service.payment-api]]
 realness = "live"
-base_url = "https://api.stripe.com"
+realized_by = "external.payment_api_stripe"
 ```
 
 Option A wins because:
 - TOML enforces uniqueness (can't accidentally declare two `live` variants)
 - Direct key lookup: `config["service"]["payment-api"]["live"]`
 - Invalid level names are structurally obvious
-- Templates access variants cleanly: `{{ service.payment_api.live.base_url }}`
+- Templates access variants cleanly: `{{ service.payment_api.live.realized_by }}`
 - No iteration needed to find the right variant
 
 ### 1.6 Phases → init dependency graph
@@ -408,130 +427,193 @@ to find it:
 > `KNOWN_ISSUES_TODO_BACKLOG.md`. Read `V8-REALIZATION-GRAPH.md` in full
 > before treating the `<stack>.<service>` addressing below as settled — this
 > note is deliberately not a substitute for it.
+>
+> **Applied 2026-08-27:** the fix this note promised is below — every
+> example in this section, and in §3 and §8, now uses the entity/realization
+> split rather than the flawed compound-key form. `type` as a field is gone
+> too (per `V8-REALIZATION-GRAPH.md`'s own resolution): which top-level table
+> an entry sits under — `[ciu_stack.*]`, `[compose_stack.*]`, `[external.*]`
+> — IS its type, so a validator rejects fields that don't belong (a
+> `location` on an `[external.*]` entry) for free, rather than needing a
+> second check against a separate `type` value.
+
+**Realizations** — WHAT the physical thing is and WHERE to find it. One
+entry per stack (`location` + the stack's *aggregate* `init_provides`,
+regardless of which container inside it actually produced a given fact —
+see `V8-REALIZATION-GRAPH.md` on why that internal detail doesn't cross the
+boundary), plus one `RealizedService` sub-entry per named container that
+needs its own deployment facts (`image`, `port`, `one_shot`,
+`init_requires`):
 
 ```toml
-# A CIU-managed stack containing multiple services
-[service.our_db_stack]
-type = "CIU"
+[ciu_stack.our_db_stack]
 location = "infra/db-core"       # filesystem path to the stack directory
+init_provides = ["pg:db/demo", "pg:role/controller", "minio:user/worker-io"]
 
-# A legacy compose project (no ciu config, pre-created docker-compose.yml)
-[service.legacy_stack]
-type = "COMPOSE"
-location = "/opt/my_legacy_service"
-
-# An external API consumed but never deployed here
-[service.payment-api]
-type = "EXTERNAL"
-
-# Mock/simulation files only; never deployed as containers
-[service.notification-service]
-type = "IN_PROCESS"
-```
-
-**Service-level declaration** — realness variants live INSIDE the stack,
-on each service:
-
-```toml
-# Services within a CIU-type stack
-[service.our_db_stack.postgres.live]
+[ciu_stack.our_db_stack.postgres]
 port = 5432
 image = "timescale/timescaledb-ha:pg18"
 
-[service.our_db_stack.postgres.mock]
-implementation = "tests/mocks/postgres_mock.py"
-
-[service.our_db_stack.minio.live]
+[ciu_stack.our_db_stack.minio]
 port = 9000
 image = "minio/minio:latest"
 
-# Services within a COMPOSE-type stack CAN have realness variants —
-# one service might be replaced by a stub while others run live.
-[service.legacy_stack.service1]
+# Instance named `compose_stack` (not e.g. `legacy_stack`) so the kind
+# prefix and instance name match at a glance — see §3.1.
+[compose_stack.compose_stack]
+location = "/opt/my_legacy_service"
+
+[compose_stack.compose_stack.service1]
 port = 1234                        # live: how we reach the real service
 
-[service.legacy_stack.service1.mock]
+[external.payment_api_stripe]
+base_url = "https://api.stripe.com"
+secrets = ["stripe_secret_key"]
+
+[ciu_stack.api_handler_stack]
+location = "applications/api-handler"
+
+[ciu_stack.api_handler_stack.api]
+port = 8080
+health = "/health"
+init_requires = ["our_main_db", "vault:secret/db/postgres/api_password"]
+depends_on = ["our_object_store", "payment-api"]  # usage deps: logical names too, never stacks
+allow_degraded_start = true
+```
+
+**LogicalServices** — the stable name every consumer depends on, uniform
+regardless of what realizes them. `realized_by` always names a *Realization*
+(a stack or an external entry), never a specific `RealizedService` inside
+one — the realization's aggregate `init_provides` is what gets checked
+against the logical service's `contract`, not any one container's own
+output. The value is kind-qualified (`"ciu_stack.our_db_stack"`, not
+`"our_db_stack"` — see §3.1's correction, applied here too): Realization
+names live in three separate top-level tables, so a bare name has no
+defined way to say which one it means the moment the same name exists in
+more than one:
+
+```toml
+[service.our_main_db]
+description = "The application's database"
+contract = ["pg:db/demo", "pg:role/controller"]
+
+[service.our_main_db.live]
+realized_by = "ciu_stack.our_db_stack"
+
+[service.our_main_db.mock]
+implementation = "tests/mocks/postgres_mock.py"
+
+[service.our_object_store]
+contract = ["minio:user/worker-io"]
+
+[service.our_object_store.live]
+realized_by = "ciu_stack.our_db_stack"        # same stack backs two distinct logical services
+
+[service.our_api]
+description = "HTTP request handler"
+
+[service.our_api.live]
+realized_by = "ciu_stack.api_handler_stack"
+
+[service.our_api.mock]
+implementation = "tests/mocks/api_handler_mock.py"
+
+[service.legacy_service_1]
+description = "A service reached through a legacy compose project"
+
+[service.legacy_service_1.live]
+realized_by = "compose_stack.compose_stack"
+
+[service.legacy_service_1.mock]
 implementation = "tests/mocks/legacy_service1_mock.py"
 
-# EXTERNAL and IN_PROCESS types have no inner stack services;
-# their realness variants sit directly on the entity:
+[service.payment-api]
+description = "External payment processor"
+
 [service.payment-api.live]
-endpoint = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
+realized_by = "external.payment_api_stripe"
 
 [service.payment-api.mock]
 implementation = "tests/mocks/stripe_mock.py"
+
+[service.notification-service]
+description = "Sends emails/SMS (not yet implemented)"
+
+[service.notification-service.mock]
+implementation = "tests/mocks/notification_mock.py"
 ```
 
-**Type determines HOW CIU deploys the stack, not what realness variants
-its services can have. Realness is always per-service and orthogonal to
-the deployment mechanism.**
+A `LogicalService` with only a `.mock` variant (`notification-service`
+above) needs no Realization table at all — there is nothing to locate on
+disk or connect to.
 
-| Type | Has inner services? | How CIU deploys | Realness per service |
-|------|--------------------|-----------------|---------------------|
-| `CIU` | Yes | Full pipeline (render, secrets, hooks, compose) | `live`, `mock`, `owned-seeded`, `simulated` |
-| `COMPOSE` | Yes | `docker compose up` on pre-existing file | `live`, `mock`, `simulated` |
-| `EXTERNAL` | No (entity IS the service) | Nothing deployed; connection facts only | `live`, `owned-seeded`, `simulated`, `mock` |
-| `IN_PROCESS` | No (entity IS the mock) | Nothing deployed; files referenced directly | `mock` only |
+**What table a Realization lives under determines how CIU deploys it —
+never a `type` field, and it says nothing about which realness levels the
+LogicalServices pointing at it may declare, since realness is a property of
+the logical side, not the physical one:**
 
-**Service reference format:** always `<stack>.<service>`. This is unique
-because TOML enforces that a given stack name appears only once at the top
-level, and service names within it are unique by TOML table rules.
+| Realization table | How CIU deploys |
+|---|---|
+| `[ciu_stack.*]` | Full pipeline (render, secrets, hooks, compose) |
+| `[compose_stack.*]` | `docker compose up` on a pre-existing file |
+| `[external.*]` | Nothing deployed; connection facts only |
+| *(none)* | Nothing deployed; a LogicalService with only `.mock`, files referenced directly |
 
-No separate `logical_name` field is needed. If two stacks both have a
-service called `postgres`, they are naturally distinct:
-`our_db_stack.postgres` vs `other_stack.postgres`. Cross-stack references
-in groups, init_requires, and testing selection use the full compound key.
+**Service reference format:** always the bare logical name —
+`our_main_db`, `our_api`, `payment-api` — never a stack path and never a
+compound key. `init_requires`, `depends_on`, deployment groups, and testing
+selection all reference logical names exclusively. Renaming, moving, or
+re-realizing a stack is a one-line `realized_by` change; no consumer's
+reference ever needs to follow it.
 
 
 **Problem.** Each stack directory needs per-service deployment config
 (ports, env vars, hostdirs). Currently dstdns derives a root key from the
 directory name (`infra/db-core` → `[db_core]`). This is implicit and fragile.
 
-**V8 approach:** every stack declares its services under a reserved
-top-level key `[local_stack]` in its own `ciu.defaults.toml.j2`. This is
-NOT the global service registry — it is per-stack deployment wiring:
+**Reconciled with the entity/realization split above (2026-08-27):** this
+used to propose a THIRD, separate per-stack layer (`[local_stack.<name>]`),
+joined to the global `[service.<name>]` registry by matching key name. That
+join is now redundant — `[ciu_stack.<stack>.<svc>]` (or
+`[compose_stack.<stack>.<svc>]`) declared directly in the stack's own file
+*is already* the compound, globally-addressable key a `realized_by` pointer
+targets. There is no second name to keep in sync, so the join step this
+section originally existed to define no longer has anything to do. The part
+worth keeping — a stack's own file owning its own deployment wiring — is
+preserved exactly:
 
 ```toml
 # infra/db-core/ciu.defaults.toml.j2
-[local_stack.postgres]
+[ciu_stack.our_db_stack.postgres]
 port = 5432
 image = "timescale/timescaledb-ha:pg18"
 health_endpoint = "/ready"
 
-[local_stack.minio]
+[ciu_stack.our_db_stack.minio]
 port = 9000
 image = "minio/minio:latest"
 ```
 
-| Aspect | Global `[service.X]` | Stack `[local_stack.Y]` |
-|--------|----------------------|--------------------------|
-| Purpose | Logical identity + realness variants | Per-stack deployment wiring |
-| Owner | CIU global config | Stack's own ciu.defaults.toml.j2 |
-| Contains | type, location, init_requires | port, image, env, hostdir, hooks |
-| Realness | Declared here | Not present — realness is a global concern |
+Cross-stack references still use
+`{{ topology.services.postgres.internal_host }}`.
 
-Templates access local config as `{{ local_stack.postgres.port }}`;
-cross-stack references still use `{{ topology.services.postgres.internal_host }}`.
+**Rules (normative), carried forward minus the join step they existed only
+to support:**
 
-**Mapping rules (normative):**
-
-1. The `[local_stack.<name>]` key MUST match the logical service name from
-   the global `[service.<name>]` registry exactly. This is the join key:
-   global defines WHO the service is; local_stack defines HOW to run it.
-2. One stack directory MAY declare multiple `[local_stack.*]` entries —
-   this is normal when a stack deploys several services (e.g. db-core runs
-   postgres, minio, and pgadmin).
-3. The global `location` field points to the stack directory. Renaming or
-   moving that directory requires updating only the global `location` value;
-   the stack's own `[local_stack]` content is unchanged.
-4. A `[local_stack.<name>]` entry for a service NOT declared in the global
-   registry is valid — it means "this stack deploys something only it knows
-   about." The global registry exists for cross-stack references and SSOT
-   defaults, not as a gatekeeper for what a stack may run.
-5. Hooks move from the old `[<root>.hooks]` convention to
-   `[local_stack.<svc>.hooks]`, keeping hook declarations co-located with
-   the service they configure.
+1. One stack directory MAY declare multiple `[ciu_stack.<stack>.<svc>]`
+   entries — normal when a stack deploys several containers (e.g. db-core
+   running postgres, minio, and pgadmin).
+2. The Realization's own `location` (declared once, on the bare
+   `[ciu_stack.<stack>]` table) points to the stack directory. Renaming or
+   moving that directory requires updating only that one `location` value;
+   every RealizedService sub-table under it is unaffected.
+3. A `RealizedService` with no `LogicalService` pointing at it via
+   `realized_by` is valid — it means "this stack runs something nothing
+   else depends on." The global registry exists for cross-stack references,
+   not as a gatekeeper for what a stack may run.
+4. Hooks move from the old `[<root>.hooks]` convention to
+   `[ciu_stack.<stack>.<svc>.hooks]`, keeping hook declarations co-located
+   with the service they configure.
 
 #### 1.17 Topology: do we need endpoints/routes?
 
@@ -556,9 +638,45 @@ Optional per-service route overrides (reverse-proxy paths):
 path_prefix = "/api"
 ```
 
-**Decision:** defer full endpoint/route modeling until a second multi-host
-consumer exists. Profile + transport covers the immediate need. Most stacks
-on an internal network never declare routes.
+**Superseded 2026-08-27 (B1-shaped reconciliation, same pattern as the
+addressing debt elsewhere in this doc) — this section's own "defer" stance
+no longer holds, but its OWN key naming does.** This was written first and
+deliberately kept minimal ("defer full endpoint/route modeling"); §4.2 and
+§8's full sample config were written later and went ahead and built the
+fuller version anyway (per-host addresses, worked two-host/three-host
+examples) without ever circling back to say so — leaving a stale "defer"
+note contradicted by the sections that came after it, and (initially
+mis-diagnosed while fixing this) an apparent naming split. Checked
+directly rather than assumed: `transport` is actually used here AND in
+§8's full sample config; only §4.2 alone drifted to `mode`. **Resolved:
+`transport` is the key name** (§1.17 and §8 agree; §4.2 is the outlier,
+corrected to match) — **`address` is the per-host field name** (from here;
+`wireguard_ip`, which had crept into both §4.2 and §8, is dropped
+everywhere — it only made sense for one of `transport`'s three values, and
+a proxy-mode host's reachable address was never meaningfully "a WireGuard
+IP"). §4.2 and §8 are corrected to match this section, not the other way
+around — this section's schema is normative.
+
+**Scope boundary (added 2026-08-27, same shape as CONFIG.md's clarified
+Vault boundary): CIU is declarative-only here — it never provisions the
+transport itself.** `[topology]` states facts CIU's own templates and
+`ciu check` can read and validate; it does not cause CIU to configure a
+WireGuard interface, exchange keys, or set up a reverse proxy. Establishing
+the actual tunnel/proxy is entirely a host-provisioning or hook-authored
+concern, outside CIU's own source — the same boundary as Vault: CIU knows
+addresses, not how the network under them came to exist.
+
+**New `ciu check` rule (added 2026-08-27):** two static completeness
+checks, config-only, no live probe — (1) every host named in a
+`[deploy.profiles.<name>.hosts]` list has a matching
+`[topology.hosts.<host>]` entry whenever `transport != "direct"`; (2) every
+`[topology.hosts.<host>]` entry declares `address` whenever
+`transport != "direct"`. §2.7's 12-stage table has no row for
+deployment/topology shape yet — this needs one added there, not shoehorned
+into an existing stage; flagging rather than guessing which number it
+should be, since that table's own ordering wasn't re-examined as part of
+this change. An incomplete topology declaration should become a
+`ciu check` failure, not a `ciu up`-time surprise, once that's wired in.
 
 #### 1.18 One-shot completion semantics
 
@@ -586,10 +704,14 @@ instance-loop context rather than hand-writing `{% for %}` ranges.
 Stacks currently inject `${VAR:-fallback}` or `${VAR:?message}` directly
 into compose templates with no typed declaration of expected vars.
 
-V8 adds an inline list on each local_stack entry:
+V8 adds an inline list on each RealizedService entry (corrected 2026-08-27:
+this section still showed the pre-reconciliation `[local_stack.*]` layer
+§1.15 established is redundant — `env_required` lives directly on the
+`[ciu_stack.<stack>.<svc>]`/`[compose_stack.<stack>.<svc>]` table itself,
+same as every other per-container fact):
 
 ```toml
-[local_stack.postgres]
+[ciu_stack.our_db_stack.postgres]
 env_required = ["POSTGRES_PASSWORD_FILE", "POSTGRES_USER"]
 ```
 
@@ -695,7 +817,7 @@ pipeline in dry-run mode:
 |-------|-------------------|-------------|
 | 1. Render | Jinja2 + `$VAR` expansion + TOML parse (global chain, all selected stacks) | None |
 | 2. Shape | Single root key (S3.5), reserved namespace collision (S3.7) | None |
-| 3. Secrets | Directive grammar (S4), placement (S4.1/S4.5), name uniqueness (S4.6), Vault ordering (S7.6) | None |
+| 3. Secrets | Directive grammar (S4), placement (S4.1/S4.5), name uniqueness (S4.6), Vault ordering (S7.6), Vault presence vs. directives (below, added 2026-08-27) | None |
 | 4. Provisioning | requires/provides grammar (S13), graph lint, cycle detection | None |
 | 5. Governance | Shape checks (S15.2), cgroup parent resolution | None |
 | 6. Configfile | Template existence, target path validity, schema file existence (S5) | None |
@@ -705,6 +827,25 @@ pipeline in dry-run mode:
 | 10. Compose render | Full compose template rendering with guarded config (S4.21) | Writes nothing; renders to memory |
 | 11. Overlay | Generate overlay in memory; leak scan (S4.22) | Writes nothing |
 | 12. Consumption | Declared-vs-consumed secret cross-check (S4.20) | None |
+
+**Vault presence becomes a static, config-only fact — not something only
+discovered at runtime (added 2026-08-27, operator observation).** Today
+(S4.16, shipped), a project with `GEN_TO_VAULT`/`ASK_VAULT` directives but
+no resolvable Vault token aborts only when `materialize_secrets()` actually
+runs — a live-path failure, well into `ciu up`. But whether a project has
+Vault at all is already fully determined by config alone:
+`[topology.services.vault]`/`[vault].stack_path` either declares one or
+doesn't (see CONFIG.md's clarified `[vault]` boundary — CIU's own native
+Vault awareness is exactly this address-plus-token-plus-KV2-client, nothing
+more). So stage 3 gains a static rule: **if no Vault is declared, every
+`GEN_TO_VAULT`/`ASK_VAULT` directive anywhere in the config is an
+unconditional `ciu config check` failure, naming the stack, directive, and
+secret** — not "will fail at runtime if a token can't be found," but
+"cannot ever succeed, known from config alone, before any container
+starts." This makes "does this project use Vault" a config-derived fact
+rather than an implicit runtime discovery: declare the pointer and Vault
+directives work; omit it and they're rejected immediately, with a clear
+reason, at the same time as every other static config error.
 
 **Key design decision: the `validate_config` hook contract.**
 
@@ -802,127 +943,253 @@ without touching Docker or the filesystem beyond reading templates.
 
 ### 3.1 Declaration
 
-The global config declares logical stacks and their services. Each stack has
-a `type` that determines CIU behavior. Services within a stack declare
-realness variants.
+**Reconciled with `V8-REALIZATION-GRAPH.md` (2026-08-27) — B1's addressing
+debt closed.** This section previously declared logical stacks and services
+under one compound-keyed `[service.<stack>.<svc>.<level>]` table, with a
+`type` field selecting deployment behavior. `V8-REALIZATION-GRAPH.md`
+(2026-08-26) identified this as a real flaw, not a style preference: it
+couples a consumer's dependency reference to wherever a service happens to
+run *today*, so moving or renaming a stack forces every consumer's
+`init_requires` to change too, even though nothing the consumer actually
+wants changed. The declaration below is the fix, applied throughout this
+document as of this date (§1.15, §8, and this section) — see
+`V8-REALIZATION-GRAPH.md` for the full worked derivation; what follows is
+the normative shape.
+
+The global config declares three kinds of things, in three different
+top-level tables, never joined by a `type` field:
+
+- **`LogicalService`** (`[service.<name>]`) — the stable identity every
+  consumer depends on. Carries `description` and a `contract` (the typed
+  facts any realization must provide). No deployment detail ever lives
+  here.
+- **`RealnessVariant`** (`[service.<name>.<level>]`, `level` one of `live`,
+  `mock`, `owned-seeded`, `simulated`) — either `realized_by = "<kind>.<name>"`
+  (points at a Realization, kind-qualified — see below) or
+  `implementation = "<path>"` (a mock needs nothing else).
+- **Realization** (`[ciu_stack.<name>]`, `[compose_stack.<name>]`, or
+  `[external.<name>]`) — the physical thing satisfying it: `location` (the
+  first two only) plus the stack's aggregate `init_provides`. Each may carry
+  `RealizedService` sub-tables (`[ciu_stack.<name>.<svc>]` etc.) for
+  per-container facts (`image`, `port`, `one_shot`, `init_requires`) when a
+  stack runs more than one thing.
+
+**`realized_by` is kind-qualified, not a bare name (corrected 2026-08-27).**
+`V8-REALIZATION-GRAPH.md`'s own worked examples wrote `realized_by = "db_core"`
+— a bare name — and this document's first pass at reconciling B1 copied that
+convention verbatim. It has a real ambiguity: with three separate top-level
+tables (`ciu_stack`, `compose_stack`, `external`), nothing stops
+`ciu_stack.foo` and `external.foo` from both existing, and a bare
+`realized_by = "foo"` would have no defined way to say which one it means —
+none of the three governing documents states a rule for that case, because
+none of them anticipated needing one. Qualifying the reference
+(`realized_by = "external.payment_api_stripe"`) removes the ambiguity by
+construction instead of requiring a new cross-table global-uniqueness
+validation rule to police it. This is a correction to the examples below,
+not a new field — `realized_by`'s existing single string value now always
+carries its Realization's own table path.
 
 ```toml
 # ────────────────────────────────────────────────────
-# CIU-managed stacks
+# Realizations — CIU-managed stack
 # ────────────────────────────────────────────────────
 
-[service.our_db_stack]
-type = "CIU"
+[ciu_stack.our_db_stack]
 location = "infra/db-core"
+init_provides = ["pg:db/demo", "pg:role/controller", "minio:user/worker-io"]
 
-[service.our_db_stack.postgres.live]
+[ciu_stack.our_db_stack.postgres]
 port = 5432
 image = "timescale/timescaledb-ha:pg18"
 init_requires = []                  # nothing needed before postgres starts
-provides = ["pg:db/demo", "pg:role/controller"]
 
-[service.our_db_stack.postgres.mock]
-implementation = "tests/mocks/postgres_mock.py"
-
-[service.our_db_stack.minio.live]
+[ciu_stack.our_db_stack.minio]
 port = 9000
 image = "minio/minio:latest"
-provides = ["minio:user/worker-io"]
 
-[service.our_api_stack]
-type = "CIU"
+[ciu_stack.api_handler_stack]
 location = "applications/api-handler"
 
-[service.our_api_stack.api.live]
+[ciu_stack.api_handler_stack.api]
 port = 8080
 health = "/health"
-init_requires = [
-    "our_db_stack.postgres",       # reference by compound key
-    "vault:secret/db/postgres/api_password",
-]
-depends_on = ["our_db_stack.redis", "payment-api"]
+init_requires = ["our_main_db", "vault:secret/db/postgres/api_password"]
+depends_on = ["our_object_store", "payment-api"]
 allow_degraded_start = true         # default true
 
-[service.our_api_stack.api.mock]
-implementation = "tests/mocks/api_handler_mock.py"
-
 # ────────────────────────────────────────────────────
-# COMPOSE-type stacks (pre-existing docker-compose.yml)
+# Realization — COMPOSE stack (pre-existing docker-compose.yml).
+# Instance named `compose_stack` (not e.g. `legacy_stack`) deliberately —
+# echoing the kind prefix in the example's own instance name makes it
+# unmistakable at a glance which table you're reading, at the cost of the
+# repeated word in `[compose_stack.compose_stack]` below.
 # ────────────────────────────────────────────────────
 
-[service.legacy_stack]
-type = "COMPOSE"
+[compose_stack.compose_stack]
 location = "/opt/my_legacy_service"
 
-[service.legacy_stack.service1]
+[compose_stack.compose_stack.service1]
 port = 1234                        # live: how we reach the real service
 
-[service.legacy_stack.service1.simulated]
+# ────────────────────────────────────────────────────
+# Realization — external, never deployed
+# ────────────────────────────────────────────────────
+
+[external.payment_api_stripe]
+endpoint = "https://api.stripe.com"
+secrets = ["stripe_secret_key"]
+
+# ────────────────────────────────────────────────────
+# LogicalServices — the names every consumer actually references
+# ────────────────────────────────────────────────────
+
+[service.our_main_db]
+contract = ["pg:db/demo", "pg:role/controller"]
+
+[service.our_main_db.live]
+realized_by = "ciu_stack.our_db_stack"
+
+[service.our_main_db.mock]
+implementation = "tests/mocks/postgres_mock.py"
+
+[service.our_object_store]
+contract = ["minio:user/worker-io"]
+
+[service.our_object_store.live]
+realized_by = "ciu_stack.our_db_stack"
+
+[service.our_api]
+[service.our_api.live]
+realized_by = "ciu_stack.api_handler_stack"
+
+[service.our_api.mock]
+implementation = "tests/mocks/api_handler_mock.py"
+
+[service.legacy_service_1]
+[service.legacy_service_1.live]
+realized_by = "compose_stack.compose_stack"
+
+[service.legacy_service_1.simulated]
 image = "wiremock/wiremock:latest"
 stub_mappings = "fixtures/legacy_stubs/"
 
-# ────────────────────────────────────────────────────
-# EXTERNAL services (consumed, never deployed)
-# ────────────────────────────────────────────────────
-
 [service.payment-api]
-type = "EXTERNAL"
-
 [service.payment-api.live]
-endpoint = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
+realized_by = "external.payment_api_stripe"
 
 [service.payment-api.mock]
 implementation = "tests/mocks/stripe_mock.py"
 
-# ────────────────────────────────────────────────────
-# IN_PROCESS services (mock files only)
-# ────────────────────────────────────────────────────
-
+# A LogicalService with only `.mock` needs no Realization at all —
+# nothing to locate on disk, nothing to connect to.
 [service.notification-service]
-type = "IN_PROCESS"
-
 [service.notification-service.mock]
 implementation = "tests/mocks/notification_mock.py"
 ```
 
 **Key structural rules:**
 
-- Stack-level keys (`type`, `location`, `description`) sit directly under
-  `[service.<stack_name>]`.
-- Service-level realness variants are nested:
-  `[service.<stack>.<svc>.<level>]`.
-- For `EXTERNAL` and `IN_PROCESS` types there is no inner service layer —
-  realness sits directly on the entity because it doesn't live inside a stack.
-- Realness is ALWAYS per-service, regardless of stack type. A COMPOSE-type
-  stack can have one service mocked while others run live. The `type`
-  controls deployment mechanism; realness controls test posture.
-- `init_requires` and `depends_on` reference OTHER services using the full
-  compound key (`<stack>.<service>`) or external typed references
-  (`vault:secret/...`, `pg:db/...`).
+- Realizations, RealnessVariants, and LogicalServices are three separate
+  top-level table families — never nested inside one compound key.
+- `RealizedService` sub-tables exist only when a stack needs per-container
+  facts; a Realization with nothing container-specific to say (e.g. a
+  one-service stack) may carry those facts directly on its bare
+  `[ciu_stack.<name>]` table instead.
+- Realness is ALWAYS a property of the LogicalService, never the
+  Realization. A COMPOSE-backed logical service can be `mock` while a
+  CIU-backed one runs `live` — which top-level table backs it says nothing
+  about which realness levels are meaningful for it.
+- `init_requires` and `depends_on` reference OTHER LogicalServices by their
+  bare name (`our_main_db`, `payment-api`) or external typed references
+  (`vault:secret/...`, `pg:db/...`) — never a stack path, never a compound
+  key, and never `[external.<name>]`/`[ciu_stack.<name>]` directly even
+  when the dependency happens to be external (confirmed 2026-08-27,
+  operator question: shouldn't a dependency on an external service address
+  the Realization instead? No — that would reintroduce exactly the coupling
+  the entity/realization split exists to remove: if `geo-location`'s
+  backing later moved from `[external.geo_ip_provider]` to a self-hosted
+  `[ciu_stack.geo_ip_self_hosted]`, every consumer referencing the
+  Realization directly would need to change; a consumer referencing the
+  bare LogicalService name is unaffected — only its `realized_by` pointer
+  changes). A `RealizedService`'s OWN `init_requires` (e.g. a one-shot job
+  needing another stack's admin access first) may reference a LogicalService
+  the same way.
+- `realized_by`, by contrast, IS kind-qualified (`"ciu_stack.our_db_stack"`,
+  not `"our_db_stack"`) — the opposite rule from the bullet above, and
+  deliberately so: `LogicalService` names live in exactly one table
+  (`service.*`), so a bare reference to one is never ambiguous; Realization
+  names live in three separate tables, so a bare reference to one is
+  ambiguous the moment the same name is reused across two of them.
+- **A dependency on an `[external.*]`-realized LogicalService never affects
+  startup order, even when declared as `init_requires` (added 2026-08-27,
+  surfaced by asking "how does a real consumer — not a test — declare it
+  needs a 3rd-party service, e.g. a worker calling a geo-location API").**
+  The mechanism is the SAME as any other dependency —
+  `[ciu_stack.worker_stack.worker] depends_on = ["geo-location"]` or
+  `init_requires = ["geo-location"]`, referencing `[service.geo-location]`
+  exactly like `api_handler_stack.api` already references `payment-api`
+  above — nothing new is needed to express "I use this 3rd-party service."
+  But an `[external.*]` Realization has no container to wait for starting,
+  so the reference does no topological-sort work at all when it resolves to
+  one. What it DOES still do: (a) trigger §3.3's secret preflight (the
+  consumer isn't allowed to start until the external's declared secrets
+  resolve), and (b) if declared as `depends_on` rather than `init_requires`,
+  feed into degraded-health reporting exactly as any other usage dependency
+  does. `init_requires` naming an external is therefore meaningful only for
+  its secret-preflight effect, never for ordering — worth stating
+  explicitly rather than leaving a reader to assume it participates in the
+  topological sort the way an internal dependency does.
+
+**Note on the `simulated` realness variant above
+(`legacy_service_1.simulated` carrying `image`/`stub_mappings` directly,
+with no `realized_by`):** this is a judgment call, not something
+`V8-REALIZATION-GRAPH.md` itself worked out — its own examples only cover
+`live`/`mock` variants pointing at real infra or carrying `implementation`.
+A `simulated` variant that runs an actual container (a wiremock double) is
+itself a small Realization in every sense that matters, so the fully
+consistent shape would give it its own `[ciu_stack.<synthetic-name>]` (or
+`[compose_stack.*]`) entry and point to it via `realized_by`, the same as
+any other variant. Inlining `image`/`stub_mappings` straight onto the
+variant, as shown, is simpler for a one-container stub but is an
+inconsistency worth resolving explicitly before this becomes normative,
+not a settled part of the model.
 
 ### 3.2 Validation rules
 
-- Every sub-table key under `[service.<stack>.<svc>]` MUST match a valid
-  realness level. Other key names are validation errors.
-- Valid realness levels:
-  - `CIU` and `COMPOSE` stacks: `live`, `mock`, `owned-seeded`, `simulated`
-    per service
-  - `EXTERNAL`: `live`, `owned-seeded`, `simulated`, `mock`
-    (declared directly on the entity)
-  - `IN_PROCESS`: `mock` (the entity IS a mock)
-- At least one variant MUST be declared per service.
-- `init_requires` references use S13 typed-reference grammar. Service-to-service
-  references use the compound `<stack>.<service>` form.
-- Secrets referenced in a variant MUST have corresponding entries in
-  `ciu.secrets.toml` or Vault paths. Missing credentials fail at
-  config-validation time when that realness level is selected.
+- Every sub-table key under `[service.<name>]` MUST match a valid realness
+  level (`live`, `mock`, `owned-seeded`, `simulated`). Other key names are
+  validation errors.
+- At least one variant MUST be declared per LogicalService.
+- A variant MUST carry either `realized_by` (pointing at an existing
+  `[ciu_stack.*]`/`[compose_stack.*]`/`[external.*]` entry) or
+  `implementation` (a mock) — never both, never neither.
+- `init_requires`/`depends_on`/typed references use S13's grammar; any bare
+  name in them MUST resolve to a declared `[service.<name>]` — a reference
+  to a stack or compound key is a validation error, not a lookup miss.
+- A Realization's aggregate `init_provides` is checked against every
+  LogicalService's `contract` that points at it via `realized_by` — missing
+  coverage is a validation error naming the logical service, the
+  realization, and the uncovered fact. (Per `V8-REALIZATION-GRAPH.md`'s own
+  "Still open" list, this contract-conformance check is not yet
+  implemented anywhere — it's the actual prerequisite for §4.3 dropping
+  `[deploy.phases]` safely, not an optional nice-to-have.)
+- Secrets referenced in a variant MUST have corresponding entries under that
+  variant's realization's `[ciu_stack.<stack>.<entity>.secrets]` table (or
+  `[external.<name>.secrets]`) or a Vault path, per §10.3. Missing
+  credentials fail at config-validation time when that realness level is
+  selected.
 
 ### 3.3 Secret preflight
 
-When an environment selects `payment-api = live`, CIU checks that `[payment-api] stripe_secret_key` exists in the resolved secret store before provisioning. Missing = refuse with message naming the service, variant, and expected key.
+When an environment selects `payment-api = live`, CIU resolves
+`service.payment-api.live.realized_by` to `external.payment_api_stripe`,
+then checks that `[external.payment_api_stripe.secrets] stripe_secret_key`
+exists in the resolved secret store before provisioning. Missing = refuse
+with message naming the logical service, its realization, the variant, and
+the expected key.
 
-Mock and simulated variants that declare no secrets skip credential resolution entirely.
+Mock and simulated variants that declare no secrets skip credential
+resolution entirely.
 
 ---
 
@@ -935,11 +1202,11 @@ Replace the service-selection half of old profiles:
 ```toml
 [deploy.groups.core]
 description = "Infrastructure foundation"
-services = ["our_db_stack.postgres", "redis_stack.redis"]
+services = ["our_main_db", "our_cache"]
 
 [deploy.groups.app]
 description = "Application layer"
-services = ["our_api_stack.api", "notification-service"]
+services = ["our_api", "notification-service"]
 
 [deploy.groups.full]
 description = "Everything"
@@ -960,19 +1227,20 @@ description = "DB on host-a, app on host-b"
 hosts = ["host-a", "host-b"]
 
 [deploy.profiles.two-host.hosts.host-a]
-services = ["our_db_stack.postgres", "redis_stack.redis"]
+services = ["our_main_db", "our_cache"]
 
 [deploy.profiles.two-host.hosts.host-b]
-services = ["our_api_stack.api", "notification-service"]
+services = ["our_api", "notification-service"]
 
 [topology]
-mode = "wireguard"               # "wireguard" | "proxy" | "direct"
+transport = "wireguard"          # "direct" | "wireguard" | "proxy" — see §1.17
+                                  # (this table's schema is normative there)
 
 [topology.hosts.host-a]
-wireguard_ip = "10.0.0.1"
+address = "10.0.0.1"
 
 [topology.hosts.host-b]
-wireguard_ip = "10.0.0.2"
+address = "10.0.0.2"
 ```
 
 Profiles are reusable across multiple environments (multi-stack).
@@ -1005,7 +1273,42 @@ ciu up --group full --profile single-host --name dev-john
 ciu up --group app --profile two-host --name staging
 ```
 
+**`--name` is a human-facing alias, never the identity (clarified
+2026-08-27).** `INSTANCE_ID` (existing S16 behavior) remains the one
+canonical, unique identifier per rendered `ciu.global.toml` — it's what
+containers, networks, and every other mechanical name derive from, exactly
+as today. `--name` records a purely cosmetic label (`dev-john`, `staging`)
+pointing at that `INSTANCE_ID`, used only for human-facing addressing —
+`ciu lock <instance-name>` below resolves the name to its `INSTANCE_ID`
+before doing anything, the same way a Docker container's human-readable
+name resolves to its ID. No container name, network name, or any other
+mechanical identifier is ever derived from `--name` itself.
+
+This does NOT mean one checkout can run two *concurrent* named instances of
+the same project — `INSTANCE_ID` is one per rendered config, so two
+genuinely concurrent instances of the same project still require two
+checkouts (a new worktree each), same as today. The two example commands
+above are two *separate* invocations (different times, or different
+checkouts) being given different aliases, not a claim that they coexist
+from one checkout. The real "multiple simultaneously-running instances,
+same checkout, no new worktree" case is a monorepo holding more than one
+*independent* `ciu.global.defaults.toml.j2` root (e.g. this very repo:
+`vbpub/ciu`, `vbpub/cmru`, `vbpub/assay`, each a distinct CIU project living
+under one git checkout) — each gets its own `INSTANCE_ID` because they're
+different projects, not because one project was instantiated twice.
+
 Multiple instances can coexist (multi-stack). Each gets unique `INSTANCE_ID`, network, container prefix — existing S16 behavior.
+
+**An Environment's identity includes its realness selection, not just its
+`INSTANCE_ID` (added 2026-08-27).** "Environment (instance)" is this
+document's existing name for the whole running collection under one
+`INSTANCE_ID` — and per §10.13, that collection is a *specific realness
+materialization*: fixed for the instance's whole lifetime, never live-swapped.
+No new noun is introduced for this — "Environment" already means it; this
+just states the connection explicitly, since nothing did before. Whether the
+*declared selection* deserves its own name distinct from its *materialization*
+(echoing the LogicalService/Realization split) is a genuine open question,
+not resolved here — see §10.13.
 
 Note: If lots of groups are defined it might be useful to allow exclusion (subtract) a group/service from start like `--group full,-excluded_service`
 
@@ -1329,81 +1632,105 @@ hold = false
 min_release_age_days = 14
 
 # ------------------------------------------------------------
-# LOGICAL SERVICES
+# REALIZATIONS — the physical things (see §3.1; entity/realization split)
 # ------------------------------------------------------------
 
-[service.our_api_stack]
-type = "CIU"
+[ciu_stack.our_api_stack]
+location = "applications/api-handler"
 description = "HTTP request handler"
 
-[service.our_api_stack.api.live]
-location = "applications/api-handler"
+[ciu_stack.our_api_stack.api]
 port = 8080
 health = "/health"
-init_requires = ["postgres:db/demo"]
-depends_on = ["redis_stack.redis", "payment-api"]
+init_requires = ["our_main_db"]
+depends_on = ["our_cache", "payment-api"]
 allow_degraded_start = true
 
-[service.our_api_stack.api.mock]
+[ciu_stack.our_db_stack]
+location = "infra/db-core"
+
+[ciu_stack.our_db_stack.postgres]
+image = "timescale/timescaledb:pg18"
+port = 5432
+seed_data = "fixtures/seed.sql"
+
+[ciu_stack.redis_stack]
+location = "infra/redis-core"
+
+[ciu_stack.redis_stack.redis]
+image = "redis:7-alpine"
+port = 6379
+
+[external.payment_api_stripe]
+base_url = "https://api.stripe.com"
+secrets = ["stripe_secret_key"]
+
+[ciu_stack.payment_api_stub]
+location = "infra/payment-stub"
+
+[ciu_stack.payment_api_stub.stub]
+port = 8090
+seed_data = "fixtures/payment_responses.json"
+secrets = ["payment_stub_key"]
+
+# ------------------------------------------------------------
+# LOGICAL SERVICES — the names every consumer, group, and selection
+# actually references
+# ------------------------------------------------------------
+
+[service.our_api]
+[service.our_api.live]
+realized_by = "ciu_stack.our_api_stack"
+
+[service.our_api.mock]
 implementation = "tests/mocks/api_handler_mock.py"
 
 [service.notification-service]
-type = "IN_PROCESS"
 description = "Sends emails/SMS (not yet implemented)"
 
 [service.notification-service.mock]
 implementation = "tests/mocks/notification_mock.py"
 
-[service.our_db_stack]
-type = "CIU"
-location = "infra/db-core"
+[service.our_main_db]
+[service.our_main_db.owned-seeded]
+realized_by = "ciu_stack.our_db_stack"
 
-[service.our_db_stack.postgres.owned-seeded]
-image = "timescale/timescaledb:pg18"
-port = 5432
-seed_data = "fixtures/seed.sql"
+[service.our_cache]
+[service.our_cache.owned-seeded]
+realized_by = "ciu_stack.redis_stack"
 
 [service.payment-api]
-type = "EXTERNAL"
 description = "External payment processor"
 
 [service.payment-api.live]
-base_url = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
+realized_by = "external.payment_api_stripe"
 
 [service.payment-api.owned-seeded]
-location = "infra/payment-stub"
-port = 8090
-seed_data = "fixtures/payment_responses.json"
-secrets = ["payment_stub_key"]
+realized_by = "ciu_stack.payment_api_stub"
 
 [service.payment-api.simulated]
-image = "wiremock/wiremock:latest"
-port = 8090
+image = "wiremock/wiremock:latest"      # inline; same open judgment call as §3.1's
+port = 8090                              # legacy_service_1.simulated — not yet settled
 stub_mappings = "fixtures/wiremock_stubs/"
 
 [service.payment-api.mock]
 implementation = "tests/mocks/payment_mock.py"
 
-[service.redis_stack]
-type = "CIU"
-location = "infra/redis-core"
-
-[service.redis_stack.redis.owned-seeded]
-image = "redis:7-alpine"
-port = 6379
-
 # ------------------------------------------------------------
-# STACK-LEVEL SERVICE WIRING (see §1.16) — in each stack's ciu.defaults.toml.j2,
-# NOT in the global file. Shown here for illustration.
+# PER-STACK DEPLOYMENT WIRING (see §1.15) — declared directly in each
+# stack's own ciu.defaults.toml.j2 as [ciu_stack.<stack>.<svc>], not in
+# the global file and not through any separate `[local_stack.*]` layer
+# (that layer's join is redundant once the compound key is itself the
+# global address — §1.15). Shown here for illustration only:
 # ------------------------------------------------------------
 
-# [local_stack.postgres]
+# infra/db-core/ciu.defaults.toml.j2:
+# [ciu_stack.our_db_stack.postgres]
 # port = 5432
 # image = "timescale/timescaledb-ha:pg18"
 # env_required = ["POSTGRES_PASSWORD_FILE"]
 #
-# [local_stack.minio]
+# [ciu_stack.our_db_stack.minio]
 # port = 9000
 # image = "minio/minio:latest"
 
@@ -1413,11 +1740,11 @@ port = 6379
 
 [deploy.groups.core]
 description = "Infrastructure foundation"
-services = ["our_db_stack.postgres", "redis_stack.redis"]
+services = ["our_main_db", "our_cache"]
 
 [deploy.groups.app]
 description = "Application layer"
-services = ["our_api_stack.api", "notification-service"]
+services = ["our_api", "notification-service"]
 
 [deploy.groups.full]
 description = "Everything"
@@ -1441,10 +1768,10 @@ transport = "wireguard"
 [topology.hosts.localhost]
 
 [topology.hosts.host-a]
-wireguard_ip = "10.0.0.1"
+address = "10.0.0.1"
 
 [topology.hosts.host-b]
-wireguard_ip = "10.0.0.2"
+address = "10.0.0.2"
 
 # ------------------------------------------------------------
 # TESTING POLICY
@@ -1474,10 +1801,16 @@ patterns = ["src/payments/**/*.py"]
 scope = ["tests/unit/test_payment.py", "tests/integration/test_payment_flow.py"]
 
 # ------------------------------------------------------------
-# SECRETS (in gitignored ciu.secrets.toml)
-# [postgres] postgres_password = "..."
-# [payment-api] stripe_secret_key = "sk_live_..."
-# [payment-api] payment_stub_key = "stub_local_..."
+# SECRETS (in gitignored ciu.secrets.toml — addressed by realization,
+# not logical name; see §10.3)
+# [ciu_stack.our_db_stack.postgres.secrets]
+# postgres_password = "..."
+#
+# [external.payment_api_stripe.secrets]
+# stripe_secret_key = "sk_live_..."
+#
+# [ciu_stack.payment_api_stub.stub.secrets]
+# payment_stub_key = "stub_local_..."
 # ------------------------------------------------------------
 ```
 
@@ -1602,56 +1935,225 @@ inside wrapper scripts (which is what dstdns currently does in
 `scripts/p128-assay-schema.sh` and `scripts/p129-assay-schema.sh`) and makes
 the pattern reusable across all projects with database-dependent mutation lanes.
 
-### 10.3 Secrets architecture — open design question
+### 10.3 Secrets architecture — RESOLVED (2026-08-27, dstdns/vbpub joint session)
 
 **Current state (S4):** six directives (`ASK_VAULT`, `GEN_TO_VAULT`,
 `GEN_LOCAL`, `ASK_EXTERNAL`, `ASK_FILE`, `GEN_EPHEMERAL`) resolve secrets
 into `.ciu/secrets/<name>` store files. Vault-backed directives require a
-running Vault instance.
+running Vault instance. This remains shipped, unchanged behavior — nothing
+below alters S4 itself.
 
-**V8 introduces `ciu.secrets.toml`** as a sibling of the global config file.
-Its role and relationship to S4 needs explicit definition:
+**V8 introduces `ciu.secrets.toml`** as a sibling of the global config file:
 
 | Deployment mode | Where secrets live | How they reach containers |
 |----------------|-------------------|--------------------------|
-| **With Vault** | Vault KV2 (S4 directives unchanged) | Materialized to `.ciu/secrets/` by CIU, mounted via overlay |
-| **Without Vault** | `ciu.secrets.toml` (gitignored) | Values read directly from this file; materialized to `.ciu/secrets/` |
-| **Mixed** | Vault for infrastructure secrets; `ciu.secrets.toml` for 3rd-party API keys, dev credentials | Both paths feed into the same `.ciu/secrets/` store |
+| **With Vault** | Vault KV2 (S4 directives unchanged) | Materialized into the owning stack's own folder (below), mounted via overlay |
+| **Without Vault** | `ciu.secrets.toml` (gitignored) | Values read directly from this file; materialized the same way |
+| **Mixed** | Vault for infrastructure secrets; `ciu.secrets.toml` for 3rd-party API keys, dev credentials | Both paths feed the same per-stack materialized-copy layer |
 
-`ciu.secrets.toml` is NOT a replacement for S4 — it is an additional source.
-When Vault is available, S4 directives work unchanged. When it is not,
-`ciu.secrets.toml` fills the gap for projects that cannot run Vault.
+**Core principle — two coexisting SSoTs, not a replacement.** `ciu.secrets.toml`
+is not an alternative to Vault, and Vault is not mandatory. A project may
+declare a secret's authoritative value in *either* store, per-secret. Neither
+store is subordinate to the other — `ciu.secrets.toml` fills exactly the gap
+Vault can't (bootstrap-before-Vault-exists, and projects that never run Vault
+at all), while Vault remains authoritative for anything with a live-fetch
+path (AppRole/SM2 in particular — see (3) below). This is worth stating as
+its own rule because it's easy to misread "vaultless fallback" as "second
+choice": it isn't. Whichever store holds a given secret's value, that store
+is that secret's SSoT.
 
-**Open questions requiring further design:**
+The four open questions below are now resolved:
 
-1. **Project-level secrets.** Where does a stack's own secret go?
-   Options:
-   - `<stack>/ciu.secrets.toml` (alongside ciu.defaults.toml.j2)
-   - A `[secrets]` table in `ciu.toml.j2` (the sparse override layer)
-   - Keep using S4 per-stack secret tables with `GEN_LOCAL`
+**1. Project-level secrets — resolved.** `ciu.secrets.toml` lives at
+project/repo root, one file, addressed with the *same* addressing scheme
+`V8-REALIZATION-GRAPH.md` already uses for realizations — whichever
+realization kind actually backs the entity (`[ciu_stack.<stack>.<entity>]`,
+`[compose_stack.<stack>.<entity>]`, or `[external.<entity>]`, per §3.1) —
+rather than inventing a parallel `<stack>/ciu.secrets.toml`, a `[secrets]`
+table in the sparse override layer, or a secrets-only naming scheme that
+ignores which realization kind is actually in play. A secret sits at the
+exact address its own realization does, whichever kind that is, so nothing
+needs a second lookup path to find where a given entity's material lives.
+One refinement beyond that reuse: secrets are nested under a reserved
+`.secrets` sub-key of that address (`[ciu_stack.vault_stack.vault.secrets]`),
+not injected as bare keys directly into the realization table — this avoids
+a secret name ever colliding with a reserved realization key
+(`init_provides`, `contract`, etc.) purely by chance. **This one nesting
+detail is an editorial call made while writing this section, not something
+explicitly settled in conversation — worth a second look before it's
+treated as final.** (This paragraph was updated 2026-08-27 to name all
+three realization kinds — it originally said only `ciu_stack`, written
+before the `ciu_stack`/`compose_stack`/`external` split existed anywhere in
+this document; see the corrected examples below.)
 
-2. **Vault bootstrap.** The Vault service itself needs its own unlock key
-   after initialization. Currently dstdns stores this in the vault stack's
-   `[state]` table. Should v8 formalize this pattern?
+A stack may declare more than one secret; the table just grows more keys:
 
-3. **Service-level access tokens.** For services that need a Consul token
-   or Vault AppRole credentials at runtime, the current pattern is:
-   hook provisions token → writes to Vault → service reads via ASK_VAULT.
-   In a vaultless deployment, where does this go? Options:
-   - `ciu.secrets.toml` at global level (shared across stacks)
-   - `<stack>/ciu.secrets.toml` (per-stack)
-   - Directly in compose environment (current `expose_env` escape hatch)
+```toml
+# ciu.secrets.toml (gitignored, project-root sibling of ciu.global.toml)
 
-4. **Mounting into containers.** The proposal does NOT mount
-   `ciu.secrets.toml` directly into containers — multiple services per
-   stack may need different subsets of its values. Instead, CIU reads it
-   during secret resolution and materializes individual files to
-   `.ciu/secrets/<name>`, which are then mounted selectively per service.
+[ciu_stack.postgres_stack.postgres.secrets]
+postgres_password = "..."
+postgres_replication_password = "..."
 
-**Status:** OPEN — needs design before v8 becomes normative. The
-`ciu.secrets.toml` file itself is non-controversial; its precedence rules,
-project-level placement, and interaction with existing S4 stores need
-resolution.
+[external.payment_api_stripe.secrets]
+stripe_secret_key = "sk_live_..."
+
+[ciu_stack.payment_api_stub.stub.secrets]
+payment_stub_key = "stub_local_..."
+```
+
+(Updated 2026-08-27 to match §3.1's realization-kind addressing, adopted
+in this document after this section was originally written: this section
+predates the `ciu_stack`/`compose_stack`/`external` split, so its examples
+originally addressed everything as `ciu_stack.*` — including secrets that
+actually belong to an `external` or `compose_stack` realization, like
+Stripe above. Same table-per-key rule as before, now with the correct
+realization-kind prefix.)
+
+**2. Vault bootstrap — resolved.** Root_token/unseal_key move OFF the
+`[state]` mechanism and into an addressed secrets table like any other
+secret:
+
+```toml
+[ciu_stack.vault_stack.vault.secrets]
+root_token = "hvs...."
+unseal_key = "..."
+initialized = true
+initialized_at = "2026-08-27T00:00:00Z"
+```
+
+Why move it: today's `[state]` channel is a general hook-persistence
+mechanism (arbitrary structured value, optional `apply_to_config`
+round-trip) that Vault's bootstrap secrets piggyback on *because* the
+six-directive grammar can't express a multi-field value — not because
+`[state]` is where secrets belong. That conflates two different concerns
+(hook state vs. secret storage) in one channel. `[state]` itself is **not**
+removed — a hook that genuinely wants to remember non-secret state (a
+counter, a timestamp, a flag) keeps using it exactly as today. Only the
+secret-shaped values move out.
+
+**3. Service-level access tokens — resolved, plus one clarifying insight.**
+Same answer as (1): an addressed `ciu_stack.<stack>.<entity>.secrets` table,
+not a separate global-vs-per-stack fork. The clarifying insight: **an AppRole
+bootstrap credential (a Vault `secret_id`, single-use, `secret_id_num_uses=1`)
+is not a special kind of thing that needs its own path — it is an ordinary
+ciu/docker-layer secret, materialized through the exact same mechanism as
+any other value in this table.** SM2 (per-service Vault AppRole) does not
+change how CIU delivers *that one bootstrap credential*; it changes what
+happens *after* the service reads it — the service trades it for a Vault
+client token and, from that point on, is fetching every other secret live
+from Vault, with CIU no longer in the loop at all. CIU's own job never
+grows past "materialize one more entry in the table"; it just becomes the
+last entry a given service ever needs from CIU.
+
+```toml
+[ciu_stack.controller_stack.controller.secrets]
+vault_approle_secret_id = "..."   # single-use; consumed once, then irrelevant
+```
+
+**4. Mounting into containers — resolved, with a delivery-mode axis added.**
+Two independent questions were previously conflated here: *where* the
+materialized copy lives, and *how* the container receives it. Both are now
+answered:
+
+- **Why a materialized copy still exists at all:** centralizing the SSoT
+  doesn't remove the need for one. `ciu.secrets.toml` is never mounted
+  directly — a stack's containers each need only their own subset of it,
+  and Compose (outside Swarm mode, which this deployment model doesn't use)
+  has no secret-delivery path that isn't a literal file on disk; its
+  `secrets:` block is sugar over exactly that. *Considered and rejected:*
+  writing values into Docker's own Swarm-native secret store (created via
+  `docker secret create`, encrypted at rest, referenced by name with no
+  file) so nothing ever touches disk — rejected because it's Swarm-only,
+  and adopting Swarm is a far larger orchestration change than this section
+  is about. So CIU still reads the SSoT during secret resolution and
+  materializes one file per secret, same as it does for S4 today — only
+  *where* that file lands changes.
+- **Where:** every materialized secret — S4 Vault-backed values and
+  `ciu.secrets.toml` values alike — moves out of the hidden nested
+  `<stack>/.ciu/secrets/<name>` layout into a plain visible sibling of the
+  relevant stack's `ciu.defaults.toml.j2` — no `.ciu/` subdirectory at all.
+
+  **Naming — corrected 2026-08-27, reversing what this bullet said
+  before.** It previously claimed `<service>.<key>` (the *consuming*
+  container's own name plus the secret's bare key) was collision-free
+  because the stack's own folder already disambiguates. That's true only
+  when the secret materializes into *its own owning stack's* folder — it
+  breaks the moment a folder receives a copy of a secret it doesn't own,
+  which is exactly the `[external.*]` case below: two *unrelated* secrets
+  (from two different realizations, or even a coincidental same-named key
+  under two different `[external.*]` entries) can both be consumed by the
+  same stack and would collide under the old rule, since nothing about
+  `<service>.<key>` encodes which realization the value actually came from.
+
+  The fix: the filename always carries the secret's own fully-qualified SoT
+  address — `ciu.secret-temp-copy.<realization-kind>.<realization-name>.<key>.txt`
+  (e.g. `ciu.secret-temp-copy.external.geo_ip_provider.geo_api_key.txt`) —
+  never the consuming service's own name. This is unique by construction
+  everywhere, not just within one folder: TOML itself already forbids two
+  entries at the same `[<kind>.<name>.secrets]` address, so no two secrets
+  can ever produce the same filename, regardless of which folder(s) they
+  land in or how many different consumers pull from the same source. One
+  rule for every case — no separate reasoning needed for "secret in its own
+  stack's folder" vs. "secret in a consumer's folder" the way the old
+  wording required. (The `GEN_LOCAL` "unrelated stacks share a secret"
+  case still lands at true repo root under its own locator name, same as
+  today — that part is unaffected.)
+
+  **Where copies land, unchanged by this correction:** a `ciu_stack`/
+  `compose_stack`-owned secret's copy still lives in that stack's own
+  folder (Compose needs it within reach of that stack's own compose
+  context) — the folder no longer does any disambiguation work, it's now
+  purely mechanical placement. An `[external.*]` secret — no `location`, no
+  folder of its own — lands in *every consuming stack's* own folder instead
+  (one copy per consumer, same "Compose needs a file per container"
+  reasoning as always), each carrying the identical, fully-qualified
+  filename.
+- **Lifecycle:** "temporarily" does not mean "deleted the instant the
+  container starts." A crash-looping or `docker compose restart`ed container
+  re-reads its mount and needs the file to still be there. Fast removal
+  right after first use would be more SSoT-pure and marginally more secure,
+  but restart-safety wins the trade-off — the file persists exactly as
+  today's `.ciu/secrets/*` files do: untouched by `ciu down`, wiped only by
+  `ciu clean` / `ciu secrets reset`. The `-temp-copy-` naming carries the
+  "this is disposable, not authoritative" signal instead of an actually
+  short-lived file.
+- **How (new axis — delivery mode):** not every service accepts a
+  file-based secret. CIU must offer all of: (a) a plain environment variable
+  (still supported, despite being the weaker option — plain env vars leak
+  via `docker inspect`, `/proc/<pid>/environ`, and crash/error-reporting
+  dumps that include the process environment — but some services simply
+  don't support anything else), (b) a `_FILE`-suffixed env var pointing at
+  the materialized copy (the pattern most official images already expect,
+  and the **recommended default**), (c) a fixed path the target app expects.
+  Native Vault SDK / Vault Agent consumption (no file, no env var — the
+  service talks to Vault directly) is a fourth mode, but it's the one CIU
+  is genuinely not a party to (see (3)) — not a delivery mode CIU implements,
+  just the boundary past which CIU's job is already done. Default is file
+  delivery; env-var delivery is an explicit per-secret opt-in:
+
+```toml
+[compose_stack.compose_stack.service1.secrets]
+db_password = "..."                            # default: file delivery
+api_key = { value = "...", delivery = "env" }  # this app only accepts env
+```
+
+(`compose_stack.compose_stack.service1` reuses §3.1's own COMPOSE-type
+example rather than inventing a fresh name, and is addressed as
+`compose_stack.*` accordingly — same realization-kind correction as above.
+The doubled `compose_stack` is §3.1's own deliberate renaming, not a typo —
+see its note there.)
+
+**Status:** RESOLVED — the design above is ready to fold into the normative
+v8 spec. One nesting detail is flagged inline above (the `.secrets`
+sub-key) as this session's own editorial call rather than something
+explicitly agreed in conversation, and should get an explicit look before
+being locked in.
+
+See §10.11 for a related but *separate* decision made in the same session:
+a new whole-run instance mutex. It shares the "one file, one instance" spirit
+of this section but is not a secrets mechanism and doesn't reuse any of the
+files described above.
 
 ---
 
@@ -1703,8 +2205,12 @@ Minimum viable solution: add `judge.version` and `judge.sha256` fields to
 the verdict JSON schema. CIU records these from whatever assay binary it
 invoked. This is an Assay backlog item (verdict schema extension).
 
-**Status:** OPEN — filed as Assay upstream ask; CIU-v8 must record the
-producing judge identity in every verdict.
+**Status:** RESOLVED (bookkeeping fix, 2026-08-27) — §10.5 "Judge
+distribution" already carries a complete worked design (`[testing.judge]`
+version/source/sha256, CIU resolves+verifies+mounts the pinned artifact,
+records both judge and runner-image digests in the ExecutionManifest and
+verdict). This entry was never updated to point at it; the design itself
+was not missing.
 
 ### 11.4 Changed-file scope refinement (was M4)
 
@@ -1725,7 +2231,7 @@ scope = ["tests/unit/test_api.py"]
 
 Additional fields worth considering:
 - `min_changed_lines = 5` — skip scope if fewer than N lines changed (noise filter)
-- `requires_services = ["our_api_stack.api"]` — only meaningful when these services are deployed
+- `requires_services = ["our_api"]` — only meaningful when these logical services are deployed
 - Per-package roots for monorepo subprojects with independent test suites
 
 The base diff computation should use Assay's B012 changed-lines mode
@@ -1734,6 +2240,50 @@ trigger full gate runs.
 
 **Status:** OPEN — refine before implementation; coordinate with Assay's
 changed-file detection (B014 bounded output tails).
+
+### 11.5 Default skip-on-realness-mismatch false-green risk (was M3)
+
+Skip-with-warning as a default lets a lane report success on partial
+evidence, inverting run-gate/assay's existing fail-safe posture.
+
+**Status:** RESOLVED (bookkeeping fix, 2026-08-27) — never had an entry
+here, but §10.6 ("Lane realness requirements") and §10.7 ("NOT_RUN
+semantics") substantively resolve exactly this: a lane whose required
+realness variant isn't met is assigned `NOT_RUN` with a named reason and is
+"NEVER silently downgraded to a different variant"; ship intents fail
+closed on any required `NOT_RUN`. The concern was addressed elsewhere in
+the document before this section existed to track it.
+
+**Extension (2026-08-27):** an explicitly requested realness or rigor that
+cannot be fulfilled must fail regardless of the invoking intent's default
+`not_run_policy` — an explicit ask is a stronger signal than any intent
+default and must never silently degrade to a warning. See §10.7's added
+rule for the mechanics.
+
+### 11.6 Concurrency budget and locking incomplete (was M8)
+
+S16.3 coordinates family-wide cold starts through shared locks; the
+original review asked how named environments, locks, budgets, shared
+networks, and parallel CI all interact — nothing explained it in one place.
+
+**Status:** RESOLVED (2026-08-27) — §10.11 (instance mutex) and §10.12
+(concurrency model — how all five locking mechanisms compose, acquisition
+order, and why S4.26 stays as defense-in-depth) now cover this directly.
+
+### 11.7 Shared infrastructure absent (was M7)
+
+S16.1 shared-infra join for worktrees is ignored by v8's deployment model;
+common multi-stack optimization risked being lost.
+
+**Status:** OPEN, sharpened not resolved (2026-08-27) — see §10.14. The
+problem turns out bigger than "add a cross-reference": S16.1 is welded to
+`ciu worktree add`, and the real "multiple instances, one checkout, no new
+worktree" case (a monorepo with independent ciu-roots — this repo is the
+live example) never calls that verb, so shared-infra join has no way to
+apply there today regardless of anything v8 does. Two options laid out in
+§10.14, neither chosen: keep it worktree-scoped (simple, accepts the gap)
+or generalize it to an environment-instance property (real design work,
+several sub-questions un-explored).
 
 ### 10.4 Execution manifest
 
@@ -1852,6 +2402,36 @@ This means the resolution order from §1.4a gains a validation step after
 selection: lanes check their `requires_realness` against what was actually
 selected and refuse to run on mismatch.
 
+**Coverage warning: `requires_realness` vs. transitive dependencies
+(added 2026-08-27, operator ask).** Nothing above checks whether a lane's
+`requires_realness` is actually *complete*. A lane naming `worker` doesn't
+automatically also cover `geo-location`, even though `worker`'s own
+`depends_on`/`init_requires` names it — the lane author has to add it
+separately, and nothing today catches the omission if they forget.
+
+`ciu check` gains a new warning class for this: for every service named in
+a lane's `requires_realness`, walk that service's RealizedService
+`depends_on` + `init_requires` closure transitively (the same LogicalService
+reference-following the topological sort already does for startup
+ordering) and flag any dependency not also present in the lane's
+`requires_realness` keys. This is config-only — no live environment needed
+— so it runs wherever every other `ciu check` validation does, not only at
+gate time.
+
+Two severities, matching the distinction §1.6 already draws between init
+and usage dependencies:
+- An uncovered `init_requires` dependency: the consumer under test cannot
+  even start without it, so a lane that never named it is resting on an
+  unstated assumption about what realness it's actually getting.
+- An uncovered `depends_on` dependency: the consumer can run degraded
+  without it, so silence is more defensible — but still worth surfacing,
+  since a test that ends up exercising degraded-mode behavior by accident
+  rather than by design is a real failure mode too.
+
+Reuses the WARN/ERROR severity vocabulary CIU-65 already proposes for
+`validate_config` findings (§1.15's note above) rather than inventing a
+third one — once that lands, this check's two levels map onto it directly.
+
 ---
 
 ### 10.7 NOT_RUN semantics
@@ -1892,6 +2472,26 @@ rigor = ["R0"]
 not_run_policy = "warn"           # fast feedback can tolerate gaps
 ```
 
+**An explicit request always fails closed, regardless of `not_run_policy`
+(2026-08-27).** The policy above governs the intent's own *default* posture
+toward a `NOT_RUN` arising from ordinary selection — nothing was explicitly
+asked for, so the ambient default decides. It does not govern the case
+where the operator explicitly asked for a specific realness or rigor —
+`ciu gate --rigor R2 ...`, or a realness pinned via `--realness
+<svc>=<level>` (§1.4) that a lane's `requires_realness` then can't satisfy —
+and that exact request cannot be fulfilled. An explicit ask is a stronger
+signal than any intent default: silently downgrading it to a warning means
+the operator asked for something specific and the system quietly gave them
+something else, which is worse than asking for nothing and getting the
+intent's own default. So: **a `NOT_RUN` caused by an explicitly requested
+realness/rigor is always FAIL, even under `not_run_policy = "warn"`.** Only
+a `NOT_RUN` arising from the intent's own inferred/default selection is
+subject to `not_run_policy` at all. (This is a gate-layer rule. The
+deployment-layer `--realness` CLI override at `ciu up` time, §1.4, has the
+same open question — no failure mode is stated there yet for an explicit
+override naming a variant the service doesn't declare — but that's a
+separate gap from this one, not resolved by this addition.)
+
 ---
 
 ### 10.8 Authored config vs derived state
@@ -1903,11 +2503,19 @@ To prevent ambiguity about where truth lives:
 - `ciu.global.toml.j2` — intentional committed override
 - `<stack>/ciu.defaults.toml.j2` — stack-authoritative baseline
 - `<stack>/ciu.toml.j2` — optional stack override
+- `ciu.secrets.toml` — gitignored secret values for vaultless/mixed-mode
+  projects; coexists with Vault as a second SSoT, never subordinate to it
+  (§10.3)
 
 **Derived (never authored):**
 - `ciu.global.toml` — rendered output of the chain above
 - `.ciu-execution-manifest.json` — compiled gate plan (§10.4)
-- `.ciu/secrets/*` — materialized secret values
+- `<stack>/ciu.secret-temp-copy.<realization-kind>.<realization-name>.<key>.txt`
+  — materialized secret copies, named by the secret's own fully-qualified
+  SoT address (never the consuming service's name — see §10.3's correction),
+  landing in whichever stack folder(s) need a copy (S4 Vault-backed AND
+  `ciu.secrets.toml`-sourced alike), superseding the old hidden
+  `<stack>/.ciu/secrets/<name>` layout
 - `.ciu/ciu.compose.overlay.yml` — machine-derived wiring
 
 The ExecutionManifest is a COMPILATION of the authored config plus runtime
@@ -1982,3 +2590,279 @@ the ExecutionManifest. The lane reads it from there, not from its own config.
 
 This makes the same lane definition reusable across branches, PRs, and
 local development without editing config per context.
+
+---
+
+### 10.11 Instance-level run mutex (2026-08-27, dstdns/vbpub joint session)
+
+**This is a new capability, not a relocation of an existing one.** ciu's
+only lock today, S4.26 (`<stack>/.ciu/lock` / `<repo-root>/.ciu/lock`), is
+held solely for the duration of `materialize_secrets()` — it serializes
+concurrent *secret writes*, then releases. Nothing in ciu today serializes
+the rest of a `ciu up`/`ciu down` run (compose apply, hooks, health checks)
+against a second concurrent invocation against the same instance. Before
+proposing this, it's worth being explicit that ciu does **not** currently
+guarantee "only one ciu instance is running" in any general sense — that
+guarantee doesn't exist yet, and this section proposes adding it, not
+documenting something already true.
+
+**Proposal:** a second, separate, whole-run mutex — held from the start of
+`ciu up`/`ciu down` until it exits, not just during materialization.
+
+**Scope: per `INSTANCE_ID`, not per git-common-dir.** `INSTANCE_ID`
+(`engine.py`, `worktree.py::lease_holder`) already identifies one checkout —
+each worktree instance renders its own `ciu.global.toml` and gets its own
+identity (CIU-60). The mutex lives beside that instance's own rendered
+config, one lock per `INSTANCE_ID`. This is deliberately the *opposite*
+scope from git-common-dir: git-common-dir is the one thing every worktree of
+a checkout family shares, which is exactly why today's worktree
+allocation/budget locks (`worktree.py`) use it — they need family-wide
+serialization for bookkeeping that really is shared. A run mutex does not
+share that need. Scoping it at git-common-dir would mean a `ciu up` running
+in the primary checkout blocks every one of its worktrees (and vice versa)
+from running at all — directly defeating the reason worktree-based
+multi-stack setups exist. Scoping it per-`INSTANCE_ID` means the primary
+checkout and every worktree spawned from it each get an independent mutex;
+none blocks any other. Concurrent `ciu up` invocations *against the same
+instance* are the only thing this serializes.
+
+**Relationship to S4.26:** these remain two distinct locks, not one file
+wearing two jobs. §10.3's materialization change relocates *where* the
+per-stack secret copies live (out of `.ciu/secrets/`, into the stack's own
+folder) but does not change S4.26's own scope — it stays exactly what it is
+today, a brief per-stack (or per-repo-root, for the rare stack-less secret)
+write-race guard, just without the `.ciu/` prefix on its own sentinel file
+now that the surrounding layout has dropped it too. It is still a different
+file, held for a much shorter time, than the new whole-run mutex below.
+
+**Lock target: `ciu.global.defaults.toml.j2`, not a new sentinel file, and
+not the rendered `ciu.global.toml`.** Grabbing the lock at process start and
+releasing only at exit — or on a crash, via `flock`'s own auto-release when
+the holding process's file descriptor closes — is exactly right, and is not
+a new mechanism: it's how S4.26 and the worktree allocation/budget locks
+already behave (`fcntl.flock` in `worktree.py`), just extended to cover the
+whole run instead of one narrow section of it. The question is only which
+file to hold that flock against. Two candidates were compared:
+
+- `ciu.global.toml` (rendered, gitignored, no `.j2`) — **rejected**: other
+  ciu code paths (`env generate`, `render`) read and rewrite this file
+  mid-run, so a long-held exclusive lock on it risks ciu self-contending
+  with its own other commands, not just blocking a second `ciu up`/`down`.
+- `ciu.global.defaults.toml.j2` — **adopted**. Checked directly against the
+  source rather than assumed: every reference to this file (`cli.py`,
+  `dev.py`, `workspace_env.py`) is a *read*, used specifically to walk up
+  and detect the repo root (S1.1 — it's the canonical repo-root marker, not
+  merely "a" config file). The only write site anywhere in ciu is
+  `scaffold.py`, a one-time `ciu init`-style creation, never touched during
+  `ciu up`/`down`. So a whole-run exclusive lock on it contends with
+  nothing else ciu does mid-run. It also gets the right scope for free:
+  since it's a git-tracked file, every worktree already has its *own* copy
+  checked out at its own root — flock on one worktree's copy cannot block
+  another worktree's copy, because they're different inodes at different
+  paths. No new file to create or manage; the existing repo-root marker
+  file already has exactly the right lifetime, presence guarantee, and
+  per-checkout scope this mutex needs.
+
+**Left open for implementation:** whether the mutex is default-on or an
+opt-in `[ciu.instance]` config knob, and the exact CLI/error UX when a
+second invocation finds it held. Neither was decided in the conversation
+this section comes from.
+
+---
+
+### 10.12 Concurrency model — how the locking mechanisms compose (was M8, 2026-08-27)
+
+M8 flagged that CIU's locking primitives were never reconciled in one
+place. By the time §10.11 lands there are five, at four different scopes,
+not two:
+
+| Mechanism | Scope | Duration | Guards |
+|---|---|---|---|
+| S4.26 secrets lock | per-stack (or per-repo-root for `GEN_LOCAL`/shared secrets) | brief — only during `materialize_secrets()` | write races on secret files |
+| Worktree allocation lock | git-common-dir (whole worktree family) | brief — around allocation bookkeeping | two worktrees racing to claim the same new instance identity |
+| S16.3 budget lock | git-common-dir (whole worktree family) | brief — checked immediately before `docker compose up`, before any container starts | the family-wide `max_concurrent_instances` count |
+| §5.7 gate admission | per-lane, computed — not a flock | for the lane's own execution | memory budget + shared-infra name collisions between concurrently *running* gates |
+| §10.11 instance mutex | per-`INSTANCE_ID` | the whole guarded subcommand's run | two invocations touching the same instance's own state at once |
+
+**Instance mutex reach — resolved as "every mutating/lifecycle subcommand,"
+not literally every subcommand.** The chosen scope was "every ciu
+subcommand touching the instance" — but taken completely literally that
+includes `ciu gate`, and a gate run held under the same mutex as `ciu up`
+would make §5.7's own concurrent-gate-admission model impossible: two lanes
+against the same instance could never overlap even when the resource
+budget has room, defeating the entire section written to allow exactly
+that. **This is flagged as a correction to the literal scope just chosen,
+not a silent narrowing of it** — §5.7 was written independently, in an
+earlier part of this same document, and nobody had checked it against this
+scope decision until now. The reconciled reading: the mutex covers `ciu
+up`, `ciu down`, `ciu clean`, `ciu secrets reset`, `ciu lock`/`unlock` —
+anything that changes what the instance *is* — while `ciu gate` and other
+read-only inspection commands (`ciu secrets list`, `ciu check`) are
+excluded and left to their own governance (§5.7's resource-based admission
+for gates; nothing needed for pure reads).
+
+**S4.26 becomes provably redundant under this scope, and is kept anyway.**
+Every code path that can trigger `materialize_secrets()` now runs inside a
+mutex-guarded subcommand, so a second concurrent materialization race
+against the same stack can no longer happen — the mutex already prevents it
+one layer up. Removing S4.26 was considered and rejected: it is cheap,
+already implemented, and correct; keeping a working, narrow safety net that
+has become provably unnecessary under *today's* call graph costs nothing,
+while removing it bets that no future code path will ever call into
+materialization outside a mutex-guarded entry point. That is not a bet
+worth taking to save a few lines of already-shipped code.
+
+**Fixed acquisition order.** Precedent already exists for stating this
+explicitly — S4.26 itself documents a fixed stack-then-project order across
+its own two locks specifically to avoid deadlocks. Extended to the full set:
+
+1. Worktree allocation lock / S16.3 budget lock (family-wide, momentary) —
+   acquired and released first, before anything instance-specific is
+   attempted. A budget-exhausted family fails fast here, before ever
+   contending for an instance mutex.
+2. §10.11 instance mutex — acquired next, held for the subcommand's whole run.
+3. S4.26 secrets lock — acquired, as needed, as a sub-step inside an
+   already-mutex-held run.
+
+Because the family-wide locks are always released before the instance
+mutex is even requested, and the instance mutex's own critical section
+never itself tries to acquire a family-wide lock, there is no cycle between
+them — no ordering-driven deadlock is possible, the same property S4.26's
+existing two-lock ordering already relies on.
+
+---
+
+### 10.13 Realness is immutable per environment instance (2026-08-27, dstdns/vbpub joint session)
+
+**The question this resolves:** is it ever desirable to swap a running
+instance's realness selection in place — worker was talking to a live
+`controller`, now make it talk to a mock, without tearing anything down?
+
+**No — and the reasoning is more fundamental than the addressing mechanics
+below.** A live swap risks state divorced from reality: if `controller` ran
+`live` and wrote real rows into `our_main_db`, then realness swaps to
+`mock`, that data doesn't vanish — it sits there, inconsistent with
+whatever the new selection assumes, and a test running against it draws
+conclusions from a hybrid state nothing declared or intended. This alone
+settles it independent of any network-addressing concern: **realness is
+selected once, at `ciu up` time, and is fixed for that instance's entire
+life.** Changing it is not a live operation — it is `ciu down` (or `ciu
+clean`, when the previous run's state must not leak into the next one) 
+followed by `ciu up` with the new selection.
+
+**What this dissolves, and what it leaves standing.** §1.15/§3.1's
+entity/realization split raised a real question during this session: if
+`controller`'s `live` realization and its `simulated` realization are
+different `RealizedService` tables (different compose service keys), does
+`container_name()`'s naming (`{project}-{env_tag}-{service_name}`, unchanged
+since v5/v6) produce a different address for each, breaking a consumer that
+expects the address to stay put? Immutability dissolves the *live*-swap
+version of that concern entirely — there is no in-flight moment to make
+transparent, because the instance is always rebuilt, never reconfigured
+underneath itself. What survives is a *weaker* version: a consumer's own
+build/config shouldn't need regenerating every time a *different* `ciu up`
+picks a different realness combination for the same logical dependency.
+Whether that's worth solving by keying compose service naming off the
+LogicalService name rather than the RealizedService's own name (as
+originally proposed) is now a build-time convenience question, not a
+correctness one — left open, lower stakes than first framed.
+
+**Consequence 1 — realness selection must be durable, inspectable state,
+not just the CLI flags of whatever `ciu up` happened to run.** §1.4a's
+resolution order (CLI > per-service override > intent hint > defaults)
+describes what gets *selected*; nothing currently records what an
+already-running instance's selection *was*, past the ephemeral argv of the
+invocation that created it. Without a durable record, "what realness is
+this instance running?" has no authoritative answer once the terminal that
+ran `ciu up` is gone.
+
+**Consequence 2 — `ciu up` must refuse, not silently reconfigure, on a
+realness mismatch against an already-running instance.** This is the
+natural extension of §10.11's instance mutex: while holding the per-`INSTANCE_ID`
+lock, compare the requested selection (resolved via §1.4a) against the
+durably recorded one. Match → proceed normally (this is just an ordinary
+`ciu up`, e.g. restarting after a crash). Mismatch → refuse, naming which
+service(s) differ and instructing `ciu down` (or `ciu clean`) first. This
+also interacts with §4.4's existing lock mechanism: a `ciu lock`ed instance
+already can't `ciu down`, so it transitively can't have its realness
+changed either — consistent, not a new rule, just worth stating.
+
+**Consequence 3 — this likely needs its own verb surface, not just a flag
+on `ciu up` (proposed, not fully settled).** Something in the shape of
+`ciu realness set <svc>=<level>` — a single place realness selection is
+declared, distinct from the ordinary up/down lifecycle, so "what is this
+instance's selection" is a first-class, queryable fact rather than
+something reconstructed from `ciu up`'s own history. Exact CLI shape,
+whether `--realness` on `ciu up` remains the entry point that records the
+durable state versus a wholly separate verb, and how this interacts with
+`ciu plan` (§5.6, already used to preview resolution before any container
+starts) are open — this section states the requirement, not the final
+design.
+
+**Terminology:** see §4.4 — "Environment (instance)" already names the
+whole running collection; this section is what makes explicit that an
+Environment's identity now includes which realness selection it was
+materialized from.
+
+---
+
+### 10.14 Shared infrastructure (was M7) — problem sharpened, NOT resolved (2026-08-27)
+
+**This section exists so the reasoning already worked out isn't lost —
+it is explicitly OPEN, same status as M1/M2/M4/M6/M9, not a decision.**
+
+**What S16.1 does today (shipped).** `ciu worktree add NAME --shared-infra
+REF --shared-infra-services S1[,S2] --shared-infra-ref-projects R1[,R2]
+--profile P1[,P2]` lets a *new* worktree skip standing up its own copy of
+heavy, rarely-diverging infrastructure (identity, secrets, observability,
+reverse-proxy) by joining an *existing* reference worktree's network
+instead — only the new instance's own "diverging-tier" containers gain a
+second network membership. Validated twice: at `add` time (proves every
+reference project has a live container before the checkout even exists)
+and again at `ciu up` time (re-proves liveness, re-checks the network
+hasn't changed). It exists so ten parallel package-worktrees don't each
+need their own Vault/Consul/Redis.
+
+**The gap:** v8's deployment model (§4 — groups, profiles, environment
+instances via `ciu up --name`) never mentions shared-infra join at all —
+not even a note saying "unaffected, still S16.1 as shipped."
+
+**Why this isn't a simple cross-reference fix — sharpened via a concrete
+example.** v8 deliberately separates "environment instance" (a runtime
+`ciu up` concept) from "worktree" (a git concept). The obvious guess for
+"multiple simultaneously-running instances, one checkout, no new
+worktree" — two *named* instances of the *same* project sharing a
+checkout — turns out not to be real: `INSTANCE_ID` is one per rendered
+config (§4.4), so two concurrent instances of the same project still need
+two checkouts regardless. The real version of that scenario is a monorepo
+holding more than one *independent* `ciu.global.defaults.toml.j2` root —
+this very repo is the live example (`vbpub/ciu`, `vbpub/cmru`,
+`vbpub/assay`, each its own project, each its own `INSTANCE_ID`, no new
+worktree needed since they already coexist).
+
+**The consequence that actually matters:** that monorepo-multiple-roots
+scenario never calls `ciu worktree add` at all — the roots already
+coexist from the start, nobody "adds" a worktree for them. S16.1's
+shared-infra join is welded specifically to that verb. So today, if
+`cmru` wanted to join `ciu`'s already-running shared infra rather than
+standing up its own, there is **no way to request that at all**, regardless
+of anything v8 changes — not a design gap in v8's model, a gap in the
+verb the capability is attached to.
+
+**The fork, not yet decided:**
+- **(a) Keep it worktree-scoped, as shipped.** Simplest — v8 gets a note
+  saying shared-infra join is unaffected, still only available via
+  `ciu worktree add`. Accepts that the monorepo-multiple-roots case simply
+  cannot use it.
+- **(b) Generalize it to an environment-instance property** — e.g.
+  `ciu up --name X --shared-infra REF ...`, the same flags moved (or
+  duplicated) onto the verb that actually creates instances in the new
+  model, so any new instance — worktree-created or a pre-existing monorepo
+  root — can request it. Real design work: does the add-time/up-time
+  validation split still make sense when there's no `add` step? Does
+  "diverging-tier vs. reference-tier" need a home in `[deploy.groups]`
+  (raised, never explored further)?
+
+Neither option is chosen here. This section's job is to make sure the next
+person picking this up starts from the sharpened problem, not from
+scratch.

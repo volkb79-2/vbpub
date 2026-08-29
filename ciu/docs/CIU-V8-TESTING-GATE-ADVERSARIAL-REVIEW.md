@@ -39,6 +39,8 @@ Section 3.2 refers to `ciu.secrets.toml`, but S4 permits secrets only in stack-s
 
 **Resolution (operator ruling):** `ciu.secrets.toml` is ONLY for vaultless projects — it replaces `.ciu/secrets/*` storage. When Vault is used, existing S4 directives apply unchanged. `GEN_TO_VAULT` naturally requires Vault. Status: RESOLVED by clarification, proposal needs revision.
 
+**Superseded 2026-08-27:** the proposal's own §10.3 now carries the full, revised resolution (addressing scheme, delivery modes, materialization relocation+lifecycle, Vault-bootstrap and AppRole disposition) — this entry is kept for audit history only; read §10.3, not this line, for the current design. One correction to the ruling above: `ciu.secrets.toml` is not restricted to vaultless projects in the finalized design — it coexists with Vault as a second SSoT in any project (§10.3's "Mixed" mode), and it still materializes to on-disk files (relocated, not eliminated) rather than truly replacing `.ciu/secrets/*` storage.
+
 ### B4: No worktree/instance selection contract for gates
 
 How does the gate know which tree supplies test files, changed-file diffs, assay pins, and provenance?
