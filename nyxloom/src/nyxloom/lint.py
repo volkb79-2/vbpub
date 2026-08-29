@@ -65,8 +65,8 @@ L8  error   escalate_if entries containing introspective phrasing
             flagged 'non-mechanical escalation trigger (P51)'.
 L9  error   if any scope.touch glob/path matches cfg.infra_globs, the
             effective mutexes (fm.effective_mutexes()) must include 'stack'.
-L10 warning body+frontmatter token estimate (len(text)//4) over 6000 ->
-            warning; over 12000 -> error. Message includes the estimate.
+L10 warning body+frontmatter token estimate (len(text)//4) over 10000 ->
+            warning; over 18000 -> error. Message includes the estimate.
 L11 error   body must contain (case-insens.) a worktree path mention
             ('worktree'), a branch name ('branch'), an out-of-scope/forbid
             mention ('out of scope' or 'forbid'), and a context section
@@ -1081,14 +1081,14 @@ def _check_l10(findings: list[LintFinding], path: Path, full_text: str) -> None:
     tokens = len(full_text) // 4
     message = f"handoff size {tokens} tokens"
 
-    if tokens > 12000:
+    if tokens > 18000:
         findings.append(LintFinding(
             rule="L10",
             severity="error",
             message=message,
             path=str(path)
         ))
-    elif tokens > 6000:
+    elif tokens > 10000:
         findings.append(LintFinding(
             rule="L10",
             severity="warning",
