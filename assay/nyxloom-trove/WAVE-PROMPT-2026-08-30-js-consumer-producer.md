@@ -7,13 +7,31 @@ dispatch plan plus the ready-to-paste implementer prompt for Wave A; Wave B's
 prompt is derived from the same template once A has shipped (its §"Wave B"
 below carries everything that differs).
 
+## Status (updated 2026-08-30, post-3.2.0)
+
+**Wave A shipped as assay-v3.2.0** — reviewed 2 rounds (fresh Opus, ACCEPT-
+conditional then ACCEPT), merged `--no-ff` to main (`71ddc7d9`), released,
+deployed, dstdns notified. B049 (Vitest's `coverage.clean` default orphans
+assay's coverage-artifact reservation) filed with a working documented
+workaround and 4 candidate fix options, none implemented — a separate,
+smaller follow-up, not part of Wave B/C. Full detail: memory `assay-project`
+and `nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md`.
+
+**Operator ruling, confirmed 2026-08-30: Wave B and Wave C run
+BACK-TO-BACK in the order below, but Wave C's dispatch waits for Wave B's
+own real RELEASE (4.0.0 published + deployed + dstdns-notified), not merely
+its merge to main.** Do not start Wave C's implementer while Wave B is only
+merged-but-unreleased — the whole reason for this order is that Go's carve
+consumes `producer`/`helpers[]` as SHIPPED, stable fields, not as
+in-flight ones on an unreleased major.
+
 ## Sequencing, and why
 
 | wave | version | verdict schema | contents | why this order |
 |---|---|---|---|---|
-| **A — JS consumer** | 3.2.0 (minor) | v8 unchanged | B044 `assay lanes --json` · B042 docs · B041 (a)+(c) offline-closure pattern + real-`vitest` qualification · B039/B047-4 shared expansion bound · B048 docs + fixture | everything the first consumer needs to write a correct lane, and everything ciu's v8 carve needs to consume (CIU-72), with zero schema cost — ships in days |
-| **B — producer** | 4.0.0 (MAJOR, `feat!:`) | **v9** | B045 declared producer (+ real arcs, type-only lexer, `vitest-v8` refused by name) · B046 ingested R2 (Stryker via `mutation-report-json`) · B043 `cwd` · B041 (b) `link_paths` · `judgment.r2.producer`, `cwd_declared`, `snapshot_policy.link_paths`, `judgment.r1.coverage_producer` | one bundled cut (operator ruling 2026-08-30): every field the verdict must witness lands in one bump with one migration note; the Go wave reuses the keys |
-| **C — Go** | later | v9 (no further bump expected) | P27 re-carve per A-217/A-239 + B047 items 1–3, 5–6 | after B, so `producer`, `helpers[]`-in-LaneResult and the shared bound already exist |
+| **A — JS consumer** | 3.2.0 (minor) — **SHIPPED** | v8 unchanged | B044 `assay lanes --json` · B042 docs · B041 (a)+(c) offline-closure pattern + real-`vitest` qualification · B039/B047-4 shared expansion bound · B048 docs + fixture | everything the first consumer needs to write a correct lane, and everything ciu's v8 carve needs to consume (CIU-72), with zero schema cost — ships in days |
+| **B — producer** | 4.0.0 (MAJOR, `feat!:`) — NEXT | **v9** | B045 declared producer (+ real arcs, type-only lexer, `vitest-v8` refused by name) · B046 ingested R2 (Stryker via `mutation-report-json`) · B043 `cwd` · B041 (b) `link_paths` · `judgment.r2.producer`, `cwd_declared`, `snapshot_policy.link_paths`, `judgment.r1.coverage_producer` | one bundled cut (operator ruling 2026-08-30): every field the verdict must witness lands in one bump with one migration note; the Go wave reuses the keys |
+| **C — Go** | later (after B's RELEASE, not just its merge) | v9 (no further bump expected) | P27 re-carve per A-217/A-239 + B047 items 1–3, 5–6 | after B, so `producer`, `helpers[]`-in-LaneResult and the shared bound already exist as shipped, stable fields |
 
 Out of scope for A and B: R3 registration for `javascript` (B041's last
 acceptance box — only after the real-`vitest` canary pair has run), the Go
