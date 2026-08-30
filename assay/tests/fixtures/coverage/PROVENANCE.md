@@ -1,5 +1,10 @@
 # Real coverage artifacts — carver-owned evidence, never hand-authored
 
+Sixteen artifacts. Eight are coverage.py's (below); the six
+`coverage-istanbul-json.*` documents are real `vitest run --coverage` output
+and have their own sections at the bottom of this file (B036/A-346), as do the
+two canary artifacts under `tests/fixtures/canary/javascript/`.
+
 Eight artifacts. Six are three formats × (branch tracking ON / OFF) over the
 two-file program in `probe/`; two more (`*.exitarc.*`) come from `probe-exit/`
 and exist only to witness the exit-arc spellings described at the bottom of this
@@ -98,3 +103,157 @@ mistake this directory exists to prevent.
 
 Both files carry the ordinary shapes too (`[5,6]`/`[5,7]`, `BRDA:5,0,jump to
 line 6,1`), so a test that reads them is not exercising only the exotic case.
+
+---
+
+# The istanbul artifacts — real `vitest run --coverage` output (B036)
+
+Two artifacts, `coverage-istanbul-json.vitest-v8.json` and
+`coverage-istanbul-json.vitest-istanbul.json`. They are the SAME program
+measured by Vitest's TWO coverage providers, and they exist because the whole
+design of `coverage_parsers/coverage_istanbul_json.py` and of
+`adapters/javascript.py`'s `requires_span_attribution = False` turns on how
+these two documents actually differ. A hand-written istanbul fixture would
+have reproduced neither difference.
+
+**The implementer must not edit either artifact**, nor the driver project in
+`probe-js/` that produces them. A parser that needs one of them changed is a
+parser that does not read the real format.
+
+## How they were produced
+
+`probe-js/` is a complete, self-contained Vitest project (its `package.json`
+pins every direct version exactly, no ranges, and its committed
+`package-lock.json` pins every transitive one — round-1 review nitpick: the
+recipe below was reproducible in practice but not exactly, since transitive
+resolution was unpinned). Outside this repository — no
+`node_modules` is committed — with Node `v26.5.1`, `vite 7.3.6`,
+`vitest 3.2.4`, `@vitest/coverage-v8 3.2.4` and
+`@vitest/coverage-istanbul 3.2.4`, on 2026-08-30:
+
+```sh
+npm install
+npx vitest run --coverage --coverage.provider=v8
+cp coverage/coverage-final.json ../coverage-istanbul-json.vitest-v8.json
+npx vitest run --coverage --coverage.provider=istanbul
+cp coverage/coverage-final.json ../coverage-istanbul-json.vitest-istanbul.json
+```
+
+**No file was edited afterwards.** In particular the record keys are the
+producing machine's own ABSOLUTE paths, left exactly as istanbul writes them —
+that is the format's actual key shape, and a fixture with them rewritten to
+relative paths would silently retire the very case
+`evaluate._to_repo_relative_key`'s absolute-key branch exists to handle
+(A-341). A test that needs those keys under its own temp repository rebases
+the directory prefix at read time and changes nothing else.
+
+`probe-js/src/format.ts` and `probe-js/src/roles.ts` are copied verbatim from
+dstdns's `applications/webapp-ui-react/src/lib/` (the first real consumer),
+with one edit to `roles.ts`: its `@/auth/types` path alias is rewritten to a
+relative `./types`, because the probe declares no alias. The rest of the
+program is shaped so every case the parser and the adapter must decide appears
+at once — a partially-covered `if`/`if`/ternary function, a TSX component with
+a multi-line JSX return, a `.d.ts` declaration file, a type-only `.ts` module,
+a never-imported module, a function carrying an
+`/* istanbul ignore next */` hint, and test files under all three naming
+conventions (`__tests__/roles.test.ts`, `branchy.test.ts`, `Badge.spec.tsx`).
+
+## What each artifact proves — the facts B036's design depends on
+
+| fact | witness |
+|---|---|
+| the format keys records by **absolute filesystem path** | every top-level key in both documents is an absolute path, and each record repeats it in its own `path` field |
+| `@vitest/coverage-v8` emits **one single-line statement per executable line** | in the v8 artifact no `statementMap` entry anywhere has `end.line != start.line` |
+| `@vitest/coverage-istanbul` emits **real multi-line statement extents** | in the istanbul artifact `format.ts` carries `[13,15]`, `[24,32]`, `[33,37]` and `[34,36]`; `roles.ts` carries `[7,11]` |
+| so this format DOES have coverage.py's multi-line-statement gap, under one provider | those extents' interior lines have no statement entry of their own at all |
+| statement extents **nest**, and "executed wins" would be a false green | `branchy.ts` (istanbul) reports `[2,4]` (the whole `if`) with count **1** and `[3,3]` (its own never-taken `return`) with count **0**; innermost-wins classifies line 3 missing, a go-cover-style merge would call it covered |
+| an `if`'s else-arm location is `{"start": {}, "end": {}}` — empty objects, no line at all | every two-location `if` entry in the istanbul artifact; irrelevant to this parser, which reads no branch data, and load-bearing for whoever implements B038 |
+| the two providers' `branchMap` are **not the same measurement** | for `branchy.ts` the istanbul artifact has 3 entries typed `if`/`if`/`cond-expr` with per-arm counts `[0,1]`, `[1,0]`, `[0,0]` (6 arcs, 2 covered); the v8 artifact has 4 entries all typed `"branch"`, each with exactly ONE location and ONE count (4 "arcs", 1 covered), one of them spanning the whole function |
+| an end position's `column` can be **`null`** in real output | every `end` in the istanbul artifact — a parser requiring an integer column rejects genuine output |
+| a `.d.ts` declaration file is reported by **neither** provider | `src/types.d.ts` appears in neither document |
+| a **type-only `.ts` module** is reported by v8 with an EMPTY `statementMap`, and not at all by istanbul | `src/typesonly.ts` has `"statementMap": {}` in the v8 artifact and no record in the istanbul one |
+| a never-imported source file is still measured by v8 | `src/orphan.ts` carries `"all": true` and all-zero counts in the v8 artifact |
+| test files are excluded by the tool itself, under all three naming conventions | neither document has a record for `__tests__/roles.test.ts`, `branchy.test.ts` or `Badge.spec.tsx` |
+| an `/* istanbul ignore next */` hint leaves **no exclusion field** to read | `src/hinted.ts` carries the hint, and in both artifacts its hinted `if` is still an ordinary `statementMap` entry with a live count (istanbul: `[3,5]` count 1, its never-taken `return` `[4,4]` count 0) and no `skip` marker appears anywhere in either document — which is why `excluded` is `None` for this format |
+
+---
+
+# The provider-defect artifacts — one program, two providers, two Vitest majors (A-346)
+
+Four artifacts, `coverage-istanbul-json.provider-defect.{vitest3,vitest4}-{v8,istanbul}.json`,
+produced from `probe-js-provider-defect/`. They exist because the round-1
+adversarial review of B036 found that both providers had been measured
+exhaustively for SHAPE and never once for ACCURACY — and that one of them is
+wrong.
+
+**The program is built so ground truth needs no coverage tool.** Five
+functions, each guarded by `if (v === 0) return 0` on its second line; one
+test calls each with `0`. Every line below a guard provably never executes.
+That is a fact about the program; any artifact disagreeing with it is wrong.
+
+**The implementer must not edit these four artifacts** nor `probe-js-provider-defect/`.
+
+## How they were produced
+
+Outside this repository, on 2026-08-30, with Node `v26.5.1`. Two dependency
+sets are committed as `package.vitest3.json`/`package-lock.vitest3.json` and
+`package.vitest4.json`/`package-lock.vitest4.json` (rename either pair to
+`package.json`/`package-lock.json`); everything else in the project is shared:
+
+```sh
+cp package.vitest3.json package.json && npm install
+npx vitest run --coverage --coverage.provider=v8
+cp coverage/coverage-final.json ../coverage-istanbul-json.provider-defect.vitest3-v8.json
+npx vitest run --coverage --coverage.provider=istanbul
+cp coverage/coverage-final.json ../coverage-istanbul-json.provider-defect.vitest3-istanbul.json
+
+rm -rf node_modules package-lock.json
+cp package.vitest4.json package.json && npm install     # vitest 4.1.11
+# ...the same two runs, into the vitest4-* names
+```
+
+**No file was edited afterwards.**
+
+## What they prove
+
+| fact | witness |
+|---|---|
+| **`@vitest/coverage-v8` reports never-executed lines as EXECUTED** | in both v8 artifacts, `shapes.ts` lines 10-11 (below `ternaryMultiLine`'s guard) carry a nonzero count, and the test only ever calls `ternaryMultiLine(0)` |
+| it is triggered by a **one-line** ternary too, not only a multi-line one | `vitest3-v8` additionally has lines 16-18 (`ternaryOneLine`) executed; `vitest4-v8` has 17-18 |
+| it is **not a version to upgrade past** | present in `vitest3-v8` AND `vitest4-v8` — the two currently-released majors |
+| it is the PROVIDER, not the version | `vitest3-istanbul` and `vitest4-istanbul` have zero false greens across all five shapes |
+| only conditional expressions trigger it | in the same v8 artifacts, `binaryMultiLine`, `callMultiLine` and `objectLiteralMultiLine` bodies are all correctly not-executed — so sound and unsound records are structurally indistinguishable |
+| istanbul reports the never-run lines as **missing**, not merely absent | `{10, 11}` and `{17, 18}` are in `missing` in both istanbul artifacts, so they reach an R1 denominator and a floor can refuse them |
+| the v8 provider's statement geometry **changed between majors** | `vitest3-v8` has no multi-line extent anywhere; `vitest4-v8` has several — which is why no shape-based producer discriminator could have been written and stayed correct |
+
+`coverage.experimentalAstAwareRemapping = true` was also tested against
+Vitest 3.2.4 and does not fix it; no artifact is committed for that run
+because it is byte-identical in the respect that matters (lines 10-11 still
+carry a nonzero count).
+
+---
+
+# The canary artifacts — `tests/fixtures/canary/javascript/` (A-345)
+
+`roles.uncovered-line-injected.ts` is exactly what
+`JavaScriptAdapter.inject_uncovered_line` produces for `probe-js/src/roles.ts`
+— asserted byte-for-byte by
+`test_the_committed_injected_file_is_byte_for_byte_what_this_adapter_produces`,
+so the two halves cannot drift apart silently. The two
+`coverage-istanbul-json.uncovered-line.*.json` documents are real
+`vitest run --coverage` output from a `probe-js` copy with that injected file
+in place, one per provider, produced the same way and the same day.
+
+They prove A-345's R1 claim as committed evidence rather than as a report
+transcript: the appended function's declaration line is reached merely by the
+module loading, while its two body lines are reported **missing** under both
+providers — so a gate enforcing a changed-line-coverage floor rejects the
+transform while a tests-only gate sails past it. The suite still passed in
+both runs, which is the other half of the contract: the injection is valid,
+lint-clean and test-neutral.
+
+There is deliberately no artifact for `inject_import_break`, and there cannot
+be one: that injection makes the test run fail, and a failed run writes no
+coverage document at all — the same reason `adapters/go.py` records for its
+own import-break half.
+

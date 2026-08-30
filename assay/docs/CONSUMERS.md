@@ -494,6 +494,204 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
+## JavaScript/TypeScript lanes (R1 only)
+
+`judge.language = "javascript"` is a changed-line coverage lane over
+`.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
+**R1 only**: R2 waits on a real architectural ruling (B037: a native JS/TS
+mutation engine, or ingesting Stryker's evidence), and R3 is unwired, so a
+lane declaring either is refused `ERROR`/`BAD_LANE_CONFIG` before anything
+runs.
+
+### Make your test runner emit `coverage-final.json`
+
+`format = "coverage-istanbul-json"` is istanbul's own coverage-map document.
+nyc/istanbul and Jest (`--coverageReporters=json`) emit it natively; for
+Vitest, add a coverage provider and ask for the `json` reporter. Point the
+report directory at the same gitignored place your verdict goes:
+
+```bash
+npm install --save-dev @vitest/coverage-istanbul
+```
+
+**Install the istanbul provider, not the v8 one.** See
+[the provider warning](#the-v8-provider-is-not-safe-to-gate-on) below before
+reaching for `@vitest/coverage-v8`; it is faster and needs no instrumentation
+step, and it will also pass your gate on lines that never ran.
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',        // NOT 'v8' -- see the warning above
+      reporter: ['json'],          // 'json' IS coverage-final.json
+      reportsDirectory: '.assay',
+      include: ['src/**'],
+    },
+  },
+})
+```
+
+`reporter: ['json']` writes `.assay/coverage-final.json`. Do not use
+`json-summary` (totals only, no per-file detail) or `lcov` (a different
+registry format — if you prefer it, declare `format = "lcov"` instead and
+point at `lcov.info`).
+
+### A worked, pasteable JavaScript lane
+
+```toml
+schema_version = 2
+
+[lanes.ui]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["npm", "run", "test:coverage"]
+env = {}
+env_passthrough = ["PATH", "HOME"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.ui.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui/src"]
+fail_under = 90.0
+allow_excluded = false
+base = "origin/main"
+
+[lanes.ui.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = ".assay/coverage-final.json"
+```
+
+Gitignore what the run writes — the coverage directory, and anything your
+runner drops beside it — in the same change that adds the lane:
+
+```text
+.assay/
+```
+
+### Four things that behave differently from a Python lane
+
+**Absolute paths in the artifact are handled for you.** Istanbul keys every
+record by absolute filesystem path (`/build/agent/7/src/App.tsx`), not a
+project-relative one. Assay resolves those against the repository top itself,
+so a key naming a file inside the repository is matched against the diff
+normally and a key naming anything outside it (a dependency, a generated file
+under `node_modules`) simply never matches a changed file. There is nothing to
+configure, and no `--coverage.reportsDirectory` layout that breaks it.
+
+**`allow_excluded` has nothing to exclude.** This format carries no per-line
+exclusion field: an `/* istanbul ignore next */` or `/* v8 ignore next */`
+hint leaves no trace a parser can read, so by the time assay sees the document
+an ignored line is indistinguishable from a line that was never code.
+`exclusion_capability` is reported `"unavailable"`, and the lane's
+`allow_excluded` is never consulted. Suppressing a line therefore does not
+launder it past the floor — it just makes the line non-code, the same as a
+comment.
+
+**Some real lines are not judged at all, and which ones depends on your
+provider.** A line the artifact records no statement for falls out of both the
+numerator and the denominator — the same treatment a comment gets. Under
+`@vitest/coverage-istanbul` that includes **every function signature line,
+every function-level closing brace, and a `const x =` line whose recorded
+statement starts on its initialiser**: measured on assay's own committed
+fixture, 23 non-comment lines across six files. Under `@vitest/coverage-v8`
+only 13, all of them type declarations TypeScript erases anyway. The practical
+consequence: a diff that touches *only* a function signature can report
+`executable = 0` and PASS. This is not a coverage claim about those lines, it
+is the absence of one — assay reports what the artifact measured and never
+invents a status for a line the instrumenter did not record. If that matters
+for your gate, `judge.mode = "whole_target"` judges whole files instead of a
+diff.
+
+**`require_branch = true` will refuse this format.** `branch_capability` is
+`"unavailable"`, deliberately: istanbul's `branchMap` means one thing under
+`@vitest/coverage-istanbul` (real per-arm arcs) and a different thing under
+`@vitest/coverage-v8` (v8's own executed/unexecuted ranges), and a lane
+declares the format, not the producer — so no honest single translation
+exists yet, and a fabricated branch percentage is worse than an absent one.
+Leave `require_branch` unset (or `false`) on a JavaScript lane; B038 tracks
+adding real arc support once a producer can be declared.
+
+### The v8 provider is not safe to gate on
+
+**`@vitest/coverage-v8` reports lines that provably never executed as
+executed.** An assay R1 lane reading its artifact therefore PASSes on those
+lines. Use `@vitest/coverage-istanbul` for anything you gate.
+
+The trigger is a conditional (ternary) expression: every line after one, in
+the same block, is reported executed even when the block never ran. Minimal
+reproduction — the only test calls `k(0)`, which returns at line 2, so lines
+7 and 8 provably never run:
+
+```ts
+export function k(v: number): number {   // 1
+  if (v === 0) return 0                  // 2  <- k(0) returns HERE
+  const a =                              // 3
+    v > 3                                // 4
+      ? 10                               // 5
+      : 20                               // 6
+  const b = a + 2                        // 7  <- never runs
+  return b                               // 8  <- never runs
+}                                        // 9
+```
+
+```
+@vitest/coverage-v8        line 7: executed   line 8: executed   <- WRONG
+@vitest/coverage-istanbul  line 7: missing    line 8: missing    <- correct
+```
+
+Through assay, with lines 7-8 as the diff and `fail_under = 100.0`:
+`PASS 100.0%` under v8, `FAIL 0.0%` under istanbul.
+
+What was measured, so you can judge the risk for yourself:
+
+- both **Vitest 3.2.4 and 4.1.11** — this is not a version to upgrade past;
+- **one-line ternaries too** (`const a = v > 3 ? 10 : 20`), not just
+  multi-line ones;
+- `coverage.experimentalAstAwareRemapping` does **not** fix it;
+- a multi-line binary expression, a multi-line call and a multi-line object
+  literal do **not** trigger it — so you cannot avoid it by a formatting rule;
+- `@vitest/coverage-istanbul` was correct on every case measured.
+
+**assay cannot detect this for you, and does not pretend to.** Both providers
+emit the same `coverage-final.json`, and nothing in the document distinguishes
+a true execution count from a false one — there is no inconsistency to catch.
+Guessing the producer from the artifact's shape is exactly the
+declaration-versus-sniffing collapse assay refuses to make. So this is a
+choice you make in `vite.config.ts`, and the only safe one today is
+`provider: 'istanbul'`.
+
+The witness artifacts are committed under
+`tests/fixtures/coverage/probe-js-provider-defect/` (both providers, both
+Vitest majors) and re-derived by
+`tests/test_coverage_istanbul_provider_accuracy.py` on every run. The ruling
+is A-346; B040 tracks it upstream. **`nyc`/`istanbul` and Jest emit this
+format through the same instrumenter as `@vitest/coverage-istanbul` and are
+unaffected.**
+
+### What counts as a test file, and what is skipped
+
+A changed file is skipped when its name carries a `.test.`/`.spec.` segment
+(Vitest's own default `include` glob), when any path segment is `__tests__`,
+or when any path segment is `node_modules`, `dist` or `coverage`. A `.d.ts`
+declaration file with no coverage entry is treated as having no executable
+code — the expected silence, not a coverage gap. A **type-only `.ts` module**
+(only `export type`/`interface`, no runtime value) is reported by
+`@vitest/coverage-v8` with an empty statement map and judged as zero
+executable lines; under `@vitest/coverage-istanbul` it is absent from the
+artifact entirely and would be reported as missing coverage. That is the one
+respect in which the v8 provider behaves better, and it is **not** a reason to
+use it — see the provider warning below. Until B038 lands, either give such a
+module one real runtime export, or keep it out of your declared source roots.
+
 ## CMRU / tester-unified integration
 
 CMRU's project `cmru.toml` owns the exact gate command. `tester-unified` should **not** bake an

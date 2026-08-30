@@ -3304,6 +3304,15 @@ alongside whatever else needs one, not force one on its own.
 
 ## B036 — a JavaScript/TypeScript `LanguageAdapter` for changed-line coverage (R1), first consumer dstdns's React UI
 
+**Status: IMPLEMENTED 2026-08-30 on `feature/assay-b036-js-adapter`; awaiting
+adversarial review and merge.** Decisions A-340..A-345; report at
+`nyxloom-trove/reports/assay-B036-js-adapter-REPORT.md`. Two follow-ups filed
+out of it — **B038** (branch arcs and the type-only-module gap, both blocked
+on whether a lane may declare its coverage PRODUCER) and **B039** (an
+unbounded line expansion of the same shape in the pre-existing `go-cover`
+parser). Every acceptance box below is ticked with its own file:line evidence
+in the report's acceptance table.
+
 **Filed 2026-08-30.** dstdns's new UI (`applications/webapp-ui-react` —
 React 19 + Vite 6 + TypeScript 5.8, test runner Vitest 3.2, no coverage
 provider installed yet, no assay lane declared yet) currently has zero
@@ -3396,34 +3405,34 @@ field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
 
 ### Acceptance
 
-- [ ] a new `coverage-istanbul-json` (or equivalently named — match the
+- [x] a new `coverage-istanbul-json` (or equivalently named — match the
       naming decision above) parser registered in `FORMAT_REGISTRY`, parsing
       a real `coverage-final.json` produced by a real `vitest run --coverage`
       against `webapp-ui-react` (or an equivalent minimal fixture project),
       not a hand-written fixture alone;
-- [ ] a new adapter (`adapters/javascript.py` or matching the naming
+- [x] a new adapter (`adapters/javascript.py` or matching the naming
       decision) implementing all seven `LanguageAdapter` protocol methods,
       `generate_mutation_sites` returning `"UNSUPPORTED"` (Go's own
       precedent — legal to spell, not yet backed);
-- [ ] registered in `cli.py`'s `new_registry(...)` for `frozenset({"R1"})`
+- [x] registered in `cli.py`'s `new_registry(...)` for `frozenset({"R1"})`
       only;
-- [ ] `is_test_path` correctly excludes Vitest's own conventions
+- [x] `is_test_path` correctly excludes Vitest's own conventions
       (`*.test.ts(x)`, `*.spec.ts(x)`, `__tests__/`) and `excluded_dir_names`
       excludes `node_modules` and build output dirs at minimum;
-- [ ] `.d.ts` type-only declaration files are handled correctly by
+- [x] `.d.ts` type-only declaration files are handled correctly by
       `has_executable_code` (they contain no executable code at all — the
       NoCode case, not a coverage gap);
-- [ ] a real end-to-end test: a lane declaring `judge.language =
+- [x] a real end-to-end test: a lane declaring `judge.language =
       "javascript"`, `R1` only, against a real (fixture or `webapp-ui-react`
       itself) TS/TSX project, correctly reports changed-line coverage
       pass/fail:
-- [ ] refusal paths covered explicitly: an unrecognised `judge.language`
+- [x] refusal paths covered explicitly: an unrecognised `judge.language`
       value, a malformed/truncated `coverage-final.json`, a `judge.language
       = "javascript"` lane declaring `R2` (must refuse — not registered for
       this build);
-- [ ] `README.md`/`CONSUMERS.md`/`DESIGN-GUIDE.md` document the new language
+- [x] `README.md`/`CONSUMERS.md`/`DESIGN-GUIDE.md` document the new language
       and format the same way Python/Go/SQL already are;
-- [ ] the real registered gate (`tools/tester-unified-gate.sh`), not just
+- [x] the real registered gate (`tools/tester-unified-gate.sh`), not just
       `pytest tests/`, run green before this is called done.
 
 ---
@@ -3511,3 +3520,176 @@ ruling closes the architectural fork, not the implementation.
 - [ ] the three remaining design decisions above are written up and
       reviewed against every relevant standing constraint;
 - [ ] no implementation lands until those three are recorded.
+
+---
+
+## B038 — `coverage-istanbul-json`: real branch arcs, and the type-only-module gap, once a producer can be declared
+
+**Filed 2026-08-30 by B036's own implementation, from measured evidence.**
+Two consequences of one root cause: `coverage-final.json` is a format with
+several producers that DISAGREE about the meaning of parts of it, and a lane
+declares the format, never the producer.
+
+### (a) branch arcs are reported `unavailable`, and should not have to be
+
+`coverage_parsers/coverage_istanbul_json.py` returns `branches=None`
+unconditionally (A-344). Measured on one source file
+(`tests/fixtures/coverage/probe-js/src/branchy.ts`, two `if`s and a ternary,
+one test):
+
+- `@vitest/coverage-istanbul` — three `branchMap` entries typed
+  `if`/`if`/`cond-expr`, one location per ARM, one count per arm:
+  **6 arcs, 2 covered**;
+- `@vitest/coverage-v8` — four entries all typed `"branch"`, each with
+  exactly ONE location and ONE count, describing v8's own executed/unexecuted
+  RANGES (one spans the whole function, another begins at a closing brace):
+  **4 "arcs", 1 covered**.
+
+Both artifacts are committed. A single translation cannot be honest for both,
+so `None` was chosen over a number whose meaning depends on an undeclared
+fact. The consequence for consumers: `require_branch = true` refuses on a
+JavaScript lane today.
+
+### (b) a type-only `.ts` module is a false failure under one provider
+
+`JavaScriptAdapter.has_executable_code` answers `True` for a module holding
+only `export type`/`interface` (A-343), because deciding otherwise needs real
+TypeScript type-erasure semantics. Under `@vitest/coverage-v8` this never
+surfaces — such a module IS reported, with an empty `statementMap`, so the
+method is never consulted (measured: `probe-js/src/typesonly.ts`). Under
+`@vitest/coverage-istanbul` the module is absent from the artifact entirely,
+so a changed type-only module is reported as missing coverage.
+
+### The decision this item exists to force
+
+Should a lane be able to declare its PRODUCER (a `judge.coverage.provider`
+key, a second registry format key such as `coverage-istanbul-json-v8`, or a
+derivation from the artifact's own shape), and if so which mechanism? Both
+halves above dissolve the moment the producer is a declared fact rather than
+an inferred one; neither can be fixed honestly while it is not. Deriving the
+producer by sniffing (e.g. "every `branchMap` entry is typed `"branch"` with
+one location") is the obvious shortcut and is exactly the
+declaration-versus-sniffing collapse `coverage.py`'s own module docstring
+forbids (A-007) — it must be argued explicitly if it is chosen, not slid in.
+
+### Acceptance
+
+- [ ] a recorded decision on how (or whether) a producer becomes a declared
+      fact, argued against A-007;
+- [ ] if declared: real `BranchCoverage` for the arc-bearing producer, with
+      the `FileCoverage` cross-bucket invariants holding on both committed
+      real artifacts, and `branch_capability` still `"unavailable"` for a
+      producer whose `branchMap` is not arcs;
+- [ ] if declared: the type-only-module case decided for the
+      istanbul-provider path without a hand-written TypeScript parser;
+- [ ] `README.md`/`CONSUMERS.md`'s current "leave `require_branch` unset on a
+      JavaScript lane" guidance updated in step.
+
+---
+
+## B039 — `go_cover.parse` expands a block's line range with no fixed bound
+
+**Filed 2026-08-30 by B036's own implementation, in passing.** Noticed while
+writing the equivalent expansion for `coverage-istanbul-json`, which was
+given a bound (`MAX_CLASSIFIED_LINES`, O4's "a fixed bound, never an ambient
+guess") precisely because the shape is dangerous.
+
+`coverage_parsers/go_cover.py`'s `parse` runs
+`for file_line in range(start, end + 1)` over every block, with `start`/`end`
+read straight from the artifact and validated only for positivity and
+ordering (`_parse_pos`, `_parse_block`). A single ~50-byte block line reading
+`pkg/x.go:1.1,999999999.1 1 1` sits far inside the 16 MiB
+`MAX_COVERAGE_ARTIFACT_BYTES` read bound and materializes a billion dict
+entries.
+
+This is a resource-exhaustion shape, not a correctness one, and it is behind
+a lane that must already declare `go-cover` as its format — but assay's own
+threat model treats a coverage artifact as potentially adversarial input in
+the same breath as `FileCoverage`'s three independent arrays (P15/A-067
+finding 4), so "the input is trusted" is not the answer this project gives
+elsewhere.
+
+### Acceptance
+
+- [ ] a fixed, documented ceiling on total classified lines per artifact in
+      `go_cover.parse`, refusing `ERROR`/`UNREADABLE_ARTIFACT` past it, with
+      a paired must-succeed control proving an ordinary profile still parses;
+- [ ] check whether the bound belongs in ONE shared place rather than once
+      per expanding parser (`coverage_istanbul_json` has its own today).
+
+---
+
+## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
+
+**Filed 2026-08-30 by B036's round-1 adversarial review, reproduced and ruled
+on as A-346 before filing.** The ruling (documentation names
+`@vitest/coverage-istanbul` as the only judged-safe Vitest provider) is
+shipped and is a mitigation, not a fix. This item owns the two things the
+ruling deliberately did not do.
+
+### The defect, measured
+
+Ground truth needs no coverage tool here: five functions, each guarded by
+`if (v === 0) return 0` on its second line, one test calling each with `0`.
+Every line below a guard provably never runs.
+`tests/fixtures/coverage/probe-js-provider-defect` is that project; four real
+artifacts are committed (both providers × Vitest 3.2.4 and 4.1.11).
+
+`@vitest/coverage-v8` reports lines below the guard as **executed** whenever a
+conditional (ternary) expression appears earlier in the same block. Through
+the shipped `evaluate_coverage`, with those lines as the diff and
+`fail_under = 100.0`: **PASS at 100.0%** under v8, **FAIL at 0.0%** under
+istanbul.
+
+Four facts, each measured, that make this more than a caveat:
+
+- reproduces on **both** currently-released Vitest majors — no version to pin
+  past;
+- a **one-line** ternary triggers it, not just a multi-line one — no
+  formatting rule avoids it;
+- `coverage.experimentalAstAwareRemapping = true` does **not** fix it;
+- a multi-line binary expression, call and object literal are all correct in
+  the same artifact from the same provider — so unsound records are not
+  structurally distinguishable from sound ones.
+
+`@vitest/coverage-istanbul` is correct on every case measured, as are
+nyc/istanbul and Jest, which share its instrumenter.
+
+### (a) report it upstream
+
+Not yet done. The minimal reproduction is
+`probe-js-provider-defect/src/shapes.ts` plus its one test; the two committed
+v8 artifacts are the evidence. Worth checking first whether it is already
+filed against `ast-v8-to-istanbul` (the remapping layer, which is where the
+defect most likely lives — v8's own range data is not obviously wrong; the
+mapping of ranges onto statement lines is).
+
+### (b) the standing question this shares with B038
+
+Should a lane be able to declare its coverage PRODUCER? B038 wants it for
+branch arcs. This item wants it for a much sharper reason: with a declared
+producer, assay could refuse a `coverage-istanbul-json` lane that names the v8
+provider outright, instead of relying on a consumer having read a warning.
+Without one, assay cannot tell the two apart — and **must not try**: nothing
+in the document separates a true `s` count from a false one (`fnMap`/`f`
+corroborate the lie, because the enclosing function really did run), so the
+only mechanical route is inferring the producer from the artifact's shape,
+which is the declaration-versus-sniffing collapse A-007 forbids and which
+would already have broken between the two versions measured here (Vitest 4's
+v8 provider emits multi-line extents where Vitest 3's emitted single-line
+ones).
+
+### Acceptance
+
+- [ ] the defect reported upstream (or an existing report found and linked),
+      with the committed reproduction;
+- [ ] `test_coverage_istanbul_provider_accuracy.py`'s defect-witness tests
+      re-checked against any newer provider release — they read four
+      COMMITTED fixtures and cannot go red on their own, so this is a manual
+      step: regenerate `probe-js-provider-defect`'s v8 fixtures against the
+      new release and re-run; **if that makes them FAIL, the defect is
+      fixed**, and that is this item's completion signal, not a test to
+      relax;
+- [ ] if a producer becomes declarable (B038): a `javascript` lane declaring
+      the v8 provider is refused by name, and A-346's documentary mitigation
+      is downgraded to a note about older configurations.

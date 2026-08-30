@@ -70,6 +70,7 @@ from . import (
     runner,
 )
 from .adapters.base import LanguageAdapter
+from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
@@ -313,12 +314,50 @@ def _built_in_registry() -> registry.Registry:
     it. Route (i) (§4.1) needs no ``external_tools`` entry, so this is the
     entire wiring change -- no preflight, no new config surface, one more
     entry in this one registry.
+
+    **B036: JavaScript/TypeScript is registered at R1 ONLY**, following
+    Python's own first-ship shape rather than SQL's. R2 is not registered
+    because no JS/TS mutation engine exists to reach -- whether it should be
+    native or should ingest an external producer's evidence is the ruling
+    **B037** exists to force (:meth:`~assay.adapters.javascript.
+    JavaScriptAdapter.generate_mutation_sites` is unconditionally
+    ``"UNSUPPORTED"`` until then). R3 is not registered either: the two
+    canary injection methods are real implementations rather than stubs, but
+    a producer path is a separate claim from a method existing
+    (DESIGN-GUIDE §7), and wiring one is a fast-follow, not part of B036.
+
+    **Which layer actually refuses a ``javascript`` R2 lane** (round-1
+    review, Minor -- an earlier version of this docstring named only the
+    second). TWO independent guards refuse it, and the one a real lane meets
+    is the FIRST:
+
+    1. :mod:`assay.config` at load time. ``mutation`` is a REQUIRED key for
+       an R2 lane (:data:`assay.config.JUDGE_FIELDS_BY_RIGOR`) and
+       ``judge.mutation.operators`` must be non-empty, while
+       :data:`assay.vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` has no
+       ``javascript`` entry at all -- so every operator a lane could spell is
+       FOREIGN to it, and the foreign-operator guard refuses
+       ``BAD_LANE_CONFIG`` naming the language. A config-valid
+       ``javascript`` R2 lane is therefore not constructible at all.
+    2. :func:`assay.registry.get_adapter`, this entry's own
+       ``rigor=frozenset({"R1"})``, which refuses with the same
+       ``ERROR``/``BAD_LANE_CONFIG`` an unknown language gets. Reachable by a
+       direct call (and tested that way), never by a loaded lane while (1)
+       stands.
+
+    Both are honest and both name ``javascript``; (2) is the one that keeps
+    the guarantee if B037 ever adds a ``javascript:*`` operator vocabulary
+    ahead of a registered engine, which is exactly the ``go:*`` situation
+    today.
     """
     return registry.new_registry(
         registry.RegistryEntry(
             adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
         registry.RegistryEntry(adapter=SqlAdapter(), rigor=frozenset({"R2"})),
+        registry.RegistryEntry(
+            adapter=JavaScriptAdapter(), rigor=frozenset({"R1"})
+        ),
     )
 
 

@@ -5,69 +5,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Migration notes (upgrading from 2.4.x)
-
-This release cuts verdict schema **v7 → v8** and carries several breaking lane-config
-changes. Concrete steps for consumers, in the order you'll likely hit them:
-
-1. **Pin or upgrade your verifier together with your producer.** A v8 verdict fails
-   validation under a v7 `assay verify` (the new `judgment.r2.mode`/`targets` fields are
-   `additionalProperties: false`-rejected), and a v7 verdict is refused by a v8 `assay
-   verify` (`schema_version` is checked first, before any other field). This is a hard cut,
-   not a rolling upgrade — verify with the same major schema version you produced with.
-2. **If any lane declares `judge.mode = "whole_target"`, it must not also declare
-   `judge.base`.** Already true since 2.4.2 (B033) but restated here because the schema-v8
-   cut is when a leftover `base` line stops being merely inert and starts being refused
-   consistently across every tier. dstdns's own `cw2b_schema` lane needed this fix and has
-   already applied it.
-3. **`python:uuid-equality-swap` and `python:enum-comparison-swap` are now gone from the
-   schema, not just from what assay produces.** If any lane file or `--operators` override
-   still names either, delete it — the refusal now correctly points at
-   `python:compare-swap` instead of a bare "unknown operator". A verdict already on disk
-   from before this release that used either spelling still verifies against a v7
-   `assay verify`; it will not validate as v8.
-4. **New, entirely opt-in:** `judge_provenance` (name/version/artifact/digest) appears on a
-   verdict when assay can identify its own build artifact. Nothing changes unless you pass
-   `--require-judge-provenance`, which turns an unidentifiable invocation into a refusal —
-   read `docs/CONSUMERS.md`'s install-shape table first if you plan to use it inside a
-   container image: a plain `pip install assay` from an index cannot be identified (no
-   on-disk record survives that install shape); install from the wheel file/URL or the
-   `.pyz` instead if you want this flag to work.
-5. **New, entirely opt-in:** a lane can delegate its comparison base to the invoking gate
-   with `judge.base_source = "request"` + `assay run|plan --request-base REF`, instead of
-   hardcoding `judge.base`. Declaring both is refused, not resolved by precedence — pick
-   one per lane.
-
 ### Added
-- feat(assay): every verdict may now carry `judge_provenance` — the resolved judge name, its exact
-  semantic version, `digest_algorithm = "sha256"` and the lowercase sha256 of the build artifact the
-  run actually executed (installed wheel via PEP 610 `direct_url.json`, or the `.pyz` a zipapp run
-  imported from) — so a consumer can bind a verdict to a specific build instead of trusting a version
-  string. It is absent-or-complete, never partial: an invocation that cannot identify its own artifact
-  (a source checkout, or an installed distribution shadowed by a source tree on `sys.path`) records
-  nothing and says why on the diagnostics stream rather than inventing a digest (B018/A-327)
-- feat(assay): `assay run --require-judge-provenance` turns that absence into an
-  `ERROR`/`BAD_LANE_CONFIG` refusal before any work runs, for callers — the registered gate among
-  them — that require a verdict to be attributable to a build artifact (B018/A-327)
-- feat(assay): a lane may delegate its comparison base to the invoking gate with
-  `judge.base_source = "request"`, supplied per-invocation as `assay run|plan --request-base REF`;
-  every mismatch is refused loudly by name rather than resolved by precedence (B019/A-328)
-- feat(assay): `judgment.r2` now records its own `mode` and `targets`, so an R2-only verdict witnesses
-  the scope it was judged under instead of leaving it unstated (B035/A-329)
-
-### Changed
-- chore(assay): `judge_provenance`'s wheel-URL parser now strips a URL fragment and query before
-  testing for `.whl`. **This fixes no reachable defect**: PEP 610 permits a fragment, but pip
-  records `url_without_fragment` and uv strips it too, so no current installer produces the shape
-  — measured against real local and remote URL installs. It is hardening against a future or
-  third-party installer that writes what the spec allows. An sdist is still refused (A-332,
-  corrected by A-334)
-- docs(assay): `--require-judge-provenance`'s refusal reason listed only source-tree causes, reading
-  as exhaustive while omitting the dominant one — an ordinary index install (`pip install assay`),
-  which PEP 610 records nothing for. It now names that case first and says what to do instead;
-  `docs/CONSUMERS.md` carries the full table of which install shapes can be identified, including
-  that **uv records no digest even for a direct-URL install**, so a uv-installed wheel is not
-  identifiable today (A-332)
+- feat(assay): a JavaScript/TypeScript `LanguageAdapter` (`judge.language = "javascript"`,
+  covering `.js`/`.jsx`/`.ts`/`.tsx`) registered at **R1 only**, plus a fifth coverage format
+  `coverage-istanbul-json` — istanbul's own `coverage-final.json`, emitted natively by
+  nyc/istanbul, Jest, and both Vitest coverage providers. Changed-line coverage only: R2 waits
+  on B037's native-vs-ingest ruling, so `generate_mutation_sites` is `UNSUPPORTED` and a
+  `javascript` lane declaring R2 is refused; R3 is unwired though both canary injection
+  mechanisms are real. `excluded` and `branches` are reported unavailable for this format, both
+  as measured refusals (B036/A-340..A-345). **Use `@vitest/coverage-istanbul`, not
+  `@vitest/coverage-v8`, for any JavaScript lane you gate on:** the v8 provider reports
+  provably-never-executed lines as executed whenever a conditional expression appears
+  earlier in the same block, so an R1 lane PASSes on lines that never ran. Measured on
+  Vitest 3.2.4 and 4.1.11 alike, for one-line and multi-line ternaries, and not fixed by
+  `experimentalAstAwareRemapping`; assay cannot detect it, because nothing in the
+  artifact distinguishes a true execution count from a false one (A-346, B040).
+  nyc/istanbul and Jest are unaffected
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

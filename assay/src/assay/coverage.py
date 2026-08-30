@@ -56,7 +56,13 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 from . import safeio
-from .coverage_parsers import cobertura, coverage_py_json, go_cover, lcov
+from .coverage_parsers import (
+    cobertura,
+    coverage_istanbul_json,
+    coverage_py_json,
+    go_cover,
+    lcov,
+)
 from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
@@ -104,6 +110,14 @@ FORMAT_REGISTRY: Mapping[str, FormatSpec] = MappingProxyType(
         "lcov": FormatSpec(parse=lcov.parse, sniff=lcov.sniff),
         "cobertura": FormatSpec(parse=cobertura.parse, sniff=cobertura.sniff),
         "go-cover": FormatSpec(parse=go_cover.parse, sniff=go_cover.sniff),
+        # B036: istanbul's own `coverage-final.json` coverage-map object,
+        # emitted by nyc/istanbul, Jest, and both of Vitest's coverage
+        # providers. Registered as a fifth FORMAT with no language attached,
+        # exactly as the other four are -- the same document is produced for
+        # JavaScript, TypeScript, JSX and TSX alike.
+        "coverage-istanbul-json": FormatSpec(
+            parse=coverage_istanbul_json.parse, sniff=coverage_istanbul_json.sniff
+        ),
     }
 )
 
