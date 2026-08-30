@@ -3471,9 +3471,12 @@ ones).
 - [ ] the defect reported upstream (or an existing report found and linked),
       with the committed reproduction;
 - [ ] `test_coverage_istanbul_provider_accuracy.py`'s defect-witness tests
-      re-checked against any newer provider release — **they are written to
-      FAIL if it is fixed**, and that failure is this item's completion
-      signal, not a test to relax;
+      re-checked against any newer provider release — they read four
+      COMMITTED fixtures and cannot go red on their own, so this is a manual
+      step: regenerate `probe-js-provider-defect`'s v8 fixtures against the
+      new release and re-run; **if that makes them FAIL, the defect is
+      fixed**, and that is this item's completion signal, not a test to
+      relax;
 - [ ] if a producer becomes declarable (B038): a `javascript` lane declaring
       the v8 provider is refused by name, and A-346's documentary mitigation
       is downgraded to a note about older configurations.

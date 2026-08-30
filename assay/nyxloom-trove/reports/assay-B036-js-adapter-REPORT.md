@@ -573,9 +573,11 @@ What shipped for it:
   re-derive the defect from those artifacts, drive it through the shipped
   `evaluate_coverage` to show `PASS 100.0%` vs `FAIL 0.0%` on the same lines,
   and pin the `format.ts:17-18` instance the review found inside the *existing*
-  committed fixture. **Three of them assert the bug still exists** — if a
-  future provider fixes it they fail, and that failure is the signal to
-  revisit A-346, not a test to relax;
+  committed fixture. **Three of them assert the bug still exists against
+  COMMITTED artifacts** — they cannot go red from an upstream fix on their
+  own, only from a fixture manually regenerated against a fixed provider
+  (B040's recheck item), and that failure is the signal to revisit A-346, not
+  a test to relax;
 - **docs flipped** — README's config block, CONSUMERS' install line and worked
   config now say `provider: 'istanbul'`; the "prefer the v8 provider" sentence
   is gone; a new CONSUMERS section, *"The v8 provider is not safe to gate on"*,

@@ -22,12 +22,15 @@ versions, for a one-line ternary as well as a multi-line one, and not fixed by
 ``coverage.experimentalAstAwareRemapping``. A multi-line binary expression, a
 multi-line call and a multi-line object literal do NOT trigger it.
 
-**These tests pin a DEFECT as a witness, deliberately.** If a future
-``@vitest/coverage-v8`` fixes the mis-attribution, `test_the_v8_provider_*`
-below will FAIL — and that failure is the signal to revisit A-346's ruling and
-B040, not a test to relax. The defect is why assay's own documentation names
-`@vitest/coverage-istanbul` as the only Vitest provider safe for a judged
-lane; if it goes away, so does the reason.
+**These tests pin a DEFECT as a witness, deliberately, against the FOUR
+COMMITTED artifacts** — they read no live Node/Vitest, so an upstream fix
+does not turn them red on its own. Regenerating `probe-js-provider-defect`'s
+v8 fixtures against a fixed `@vitest/coverage-v8` (B040's manual recheck
+item) is what would make `test_the_v8_provider_*` below FAIL, and that
+failure is the signal to revisit A-346's ruling, not a test to relax. The
+defect is why assay's own documentation names `@vitest/coverage-istanbul` as
+the only Vitest provider safe for a judged lane; if it goes away, so does the
+reason.
 
 Negative: without this module the change ships guidance steering consumers
 onto a provider that produces false-clean R1 verdicts, with the committed v8
@@ -173,10 +176,12 @@ def test_the_istanbul_provider_reports_the_ternary_bodies_as_missing(name: str):
 
 @pytest.mark.parametrize("name", V8_ARTIFACTS)
 def test_the_v8_provider_falsely_reports_never_executed_lines_as_executed(name: str):
-    """**This test asserts that a bug still exists.** If it fails because
-    `@vitest/coverage-v8` was fixed, do not relax it -- revisit A-346's
-    ruling and B040, and re-measure, because the reason assay's docs name
-    istanbul as the only judged-safe Vitest provider will have gone away."""
+    """**This test asserts that a bug still exists, against a COMMITTED
+    fixture** -- it cannot go red from an upstream fix on its own. If a
+    fixture regenerated against a newer `@vitest/coverage-v8` (B040's manual
+    recheck item) ever makes this fail, do not relax it -- revisit A-346's
+    ruling and re-measure, because the reason assay's docs name istanbul as
+    the only judged-safe Vitest provider will have gone away."""
     record = _shapes(name)
     false_greens = sorted(set(_all_never_executed()) & record.executed)
 

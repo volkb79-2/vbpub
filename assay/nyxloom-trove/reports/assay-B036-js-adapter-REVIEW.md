@@ -240,3 +240,126 @@ correct on real adversarial data, the refusals are typed and non-vacuous, and
 the scope boundary held exactly as claimed. What it missed is that it measured
 the two producers' *shapes* and never their *accuracy*, and then recommended
 the inaccurate one.
+
+---
+---
+
+# ROUND 2 — re-verification of `3a677f95` (6 commits on `371a4f7b`)
+
+**Verdict: ACCEPT.** All three round-1 conditions met, both Majors closed, all
+five Minors and all Nitpicks fixed, two of them beyond what was asked. Nothing
+new found. Everything below was re-run here, not read off the report.
+
+## Independently re-verified
+
+| | |
+|---|---|
+| **gate** | `./run-gate.py --worktree … tester-unified` on a clean tree at HEAD `3a677f95`. Exit read in a SEPARATE step: `GATE_EXIT=0`, **10** phase markers in order, `ASSAY_REGISTERED_GATE_COMPLETE=1`, wheel `assay-2.4.3.dev28+g3a677f95` built from the exact OID (one commit past the report's `dev27`, which is the report's own transcript commit — expected) |
+| **suite** | `pytest tests/ -q` → `3489 passed, 11 skipped`, exit 0. 3454 + 35 = 3489; nothing regressed |
+| **the four defect artifacts are real** | `npm ci` from **the committed lockfiles** into two clean trees (`vitest 3.2.4`, `vitest 4.1.11`), ran both providers in each. All four committed artifacts are **byte-identical to my own runs** (modulo the `path` field) |
+| **the defect, against ground truth** | Computed dead lines from `shapes.ts` structurally (every line below each `if (v === 0) return 0` guard), then checked each artifact. v8 falsely reports executed: **Vitest 3** → `[10,11,16,17,18]`, **Vitest 4** → `[10,11,17,18]`. Exactly `V8_FALSE_GREENS`. istanbul: **zero** false greens in both. My round-1 numbers matched once braces are excluded, which their `NEVER_EXECUTED` correctly does |
+| **one-line ternary — my round-1 characterisation was too narrow** | Confirmed. `ternaryOneLine` (`const a = v > 3 ? 10 : 20`) triggers it in both majors. The implementer's correction is right and my review was wrong on this point |
+| **no version to pin past** | Confirmed on both currently-released majors |
+| **only ternaries trigger it** | Confirmed: `binaryMultiLine`, `callMultiLine`, `objectLiteralMultiLine` are all correct under the same provider in the same artifact. So sound and unsound records are not structurally distinguishable |
+| **the version-drift argument against shape-sniffing** | This is the load-bearing claim behind "option (b) is unavailable", and it verifies **stronger than argued**: Vitest 3's v8 provider emits **0** multi-line extents; Vitest 4's emits **4** — and they are the *identical* extent tuples istanbul emits, `[(7,9),(24,25),(32,35),(42,45)]`. Under Vitest 4 there is literally no extent-geometry discriminator between the two providers. Any shape heuristic written today would be both forbidden by A-007 and factually broken |
+| **PASS/FAIL through the shipped code** | Drove all four artifacts through `evaluate_coverage` at `fail_under=100.0` on provably-dead lines: v8 → **PASS 100.0%** (3 of 4 cases; Vitest 4 partially recovers `ternaryOneLine` to 66.7% FAIL but still PASSes 100% on `ternaryMultiLine`), istanbul → **FAIL 0.0%** in all four |
+| **`format.ts:17-18` instance pinned** | Present as its own test |
+
+## Round-1 conditions
+
+**Condition 1 (M1) — MET, and exceeded.** Ruling (a) is the right call and my
+own measurement supports it more strongly than the report argues (see the
+version-drift row). README/CONSUMERS now say `provider: 'istanbul'` only, with
+a 9-line repro, the four measured facts, and — the sentence that matters —
+"**assay cannot detect this for you, and does not pretend to.**" That is the
+honest shape. A-346 records the ruling *and* the process lesson ("a shape match
+is not a correctness check"), which is the more transferable finding. B040
+filed, and honestly marks the upstream report as *not yet done* rather than
+claiming it.
+
+**Condition 2 (M2) — MET.** A-342 corrected in place, A-326 style: the
+withdrawn phrase left visible next to its measured refutation, with the true
+narrower guarantee stated ("every line any statement extent covers is
+classified"). Same correction applied to `adapters/javascript.py`'s docstring
+and report §3.3. CONSUMERS gained a fourth "behaves differently" item spelling
+out the practical consequence (a signature-only diff can report
+`executable = 0` and PASS) — and offers `judge.mode = "whole_target"` as a real
+mitigation, which I had not thought to suggest.
+
+**Condition 3 (M2 test) — MET.** The vacuous pin is gone. I mutation-tested the
+replacements: reducing `_paint` to `istanbul-lib-coverage`'s start-line-only
+behaviour now kills **5** tests including both new ones
+(`test_the_unattributed_line_set_is_exactly_what_was_measured[istanbul]`,
+`test_extent_expansion_classifies_strictly_more_than_start_lines_alone`). The
+old test survived that mutation. `UNATTRIBUTED`'s literal sets match my
+independent round-1 measurement exactly, file for file and line for line
+(13 v8 / 23 istanbul). The e2e module is parametrized over both artifacts. The
+denominator-consistency test correctly does **not** die under the mutation —
+and its own docstring says up front that it does not pin the parser, which is
+the right way to ship a test like that.
+
+## Round-1 Minors / Nitpicks
+
+All fixed. Verified directly: canary evidence moved to committed fixtures —
+`roles.uncovered-line-injected.ts` is byte-for-byte what
+`inject_uncovered_line` produces (checked), and both provider artifacts show
+the canary body as missing, matching my round-1 live `vitest` run exactly
+(`{23:1, 24:0, 25:0, 26:0}` under v8). `MAX_CLASSIFIED_LINES` tests now
+monkeypatch the ceiling: peak RSS **352 MB → 77 MB** (measured), pinned from
+both sides. `test_all_four_adapters_coexist…` now actually registers
+`GoAdapter`, with the correction noted in its own docstring. `cli.py`'s
+two-layer refusal documented in the order a real lane hits them — and their
+finding is sharper than mine: a config-valid `javascript` R2 lane is **not
+constructible at all** today. Lockfiles committed. A-342's stale synergy-wave
+id corrected.
+
+## The two questions flagged for me
+
+**1. Should assay refuse v8-produced artifacts pending B038/B040? — No, and
+this is not a close call.** Refusing requires identifying, and identifying
+requires either a *declared* producer (which does not exist yet, and is exactly
+B040(b)/B038's scope) or shape-sniffing. Sniffing is forbidden by A-007 *and* —
+per my own measurement above — factually impossible under Vitest 4, where the
+two providers emit identical extent geometry. A heuristic would therefore be
+wrong, silent, and worse than the warning: it would manufacture a false sense
+of protection while refusing honest nyc/Jest artifacts, which share istanbul's
+correct instrumenter. Building an opt-in `judge.coverage.producer` key inside
+B036 would also widen the config surface for one language mid-change. The
+documentary mitigation plus B040 is the correct disposition.
+
+**2. Three tests asserting an upstream bug persists — the tradeoff is right,
+with one wording correction.** Pinning a defect as a witness is sound: it is
+the stated reason for a shipped ruling, so it should break when the reason
+does. But the tests read **committed artifacts**, not a live `npx vitest`, so
+they cannot fail on their own when upstream fixes the provider — they change
+only when someone regenerates the fixtures. Freezing them is right (the suite
+must stay Node-free, DESIGN-GUIDE §10), so the design is correct; it is the
+*framing* that overreaches. The module docstring and B040's acceptance both say
+the tests "are written to FAIL if it is fixed", which reads as an automatic
+signal it is not. B040's checkbox already owns the manual re-check, so the
+maintenance cost is real but small and correctly homed. Worth one wording pass
+("if you regenerate these fixtures against a newer provider and this fails,
+upstream fixed it — revisit A-346"), not worth another round.
+
+## Remaining — non-blocking, for whenever
+
+- The wording nit in question 2 above.
+- The four defect artifacts carry an absolute key under a
+  `/tmp/claude-…/scratchpad/defect/` path from the producing session. Harmless
+  — it is genuine tool output and the tests rebase the prefix — and arguably
+  good evidence that it was not hand-authored. Just untidy in a committed
+  fixture.
+
+## Verdict
+
+**ACCEPT.** Merge, release and deploy per standing authorization.
+
+The round-2 work is better than the fix it was asked for. It reproduced M1
+independently before touching anything, found it worse than I had reported
+(one-line ternaries, both majors), built a probe whose ground truth needs no
+coverage tool at all, committed four real artifacts plus lockfiles, and then
+declined to build the heuristic that would have looked like a stronger fix and
+been a silent lie. The A-346 process lesson — *a shape match is not a
+correctness check; A-334's "check against a real thing" has to mean the thing
+the verdict actually claims* — is worth upstreaming to nyxloom `LESSONS.md`
+beyond this repo.
