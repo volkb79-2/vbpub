@@ -78,6 +78,32 @@ kill_signal_artifact = ".assay/kill-signal.txt"
 """
 
 
+#: (Wave A review round 1, should-fix 10) An R0 lane declaring non-default
+#: `env_required`, `environment_command`, and `infrastructure` -- every
+#: existing golden lane leaves these at their zero-value default, so no
+#: golden test previously exercised these three fields actually carrying
+#: content through to the JSON document.
+ENV_AND_INFRA_LANE = """\
+schema_version = 2
+
+[lanes.deploy_check]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["scripts/deploy-check.sh"]
+env = {}
+env_passthrough = ["PATH", "HOME", "CIU_IMAGE_REVISION"]
+env_required = ["CIU_IMAGE_REVISION"]
+environment_command = ["scripts/prepare-env.sh"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.deploy_check.infrastructure]
+api = "required-env:API_URL"
+db = "derived:deploy.db_host"
+"""
+
+
 def _delegating_r1_lane() -> str:
     """`R1_LANE` with the base DELEGATED instead of declared (B019) -- the
     same one-line edit `test_config_judge_base_source.py` proves loads."""
@@ -245,6 +271,40 @@ def test_a_sql_r2_lane(project: Project):
             "infrastructure_facts": [],
             "budget": "20m",
             "snapshot_selection": "repository",
+            **_WAVE_B_STUB,
+        }
+    ]
+
+
+def test_a_lane_with_declared_env_required_environment_command_and_infrastructure(
+    project: Project,
+):
+    """(Wave A review round 1, should-fix 10) The three fields every other
+    golden lane leaves at [] / False / [] here carry real content, and the
+    inventory reports it verbatim -- not just the shape, the values."""
+    path = project.write(ENV_AND_INFRA_LANE)
+
+    doc = lanes_json(path)
+
+    assert doc["lanes"] == [
+        {
+            "name": "deploy_check",
+            "scope": "S1",
+            "rigor": ["R0"],
+            "enforcement": "gate",
+            "language": None,
+            "rigor_reachable": [],
+            "coverage": None,
+            "mutation": None,
+            "canary": None,
+            "base_source": None,
+            "external_tools": [],
+            "argv0": "scripts/deploy-check.sh",
+            "env_required": ["CIU_IMAGE_REVISION"],
+            "environment_command": True,
+            "infrastructure_facts": ["api", "db"],
+            "budget": "10m",
+            "snapshot_selection": None,
             **_WAVE_B_STUB,
         }
     ]
