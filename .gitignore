@@ -180,6 +180,18 @@ ciu.global.toml
 **/ciu.compose.yml
 **/.ciu/
 **/docker-compose.yml
+# Per-worktree CIU registration metadata (ciu worktree create). Was previously
+# hidden only via a hand-added, non-portable .git/info/exclude entry — a
+# fresh clone/CI runner never had that, so this file showed up as genuinely
+# untracked dirt on every ciu-registered worktree (and, as a direct
+# consequence, caused assay's dirty_paths() to report a false DIRTY_TREE on
+# every such worktree — vbpub assay B017, 2026-08-25; dstdns carries the same
+# fix already). Tracking the ignore here instead is the portable fix.
+ciu.worktree-instance.json
+# Same B017 class, third occurrence (vbpub's own worktrees, 2026-08-29): another
+# CIU-generated per-worktree render input, same untracked-dirt/false
+# DIRTY_TREE symptom on assay's dirty_paths() check.
+ciu.global.worktree.toml.j2
 
 # Spyder project settings
 .spyderproject
