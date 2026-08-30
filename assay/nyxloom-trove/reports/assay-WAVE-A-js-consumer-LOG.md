@@ -313,3 +313,72 @@ replacing the placeholder and honestly recording the two environmental
 (non-product) failed attempts that preceded it. Lands after the judged
 commit — pure documentation of an already-green run, no source or test
 file touched.
+
+---
+
+## `64e9382a` — fix(assay): list JavaScript R1 in `assay run`'s own help/docstring
+
+**Files:** `src/assay/cli.py`
+
+**What:** Round-1 review, should-fix 4: the CLI's own module docstring and
+`--help` text for `assay run` still said "R0, Python R1, Python R2, Python
+R3, and SQL R2", omitting the JavaScript R1 support B036 shipped in 3.1.0.
+Both corrected; the docstring's closed-registry summary ("Python is
+registered at R1, R2 and R3, SQL at R2 only, and nothing else") now names
+JavaScript's R1-only registration too.
+
+**Why:** Consumer-facing help text drifted from the actual registry after
+B036 shipped and was never caught until an adversarial reviewer read it
+against `_built_in_registry()`.
+
+---
+
+## `efb825bc` — docs(assay): Wave A review round 1 — fix 3 blockers + 6 should-fixes
+
+**Files:** `docs/CONSUMERS.md`, `README.md`, `nyxloom-trove/4-backlog.md`,
+`CHANGES.md`
+
+**What:** A fresh Opus adversarial reviewer's round-1 verdict was
+ACCEPT-conditional on three blockers (all doc/backlog accuracy, no code
+change): the `vite-plugin-istanbul` instrumenter misattribution
+(CONSUMERS.md, falsified by this wave's own committed lockfile); two
+miscited source lines plus two omitted facts in B049's filed mechanism
+(4-backlog.md — the shipped message asserts a checkable falsehood, and the
+correct reason code is already reserved in the frozen v8 schema); and a
+stale `[Unreleased]` CHANGES.md block that would have republished 3.1.0's
+already-retracted "Jest are unaffected" claim into 3.2.0's own release
+notes. All three fixed. Six should-fixes also landed: version-scoping the
+Vitest-internals citation, qualifying the "every file the glob matches"
+claim with its own hardcoded-exclude carve-out, strengthening the Jest
+`coverageProvider: "v8"` hedge with the shared `v8-to-istanbul` dependency
+evidence (verified live against the npm registry), splitting B044's
+third acceptance box so the still-open CIU-72 half is no longer ticked,
+stating `external_tools`'s always-`[]`-this-release fact plainly, and
+correcting the "explicitly excludes core-mechanism changes"
+mischaracterization of the wave prompt's own NOT-IN-SCOPE list.
+B049 also gained a fourth candidate fix option and a wider-blast-radius
+finding from the reviewer's own investigation (SQL R2 equivalence reads
+and mutation-crash classification share the same fold, not just JS
+coverage) — filed, not implemented.
+
+**Why:** Every fix here is a documentation/backlog-accuracy correction the
+reviewer's blind-then-reconcile pass caught; none touches shipped
+behaviour, so no test changed.
+
+---
+
+## `15e24ffa` — test(assay): B044 golden coverage for env_required/environment_command/infrastructure_facts
+
+**Files:** `tests/test_cli_lanes_json.py`
+
+**What:** Round-1 review, should-fix 10: every existing golden lane left
+`env_required`/`environment_command`/`infrastructure_facts` at their
+zero-value default, so no golden test exercised these three fields
+actually carrying content through the inventory document — a real
+test-coverage gap (the reviewer verified the live behaviour was already
+correct). Adds `ENV_AND_INFRA_LANE` (non-default values for all three) and
+`test_a_lane_with_declared_env_required_environment_command_and_infrastructure`,
+asserting the full entry dict per this file's existing pattern.
+
+**Tests added:** 1 (12 total in this module, up from 11). Full suite
+re-verified green: 3576 passed, 12 skipped.

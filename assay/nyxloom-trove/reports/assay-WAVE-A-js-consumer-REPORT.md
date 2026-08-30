@@ -264,19 +264,24 @@ command never wrote anything."
 **Not fixed in code this wave** — `safeio.py`/`runner.py` are core,
 language-free machinery shared by every adapter (Python R1/R2/R3, SQL R2, JS
 R1) and every future one; the wave prompt scopes Wave A to the JS adapter's
-own consumer-facing gaps and explicitly excludes core-mechanism changes.
-Filed as **B049** with three unranked fix options (re-open by name at
-consume time and lose part of `arm()`'s TOCTOU protection; detect a
-recreated directory and name a distinguishable reason instead of folding
-into `EMPTY_COVERAGE`; leave it fully consumer-owned via documentation, the
-Wave A default) and recorded as **A-347**. Every `vitest.config.ts` this
-wave ships (README, CONSUMERS, the qualification harness) declares
-`clean: false` as the documented, working mitigation.
+own consumer-facing gaps and it is outside the wave's own enumerated scope
+list. (Corrected 2026-08-30, Wave A review round 1: the prompt's actual
+NOT-IN-SCOPE list, `WAVE-PROMPT-2026-08-30-js-consumer-producer.md` lines
+115-121, does not literally exclude "core-mechanism changes" as a category
+— the original wording here overstated it.) Filed as **B049**, with a
+fourth option added by round-1 review after this REPORT was first written
+(a name-free `os.fstat(parent_fd).st_nlink == 0` check needing no schema
+change, with the finding that the same fold also mis-classifies SQL R2
+equivalence reads and mutation-crash detection, not just JS coverage — see
+`4-backlog.md` B049 for the full corrected entry) and recorded as **A-347**.
+Every `vitest.config.ts` this wave ships (README, CONSUMERS, the
+qualification harness) declares `clean: false` as the documented, working
+mitigation.
 
 **This is a decision ask, not a BLOCKED item** — it did not block anything
 in this wave's own contract (the workaround exists and is documented), but
-it needs a maintainer ruling among B049's three options before Wave B or a
-later Go wave meets the same class of defect with a different tool.
+it needs a maintainer ruling among B049's options before Wave B or a later
+Go wave meets the same class of defect with a different tool.
 
 ---
 
@@ -511,6 +516,14 @@ documentation of an already-green run, touching no source or test file.
    command and comparing device/inode against a fresh `stat` of the path by
    name, refusing loudly on mismatch without needing a full re-open —
    sketched nowhere in B049, not evaluated here).
+   **(Resolved by review round 1, 2026-08-30):** yes — the reviewer
+   prototyped and ran exactly this (`os.fstat(parent_fd).st_nlink == 0`,
+   name-free, no by-name `stat` needed), confirmed it reuses the ALREADY
+   RESERVED `ERROR`/`UNREADABLE_ARTIFACT` code (`coverage.py:171-173`), and
+   found the same fold's blast radius is wider than filed (SQL R2
+   equivalence artifacts, mutation-crash classification). Recorded as
+   B049's option 4 in `4-backlog.md`; still not implemented on this branch,
+   still needs a maintainer ruling and its own implementer round.
 2. **`base_source`'s derivation in `assay lanes --json`** (A-349) — is
    resolving `None → "declared"` really the right call, or should the
    inventory pass `null` through raw and let CIU implement A-328 itself?
@@ -570,8 +583,78 @@ documentation of an already-green run, touching no source or test file.
 
 ## 14. Decision asks
 
-- **B049's three fix options need a ruling** (§6) — not blocking this
-  wave's own contract, but blocking a clean answer the next time a
-  different external tool (a future Go coverage/mutation producer, a
-  consumer's own SQL dump step) shares Vitest's "recreate my output
-  directory" convention.
+- **B049's fix options need a ruling** (§6) — not blocking this wave's own
+  contract, but blocking a clean answer the next time a different external
+  tool (a future Go coverage/mutation producer, a consumer's own SQL dump
+  step) shares Vitest's "recreate my output directory" convention. Now four
+  options, not three — see §15.
+
+---
+
+## 15. Review round 1 (2026-08-30, fresh Opus reviewer) — verdict and fixes
+
+**Verdict: ACCEPT-conditional.** The reviewer independently re-verified
+every contracted item from the diff and the code (not from this REPORT),
+including re-running the qualification harness with its own mutation of the
+fixture, planting a 999999999-line block against the shipped ceiling, and
+running the full registered gate to completion a second time, independently,
+on the SAME tip commit (`225dd6ad`) already committed at the time of review
+(GREEN — all phases including the self-hosted `pytest tests -q` lane,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`; log kept in the reviewer's own scratch
+directory, not committed to this repo — it is a second independent
+confirmation of the same commit §11's own transcript already covers, not a
+new artifact this REPORT adds; worktree confirmed clean throughout). No Wave
+B leakage found.
+
+Three blockers, all documentation/backlog accuracy, none requiring a code
+change — all fixed in this same worktree before the confirming gate re-run:
+
+1. `docs/CONSUMERS.md` misnamed `vite-plugin-istanbul`'s instrumenter as
+   `babel-plugin-istanbul`'s, falsified by this wave's own committed
+   `probe-js-vite-plugin-istanbul/package-lock.json` (the real dependency is
+   `istanbul-lib-instrument@^6.0.3`). Fixed.
+2. `4-backlog.md` B049 miscited two source lines (`safeio.py:339` →
+   corrected to `:320-321`; `check_empty_coverage`/`coverage.py:313` →
+   corrected to `parse_coverage_artifact`/`coverage.py:179-187`) and omitted
+   two facts the miscitation hid: the shipped refusal message asserts a
+   checkable falsehood over a genuinely complete artifact, and
+   `coverage.py:171-173` already reserves `ERROR`/`UNREADABLE_ARTIFACT` for
+   exactly this race, so a fix needs no new schema const. Fixed, and the
+   entry gained a fourth candidate fix option (`os.fstat`-based, prototyped
+   and run clean by the reviewer) plus the wider-blast-radius finding (SQL
+   R2 equivalence reads, mutation-crash classification share the same
+   fold) — see `4-backlog.md` B049.
+3. `CHANGES.md`'s `[Unreleased]` block still carried 3.1.0's already-shipped
+   JS-adapter bullet, ending in the exact "nyc/istanbul and Jest are
+   unaffected" sentence B042 exists to retract — a stale duplicate of the
+   dated `## [3.1.0]` section below it. Removed.
+
+Nine should-fixes also addressed: `assay run --help`/the module docstring
+now list JavaScript R1 (previously omitted); the Vitest internals citation
+(`chunks/coverage.*.js`) is now explicitly version-scoped, with the
+qualification harness's actual pinned `3.2.4` named as not independently
+re-measured; the "every file the glob matches" claim now states the
+hardcoded-exclude carve-out inline instead of only afterward; the Jest
+`coverageProvider: "v8"` hedge now states the `v8-to-istanbul@^9.0.1`
+(Jest) / `^9.0.0` (`c8`) shared-dependency evidence (both verified live
+against the npm registry to resolve to the same `9.3.0` today) rather than
+reading as a clean unknown; B044's third acceptance box (the "ciu handoff
+note") is split so the still-undone CIU-72 half is no longer ticked;
+`external_tools`'s always-`[]`-this-release fact is now stated plainly in
+CONSUMERS so CIU-72 does not build a no-op preflight around it; the
+NOT-IN-SCOPE mischaracterization ("explicitly excludes core-mechanism
+changes") is corrected in both `4-backlog.md` and §6 above; and a new golden
+test (`test_a_lane_with_declared_env_required_environment_command_and_infrastructure`,
+`tests/test_cli_lanes_json.py`) now exercises `env_required`/
+`environment_command`/`infrastructure_facts` carrying real, non-default
+values — every prior golden lane left these three fields at their
+zero-value default.
+
+Three decision asks from the reviewer, not ruled on here (controller's
+call): D1 (B049 fix-vs-file, now with the fourth option and its evidence —
+see above), D2 (A-349's `base_source` derivation — reviewer's own view:
+keep it, mirrors `config.py:1327-1350`'s existing default rule), D3
+(external validity of the single-machine c8/vite-plugin-istanbul
+measurements — reviewer's own view: acceptable, ground truth needs no tool
+and the reviewer independently recomputed c8's false-green set and it
+matched).
