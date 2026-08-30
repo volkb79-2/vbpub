@@ -102,6 +102,84 @@ def test_a_wheel_install_reports_the_installers_recorded_sha256(tmp_path: Path):
     )
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.invalid/assay-1.0-py3-none-any.whl",
+        # The shape that was actually broken: an index page's own link, and
+        # the way a gate pins a judge artifact by URL AND digest.
+        "https://ex.invalid/assay-1.0-py3-none-any.whl#sha256=" + "5e" * 32,
+        "https://ex.invalid/assay-1.0-py3-none-any.whl?token=redacted",
+        "https://ex.invalid/assay-1.0-py3-none-any.whl?t=1#sha256=" + "5e" * 32,
+    ],
+)
+def test_a_direct_url_wheel_is_identified_whatever_the_url_carries_after_it(
+    tmp_path: Path, url
+):
+    """(M3/A-332) A URL fragment must not make a real wheel install
+    unidentifiable.
+
+    PEP 610 records the requested URL verbatim, fragment included, and
+    `pip install https://.../x.whl#sha256=...` is the ordinary way to pin a
+    wheel by URL and digest. The original `url.split("?")[0].endswith(".whl")`
+    answered False for exactly that form, so the single install shape this
+    feature's own consumer is most likely to use -- CIU pinning a verified
+    judge artifact by URL -- was silently reported as having no identity, and
+    `--require-judge-provenance` would have hard-refused it.
+    """
+    identity, reason = provenance.identify_judge(
+        _module_at(tmp_path / "assay" / "__init__.py"),
+        _wheel_dist(tmp_path, A_DIGEST, url=url),
+    )
+    assert reason is None, reason
+    assert identity is not None
+    assert identity.artifact == "wheel"
+    assert identity.digest == A_DIGEST
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.invalid/assay-1.0.tar.gz",
+        "https://ex.invalid/assay-1.0.zip#sha256=" + "5e" * 32,
+    ],
+)
+def test_stripping_the_fragment_does_not_start_accepting_non_wheels(
+    tmp_path: Path, url
+):
+    """The other half of the fix above: the `.whl` test still has to REFUSE an
+    sdist or a bare archive. Pinned because widening a parser is exactly how a
+    guard stops guarding."""
+    identity, reason = provenance.identify_judge(
+        _module_at(tmp_path / "assay" / "__init__.py"),
+        _wheel_dist(tmp_path, A_DIGEST, url=url),
+    )
+    assert identity is None
+    assert reason is not None
+
+
+def test_the_unidentifiable_reason_names_the_index_install_case(tmp_path: Path):
+    """(M3/A-332) The refusal used to list "an editable install, a directory
+    install, and a source checkout carrying `*.egg-info`" and stop -- reading
+    as exhaustive while omitting the case that actually dominates in
+    production, an ordinary index install, which writes no direct_url.json at
+    all. An operator hitting this in a runner image was sent hunting for a
+    source-tree problem that did not exist."""
+    dist = _FakeDistribution(
+        root=tmp_path,
+        metadata={"Name": "assay", "Version": "1.0.0"},
+        direct_url=None,
+    )
+    identity, reason = provenance.identify_judge(
+        _module_at(tmp_path / "assay" / "__init__.py"), dist
+    )
+    assert identity is None
+    assert reason is not None
+    assert "INDEX install" in reason, reason
+    # and it must say what to do instead, not just what went wrong
+    assert ".whl" in reason and "zipapp" in reason, reason
+
+
 def test_pep_610s_superseded_single_hash_spelling_is_still_read(tmp_path: Path):
     """`archive_info.hash` predates `archive_info.hashes` and pip still writes
     both. Read as a fallback, not required -- an installer that wrote only the

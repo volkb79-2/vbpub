@@ -728,6 +728,35 @@ Three refusals bound this, and each names the one line to change:
 `mode = "changed_lines"` — it is a policy *about* `judge.base`, so it is legal
 exactly where `judge.base` is.
 
+#### Migrating an existing lane, and the one case that costs something
+
+A lane pinning a **frozen SHA** migrates for free: delete `base = "<sha>"`, add
+`base_source = "request"`, and have the invoker pass that same SHA. Nothing
+about what gets judged changes.
+
+The case that genuinely costs something is a lane pinning a **symbolic,
+self-updating ref** — `base = "origin/main"` is the common one, and it is what
+this estate's own `ciu/assay.toml` lane declares. Such a lane works today from
+any checkout with no orchestrator at all: `assay run ciu` just resolves
+`origin/main`. Delegating it means that same command becomes a hard refusal
+unless an invoker supplies `--request-base`, because refusal (1) above does not
+except the lane that *could* have resolved something on its own.
+
+That is the real trade and it is not free. It is the deliberate consequence of
+refusing precedence rather than picking it, so decide per lane:
+
+- **Keep `judge.base = "origin/main"`** when the lane must stay runnable by
+  hand, standalone, from a developer checkout. It simply is not a delegating
+  lane, and nothing forces it to become one.
+- **Move to `base_source = "request"`** when an orchestrator owns branch
+  awareness and every real invocation comes from it — which is the case
+  B019 exists for. Expect the standalone `assay run <lane>` invocation to stop
+  working, and give the humans a wrapper that passes `--request-base`.
+
+There is no middle setting, on purpose: a lane that declared both a default and
+a delegation would be back to a precedence rule, and one of the two would be
+config nothing reads.
+
 ### `judge_provenance`: which build emitted this verdict (B018)
 
 `assay_version` is a string; any process can print one. An assay running from
@@ -767,6 +796,35 @@ assay cannot identify itself, so you never receive evidence you cannot
 attribute. Compare `judge_provenance.digest` against the digest you verified
 on download; `judge_provenance.version` equals the top-level `assay_version`
 for any artifact assay itself produced.
+
+#### Which install shapes can be identified — read this before you demand it
+
+`--require-judge-provenance` is a hard refusal, so **how you installed assay
+decides whether your gate can use it at all.** The rule is PEP 610's: an
+artifact identity exists only where the installer recorded one, and it records
+one only for a *direct* install.
+
+| how assay got there | identified? | why |
+|---|---|---|
+| `pip install ./assay-<v>-py3-none-any.whl` | **yes** (`wheel`) | direct file install; PEP 610 records the wheel's sha256 |
+| `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…` | **yes** (`wheel`) | direct URL install; the fragment and any query are ignored when deciding it is a wheel |
+| running the `.pyz` (or `PYTHONPATH=<pyz>`) | **yes** (`zipapp`) | the archive is on disk and is hashed directly |
+| **`pip install assay` / `pip install assay==2.5.0` from an index** | **no** | PEP 610 writes `direct_url.json` only for direct installs. An index install records **no** artifact identity anywhere on disk, and none can be recovered afterwards |
+| `pip install -e .`, `pip install <directory>` | no | no build artifact exists to hash |
+| a source checkout, or a `sys.path` entry shadowing an install | no | the running code is not the artifact's code (refused by name) |
+
+The index-install row is the one that surprises people, and it matters
+specifically for **a CI runner image that pip-installs assay from a private
+index at image-build time**. That image is perfectly well pinned, and assay
+still cannot identify itself inside it — there is nothing on disk to identify.
+If your gate demands provenance, install the judge into the image **from the
+wheel file or its URL** (or ship the `.pyz`), not from a bare requirement
+specifier. Mounting the verified artifact into the runner works too.
+
+Assay refuses rather than synthesising something here, and that is deliberate:
+a digest derived from the installed *files* would not equal the digest you
+verified on *download*, so it would look like an identity while being
+uncomparable — the invented fact this whole field exists to prevent (A-332).
 
 ### A green run over an empty subject is not a pass
 

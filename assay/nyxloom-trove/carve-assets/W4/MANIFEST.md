@@ -1,6 +1,6 @@
 # W4 — the verdict schema v8 successors (B018 / B019 / B035)
 
-Captured 2026-08-29 on branch `feature/assay-b018-b019-b035-v8-synergy`, as the
+Captured 2026-08-30 on branch `feature/assay-b018-b019-b035-v8-synergy`, as the
 evidence behind **A-327** (judge provenance), **A-328** (gate-request-supplied
 comparison base) and **A-329** (`judgment.r2` witnesses its own judging scope).
 

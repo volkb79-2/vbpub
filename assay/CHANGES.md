@@ -5,6 +5,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+<!-- STALE-ENTRY WARNING, added 2026-08-30 by the B018/B019/B035 wave after its
+     round-1 review flagged it (m8). Everything below tagged (B033/A-325) or
+     (B034/A-326) ALREADY SHIPPED in 2.4.2 -- see the generated `## [2.4.2]`
+     section further down, which names `a667862c` and `6e0dca84`. Those
+     hand-written entries were never cleared when 2.4.2 was cut, so as it
+     stands the next release re-announces them.
+
+     WHOEVER CUTS THE NEXT RELEASE: delete the B033/B034 entries from this
+     section before generating. This file's own release-history comment says
+     clearing `[Unreleased]` "is part of releasing", so this wave deliberately
+     did NOT clear them -- it is not authorised to release, and silently
+     deleting another wave's release notes is not an implementation change.
+     Flagged here rather than left to be rediscovered.
+
+     The entries this wave itself added (B018/A-327, B019/A-328, B035/A-329,
+     A-331, A-332) are genuinely unreleased and must stay. -->
+
+<!-- ADDED BY THIS WAVE (B018/B019/B035 + A-331/A-332) -- genuinely unreleased -->
+
 ### Added
 - feat(assay): every verdict may now carry `judge_provenance` — the resolved judge name, its exact
   semantic version, `digest_algorithm = "sha256"` and the lowercase sha256 of the build artifact the
@@ -21,6 +40,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   every mismatch is refused loudly by name rather than resolved by precedence (B019/A-328)
 - feat(assay): `judgment.r2` now records its own `mode` and `targets`, so an R2-only verdict witnesses
   the scope it was judged under instead of leaving it unstated (B035/A-329)
+
+### Fixed
+- fix(assay): a wheel installed from a URL carrying a fragment —
+  `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…`, the way an index page's own links
+  are written and the way a gate pins a judge artifact by URL and digest — was reported as having
+  no identifiable build artifact, because the `.whl` test ran against the raw URL. The fragment and
+  query are now stripped first; an sdist is still refused. This was the install shape most likely to
+  be used by the consumer B018 exists for (A-332)
+- fix(assay): `--require-judge-provenance`'s refusal reason listed only source-tree causes, reading
+  as exhaustive while omitting the dominant one — an ordinary index install (`pip install assay`),
+  which PEP 610 records nothing for. It now names that case first and says what to do instead;
+  `docs/CONSUMERS.md` carries the full table of which install shapes can be identified (A-332)
+
+<!-- END of this wave's entries. Everything below belongs to 2.4.2 — see the warning above. -->
+
 - feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
 - feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
 - feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)

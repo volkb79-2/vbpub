@@ -145,7 +145,19 @@ def _installed_wheel_digest(dist: Distribution) -> str | None:
     url = document.get("url")
     # A wheel is the only archive form assay is installed from; refusing an
     # sdist or a bare tarball here is the point, not an oversight.
-    if not isinstance(url, str) or not url.split("?", 1)[0].endswith(".whl"):
+    #
+    # (A-332) The fragment MUST be stripped before this test, and the query
+    # with it. `pip install https://.../assay-1.0-py3-none-any.whl#sha256=...`
+    # is the ordinary way to pin a wheel by URL and digest -- it is the shape
+    # an index page's own links carry, and the shape a gate pinning its judge
+    # by artifact URL would use. PEP 610 records that URL verbatim, fragment
+    # included, so an `endswith(".whl")` test against the raw string answers
+    # False and the install is reported unidentifiable. Measured against the
+    # four real URL forms; only the fragment one was refused, and it was the
+    # one this feature's own consumer is most likely to use.
+    if not isinstance(url, str):
+        return None
+    if not url.split("#", 1)[0].split("?", 1)[0].endswith(".whl"):
         return None
     hashes = archive_info.get("hashes")
     digest = hashes.get("sha256") if isinstance(hashes, dict) else None
@@ -276,9 +288,18 @@ def identify_judge(
             f"the installed {DISTRIBUTION_NAME!r} distribution records no PEP "
             f"610 direct_url.json naming an installed wheel and its "
             f"{DIGEST_ALGORITHM}, so the artifact this process was installed "
-            f"from cannot be identified -- an editable install, a directory "
-            f"install, and a source checkout carrying `*.egg-info` build "
-            f"residue are all exactly this case"
+            f"from cannot be identified. The most common cause is an INDEX "
+            f"install (`pip install {DISTRIBUTION_NAME}` resolved from PyPI "
+            f"or a private index): PEP 610 writes direct_url.json only for "
+            f"DIRECT installs, so an index install records no artifact "
+            f"identity anywhere on disk and none can be recovered after the "
+            f"fact. Install from the wheel FILE or its URL instead "
+            f"(`pip install ./{DISTRIBUTION_NAME}-<version>-py3-none-any.whl`, "
+            f"or `pip install https://.../{DISTRIBUTION_NAME}-<version>"
+            f"-py3-none-any.whl#sha256=<digest>`), or run the zipapp. An "
+            f"editable install, a directory install, and a source checkout "
+            f"carrying `*.egg-info` build residue are also this case, and "
+            f"cannot be identified either"
         )
     return (
         JudgeProvenance(

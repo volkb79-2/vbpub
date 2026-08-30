@@ -240,8 +240,19 @@ run_self_hosted_lane() {
     # pytest here and an unexplained red lane above. Naming the paths costs
     # one git call and is the difference between a five-minute answer and a
     # rebuild-the-container investigation.
+    # Both halves, and the second is the one that matters. `git.dirty_paths`
+    # (A-177) is deliberately the UNION of `git status --porcelain` and
+    # `git ls-files --others --exclude-per-directory=.gitignore`, because
+    # porcelain status honours `.git/info/exclude` and assay must not -- a
+    # personal, unversioned ignore rule may not hide a file from the
+    # dirty-tree check. Printing only the status half reproduces exactly the
+    # blindness the lane does not have, which is why the first version of
+    # this diagnostic printed NOTHING for the B017-class failure it was
+    # written to explain (round-1 review, m2).
     echo 'ASSAY_GATE_DIAGNOSTIC=worktree-status-after-the-lane' >&2
     git status --porcelain >&2 || true
+    echo 'ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query' >&2
+    git ls-files --others --exclude-per-directory=.gitignore >&2 || true
     python -m pytest tests -q --ignore=tests/test_self_hosting.py \
       --override-ini=pythonpath= || true
     return 1

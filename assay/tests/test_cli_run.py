@@ -40,6 +40,7 @@ from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
+from assay.vocabulary import WITHDRAWN_MUTATION_OPERATORS
 
 
 #: (B018/A-327) The bracketing text of the one line a clean run prints on
@@ -526,6 +527,45 @@ def test_run_refuses_an_unknown_operator_with_a_clean_verdict_not_a_crash(
     assert code != 0
     assert "unknown mutation operators" in err
     assert out == ""  # A-181: refused before output reservation, so nothing is written
+
+
+@pytest.mark.parametrize("verb", ["run", "plan"])
+@pytest.mark.parametrize("withdrawn", sorted(WITHDRAWN_MUTATION_OPERATORS))
+def test_operators_answers_a_withdrawn_name_by_name_not_as_unknown(
+    git_repo: GitRepo, verb, withdrawn
+):
+    """(A-331, filling the gap the round-1 review measured) The withdrawn
+    check runs BEFORE the unknown check at all THREE call sites, not just in
+    the loader.
+
+    This ordering only became observable at v8. Under v7 both names were
+    still in `MUTATION_OPERATORS`, so "unknown" could not fire on them and
+    either order produced the same message; A-331 deleted the spellings, and
+    from that commit a stale `--operators python:enum-comparison-swap` is
+    *literally* an unknown operator. Answering it with "unknown mutation
+    operators" would name the wrong defect and drop the one thing the
+    operator needs -- that `python:compare-swap` already covers it.
+
+    A-331 originally claimed both CLI sites were pinned by the loader's test.
+    They were not: the review reverted both reorderings and the full suite
+    was byte-identical, 3354 passed either way. These are the tests that make
+    the claim true, one per verb, because `run` and `plan` carry SEPARATE
+    copies of this block (`cli.py:392` and `cli.py:692`) and a fix applied to
+    one would otherwise leave the other silently wrong.
+    """
+    path = _write_and_commit_lane(git_repo, _r2_lane_with_two_candidates(git_repo))
+    argv = [verb, "package", "--operators", withdrawn, "--file", str(path)]
+    if verb == "run":
+        argv += ["--verdict-json", "-"]
+    code, out, err = run(argv)
+
+    assert code != 0
+    assert "withdrawn mutation operators" in err, err
+    assert withdrawn in err, err
+    assert "python:compare-swap" in err, err
+    # The ordering itself. Without it the message is the generic one and the
+    # two assertions above still pass on nothing useful.
+    assert "unknown mutation operators" not in err, err
 
 
 def test_run_records_the_executed_shard_not_the_lane_declaration(git_repo: GitRepo):

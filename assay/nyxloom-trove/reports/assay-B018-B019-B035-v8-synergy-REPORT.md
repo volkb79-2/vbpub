@@ -39,6 +39,17 @@ knowingly-red commits is worse for a reviewer than one coherent one, so the feat
 commit and everything genuinely separable — the A-331 discharge, the tests, the docs, the two
 gate/backlog fixes — is its own. This is recorded in A-330.
 
+**Correction (round-1 review, m3): the branch contains a red intermediate anyway, so the
+argument above is sound but I did not actually deliver on it.** `f7450b0a` adds
+`test_every_judge_base_source_value_is_documented`, which requires the string `request` in
+README + CONSUMERS + DESIGN-GUIDE; those three files are not touched until `b72a3c5b`, two
+commits later (`git log 4575501434..b72a3c5b~1 -- README.md docs/CONSUMERS.md
+docs/DESIGN-GUIDE.md` is empty — I re-ran it, it is). So `git bisect` over this branch hits one
+red tree, in the tests-before-docs seam rather than the feature seam I was guarding against.
+The right split was tests *with* the docs they assert on, and I did not see it. Recorded rather
+than argued away: the batching rationale is still correct about the three features, and it is
+not a licence for the ordering mistake it did not cover.
+
 ---
 
 ## 2. B018 — judge provenance in every verdict

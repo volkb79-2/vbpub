@@ -97,6 +97,35 @@ def test_shipped_schema_is_byte_identical_to_the_locked_v8_asset():
     assert shipped == locked
 
 
+def test_the_withdrawn_operator_spellings_are_not_valid_v8_operator_names():
+    """(A-331, round-1 review N6) `docs/CONSUMERS.md` and A-331 both state
+    that "a v8 verdict naming one fails validation". That was true only
+    transitively -- via a test pinning the schema's `oneOf` branches to
+    `MUTATION_OPERATORS_BY_LANGUAGE` -- and nothing asserted it against the
+    LOCKED artifact this generation freezes. Asserted here, at the level the
+    claim is made about: the frozen v8 schema itself.
+    """
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((HERE / "verdict.schema.v8.json").read_text())
+    operator = Draft202012Validator(schema["$defs"]["mutation_operator"])
+
+    for withdrawn in ("python:uuid-equality-swap", "python:enum-comparison-swap"):
+        assert not operator.is_valid(withdrawn), (
+            f"{withdrawn} still validates under the locked v8 schema; A-331 and "
+            f"docs/CONSUMERS.md both say a v8 verdict naming it is refused"
+        )
+    # The other half: the four surviving python operators must still validate,
+    # so this cannot pass by the enum having been emptied or broken.
+    for kept in (
+        "python:compare-swap",
+        "python:boolop-swap",
+        "python:bool-const-flip",
+        "python:falsy-swap",
+    ):
+        assert operator.is_valid(kept), kept
+
+
 @pytest.mark.parametrize(
     "frozen",
     [
