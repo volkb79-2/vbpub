@@ -3,8 +3,11 @@
 **Branch:** `feature/assay-b018-b019-b035-v8-synergy`
 **Worktree:** `/workspaces/vbpub/.worktrees/assay-v8-synergy-wave/assay`
 **Base:** `4575501434ceab4d7bb4f731f95a72155b731da5`
-**Head at report time:** `745ac377`
+**Gate-verified commits:** `745ac377` and `0a315100` (two independent green runs; see §7)
 **Status:** implementation complete, real registered gate run — **not merged, not pushed, not released.**
+
+Commits after the gated ones change markdown only — verify with
+`git diff --name-only 745ac377..HEAD | grep -v '\.md$'`, which must print nothing.
 
 All 89 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
 returns nothing. Nothing in `ciu/` or `dstdns/` was touched, and B020 was not opened.
@@ -475,19 +478,22 @@ head of this branch, i.e. the gate judged the tree this report describes.
 
 ### Which commit the gate actually judged
 
-`745ac377`, named in the lane's own output above. The branch head is one commit later
-(`7515c57d`), because a report that pastes its own gate transcript cannot be inside the commit
-that transcript describes — chasing that would recurse forever. The gap is prose only, and that
-is checkable rather than asserted:
+`745ac377`, named in the lane's own output above; the second, independent run below judged
+`0a315100`. The branch head is later than both, because a report that pastes its own gate
+transcript cannot live inside the commit that transcript describes — chasing that recurses
+forever, and each correction to this file moved the head again.
+
+So the invariant is stated instead of a specific hash, and it is checkable rather than asserted:
+**every commit after the gated one changes markdown only.**
 
 ```
-$ git diff --name-only 745ac377..HEAD
-assay/nyxloom-trove/carve-assets/W4/MANIFEST.md
-assay/nyxloom-trove/reports/assay-B018-B019-B035-v8-synergy-REPORT.md
-
 $ git diff --name-only 745ac377..HEAD | grep -v '\.md$'
 (no output)
 ```
+
+Run that yourself against whatever the head is when you read this. If it prints nothing, the
+gate's verdict covers every source file, schema, frozen asset, test, gate script and lane config
+in the tree you are reviewing.
 
 No source file, schema, frozen asset, test, gate script or lane config differs between the gated
 commit and the head being handed off. A reviewer who wants a gate run whose commit hash equals
