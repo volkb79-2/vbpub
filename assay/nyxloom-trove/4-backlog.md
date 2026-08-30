@@ -3779,7 +3779,10 @@ Same doctrine as the image-baked judge (B009): the gate image carries an npm
 cache populated from the committed `package-lock.json` (at image build:
 `npm ci --cache /opt/npm-cache --prefix <app>` then discard the tree, or a
 persistent `~/.npm/_cacache` provided by the environment — ciu v8
-`[testing.environments.<e>] extra_mounts`, CIU-73). The lane's argv starts
+`[testing.environments.<e>] extra_mounts`, CIU-73; on the current gate,
+`RUN_GATE_EXTRA_MOUNTS` for ephemeral lanes or the runner stack's own
+image/volume for exec lanes — run-gate `CONSUMERS.md`, with RG-25/RG-26 as
+the run-gate-side backports of CIU-72). The lane's argv starts
 with the offline install, then the pinned runner:
 
 ```toml
@@ -3994,7 +3997,9 @@ not `npm`), (2) makes `allow_argv_append` meaningless for the inner command,
 ## B044 — `assay lanes --json`: a machine-readable lane inventory for gate tools
 
 **Filed 2026-08-30 from the 3.1.0 design review (§4).** No schema coupling;
-ships on the current schema. Companion to ciu CIU-72.
+ships on the current schema. Companion to ciu CIU-72 (v8 gate) AND run-gate
+RG-25/RG-26 (the current gate — both consume this verb, so it is the
+prerequisite for the v7-era backports as much as for v8).
 
 ### Problem
 

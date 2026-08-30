@@ -2263,6 +2263,19 @@ Pointer notes were added at those sections in the same pass (operator ruling
 - Boundary respected: ciu never parses `assay.toml` beyond lane names; it
   asks the judge, exactly as it asks `assay --version`.
 
+### Backport to the current gate (run-gate v23) — filed 2026-08-30
+
+(b) and (c) are backportable on run-gate's current `schema_version = 1`
+(the proposal's own §4.11 "ship now" class) and are filed as run-gate
+**RG-25** (per-lane toolchain fitness in `doctor`/`--check-env`) and
+**RG-26** (`run-gate <lane> --base REF` → `--request-base REF`, with the
+delegating lanes DERIVED from `assay lanes --json` — no restated key at
+all, which v7 gets for free and S16.5 should keep in mind). Both depend on
+assay B044. (a) is v8-only: run-gate emits no LaneResult envelope of any
+kind (`run-gate.py` writes no result JSON — the verdict file IS the result,
+and it already carries `judge_provenance` and, later, `helpers[]`), and
+the proposal freezes run-gate at v23 with a one-release overlap.
+
 ### Acceptance
 
 - [ ] S16.9/S15.3/S16.5/S16.10 amended (the pointer notes become normative
@@ -2310,6 +2323,16 @@ assay **B041** is the judge-side half). **SPEC ownership:** S16.4
 - **Appendix A** migration note: the tester image bakes the npm cache from
   the committed lockfile (dstdns-side), or the host provides the directory
   named in `extra_mounts`.
+
+### Backport to the current gate (run-gate v23) — filed 2026-08-30
+
+Needs no ciu or run-gate code at all: `exec` environments get the cache
+from the runner STACK (baked into the image from the committed lockfile, or
+a compose volume in the runner's `ciu.compose.yml.j2` — consumer config);
+ephemeral environments use `RUN_GATE_EXTRA_MOUNTS=<host>=/opt/npm-cache`
+(`run-gate.py:34`, existing knob). The doc sentence now lives in run-gate
+`CONSUMERS.md` (`kind = "assay"` section, "Where a lane's dependency
+closure lives", 2026-08-30). Only the demo/spec half of this entry is v8's.
 
 ### Acceptance
 

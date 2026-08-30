@@ -42,6 +42,8 @@ SPEC §9.
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | OPEN 2026-08-30 |
+| RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
+| RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
 
 ---
 
@@ -1228,3 +1230,123 @@ worktree-scoped live lane.
       for this one resolution path explicitly, since it is easy to
       conflate with the (correct, unchanged) repo-relative resolution used
       elsewhere.
+
+## RG-25 — `doctor`/`--check-env` cannot see that an assay lane's LANGUAGE needs a toolchain in its environment; consume `assay lanes --json` (assay B044) for a per-lane fitness check
+
+**Filed:** 2026-08-30, from the assay 3.1.0 design review
+(`assay/nyxloom-trove/reports/assay-3.1-js-adapter-design-review-2026-08-30.md`
+§4 D3) — the current-gate backport of ciu **CIU-72 (b)**; backportable
+because the gate on the current schema IS run-gate and the change is
+additive (the v8 proposal's own §4.11 "ship now" class). **SPEC
+ownership:** §2 `R-01` (`--check-env`, `doctor`), `R-05` (disclosure); §5
+execution contract (preflight). Code: `cmd_doctor` (`run-gate.py:964`),
+`cmd_check_env` (`run-gate.py:1598`), `build_assay_inner`
+(`run-gate.py:1141-1180`, the existing in-environment `--version` probe).
+
+### The gap
+
+run-gate reads nothing from `assay.toml` — the `assay_lane` name is a
+string it passes through (`build_assay_inner`). `doctor` checks docker,
+per-environment resolution and slice state (`run-gate.py:975-1020`);
+`--check-env` checks the env-forward contract (RG-17/19/23). Neither can
+know that `[lanes.ui-unit] kind = "assay"` → `assay.toml
+[lanes.ui_unit] judge.language = "javascript"` needs `node`/`npm` on PATH
+inside `environment = "test-runner"`, or that a future Go lane needs
+assay's statement-position helper (assay A-239). Today the first sign is
+the lane itself: `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` at best; with
+`npx` and no `--no-install`, an unpinned registry fetch inside the gate
+container (assay B041). The fact is knowable statically; assay B044
+(`assay lanes --json`) makes it askable without run-gate ever parsing
+`assay.toml` — it asks the judge, the same way it already asks
+`--version`.
+
+### Fix (additive; `schema_version = 1` unchanged)
+
+- In `cmd_doctor` and `cmd_check_env`, for every `kind = "assay"` lane whose
+  environment resolves: run `<assay_command> lanes --json --file assay.toml`
+  INSIDE the lane's environment through the SAME exec/ephemeral probe path
+  the pin `--version` check uses (one docker construction site, never a
+  second), find the entry named `assay_lane`, and `command -v` each of its
+  `external_tools` and its `argv0` inside the environment. Report in
+  doctor's existing `record()` format: `[OK] lane 'ui-unit' toolchain:
+  node, npm` / `[FAIL] lane 'ui-unit' needs 'node' in environment
+  'test-runner'`; `--check-env` exits 2 on a FAIL (its existing severity
+  for a broken contract).
+- The named `assay_lane` missing from the inventory → `[FAIL] assay lane
+  'ui_unit' not declared in assay.toml` — a run-time refusal becomes a
+  doctor finding (validate-pointers' spirit).
+- Judge unreachable, or an assay without `--json` (older than B044) →
+  `[SKIP]` naming why; NEVER a FAIL for an older judge — the pin declares
+  the version, run-gate must not require a floor it never declared.
+  `inventory_schema != 1` → `[SKIP]` with the value.
+
+### Acceptance
+
+- [ ] `doctor` and `--check-env` emit the per-lane lines; tests with a fake
+      `assay_command` script: inventory with `external_tools = ["node"]`
+      against a fake environment lacking `node` → FAIL naming
+      lane/tool/environment; with `node` → OK; script without `--json` →
+      SKIP; lane absent from the inventory → FAIL;
+- [ ] grep proves ONE in-environment probe builder shared with the pin
+      probe (no second `docker exec`/`docker run` argv construction);
+- [ ] SPEC §2 `R-01` (`--check-env`/`doctor`) updated; CONSUMERS
+      `kind = "assay"` section names the check beside the closure note
+      added 2026-08-30.
+
+## RG-26 — no `--base REF` passthrough to `assay run --request-base`: B019 (assay ≥ 3.0.0) is unusable from the gate; derive the delegating lanes from `assay lanes --json`, not a new lane key
+
+**Filed:** 2026-08-30, from the assay 3.1.0 design review (§4 D3) — the
+current-gate backport of ciu **CIU-72 (c)**; absorbs the v8 proposal's
+§4.11 **N12**, which was never filed here (N12 cited "RG-24", but RG-24 is
+the exec-mode container-resolution bug; the proposal row now points here).
+**SPEC ownership:** §2 CLI (beside `R-02`), `R-05`; §5 assay invocation
+(`build_assay_inner`, `run-gate.py:1178-1179`); RG-1's conjunction
+propagation rule.
+
+### The gap
+
+`build_assay_inner` always emits `assay run <lane> --file assay.toml
+--verdict-json …`. assay 3.0.0 shipped `judge.base_source = "request"` +
+`--request-base REF` (B019/A-328): a changed-line lane that leaves
+`judge.base` out and takes the comparison base from the gate — the shape
+every PR-scoped lane wants (the v8 demo's `p129_enumeration_cursor` shows
+it). Such a lane invoked WITHOUT `--request-base` refuses
+`ERROR`/`BAD_LANE_CONFIG` by design (assay never falls back to `HEAD`).
+run-gate has no `--base` flag, so no consumer can adopt B019 until v8's
+`ciu gate` — months of a shipped judge feature sitting unusable.
+
+### Fix (additive)
+
+- `run-gate <lane> [--base REF]`. For a `kind = "assay"` lane: query
+  `<assay_command> lanes --json --file assay.toml` in the environment
+  (RG-25's shared probe); if the named lane reports `base_source ==
+  "request"`, append `--request-base <REF>` to the assay argv, where `REF`
+  is `--base` if given, else the judged worktree's `git merge-base HEAD
+  @{upstream}`; no upstream → exit 2 `run-gate: lane 'x' delegates its
+  comparison base; pass --base REF (worktree has no upstream)`. A lane that
+  does NOT delegate, invoked with `--base` → exit 2 naming the lane (assay
+  would refuse anyway; refuse earlier and clearer). Conjunction lanes
+  propagate `--base` to every sub-invocation (RG-1's rule: an override
+  given to the gate reaches every sub-lane).
+- **No new `run-gate.toml` key.** The fact lives in `assay.toml` and is
+  DERIVED, so the current gate never restates it (v8's S16.5 `request_base`
+  restatement is CIU-72 (c)'s concern there; v7 gets the one-spelling
+  property for free).
+- Judge without `--json` and no `--base` → behaviour unchanged; judge
+  without `--json` and `--base` given → exit 2 naming the assay version that
+  first carries the inventory (B044).
+- `--dry-run` shows the resolved `REF` and the appended flag; `R-05`'s
+  pre-execution disclosure prints it.
+
+### Acceptance
+
+- [ ] `--base` accepted on lane and conjunction invocations and propagated;
+- [ ] tests: delegating lane + `--base` → assay argv carries
+      `--request-base REF`; delegating lane without `--base`, with and
+      without an upstream; non-delegating lane + `--base` → exit 2; judge
+      without `--json` in both shapes;
+- [ ] `--dry-run` and the disclosure show it; SPEC §2/§5 and the CONSUMERS
+      worked example updated (a `base_source = "request"` lane beside the
+      existing one);
+- [ ] N12's row in `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11 points
+      here (done 2026-08-30).

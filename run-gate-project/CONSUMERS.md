@@ -165,6 +165,23 @@ Division of labor, spelled out:
 | verdict artifact + PASS/FAIL meaning | assay |
 | WHEN a lane must pass (release policy) | the project's release config (cmru) |
 
+**Where a lane's dependency closure lives (assay B041 / ciu CIU-73).** assay
+runs the lane command in a private snapshot of the *committed* tree —
+gitignored trees such as `node_modules/` are absent by construction, and
+`environment_command` cannot vouch for them (it runs in the invoking
+environment, not the snapshot). A JavaScript lane therefore rebuilds its
+closure OFFLINE from the committed lockfile as the first step of its own
+argv (`npm ci --offline …`, then `npx --no-install vitest run --coverage`)
+out of a package cache the ENVIRONMENT provides: for an `exec` environment,
+bake the cache into the runner image at build from the same lockfile, or add
+a volume to the runner's own stack; for an ephemeral environment,
+`RUN_GATE_EXTRA_MOUNTS=/var/cache/<project>/npm=/opt/npm-cache`. Python
+(venv) and Go (`GOMODCACHE`) closures are out-of-tree and need nothing. Once
+RG-25 lands, `doctor`/`--check-env` report a lane whose language needs a
+toolchain the environment lacks; until then the first sign is the lane's own
+`NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` — or, without `--no-install`, an
+unpinned `npx` fetch inside the gate container.
+
 ### Worked example — run-gate × assay, end to end
 
 The halves are documented separately (this file owns orchestration;
