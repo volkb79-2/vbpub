@@ -11,7 +11,19 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-26 — **CIU-67, CIU-68 FILED**: a genuinely fresh
+Last updated: 2026-08-30 — **CIU-72, CIU-73 FILED** from the assay 3.1.0
+design review (`assay/nyxloom-trove/reports/assay-3.1-js-adapter-design-review-2026-08-30.md`),
+both against the v8 gate (SPEC-V8 S15.3/S16): CIU-72 — the LaneResult copies
+only `judge_provenance` and never the verdict's `helpers[]` (the Go oracle's
+identity), and `ciu check` cannot see that a `javascript`/`go` assay lane
+needs Node/Go in its environment because it reads lane names only — consume
+`assay lanes --json` (assay B044) and derive `request_base` from it; CIU-73 —
+assay's snapshot carries committed objects only, so a JS lane's `node_modules`
+must come from the environment (offline npm cache baked or mounted); the demo
+has no language-bound assay lane to exercise it. Operator ruling 2026-08-30:
+file both AND annotate SPEC-V8/the demo with pointers (done in the same pass).
+
+Previously, 2026-08-26 — **CIU-67, CIU-68 FILED**: a genuinely fresh
 `ciu clean && ciu up` (the standard documented dstdns bring-up) failed at
 phase_2 with `stack:infra/vault:healthy` reporting `starting`. Root cause is
 two compounding gaps: `deploy.health.timeout` is silently reused for both a
@@ -2201,6 +2213,112 @@ Two independent directions, either sufficient alone:
 (the `docker compose ... up -d` call site building the argv from rendered
 stack config) — not yet cross-referenced to a SPEC section number by this
 filer; the next triager should locate and record it.
+
+## CIU-72 — v8 gate: the LaneResult must carry the verdict's `helpers[]`; `ciu check`/`ciu gate doctor` must verify environment fitness for language-bound assay lanes via `assay lanes --json`; `request_base` is derivable, not restated
+
+**Filed by:** the assay 3.1.0 design review, 2026-08-30
+(`assay/nyxloom-trove/reports/assay-3.1-js-adapter-design-review-2026-08-30.md`
+§4 D3; assay **B044** is the judge-side half). **SPEC ownership:** SPEC-V8
+S16.9 (LaneResult), S15.3 stage 12, S16.4/S16.5, S16.10 (`ciu gate doctor`).
+Pointer notes were added at those sections in the same pass (operator ruling
+2026-08-30: file AND annotate).
+
+### Observed (in the spec, before any code exists)
+
+1. S16.9's LaneResult copies `judge_provenance` and the resolved `REF` from
+   the verdict and nothing else. assay's verdict also carries `helpers[]`
+   (`verdict.schema.json` `properties.helpers`: `role`/`tool`/
+   `resolved_path`/`identity` — "every external helper an adapter actually
+   invoked… so a coverage or mutation claim is reproducible against a known
+   tool identity", assay A-230a). The Go adapter (assay A-217/A-239) records
+   its statement-position oracle there. A Go verdict's gate envelope without
+   it is not reproducible from the LaneResult alone — exactly the property
+   S16.9 exists to guarantee for `judge_provenance`.
+2. S15.3 stage 12 reads `assay.toml` for lane names only (a deliberate
+   boundary; keep it). Consequence: a `judge.language = "javascript"` lane
+   in an environment without Node, or a Go lane without its helper, passes
+   `ciu check` and fails at run time — `NO_MEASUREMENT`/
+   `MISSING_EXTERNAL_TOOL` at best; with `npx` and no `--no-install`, an
+   unpinned registry fetch (assay B041). The fitness fact is knowable
+   statically.
+3. S16.5's `request_base = true` restates the assay lane's own
+   `judge.base_source = "request"` — one fact, two spellings (the proposal's
+   P1); when they disagree the failure is assay's run-time refusal, not a
+   `ciu check` finding.
+
+### Fix
+
+- **S16.9:** `helpers?: [...]` copied verbatim from the verdict (present iff
+  the verdict carries it; never `[]`).
+- **S15.3 stage 12 / S16.10:** when the judge is reachable in the lane's
+  environment (the same "reachable" as the S16.3.1 floor check — one exec,
+  not two), run `assay lanes --json --file assay.toml` (assay B044,
+  `inventory_schema: 1`) once per gate run and, per assay lane: (a) every
+  `external_tools` entry and `argv0` resolves on PATH inside the environment
+  (`command -v`), else ERROR `[S16.4] lane 'ui-unit' needs 'node' in
+  environment 'tester'`; (b) `request_base` is derived from `base_source ==
+  "request"`; an explicit `request_base` key stays legal as a restatement
+  that must AGREE (`[S16.5] request_base = false but assay lane 'p129…'
+  delegates its base`). `ciu gate doctor` prints the per-lane table.
+- Boundary respected: ciu never parses `assay.toml` beyond lane names; it
+  asks the judge, exactly as it asks `assay --version`.
+
+### Acceptance
+
+- [ ] S16.9/S15.3/S16.5/S16.10 amended (the pointer notes become normative
+      text); a LaneResult fixture carrying `helpers`;
+- [ ] a check-stage test: a javascript lane + an environment image without
+      `node` → ERROR naming lane/tool/environment; with `node` → passes;
+- [ ] a `request_base` disagreement test;
+- [ ] the floor check and the inventory call share one judge-reachable
+      code path.
+
+---
+
+## CIU-73 — v8 demo/spec: a language-bound (`javascript`) assay lane, and the dependency-closure cache on the tester environment; say once that closures are the environment's
+
+**Filed by:** the assay 3.1.0 design review, 2026-08-30 (§3 G1, §4 D5;
+assay **B041** is the judge-side half). **SPEC ownership:** S16.4
+(`extra_mounts`, `image_from`), S16.5, Appendix A (migration); the demo's
+`[testing]` and `assay.toml`.
+
+### Observed
+
+- assay's snapshot is `git read-tree <commit>` into a temp dir — committed
+  objects only (assay `isolation.py:577`, A-161/A-184). A JS lane's
+  `node_modules` (gitignored, in-tree) never exists inside it; Python (venv)
+  and Go (`GOMODCACHE`) closures are out-of-tree and never met this.
+- dstdns's `tools/test-runner` image ships Node and runs `npm ci` into the
+  bind-mounted checkout at gate time (`Dockerfile:17-43`); nothing reaches
+  the snapshot.
+- The v8 demo's only UI lane is `kind = "command"` (typecheck + browser
+  tests); no assay lane in the model is language-bound, so nothing exercised
+  whether an S16.4 environment can express "this lane's closure lives here".
+
+### Fix
+
+- **S16.4**, one sentence: an environment also provides a lane's dependency
+  closure — an offline package cache baked into the image or mounted via
+  `extra_mounts`; assay's lane rebuilds the in-tree closure offline from the
+  committed lockfile (assay B041 pattern (a)); `link_paths` (assay B041 (b))
+  is the lane's declared alternative and is recorded in the verdict.
+- **Demo** (done in this pass, with pointers to this entry):
+  `[testing.environments.tester] extra_mounts = ["/var/cache/dstdns/npm:/opt/npm-cache"]`;
+  `[testing.lanes.ui-unit] kind = "assay"` → assay lane `ui_unit`
+  (`javascript`, offline `npm ci`, `--no-install` runner, `producer` to
+  follow assay B045); the demo README row.
+- **Appendix A** migration note: the tester image bakes the npm cache from
+  the committed lockfile (dstdns-side), or the host provides the directory
+  named in `extra_mounts`.
+
+### Acceptance
+
+- [ ] S16.4 sentence + Appendix A note;
+- [ ] the demo lane validates (`validate_demo.py`) and CIU-72's stage-12
+      check reports `node` fitness for it;
+- [ ] `ciu gate doctor` lists the mount.
+
+---
 
 ## Compact resolved index
 

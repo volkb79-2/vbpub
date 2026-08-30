@@ -3442,6 +3442,21 @@ field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
 **Filed 2026-08-30, alongside B036.** Same shape as B020: a scope boundary
 and required decisions, not a dispatchable implementation brief.
 
+> **RESOLVED 2026-08-30 (operator ruling; design review
+> `reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §5) — the three
+> open decisions below are answered by B046, the dispatchable entry:** the
+> LANE's own argv runs Stryker inside the private snapshot (neither a shell-out
+> by assay nor a CIU-supplied report — R1's own shape), assay reads the
+> mutation-testing-report-schema JSON through a FORMAT-keyed mutation registry
+> (`judge.mutation.format = "mutation-report-json"` + `artifact`), commit
+> binding is the snapshot exactly as for a coverage artifact, statuses map onto
+> assay's buckets with `survived_uncovered` and `discarded` kept visible and
+> `stryker:<mutator>` admitted as a namespace, `judgment.r2.producer =
+> "ingested"` with the producer's identity copied from the report (not
+> `helpers[]` — assay did not run it), and yes: this is the precedent for every
+> R2 producer assay has no native engine for. The `decisions.md` rows land with
+> B046's implementation.
+
 ### Scope boundary
 
 Every existing R2 producer (Python, SQL) is **native** — assay parses and
@@ -3517,9 +3532,12 @@ ruling closes the architectural fork, not the implementation.
       evidence-ingestion via Stryker Mutator) — this is a scope/direction
       decision, not an implementation, and does not by itself authorize
       code;
-- [ ] the three remaining design decisions above are written up and
-      reviewed against every relevant standing constraint;
-- [ ] no implementation lands until those three are recorded.
+- [x] the three remaining design decisions above are written up and
+      reviewed against every relevant standing constraint — written up in
+      B046 (2026-08-30) against A-161/A-007/A-230a/the north-star's tier
+      rule; B046's adversarial review is the review;
+- [x] no implementation lands until those three are recorded — recorded in
+      B046; the `decisions.md` rows are part of B046's own acceptance.
 
 ---
 
@@ -3572,6 +3590,15 @@ one location") is the obvious shortcut and is exactly the
 declaration-versus-sniffing collapse `coverage.py`'s own module docstring
 forbids (A-007) — it must be argued explicitly if it is chosen, not slid in.
 
+> **RULED 2026-08-30 → B045** (operator ruling, design review
+> `reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §5): a
+> `judge.coverage.producer` key, declared per lane from a closed PER-FORMAT
+> vocabulary and recorded in the verdict as `judgment.r1.coverage_producer`
+> (schema v9, one bundled cut). Sniffing rejected; a second format name
+> rejected (it would bind a trust property to a format). (a) real arcs under
+> `producer = "istanbul"` and (b) the narrow fail-closed type-only lexer are
+> B045's acceptance; this item closes when B045 ships.
+
 ### Acceptance
 
 - [ ] a recorded decision on how (or whether) a producer becomes a declared
@@ -3593,6 +3620,11 @@ forbids (A-007) — it must be argued explicitly if it is chosen, not slid in.
 writing the equivalent expansion for `coverage-istanbul-json`, which was
 given a bound (`MAX_CLASSIFIED_LINES`, O4's "a fixed bound, never an ambient
 guess") precisely because the shape is dangerous.
+
+> **2026-08-30:** scheduled as B047 item 4 (Go wave prep) and pulled forward
+> into Wave A (`WAVE-PROMPT-2026-08-30-js-consumer-producer.md` step 4).
+> Acceptance box 2 is answered: ONE shared place, `coverage_parsers/model.py`,
+> used by both expanding parsers.
 
 `coverage_parsers/go_cover.py`'s `parse` runs
 `for file_line in range(start, end + 1)` over every block, with `start`/`end`
@@ -3693,3 +3725,611 @@ ones).
 - [ ] if a producer becomes declarable (B038): a `javascript` lane declaring
       the v8 provider is refused by name, and A-346's documentary mitigation
       is downgraded to a note about older configurations.
+
+> **2026-08-30 — the producer question is RULED: B045.** Operator decision
+> (design review, `reports/assay-3.1-js-adapter-design-review-2026-08-30.md`
+> §5): a lane declares `judge.coverage.producer`, the verdict records it, and
+> the v8 provider is refused by name at load. (a) above stays this item's own;
+> (b) is discharged by B045's acceptance.
+
+---
+
+## B041 — a JavaScript lane's dependency closure (`node_modules`) is absent from the committed-object snapshot: the offline-install pattern, `isolation.link_paths`, and a real-`vitest` qualification
+
+**Filed 2026-08-30 from the 3.1.0 design review**
+(`reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §3 G1).
+**Operator ruling 2026-08-30: BOTH halves — (a) the documented offline-install
+pattern with a real-`vitest` qualification, AND (b) a declared
+`[lanes.<n>.isolation] link_paths` feature — with detailed consumer usage
+documentation.** (a) and the docs ship on the current schema; (b) records
+itself in the verdict and therefore rides the v9 cut (B045's wave).
+
+### Mechanism, confirmed in source — not assumed
+
+- `isolation.py:577` materialises every R1/R2/R3 snapshot with
+  `git read-tree <commit>` into `tempfile.mkdtemp(dir=scratch_root,
+  prefix="assay-p22-snap-")` (`isolation.py:492`). Only tracked blobs exist
+  there; a gitignored `node_modules/` is absent by construction (A-161/A-184:
+  committed objects, never the working tree). This is correct and must stay.
+- The lane command runs with `cwd=snapshot.project_root` (`runner.py:1754`).
+- `tests/test_cli_run_javascript.py:88,131`: the end-to-end lane's argv is
+  `/bin/sh -c "cat > coverage-final.json <<EOF …"` — the producer is a test
+  double (A-334's own definition). The real Vitest artifacts (`probe-js`,
+  `probe-js-provider-defect`) were produced OUTSIDE assay (REPORT §2). **No
+  real `vitest` has ever run inside an assay snapshot.**
+- The first consumer's runner image ships Node
+  (`dstdns/tools/test-runner/Dockerfile:17-43`) and `npm ci`s into the
+  bind-mounted checkout at gate time; inside the snapshot there is no
+  `node_modules`, so `npx vitest run --coverage` does not fail loudly — `npx`
+  FETCHES a missing package from the registry (unpinned, network) unless
+  `--no-install` is passed, and then fails with a resolution error. Either way
+  no artifact lands at the declared path: `NO_MEASUREMENT` at best, an
+  unpinned toolchain at worst.
+- `environment_command` (B010) cannot vouch for the closure: it runs in the
+  INVOKING environment before any snapshot work (DESIGN-GUIDE §4), so
+  `node -e "require.resolve('vitest')"` succeeds in the checkout while the
+  snapshot has nothing.
+- Why this is new: Python's closure is a venv and Go's is `GOMODCACHE`, both
+  out-of-tree, so neither adapter ever met an in-tree closure. R3 triples the
+  cost (baseline + two canary runs, each a fresh snapshot).
+
+### (a) The honest default: closures come from the image; the snapshot rebuilds the in-tree closure OFFLINE from the committed lockfile
+
+Same doctrine as the image-baked judge (B009): the gate image carries an npm
+cache populated from the committed `package-lock.json` (at image build:
+`npm ci --cache /opt/npm-cache --prefix <app>` then discard the tree, or a
+persistent `~/.npm/_cacache` provided by the environment — ciu v8
+`[testing.environments.<e>] extra_mounts`, CIU-73). The lane's argv starts
+with the offline install, then the pinned runner:
+
+```toml
+[lanes.ui_unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "15m"
+allow_argv_append = false
+
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_unit.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+fail_under = 100.0
+allow_excluded = false
+base_source = "request"
+
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+```
+
+Properties: `--offline` fails loudly when the cache lacks anything (no silent
+network); `--no-install` makes a missing runner a refusal, never a fetch; the
+lockfile is committed, so the closure is reproducible modulo the image, which
+`judge_provenance`/the ciu image pin already identify. The `bash -c` wrapper
+goes away with B043 (`cwd`). Budget is the consumer's measurement (the docs
+say to measure it, not a number).
+
+### (b) The declared speed path: `[lanes.<n>.isolation] link_paths`
+
+```toml
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+link_paths = ["applications/webapp-ui-react/node_modules"]
+```
+
+Contract, each rule with its refusal:
+1. every entry is a repo-relative forward-slash path with no `..`, no leading
+   `/`, resolving to a DIRECTORY in the invoking checkout — absent →
+   `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` naming the path (the closest
+   existing meaning: a declared prerequisite the environment did not
+   provide; a dedicated code may ride v9 if the carve prefers one);
+2. the entry must NOT be a tracked path at the resolved commit
+   (`git ls-tree` lookup): linking a tracked path would silently replace
+   committed content with working-tree content — `ERROR`/`BAD_LANE_CONFIG`;
+3. materialised as a symlink `snapshot/<path> -> <checkout>/<path>`
+   immediately after `read-tree` (`isolation.py:577`), before any command,
+   for every snapshot the lane creates (R3 canary snapshots included);
+4. the symlink is created only if `<path>`'s parent exists in the snapshot
+   (tracked), else refused as (2) — never `mkdir -p` into the snapshot;
+5. recorded in the verdict as `snapshot_policy.link_paths` (sorted), so a
+   verdict states plainly that its snapshot was not purely committed
+   objects — **schema v9**, registered in `verify.py` too (the third place,
+   per the 2.4.0 lesson);
+6. snapshot teardown must remove the LINK, never its target — the
+   destructive failure to pin: a test plants a canary file in the target and
+   proves it survives teardown; a wrong implementation using a following
+   `rmtree` deletes the consumer's `node_modules`.
+
+`excluded_dir_names` already excludes `node_modules` from judging, the link is
+not a tracked path so the diff never sees it, and istanbul keys under it are
+inert (A-341). `dirty_paths()` on the checkout is unaffected (snapshot-side).
+Trade-off stated in the docs: faster, but the closure is whatever the checkout
+holds — the honest default is (a).
+
+### (c) Qualification: a real `vitest` inside a real snapshot
+
+`tester-unified` deliberately has no Node (DESIGN-GUIDE §10), so this cannot
+be a registered-gate test. It is a **qualification harness** in the P25 shape:
+`tests/qualification/test_javascript_real_vitest.py`, skipped unless
+`ASSAY_NODE_QUALIFICATION=1` and `node`/`npm` are on PATH, which builds an
+npm cache from `tests/fixtures/coverage/probe-js/package-lock.json`, drives a
+lane of shape (a) through the real CLI in a two-commit git fixture, and asserts
+the PASS/FAIL verdict pair. Its transcript is pasted into the wave REPORT
+(A-335: run the thing production runs, the way production runs it), and the
+first dstdns lane's real verdict is the live qualification. The gate-runnable
+tests own the `link_paths` mechanics with a fake directory (rules 1–6).
+
+### Consumer-side actions (dstdns) — kept here so they are not lost
+
+See the review report §7: provider + jsdom/testing-library install,
+`vitest/config` import, `reportsDirectory: '.assay'` under the app, gitignore,
+the baked npm cache in `tools/test-runner`, the `ui_unit` lane, and the one
+type-only module (`src/auth/types.ts`, B038(b)).
+
+### Acceptance
+
+- [ ] `docs/CONSUMERS.md`: a new section "JavaScript lanes and the dependency
+      closure" carrying the mechanism, pattern (a) with the worked monorepo
+      lane above, the image-side cache recipe, the `npx` fetch hazard and
+      `--no-install`, the `environment_command` caveat, the R3 cost, and
+      pattern (b) with its purity trade-off and what the verdict records;
+      README's JS section links to it;
+- [ ] the qualification harness in (c) exists, is skipped in the registered
+      gate with a named reason, and its transcript (PASS and FAIL runs) is in
+      the wave REPORT;
+- [ ] `link_paths` implemented per rules 1–6 with a gate-runnable test per
+      rule, including the teardown-preserves-target canary;
+- [ ] `snapshot_policy.link_paths` in the schema, the dataclass and
+      `verify.py`; the frozen drift-guard asset updated at the v9 cut;
+- [ ] `assay lanes --json` (B044) exposes `link_paths`;
+- [ ] R3 for `javascript` wired in `cli.py`'s registry ONLY after the
+      qualification harness has run a real canary pair, never before.
+
+---
+
+## B042 — JavaScript consumer documentation: the worked lane is not a monorepo lane, "Jest is unaffected" is an overclaim, and support files are not test paths
+
+**Filed 2026-08-30 from the 3.1.0 design review (§3 G2/G3, §6).** Docs only;
+ships on the current schema. Every item below names its file:line and its
+replacement so the change is mechanical.
+
+1. **Worked lane (`docs/CONSUMERS.md:543-571`).** `argv = ["npm", "run",
+   "test:coverage"]` runs at the repository root, where the first consumer has
+   no `package.json`, while `source_roots = ["applications/webapp-ui/src"]`
+   names a monorepo app; Vitest's `reportsDirectory` resolves against the
+   app root, so `artifact = ".assay/coverage-final.json"` is the wrong path
+   for that layout. Replace with B041's worked lane (offline install +
+   `--no-install` runner + `applications/<app>/.assay/coverage-final.json`),
+   and say in one sentence that a root-level app keeps the short form. Once
+   B043 lands, show `cwd = "applications/webapp-ui-react"` instead of the
+   `bash -c` wrapper.
+2. **Jest scope (`README.md:191`, `docs/CONSUMERS.md:676-678`).** "nyc/istanbul
+   and Jest are unaffected" is true only of Jest's default `coverageProvider:
+   "babel"`. Jest `coverageProvider: "v8"` and `c8` write the same
+   `coverage-final.json` through v8-to-istanbul remapping and were NOT
+   measured. Replace with: "`nyc`/`istanbul` and Jest with its default
+   `babel` coverage provider share `@vitest/coverage-istanbul`'s instrumenter
+   and are unaffected. Jest's `coverageProvider: "v8"` and `c8` remap v8
+   ranges the same way the defective provider does and have not been
+   measured — treat them as unsafe until a committed witness says otherwise."
+   If the implementer can reproduce the `probe-js-provider-defect` project
+   under `c8` cheaply, commit the artifact and state the result instead.
+3. **Support files (`docs/CONSUMERS.md:680-693`).** Add: `*.stories.tsx`,
+   `src/test/setup.ts`, `vitest.setup.ts` and `*.config.*` are NOT test paths
+   by the adapter's rule (Vitest's own `include` glob is the citation), and
+   Vitest's default `coverage.exclude` drops config files from the artifact,
+   so a changed one under a declared source root is reported as uncovered
+   (fail-closed, visible). Keep them out of `source_roots`.
+4. **`README.md:169-178` snippet.** Say `vitest/config` (not `vite`) is the
+   `defineConfig` import that accepts a `test:` block; the CONSUMERS snippet
+   already does.
+5. **Cross-links.** README's JS section → B041's new CONSUMERS section;
+   CONSUMERS "Practices" gains "Dependency closures come from the image,
+   never the working tree" as a one-paragraph rule (B041 (a)).
+
+### Acceptance
+
+- [ ] items 1–5 landed with the exact wording or better, each checked
+      against the current files (line numbers above are 3.1.0's);
+- [ ] no doc still says the two Vitest providers are interchangeable or that
+      Jest is unconditionally unaffected (grep for "Jest" in README/CONSUMERS/
+      DESIGN-GUIDE/the parser docstring).
+
+---
+
+## B043 — a lane-level `cwd`: the command's working directory as a declared, recorded fact
+
+**Filed 2026-08-30 from the 3.1.0 design review (§3 G2).** Schema v9 (the
+verdict must witness it) — rides B045's wave.
+
+### Problem
+
+The lane key set is closed (`config.py:139-155`) and has no working-directory
+key; every command runs at the snapshot root (`runner.py:1754`). A monorepo
+app's package script (`npm run …`, `go test ./...` inside a module, `cargo`)
+therefore needs `argv = ["bash", "-c", "cd applications/x && …"]` — dstdns's
+`run-gate.toml` already carries eleven such wrappers. The wrapper (1) hides the
+real `argv[0]` from the `MISSING_EXTERNAL_TOOL` preflight (it checks `bash`,
+not `npm`), (2) makes `allow_argv_append` meaningless for the inner command,
+(3) puts shell quoting between the lane file and what ran, which
+`argv_effective` then records opaquely.
+
+### Contract
+
+- `cwd = "applications/webapp-ui-react"` — repo-relative, forward-slash, no
+  `..`, no leading `/`, must resolve to a tracked DIRECTORY at the resolved
+  commit (so it exists in every snapshot) — otherwise `ERROR`/`BAD_LANE_CONFIG`
+  at load, naming the path and the commit. Symlink components are refused
+  through the existing P22 containment gates.
+- Applied as `cwd=snapshot.project_root / cwd` for the lane command and for
+  every re-execution (R2 candidates, R3 canaries) — one place, so
+  `resolve_command_plan` and the mutation executor cannot disagree.
+- **Nothing else re-roots.** `judge.coverage.artifact`, `equivalence_artifact`,
+  `infrastructure` facts, `source_roots`, `targets` stay project-root-relative
+  (one path grammar, A-271). The docs say so in the key's own paragraph.
+- Recorded in the verdict as `cwd_declared` beside `argv_declared` (absent
+  when not declared — absent, never `"."`), registered in `verify.py`.
+- `environment_command` keeps running in the invoking environment's cwd; it
+  is not the lane command.
+
+### Acceptance
+
+- [ ] loader accepts/refuses per the contract with a test per refusal;
+- [ ] the command, every R2 candidate execution and every R3 canary run use
+      the same resolved cwd (one test each, proven by a command that writes
+      `$PWD` to its artifact);
+- [ ] schema/dataclass/`verify.py` carry `cwd_declared`; drift-guard updated;
+- [ ] CONSUMERS' JS worked lane and the SQL lane example use `cwd` where the
+      wrapper was; `assay lanes --json` (B044) exposes it.
+
+---
+
+## B044 — `assay lanes --json`: a machine-readable lane inventory for gate tools
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4).** No schema coupling;
+ships on the current schema. Companion to ciu CIU-72.
+
+### Problem
+
+`assay lanes` prints text (`cli.py:125-140`, dispatch at `cli.py:255`). CIU v8
+(SPEC S16, S15.3 stage 12) deliberately reads `assay.toml` for lane names
+only, so the gate cannot know that a `javascript` lane needs Node in its
+environment, that a future Go lane needs the statement-position helper on
+PATH, or that a lane delegates its base — the consumer restates the last one
+as `[testing.lanes.<l>] request_base = true`, a second spelling of one fact
+(the proposal's own P1). Asking the judge is not reading the file.
+
+### Contract
+
+`assay lanes --json [--file PATH]` writes one JSON document to stdout:
+
+```json
+{"inventory_schema": 1, "assay_version": "3.2.0", "lanes": [
+  {"name": "ui_unit", "scope": "S1", "rigor": ["R0","R1"], "enforcement": "gate",
+   "language": "javascript", "rigor_reachable": ["R1"],
+   "coverage": {"format": "coverage-istanbul-json", "artifact": "applications/webapp-ui-react/.assay/coverage-final.json", "producer": null},
+   "mutation": null, "canary": null,
+   "base_source": "request", "external_tools": [], "argv0": "bash",
+   "env_required": [], "environment_command": false, "infrastructure_facts": [],
+   "budget": "15m", "cwd": null, "link_paths": [], "snapshot_selection": "repository"}]}
+```
+
+- every field has ONE producer: the loaded `Lane`/`JudgeConfig` and the
+  registry entry (`rigor_reachable` = the levels THIS build wires for the
+  language, `registry.py`); nothing is re-derived from the TOML text;
+- `external_tools` = the adapter's declared tuple, plus (after B047) the Go
+  helper; `argv0` lets a gate preflight the real first token;
+- a lane file that fails to load → exit 2 with the loader's message and NO
+  partial document; `--json` never emits both text and JSON;
+- `inventory_schema` is bumped only when a key changes meaning; adding keys
+  (B043 `cwd`, B041 `link_paths`, B045 `producer`) is additive.
+
+### Acceptance
+
+- [ ] golden JSON for every fixture lane file under `tests/fixtures/lanes/`
+      (or the existing lane fixtures), including a `javascript`, a `sql` and
+      a delegating lane;
+- [ ] a refusal test (bad lane file → exit 2, empty stdout);
+- [ ] CONSUMERS "CMRU / tester-unified integration" and the ciu handoff note
+      show a gate consuming it; CIU-72 references the exact key names.
+
+---
+
+## B045 — declare the coverage PRODUCER: `judge.coverage.producer`, recorded in the verdict (schema v9); closes B038(a)(b) and B040(b)
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D1). Operator ruling
+2026-08-30: one bundled v9 cut with B046/B043/B041(b) — assay 4.0.0.** This
+is the decision B038 and B040 exist to force, argued against A-007 as they
+require: a producer becomes a **declared** fact, never a sniffed one.
+
+### Why a declaration and not a per-producer format
+
+`coverage-istanbul-json` is one format with several producers that disagree
+about (i) what `branchMap` means (A-344) and (ii) whether a line ran (A-346).
+Registering `coverage-istanbul-json-v8` as a second FORMAT would bind a
+trust property to a format name — and the same document from nyc, Jest-babel
+and `@vitest/coverage-istanbul` would then need three names for one shape.
+The producer is a fact about the lane's toolchain, like `judge.language`; it
+belongs beside the format, and the verdict must witness it (the B035 lesson:
+a judgment that cannot state its own inputs cannot be verified).
+
+### Contract
+
+- `[lanes.<n>.judge.coverage] producer = "<name>"`, a closed vocabulary PER
+  FORMAT, kept in `vocabulary.py` beside the operators:
+  - `coverage-istanbul-json`: `istanbul` (babel-plugin-istanbul family:
+    nyc/istanbul, Jest `babel`, `@vitest/coverage-istanbul`,
+    `vite-plugin-istanbul`), `vitest-v8` (**refused at load by name, A-346**),
+    `jest-v8`, `c8` (**refused until a committed witness clears them**, B042
+    item 2). REQUIRED for this format — its producers disagree, so no
+    implied value is correct in every context (DESIGN-GUIDE §5).
+  - `coverage-py-json`: `coverage.py` — optional, the only producer; if
+    present must equal it.
+  - `lcov`, `cobertura`: optional; vocabulary opened by the first consumer
+    that needs one (no speculative names — §5).
+  - `go-cover`: `go-test` | `covdata` — declared by the Go wave (B047), same key.
+- Verdict: `judgment.r1.coverage_producer` (string, present iff declared;
+  absent never `null`), registered in `verify.py`; schema `const` 8 → 9.
+- **B038(a) — real branch arcs under `producer = "istanbul"`.** The parser
+  gains a producer-aware branch path: `branchMap` entries typed
+  `if`/`cond-expr`/`switch`/`binary-expr`/`default-arg` with N locations and
+  N counts become `BranchCoverage.by_line` arcs keyed by each arm's
+  `start.line` (istanbul-lib-coverage's own reduction), with the
+  `FileCoverage` cross-bucket invariants checked on BOTH committed real
+  artifacts; any other producer keeps `branches=None` and
+  `branch_capability = "unavailable"`. `require_branch = true` becomes legal
+  on an istanbul-producer lane.
+- **B038(b) — type-only modules under `istanbul`.** Absent-from-artifact
+  changed `.ts`/`.tsx` files are offered to a NARROW, fail-closed lexer
+  (Go's `has_executable_code` discipline, A-104): after comment masking, a
+  file whose every top-level statement begins with `import type`,
+  `export type`, `export interface`, `type `, `interface `, `declare ` and
+  contains no other top-level token is NoCode; any construct the lexer does
+  not recognise answers `True`. No TypeScript parser; measured against
+  `probe-js/src/typesonly.ts` and a control with one runtime export.
+- **B040(b)**: the `vitest-v8` refusal message names A-346 and the fix
+  (`provider: 'istanbul'`); A-346's documentary warning is downgraded to a
+  note about lanes written before this key existed.
+
+### Migration (4.0.0 notes)
+
+Every existing `coverage-istanbul-json` lane must add `producer = "istanbul"`
+(there are none in the estate yet — dstdns has no JS lane); Python lanes
+need nothing. v8 verdicts are refused by `assay verify` at v9 exactly as v7
+were at v8.
+
+### Acceptance
+
+- [ ] vocabulary, loader refusals (unknown name; name not in the format's
+      set; `vitest-v8`/`jest-v8`/`c8` by name with their reasons; missing on
+      istanbul-json), each with a test;
+- [ ] `judgment.r1.coverage_producer` in schema/dataclass/`verify.py`;
+      drift-guard v9 asset; migration notes in CHANGES.md;
+- [ ] branch arcs under `istanbul` on both committed real artifacts, with
+      the A-265 detail-over-metadata discipline and uniqueness/disjointness
+      validation before aggregation; `unavailable` for every other producer;
+- [ ] the type-only lexer with its fail-closed controls;
+- [ ] README/CONSUMERS/DESIGN-GUIDE §11 updated: "leave `require_branch`
+      unset" guidance replaced; B038 and B040 (b) marked resolved by this item.
+
+---
+
+## B046 — R2 by evidence ingestion: `judge.mutation.format = "mutation-report-json"`, the lane's own argv runs the mutation tool inside the snapshot (resolves B037; schema v9)
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D2). Operator ruling
+2026-08-30: RATIFIED — B037's three open decisions are resolved as below;
+this entry is dispatchable in the v9 wave. Record the rulings as
+`decisions.md` entries when implemented.**
+
+### The shape: make ingested R2 look exactly like R1
+
+R1 already ingests foreign evidence: the lane's argv runs a coverage tool
+inside the snapshot, the tool writes an artifact at a declared path, assay
+reads it through a FORMAT-keyed registry and computes the judgment. Ingested
+R2 is the same sentence with "mutation" substituted:
+
+```toml
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"                      # B043
+argv = ["bash", "-c", "npm ci --offline --no-audit --no-fund && npx --no-install stryker run --reporters json"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+base_source = "request"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"                            # mutation-testing-report-schema (Stryker's json reporter)
+artifact = "applications/webapp-ui-react/reports/mutation/mutation.json"
+fail_under = 100.0                                         # killed / (killed + survived), over changed lines
+```
+
+This answers B037's open questions without a new trust boundary:
+
+1. **"Shell out, or accept a CIU-supplied report?" — neither.** The lane's
+   argv runs Stryker in the private snapshot (A-161), so the report is bound
+   to the resolved commit by construction, exactly as `coverage-final.json`
+   is today. CIU orchestrates WHERE (the environment, the npm cache); assay
+   never invokes Stryker itself and never accepts a report it did not watch
+   being produced.
+2. **Non-repudiation.** (i) commit binding = snapshot; (ii) exit status is
+   not proof: Stryker exits non-zero when the score is under ITS thresholds —
+   the docs mandate `thresholds: { break: null }` so the exit status carries
+   only crash information and assay judges the score; a non-zero exit is
+   still R0's `COMMAND_FAILED`; (iii) the report's `projectRoot` must equal
+   the snapshot root and every `files` key must resolve under a declared
+   source root — otherwise `ERROR`/`UNREADABLE_ARTIFACT` ("an artifact from
+   elsewhere"); (iv) `schemaVersion` is pinned to the major the committed
+   real fixture carries; a `Pending` mutant anywhere refuses the whole
+   report (incomplete evidence is not evidence); (v) the report is read once,
+   bounded by `MAX_COVERAGE_ARTIFACT_BYTES`'s sibling and a fixed mutant
+   ceiling.
+3. **Vocabulary.** Status map, each direction chosen for the visible-failure
+   side: `Killed → killed`; `Survived → survived`; `NoCoverage → survived`
+   (recorded separately as `survived_uncovered` — the worst kind, never
+   hidden inside the survived count); `Timeout → budget_exceeded`
+   (Stryker's per-mutant timeout IS the per-candidate budget);
+   `CompileError`/`RuntimeError → discarded` (an invalid mutant the native
+   engine never emits; excluded from the denominator, counted);
+   `Ignored → excluded` (the tool's own ignore, counted, never laundered as a
+   kill); `Pending → refuse`. `equivalent` stays 0 and `kill_attribution =
+   "unattributed"` (no equivalence detection; `equivalence_artifact` stays
+   SQL-only). Operators: a foreign tool's mutator names are DATA, not assay's
+   closed list — each recorded mutant carries `operator = "stryker:<mutatorName>"`,
+   admitted by a namespace pattern branch in the schema's `mutation_operator`
+   (`^stryker:[A-Za-z0-9]+$`), and `judge.mutation.operators` is REFUSED on an
+   ingested lane (Stryker's config declares mutators; two declarations would
+   be the P1 hazard).
+4. **Provenance and the B018 relationship.** `judge_provenance` stays assay's.
+   The producer's identity is copied from the report — `judgment.r2.producer
+   = "ingested"`, `judgment.r2.producer_tool = {name, version,
+   report_schema_version}` from `framework`/`schemaVersion` — declared-by-
+   artifact, not verified, and said so in DESIGN-GUIDE. `helpers[]` is NOT
+   used: it records tools assay itself invoked (A-230a), and assay did not
+   run Stryker. Native lanes record `producer = "native"`. A verdict thereby
+   distinguishes Tier-1-computed-natively from Tier-1-computed-over-ingested-
+   evidence, which the north-star's "never conflate tiers" requires.
+5. **Precedent.** Yes — this is the general shape for any R2 producer assay
+   has no native engine for: a format-keyed MUTATION registry
+   (`mutation_parsers/`, parallel to `coverage_parsers/`) keyed by the
+   report format, not the tool; Stryker.NET/Stryker4s emit the same schema
+   and would need no code. Go's or Python's tools join only when they emit
+   a registered format.
+
+### Judgment
+
+Scope is assay's computation, not the tool's: under `changed_lines`, a mutant
+counts iff its `location.start.line` (file key resolved to repo-relative) is
+an added line of the diff; under `whole_target`, iff its file is a declared
+target. A changed executable line with NO mutant is recorded
+(`lines_without_candidates`) and, with zero candidates in scope overall,
+renders `INCONCLUSIVE`/`NO_MUTANTS` exactly as native R2 does. `pct =
+killed / (killed + survived)`; `fail_under` compares against it;
+`survived_uncovered` is listed with file:line so a consumer sees the untested
+mutant, not a number.
+
+### Acceptance
+
+- [ ] a REAL Stryker report from `tests/fixtures/coverage/probe-js` (Stryker
+      + `@stryker-mutator/vitest-runner`, versions and lockfile committed
+      under `PROVENANCE.md`) is the primary fixture (A-334); synthetic
+      reports cover every status, `Pending`, a foreign `projectRoot`, a key
+      outside the source roots, and an over-ceiling mutant count;
+- [ ] `mutation_parsers/mutation_report_json.py` + registry + loader keys
+      (`format`, `artifact`, `fail_under`; `operators`/`jobs`/`max_mutants`/
+      `equivalence_artifact` refused on an ingested lane with reasons);
+- [ ] `judgment.r2.producer`/`producer_tool`/`survived_uncovered`/
+      `discarded`/`lines_without_candidates` in schema, dataclass, `verify.py`
+      (re-derivation of `pct` and buckets from the payload), drift-guard v9;
+- [ ] `cli.py` registers `javascript` at `{"R1", "R2"}` ONLY through the
+      ingested path (`generate_mutation_sites` stays `UNSUPPORTED`; the
+      runner selects native vs ingested by `judge.mutation.format` presence);
+- [ ] CONSUMERS: worked lane, the `thresholds.break: null` mandate, the
+      status map table, what the verdict records; DESIGN-GUIDE §11 "Mutation
+      is source-oriented" gains the ingested paragraph and the tier
+      statement; B037 marked RESOLVED by this item; decisions recorded.
+
+---
+
+## B047 — Go wave preparation: helper distribution and identity, `helpers[]` in the gate envelope, the shared line-expansion bound (B039), the `covdata` producer
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D4/D8).** Not a package:
+scope additions for the P27 re-carve (A-217/A-239), so the carve does not
+discover them. Each item names what is already ruled and what is not.
+
+1. **Helper distribution (NOT ruled by A-239, which settled the seam).** Two
+   candidates, decide in the carve with a probe: (a) ship the
+   statement-position oracle's Go source inside the wheel
+   (`assay/helpers/go/stmtpos/`) and invoke `go run <path>` — the source is
+   then covered by `judge_provenance`, and `helpers[].identity` is
+   `go version …`; stdlib-only source needs no module download (`GOFLAGS=-mod=mod`,
+   `GOPROXY=off` proven in the probe); compile latency measured against
+   `tester-unified-go`'s warm `GOCACHE`. (b) a separately built binary in the
+   environment image — a second artifact to pin, which ciu v8's
+   `[testing.judge]` floor does not cover. Recommend (a).
+2. **`external_tools = ("go",)`** on the Go adapter → the existing
+   `MISSING_EXTERNAL_TOOL` preflight (A-253) covers it; `assay lanes --json`
+   (B044) exposes it so CIU-72 can check the environment.
+3. **`judge.coverage.producer` for `go-cover`** (B045's key): `go-test`
+   (`go test -coverprofile`) | `covdata` (`go tool covdata textfmt` over the
+   `GOCOVERDIR` binary data of `go build -cover` binaries — the integration-
+   test path, an S3 lane). Same format; document both and their producer names.
+4. **B039** — fold the per-artifact classified-line ceiling into ONE shared
+   bound in `coverage_parsers/model.py`, used by `go_cover` and
+   `coverage_istanbul_json`; B039's own acceptance is discharged there.
+5. **Gate envelope** — CIU-72: the LaneResult copies `helpers[]` verbatim;
+   nothing on assay's side beyond documenting that `helpers` is the
+   reproducibility record for a Go verdict.
+6. **Fixtures** — A-234's stale hand-authored profiles regenerate against
+   `tester-unified-go` as already tracked.
+
+### Acceptance
+
+- [ ] the P27 re-carve cites items 1–6 explicitly (carve reviewer checks);
+- [ ] item 4 landed (may ride the v9 wave or the Go wave — whichever is first).
+
+---
+
+## B048 — browser (Playwright) coverage of a React UI as an R1 lane: `vite-plugin-istanbul` inside the lane, and where the S3 binding stops
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D6).** Documents a path
+that needs NO assay change today, and names the one thing that must not be
+built before B004.
+
+### The path
+
+Inside one lane (the snapshot): `npm ci --offline`; `vite build --mode
+coverage` with `vite-plugin-istanbul` (babel-plugin-istanbul — the same
+instrumenter as `@vitest/coverage-istanbul`, `producer = "istanbul"` under
+B045); serve the build (`vite preview` or the app's nginx) on the instance
+network; run the Python-driven Playwright suite (`pytest -m browser
+tests/e2e/ui/webapp-ui-react`) against it, with a fixture that dumps
+`window.__coverage__` after every test and merges the maps
+(`istanbul-lib-coverage`) into one `coverage-final.json`; the lane declares
+`format = "coverage-istanbul-json"`, `source_roots = ["applications/webapp-ui-react/src"]`.
+The implementer must measure that the artifact's keys are the ORIGINAL
+`src/**/*.tsx` paths (the plugin instruments pre-transform sources), never
+`dist/`.
+
+WHERE is ciu's: the tester serving the preview must be reachable from the
+browser service, and the UI needs the instance's backend
+(`requires.services = ["webapp_server", "browser_service"]`); the backend
+route reaches the lane as an `infrastructure` fact (B013 `derived:` → v8
+`ciu.instance.resolved.routes…`). Scope `S3`, declared.
+
+### The limit, stated once
+
+The UI code judged is the snapshot's (fully bound). The API it talks to is the
+deployed image's — an unverified declared fact, exactly A-O12/B004's subject.
+Until B004 ships verified provenance, an S3 R1 verdict from this lane binds
+the UI, not the system. A detached `assay judge <artifact>` verb (judging
+evidence produced by a deployed image, outside any snapshot) is the larger
+ask this pattern avoids; **do not build it before B004** — it would be the
+first assay judgment with no commit binding of its own.
+
+### Acceptance
+
+- [ ] a CONSUMERS section "Browser coverage of a UI as an R1 lane" with the
+      recipe above and the limit paragraph verbatim in spirit;
+- [ ] a small committed `vite-plugin-istanbul` artifact (produced outside
+      assay like `probe-js`, `PROVENANCE.md` entry) proving the keys and the
+      parser path, plus a parser test over it;
+- [ ] the consumer-side `__coverage__` dump fixture is dstdns's package, listed
+      in the review report §7.
