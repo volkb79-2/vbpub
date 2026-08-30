@@ -554,8 +554,21 @@ subset of `python:compare-swap`'s own sites — same span, same replacement — 
 declaring them alongside `compare-swap` emitted every shared site twice and
 added no coverage. A lane still naming either is now refused at load; delete
 them and keep `python:compare-swap`, which already covers `==`/`!=` swapping.
-The two names remain spellable in a schema-v7 artifact so that verdicts already
-emitted by 2.3.0/2.4.x keep verifying; nothing produces them.
+The two names remained *spellable* at schema v7 so that verdicts already
+emitted by 2.3.0/2.4.x kept verifying. **Schema v8 removes the spellings**
+(A-331), discharging A-326's own "the spellings go at the next bump" at the
+bump it named: neither name appears in the packaged schema's per-language
+`oneOf` any more, so a v8 verdict naming one fails validation. Nothing you
+need to do differs — the lane-config refusal was already in force at 2.4.2 —
+but note two consequences:
+
+- Your v7 verdicts still verify, with a **v7** `assay`. Under v8 they are
+  refused on `schema_version` alone (hard cut, A-170), which is why removing
+  the spellings costs nothing v8 had not already cost.
+- A lane file still carrying either name gets the *withdrawn* refusal naming
+  `python:compare-swap` as the replacement, **not** a bare "unknown
+  operator(s)" — the withdrawn check deliberately runs first now that the
+  catalogue no longer spells them.
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
@@ -577,7 +590,7 @@ applies (for example, the command never started).
 
 ## Adopting a v2-capable release
 
-Verdict schema v7 and lane schema v2 are both hard cuts (no dual-version verifier, no
+Verdict schema v8 and lane schema v2 are both hard cuts (no dual-version verifier, no
 compatibility shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
@@ -671,9 +684,89 @@ HEAD is itself a merge commit). The two can differ enormously: a lane judged
 right after merging main in can see its changed-line/mutation scope narrow to
 "whatever the merge itself touched" rather than the branch's own accumulated
 work, with no other signal that anything unusual happened. `base_resolution`
-is present only when `judgment.resolved.base` is (a lane with no `judge.base`
-declared has nothing to classify); a consumer that gates on "did R1/R2 see the
-whole change" should check it rather than assume `base` alone tells the story.
+is present only when `judgment.resolved.base` is (a lane with no comparison
+base to resolve has nothing to classify); a consumer that gates on "did R1/R2
+see the whole change" should check it rather than assume `base` alone tells
+the story.
+
+### Delegating the comparison base to the invoking gate request (B019)
+
+A lane that must stay portable across branches and worktrees can require
+changed-line judging without hardcoding *which* commit it judges against:
+
+<!-- assay-doc-example:skip reason="judge sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.unit.judge]
+language = "python"
+source_roots = ["src"]
+# `judge.base` is ABSENT. This lane's invoker owns the base identity.
+base_source = "request"
+```
+
+The invoker then supplies it per run:
+
+```bash
+assay run unit --request-base "$MERGE_TARGET" --verdict-json verdict.json
+assay plan mutate --request-base "$MERGE_TARGET"
+```
+
+`--request-base` takes a ref *or* an already-resolved commit, and either goes
+through exactly the merge-base resolution `judge.base` always used; the result
+is recorded once in `judgment.resolved.base`, with `base_resolution` beside it
+as usual. Nothing downstream can tell — or needs to tell — which owner
+supplied it.
+
+Three refusals bound this, and each names the one line to change:
+
+| situation | what happens |
+|---|---|
+| `base_source = "request"`, no `--request-base` given | `ERROR`/`BAD_LANE_CONFIG`. Never a fallback to `HEAD` or a default branch: a changed-line judgment whose base was guessed is not a changed-line judgment. |
+| `judge.base` declared **and** `--request-base` given | `ERROR`/`BAD_LANE_CONFIG`. Whichever side lost a precedence contest would be configuration nothing reads, and therefore configuration that cannot fail loudly if it is wrong. Delete one. |
+| `--request-base` given to a lane that reads no base (R0/R3 only, or `mode = "whole_target"`) | `ERROR`/`BAD_LANE_CONFIG`, for the same reason `judge.base` is refused there. |
+
+`base_source` is legal only on a lane declaring R1 and/or R2 under
+`mode = "changed_lines"` — it is a policy *about* `judge.base`, so it is legal
+exactly where `judge.base` is.
+
+### `judge_provenance`: which build emitted this verdict (B018)
+
+`assay_version` is a string; any process can print one. An assay running from
+a real build artifact additionally records the artifact itself:
+
+```json
+"judge_provenance": {
+  "name": "assay",
+  "version": "2.5.0",
+  "artifact": "wheel",
+  "digest_algorithm": "sha256",
+  "digest": "2bf81187b3158a010b4f0d8712a7414779f0ee97b72251db0a072314412e82d4"
+}
+```
+
+`artifact` is `"wheel"` or `"zipapp"`; a release publishes both, with a
+`.sha256` sidecar each, and their digests necessarily differ — so the kind is
+recorded rather than left for you to guess which file to compare against. The
+digest is the artifact's own sha256: for a zipapp, the `.pyz` is hashed
+directly; for a wheel install, it is the digest the installer recorded in PEP
+610 `direct_url.json`, which is the only statement about the wheel that
+survives its own installation.
+
+**The field is optional, and its absence is meaningful.** An invocation with
+no identifiable build artifact — a source checkout, an editable install, or an
+import that shadows an installed distribution — records **no** identity rather
+than a partial or invented one, and prints the reason on stderr. If your gate
+resolves and verifies a judge binary before running it, and needs the evidence
+bound to that binary, do not merely read the field: **demand it**.
+
+```bash
+assay run unit --require-judge-provenance --verdict-json verdict.json
+```
+
+That refuses `ERROR`/`BAD_LANE_CONFIG` before any lane work if the running
+assay cannot identify itself, so you never receive evidence you cannot
+attribute. Compare `judge_provenance.digest` against the digest you verified
+on download; `judge_provenance.version` equals the top-level `assay_version`
+for any artifact assay itself produced.
 
 ### A green run over an empty subject is not a pass
 

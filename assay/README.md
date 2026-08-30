@@ -94,9 +94,9 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 7` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-Both are hard cuts: `assay verify` refuses a v6 verdict exactly as it refuses
-v5 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
+`VERDICT_SCHEMA_VERSION = 8` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+Both are hard cuts: `assay verify` refuses a v7 verdict exactly as it refuses
+v6 today (no dual-version verifier, no upgrade-in-place), and a v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
@@ -170,8 +170,10 @@ over assay's own source they produced 87 sites, none of which
 `python:compare-swap` did not already produce at the same byte span with the
 same replacement bytes — so a lane declaring both families ran every shared
 mutation twice for no additional coverage. A lane naming either is refused at
-load; the spellings stay valid in a schema-v7 artifact so verdicts emitted by
-2.3.0/2.4.x still verify.
+load, by name and with that reason — and at the v7→v8 cut the spellings are
+gone too (A-331), so neither name is legal anywhere in a v8 verdict. Verdicts
+emitted by 2.3.0/2.4.x are unaffected: they are schema v7 documents, refused
+under v8 on `schema_version` alone, and must be verified with a v7 `assay`.
 
 The seven closed `judge.mutation.operators` values a SQL lane may declare:
 
@@ -204,6 +206,33 @@ record the destination, exactly as it does not record `--verdict-json`'s.
 Lanes may declare `[lanes.<name>.infrastructure]` facts with `required-env:` or
 `derived:` sources. Assay resolves them in the invoking context before any
 snapshot work and injects the values into the isolated command.
+
+**Who owns the comparison base is a lane decision (B019).** A changed-line
+lane normally declares `judge.base` itself. A lane that must stay portable
+across branches and worktrees instead declares `judge.base_source = "request"`
+and leaves `judge.base` out entirely: changed-line judging is still required,
+but the base's identity comes from the invoking gate request, as `assay run
+<lane> --request-base REF` (`assay plan` takes the same flag). A ref or an
+already-resolved commit is accepted, and either goes through exactly the
+merge-base resolution `judge.base` always did, landing once in
+`judgment.resolved.base`. The two owners are mutually exclusive: declaring
+both, or passing `--request-base` to a lane that did not delegate, is refused
+by name rather than settled by a precedence rule — whichever side lost would
+be configuration nothing reads. A delegating lane invoked with no
+`--request-base` refuses too; assay never falls back to `HEAD` or a default
+branch.
+
+**Every verdict may name the build that produced it (B018).** Beside
+`assay_version` — a string any process can print — an installed assay records
+`judge_provenance`: the distribution name, exact version, artifact kind
+(`wheel` or `zipapp`), digest algorithm and the lowercase sha256 of the
+artifact it was installed from. A wheel install reports the digest the
+installer recorded in PEP 610 `direct_url.json`; a zipapp is hashed directly.
+An invocation with no identifiable build artifact — a source checkout, an
+editable install — records **nothing** rather than a partial identity, and
+says so on stderr. A gate that binds its evidence to a judge binary it
+verified passes `assay run <lane> --require-judge-provenance`, which turns
+that absence into a refusal before any work runs.
 
 `assay plan` accepts `--operators name,name` and `--shard INDEX/COUNT`; `assay
 run` accepts `--resume` plus the same filters. Shards use zero-based indexes,

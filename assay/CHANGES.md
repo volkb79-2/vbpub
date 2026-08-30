@@ -6,12 +6,37 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Added
+- feat(assay): every verdict may now carry `judge_provenance` — the resolved judge name, its exact
+  semantic version, `digest_algorithm = "sha256"` and the lowercase sha256 of the build artifact the
+  run actually executed (installed wheel via PEP 610 `direct_url.json`, or the `.pyz` a zipapp run
+  imported from) — so a consumer can bind a verdict to a specific build instead of trusting a version
+  string. It is absent-or-complete, never partial: an invocation that cannot identify its own artifact
+  (a source checkout, or an installed distribution shadowed by a source tree on `sys.path`) records
+  nothing and says why on the diagnostics stream rather than inventing a digest (B018/A-327)
+- feat(assay): `assay run --require-judge-provenance` turns that absence into an
+  `ERROR`/`BAD_LANE_CONFIG` refusal before any work runs, for callers — the registered gate among
+  them — that require a verdict to be attributable to a build artifact (B018/A-327)
+- feat(assay): a lane may delegate its comparison base to the invoking gate with
+  `judge.base_source = "request"`, supplied per-invocation as `assay run|plan --request-base REF`;
+  every mismatch is refused loudly by name rather than resolved by precedence (B019/A-328)
+- feat(assay): `judgment.r2` now records its own `mode` and `targets`, so an R2-only verdict witnesses
+  the scope it was judged under instead of leaving it unstated (B035/A-329)
 - feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
 - feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
 - feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
 - feat(assay): infrastructure fact injection (`required-env:`/`derived:`) for isolated lanes (B013)
 
 ### Changed
+- **BREAKING (verdict schema v7 → v8):** `judgment.r2` now REQUIRES `mode`, so every verdict emitted
+  before this release fails validation under v8 and must be verified with a v7 `assay` — a hard cut
+  (A-170), not an upgrade-in-place. `judge.mode` is enforced as a lane-level scope across tiers: an
+  r1 and an r2 in the same judgment must agree on `mode` and `targets`, and the `resolved.base`
+  rules are expressed against whichever tier witnesses the scope rather than r1 alone (B035/A-329)
+- **BREAKING (verdict schema v7 → v8):** `python:uuid-equality-swap` and `python:enum-comparison-swap`
+  lose their SPELLINGS as well as their behaviour — both are gone from the packaged schema's
+  per-language `oneOf`, discharging A-326's "the spellings go at the next bump" at the bump it named.
+  A lane file still naming either still gets the *withdrawn* refusal pointing at `python:compare-swap`,
+  not a bare "unknown operator", because that check now runs first (A-331)
 - **BREAKING (lane config):** a lane declaring `judge.mode = "whole_target"` may no longer
   declare `judge.base` — no tier reads one under whole-target scope, so it is now refused as
   inert config, in every language and at every rigor. A whole-target R2 lane that declared a
