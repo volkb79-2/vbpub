@@ -255,3 +255,22 @@ CHANGES.md's own housekeeping comment says `[Unreleased]` should have been
 cleared at that release and was not. Left untouched per the wave's division
 of labor (the controller clears `[Unreleased]` as part of cutting the
 release); flagged in the REPORT.
+
+---
+
+## `4a4056b6` — docs(assay): Wave A commit LOG
+
+**Files:** `nyxloom-trove/reports/assay-WAVE-A-js-consumer-LOG.md` (this
+file, its own first version).
+
+---
+
+## `4a70e09e` — docs(assay): fix a dangling "see the qualification harness below" reference
+
+**Files:** `docs/CONSUMERS.md`
+
+**What:** Self-review catch in the R3-cost paragraph of "JavaScript lanes
+and the dependency closure" (B041(a)) — "see the qualification harness
+below" pointed at nothing; the section it was written for was cut during
+drafting. Replaced with a direct pointer to
+`tests/qualification/test_javascript_real_vitest.py`.
