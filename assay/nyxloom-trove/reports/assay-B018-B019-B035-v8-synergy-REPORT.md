@@ -337,7 +337,36 @@ version, 64-hex shape) but the field cannot participate in byte-comparison again
 template, because the digest is by construction different on every build. Rationale is written at
 the call site; flagged here because "validated then removed" deserves a reviewer's eye.
 
-### 6.5 Batching
+### 6.5 Two errors of my own, caught while writing this report
+
+Recorded because they say something about where else to look, not to pad the list.
+
+1. **A false coverage citation.** `provenance.py`'s docstring claimed the wheel and zipapp forms
+   were "exercised against genuinely built artifacts in
+   `tests/test_distribution_build_release.py`". The wheel half was true but in a different file
+   (`test_standalone.py`); **the zipapp half was not true anywhere** — every zipapp test drove a
+   stand-in `Distribution`, and no automated test had ever run `identify_judge` inside a real
+   `.pyz`. I had measured it by hand during design, and hand-measurement does not survive.
+   This is exactly the unverified-citation defect A-105/A-112 caught twice before and that
+   A-326 flagged again in its own round-2 correction.
+   Fixed properly rather than by editing the sentence: `test_distribution_build_release.py` now
+   carries `test_the_zipapps_own_sha256_is_what_identify_judge_records`, which runs a probe
+   inside the real built `.pyz` and compares the emitted digest against
+   `hashlib.sha256(zipapp.read_bytes())`, plus a second test pinning that digest to the build's
+   own shipped `.sha256` sidecar. The docstrings now name the two tests that actually exist.
+   The zipapp branch is also where the measured `zipp.Path`/`pathlib.Path` `TypeError` lives, so
+   it was the single least-safe uncovered path in the feature.
+2. **A wrong field name in A-327.** The row said the object carries `judge`; the field is
+   `name` (`judge_provenance.name`). Corrected in place, with the five-field list spelled out.
+   **This is the one place I revised a decisions.md row after writing it** — this wave's own
+   row, same day, unmerged, and a plain misspelling of a field name that none of the row's
+   reasoning depended on. Worth stating precisely, because it turns out not to be an append-only
+   violation even on the strictest reading: the row is a line this branch *adds*, so correcting
+   it does not modify any line that existed before. `git diff --numstat <base> -- decisions.md`
+   is **+19 / −0** — nineteen added lines, zero deleted, i.e. the file is still purely additive
+   against the branch base. No pre-existing row was touched or reworded.
+
+### 6.6 Batching
 
 One combined feature commit rather than three. Reasoning in §1 and A-330. If the reviewer wants
 three, the honest split would require three knowingly-red intermediate trees.

@@ -178,10 +178,14 @@ def identify_judge(
     *module* is the imported ``assay`` package and *dist* its installed
     distribution; both default to the live ones. They are parameters so each
     branch can be driven by a test with a stand-in, instead of only by
-    reinstalling the interpreter -- but the two forms that matter most (a real
-    wheel install and a real zipapp) are exercised against genuinely built
-    artifacts in ``tests/test_distribution_build_release.py``, because a
-    stand-in cannot show that ``pip`` really writes the hash this reads.
+    reinstalling the interpreter -- but the two forms that matter most are also
+    exercised against genuinely built artifacts, because a stand-in cannot show
+    that ``pip`` really writes the hash this reads, nor that ``zipimport``
+    really reports the archive a running ``.pyz`` came from: the wheel in
+    ``tests/test_standalone.py``
+    (``test_the_installed_wheels_own_sha256_is_what_the_verdict_records``) and
+    the zipapp in ``tests/test_distribution_build_release.py``
+    (``test_the_zipapps_own_sha256_is_what_identify_judge_records``).
 
     Never raises for an unidentifiable invocation. That state is legitimate and
     common -- every developer running out of a checkout is in it -- so the
