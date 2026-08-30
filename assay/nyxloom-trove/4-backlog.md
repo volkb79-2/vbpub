@@ -3448,25 +3448,48 @@ PROPOSAL.md` §1.12 already warns against for R4/property-testing generally:
 validates thresholds, binds evidence to commit/input, emits verdicts and
 fails loudly" — never reinventing mature tooling that already exists.
 
-**Leading candidate, not yet a ruling:** Stryker Mutator is the mature,
-widely-adopted JS/TS mutation-testing tool (first-party Vitest runner
-support via `@stryker-mutator/vitest-runner`), with a structured JSON
-report naming per-mutant status (Killed/Survived/NoCoverage/Timeout/
-CompileError/RuntimeError), file, line, and mutator name — a shape assay
-could plausibly validate and bind into its own verdict contract as
-**evidence from an external producer**, the same relationship the proposal
-already recommends for R4/fuzzing, rather than assay growing a native JS
-mutation engine. This would be the FIRST time assay's own R2 tier is
-evidence-ingestion rather than native construction — a real architectural
-precedent, not a mechanical extension, and needs a controller/operator
-ruling before any code, not an implementer's unilateral call.
+**RULING (operator-delegated product decision, 2026-08-30): evidence-ingestion,
+via Stryker Mutator. The native-vs-ingestion fork is resolved; the three
+decisions below it are NOT — this item stays design-first for those.**
+Reasoning: (1) assay's own charter, restated explicitly in this project's
+docs, is a judge that validates and binds evidence — it has never owned a
+parser for any language it judges beyond what's needed to locate mutation
+sites, and Python/SQL's native operators stay cheap only because Python's own
+`ast` module and one narrow SQL grammar are small, stable surfaces assay
+already has to touch anyway for other reasons. A TS/JSX-aware mutation engine
+has neither property: it is a real, ongoing static-analysis project (grammar
+evolution, JSX/TSX surface, type-directed mutants) that would make assay
+responsible for tracking TypeScript's own language evolution, categorically
+outside what B036 needed to add JS/TS coverage support. (2) This project
+already committed to the evidence-ingestion shape for exactly this
+complexity tier — CIU proposal §1.12's "specialized tools generate cases...
+Assay validates, binds, fails loudly" was written for R4/fuzzing, but the
+reasoning transfers without modification to R2 for a language assay has no
+native tooling for; there is no principled reason to reinvent for JS what
+the project already declined to reinvent for property-testing. (3) Stryker
+is the correct specific choice, not merely "an" external tool: first-party
+Vitest runner support (the test runner B036 already standardized on),
+mature/widely-adopted (lower supply-chain risk than a niche alternative),
+and a structured per-mutant JSON report that maps onto assay's own
+Killed/Survived/NoCoverage/Timeout taxonomy without inventing new buckets.
+**What this ruling does NOT settle, and an implementer must not treat as
+answered:** whether assay shells out to Stryker directly or expects a
+CIU-orchestrated caller to supply Stryker's report as input (a real design
+question given CIU's own gate-preparation model); the exact non-repudiation
+binding (commit, judge provenance, anti-"exit-status-as-proof") Stryker's
+output needs before assay will trust it; and whether this sets a precedent
+other future non-native R2/R4 producers should follow or is JS-specific.
+Record the actual answers as decisions.md entries when this is implemented,
+the same way every other design call in this backlog is recorded — this
+ruling closes the architectural fork, not the implementation.
 
 ### Required design decisions before implementation
 
-- native (hand-rolled, matching every existing R2 producer) vs.
+- ~~native (hand-rolled, matching every existing R2 producer) vs.
   evidence-ingestion (Stryker or equivalent, a new pattern for assay) —
-  the central ruling this item exists to force;
-- if evidence-ingestion: how a foreign tool's report is bound to a verdict
+  the central ruling this item exists to force~~ **RESOLVED above:
+  evidence-ingestion via Stryker Mutator.**
+- how a foreign tool's report is bound to a verdict
   with the same non-repudiation properties assay's own native producers
   have today (commit binding, judge provenance per B018, no "process
   returned zero" weakening — CIU proposal §1.10's own standing objection to
@@ -3475,11 +3498,16 @@ ruling before any code, not an implementer's unilateral call.
 - operator vocabulary: does a foreign tool's mutator taxonomy map cleanly
   onto assay's own `mutation.*` bucket model (survived/killed/equivalent/
   budget_exceeded), or does it need its own schema shape;
-- relationship to B018 (judge provenance) if evidence-ingestion is chosen —
-  whose identity is recorded, assay's or the ingested tool's, or both.
+- relationship to B018 (judge provenance) now that evidence-ingestion is
+  the ruled direction — whose identity is recorded, assay's or Stryker's,
+  or both.
 
 ### Acceptance
 
-- [ ] written design decision reviewed against every relevant standing
-      constraint above;
-- [ ] no implementation lands until the above four decisions are recorded.
+- [x] the central native-vs-evidence-ingestion fork is ruled (above:
+      evidence-ingestion via Stryker Mutator) — this is a scope/direction
+      decision, not an implementation, and does not by itself authorize
+      code;
+- [ ] the three remaining design decisions above are written up and
+      reviewed against every relevant standing constraint;
+- [ ] no implementation lands until those three are recorded.
