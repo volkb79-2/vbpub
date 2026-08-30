@@ -249,10 +249,19 @@ run_self_hosted_lane() {
     # blindness the lane does not have, which is why the first version of
     # this diagnostic printed NOTHING for the B017-class failure it was
     # written to explain (round-1 review, m2).
+    # Both queries are anchored at "$worktree" with `-C`, and that anchoring is
+    # the whole point rather than tidiness. This function has already done
+    # `cd "$worktree/assay"`, and `git ls-files` is scoped to the CURRENT
+    # DIRECTORY -- so a bare call here lists nothing outside `assay/` and the
+    # B017 files, which live at the worktree ROOT, stay invisible. That is how
+    # the SECOND attempt at this diagnostic still could not see the class it
+    # was written for (round-2 review, R2-M2). `-C "$worktree"` also makes the
+    # paths repo-top-relative, which is exactly what `git.dirty_paths` reports
+    # and therefore what the lane's own refusal is about.
     echo 'ASSAY_GATE_DIAGNOSTIC=worktree-status-after-the-lane' >&2
-    git status --porcelain >&2 || true
+    git -C "$worktree" status --porcelain >&2 || true
     echo 'ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query' >&2
-    git ls-files --others --exclude-per-directory=.gitignore >&2 || true
+    git -C "$worktree" ls-files --others --exclude-per-directory=.gitignore >&2 || true
     python -m pytest tests -q --ignore=tests/test_self_hosting.py \
       --override-ini=pythonpath= || true
     return 1

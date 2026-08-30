@@ -299,15 +299,23 @@ subtree, belongs to the estate root, and the brief scopes this wave to `assay/`.
 `vbpub@8caf1c24` adds both filenames to the committed `.gitignore`. See §6.3; the finding is
 closed, and nothing in this branch depends on it.
 
-One correction to the paragraph above, so the record is not overstated: shortly after the final
-gate run, a **ciu** invocation regenerated this worktree's `ciu.env` and removed both render
-inputs, so the two files are no longer present at all. They are transient — CIU creates and
-removes them across worktree operations — which means the failure they cause is intermittent
-rather than permanent, and that is exactly what makes it expensive to diagnose. The mechanism
-reported above was directly observed twice (`git check-ignore -v` naming
-`.git/info/exclude:18`, and `git ls-files --others --exclude-per-directory=.gitignore` listing
-the file while `git status` showed clean); the claim that a reviewer *will* hit it is what
-softens to *may*, depending on where ciu's lifecycle happens to be.
+~~One correction to the paragraph above: shortly after the final gate run, a **ciu** invocation
+regenerated this worktree's `ciu.env` and removed both render inputs… so the failure they cause
+is intermittent rather than permanent.~~
+
+**RETRACTED (R2-M3). There was no ciu invocation.** That was the round-1 reviewer moving both
+files aside for their own gate run and restoring them — stated in their appendix, in a document I
+had already read and quoted. The 01:38 `ciu.env` mtime is a `cp`, not a regeneration: the content
+is byte-identical to the original, and the file otherwise dates from worktree creation. I inferred
+a process from a single timestamp.
+
+**The strong reading stands: on a ciu-created worktree whose repository lacks the committed
+`.gitignore` entries, this reproduces every time.** The retraction matters because the claim was
+load-bearing — it downgraded a reproducible failure to an "intermittent" one and softened the
+warning to a future reader from *will* to *may*. The mechanism itself is untouched and was
+directly observed twice (`git check-ignore -v` naming `.git/info/exclude:18`, and
+`git ls-files --others --exclude-per-directory=.gitignore` listing the file while `git status`
+showed clean).
 
 ---
 
@@ -514,12 +522,16 @@ No source file, schema, frozen asset, test, gate script or lane config differs b
 commit and the head being handed off. A reviewer who wants a gate run whose commit hash equals
 the branch head can get one by re-running the gate on the merge commit.
 
-**A second, independent gate run corroborates this.** After the run above, a ciu-orchestrated
-invocation (`tester-unified-gate.sh ..`, CMRU's own relative spelling) ran the full gate against
-this branch at head `0a315100` — a commit later than `745ac377`, launched by something other
-than this session. It also finished **exit 0**, with the same eleven phase markers, having built
-its own wheel (`assay-2.4.3.dev22+g0a315100`). Two independent green runs at two different
-commits of this branch.
+**A second, independent gate run corroborates this.** The round-1 **reviewer** ran the full gate
+against this branch at head `0a315100` — a commit later than `745ac377` — and it also finished
+**exit 0**, with the same eleven phase markers, having built its own wheel
+(`assay-2.4.3.dev22+g0a315100`). Two green runs, at two commits, by two parties.
+
+(This paragraph originally called that run "a ciu-orchestrated invocation … launched by something
+other than this session", which was wrong and contradicted this report's own header. I saw an
+unfamiliar container running `tester-unified-gate.sh ..` and inferred an orchestrator; it was the
+reviewer, using the invocation their own appendix documents. Corrected per R2-M3 — the
+corroboration is real, the attribution was not.)
 
 ### Full-suite state
 

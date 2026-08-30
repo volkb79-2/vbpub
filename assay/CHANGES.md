@@ -41,17 +41,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): `judgment.r2` now records its own `mode` and `targets`, so an R2-only verdict witnesses
   the scope it was judged under instead of leaving it unstated (B035/A-329)
 
-### Fixed
-- fix(assay): a wheel installed from a URL carrying a fragment —
-  `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…`, the way an index page's own links
-  are written and the way a gate pins a judge artifact by URL and digest — was reported as having
-  no identifiable build artifact, because the `.whl` test ran against the raw URL. The fragment and
-  query are now stripped first; an sdist is still refused. This was the install shape most likely to
-  be used by the consumer B018 exists for (A-332)
-- fix(assay): `--require-judge-provenance`'s refusal reason listed only source-tree causes, reading
+### Changed
+- chore(assay): `judge_provenance`'s wheel-URL parser now strips a URL fragment and query before
+  testing for `.whl`. **This fixes no reachable defect**: PEP 610 permits a fragment, but pip
+  records `url_without_fragment` and uv strips it too, so no current installer produces the shape
+  — measured against real local and remote URL installs. It is hardening against a future or
+  third-party installer that writes what the spec allows. An sdist is still refused (A-332,
+  corrected by A-334)
+- docs(assay): `--require-judge-provenance`'s refusal reason listed only source-tree causes, reading
   as exhaustive while omitting the dominant one — an ordinary index install (`pip install assay`),
   which PEP 610 records nothing for. It now names that case first and says what to do instead;
-  `docs/CONSUMERS.md` carries the full table of which install shapes can be identified (A-332)
+  `docs/CONSUMERS.md` carries the full table of which install shapes can be identified, including
+  that **uv records no digest even for a direct-URL install**, so a uv-installed wheel is not
+  identifiable today (A-332)
 
 <!-- END of this wave's entries. Everything below belongs to 2.4.2 — see the warning above. -->
 

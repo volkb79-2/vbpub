@@ -116,16 +116,22 @@ def test_a_wheel_install_reports_the_installers_recorded_sha256(tmp_path: Path):
 def test_a_direct_url_wheel_is_identified_whatever_the_url_carries_after_it(
     tmp_path: Path, url
 ):
-    """(M3/A-332) A URL fragment must not make a real wheel install
-    unidentifiable.
+    """(A-332, rescoped by A-334) A URL fragment or query must not make a
+    wheel install unidentifiable.
 
-    PEP 610 records the requested URL verbatim, fragment included, and
-    `pip install https://.../x.whl#sha256=...` is the ordinary way to pin a
-    wheel by URL and digest. The original `url.split("?")[0].endswith(".whl")`
-    answered False for exactly that form, so the single install shape this
-    feature's own consumer is most likely to use -- CIU pinning a verified
-    judge artifact by URL -- was silently reported as having no identity, and
-    `--require-judge-provenance` would have hard-refused it.
+    **This pins hardening, not a fixed defect, and the distinction was got
+    wrong once already.** PEP 610 permits a fragment in `url`, but no current
+    installer writes one: pip builds the record from
+    `link.url_without_fragment`, and uv strips it too. Measured against real
+    installs -- local `file://` and remote over a loopback HTTP server -- the
+    stored URL has no fragment, so the pre-A-332 parser identified every one
+    of them correctly. An earlier revision of this docstring claimed the
+    opposite; that claim came from a `_FakeDistribution` string, which is
+    exactly what this parametrization still is.
+
+    It is kept because the shape is spec-legal and costs one `split` to
+    accept, so a future or third-party installer that writes what PEP 610
+    allows is identified rather than silently refused.
     """
     identity, reason = provenance.identify_judge(
         _module_at(tmp_path / "assay" / "__init__.py"),
@@ -153,6 +159,35 @@ def test_stripping_the_fragment_does_not_start_accepting_non_wheels(
     identity, reason = provenance.identify_judge(
         _module_at(tmp_path / "assay" / "__init__.py"),
         _wheel_dist(tmp_path, A_DIGEST, url=url),
+    )
+    assert identity is None
+    assert reason is not None
+
+
+def test_an_archive_info_with_no_digest_is_unidentifiable_not_a_crash(tmp_path: Path):
+    """(R2-m1) uv 0.12.1 installing a wheel from a direct URL writes
+    `direct_url.json` with `"archive_info": {}` -- the record exists, names a
+    `.whl`, and carries NO digest. Measured against a real uv install over a
+    loopback HTTP server, not assumed.
+
+    This is the case that breaks the tempting rule "a direct install always
+    records a digest": the rule is really "the INSTALLER recorded a digest",
+    and recording it is the installer's choice. The honest answer here is the
+    same as for an index install -- no identity -- and the important property
+    is that it is a clean refusal rather than a `KeyError` on `hashes`.
+    """
+    dist = _FakeDistribution(
+        root=tmp_path,
+        metadata={"Name": "assay", "Version": "1.0.0"},
+        direct_url=json.dumps(
+            {
+                "url": "http://127.0.0.1:8000/assay-1.0-py3-none-any.whl",
+                "archive_info": {},
+            }
+        ),
+    )
+    identity, reason = provenance.identify_judge(
+        _module_at(tmp_path / "assay" / "__init__.py"), dist
     )
     assert identity is None
     assert reason is not None

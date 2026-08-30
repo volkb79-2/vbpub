@@ -1855,14 +1855,26 @@ and therefore does not contain it; a merge in either direction picks it up.
 
 Two refinements to the report above, recorded so the entry is not overstated:
 
-* **The files are TRANSIENT, not permanent dirt.** A ciu invocation observed at
-  01:38 regenerated this worktree's `ciu.env` and removed both render inputs
-  outright. So the false `DIRTY_TREE` appears and disappears with ciu's own
-  worktree lifecycle, which is a large part of why three separate
-  investigations were needed to pin it down: the symptom is intermittent, and
-  a clean `git status` throughout makes it look like the gate, not the tree.
-* **The mechanism itself was directly observed, twice**, and stands
-  independently of the above: `git check-ignore -v` named
+* ~~**The files are TRANSIENT, not permanent dirt.** A ciu invocation observed
+  at 01:38 regenerated this worktree's `ciu.env` and removed both render
+  inputs outright.~~ **RETRACTED after round-2 review (R2-M3). No ciu ran.**
+  That was the round-1 REVIEWER moving both files aside to get a gate run and
+  restoring them afterwards — their review's own appendix says so in as many
+  words, in a document already read by the time this bullet was written. The
+  01:38 `ciu.env` mtime is their `cp` restoring the file, not a regeneration:
+  the content is byte-identical to the original, which a regeneration would
+  not be, and the file dates from worktree creation (23:07:10) otherwise.
+  There is no independent evidence of a ciu process anywhere — the claim was
+  inferred from one mtime.
+
+  **This retraction matters because the claim was load-bearing, not
+  decorative.** It converted a three-times-recurring, reproducible false
+  `DIRTY_TREE` into an "intermittent" one and softened the warning to a future
+  reader from *will* hit this to *may*. **Restore the strong reading: on a
+  ciu-created worktree whose repository lacks the committed `.gitignore`
+  entries, this reproduces every time.**
+* **The mechanism itself was directly observed, twice**, and is untouched by
+  the retraction above: `git check-ignore -v` named
   `/workspaces/vbpub/.git/info/exclude:18` as the only rule hiding the file,
   and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
   query — listed it while `git status --porcelain` reported nothing.

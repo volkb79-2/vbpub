@@ -806,20 +806,30 @@ one only for a *direct* install.
 
 | how assay got there | identified? | why |
 |---|---|---|
-| `pip install ./assay-<v>-py3-none-any.whl` | **yes** (`wheel`) | direct file install; PEP 610 records the wheel's sha256 |
-| `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…` | **yes** (`wheel`) | direct URL install; the fragment and any query are ignored when deciding it is a wheel |
+| **pip**: `pip install ./assay-<v>-py3-none-any.whl` | **yes** (`wheel`) | direct file install; pip records the wheel's sha256 in `archive_info.hashes` |
+| **pip**: `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…` | **yes** (`wheel`) | direct URL install; pip records the digest, and stores the URL with the `#fragment` already stripped |
 | running the `.pyz` (or `PYTHONPATH=<pyz>`) | **yes** (`zipapp`) | the archive is on disk and is hashed directly |
+| **`uv pip install` of a wheel, even from a direct URL** | **no** | measured on uv 0.12.1: it writes `direct_url.json` with `"archive_info": {}` — the record exists but carries **no digest**, so there is nothing to report |
 | **`pip install assay` / `pip install assay==2.5.0` from an index** | **no** | PEP 610 writes `direct_url.json` only for direct installs. An index install records **no** artifact identity anywhere on disk, and none can be recovered afterwards |
 | `pip install -e .`, `pip install <directory>` | no | no build artifact exists to hash |
 | a source checkout, or a `sys.path` entry shadowing an install | no | the running code is not the artifact's code (refused by name) |
+
+Note the rule is *"the installer recorded a digest"*, not *"the install was
+direct"* — the `uv` row is a direct install that still yields no identity,
+because recording the digest is the installer's choice and uv currently
+declines. If your gate demands provenance, **pin the installer as well as the
+artifact**, and verify one real install of your actual image before relying on
+it.
 
 The index-install row is the one that surprises people, and it matters
 specifically for **a CI runner image that pip-installs assay from a private
 index at image-build time**. That image is perfectly well pinned, and assay
 still cannot identify itself inside it — there is nothing on disk to identify.
-If your gate demands provenance, install the judge into the image **from the
-wheel file or its URL** (or ship the `.pyz`), not from a bare requirement
-specifier. Mounting the verified artifact into the runner works too.
+If your gate demands provenance, install the judge into the image **with pip,
+from the wheel file or its URL** (or ship the `.pyz`), not from a bare
+requirement specifier. Mounting the verified artifact into the runner works
+too. The `.pyz` is the most robust of these: it depends on no installer's
+metadata choices at all, because assay hashes the archive it is running from.
 
 Assay refuses rather than synthesising something here, and that is deliberate:
 a digest derived from the installed *files* would not equal the digest you

@@ -146,15 +146,24 @@ def _installed_wheel_digest(dist: Distribution) -> str | None:
     # A wheel is the only archive form assay is installed from; refusing an
     # sdist or a bare tarball here is the point, not an oversight.
     #
-    # (A-332) The fragment MUST be stripped before this test, and the query
-    # with it. `pip install https://.../assay-1.0-py3-none-any.whl#sha256=...`
-    # is the ordinary way to pin a wheel by URL and digest -- it is the shape
-    # an index page's own links carry, and the shape a gate pinning its judge
-    # by artifact URL would use. PEP 610 records that URL verbatim, fragment
-    # included, so an `endswith(".whl")` test against the raw string answers
-    # False and the install is reported unidentifiable. Measured against the
-    # four real URL forms; only the fragment one was refused, and it was the
-    # one this feature's own consumer is most likely to use.
+    # (A-332, corrected by A-334) The fragment and query are stripped before
+    # this test as DEFENSIVE parsing, not as a fix for a reachable defect.
+    #
+    # PEP 610 does not forbid a fragment in `url`, but neither pip nor uv
+    # writes one: pip builds the record from `link.url_without_fragment`
+    # (`pip/_internal/utils/direct_url_helpers.py`), so
+    # `pip install https://host/assay-1.0-py3-none-any.whl#sha256=...` records
+    # the URL with the fragment already gone. That was MEASURED here, against
+    # real installs -- a local `file://` install and a remote one over a
+    # loopback HTTP server, which is the "pin the judge by URL and digest"
+    # shape this feature exists for -- after an earlier revision of this
+    # comment claimed the opposite on the strength of a hand-written test
+    # double rather than an installer.
+    #
+    # So this is hardening against a shape the spec permits and today's
+    # installers do not emit. It costs one `split` and removes a way for a
+    # future or third-party installer to be silently unidentifiable. The
+    # `.whl` test itself still has to REFUSE an sdist, which a test pins.
     if not isinstance(url, str):
         return None
     if not url.split("#", 1)[0].split("?", 1)[0].endswith(".whl"):
