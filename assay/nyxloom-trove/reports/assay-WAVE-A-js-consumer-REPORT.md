@@ -425,11 +425,81 @@ its own implementer, and it is reported here rather than quietly re-run and
 forgotten — the earlier phases (`wheel-installed` through
 `verdict-v8-successors-verified`) all passed cleanly on this same attempt.
 
-**Attempt 2, from a stable, untouched worktree, is below (or superseding
-this section if this was updated before the older text was overwritten —
-see the commit that lands it).**
+**Attempt 2 (judged commit `e9424676`): also `ERROR`/environmental, not a
+product defect.** Launched cleanly from an untouched worktree, but this
+session's own background-task tracking killed the outer shell mid-run twice
+in a row (unrelated to assay — an artifact of this harness's own background-
+task lifecycle, observed independently of any file this wave touches); the
+underlying `tester-unified:local` container kept running detached and
+un-inspectable after `--rm` auto-removal raced my attempts to recover its
+exit code. No product signal either way from these two attempts; not
+counted as gate evidence.
 
----
+**Attempt 3 (judged commit `e9424676`, same as attempt 2 — worktree never
+touched between attempts): GREEN, full transcript captured.** Launched via
+`nohup ... & disown` so the run survived independent of this session's own
+background-task tracking, polled through a `Monitor` watch on its log file
+rather than the process itself. Full transcript committed verbatim at
+`nyxloom-trove/reports/assay-WAVE-A-gate-transcript.txt`; the load-bearing
+lines, read in a separate step from the pipe (never a tail):
+
+```
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.48s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 21.75s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.81s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6/v7 hard-cut guard passed for 12 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v7-hard-cut-verified
+41 passed in 0.97s
+ASSAY_GATE_PHASE=verdict-v8-successors-verified
+tester-unified: PASS (exit 0)
+  commit: e94246767b1935e1233c42d9fdab4df5fed22eff
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 13.70s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+`ASSAY_REGISTERED_GATE_COMPLETE=1` is the literal last line of the captured
+log (line 61 of 61) — verified by direct file inspection, not a pipe tail.
+The judged worktree's own `git status --short -- assay` was confirmed empty
+immediately before AND after this run; the judged commit (`e9424676`) is
+this wave's actual final commit before this REPORT's own closing commits
+(which land after, and are therefore not gate-verified — see the note at
+the end of this section).
+
+**Every phase, all real, nothing skipped:** the self-hosted lane runs this
+project's ENTIRE `pytest tests -q` suite (the same 3574-pass/13-skip count
+attempt 1's diagnostic rerun already showed) against the wheel-installed
+build; P25's Topos qualification and CMRU's B006a qualification each run
+real R0/R1/R2/R3 claims (a real killed mutant, a real canary) against real
+disposable git snapshots; the independent witness re-verifies self-hosting
+from a second angle. None of this wave's own new work (B044's inventory,
+the shared bound, the JS/vite-plugin-istanbul fixtures, the qualification
+harness) is part of what these OTHER packages' own qualification suites
+exercise directly — their green result is evidence the WHOLE installed
+wheel behaves correctly, including this wave's changes, not a claim that
+they specifically targeted B036/B041/B042/B044/B048/B039.
+
+**Note on commits after the judged one:** this REPORT's own remaining
+edits (filling in this very section) and its commit land AFTER `e9424676`,
+so the gate has not re-verified those specific bytes — they are pure
+documentation of an already-green run, touching no source or test file.
+
 
 ## 12. What a reviewer should push on
 

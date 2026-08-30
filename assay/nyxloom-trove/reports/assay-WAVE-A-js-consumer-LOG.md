@@ -274,3 +274,42 @@ and the dependency closure" (B041(a)) — "see the qualification harness
 below" pointed at nothing; the section it was written for was cut during
 drafting. Replaced with a direct pointer to
 `tests/qualification/test_javascript_real_vitest.py`.
+
+---
+
+## `8353ff25` — docs(assay): Wave A REPORT, and LOG entries for the housekeeping commits
+
+**Files:** `nyxloom-trove/reports/assay-WAVE-A-js-consumer-LOG.md`,
+`nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md` (new)
+
+**What:** The REPORT's first full version (per-item acceptance evidence,
+both qualification transcripts, the c8 measurement, decisions recorded,
+docs disposition table); the gate section left as a placeholder pending the
+real run.
+
+---
+
+## `e9424676` — docs(assay): commit the qualification transcript (renamed past *.log gitignore)
+
+**Files:** `nyxloom-trove/reports/assay-WAVE-A-qualification-transcript.txt`
+(renamed from `.log`), `nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md`
+
+**What:** The committed qualification transcript was silently excluded by
+the repo's blanket `*.log` gitignore rule. Renamed to `.txt` (a
+deliberately committed artifact, not an ephemeral run log); the REPORT's
+own reference updated to match. **This is the commit the registered gate
+judged green** — see the REPORT's §11 for the full transcript.
+
+---
+
+## (post-gate) docs(assay): the gate transcript, and the REPORT's final §11
+
+**Files:** `nyxloom-trove/reports/assay-WAVE-A-gate-transcript.txt` (new),
+`nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md`
+
+**What:** The registered gate's own full, green transcript (judged commit
+`e9424676`), committed verbatim; REPORT §11 filled in with the real result,
+replacing the placeholder and honestly recording the two environmental
+(non-product) failed attempts that preceded it. Lands after the judged
+commit — pure documentation of an already-green run, no source or test
+file touched.
