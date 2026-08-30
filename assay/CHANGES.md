@@ -48,7 +48,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - **BREAKING (lane config):** `python:uuid-equality-swap` and `python:enum-comparison-swap` are
   withdrawn — a lane declaring either, or an `--operators` override naming either, is refused at
   load. The two names stay legal in a schema-v7 artifact, so verdicts already emitted by
-  2.3.0/2.4.x keep verifying; nothing produces them (B034/A-326)
+  2.3.0/2.4.x keep verifying; nothing produces them (B034/A-326). **Superseded in part by the
+  v8 entry above:** that "stay legal" half was explicitly scoped to v7 and is discharged by
+  A-331 at this release's schema cut — the spellings are gone from v8 entirely
 
 ### Fixed
 - fix(assay): R2 whole-target mutation silently dropped a declared `judge.targets` entry that
