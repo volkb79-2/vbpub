@@ -42,6 +42,30 @@ from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
 
 
+#: (B018/A-327) The bracketing text of the one line a clean run prints on
+#: stderr from a SOURCE TREE, where assay has no build artifact to hash and
+#: therefore records no `judge_provenance` at all. The middle -- the specific
+#: reason -- is genuinely environment-dependent (no distribution metadata at
+#: all vs. metadata with no PEP 610 wheel record), so it is not pinned here;
+#: the bracketing wording IS pinned, because it is what an operator reads.
+JUDGE_PROVENANCE_ABSENT_PREFIX = "assay: no judge_provenance recorded -- "
+JUDGE_PROVENANCE_ABSENT_SUFFIX = (
+    "; pass --require-judge-provenance to refuse instead of proceeding\n"
+)
+
+
+def assert_stderr_is_only_the_judge_provenance_notice(err: str) -> None:
+    """The successor to this module's old ``assert err == ""``.
+
+    It is still an "assay said nothing else" assertion -- the exactly-one-line
+    check is what carries that -- and it additionally proves B018's loudness:
+    an unidentifiable judge is ANNOUNCED, never silently omitted.
+    """
+    assert err.startswith(JUDGE_PROVENANCE_ABSENT_PREFIX), err
+    assert err.endswith(JUDGE_PROVENANCE_ABSENT_SUFFIX), err
+    assert err.count("\n") == 1, err
+
+
 def _run_parser_description() -> str:
     """Exactly what a user sees from ``assay run --help`` -- captured from
     the real parser's own output, never read off the source line that
@@ -78,7 +102,13 @@ def test_run_executes_a_passing_lane_and_exits_zero(git_repo: GitRepo):
     code, out, err = run(["run", "package", "--file", str(path)])
 
     assert code == 0
-    assert err == ""
+    # B018/A-327: the ONLY thing on stderr for a clean run is the judge-
+    # provenance notice, and it is here because the test suite runs from a
+    # source tree -- there is no build artifact to hash, so no identity is
+    # recorded and the absence is announced rather than left silent. An
+    # installed wheel or zipapp prints nothing here (proved for real in
+    # `test_distribution_build_release.py`).
+    assert_stderr_is_only_the_judge_provenance_notice(err)
     assert "package: PASS (exit 0)" in out
     assert git_repo.head() in out
 
@@ -329,6 +359,12 @@ operators = ["python:compare-swap"]
         # this assertion pins the only derivation this build can reach, and
         # does not pretend to witness the other branch.
         "kill_attribution": "unattributed",
+        # B035/A-329: the REAL producer's own value, through the installed
+        # CLI -- this lane declares no `judge.mode`, so the artifact records
+        # the effective scope `_build_judgment_r2` resolved, not the absent
+        # declaration. It is what makes the `base` this same document carries
+        # checkable for an `R0,R2` lane at all.
+        "mode": "changed_lines",
     }
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --
     # exactly the hole v4 had, since `judgment.r1` is absent here and there
@@ -570,7 +606,10 @@ def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
     )
     path = _write_and_commit_lane(git_repo, lane)
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
-    assert err == ""
+    # B018/A-327: still the silent-on-stderr bucket for the REFUSAL itself --
+    # the one line present is the judge-provenance notice this source-tree
+    # invocation prints on every run, not a message this path gained.
+    assert_stderr_is_only_the_judge_provenance_notice(err)
     assert "Traceback" not in err
     document = json.loads(out)
     assert why_invalid(validator, document) == []

@@ -1,5 +1,5 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "555555555555555555555555555555555555555e",
@@ -39,7 +39,8 @@
       "jobs": 2,
       "max_mutants": 50,
       "operators": ["python:bool-const-flip", "python:compare-swap"],
-      "kill_attribution": "unattributed"
+      "kill_attribution": "unattributed",
+      "mode": "changed_lines"
     }
   },
   "snapshot_policy": {

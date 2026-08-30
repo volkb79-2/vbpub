@@ -1,5 +1,5 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",

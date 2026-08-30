@@ -99,6 +99,7 @@ from .verdict import (
     Evidence,
     EvidenceDeclaration,
     Helper,
+    JudgeProvenance,
     Judgment,
     JudgmentR1,
     JudgmentR2,
@@ -647,9 +648,10 @@ def _check_resolved_language_owns_every_operator(
 
 def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -> None:
     """(P33/A-223a/A-227, widened by wave-1 §6/A-260, CORRECTED by
-    B033/A-325) ``judgment.resolved.base`` is required IF ``r1`` is present
-    with ``mode == "changed_lines"``, forbidden IF ``r1`` is present with
-    ``mode == "whole_target"``, and forbidden when neither tier is present.
+    B033/A-325, COMPLETED by B035/A-329) ``judgment.resolved.base`` is
+    required when the lane's own mode -- witnessed by ``r1`` if present, else
+    by ``r2`` -- is ``"changed_lines"``, forbidden when it is
+    ``"whole_target"``, and forbidden when neither tier is present at all.
 
     The old rule made ``r2`` alone force a base. That was false as soon as
     ``whole_file_r2`` shipped: ``mode`` is a LANE-level scope, so a
@@ -658,46 +660,60 @@ def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -
     whole-target R2 artifact could not be produced at all -- the producer
     had to record a base nothing compared against.
 
-    Where ``r1`` is present its ``mode`` witnesses the LANE's mode, so both
-    halves are enforceable for both tiers. Where ``r1`` is absent and ``r2``
-    present, v7 puts nothing on the wire that distinguishes a diff-based R2
-    from a whole-target one (``judgment.r2`` has no ``mode``/``targets``
-    field), so neither half is enforceable and neither is claimed -- see
-    B035. Asserting a rule this document cannot witness is how a verifier
-    starts rejecting honest artifacts, which is the defect being fixed here,
-    not one to re-introduce facing the other way.
+    **B035/A-329, at schema v8:** the exemption A-325 had to carve out for an
+    ``r1``-absent document is GONE. ``judgment.r2.mode`` now witnesses the
+    lane's scope whenever ``r1`` does not, so both halves are enforceable for
+    every shape -- including the ``R0,R2`` one this rule most needed and
+    least covered (every SQL lane; dstdns's ``cw2b_schema`` by name). Where
+    both tiers are present their modes must agree, since one judgment records
+    one lane scope; a document holding two would make "the lane's mode"
+    ambiguous, and an ambiguous premise cannot carry the rule below.
 
     The producer cannot reach the forbidden half for an ordinary
     ``changed_lines`` lane -- A-062 refuses ``judge.base`` on an ``R0,R3``
-    lane as inert config, and the loader now does the same for every
-    whole-target lane -- but this verifier exists for FOREIGN documents,
-    which is exactly the population that can.
+    lane as inert config, and the loader does the same for every whole-target
+    lane -- but this verifier exists for FOREIGN documents, which is exactly
+    the population that can.
     """
     resolved = judgment.get("resolved")
     if not isinstance(resolved, dict):
         return
     r1 = judgment.get("r1")
+    r2 = judgment.get("r2")
     has_base = "base" in resolved
-    if isinstance(r1, dict):
-        if r1.get("mode") == "changed_lines" and not has_base:
+    if isinstance(r1, dict) and isinstance(r2, dict):
+        if r1.get("mode") != r2.get("mode"):
             failures.append(
-                "judgment.resolved omits base while judgment records r1 in "
-                "changed-line mode, which judges a diff against a resolved "
-                "comparison commit"
+                f"judgment.r1 declares mode {r1.get('mode')!r} while "
+                f"judgment.r2 declares {r2.get('mode')!r}; one judgment "
+                f"records one lane's scope and both tiers judge under it"
             )
-        if r1.get("mode") == "whole_target" and has_base:
+        if r1.get("targets") != r2.get("targets"):
             failures.append(
-                "judgment.resolved records a base although judgment records "
-                "r1 in whole-target mode; whole-target scope replaces the "
-                "diff at every tier, so no tier here reads a comparison "
+                "judgment.r1 and judgment.r2 declare different target sets, "
+                "though both name the DECLARED targets of the same lane"
+            )
+    witness = r1 if isinstance(r1, dict) else r2
+    if not isinstance(witness, dict):
+        if has_base:
+            failures.append(
+                "judgment.resolved records a base although judgment carries "
+                "neither r1 nor r2; no tier present here reads a comparison "
                 "commit"
             )
         return
-    if "r2" not in judgment and has_base:
+    which = "r1" if witness is r1 else "r2"
+    if witness.get("mode") == "changed_lines" and not has_base:
         failures.append(
-            "judgment.resolved records a base although judgment carries "
-            "neither r1 nor r2; no tier present here reads a comparison "
-            "commit"
+            f"judgment.resolved omits base while judgment records {which} in "
+            f"changed-line mode, which judges a diff against a resolved "
+            f"comparison commit"
+        )
+    if witness.get("mode") == "whole_target" and has_base:
+        failures.append(
+            f"judgment.resolved records a base although judgment records "
+            f"{which} in whole-target mode; whole-target scope replaces the "
+            f"diff at every tier, so no tier here reads a comparison commit"
         )
 
 
@@ -1040,6 +1056,24 @@ def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:
         raise ValueError(f"unknown {what} field(s): {unknown}")
 
 
+def _reconstruct_judge_provenance(raw: dict) -> JudgeProvenance:
+    """(B018/A-327) The judge identity, rebuilt from raw JSON.
+
+    Every field is a plain ``raw[...]`` lookup rather than ``raw.get(...)``:
+    the object has no optional half, so a missing key must raise here instead
+    of producing a `JudgeProvenance` with a hole in it.
+    """
+    identity = JudgeProvenance(
+        name=raw["name"],
+        version=raw["version"],
+        artifact=raw["artifact"],
+        digest_algorithm=raw["digest_algorithm"],
+        digest=raw["digest"],
+    )
+    _reject_unknown_keys(raw, identity.to_dict(), "judge_provenance")
+    return identity
+
+
 def _reconstruct_coverage(raw: dict) -> Coverage:
     coverage = Coverage(
         covered=raw["covered"],
@@ -1110,6 +1144,13 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         kill_attribution=raw["kill_attribution"],
         kill_signal_artifact=raw.get("kill_signal_artifact"),
         equivalence_artifact=raw.get("equivalence_artifact"),
+        # B035/A-329: registered in the SAME commit the dataclass and the
+        # schema gain them, which is the whole of A-323's lesson. `mode` is a
+        # required key at v8 (`raw["mode"]`, never `raw.get`) exactly as
+        # `_reconstruct_judgment_r1` reads r1's; `targets` is conditional and
+        # so is read the same way r1's is.
+        mode=raw["mode"],
+        targets=tuple(raw["targets"]) if "targets" in raw else None,
         shard_index=raw.get("shard_index"),
         shard_count=raw.get("shard_count"),
     )
@@ -1276,6 +1317,16 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             lane_kwargs["env_effective_incomplete"] = True
 
     judgment_kwargs: dict[str, Any] = {}
+    # B018/A-327. REGISTERED here in the same commit that adds it to the
+    # dataclass, the schema and the producer -- B031/A-323's lesson exactly:
+    # `shard_index`/`shard_count` sat in the model and the schema for a whole
+    # release while this layer rejected them, so assay's own schema-valid
+    # output failed `assay verify`. `_reject_unknown_keys` below is what makes
+    # that failure mode certain rather than possible.
+    if "judge_provenance" in document:
+        judgment_kwargs["judge_provenance"] = _reconstruct_judge_provenance(
+            document["judge_provenance"]
+        )
     if "judgment" in document:
         judgment_kwargs["judgment"] = _reconstruct_judgment(document["judgment"])
     if "helpers" in document:
