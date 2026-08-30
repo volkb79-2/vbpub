@@ -3,20 +3,20 @@
 **Branch:** `feature/assay-b018-b019-b035-v8-synergy`
 **Worktree:** `/workspaces/vbpub/.worktrees/assay-v8-synergy-wave/assay`
 **Base:** `4575501434ceab4d7bb4f731f95a72155b731da5`
-**Latest gate-verified commit:** `0fad7842` — the round-1 review remediation (§8).
-Earlier green runs: `745ac377` (§7) and `0a315100` (the reviewer's own, independent).
-**Status:** review-remediated, real registered gate green — **not merged, not pushed, not released.**
+**Latest gate-verified commit:** `652962af` — the round-2 review remediation (§9).
+Earlier green runs: `0fad7842` (§8), `745ac377` (§7), and `0a315100` (the reviewer's own).
+**Status:** review-remediated twice, real registered gate green — **not merged, not pushed, not released.**
 
-Commits after `0fad7842` change markdown only — verify with
-`git diff --name-only 0fad7842..HEAD | grep -v '\.md$'`, which must print nothing.
-(This line named `745ac377` until the remediation landed real code after it; it is
-updated rather than left to read as a stale guarantee, which is the mistake §8's own
-m3/N2 findings are about.)
+Commits after `652962af` change markdown only. **Do not trust that sentence — run it**, because
+it has gone stale twice already as later rounds landed code after the commit it named:
 
-All 92 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
-returns nothing. Nothing in `ciu/` or `dstdns/` was touched, and B020 was not opened.
+```
+git diff --name-only 652962af..HEAD | grep -v '\.md$'    # must print nothing
+```
 
-Paths below are relative to `assay/` unless stated otherwise.
+If it prints anything, the gate has not judged those files and the right move is to re-run the
+gate, not to re-date this line. (This is the third revision of this paragraph; §9's own R2
+findings are about exactly this failure mode, so it is written to be checked rather than believed.)
 
 ---
 
