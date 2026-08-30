@@ -661,7 +661,9 @@ and set the budget from that.
 further runs (import-break, uncovered-line), each against its OWN fresh
 snapshot — so each one repeats the offline install from a cold `node_modules`
 inside that snapshot. Budget a `javascript` R3 lane accordingly once it is
-wired (not yet — see the qualification harness below).
+wired — not yet: R3 is registered only after a real-Vitest canary pair has
+run (`tests/qualification/test_javascript_real_vitest.py` proves R1 today;
+canary coverage is a later step).
 
 Gitignore what the run writes — the coverage directory, and anything your
 runner drops beside it — in the same change that adds the lane:
