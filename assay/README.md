@@ -167,15 +167,31 @@ nyc/istanbul and by Jest (`--coverageReporters=json`), and by Vitest through
 either coverage provider:
 
 ```jsonc
-// vite.config.ts / vitest.config.ts
+// vite.config.ts / vitest.config.ts -- import `defineConfig` from
+// 'vitest/config', NOT from 'vite': only vitest/config's defineConfig
+// accepts a `test:` block; vite's own rejects it at the type level.
 test: {
   coverage: {
     provider: 'istanbul',      // REQUIRED for a judged lane — see below
     reporter: ['json'],        // 'json' IS coverage-final.json
-    reportsDirectory: '.assay' // keep it out of the tree, and gitignore it
+    reportsDirectory: '.assay', // keep it out of the tree, and gitignore it
+    clean: false               // REQUIRED inside an assay snapshot — see below
   }
 }
 ```
+
+> **`coverage.clean: false` is REQUIRED for a lane assay judges, not a style
+> preference.** Vitest's own default (`clean: true`) deletes and recreates
+> `reportsDirectory` before writing, and assay reserves that directory's file
+> handle *before* your command runs so it can read the artifact back
+> afterward without a second, racy directory walk. A tool that deletes and
+> recreates the directory rather than writing into the one assay already
+> opened leaves that handle pointing at an orphaned, empty directory — assay
+> then reads nothing back, even though a fully-populated `coverage-final.json`
+> really exists on disk at that path. Measured: with Vitest's default
+> `clean: true`, `assay run` on a real, correctly-covered lane returns
+> `NO_MEASUREMENT`/`EMPTY_COVERAGE`; the *only* change that fixes it is
+> `clean: false`. See B049.
 
 > **Use `@vitest/coverage-istanbul`, not `@vitest/coverage-v8`, for any lane
 > you gate on.** The v8 provider reports provably-never-executed lines as
@@ -188,7 +204,16 @@ test: {
 > tell them apart, which is exactly why the choice is yours to make correctly.
 > The witness fixtures are committed
 > (`tests/fixtures/coverage/probe-js-provider-defect/`), the ruling is A-346,
-> and the follow-up is B038/B040. `nyc`/`istanbul` and Jest are unaffected.
+> and the follow-up is B038/B040. `nyc`/`istanbul` and Jest with its default
+> `babel` coverage provider share `@vitest/coverage-istanbul`'s own
+> instrumenter and are unaffected. Jest's `coverageProvider: "v8"` remains
+> genuinely unmeasured — treat it as unsafe until a committed witness says
+> otherwise. `c8` **was measured** (B042 item 2) and is **also** unsafe: on
+> the identical ground truth, `c8@12.0.0`'s own `v8-to-istanbul` remapping
+> reports the same class of false-executed lines, triggered by the same
+> conditional expression — a related but not byte-identical defect (see
+> [the CONSUMERS guide](docs/CONSUMERS.md#the-v8-provider-is-not-safe-to-gate-on)
+> for the exact measured line sets and the committed witnesses).
 
 The artifact keys every record by absolute filesystem path; assay reconciles
 that against the diff's own repo-relative spelling itself, so nothing has to
@@ -198,6 +223,14 @@ anything under a `__tests__/` segment); `node_modules`, `dist` and `coverage`
 are excluded as directories. A `.d.ts` declaration file is recognised as
 having no executable code at all rather than being reported as a coverage
 gap.
+
+**A JavaScript/TypeScript lane's dependency closure (`node_modules`) is
+absent from assay's own snapshot** — Python's venv and Go's module cache are
+both out-of-tree, so neither adapter ever met this; JavaScript's is in-tree
+and gitignored. See
+[CONSUMERS' "JavaScript lanes and the dependency closure"](docs/CONSUMERS.md#javascript-lanes-and-the-dependency-closure)
+for the offline-install pattern, the `npx` fetch hazard, and a worked
+monorepo lane (B041).
 
 **There is deliberately no JavaScript R2 yet.** Whether JS/TS mutation should
 be a native engine (as Python's and SQL's are) or should ingest an external
