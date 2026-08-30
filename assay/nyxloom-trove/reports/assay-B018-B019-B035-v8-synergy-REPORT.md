@@ -13,7 +13,7 @@ Commits after `0fad7842` change markdown only — verify with
 updated rather than left to read as a stale guarantee, which is the mistake §8's own
 m3/N2 findings are about.)
 
-All 91 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
+All 92 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
 returns nothing. Nothing in `ciu/` or `dstdns/` was touched, and B020 was not opened.
 
 Paths below are relative to `assay/` unless stated otherwise.
