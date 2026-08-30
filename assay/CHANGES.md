@@ -32,6 +32,34 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [3.1.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=c0b0e18225935138628099d44f23e93d5f5e7f49 -->
+
+### Added
+- feat(assay): a JavaScript/TypeScript adapter, registered at R1 (B036) (26c92be9)
+- feat(assay): coverage-istanbul-json, a fifth coverage format (B036) (d019b624)
+
+### Changed
+- merge(assay): bring feature/assay-b036-js-adapter up to date with main (B018/B019/B035 v8 + B037 ruling) before landing (408c3d57)
+- backlog(assay): rule B037's native-vs-evidence-ingestion fork -- Stryker Mutator (b0bef83a)
+
+### Documentation
+- docs(assay): B036/A-346 -- fix "written to FAIL if fixed" overreach (round-2 nit) (e580de02)
+- docs(assay): B036 report -- round-2 registered gate transcript, exit 0 (B036) (3a677f95)
+- docs(assay): B036 report -- round-2 response, and commit the review it answers (B036) (d8b54de8)
+- docs(assay): rule @vitest/coverage-v8 unsafe for judged lanes (A-346, B040) (0e2f111b)
+- docs(assay): correct three overstated claims in the JS adapter's own source (B036) (14b5c47e)
+- docs(assay): correct the phase-marker count in the B036 report (371a4f7b)
+- docs(assay): record the registered gate transcript for B036 (95a83968)
+- docs(assay): B036 implementation report (8aa62c62)
+- docs(assay): document the javascript language and istanbul format (B036) (53dca7d5)
+
+### Testing
+- test(assay): pin the v8 provider defect and replace the vacuous span pin (B036) (c115a107)
+- test(assay): real fixtures for the v8 provider defect and the canary (B036) (6aa8e08b)
+- test(assay): real vitest coverage fixtures for both providers (B036) (e2395b66)
+
 ## [3.0.0] - 2026-08-30
 <!-- cmru: generated -->
 <!-- cmru: source-end=b6aca39de509ab188148c149d352a74401d09fa0 -->
