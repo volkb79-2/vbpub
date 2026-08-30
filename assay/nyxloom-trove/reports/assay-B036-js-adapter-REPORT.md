@@ -283,7 +283,108 @@ A-345 argues — a real transcript, not a structural claim.
 
 ### 4.3 The registered gate — `bash tools/tester-unified-gate.sh`
 
-<!-- GATE-TRANSCRIPT -->
+Invoked exactly the way `nyxloom-trove/nyxloom.toml`'s own
+`[gates.tester-unified]` invokes it (the SSOT pointer: the lane lives in
+`assay/run-gate.toml` and `run-gate.py` drives
+`tools/tester-unified-gate.sh`, which owns its own container mechanics —
+exact-OID clone, pinned build closure, detached run). Running the gate script
+directly with no argument, or against an uncommitted tree, is refused by the
+script itself; both refusals were hit and are why the report is committed one
+commit before this transcript.
+
+```
+$ cd assay && ./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b036-js-adapter tester-unified
+run-gate: rev 23 | lane tester-unified | env built-in 'host'
+run-gate: budget 60m (advisory)
+Looking in links: /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.MMAMvLKK0g/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-2.4.3.dev20+g8aa62c62-py3-none-any.whl size=373706 sha256=a0c5d1b894519f9804dff088f1d4724418b28f28b469540743c8fe92755457c9
+  Stored in directory: /tmp/pip-ephem-wheel-cache-v6qsk1yn/wheels/24/56/03/acda65d3d756c549442d8d55bbc9de23b95dcdba84a0ef91da
+Successfully built assay
+Processing ./tmp/tmp.MMAMvLKK0g/dist/assay-2.4.3.dev20+g8aa62c62-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-2.4.3.dev20+g8aa62c62
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 1.45s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 19.47s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.95s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+.......................                                                  [100%]
+23 passed in 0.86s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 8aa62c622afc6377b1dce2de57b9d012487685b0
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"description": "Eq->NotEq", "end_byte": 52, "lineno": 2, "operator": "python:compare-swap", "path": "cmru/src/cmru/_b006a_probe.py", "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2", "start_byte": 50}
+r3_canary={"control_outcome": "PASS", "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file", "expected_reason_code": "UNCOVERED_LINES", "mechanism": "uncovered-line", "observed_reason_code": "UNCOVERED_LINES", "target": "src/cmru/_b006a_probe.py", "transformed_outcome": "FAIL"}
+snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlink_omissions": ["topos/tests/fixtures/inspect_files/_danger/passwd_link", "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape", "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"]}
+omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 12.78s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+The exit code was read in a SEPARATE step, never off a pipe tail (LESSONS L4):
+
+```
+$ tail -3 gate.txt
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT=0
+```
+
+All eight phase markers present and in order — `wheel-installed`,
+`attestation-hardened`, `verdict-v5-accepted`,
+`lane-schema-v2-successors-verified`, `verdict-v6-successors-verified`,
+`verdict-v7-successors-verified`, `self-hosted-lane-passed`,
+`topos-qualified`, `cmru-b006a-qualified`,
+`independent-self-hosting-passed` — terminated by
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. The self-hosted lane ran assay's own
+3,454-test suite through the WHEEL built from the exact commit
+(`assay-2.4.3.dev20+g8aa62c62`), not a source import.
+
+For reference, the same suite run directly in the worktree:
+
+```
+$ python -m pytest tests/ -q
+3454 passed, 11 skipped, 1 warning in 374.01s (0:06:14)
+```
+
 
 ---
 
