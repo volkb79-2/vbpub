@@ -3,13 +3,17 @@
 **Branch:** `feature/assay-b018-b019-b035-v8-synergy`
 **Worktree:** `/workspaces/vbpub/.worktrees/assay-v8-synergy-wave/assay`
 **Base:** `4575501434ceab4d7bb4f731f95a72155b731da5`
-**Gate-verified commits:** `745ac377` and `0a315100` (two independent green runs; see §7)
-**Status:** implementation complete, real registered gate run — **not merged, not pushed, not released.**
+**Latest gate-verified commit:** `0fad7842` — the round-1 review remediation (§8).
+Earlier green runs: `745ac377` (§7) and `0a315100` (the reviewer's own, independent).
+**Status:** review-remediated, real registered gate green — **not merged, not pushed, not released.**
 
-Commits after the gated ones change markdown only — verify with
-`git diff --name-only 745ac377..HEAD | grep -v '\.md$'`, which must print nothing.
+Commits after `0fad7842` change markdown only — verify with
+`git diff --name-only 0fad7842..HEAD | grep -v '\.md$'`, which must print nothing.
+(This line named `745ac377` until the remediation landed real code after it; it is
+updated rather than left to read as a stale guarantee, which is the mistake §8's own
+m3/N2 findings are about.)
 
-All 89 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
+All 91 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
 returns nothing. Nothing in `ciu/` or `dstdns/` was touched, and B020 was not opened.
 
 Paths below are relative to `assay/` unless stated otherwise.
