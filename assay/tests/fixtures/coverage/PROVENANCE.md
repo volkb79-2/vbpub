@@ -1,5 +1,9 @@
 # Real coverage artifacts — carver-owned evidence, never hand-authored
 
+Ten artifacts. Eight are coverage.py's (below); the two
+`coverage-istanbul-json.*` documents are real `vitest run --coverage` output
+and have their own section at the bottom of this file (B036).
+
 Eight artifacts. Six are three formats × (branch tracking ON / OFF) over the
 two-file program in `probe/`; two more (`*.exitarc.*`) come from `probe-exit/`
 and exist only to witness the exit-arc spellings described at the bottom of this
@@ -98,3 +102,71 @@ mistake this directory exists to prevent.
 
 Both files carry the ordinary shapes too (`[5,6]`/`[5,7]`, `BRDA:5,0,jump to
 line 6,1`), so a test that reads them is not exercising only the exotic case.
+
+---
+
+# The istanbul artifacts — real `vitest run --coverage` output (B036)
+
+Two artifacts, `coverage-istanbul-json.vitest-v8.json` and
+`coverage-istanbul-json.vitest-istanbul.json`. They are the SAME program
+measured by Vitest's TWO coverage providers, and they exist because the whole
+design of `coverage_parsers/coverage_istanbul_json.py` and of
+`adapters/javascript.py`'s `requires_span_attribution = False` turns on how
+these two documents actually differ. A hand-written istanbul fixture would
+have reproduced neither difference.
+
+**The implementer must not edit either artifact**, nor the driver project in
+`probe-js/` that produces them. A parser that needs one of them changed is a
+parser that does not read the real format.
+
+## How they were produced
+
+`probe-js/` is a complete, self-contained Vitest project (its `package.json`
+pins every version exactly, no ranges). Outside this repository — no
+`node_modules` is committed — with Node `v26.5.1`, `vite 7.3.6`,
+`vitest 3.2.4`, `@vitest/coverage-v8 3.2.4` and
+`@vitest/coverage-istanbul 3.2.4`, on 2026-08-30:
+
+```sh
+npm install
+npx vitest run --coverage --coverage.provider=v8
+cp coverage/coverage-final.json ../coverage-istanbul-json.vitest-v8.json
+npx vitest run --coverage --coverage.provider=istanbul
+cp coverage/coverage-final.json ../coverage-istanbul-json.vitest-istanbul.json
+```
+
+**No file was edited afterwards.** In particular the record keys are the
+producing machine's own ABSOLUTE paths, left exactly as istanbul writes them —
+that is the format's actual key shape, and a fixture with them rewritten to
+relative paths would silently retire the very case
+`evaluate._to_repo_relative_key`'s absolute-key branch exists to handle
+(A-341). A test that needs those keys under its own temp repository rebases
+the directory prefix at read time and changes nothing else.
+
+`probe-js/src/format.ts` and `probe-js/src/roles.ts` are copied verbatim from
+dstdns's `applications/webapp-ui-react/src/lib/` (the first real consumer),
+with one edit to `roles.ts`: its `@/auth/types` path alias is rewritten to a
+relative `./types`, because the probe declares no alias. The rest of the
+program is shaped so every case the parser and the adapter must decide appears
+at once — a partially-covered `if`/`if`/ternary function, a TSX component with
+a multi-line JSX return, a `.d.ts` declaration file, a type-only `.ts` module,
+a never-imported module, a function carrying an
+`/* istanbul ignore next */` hint, and test files under all three naming
+conventions (`__tests__/roles.test.ts`, `branchy.test.ts`, `Badge.spec.tsx`).
+
+## What each artifact proves — the facts B036's design depends on
+
+| fact | witness |
+|---|---|
+| the format keys records by **absolute filesystem path** | every top-level key in both documents is an absolute path, and each record repeats it in its own `path` field |
+| `@vitest/coverage-v8` emits **one single-line statement per executable line** | in the v8 artifact no `statementMap` entry anywhere has `end.line != start.line` |
+| `@vitest/coverage-istanbul` emits **real multi-line statement extents** | in the istanbul artifact `format.ts` carries `[13,15]`, `[24,32]`, `[33,37]` and `[34,36]`; `roles.ts` carries `[7,11]` |
+| so this format DOES have coverage.py's multi-line-statement gap, under one provider | those extents' interior lines have no statement entry of their own at all |
+| statement extents **nest**, and "executed wins" would be a false green | `branchy.ts` (istanbul) reports `[2,4]` (the whole `if`) with count **1** and `[3,3]` (its own never-taken `return`) with count **0**; innermost-wins classifies line 3 missing, a go-cover-style merge would call it covered |
+| the two providers' `branchMap` are **not the same measurement** | for `branchy.ts` the istanbul artifact has 3 entries typed `if`/`if`/`cond-expr` with per-arm counts `[0,1]`, `[1,0]`, `[0,0]` (6 arcs, 2 covered); the v8 artifact has 4 entries all typed `"branch"`, each with exactly ONE location and ONE count (4 "arcs", 1 covered), one of them spanning the whole function |
+| an end position's `column` can be **`null`** in real output | every `end` in the istanbul artifact — a parser requiring an integer column rejects genuine output |
+| a `.d.ts` declaration file is reported by **neither** provider | `src/types.d.ts` appears in neither document |
+| a **type-only `.ts` module** is reported by v8 with an EMPTY `statementMap`, and not at all by istanbul | `src/typesonly.ts` has `"statementMap": {}` in the v8 artifact and no record in the istanbul one |
+| a never-imported source file is still measured by v8 | `src/orphan.ts` carries `"all": true` and all-zero counts in the v8 artifact |
+| test files are excluded by the tool itself, under all three naming conventions | neither document has a record for `__tests__/roles.test.ts`, `branchy.test.ts` or `Badge.spec.tsx` |
+| an `/* istanbul ignore next */` hint leaves **no exclusion field** to read | `src/hinted.ts` carries the hint, and in both artifacts its hinted `if` is still an ordinary `statementMap` entry with a live count (istanbul: `[3,5]` count 1, its never-taken `return` `[4,4]` count 0) and no `skip` marker appears anywhere in either document — which is why `excluded` is `None` for this format |
