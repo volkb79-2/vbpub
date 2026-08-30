@@ -1775,6 +1775,115 @@ only): every new CIU-generated per-worktree render-input filename repeats
 this exact gap until it's added to the ignore file by hand, one file at a
 time, after someone hits it.
 
+**Recurrence 3, 2026-08-30 (assay B018/B019/B035 wave, in VBPUB'S OWN
+worktree) — the first occurrence outside dstdns, and it reds assay's own
+registered gate.** `tools/tester-unified-gate.sh`'s self-hosted lane refused
+`NO_MEASUREMENT/DIRTY_TREE` in
+`/workspaces/vbpub/.worktrees/assay-v8-synergy-wave` with a tree that
+`git status --porcelain` reported as completely clean — including the gate's
+own newly added post-lane status diagnostic, which printed nothing. The file
+is `ciu.worktree-instance.json`, i.e. **recurrence 1's original filename**,
+excluded by `/workspaces/vbpub/.git/info/exclude:18` (`/ciu.worktree-instance.json`)
+and by nothing committed; `git check-ignore -v` names that source directly,
+and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+query — lists it. `vbpub/.gitignore` does carry `ciu.env` (line 163) but not
+this one.
+
+Two things this recurrence establishes that the first two did not:
+
+1. **The fix is per-REPOSITORY, and vbpub never got it.** `dstdns@08b789f5`
+   and `dstdns@5c8c14c6` fixed dstdns's committed `.gitignore`. vbpub's was
+   never touched, so the identical gap sat unnoticed here until a wave
+   happened to run the registered gate from a ciu-created worktree. **Both**
+   filenames are present and unignored in this worktree, and the second is in
+   a worse state than the first: `ciu.global.worktree.toml.j2` (recurrence
+   2's filename) is excluded by NOTHING — not the committed `.gitignore`, not
+   `.git/info/exclude` — so it shows as a plain `??` in ordinary `git status`,
+   where `ciu.worktree-instance.json` stays hidden.
+
+   **CORRECTED after round-1 review (m1).** This paragraph originally went on
+   to say the `.j2` "reds the gate's own pre-flight (`assay has uncommitted
+   changes`) before assay is ever reached". That is **wrong**, and it was a
+   reconstruction rather than a measurement. The pre-flight is pathspec-limited
+   — `git -C "$worktree" status --porcelain=v1 -- assay` — and the `.j2` sits
+   at the worktree ROOT, outside `assay/`, so it never reaches it. Re-measured
+   with the file restored:
+
+   ```
+   plain status:                 ?? ciu.global.worktree.toml.j2
+   pre-flight query (-- assay):  (empty)      <- NOT tripped
+   assay's own dirty query:      ciu.global.worktree.toml.j2
+   ```
+
+   The pre-flight failure actually seen during this wave came from an
+   uncommitted edit to `tools/tester-unified-gate.sh`, which IS under `assay/`,
+   and was misattributed to this file. **Both files red the LANE via
+   `git.dirty_paths`; neither reaches the shell pre-flight.** The operational
+   conclusion (move both aside) is unchanged. The diagnosis is not, and a
+   recurrence entry whose entire value is an accurate diagnosis must not carry
+   a plausible-sounding wrong one into a fourth occurrence.
+
+   The two-line fix (both names in
+   vbpub's committed `.gitignore`, alongside the `ciu.env` line already
+   there) is NOT taken in this wave: `.gitignore` at the vbpub root is
+   outside this branch's assay subtree and belongs to whoever owns the estate
+   root, and the brief scoping this wave excludes it. Flagged for the
+   reviewer/controller as a two-line follow-up rather than done unilaterally.
+2. **This entry's own "if the symptom recurs, re-verify against the current
+   `.gitignore`" instruction is now three-for-three**, and each time the
+   answer has been the same missing line. The per-file, after-someone-hits-it
+   loop that recurrence 2 flagged for CIU's attention is not hypothetical
+   anymore — it has now cost three separate investigations across two repos,
+   the third of which presented as an unexplained gate failure in a wave that
+   had nothing to do with git ignore rules.
+
+Workaround used to get a real gate run in this wave (recurrence 1's, verified
+again): move the file out, run the gate, move it back. Assay-side behaviour is
+correct and unchanged — A-177's refusal to honour `.git/info/exclude` is the
+whole point, and a fix that made assay honour it would reopen the hole that
+rule exists to close.
+
+**RESOLVED 2026-08-30, same day, upstream and not by this wave.**
+`vbpub@8caf1c24` "fix(vbpub): gitignore CIU per-worktree render artifacts
+(B017, third recurrence)" adds BOTH `ciu.worktree-instance.json` and
+`ciu.global.worktree.toml.j2` to vbpub's committed `.gitignore`, with a
+comment naming this recurrence and the two dstdns precedents — i.e. the exact
+two-line fix the note above flagged rather than took. vbpub now carries what
+dstdns has carried since `dstdns@08b789f5`/`dstdns@5c8c14c6`. The assay branch
+that found it (`feature/assay-b018-b019-b035-v8-synergy`) predates that commit
+and therefore does not contain it; a merge in either direction picks it up.
+
+Two refinements to the report above, recorded so the entry is not overstated:
+
+* ~~**The files are TRANSIENT, not permanent dirt.** A ciu invocation observed
+  at 01:38 regenerated this worktree's `ciu.env` and removed both render
+  inputs outright.~~ **RETRACTED after round-2 review (R2-M3). No ciu ran.**
+  That was the round-1 REVIEWER moving both files aside to get a gate run and
+  restoring them afterwards — their review's own appendix says so in as many
+  words, in a document already read by the time this bullet was written. The
+  01:38 `ciu.env` mtime is their `cp` restoring the file, not a regeneration:
+  the content is byte-identical to the original, which a regeneration would
+  not be, and the file dates from worktree creation (23:07:10) otherwise.
+  There is no independent evidence of a ciu process anywhere — the claim was
+  inferred from one mtime.
+
+  **This retraction matters because the claim was load-bearing, not
+  decorative.** It converted a three-times-recurring, reproducible false
+  `DIRTY_TREE` into an "intermittent" one and softened the warning to a future
+  reader from *will* hit this to *may*. **Restore the strong reading: on a
+  ciu-created worktree whose repository lacks the committed `.gitignore`
+  entries, this reproduces every time.**
+* **The mechanism itself was directly observed, twice**, and is untouched by
+  the retraction above: `git check-ignore -v` named
+  `/workspaces/vbpub/.git/info/exclude:18` as the only rule hiding the file,
+  and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+  query — listed it while `git status --porcelain` reported nothing.
+
+This entry's standing instruction is unchanged for a FOURTH occurrence: any new
+CIU-generated per-worktree filename repeats the gap until it is added to the
+committed ignore file. That is now three filenames across two repositories,
+each found the same expensive way.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
@@ -1794,15 +1903,49 @@ CIU V8 depends on this to bind LaneResult evidence to the verified judge it
 resolved from `[testing.judge]`; without it, central tool resolution can verify
 a download but cannot prove which binary emitted the verdict.
 
+**Status:** **FIXED 2026-08-30 (A-327, extended by A-332)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. `judge_provenance` is an optional top-level verdict
+object that is **absent-or-complete, never partial**; `assay run
+--require-judge-provenance` turns an unidentifiable invocation into an
+`ERROR`/`BAD_LANE_CONFIG` refusal before any work runs. The identification
+logic was designed against four real invocations (wheel install, zipapp,
+bare source checkout, and an installed distribution shadowed by a source tree
+on `sys.path`), not against a reading of the `importlib.metadata` docs — the
+shadow guard exists because measurement found that a resolvable distribution
+does not prove the running code came from it.
+
 ### Acceptance
 
-- [ ] verdict schema/model records judge name, version, digest algorithm, and
-      digest;
-- [ ] distribution invocation records the installed artifact's actual SHA-256;
-- [ ] unidentifiable invocation fails loudly rather than emitting a partial
-      identity;
-- [ ] existing v7 consumers tolerate the optional fields before V8 requires
-      them.
+- [x] verdict schema/model records judge name, version, digest algorithm, and
+      digest — plus `artifact` (`wheel`/`zipapp`), which names *which* release
+      file the digest is of; all five required when the object is present.
+      Registered in all three layers in one commit (model `verdict.py:1406`,
+      raw verifier `verify.py:1059`/`:1327`, packaged schema `$defs`), closing
+      the A-323 class where a field lived in two layers for a whole release;
+- [x] distribution invocation records the installed artifact's actual SHA-256
+      — proven three ways, two outside pytest: against a built wheel
+      (`test_standalone.py`), against a built `.pyz`
+      (`test_distribution_build_release.py`), and by the registered gate
+      itself, which `sha256sum`s the wheel host-side and compares
+      (`ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel`);
+- [x] unidentifiable invocation fails loudly rather than emitting a partial
+      identity — the field is omitted entirely (A-051 "omitted, never null"),
+      the reason goes to the diagnostics stream, and
+      `--require-judge-provenance` makes it fatal for callers that require
+      attributable evidence. Every refusal path is covered explicitly, not
+      just the happy one;
+- [~] existing v7 consumers tolerate the optional fields before V8 requires
+      them — **NOT MET, and it cannot be, because B035's hard cut ships in the
+      same release.** The field is genuinely optional and additive in v7 terms,
+      which is what made it safe to add without a bump of its own; but a v7
+      consumer handed one of these verdicts refuses the whole document on
+      `schema_version` (A-170) long before it reaches `judge_provenance`. This
+      criterion assumed B018 would land in a v7 release ahead of the V8 cut,
+      and the wave batched them together instead. Annotated rather than ticked
+      (see the wave report §2 and the review's N1); the consumer-facing
+      consequence is documented in `docs/CONSUMERS.md`.
 
 ## B019 — CIU V8 preparation: gate-request-supplied comparison base
 
@@ -1820,13 +1963,37 @@ configuration refusal, never a fallback to HEAD or another invented value.
 This keeps static lane policy portable across branches/worktrees while letting
 CIU V8 own branch-aware orchestration and execution manifests.
 
+**Status:** **FIXED 2026-08-30 (A-328)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. A lane declares `judge.base_source = "request"`; the
+invoking gate supplies `assay run|plan --request-base REF`. The design decision
+worth reading is that **precedence was refused rather than picked**: with both
+present, whichever side lost would be config nothing reads, which is A-062's
+named defect class, so declaring both is refused at load. Validated against
+CIU §10.10 as written, and dstdns's five `judge.base` lanes migrate by deleting
+one line. The one estate lane that pays a real cost is `ciu/assay.toml:49`
+(`base = "origin/main"`) — see the migration note in `docs/CONSUMERS.md`.
+
 ### Acceptance
 
-- [ ] lanes can distinguish declared local base versus requested base policy;
-- [ ] request-provided refs resolve through the same merge-base contract as
-      `judge.base`;
-- [ ] absent request base for a required changed-line lane refuses loudly;
-- [ ] verdicts continue to record the effective resolved base exactly once.
+- [x] lanes can distinguish declared local base versus requested base policy —
+      `judge.base_source`, a closed two-value vocabulary
+      (`{"declared", "request"}`, default `"declared"`), `config.py:243`;
+- [x] request-provided refs resolve through the same merge-base contract as
+      `judge.base` — it is a second *source* for one argument, not a second
+      code path: both land in `runner._resolve_declared_base` and record
+      `base_resolution` identically. Verified end-to-end by the reviewer
+      against a real two-commit repo through the installed wheel;
+- [x] absent request base for a required changed-line lane refuses loudly —
+      one of three named `LaneConfigError` → `ERROR`/`BAD_LANE_CONFIG`
+      refusals, all resolved in `runner.resolve_base_declaration`
+      (`runner.py:2018`) and called once above the dispatch, so `run` and
+      `plan` cannot drift in what they accept. No fallback to `HEAD` or a
+      default branch (A-018, at the request boundary);
+- [x] verdicts continue to record the effective resolved base exactly once —
+      `judgment.resolved.base`, unchanged in shape; the request-supplied value
+      reaches it through the same single write.
 
 ## B020 — CIU V8 preparation: SQL mutation template/reset hooks (design first)
 
@@ -3061,7 +3228,16 @@ which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
 ## B035 — an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there
 
 **Filed 2026-08-26 from B033's own fix (A-325).**
-**Status:** open. Not a live defect — a gap in what the artifact can prove.
+**Status:** **FIXED 2026-08-30 (A-329)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. This is the wave's one **v7 → v8 schema cut**: it was
+batched alone as the version-bumping item precisely because it is the break,
+and B018/B019 rode with it because they are additive/config-only. `judgment.r2`
+now carries `mode` (required) and `targets` (optional), so the exemption A-325
+had to carve out for an `r1`-absent document is gone and the base rule is
+enforced for every shape — including the `R0,R2` one it most needed and least
+covered.
 **Priority note (round-2 review of the B033 wave):** this is not a neutral
 deferral. A-325 had to STOP enforcing the old `base` rule for `R0,R2`
 documents to make honest whole-target R2 artifacts verifiable at all, so a
@@ -3108,12 +3284,21 @@ alongside whatever else needs one, not force one on its own.
 
 ### Acceptance
 
-- [ ] `judgment.r2` records the mode it judged under, and the declared
-      target set when that mode is `whole_target`;
-- [ ] the model, `verify.py` and the schema enforce the `base` rule for an
-      `R0,R2` lane, not only for lanes declaring R1;
-- [ ] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
-      the bump.
+- [x] `judgment.r2` records the mode it judged under, and the declared
+      target set when that mode is `whole_target` — `verdict.py:1727`/`:1734`,
+      mirroring `judgment.r1`;
+- [x] the model, `verify.py` and the schema enforce the `base` rule for an
+      `R0,R2` lane, not only for lanes declaring R1 — enforced in all three
+      layers per A-182, against an r1-else-r2 witness, with the raw verifier's
+      wording deliberately unlike the model's so a copy-paste stub cannot
+      satisfy both;
+- [x] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
+      the bump — **as a NEW frozen generation, not an edit to W2**: W2 stays
+      frozen at v7 (that is the convention W1→W2 established), and
+      `carve-assets/W4/` carries the v8 schema copy, a 40-node acceptance
+      suite, six migrated templates and a `MANIFEST.md`. W4 rather than W3
+      because `W3/` was already taken; the `W<n>` names are wave identities,
+      not schema versions (A-330).
 
 ---
 

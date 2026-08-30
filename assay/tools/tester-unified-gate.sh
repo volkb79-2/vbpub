@@ -173,22 +173,101 @@ require_emitted_version_matches() {
     die "emitted assay_version ($emitted) != installed version ($expected)"
 }
 
+# B018/A-327: the gate's own end-to-end witness that a distribution invocation
+# records the digest of the artifact it was ACTUALLY installed from. The wheel
+# is hashed here, on the host side, with a tool that has never imported assay;
+# the number it produces must equal the one the installed console script wrote
+# into its own verdict. Nothing in between can launder the comparison, because
+# neither side derives its value from the other.
+require_emitted_judge_provenance() {
+  local scratch="$1" verdict="$2" wheel="$3" expected_version="$4"
+  local wheel_digest emitted_digest emitted_artifact emitted_version emitted_algorithm
+  wheel_digest="$(sha256sum "$wheel" | cut -d' ' -f1)"
+  [[ ${#wheel_digest} -eq 64 ]] || die "sha256sum did not yield a 64-hex digest for $wheel"
+
+  read -r emitted_artifact emitted_algorithm emitted_digest emitted_version < <(
+    "$scratch/run-venv/bin/python" - "$verdict" <<'PYEOF'
+import json
+import sys
+
+document = json.load(open(sys.argv[1]))
+identity = document.get("judge_provenance")
+assert isinstance(identity, dict), (
+    "the self-hosted lane emitted no judge_provenance, although it ran the "
+    "installed wheel, which always identifies itself (B018)"
+)
+print(
+    identity["artifact"],
+    identity["digest_algorithm"],
+    identity["digest"],
+    identity["version"],
+)
+PYEOF
+  )
+  [[ "$emitted_artifact" == "wheel" ]] || \
+    die "emitted judge_provenance.artifact ($emitted_artifact) is not 'wheel'"
+  [[ "$emitted_algorithm" == "sha256" ]] || \
+    die "emitted judge_provenance.digest_algorithm ($emitted_algorithm) is not 'sha256'"
+  [[ "$emitted_version" == "$expected_version" ]] || \
+    die "emitted judge_provenance.version ($emitted_version) != installed ($expected_version)"
+  [[ "$emitted_digest" == "$wheel_digest" ]] || \
+    die "emitted judge_provenance.digest ($emitted_digest) != the installed wheel's own sha256 ($wheel_digest)"
+  echo 'ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel'
+}
+
 # Runs the self-hosted lane against the ORIGINAL reviewed worktree (never the
 # private clone) with $scratch/run-venv first on PATH. On failure, prints a
 # diagnostic rerun for visible logs and returns 1 unconditionally -- the
 # diagnostic's own `|| true` must never launder a red lane into a zero exit,
 # and no phase marker is printed on this path.
 run_self_hosted_lane() {
-  local worktree="$1" scratch="$2" version="$3"
+  local worktree="$1" scratch="$2" version="$3" wheel="$4"
   cd "$worktree/assay"
   export PATH="$scratch/run-venv/bin:$PATH"
-  if ! assay run tester-unified --verdict-json "$scratch/verdict.json"; then
+  # B018/A-327: `--require-judge-provenance` is exactly the flag a gate that
+  # binds its evidence to a verified judge binary passes, and this gate is
+  # one. It refuses before any work if the running assay cannot identify the
+  # artifact it came from -- so a self-hosted run that somehow imported source
+  # instead of the installed wheel stops here, loudly, rather than producing
+  # evidence attributed to a build it never ran.
+  if ! assay run tester-unified --require-judge-provenance \
+      --verdict-json "$scratch/verdict.json"; then
     echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
+    # A red lane has two very different shapes and the rerun below only shows
+    # one of them. `NO_MEASUREMENT/DIRTY_TREE` is assay's POST-run whole-tree
+    # check (`runner.py`'s `post_reason`), which carries no path list, so a
+    # lane whose own command passed but left a file behind reports a green
+    # pytest here and an unexplained red lane above. Naming the paths costs
+    # one git call and is the difference between a five-minute answer and a
+    # rebuild-the-container investigation.
+    # Both halves, and the second is the one that matters. `git.dirty_paths`
+    # (A-177) is deliberately the UNION of `git status --porcelain` and
+    # `git ls-files --others --exclude-per-directory=.gitignore`, because
+    # porcelain status honours `.git/info/exclude` and assay must not -- a
+    # personal, unversioned ignore rule may not hide a file from the
+    # dirty-tree check. Printing only the status half reproduces exactly the
+    # blindness the lane does not have, which is why the first version of
+    # this diagnostic printed NOTHING for the B017-class failure it was
+    # written to explain (round-1 review, m2).
+    # Both queries are anchored at "$worktree" with `-C`, and that anchoring is
+    # the whole point rather than tidiness. This function has already done
+    # `cd "$worktree/assay"`, and `git ls-files` is scoped to the CURRENT
+    # DIRECTORY -- so a bare call here lists nothing outside `assay/` and the
+    # B017 files, which live at the worktree ROOT, stay invisible. That is how
+    # the SECOND attempt at this diagnostic still could not see the class it
+    # was written for (round-2 review, R2-M2). `-C "$worktree"` also makes the
+    # paths repo-top-relative, which is exactly what `git.dirty_paths` reports
+    # and therefore what the lane's own refusal is about.
+    echo 'ASSAY_GATE_DIAGNOSTIC=worktree-status-after-the-lane' >&2
+    git -C "$worktree" status --porcelain >&2 || true
+    echo 'ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query' >&2
+    git -C "$worktree" ls-files --others --exclude-per-directory=.gitignore >&2 || true
     python -m pytest tests -q --ignore=tests/test_self_hosting.py \
       --override-ini=pythonpath= || true
     return 1
   fi
   require_emitted_version_matches "$scratch" "$scratch/verdict.json" "$version"
+  require_emitted_judge_provenance "$scratch" "$scratch/verdict.json" "$wheel" "$version"
   echo 'ASSAY_GATE_PHASE=self-hosted-lane-passed'
 }
 
@@ -367,15 +446,30 @@ run_inner() {
   echo 'ASSAY_GATE_PHASE=lane-schema-v2-successors-verified'
 
   # Wave-1: the 26 one-for-one v6 successors for the 26 locked P33 nodes
-  # deselected just above by the schema-version hard cut. Same
-  # installed-wheel pattern as every locked suite it carries forward.
-  # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
-  PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
-    -q -p no:randomly --override-ini=pythonpath= --co -q >/dev/null
-  # The suite must COLLECT, but its controls are intentionally v6 and must be
-  # rejected under v7. Prove the hard cut with a raw verifier probe instead of
-  # running the locked module as though its controls were still valid.
+  # deselected just above by the schema-version hard cut, and W2's own v7
+  # successors beside them. Same installed-wheel pattern as every locked
+  # suite this gate carries forward.
+  #
+  # B035/A-329: `VERDICT_SCHEMA_VERSION` 7 -> 8 does to W2 exactly what 6 -> 7
+  # did to W1, so W2 now gets W1's treatment rather than a new one. Both
+  # suites must COLLECT -- that is what proves they were not quietly deleted
+  # -- but their controls are intentionally v6 and v7 documents which a v8
+  # verifier must reject, so running either module as though its controls
+  # were still valid would assert the opposite of the hard cut. One raw
+  # verifier probe over BOTH generations' frozen `expected/` documents is the
+  # honest oracle, and it is stronger than the two suites were: it names the
+  # single diagnostic each document must produce, with nothing downstream of
+  # it. Their positive coverage lives on in W4's own v8 successors below, run
+  # for real.
+  for locked in \
+    "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
+    "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py"
+  do
+    # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
+    PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
+      "$worktree/assay/$locked" \
+      -q -p no:randomly --override-ini=pythonpath= --co -q >/dev/null
+  done
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" - "$worktree/assay" <<'PYEOF'
 import json
@@ -384,27 +478,38 @@ from pathlib import Path
 
 from assay.verify import verify_document
 
-root = Path(sys.argv[1])
-expected = root / "nyxloom-trove" / "carve-assets" / "W1" / "expected"
-for path in sorted(expected.glob("*.json")):
-    document = json.loads(path.read_text())
-    failures = verify_document(document)
-    assert failures == [
-        "schema_version 6 is not this verifier's version 7: a verdict "
-        "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 7"
-    ], (path.name, failures)
-print(f"v6 hard-cut guard passed for {len(list(expected.glob('*.json')))} frozen templates")
+root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
+checked = 0
+for wave, version in (("W1", 6), ("W2", 7)):
+    expected = root / wave / "expected"
+    paths = sorted(expected.glob("*.json"))
+    assert paths, f"{wave}/expected holds no frozen templates to check"
+    for path in paths:
+        document = json.loads(path.read_text())
+        failures = verify_document(document)
+        assert failures == [
+            f"schema_version {version} is not this verifier's version 8: a "
+            f"verdict artifact is rejected, never upgraded in place -- "
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 8"
+        ], (wave, path.name, failures)
+        checked += 1
+print(f"v6/v7 hard-cut guard passed for {checked} frozen templates")
 PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-hard-cut-verified'
 
+  # B018/A-327 + B035/A-329: the locked v8 acceptance suite, run for real
+  # against the same installed wheel. It carries forward the positive
+  # coverage W1's and W2's suites gave up above, and adds v8's own contract:
+  # `judgment.r2`'s scope and target set, the `base` rule enforced for an
+  # `R0,R2` lane, tier-mode agreement, and `judge_provenance`'s complete-or-
+  # absent identity. Every negative in it is differential.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v7-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v8-successors-verified'
 
-  run_self_hosted_lane "$worktree" "$scratch" "$version"
+  run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 
   # P25: qualifies the CURRENT run-venv Assay (plus a separately
   # hash-installed clean-tagged 1.2.5 release wheel) against a disposable,

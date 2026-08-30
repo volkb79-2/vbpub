@@ -29,6 +29,7 @@ this session were both false, and only running it twice showed that.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -493,3 +494,58 @@ def test_the_archive_carries_no_builder_specific_paths(built):
         assert b"../../bin/assay" not in archive.read(record)
         assert any(n.endswith(".dist-info/METADATA") for n in names), names
         assert "__main__.py" in names
+
+
+def test_the_zipapps_own_sha256_is_what_identify_judge_records(built):
+    """(B018/A-327) The zipapp branch of `provenance.identify_judge`, proven
+    against a REAL `.pyz` rather than a stand-in `Distribution`.
+
+    This closes a citation that was briefly false: `provenance.py` and
+    `test_cli_provenance_and_request_base.py` both claimed the zipapp form was
+    exercised against a genuinely built artifact, while the only real-artifact
+    coverage in the suite was the WHEEL's (`test_standalone.py`). A stand-in
+    cannot show that `zipimport` really reports the archive path a running
+    `.pyz` was loaded from, which is the single fact the whole branch rests on
+    -- and it is also where the measured `zipp.Path` / `pathlib.Path` TypeError
+    lives, so a regression there would otherwise surface only in production.
+
+    The digest is recomputed from the file's own bytes, so the assertion is
+    against the artifact rather than against another copy of the code that
+    produced it.
+    """
+    artifacts = built["first"]
+    probe = (
+        "import json;"
+        "from assay import provenance;"
+        "identity, reason = provenance.identify_judge();"
+        "print(json.dumps("
+        "{'reason': reason} if identity is None else identity.to_dict()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    identity = json.loads(out.stdout)
+    assert "reason" not in identity, (
+        f"a real zipapp must identify itself, but it refused: {identity}"
+    )
+    assert identity["artifact"] == "zipapp", identity
+    assert identity["name"] == "assay", identity
+    assert identity["version"] == artifacts.version, identity
+    assert identity["digest_algorithm"] == "sha256", identity
+    assert identity["digest"] == hashlib.sha256(
+        artifacts.zipapp.read_bytes()
+    ).hexdigest(), "the recorded digest is not the .pyz's own sha256"
+
+
+def test_the_zipapps_recorded_digest_matches_its_shipped_sidecar(built):
+    """The build writes an `<artifact>.sha256` sidecar for consumers to check,
+    and the verdict now records a digest for the same purpose. If those two
+    ever disagree, one of them is lying to whoever is checking, so they are
+    pinned to each other rather than each to the file in isolation."""
+    artifacts = built["first"]
+    sidecar = artifacts.zipapp.with_name(artifacts.zipapp.name + ".sha256")
+    recorded = sidecar.read_text(encoding="utf-8").split()[0]
+    assert recorded == hashlib.sha256(artifacts.zipapp.read_bytes()).hexdigest()

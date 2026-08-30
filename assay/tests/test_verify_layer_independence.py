@@ -88,7 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 7,
+        "schema_version": 8,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -122,6 +122,10 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
                 "max_mutants": 50,
                 "operators": ["python:compare-swap"],
                 "kill_attribution": "unattributed",
+                # B035/A-329: required at v8, and `changed_lines` here is the
+                # honest value -- `resolved.base` above says this document
+                # judged a diff.
+                "mode": "changed_lines",
                 # P33/V5-3: the `equivalent` bucket is paired
                 # both-present-or-both-absent with this declaration (A-209's
                 # pattern), because equivalence is established by comparing
@@ -468,7 +472,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "description": "drop the CHECK constraint",
     }
     document = {
-        "schema_version": 7,
+        "schema_version": 8,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -498,6 +502,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 "max_mutants": 50,
                 "operators": ["sql:drop-check"],
                 "kill_attribution": "unattributed",
+                "mode": "changed_lines",
             },
         },
         "claims": [
@@ -708,6 +713,11 @@ def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
             "max_mutants": 50,
             "operators": ["python:compare-swap"],
             "kill_attribution": "unattributed",
+            # B035/A-329: r1 declares whole-target scope here, and mode is a
+            # LANE-level fact, so r2 must agree -- a disagreeing pair is now
+            # its own refusal (asserted separately below).
+            "mode": "whole_target",
+            "targets": ["pkg/mod.py"],
         },
     }
     failures = _raw(lambda d, f: check(d, f), whole)
@@ -717,18 +727,75 @@ def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
     assert _raw(lambda d, f: check(d, f), clean) == []
 
 
-def test_raw_layer_clause_leaves_an_r2_only_base_unconstrained():
-    """The deliberate gap B035 exists to close: with no `r1` on the wire the
-    document cannot say whether its R2 diffed or mutated whole files, so the
-    raw layer asserts neither direction rather than rejecting one of the two
-    honest shapes."""
+def test_raw_layer_clause_binds_an_r2_only_base_to_r2s_own_mode():
+    """**B035/A-329 closes the gap this test used to document.** With
+    `judgment.r2.mode` on the wire at v8, an `r1`-absent document says for
+    itself whether its R2 diffed or mutated whole files, so the raw layer
+    enforces both directions for the `R0,R2` shape -- every SQL lane -- that
+    A-325 had to leave unconstrained. Differentially, as this module always
+    does: each defect's own clean control is asserted in the same test."""
     check = verify._check_base_matches_the_tiers_present
-    with_base = _sql_r2_document()["judgment"]
-    without_base = _sql_r2_document()["judgment"]
-    del without_base["resolved"]["base"]
 
-    assert _raw(lambda d, f: check(d, f), with_base) == []
-    assert _raw(lambda d, f: check(d, f), without_base) == []
+    diffed = _sql_r2_document()["judgment"]
+    assert diffed["r2"]["mode"] == "changed_lines"
+    assert _raw(lambda d, f: check(d, f), diffed) == []
+    diffed_without_base = _sql_r2_document()["judgment"]
+    del diffed_without_base["resolved"]["base"]
+    failures = _raw(lambda d, f: check(d, f), diffed_without_base)
+    assert failures and any(
+        "records r2 in changed-line mode" in f for f in failures
+    ), failures
+
+    whole = _sql_r2_document()["judgment"]
+    whole["r2"]["mode"] = "whole_target"
+    whole["r2"]["targets"] = ["pkg/mod.py"]
+    honest = json.loads(json.dumps(whole))
+    del honest["resolved"]["base"]
+    assert _raw(lambda d, f: check(d, f), honest) == []
+    failures = _raw(lambda d, f: check(d, f), whole)
+    assert failures and any("r2 in whole-target mode" in f for f in failures), failures
+
+
+def test_raw_layer_clause_refuses_two_tiers_that_disagree_about_the_mode():
+    """B035/A-329: one judgment records one lane scope. Worded differently
+    from the model's own message on purpose -- this module's own convention
+    (see `_check_resolved_language_owns_every_operator`), so "is the raw
+    branch even reached" stays testable by message content."""
+    check = verify._check_base_matches_the_tiers_present
+    agreeing = {
+        "resolved": {"language": "python", "source_roots": ["pkg"], "base": "a" * 40},
+        "r1": {
+            "coverage_format": "coverage-py-json",
+            "coverage_artifact": "cov.json",
+            "fail_under": 0.0,
+            "allow_excluded": False,
+            "mode": "changed_lines",
+            "require_branch": False,
+        },
+        "r2": {
+            "jobs": 1,
+            "max_mutants": 50,
+            "operators": ["python:compare-swap"],
+            "kill_attribution": "unattributed",
+            "mode": "changed_lines",
+        },
+    }
+    assert _raw(lambda d, f: check(d, f), agreeing) == []
+    disagreeing = json.loads(json.dumps(agreeing))
+    disagreeing["r2"]["mode"] = "whole_target"
+    disagreeing["r2"]["targets"] = ["pkg/mod.py"]
+    failures = _raw(lambda d, f: check(d, f), disagreeing)
+    assert failures and any("one judgment records one lane's scope" in f for f in failures), (
+        failures
+    )
+    differing_targets = json.loads(json.dumps(agreeing))
+    differing_targets["r1"]["mode"] = "whole_target"
+    differing_targets["r1"]["targets"] = ["pkg/a.py"]
+    differing_targets["r2"]["mode"] = "whole_target"
+    differing_targets["r2"]["targets"] = ["pkg/b.py"]
+    del differing_targets["resolved"]["base"]
+    failures = _raw(lambda d, f: check(d, f), differing_targets)
+    assert failures and any("different target sets" in f for f in failures), failures
 
 
 def test_raw_layer_clause_base_is_forbidden_when_neither_r1_nor_r2_is_present():

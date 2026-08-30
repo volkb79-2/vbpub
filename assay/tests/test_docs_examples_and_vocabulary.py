@@ -37,6 +37,7 @@ import pytest
 
 from assay.cli import _built_in_registry
 from assay.config import (
+    JUDGE_BASE_SOURCES,
     JUDGE_MODES,
     LANE_SCHEMA_VERSION,
     RIGOR_LEVELS,
@@ -45,7 +46,7 @@ from assay.config import (
     load_lane_file,
 )
 from assay.coverage import FORMAT_REGISTRY
-from assay.verdict import ReasonCode
+from assay.verdict import JUDGE_ARTIFACT_KINDS, ReasonCode
 from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +302,51 @@ def test_every_judge_mode_value_is_documented():
     assert not missing, f"undocumented judge.mode value(s): {missing}"
 
 
+def test_every_judge_base_source_value_is_documented():
+    """(B019/A-328) `judge.base_source` is a closed vocabulary a consumer
+    TYPES, so it joins `judge.mode` and `isolation.snapshot_selection` under
+    the same rule: a value nobody can find in the docs is a value nobody can
+    adopt.
+
+    The FIELD NAME is asserted alongside the values (round-1 review, m4).
+    `declared` is an ordinary English word appearing 118 times in these docs
+    at the base commit, so a values-only check is carried by prose that has
+    nothing to do with this field; `base_source` appeared zero times.
+    """
+    assert JUDGE_BASE_SOURCES, "JUDGE_BASE_SOURCES must not be empty"
+    missing = _missing_from(JUDGE_BASE_SOURCES, _docs_text())
+    assert not missing, f"undocumented judge.base_source value(s): {missing}"
+    assert "base_source" in _docs_text(), "the judge.base_source FIELD is undocumented"
+
+
+def test_every_judge_artifact_kind_is_documented():
+    """(B018/A-327) `judge_provenance.artifact` is not typed into a lane file,
+    but it IS read out of every verdict, and a consumer comparing a digest has
+    to know which of the two release files each kind names.
+
+    Asserting the values alone is VACUOUS here and the round-1 review (m4)
+    measured why: at the base commit, before one line of B018 documentation
+    existed, `wheel` already appeared 35 times in these docs and `zipapp` 6 —
+    both are ordinary words in a packaging document. The test would have
+    passed on a tree with no `judge_provenance` documentation at all, i.e. it
+    could never fail for the reason it exists. The field name carries the
+    check: `judge_provenance` appeared zero times at base.
+    """
+    assert JUDGE_ARTIFACT_KINDS, "JUDGE_ARTIFACT_KINDS must not be empty"
+    docs = _docs_text()
+    missing = _missing_from(JUDGE_ARTIFACT_KINDS, docs)
+    assert not missing, f"undocumented judge_provenance.artifact value(s): {missing}"
+    assert "judge_provenance" in docs, "the judge_provenance FIELD is undocumented"
+    # Each kind must appear as a quoted/backticked value of THIS field, not as
+    # the bare English word -- which is what made the values-only check vacuous.
+    for kind in JUDGE_ARTIFACT_KINDS:
+        assert f'"{kind}"' in docs or f"`{kind}`" in docs, (
+            f"judge_provenance.artifact value {kind!r} is never documented as a "
+            f"literal value -- only as a bare word, which any packaging prose "
+            f"satisfies by accident"
+        )
+
+
 def test_every_rigor_level_is_documented():
     assert RIGOR_LEVELS, "RIGOR_LEVELS must not be empty"
     missing = _missing_from(RIGOR_LEVELS, _docs_text())
@@ -408,6 +454,10 @@ def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
     assert REQUIRED_MUTATION_OPERATORS != set(RIGOR_LEVELS)
     assert REQUIRED_MUTATION_OPERATORS != set(FORMAT_REGISTRY)
     assert REQUIRED_MUTATION_OPERATORS != reason_codes
+    assert JUDGE_BASE_SOURCES != JUDGE_MODES
+    assert JUDGE_BASE_SOURCES != SNAPSHOT_SELECTIONS
+    assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_BASE_SOURCES
+    assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_MODES
 
 
 # --- (3) DESIGN-GUIDE anchor resolution --------------------------------------

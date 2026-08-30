@@ -78,6 +78,7 @@ __all__ = [
     "ENFORCEMENTS",
     "EvidenceConfig",
     "IsolationConfig",
+    "JUDGE_BASE_SOURCES",
     "JUDGE_FIELDS_BY_RIGOR",
     "JUDGE_MODES",
     "JudgeConfig",
@@ -223,10 +224,23 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "mutation",
     "canary",
     "base",
+    "base_source",
     "mode",
     "targets",
     "require_branch",
 )
+
+#: (B019/A-328) who owns the comparison commit a changed-line lane judges
+#: against. ``"declared"`` -- the default, and the only behaviour that existed
+#: before this key -- means ``judge.base`` is a fact of the lane file.
+#: ``"request"`` means the lane requires changed-line judging but DELEGATES the
+#: base identity to whatever gate request invokes it (``assay run
+#: --request-base``), so one static lane declaration stays correct across every
+#: branch and worktree while the orchestrator owns branch awareness. The two
+#: are mutually exclusive: a lane declaring ``"request"`` may not also declare
+#: ``judge.base``, and a run may not supply ``--request-base`` to a lane that
+#: did not delegate.
+JUDGE_BASE_SOURCES: frozenset[str] = frozenset({"declared", "request"})
 
 #: (wave-1 §5, A-260) the closed `judge.mode` vocabulary. Absent means
 #: `"changed_lines"` -- the only mode that existed before this wave -- so
@@ -493,6 +507,12 @@ class JudgeConfig:
     #: the file omits it, which means `false`. Legal only on a lane
     #: declaring R1.
     require_branch: bool | None = None
+    #: (B019/A-328) the declared `judge.base_source`, verbatim -- `None` when
+    #: the file omits it, which means `"declared"`. Stored as declared, never
+    #: defaulted here, exactly as `mode` is: the loader records what the file
+    #: said and `runner.resolve_base_declaration` resolves the effective
+    #: policy at exactly one named place.
+    base_source: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -512,6 +532,8 @@ class JudgeConfig:
             declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
+        if self.base_source is not None:
+            declared["base_source"] = self.base_source
         if self.mode is not None:
             declared["mode"] = self.mode
         if self.targets is not None:
@@ -1295,6 +1317,47 @@ def _load_judge(
             f"{list(rigor)} does not include R1"
         )
 
+    # B019/A-328. `base_source` is optional and, like `require_branch`, is
+    # not folded into any `JUDGE_FIELDS_BY_RIGOR` tuple -- it is a policy ABOUT
+    # `base`, so it is legal exactly where `base` is: on a changed-line lane
+    # declaring R1 and/or R2. Every other placement is inert config and is
+    # refused by name here rather than by the generic surplus message below,
+    # which would say the rigor "reads none of judge.{base_source}" and send
+    # the operator looking for the wrong mistake.
+    base_source = None
+    if "base_source" in table:
+        base_source = _as_str(table["base_source"], where, "judge.base_source")
+        if base_source not in JUDGE_BASE_SOURCES:
+            raise LaneConfigError(
+                f"{where}: 'judge.base_source' must be one of "
+                f"{sorted(JUDGE_BASE_SOURCES)}, got {base_source!r}"
+            )
+        if not (r1_declared or r2_declared):
+            raise LaneConfigError(
+                f"{where}: declares 'judge.base_source' but rigor "
+                f"{list(rigor)} includes neither R1 nor R2 -- no tier here "
+                f"reads a comparison commit, so naming who supplies one is "
+                f"inert config"
+            )
+        if effective_mode == "whole_target":
+            raise LaneConfigError(
+                f"{where}: declares 'judge.base_source' under judge.mode = "
+                f"'whole_target' -- whole-target scope replaces the diff at "
+                f"every tier, so no tier reads a comparison commit and "
+                f"delegating one to the gate request declares nothing "
+                f"(A-325's own rule for 'judge.base', which this key is a "
+                f"policy about)"
+            )
+        if base_source == "request" and "base" in table:
+            raise LaneConfigError(
+                f"{where}: declares BOTH 'judge.base' and judge.base_source = "
+                f"'request'. Exactly one comparison base can be read, so "
+                f"whichever loses is inert config that cannot fail loudly if "
+                f"it is wrong (A-062). Delete 'judge.base' to let the invoking "
+                f"gate request supply it with --request-base, or delete "
+                f"'judge.base_source' to keep the lane's own declared base."
+            )
+
     targets_declared = "targets" in table
     if targets_declared and effective_mode != "whole_target":
         raise LaneConfigError(
@@ -1330,6 +1393,15 @@ def _load_judge(
         # rather than guarded by a membership check that could never be
         # false, which would be an unreachable branch, not a real guard.
         required.append("targets")
+    elif base_source == "request":
+        # B019/A-328: the lane still REQUIRES changed-line judging; what it
+        # has delegated is only the identity of the commit. `base` therefore
+        # leaves `required` here -- the same move `whole_target` makes above,
+        # for the mirror-image reason -- and the explicit both-declared
+        # refusal above (not the generic surplus message) is what catches a
+        # lane that delegates and hardcodes at once.
+        if "base" in required:
+            required.remove("base")
     required = tuple(required)
 
     for field in required:
@@ -1373,7 +1445,11 @@ def _load_judge(
         # the exemption is not merely unnecessary but wrong: `targets` is a
         # member of `required` in the one mode that reads it, so exempting it
         # could only ever hide a declaration nothing reads.
-        - {"attestation_dir", "evidence", "mode", "require_branch"}
+        # B019/A-328: `base_source` joins `mode`/`require_branch` here for
+        # their reason exactly -- it is optional in every rigor that reads it,
+        # so it can never be a member of `required`, and its own placement
+        # rules are enforced by name above rather than by this message.
+        - {"attestation_dir", "evidence", "mode", "require_branch", "base_source"}
     )
     if surplus:
         raise LaneConfigError(
@@ -1461,6 +1537,7 @@ def _load_judge(
         mutation=mutation,
         canary=canary,
         base=base,
+        base_source=base_source,
         mode=mode,
         targets=targets,
         require_branch=require_branch,
@@ -1753,23 +1830,13 @@ def _load_mutation(
         and language is not None
         and operator_language(operator) != language
     )
-    # B034/A-326 round 2: what these two messages OFFER is not the same set as
-    # what the catalogue SPELLS. A withdrawn operator stays in
-    # `MUTATION_OPERATORS` so a v7 artifact naming it still verifies, but
-    # suggesting it to a consumer who just mistyped an operator name would
-    # walk them straight into a second refusal one line later. The
-    # suggestion lists are therefore the DECLARABLE set, the membership
-    # checks above and below stay the spellable one.
-    declarable_for_language = tuple(
-        operator
-        for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
-    declarable = tuple(
-        operator
-        for operator in MUTATION_OPERATORS
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
+    # (A-331) Under v7 the catalogue still SPELLED the two withdrawn
+    # operators, so these suggestion lists had to filter them back out.
+    # At the v8 cut the spellings are gone from the catalogue itself, so
+    # declarable == spellable and the filter would be dead code -- deleted
+    # rather than left standing as a no-op that reads like a live guard.
+    declarable_for_language = MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
+    declarable = MUTATION_OPERATORS
     if foreign:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
@@ -1777,19 +1844,16 @@ def _load_mutation(
             f"judge.language = {language!r}, and its operators are: "
             f"{', '.join(declarable_for_language)}"
         )
-    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
-    if unknown_operators:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
-            f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(declarable)}"
-        )
-    # B034/A-326: withdrawn operators are still SPELLABLE in a v7 artifact
-    # (see `vocabulary.WITHDRAWN_MUTATION_OPERATORS` for why the spelling
-    # outlives the behaviour), so they are neither "unknown" nor foreign --
-    # and they must still be refused here, loudly and by name. Selecting
-    # them silently would leave a lane declaring mutation coverage that no
-    # adapter can produce, which is this project's own named defect class.
+    # B034/A-326/A-331: the withdrawn check now runs BEFORE the unknown
+    # check, and the order is load-bearing rather than cosmetic. Under v7
+    # these two names were still in `MUTATION_OPERATORS`, so "unknown" could
+    # not fire on them and either order read the same. At the v8 cut the
+    # spellings are gone from the catalogue, so a lane file that still
+    # carries one is now literally an unknown operator -- and answering a
+    # consumer's stale-but-once-legal `python:enum-comparison-swap` with a
+    # bare "unknown operator(s)" would misname the defect and hide the one
+    # thing they need to be told, which is WHY it went away and what covers
+    # it instead.
     withdrawn = sorted(set(operators) & WITHDRAWN_MUTATION_OPERATORS)
     if withdrawn:
         raise LaneConfigError(
@@ -1799,6 +1863,13 @@ def _load_mutation(
             f"same byte span with the same replacement, so declaring both "
             f"emitted each shared site twice and added no coverage. Delete "
             f"them; python:compare-swap already covers ==/!= swapping"
+        )
+    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
+    if unknown_operators:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
+            f"{', '.join(unknown_operators)}; known operators: "
+            f"{', '.join(declarable)}"
         )
     # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
     # carve's single most consequential config decision (§4.3): without it,

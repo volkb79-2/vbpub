@@ -5,6 +5,31 @@ at branch `assay-P34-sql-adapter` after W5+W6 landed (`2c1a57cc`). These are
 evidence. **Never edit them.** If assay's behaviour changes, capture a NEW
 asset and record what it proves; do not bring these to green.
 
+## Scope of that rule — the two `a279-*.json` files, not `expected/`
+
+This directory holds two kinds of file, and only one of them is frozen
+evidence. Stated explicitly because a reader following the sentence above
+would otherwise conclude that every schema cut since has violated it
+(round-1 review of the v8 wave, m6):
+
+* **`a279-carve-ordering-crashed.json` / `a279-correct-ordering-killed.json`
+  — FROZEN.** These are the captured proof described below. They stay at the
+  schema version they were captured under (v6) forever, exactly like a W1 or
+  W2 template, because their value is that a real CLI really emitted them on a
+  real repository on 2026-08-18.
+* **`expected/dstdns-sql-r2-v6-witness.json` — LIVE, and migrated at every
+  cut.** It is not captured evidence; it is a comparison fixture that a test
+  validates against the CURRENT schema, so it must move with the schema or it
+  stops testing anything. It was migrated 6→7 by `b6d9615c` at the v7 cut and
+  7→8 by this wave (adding `judgment.r2.mode`), and both migrations were
+  correct.
+
+So `W3/` deliberately holds files at two different schema versions, and that
+is not drift. One consequence is recorded rather than hidden: the witness's
+FILENAME still says `-v6-` and is now stale in two generations. Renaming it
+touches a path that tests and the v7 precedent both reference, so it is left
+alone here and flagged in A-330 for a wave that owns it.
+
 ## What they prove
 
 A-279 was found by reading the carve's §3.4 against its §3.6, and confirmed by

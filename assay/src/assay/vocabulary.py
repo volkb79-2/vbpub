@@ -64,16 +64,23 @@ __all__ = [
 #: predicate matched any ``name.attr`` access rather than an enum member.
 #: They are withdrawn from the PRODUCER and from lane DECLARATION.
 #:
-#: They are NOT removed from :data:`MUTATION_OPERATORS_BY_LANGUAGE` or from
-#: the packaged schema's ``oneOf``, and that is a deliberate, reasoned
-#: asymmetry rather than an oversight (A-326, applying A-324's own test):
-#: released ``assay verify`` builds ACCEPT a v7 document naming either
-#: operator, and released ``assay run`` builds EMITTED such documents, so
-#: deleting the spellings would stop real artifacts from verifying -- the
-#: exact breakage A-324 requires a schema-version bump for. The spelling
-#: therefore stays until the next bump, where it is dropped; the BEHAVIOUR
-#: goes now. This module's own contract is unchanged by that: membership in
-#: the catalogue says a name is spellable, never that a lane may use it.
+#: **A-326's deferral is DISCHARGED here (A-331).** A-326 kept both names in
+#: :data:`MUTATION_OPERATORS_BY_LANGUAGE` and in the packaged schema's
+#: ``oneOf`` for exactly one reason -- released ``assay verify`` builds
+#: ACCEPT a v7 document naming either operator, and released ``assay run``
+#: builds EMITTED such documents, so deleting the spellings mid-v7 would have
+#: stopped real artifacts from verifying -- and said in as many words that
+#: "the spelling therefore stays until the next bump, where it is dropped".
+#: B035 IS that bump: under v8 every v7 document is already refused on
+#: ``schema_version`` alone, so the compatibility the deferral was buying is
+#: gone and the deletion now costs nothing it did not already cost.
+#:
+#: This set therefore survives the deletion, but its members are no longer a
+#: subset of :data:`MUTATION_OPERATORS`. That is the point: a consumer who
+#: still has ``python:enum-comparison-swap`` in a lane file must get the
+#: named "withdrawn, and here is why" refusal rather than a bare "unknown
+#: operator", so ``config._load_mutation`` tests this set BEFORE it tests
+#: catalogue membership.
 WITHDRAWN_MUTATION_OPERATORS: frozenset[str] = frozenset(
     {"python:uuid-equality-swap", "python:enum-comparison-swap"}
 )
@@ -86,10 +93,10 @@ WITHDRAWN_MUTATION_OPERATORS: frozenset[str] = frozenset(
 #:   ``/workspaces/vbpub/nyxloom/src/nyxloom/mutation_gate.py`` and
 #:   DESIGN-GUIDE §11's own TOML example, now qualified. B015 added two
 #:   further "semantic" families, ``python:uuid-equality-swap`` and
-#:   ``python:enum-comparison-swap``; both are **withdrawn** (B034/A-326) and
-#:   listed here only so v7 artifacts that already name them keep verifying --
-#:   see :data:`WITHDRAWN_MUTATION_OPERATORS`. The four producible Python
-#:   operators are the original four.
+#:   ``python:enum-comparison-swap``; both were **withdrawn** (B034/A-326),
+#:   and at the v7->v8 cut their SPELLINGS are gone too (A-331) -- see
+#:   :data:`WITHDRAWN_MUTATION_OPERATORS`. Python is the original four again,
+#:   in the original order.
 #: * ``go`` (A-221) -- three faithful analogues of the Python catalogue,
 #:   transcribed under A-112 rather than invented. There is deliberately NO
 #:   ``falsy-swap`` analogue: Python's exploits duck-typed truthiness, while
@@ -112,8 +119,6 @@ MUTATION_OPERATORS_BY_LANGUAGE: Mapping[str, tuple[str, ...]] = MappingProxyType
             "python:boolop-swap",
             "python:bool-const-flip",
             "python:falsy-swap",
-            "python:uuid-equality-swap",
-            "python:enum-comparison-swap",
         ),
         "go": (
             "go:compare-swap",

@@ -69,14 +69,14 @@ def test_every_declared_operator_is_accepted(project: Project):
     REQUIRED on that language alone, so the extra line is conditional and
     this sweep still proves nothing about Python/Go's own table shape."""
     for language, operators in MUTATION_OPERATORS_BY_LANGUAGE.items():
+        # (A-331) The B034/A-326-era `if operator in
+        # WITHDRAWN_MUTATION_OPERATORS: continue` skip that used to guard this
+        # loop is GONE, because it can no longer fire: the withdrawn names left
+        # `MUTATION_OPERATORS_BY_LANGUAGE` at the v8 cut, so nothing this loop
+        # iterates is withdrawn. Keeping it would be a filter that reads like a
+        # live guard and can never fire -- the exact defect class A-331 invoked
+        # to delete the sibling filters in `config.py`, applied here too.
         for operator in sorted(operators):
-            # B034/A-326: two `python:*` names are still SPELLABLE (so a v7
-            # artifact naming them keeps verifying) but no longer
-            # DECLARABLE. They are swept by
-            # `test_adapters_python_semantic_operators.py` instead, which
-            # asserts the refusal this sweep would otherwise trip over.
-            if operator in WITHDRAWN_MUTATION_OPERATORS:
-                continue
             extra = (
                 'equivalence_artifact = ".assay/schema-dump.sql"\n'
                 if language == "sql"
@@ -139,11 +139,17 @@ def test_an_unknown_operator_is_rejected(project: Project):
     with pytest.raises(LaneConfigError) as exc:
         load_lane_file(project.write(lane))
     assert "typo-swap" in str(exc.value)
+    # (A-331) Every catalogue operator is offered, with no exceptions to carve
+    # out any more: the suggestion list and the membership check are the SAME
+    # set again now that the withdrawn names have left the catalogue. The
+    # branch that used to assert a withdrawn name was absent from the message
+    # is deleted rather than left unreachable.
     for operator in sorted(MUTATION_OPERATORS):
-        if operator in WITHDRAWN_MUTATION_OPERATORS:
-            assert operator not in str(exc.value)
-        else:
-            assert operator in str(exc.value)
+        assert operator in str(exc.value)
+    # ...and the withdrawn names are still never offered -- now because they
+    # are not in the catalogue at all, which is what makes the loop above safe.
+    for withdrawn in sorted(WITHDRAWN_MUTATION_OPERATORS):
+        assert withdrawn not in str(exc.value)
 
 
 def test_operators_is_order_preserving(project: Project):
