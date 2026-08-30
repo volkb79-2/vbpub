@@ -1820,6 +1820,35 @@ correct and unchanged — A-177's refusal to honour `.git/info/exclude` is the
 whole point, and a fix that made assay honour it would reopen the hole that
 rule exists to close.
 
+**RESOLVED 2026-08-30, same day, upstream and not by this wave.**
+`vbpub@8caf1c24` "fix(vbpub): gitignore CIU per-worktree render artifacts
+(B017, third recurrence)" adds BOTH `ciu.worktree-instance.json` and
+`ciu.global.worktree.toml.j2` to vbpub's committed `.gitignore`, with a
+comment naming this recurrence and the two dstdns precedents — i.e. the exact
+two-line fix the note above flagged rather than took. vbpub now carries what
+dstdns has carried since `dstdns@08b789f5`/`dstdns@5c8c14c6`. The assay branch
+that found it (`feature/assay-b018-b019-b035-v8-synergy`) predates that commit
+and therefore does not contain it; a merge in either direction picks it up.
+
+Two refinements to the report above, recorded so the entry is not overstated:
+
+* **The files are TRANSIENT, not permanent dirt.** A ciu invocation observed at
+  01:38 regenerated this worktree's `ciu.env` and removed both render inputs
+  outright. So the false `DIRTY_TREE` appears and disappears with ciu's own
+  worktree lifecycle, which is a large part of why three separate
+  investigations were needed to pin it down: the symptom is intermittent, and
+  a clean `git status` throughout makes it look like the gate, not the tree.
+* **The mechanism itself was directly observed, twice**, and stands
+  independently of the above: `git check-ignore -v` named
+  `/workspaces/vbpub/.git/info/exclude:18` as the only rule hiding the file,
+  and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+  query — listed it while `git status --porcelain` reported nothing.
+
+This entry's standing instruction is unchanged for a FOURTH occurrence: any new
+CIU-generated per-worktree filename repeats the gap until it is added to the
+committed ignore file. That is now three filenames across two repositories,
+each found the same expensive way.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict

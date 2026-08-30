@@ -276,7 +276,20 @@ the gate run and **both have been restored**, leaving the worktree exactly as fo
 I applied B017's own documented workaround (move out, run the gate, move back) and **did not**
 take the one-line fixes: `/workspaces/vbpub/.gitignore` is outside this branch's `assay/`
 subtree, belongs to the estate root, and the brief scopes this wave to `assay/`.
-**Flagged for the controller as a two-line follow-up** — see §6.3.
+
+**That follow-up has since been taken upstream, independently of this branch** —
+`vbpub@8caf1c24` adds both filenames to the committed `.gitignore`. See §6.3; the finding is
+closed, and nothing in this branch depends on it.
+
+One correction to the paragraph above, so the record is not overstated: shortly after the final
+gate run, a **ciu** invocation regenerated this worktree's `ciu.env` and removed both render
+inputs, so the two files are no longer present at all. They are transient — CIU creates and
+removes them across worktree operations — which means the failure they cause is intermittent
+rather than permanent, and that is exactly what makes it expensive to diagnose. The mechanism
+reported above was directly observed twice (`git check-ignore -v` naming
+`.git/info/exclude:18`, and `git ls-files --others --exclude-per-directory=.gitignore` listing
+the file while `git status` showed clean); the claim that a reviewer *will* hit it is what
+softens to *may*, depending on where ciu's lifecycle happens to be.
 
 ---
 
@@ -317,18 +330,26 @@ precedent of `b6d9615c fix(assay): align runner fixtures and SQL witness with v7
 same thing at the previous cut. The name is now stale in two generations. Renaming a frozen
 asset is not a call I should make unilaterally, so it is flagged. Recorded in A-330.
 
-### 6.3 The vbpub `.gitignore` fix (§5.2) is not in this branch
+### 6.3 The vbpub `.gitignore` fix (§5.2) — **already resolved upstream, not by me**
 
-Add both `ciu.worktree-instance.json` and `ciu.global.worktree.toml.j2` to
-`/workspaces/vbpub/.gitignore`, next to the existing `ciu.env` line — the same one-line-per-file
-fix dstdns already took twice. Until that lands, **anyone running assay's registered gate from a
-ciu-created vbpub worktree hits a red gate that has nothing to do with their code**: the `.j2`
-trips the gate's own pre-flight, and `ciu.worktree-instance.json` then trips the self-hosted
-lane with a `DIRTY_TREE` that plain `git status` cannot explain (5.1's diagnostic now names it,
-but only via the `git ls-files --others --exclude-per-directory=.gitignore` query).
+This was written as an open follow-up for the controller. While this report was being finished it
+was **acted on independently**: `vbpub@8caf1c24` *"fix(vbpub): gitignore CIU per-worktree render
+artifacts (B017, third recurrence)"* landed on `main` at 01:35:59, adding both
+`ciu.worktree-instance.json` and `ciu.global.worktree.toml.j2` to the committed `.gitignore`,
+with a comment citing this wave's finding and the two dstdns precedents.
 
-I restored both files rather than deleting them, since they were in the worktree before this
-wave and are CIU's render inputs, not mine to remove.
+Consequences for this branch, stated exactly:
+
+- **This branch does not contain that fix.** It is based on `45755014`, which predates
+  `8caf1c24`. `grep ciu.worktree-instance /workspaces/vbpub/.worktrees/.../.gitignore` in this
+  worktree returns nothing, while the same grep in the primary checkout returns lines 190/194.
+  Merging (either direction) picks it up; **no action is needed from the reviewer**.
+- **Nothing about this branch's contents changes.** The fix is one file outside `assay/`, which
+  this branch still does not touch.
+- After the merge, the reproduce-caveat in §7 no longer applies: the workaround exists only to
+  paper over an ignore rule that now exists.
+
+I did not make this change, and it is recorded here rather than claimed.
 
 ### 6.4 `qualify_topos` pops `judge_provenance` rather than placeholdering it
 
@@ -471,6 +492,13 @@ $ git diff --name-only 745ac377..HEAD | grep -v '\.md$'
 No source file, schema, frozen asset, test, gate script or lane config differs between the gated
 commit and the head being handed off. A reviewer who wants a gate run whose commit hash equals
 the branch head can get one by re-running the gate on the merge commit.
+
+**A second, independent gate run corroborates this.** After the run above, a ciu-orchestrated
+invocation (`tester-unified-gate.sh ..`, CMRU's own relative spelling) ran the full gate against
+this branch at head `0a315100` — a commit later than `745ac377`, launched by something other
+than this session. It also finished **exit 0**, with the same eleven phase markers, having built
+its own wheel (`assay-2.4.3.dev22+g0a315100`). Two independent green runs at two different
+commits of this branch.
 
 ### Full-suite state
 
