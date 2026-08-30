@@ -1113,16 +1113,14 @@
       "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$"
     },
     "mutation_operator": {
-      "description": "A language-qualified operator name. The prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump.",
+      "description": "A language-qualified operator name. The prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump. REMOVING one is not additive, which is why python:uuid-equality-swap and python:enum-comparison-swap -- withdrawn in behaviour at 2.4.2 (B034/A-326) but still spellable under v7 -- lose their spellings HERE, at the v7->v8 cut, and not before (A-331).",
       "oneOf": [
         {
           "enum": [
             "python:compare-swap",
             "python:boolop-swap",
             "python:bool-const-flip",
-            "python:falsy-swap",
-            "python:uuid-equality-swap",
-            "python:enum-comparison-swap"
+            "python:falsy-swap"
           ]
         },
         {

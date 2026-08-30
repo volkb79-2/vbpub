@@ -380,13 +380,14 @@ def _cmd_run(
     lane: Lane = lane_file.lane(args.lane)
     if getattr(args, "operators", None):
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -397,6 +398,9 @@ def _cmd_run(
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         mutation_config = replace(
             lane.judge.mutation, operators=requested
         )
@@ -676,13 +680,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     shard_count: int | None = None
     if args.operators:
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -693,6 +698,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         operators = requested
     if args.shard:
         try:

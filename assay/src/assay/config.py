@@ -1830,23 +1830,13 @@ def _load_mutation(
         and language is not None
         and operator_language(operator) != language
     )
-    # B034/A-326 round 2: what these two messages OFFER is not the same set as
-    # what the catalogue SPELLS. A withdrawn operator stays in
-    # `MUTATION_OPERATORS` so a v7 artifact naming it still verifies, but
-    # suggesting it to a consumer who just mistyped an operator name would
-    # walk them straight into a second refusal one line later. The
-    # suggestion lists are therefore the DECLARABLE set, the membership
-    # checks above and below stay the spellable one.
-    declarable_for_language = tuple(
-        operator
-        for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
-    declarable = tuple(
-        operator
-        for operator in MUTATION_OPERATORS
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
+    # (A-331) Under v7 the catalogue still SPELLED the two withdrawn
+    # operators, so these suggestion lists had to filter them back out.
+    # At the v8 cut the spellings are gone from the catalogue itself, so
+    # declarable == spellable and the filter would be dead code -- deleted
+    # rather than left standing as a no-op that reads like a live guard.
+    declarable_for_language = MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
+    declarable = MUTATION_OPERATORS
     if foreign:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
@@ -1854,19 +1844,16 @@ def _load_mutation(
             f"judge.language = {language!r}, and its operators are: "
             f"{', '.join(declarable_for_language)}"
         )
-    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
-    if unknown_operators:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
-            f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(declarable)}"
-        )
-    # B034/A-326: withdrawn operators are still SPELLABLE in a v7 artifact
-    # (see `vocabulary.WITHDRAWN_MUTATION_OPERATORS` for why the spelling
-    # outlives the behaviour), so they are neither "unknown" nor foreign --
-    # and they must still be refused here, loudly and by name. Selecting
-    # them silently would leave a lane declaring mutation coverage that no
-    # adapter can produce, which is this project's own named defect class.
+    # B034/A-326/A-331: the withdrawn check now runs BEFORE the unknown
+    # check, and the order is load-bearing rather than cosmetic. Under v7
+    # these two names were still in `MUTATION_OPERATORS`, so "unknown" could
+    # not fire on them and either order read the same. At the v8 cut the
+    # spellings are gone from the catalogue, so a lane file that still
+    # carries one is now literally an unknown operator -- and answering a
+    # consumer's stale-but-once-legal `python:enum-comparison-swap` with a
+    # bare "unknown operator(s)" would misname the defect and hide the one
+    # thing they need to be told, which is WHY it went away and what covers
+    # it instead.
     withdrawn = sorted(set(operators) & WITHDRAWN_MUTATION_OPERATORS)
     if withdrawn:
         raise LaneConfigError(
@@ -1876,6 +1863,13 @@ def _load_mutation(
             f"same byte span with the same replacement, so declaring both "
             f"emitted each shared site twice and added no coverage. Delete "
             f"them; python:compare-swap already covers ==/!= swapping"
+        )
+    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
+    if unknown_operators:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
+            f"{', '.join(unknown_operators)}; known operators: "
+            f"{', '.join(declarable)}"
         )
     # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
     # carve's single most consequential config decision (§4.3): without it,

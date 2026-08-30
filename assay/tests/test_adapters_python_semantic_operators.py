@@ -129,9 +129,12 @@ def test_an_unknown_operator_is_never_offered_a_withdrawn_one_as_a_suggestion(
     """Round-2 review: the "known operators:" list rendered
     `MUTATION_OPERATORS`, which still SPELLS the withdrawn names -- so a
     consumer who mistyped an operator was handed two of them as suggestions
-    and walked straight into a second refusal. What the message OFFERS is
-    now the declarable set; what the membership checks READ is still the
-    spellable one."""
+    and walked straight into a second refusal. A-326 fixed that by filtering
+    the suggestion list; A-331 fixed it at the source by deleting the
+    spellings at the v8 cut, so declarable and spellable are one set again.
+    The OBSERVABLE contract this test pins is unchanged either way, which is
+    the point of keeping it: a mistyped operator is never answered with a
+    name that is itself refused."""
     (tmp_path / "src").mkdir()
     lane_file = tmp_path / "assay.toml"
     lane_file.write_text(
@@ -167,20 +170,70 @@ def test_an_unknown_operator_is_never_offered_a_withdrawn_one_as_a_suggestion(
         assert name not in message
 
 
-def test_the_spelling_survives_in_the_v7_vocabulary_on_purpose():
-    """A-326's deliberate asymmetry: behaviour withdrawn, spelling kept.
+def test_the_spelling_is_gone_from_the_v8_vocabulary():
+    """A-331 discharges A-326's deferral at the bump A-326 named.
 
-    Released `assay verify` builds ACCEPT a v7 document naming either
-    operator and released `assay run` builds EMITTED them, so deleting the
-    names from the catalogue (and therefore from the packaged schema's
-    per-language `oneOf`) would stop real artifacts from verifying -- the
-    breakage A-324 requires a schema-version bump for. The names go at the
-    next bump, not here.
+    A-326 kept the two spellings in the catalogue (and therefore in the
+    packaged schema's per-language `oneOf`) for one reason only: released
+    builds had ACCEPTED v7 documents naming them, so deleting the names
+    mid-v7 would have stopped real artifacts from verifying. It said the
+    names go "at the next bump". B035 is that bump -- under v8 those same
+    documents are already refused on `schema_version` alone -- so the
+    compatibility being bought no longer exists and the deletion lands.
+
+    The predecessor of this test asserted the exact opposite and was named
+    `..._survives_in_the_v7_vocabulary_on_purpose`; it is replaced rather
+    than deleted so the flip is visible in the diff instead of looking like
+    coverage that quietly evaporated.
     """
     assert WITHDRAWN_MUTATION_OPERATORS == frozenset(WITHDRAWN)
     for name in WITHDRAWN:
-        assert name in MUTATION_OPERATORS
-        assert name in MUTATION_OPERATORS_BY_LANGUAGE["python"]
-    assert set(MUTATION_OPERATORS_BY_LANGUAGE["python"]) == set(PRODUCIBLE) | set(
-        WITHDRAWN
+        assert name not in MUTATION_OPERATORS
+        assert name not in MUTATION_OPERATORS_BY_LANGUAGE["python"]
+    assert MUTATION_OPERATORS_BY_LANGUAGE["python"] == tuple(PRODUCIBLE)
+
+
+@pytest.mark.parametrize("withdrawn_name", WITHDRAWN)
+def test_a_stale_withdrawn_spelling_is_still_refused_by_name_not_as_unknown(
+    tmp_path, withdrawn_name
+):
+    """(A-331) The deletion above makes both names literally unknown to the
+    catalogue, so the withdrawn check now has to run BEFORE the unknown
+    check or a consumer with a stale lane file gets "unknown operator(s)"
+    -- the least useful of the two messages, naming the wrong defect and
+    omitting what replaced it. Pinned here because that ordering is not
+    visible from either message on its own, and because under v7 the two
+    orders were indistinguishable (the names were still in the catalogue,
+    so "unknown" could not fire on them at all)."""
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        "schema_version = 2\n\n"
+        "[lanes.pylane]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R2"]\n'
+        'enforcement = "gate"\n'
+        'argv = ["true"]\n'
+        'env_passthrough = ["PATH"]\n'
+        "env = {}\n"
+        'budget = "1m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.pylane.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["src"]\n'
+        'base = "origin/main"\n\n'
+        "[lanes.pylane.judge.mutation]\n"
+        "jobs = 1\n"
+        "max_mutants = 10\n"
+        f'operators = ["{withdrawn_name}"]\n',
+        encoding="utf-8",
     )
+    from assay.config import load_lane_file
+
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(lane_file)
+
+    message = str(excinfo.value)
+    assert "withdrawn" in message, message
+    assert "unknown operator" not in message, message
+    assert "python:compare-swap already covers" in message, message
