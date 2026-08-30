@@ -530,3 +530,111 @@ documented workaround (§5.2). It has been moved back. Until vbpub's committed `
 carries that filename (§6.3), a reviewer re-running this gate from this worktree must apply the
 same workaround or will see `NO_MEASUREMENT/DIRTY_TREE` at the self-hosted lane — a false
 refusal that says nothing about the code in this branch.
+
+---
+
+## 8. Round-1 adversarial review — what was found, and what changed
+
+The independent review (`assay-B018-B019-B035-v8-synergy-REVIEW.md`, 454 lines, no shared
+context with this session) returned **ACCEPT-conditional, no blockers**, and reproduced every
+measurable claim in §1–§7. Its four conditions and the cheap Minors are discharged below. I
+re-measured every finding before acting on it rather than taking the review's word for it — and
+one of those checks turned up a real bug the review had not found.
+
+### The four conditions
+
+| # | finding | what I did |
+|---|---|---|
+| **M1** | B018/B019/B035 all still read as OPEN; B035 literally `**Status:** open.`; twelve acceptance boxes unticked | Closed all three in the project's own B033/B034 convention. Eleven boxes ticked with evidence; B018's fourth annotated `[~] NOT MET` (see N1 below) rather than ticked. Verified programmatically: zero unticked boxes remain in the three items. |
+| **M2** | A-331 claims "Both call sites are reordered and pinned by a parametrized test" — there are **three**, and only the loader was pinned. Reviewer proved it by reverting both CLI reorderings: 3354 passed either way, unchanged | Added two parametrized tests (`tests/test_cli_run.py`), one per verb × both names. **Validated in reverse**: I reverted both reorderings myself and all four go red; `cli.py` restored to byte-identity with HEAD afterwards. A-331's sentence corrected in place, with the correction marked and the undercount named. |
+| **M3** | `--require-judge-provenance` hard-fails an index-installed wheel — the CIU §10.5 "runner image already carrying the pinned judge" path — and the refusal message reads as exhaustive while omitting that case | Real fix + honest limit + recorded refusal to fake it. See below. |
+| **m1+m2** | My B017 causal story is wrong (the pre-flight is pathspec-limited to `assay/`), and the diagnostic I added for it runs only the half that cannot see the failure | Both corrected; the diagnostic now runs assay's own `ls-files` query beside `git status`. |
+
+### M3 in detail — including a bug the review did not find
+
+Checking the reviewer's index-install finding, I probed the wheel branch against the four URL
+forms a real installer produces. One was broken:
+
+```
+plain local .whl                     -> IDENTIFIED
+https .whl (direct URL install)      -> IDENTIFIED
+https .whl with #sha256 fragment     -> None      <-- silently unidentifiable
+https .whl with ?query               -> IDENTIFIED
+```
+
+`_installed_wheel_digest` tested `url.split("?", 1)[0].endswith(".whl")`. PEP 610 records the
+requested URL verbatim, and `#sha256=…` is how an index page's own links are written — and how
+a gate pins a judge artifact **by URL and digest**, which is exactly CIU's verified-artifact
+path. So the install shape B018's most important consumer is most likely to use reported no
+identity, and `--require-judge-provenance` would have hard-refused a correctly pinned,
+correctly verified judge. Fragment and query are now both stripped; a companion test proves the
+widened parser still refuses an sdist.
+
+On the index-install case itself I **refused to synthesise an identity**, and recorded why
+(A-332). No wheel digest survives an index install — PEP 610 declines to write one, `RECORD`
+carries per-file hashes and not the archive's. A digest over the installed files would not
+equal the digest the consumer verified on download, so it would look like an identity while
+being uncomparable: an invented fact wearing the shape of a measured one, which is the precise
+failure this field exists to prevent. The absence stays honest; the *limit* is now documented
+(`docs/CONSUMERS.md` carries the full install-shape table) and the refusal message names the
+index case first and says what to do instead.
+
+### Minors and nitpicks also taken
+
+**m3** — the review proved `f7450b0a` is a knowingly-red intermediate (tests landed two commits
+ahead of the docs they assert on), which is what §1's batching rationale claimed to be avoiding.
+The rationale is sound about the three features; it did not cover the tests-vs-docs seam, and I
+did not see that. Corrected in §1 rather than argued away.
+**m4** — `test_every_judge_artifact_kind_is_documented` was vacuous: `wheel` and `zipapp` appear
+35 and 6 times in these docs at the base commit, so it passed on a tree with zero B018
+documentation. Now asserts the field name (`judge_provenance`, absent at base) and literal-value
+context.
+**m5** — two dead A-326-era guards whose comments asserted the opposite of the post-A-331 code,
+deleted. This is A-331's own "a filter that can never fire is itself the defect class" argument
+applied where I had missed it.
+**m6** — `W3/MANIFEST.md` now separates its frozen `a279-*` evidence from the live `expected/`
+witness, so the in-place migration no longer reads as a violation of its own "Never edit them".
+**m8** — the stale 2.4.2 B033/B034 entries in `[Unreleased]` are flagged unmissably for whoever
+cuts the next release. **Not cleared here**: `CHANGES.md`'s own comment says clearing
+`[Unreleased]` is part of releasing, and this wave is not authorised to release.
+**N1** — B018's fourth criterion annotated, not ticked. **N3** — W4 manifest date. **N6** — "a v8
+verdict naming a withdrawn operator fails validation" is now asserted against the frozen v8
+schema itself, not only transitively through the vocabulary.
+
+**m7** (the `ciu/assay.toml:49` cost) is documented rather than changed: `docs/CONSUMERS.md`
+now carries a migration section saying plainly that a lane pinning a frozen SHA migrates for
+free, while one pinning a symbolic ref like `base = "origin/main"` loses standalone
+runnability, and that this is the deliberate price of refusing precedence. I did not edit that
+lane — it is outside `assay/`.
+
+**m9** (a cross-repo note for CIU) is **not filed**, and that is a scope conflict the controller
+should resolve rather than me: the estate convention says findings about another tool go in that
+tool's backlog, and this wave's brief says anything in `ciu/` is out of scope. Ready-to-file text
+covering the field shape, the flag, and — most importantly — M3's install-shape constraint is
+prepared at `scratchpad/CIU-NOTE-READY-TO-FILE.md`. It needs a `CIU-NN` number assigning.
+
+### Not taken
+
+N4 (a cosmetic message on a foreign document that is rejected either way), N5 (the gate's
+value-level digest binding lives in one well-tested function — noted, not belt-and-braces), and
+N7 (a test pinning the prose schema version) are left for a later wave, as the review itself
+allowed.
+
+### The gate, re-run after remediation
+
+```
+GATE_EXIT=0
+tester-unified: PASS (exit 0)
+  commit: 0fad7842e48c06839998b759e72a5fa8b61f0988
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+Eleven phase markers, **zero** `ASSAY_GATE_DIAGNOSTIC` lines, exit 0, self-hosted lane naming
+the remediation commit. Full suite: **3365 passed, 11 skipped** (was 3354; the eleven new tests
+are M2's four, M3's six, and N6's one).
