@@ -452,6 +452,26 @@ All eleven phase markers fired, in order, ending with
 The self-hosted lane itself reports `tester-unified: PASS (exit 0)` at commit `745ac377` — the
 head of this branch, i.e. the gate judged the tree this report describes.
 
+### Which commit the gate actually judged
+
+`745ac377`, named in the lane's own output above. The branch head is one commit later
+(`7515c57d`), because a report that pastes its own gate transcript cannot be inside the commit
+that transcript describes — chasing that would recurse forever. The gap is prose only, and that
+is checkable rather than asserted:
+
+```
+$ git diff --name-only 745ac377..HEAD
+assay/nyxloom-trove/carve-assets/W4/MANIFEST.md
+assay/nyxloom-trove/reports/assay-B018-B019-B035-v8-synergy-REPORT.md
+
+$ git diff --name-only 745ac377..HEAD | grep -v '\.md$'
+(no output)
+```
+
+No source file, schema, frozen asset, test, gate script or lane config differs between the gated
+commit and the head being handed off. A reviewer who wants a gate run whose commit hash equals
+the branch head can get one by re-running the gate on the merge commit.
+
 ### Full-suite state
 
 `python -m pytest tests -q` from the worktree: **3354 passed, 11 skipped** (303s). The gate's own
