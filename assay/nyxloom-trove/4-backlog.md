@@ -1794,13 +1794,18 @@ Two things this recurrence establishes that the first two did not:
 1. **The fix is per-REPOSITORY, and vbpub never got it.** `dstdns@08b789f5`
    and `dstdns@5c8c14c6` fixed dstdns's committed `.gitignore`. vbpub's was
    never touched, so the identical gap sat unnoticed here until a wave
-   happened to run the registered gate from a ciu-created worktree. The
-   one-line fix (`ciu.worktree-instance.json` in vbpub's committed
-   `.gitignore`, alongside the `ciu.env` line already there) is NOT taken in
-   this wave: `.gitignore` at the vbpub root is outside this branch's assay
-   subtree and belongs to whoever owns the estate root, and the brief
-   scoping this wave excludes it. Flagged for the reviewer/controller as a
-   one-line follow-up rather than done unilaterally.
+   happened to run the registered gate from a ciu-created worktree. **Both**
+   filenames are present and unignored in this worktree, and the second is in
+   a worse state than the first: `ciu.global.worktree.toml.j2` (recurrence
+   2's filename) is excluded by NOTHING — not the committed `.gitignore`, not
+   `.git/info/exclude` — so it shows as a plain `??` and reds the gate's own
+   pre-flight ("assay has uncommitted changes; commit them before running the
+   merge gate") before assay is ever reached. The two-line fix (both names in
+   vbpub's committed `.gitignore`, alongside the `ciu.env` line already
+   there) is NOT taken in this wave: `.gitignore` at the vbpub root is
+   outside this branch's assay subtree and belongs to whoever owns the estate
+   root, and the brief scoping this wave excludes it. Flagged for the
+   reviewer/controller as a two-line follow-up rather than done unilaterally.
 2. **This entry's own "if the symptom recurs, re-verify against the current
    `.gitignore`" instruction is now three-for-three**, and each time the
    answer has been the same missing line. The per-file, after-someone-hits-it
