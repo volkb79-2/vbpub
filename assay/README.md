@@ -11,8 +11,11 @@ linking against assay itself.
   (see [Installing](#installing)), not published to a public index.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
-  [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below). Go
-  still has reserved schema surface but no real adapter yet — see
+  [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
+  JavaScript/TypeScript is supported at **R1 only** — changed-line coverage
+  for `.js`/`.jsx`/`.ts`/`.tsx`, see
+  [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
+  below. Go still has reserved schema surface but no real adapter yet — see
   [What assay is not (yet)](#what-assay-is-not-yet).
 
 ---
@@ -148,6 +151,56 @@ If you see `go:` anywhere in the schema or vocabulary and are wondering
 whether you can use it today: no. Declaring a rigor level a lane can't
 actually back up is exactly the failure this project exists to prevent, so
 don't be the first exception. **`sql:*` is different — see below.**
+
+### JavaScript/TypeScript changed-line coverage (R1 only)
+
+`judge.language = "javascript"` resolves at **R1 only** — changed-line
+coverage over `.js`, `.jsx`, `.ts` and `.tsx`. One language name covers all
+four: TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions
+of the two, and every coverage tool in the ecosystem measures them into one
+undifferentiated artifact, so splitting them would force a lane touching one
+`.ts` and one `.tsx` file to declare two languages for one measurement.
+
+Declare `format = "coverage-istanbul-json"` and point `artifact` at
+istanbul's own `coverage-final.json`. That document is emitted natively by
+nyc/istanbul and by Jest (`--coverageReporters=json`), and by Vitest through
+either coverage provider:
+
+```jsonc
+// vite.config.ts / vitest.config.ts
+test: {
+  coverage: {
+    provider: 'v8',            // or 'istanbul' — both emit this format
+    reporter: ['json'],        // 'json' IS coverage-final.json
+    reportsDirectory: '.assay' // keep it out of the tree, and gitignore it
+  }
+}
+```
+
+The artifact keys every record by absolute filesystem path; assay reconciles
+that against the diff's own repo-relative spelling itself, so nothing has to
+be configured for it. Test files are excluded by Vitest's own default
+`include` glob AND, independently, by the adapter (`*.test.*`, `*.spec.*`,
+anything under a `__tests__/` segment); `node_modules`, `dist` and `coverage`
+are excluded as directories. A `.d.ts` declaration file is recognised as
+having no executable code at all rather than being reported as a coverage
+gap.
+
+**There is deliberately no JavaScript R2 yet.** Whether JS/TS mutation should
+be a native engine (as Python's and SQL's are) or should ingest an external
+producer's evidence (Stryker Mutator's per-mutant report) is a real
+architectural ruling that has not been made — it is tracked as **B037**, and
+until it is, `judge.language = "javascript"` declaring R2 is refused
+`ERROR`/`BAD_LANE_CONFIG`, exactly like an unregistered language. R3 (the
+cause-sensitive canary) is unwired for the same "a method existing is not a
+producer path" reason, though both canary injection mechanisms are real.
+
+**Branch coverage is reported as unavailable for this format**, and that is a
+measured refusal rather than a gap: istanbul's `branchMap` means different
+things under the two Vitest providers (real per-arm arcs under `istanbul`,
+v8's own executed/unexecuted ranges under `v8`), and a lane declares the
+format, not the producer. `require_branch = true` on a JavaScript lane will
+therefore refuse. See **B038**.
 
 ### SQL/DDL mutation testing (R2 only)
 

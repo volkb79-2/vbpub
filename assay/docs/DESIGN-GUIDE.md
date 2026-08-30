@@ -244,7 +244,8 @@ and none of the four copies guards it.
 **Coverage format is READ and cross-checked by DERIVATION.** The lane declares
 it (it is a fact of the lane's own argv: `--cov-report=json` vs `lcov`), and
 assay sniffs the artifact (`mode:` → go-cover, `{"files":` → coverage.py JSON,
-`SF:` → lcov, `<coverage` → cobertura) and **refuses on mismatch**. A lane whose
+`SF:` → lcov, `<coverage` → cobertura, `"statementMap"` →
+`coverage-istanbul-json`) and **refuses on mismatch**. A lane whose
 argv changed format and was not updated fails loudly instead of mis-parsing.
 
 **`_derive_test_command` is deleted, not ported.** nyxloom's mutation gate maps
@@ -1129,7 +1130,11 @@ Fixtures are hello-world projects carried in assay's own test data, each with an
 expected verdict artifact covering all six outcomes and every `reason_code`.
 
 - **Committed static data:** real source files plus **pre-generated** coverage
-  artifacts (coverage.py JSON, cobertura XML, `go test -coverprofile` output).
+  artifacts (coverage.py JSON, cobertura XML, `go test -coverprofile` output,
+  and — B036 — two real `vitest run --coverage` documents, one per provider,
+  produced outside this repository from the committed `tests/fixtures/coverage/
+  probe-js` project; assay's suite needs no Node toolchain for the same reason
+  it needs no Go one).
   Parsing a profile and injecting a canary into Go source are pure text
   operations, so **assay's suite needs no Go toolchain** — mandatory here, since
   this devcontainer has none.
@@ -1168,6 +1173,13 @@ parser to an adapter copies the lcov parser into every adapter that can emit
 lcov — the four-copies divergence, one layer down. So: **a parser registry keyed
 by format, and a `LanguageAdapter` keyed by language.**
 
+B036 is that claim landing twice over. `coverage-istanbul-json` — istanbul's
+own `coverage-final.json`, emitted natively by nyc/istanbul, by Jest, and by
+BOTH of Vitest's coverage providers — was added as a fifth FORMAT with no
+language attached, and the `javascript` adapter was added as a fourth LANGUAGE
+covering `.js`/`.jsx`/`.ts`/`.tsx` with no format attached. Neither change
+touched the other's module, the protocol, the core, or the registry.
+
 The registry's output type carries one distinction the current copies lack:
 
 ```
@@ -1186,7 +1198,15 @@ to `(covered_arcs, total_arcs)` — is `None` when the format cannot express
 branch arcs at all (a Go cover profile: statement counts, no arcs, ever;
 `go-cover`'s parser sets it unconditionally and a test asserts that as a
 *measured* property of the format, not an omission that later looks like an
-oversight, A-O16). It is a `BranchCoverage` with an EMPTY `by_line` for a real
+oversight, A-O16). `coverage-istanbul-json` sets it unconditionally
+too, for a different measured reason (A-344): the format HAS a `branchMap`,
+but its two real producers disagree about what that map means — on one source
+file `@vitest/coverage-istanbul` reports 6 arcs across 3 typed branch nodes
+while `@vitest/coverage-v8` reports 4 single-location "branches" that are
+really v8's own executed/unexecuted ranges — and a lane declares the format,
+never the producer. A number whose meaning depends on an undeclared fact is
+the `declared_unverified`-class lie, so this format reports `None` until a
+producer can be declared (B038). It is a `BranchCoverage` with an EMPTY `by_line` for a real
 branch-tracking artifact's file that happens to have no branches — the exact
 trap `lcov` proves is real: `coverage.py` emits `BRF`/`BRH` for one file and
 nothing at all for a branch-free sibling in the SAME artifact, so capability
@@ -1221,6 +1241,27 @@ normalize_coverage_key(key)            statement_spans(text) -> spans | None
 inject_import_break(text)              inject_uncovered_line(text)
 generate_mutation_sites(text, lines, operators, limit) -> sites | UNSUPPORTED
 ```
+
+Four adapters implement it today, and each reaches only the rigor levels this
+build actually wires it to (§7 — an adapter existing is not a capability):
+
+| `judge.language` | reached here | notes |
+|---|---|---|
+| `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
+| `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
+| `javascript` | R1 only | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). R2 waits on B037's native-vs-ingest ruling, so `generate_mutation_sites` is unconditionally `UNSUPPORTED`; R3 is an unwired fast-follow |
+| `go` | nothing | ships and is tested, but no producer path is wired at any level (A-172/A-217) |
+
+**`javascript` needs no span attribution, and that too was measured rather
+than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
+`[start.line, end.line]` EXTENT, so the parser expands a multi-line statement
+across its own lines — innermost extent wins, ties resolve by max count — and
+leaves no line of a measured file for rule 3b to resolve. Python needs an AST
+walk for the same recovery only because `coverage.py`'s artifact does not
+carry extents. The rule is load-bearing and not a refinement: in real
+`@vitest/coverage-istanbul` output an `if` statement's extent has count 1
+while its own never-taken `return` inside it has count 0, so a go-cover-style
+"executed wins" merge would report a provably-unexecuted line as covered.
 
 ### Mutation is source-oriented
 
