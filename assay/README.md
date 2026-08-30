@@ -170,12 +170,25 @@ either coverage provider:
 // vite.config.ts / vitest.config.ts
 test: {
   coverage: {
-    provider: 'v8',            // or 'istanbul' — both emit this format
+    provider: 'istanbul',      // REQUIRED for a judged lane — see below
     reporter: ['json'],        // 'json' IS coverage-final.json
     reportsDirectory: '.assay' // keep it out of the tree, and gitignore it
   }
 }
 ```
+
+> **Use `@vitest/coverage-istanbul`, not `@vitest/coverage-v8`, for any lane
+> you gate on.** The v8 provider reports provably-never-executed lines as
+> *executed* whenever a conditional (`? :`) expression appears earlier in the
+> same block — so an assay R1 lane PASSes on lines that never ran. Measured on
+> Vitest **3.2.4 and 4.1.11 alike**, for one-line and multi-line ternaries,
+> and not fixed by `coverage.experimentalAstAwareRemapping`. The
+> `@vitest/coverage-istanbul` provider is correct on every case measured. Both
+> emit the same `coverage-final.json` and assay reads either — assay cannot
+> tell them apart, which is exactly why the choice is yours to make correctly.
+> The witness fixtures are committed
+> (`tests/fixtures/coverage/probe-js-provider-defect/`), the ruling is A-346,
+> and the follow-up is B038/B040. `nyc`/`istanbul` and Jest are unaffected.
 
 The artifact keys every record by absolute filesystem path; assay reconciles
 that against the diff's own repo-relative spelling itself, so nothing has to

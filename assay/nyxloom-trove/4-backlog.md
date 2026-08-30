@@ -3404,3 +3404,77 @@ elsewhere.
 - [ ] check whether the bound belongs in ONE shared place rather than once
       per expanding parser (`coverage_istanbul_json` has its own today).
 
+---
+
+## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
+
+**Filed 2026-08-30 by B036's round-1 adversarial review, reproduced and ruled
+on as A-346 before filing.** The ruling (documentation names
+`@vitest/coverage-istanbul` as the only judged-safe Vitest provider) is
+shipped and is a mitigation, not a fix. This item owns the two things the
+ruling deliberately did not do.
+
+### The defect, measured
+
+Ground truth needs no coverage tool here: five functions, each guarded by
+`if (v === 0) return 0` on its second line, one test calling each with `0`.
+Every line below a guard provably never runs.
+`tests/fixtures/coverage/probe-js-provider-defect` is that project; four real
+artifacts are committed (both providers × Vitest 3.2.4 and 4.1.11).
+
+`@vitest/coverage-v8` reports lines below the guard as **executed** whenever a
+conditional (ternary) expression appears earlier in the same block. Through
+the shipped `evaluate_coverage`, with those lines as the diff and
+`fail_under = 100.0`: **PASS at 100.0%** under v8, **FAIL at 0.0%** under
+istanbul.
+
+Four facts, each measured, that make this more than a caveat:
+
+- reproduces on **both** currently-released Vitest majors — no version to pin
+  past;
+- a **one-line** ternary triggers it, not just a multi-line one — no
+  formatting rule avoids it;
+- `coverage.experimentalAstAwareRemapping = true` does **not** fix it;
+- a multi-line binary expression, call and object literal are all correct in
+  the same artifact from the same provider — so unsound records are not
+  structurally distinguishable from sound ones.
+
+`@vitest/coverage-istanbul` is correct on every case measured, as are
+nyc/istanbul and Jest, which share its instrumenter.
+
+### (a) report it upstream
+
+Not yet done. The minimal reproduction is
+`probe-js-provider-defect/src/shapes.ts` plus its one test; the two committed
+v8 artifacts are the evidence. Worth checking first whether it is already
+filed against `ast-v8-to-istanbul` (the remapping layer, which is where the
+defect most likely lives — v8's own range data is not obviously wrong; the
+mapping of ranges onto statement lines is).
+
+### (b) the standing question this shares with B038
+
+Should a lane be able to declare its coverage PRODUCER? B038 wants it for
+branch arcs. This item wants it for a much sharper reason: with a declared
+producer, assay could refuse a `coverage-istanbul-json` lane that names the v8
+provider outright, instead of relying on a consumer having read a warning.
+Without one, assay cannot tell the two apart — and **must not try**: nothing
+in the document separates a true `s` count from a false one (`fnMap`/`f`
+corroborate the lie, because the enclosing function really did run), so the
+only mechanical route is inferring the producer from the artifact's shape,
+which is the declaration-versus-sniffing collapse A-007 forbids and which
+would already have broken between the two versions measured here (Vitest 4's
+v8 provider emits multi-line extents where Vitest 3's emitted single-line
+ones).
+
+### Acceptance
+
+- [ ] the defect reported upstream (or an existing report found and linked),
+      with the committed reproduction;
+- [ ] `test_coverage_istanbul_provider_accuracy.py`'s defect-witness tests
+      re-checked against any newer provider release — **they are written to
+      FAIL if it is fixed**, and that failure is this item's completion
+      signal, not a test to relax;
+- [ ] if a producer becomes declarable (B038): a `javascript` lane declaring
+      the v8 provider is refused by name, and A-346's documentary mitigation
+      is downgraded to a note about older configurations.
+

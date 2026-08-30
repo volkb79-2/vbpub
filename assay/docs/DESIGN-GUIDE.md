@@ -1255,13 +1255,35 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 **`javascript` needs no span attribution, and that too was measured rather
 than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
 `[start.line, end.line]` EXTENT, so the parser expands a multi-line statement
-across its own lines — innermost extent wins, ties resolve by max count — and
-leaves no line of a measured file for rule 3b to resolve. Python needs an AST
-walk for the same recovery only because `coverage.py`'s artifact does not
-carry extents. The rule is load-bearing and not a refinement: in real
+across its own lines — innermost extent wins, ties resolve by max count —
+recovering exactly the interior lines rule 3b exists to recover, from the
+artifact rather than from a re-parse. Python needs an AST walk for the same
+recovery only because `coverage.py`'s artifact does not carry extents. The
+rule is load-bearing and not a refinement: in real
 `@vitest/coverage-istanbul` output an `if` statement's extent has count 1
 while its own never-taken `return` inside it has count 0, so a go-cover-style
 "executed wins" merge would report a provably-unexecuted line as covered.
+
+This does **not** mean every line is classified, and A-342's original wording
+saying so was corrected by its own round-1 review: a line no statement extent
+covers at all — a function signature line and a function-level closing brace
+under the babel instrumenter, a comment under any of them — stays unclassified
+and takes rule 4, exactly as an untracked line does for every other format
+here. Measured: 23 such non-comment lines in the committed istanbul fixture,
+against 29 statement start lines and 54 lines classified after expansion.
+
+**Format is one axis; PRODUCER TRUSTWORTHINESS turns out to be a third one
+(A-346).** Two producers of `coverage-istanbul-json` disagree not only about
+what `branchMap` means (above) but about whether a line ran at all:
+`@vitest/coverage-v8` reports never-executed lines as executed after any
+conditional expression, measured on two major versions, while
+`@vitest/coverage-istanbul` is correct on every case measured. Nothing in the
+document distinguishes a true execution count from a false one, so this is not
+guardable in a parser and deliberately is not guarded — sniffing the producer
+from the artifact's shape is the §5 declaration-versus-sniffing collapse. It
+is handled where an undeclarable fact has to be handled: in the documentation
+that tells a consumer which producer to run, with committed witness artifacts
+and a test that fails if the defect is ever fixed. B040.
 
 ### Mutation is source-oriented
 

@@ -13,7 +13,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   on B037's native-vs-ingest ruling, so `generate_mutation_sites` is `UNSUPPORTED` and a
   `javascript` lane declaring R2 is refused; R3 is unwired though both canary injection
   mechanisms are real. `excluded` and `branches` are reported unavailable for this format, both
-  as measured refusals (B036/A-340..A-345)
+  as measured refusals (B036/A-340..A-345). **Use `@vitest/coverage-istanbul`, not
+  `@vitest/coverage-v8`, for any JavaScript lane you gate on:** the v8 provider reports
+  provably-never-executed lines as executed whenever a conditional expression appears
+  earlier in the same block, so an R1 lane PASSes on lines that never ran. Measured on
+  Vitest 3.2.4 and 4.1.11 alike, for one-line and multi-line ternaries, and not fixed by
+  `experimentalAstAwareRemapping`; assay cannot detect it, because nothing in the
+  artifact distinguishes a true execution count from a false one (A-346, B040).
+  nyc/istanbul and Jest are unaffected
 - feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
 - feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
 - feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
