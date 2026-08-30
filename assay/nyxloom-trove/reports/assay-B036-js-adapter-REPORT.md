@@ -416,7 +416,72 @@ $ python -m pytest tests/ -q
 
 Same invocation, on the round-2 tree with all five commits in.
 
-<!-- GATE-TRANSCRIPT-ROUND-2 -->
+```
+$ cd assay && ./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b036-js-adapter tester-unified
+run-gate: rev 23 | lane tester-unified | env built-in 'host'
+run-gate: budget 60m (advisory)
+...
+Successfully installed assay-2.4.3.dev27+gd8b54de8
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.32s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 18.10s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.89s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+23 passed in 0.73s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: d8b54de8bf33470548f16a519ece6f4471b05006
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 10.70s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+(Elided only where the round-1 transcript above already shows the identical
+wheelhouse and build-closure lines; the ten phase markers, the four rigor
+claims and the receipt are verbatim.)
+
+Exit code read in a SEPARATE step, never off a pipe tail (LESSONS L4):
+
+```
+$ tail -4 gate2.txt
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT=0
+```
+
+All ten phase markers present and in order, terminated by
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. The commit under test is
+`d8b54de8` — the fifth and last round-2 commit — and the wheel
+(`assay-2.4.3.dev27+gd8b54de8`) was built from that exact OID, so the gate
+saw every fixture, test and doc change in this round. The B006(a) receipt
+still shows R0-R3 all PASS, which is the check that this change did not
+disturb assay's own self-hosting claim.
+
+For reference, the same suite run directly in the worktree beforehand:
+
+```
+$ python -m pytest tests/ -q
+3489 passed, 11 skipped, 1 warning in 323.42s (0:05:23)
+```
+
+3,454 → 3,489 is the 35 tests round 2 added, and nothing existing went red.
 
 
 ---
