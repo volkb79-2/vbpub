@@ -60,6 +60,7 @@ from typing import Any, Sequence, TextIO
 from . import __version__
 from . import attestation, diff, git, isolation, measurability, mutation, registry, runner
 from .adapters.base import LanguageAdapter
+from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
@@ -257,12 +258,29 @@ def _built_in_registry() -> registry.Registry:
     it. Route (i) (§4.1) needs no ``external_tools`` entry, so this is the
     entire wiring change -- no preflight, no new config surface, one more
     entry in this one registry.
+
+    **B036: JavaScript/TypeScript is registered at R1 ONLY**, following
+    Python's own first-ship shape rather than SQL's. R2 is not registered
+    because no JS/TS mutation engine exists to reach -- whether it should be
+    native or should ingest an external producer's evidence is the ruling
+    **B037** exists to force (:meth:`~assay.adapters.javascript.
+    JavaScriptAdapter.generate_mutation_sites` is unconditionally
+    ``"UNSUPPORTED"`` until then), so ``judge.language = "javascript"`` at R2
+    is refused by :func:`assay.registry.get_adapter` with the same
+    ``ERROR``/``BAD_LANE_CONFIG`` an unknown language gets. R3 is not
+    registered either: the two canary injection methods are real
+    implementations rather than stubs, but a producer path is a separate
+    claim from a method existing (DESIGN-GUIDE §7), and wiring one is a
+    fast-follow, not part of B036.
     """
     return registry.new_registry(
         registry.RegistryEntry(
             adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
         registry.RegistryEntry(adapter=SqlAdapter(), rigor=frozenset({"R2"})),
+        registry.RegistryEntry(
+            adapter=JavaScriptAdapter(), rigor=frozenset({"R1"})
+        ),
     )
 
 

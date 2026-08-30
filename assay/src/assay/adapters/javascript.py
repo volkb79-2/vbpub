@@ -1,0 +1,347 @@
+"""The JavaScript/TypeScript :class:`~assay.adapters.base.LanguageAdapter`
+(B036) — the FOURTH real adapter, and the second (after Go, P08) to be added
+without touching one line of the frozen protocol
+(:mod:`assay.adapters.base`), the language-free core (:mod:`assay.evaluate`)
+or the registry (:mod:`assay.registry`).
+
+**One adapter for the whole ``.js``/``.jsx``/``.ts``/``.tsx`` family, named
+``"javascript"`` (A-340).** ``judge.language`` names a language the way
+``"python"`` and ``"go"`` already do — not a dialect, a runtime, or a file
+extension. TypeScript is JavaScript's own superset and JSX/TSX are syntax
+extensions of the two; all four compile to the same runtime language, are
+measured by the same coverage tools into the same artifact
+(``coverage-final.json``, whose records make no distinction between them), and
+share every rule this adapter states. Splitting them would force a lane
+touching one ``.ts`` file and one ``.tsx`` file to declare two languages for
+one measurement.
+
+**``requires_span_attribution = False``, settled by a real probe, not assumed
+(A-342).** ``adapters/go.py``'s own header records that its identical claim
+was only settled after A-172's probe found the premise behind it wrong once
+already; this one was measured before it was written. Real
+``vitest run --coverage`` output was generated for both of Vitest's coverage
+providers against ``tests/fixtures/coverage/probe-js`` (see that directory's
+own provenance section):
+
+* ``@vitest/coverage-v8`` emits one single-line ``statementMap`` entry per
+  executable physical line — no multi-line extent exists anywhere in the
+  artifact, so nothing is unattributed to begin with;
+* ``@vitest/coverage-istanbul`` emits REAL statement extents, several of them
+  multi-line (``format.ts``'s own ``[24, 32]`` array literal and ``[33, 37]``
+  loop), which is exactly ``coverage.py``'s multi-line-statement gap in a
+  different format.
+
+The second shape is closed by :mod:`assay.coverage_parsers.coverage_istanbul_json`
+itself, which expands each statement's own extent across its lines with
+innermost-wins resolution — a fact the ARTIFACT carries, not one this adapter
+would have to re-derive. So no line of a measured file reaches
+``evaluate.py``'s rule 3b at all, and :meth:`JavaScriptAdapter.statement_spans`
+returns ``None`` unconditionally, existing only to satisfy the protocol's
+structural shape (A-101), exactly as Go's does. The alternative —
+``True`` plus a real ``statement_spans`` — would require a TypeScript/JSX
+parser written in Python from scratch, which is the categorically larger
+undertaking B037's own scope boundary exists to rule on, and it would buy
+nothing the parser has not already recovered.
+
+**``has_executable_code`` answers ONE narrow question and refuses the moment
+its confidence runs out (A-343).** Consulted only for a changed, considered,
+non-test source file with NO entry at all in the coverage artifact. Two cases
+are decided, both measured:
+
+* a ``.d.ts``/``.d.mts``/``.d.cts`` **declaration file** has zero executable
+  code by TypeScript's own grammar (a declaration file may only declare
+  types), and neither provider reports one at all — ``probe-js/src/types.d.ts``
+  is absent from both real artifacts. This is the NoCode case, an empty
+  ``__init__.py``'s exact analogue, and it is decided from the path alone
+  because the language's grammar decides it, not the file's contents;
+* a file whose text is EMPTY, or contains nothing but whitespace and comments,
+  likewise has nothing to instrument.
+
+Everything else answers ``True``, fail-closed (srdm's asymmetry: a wrong
+``False`` is a silent excuse; a wrong ``True`` is at worst a visible false
+failure). In particular a **type-only ``.ts`` module** (``export type`` /
+``interface`` only, no runtime value) is deliberately NOT claimed as
+code-free: deciding it needs real TypeScript type-erasure semantics — a
+hand-written TS parser, the same overreach the paragraph above declines — and
+under the provider this build is wired for it never arises, because
+``@vitest/coverage-v8`` DOES report such a module, with an empty
+``statementMap`` (measured: ``probe-js/src/typesonly.ts``, zero statements),
+which reaches evaluation as a real record contributing zero executable lines
+rather than as an absent one. Under ``@vitest/coverage-istanbul`` the same
+module is absent, and a changed type-only module would then be reported as
+missing coverage — the visible direction, and B038's own follow-up.
+
+**``is_test_path`` follows Vitest's own default ``include`` glob.** Vitest's
+documented default is ``['**/*.{test,spec}.?(c|m)[jt]s?(x)']``, so a filename
+carrying a ``.test.``/``.spec.`` segment before its extension is a test file;
+``__tests__/`` is added as the one directory convention the ecosystem shares
+with Jest's own default ``testMatch``. Both are anchored: the directory rule
+fires only on a whole path segment (``(^|/)__tests__/``), never on a
+``my__tests__helpers/`` prefix, the same boundary discipline
+:data:`assay.adapters.python._TEST_FILE_RE` applies to ``tests/``. Nothing
+beyond those two is invented (DESIGN-GUIDE §5): a project whose tests live in
+a plain ``tests/`` directory with ordinary filenames is not covered by any
+convention this adapter can cite, and would have to keep them out of its
+declared source roots.
+
+**``excluded_dir_names`` names three directories, each with a real source.**
+``node_modules`` is npm's own universal, gitignored dependency tree (and the
+literal example ``adapters/base.py``'s own protocol docstring gives for this
+attribute); ``dist`` is Vite's documented default ``build.outDir``, confirmed
+directly against the first real consumer's own ``vite.config.ts``
+(``applications/webapp-ui-react``, which sets it explicitly); ``coverage`` is
+Vitest's own default ``coverage.reportsDirectory``. All three hold GENERATED
+output that a coverage artifact can never meaningfully measure. Nothing else
+is added — ``build``, ``out``, ``.next`` and friends are real defaults of
+OTHER toolchains that no source read for this adapter uses, and inventing a
+reasonable-sounding default no cited source actually has is precisely the
+hazard DESIGN-GUIDE §5 exists to forbid.
+
+**``normalize_coverage_key`` returns its key unchanged, and that is the
+finding, not an omission (A-341).** Istanbul keys every record by ABSOLUTE
+filesystem path — a different mismatch shape from Go's package-qualified
+import path. It needs no adapter-side strip, because
+:func:`assay.evaluate._to_repo_relative_key` already resolves an absolute
+coverage key against ``repo_top`` and returns its repo-relative identity
+(B006/A-145's own absolute-key branch, added for real ``coverage.py``'s
+absolute-path fallback). That is the universal prefix-BOUNDARY reconciliation
+DESIGN-GUIDE §11 puts in the core; there is no LANGUAGE-specific prefix here
+for an adapter to strip, so this method does what the protocol says an adapter
+with nothing to strip does: returns *key* unchanged.
+
+**Canary injection: both mechanisms are plain trailing appends (A-345).**
+JS/TS has an executable module top level like Python, so
+``inject_import_break`` could reproduce nyxloom's insert-after-the-leading-
+prologue shape — but an ES module's ``import`` declarations are HOISTED and
+its imported modules evaluated before any of its own body runs, so a
+``throw`` appended at the end of the file still fires during module
+evaluation, before any test can touch a single export. Appending is therefore
+exactly as faithful to the contract ("reliably tripped by merely
+importing/loading the module") while needing none of Python's
+docstring/``__future__`` insertion-point logic — the same reason
+``adapters/go.py`` appends both of its own. Both snippets are written in the
+subset that is valid in ``.js``, ``.jsx``, ``.ts`` and ``.tsx`` alike, because
+these methods receive only *text* and never a path: no type annotations (a
+``.js`` file would be a syntax error), and the canary function's parameter
+carries a DEFAULT rather than a type, so TypeScript infers ``number`` and
+``noImplicitAny`` has nothing to complain about. The function is ``export``ed
+for the same reason: an unexported, never-referenced declaration is what
+``noUnusedLocals`` flags, and the protocol asks for a lint-clean addition.
+
+**``generate_mutation_sites`` is unconditionally ``"UNSUPPORTED"`` (A-183's
+own marker, Go's precedent).** Whether JS/TS mutation should be native or
+should ingest an external producer's evidence (Stryker) is a real
+architectural ruling, deliberately left open as **B037**; until it is made
+there is no engine here, and an absent capability renders payload-free
+``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` rather than a green mutation claim
+or a ``NO_MUTANTS`` that would assert an analysis ran. ``external_tools = ()``
+for the same reason it is empty for Go: this module never shells out, never
+imports ``subprocess``, and does no work a toolchain could be required for.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Literal
+
+from ..mutation import MutationSite
+from .base import StatementSpan
+
+__all__ = ["JavaScriptAdapter"]
+
+#: Vitest's own default ``include`` glob (``**/*.{test,spec}.?(c|m)[jt]s?(x)``)
+#: plus Jest's own ``__tests__`` directory convention, as one anchored regex.
+#: The directory branch is anchored with ``(^|/)`` so a directory merely
+#: CONTAINING the characters (``x__tests__/``) never matches, the identical
+#: boundary defence :data:`assay.adapters.python._TEST_FILE_RE` applies to its
+#: own ``tests/`` branch. The filename branch requires a real ``.`` before
+#: ``test``/``spec`` so ``latest.ts`` and ``respec.ts`` cannot match, and
+#: accepts the ``.cjs``/``.mjs``/``.cts``/``.mts`` spellings Vitest's own glob
+#: accepts even though :attr:`JavaScriptAdapter.source_globs` does not yet
+#: name them -- a test-path rule that is broader than the source globs can
+#: only ever exclude MORE, never mis-include.
+_TEST_FILE_RE = re.compile(
+    r"(^|/)(__tests__/|[^/]+\.(test|spec)\.(c|m)?[jt]sx?$)"
+)
+
+#: TypeScript declaration-file suffixes. A declaration file may contain only
+#: ambient declarations by TypeScript's own grammar, so it has zero
+#: instrumentable code -- the NoCode case, decided from the path alone.
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+#: P09's canary snippets, ported to the JS/TS module top level (A-345 -- see
+#: this module's own docstring for why both are appends and why neither
+#: carries a type annotation).
+_IMPORT_BREAK_SNIPPET = (
+    '\n\nthrow new Error("assay-canary-import-break")\n'
+)
+_UNCOVERED_CANARY_FUNC = "_assayCanaryUnreached"
+_UNCOVERED_CANARY_SNIPPET = (
+    f"\n\nexport function {_UNCOVERED_CANARY_FUNC}(value = 0) {{\n"
+    "  const doubled = value * 2 // assay-canary: executed by no test\n"
+    "  return doubled\n"
+    "}\n"
+)
+
+
+def _strip_comments(text: str) -> str | None:
+    """*text* with every ``//`` line comment and ``/* */`` block comment
+    replaced by same-length whitespace (real newlines preserved), or ``None``
+    when a block comment is never closed.
+
+    Narrower than :func:`assay.adapters.go._strip_comments_and_literals` on
+    purpose: its ONE caller (:func:`_has_executable_code`) only asks whether
+    any non-comment, non-whitespace character survives, and a string or
+    template literal's own CONTENT is such a character regardless of what it
+    spells. Masking literals too would therefore change no answer, while
+    requiring this module to carry JS's template-literal-with-``${}``-
+    substitution grammar -- real parsing work with no question depending on
+    it. Comment delimiters appearing INSIDE a literal (``const u = "http://x"``)
+    are the one shape this narrowness mis-reads, and it mis-reads them in the
+    fail-closed direction: the masked tail is blanked, and a file whose only
+    other content is that literal still answers ``True`` because the literal's
+    own opening quote survives ahead of the mask.
+
+    An unterminated block comment returns ``None`` and the caller answers
+    ``True`` (A-087's own fail-closed direction, adopted verbatim): a file
+    this scan cannot finish reading is never waved through as code-free.
+    """
+    chars = list(text)
+    i = 0
+    n = len(text)
+    while i < n:
+        two = text[i : i + 2]
+        if two == "//":
+            end = text.find("\n", i)
+            if end == -1:
+                end = n
+        elif two == "/*":
+            close = text.find("*/", i + 2)
+            if close == -1:
+                return None
+            end = close + 2
+        else:
+            i += 1
+            continue
+        for index in range(i, end):
+            if chars[index] != "\n":
+                chars[index] = " "
+        i = end
+    return "".join(chars)
+
+
+def _has_executable_code(rel_path: str, text: str) -> bool:
+    """The whole narrow question :meth:`JavaScriptAdapter.has_executable_code`
+    answers (this module's own docstring): ``False`` only for a TypeScript
+    declaration file, or for text that is empty once comments and whitespace
+    are removed. ``True`` for everything else, including anything this scan
+    cannot finish reading."""
+    if rel_path.endswith(_DECLARATION_SUFFIXES):
+        return False
+    masked = _strip_comments(text)
+    if masked is None:
+        return True
+    return bool(masked.strip())
+
+
+def _append_snippet(text: str, snippet: str) -> str:
+    """*text* plus *snippet*, guaranteeing exactly one trailing newline on
+    *text* first -- a clean append boundary, never a whole-file reformat
+    (:func:`assay.adapters.go._append_snippet`'s own shape)."""
+    body = text
+    if body and not body.endswith("\n"):
+        body += "\n"
+    return body + snippet
+
+
+def _inject_import_break(text: str) -> tuple[str, str]:
+    """Append :data:`_IMPORT_BREAK_SNIPPET` -- a top-level ``throw`` -- to
+    *text*. Pure: returns the transformed text and a description; never
+    touches a filesystem (A-010)."""
+    return _append_snippet(text, _IMPORT_BREAK_SNIPPET), (
+        "appended a module-top-level `throw new Error(...)`; an ES module's "
+        "imports are hoisted, so this fires during module evaluation for any "
+        "test that imports the file (A-345)"
+    )
+
+
+def _inject_uncovered_line(text: str) -> tuple[str, str]:
+    """Append :data:`_UNCOVERED_CANARY_SNIPPET` -- a never-called, exported,
+    side-effect-free top-level function -- to *text*. Pure, same contract as
+    :func:`_inject_import_break`."""
+    return _append_snippet(text, _UNCOVERED_CANARY_SNIPPET), (
+        f"appended never-called `export function {_UNCOVERED_CANARY_FUNC}` "
+        "(2 uncovered lines) at end of file"
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class JavaScriptAdapter:
+    """The JavaScript/TypeScript :class:`~assay.adapters.base.LanguageAdapter`
+    (B036): five attributes and seven methods against the protocol frozen by
+    A-097 and extended by P07/A-101, P09/A-105 and P21/A-183 -- this adapter
+    modifies none of them.
+    """
+
+    name: str = "javascript"
+    #: ``.js``/``.jsx``/``.ts``/``.tsx`` -- the four spellings B036 names and
+    #: the four the first real consumer actually has. ``.mjs``/``.cjs``/
+    #: ``.mts``/``.cts`` are real, legal spellings no source read for this
+    #: adapter uses, so they are deliberately absent rather than guessed in
+    #: (DESIGN-GUIDE §5); adding one is a one-line change the day a consumer
+    #: has one. A ``.d.ts`` file matches ``*.ts`` here and is classified as
+    #: code-free by :meth:`has_executable_code` rather than being made
+    #: invisible: a declaration file IS this adapter's source, it simply has
+    #: no executable content, and those are different facts.
+    source_globs: tuple[str, ...] = ("*.js", "*.jsx", "*.ts", "*.tsx")
+    #: Generated trees, each with a real cited source -- see this module's own
+    #: docstring for which, and for what was deliberately NOT added.
+    excluded_dir_names: frozenset[str] = frozenset(
+        {"node_modules", "dist", "coverage"}
+    )
+    #: Measured, not assumed (A-342): the istanbul parser expands each
+    #: statement's own extent, so a measured file leaves no unattributed line
+    #: for rule 3b to resolve. See this module's own docstring for the probe.
+    requires_span_attribution: bool = False
+    external_tools: tuple[str, ...] = ()
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return bool(_TEST_FILE_RE.search(rel_path))
+
+    def has_executable_code(self, rel_path: str, text: str) -> bool:
+        return _has_executable_code(rel_path, text)
+
+    def normalize_coverage_key(self, key: str) -> str:
+        """*key* unchanged. Istanbul's absolute-path keys are reconciled by
+        the CORE's own :func:`assay.evaluate._to_repo_relative_key`, not here
+        -- this module's docstring states why there is no language-specific
+        prefix to strip at all."""
+        return key
+
+    def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
+        return None
+
+    def inject_import_break(self, text: str) -> tuple[str, str]:
+        return _inject_import_break(text)
+
+    def inject_uncovered_line(self, text: str) -> tuple[str, str]:
+        return _inject_uncovered_line(text)
+
+    def generate_mutation_sites(
+        self,
+        text: str,
+        lines: set[int],
+        *,
+        operators: tuple[str, ...],
+        limit: int,
+    ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
+        """Unconditionally ``"UNSUPPORTED"`` (A-183's marker, Go's own
+        precedent at ``adapters/go.py``). No argument is consulted: there is
+        no partial JS/TS mutation engine to fall back to, because whether one
+        should be native or should ingest an external producer's evidence is
+        the ruling **B037** exists to force and has not made. Renders
+        payload-free ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED``, never a green
+        mutation claim and never ``NO_MUTANTS``, which would assert that a
+        supported analysis ran and observed nothing mutable."""
+        return "UNSUPPORTED"
