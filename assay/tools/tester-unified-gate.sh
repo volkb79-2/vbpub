@@ -233,6 +233,15 @@ run_self_hosted_lane() {
   if ! assay run tester-unified --require-judge-provenance \
       --verdict-json "$scratch/verdict.json"; then
     echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
+    # A red lane has two very different shapes and the rerun below only shows
+    # one of them. `NO_MEASUREMENT/DIRTY_TREE` is assay's POST-run whole-tree
+    # check (`runner.py`'s `post_reason`), which carries no path list, so a
+    # lane whose own command passed but left a file behind reports a green
+    # pytest here and an unexplained red lane above. Naming the paths costs
+    # one git call and is the difference between a five-minute answer and a
+    # rebuild-the-container investigation.
+    echo 'ASSAY_GATE_DIAGNOSTIC=worktree-status-after-the-lane' >&2
+    git status --porcelain >&2 || true
     python -m pytest tests -q --ignore=tests/test_self_hosting.py \
       --override-ini=pythonpath= || true
     return 1
