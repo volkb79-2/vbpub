@@ -24,6 +24,8 @@ contract.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from assay.adapters.javascript import JavaScriptAdapter
@@ -139,3 +141,91 @@ def test_the_two_transforms_are_different_and_independent():
     assert broken != uncovered
     assert "throw" not in uncovered[len(MODULE) :]
     assert "_assayCanaryUnreached" not in broken
+
+
+# --- the R1 half, proven by a REAL committed coverage artifact ---------------
+#
+# Round-1 review, Minor: A-345's verification was a report transcript, while
+# the rest of this change committed real artifacts as evidence. It now
+# commits one. `tests/fixtures/canary/javascript/` holds the exact text
+# `inject_uncovered_line` produces for the probe project's own `roles.ts`,
+# plus the `coverage-final.json` a real `vitest run --coverage` produced from
+# that injected file, under BOTH providers.
+
+CANARY_FIXTURES = (
+    Path(__file__).resolve().parent / "fixtures" / "canary" / "javascript"
+)
+INJECTED = CANARY_FIXTURES / "roles.uncovered-line-injected.ts"
+PROBE_SOURCE = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "coverage"
+    / "probe-js"
+    / "src"
+    / "roles.ts"
+)
+CANARY_ARTIFACTS = (
+    "coverage-istanbul-json.uncovered-line.vitest-istanbul.json",
+    "coverage-istanbul-json.uncovered-line.vitest-v8.json",
+)
+
+
+def test_the_committed_injected_file_is_byte_for_byte_what_this_adapter_produces():
+    """The join between the two halves of the evidence. Without this, the
+    committed artifact would prove something about a file nobody could show
+    was the adapter's own output; with it, a change to the snippet fails here
+    FIRST and says the artifact needs regenerating, rather than letting the
+    artifact quietly stop describing what ships."""
+    produced, _description = ADAPTER.inject_uncovered_line(
+        PROBE_SOURCE.read_text(encoding="utf-8")
+    )
+
+    assert produced == INJECTED.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("artifact", CANARY_ARTIFACTS)
+def test_a_real_coverage_run_reports_the_canary_body_as_uncovered(artifact: str):
+    """A-345's R1 claim, as committed evidence instead of a transcript: the
+    injected function's DECLARATION line is reached merely by the module
+    loading, and its two BODY lines are executed by no test -- so a gate
+    enforcing a changed-line-coverage floor rejects the transform while a
+    tests-only gate sails past it. True under both providers (the defect
+    A-346 rules on does not touch this shape: there is no conditional
+    expression anywhere in the appended function)."""
+    from assay.coverage import load_coverage_profile
+
+    profile = load_coverage_profile(
+        (CANARY_FIXTURES / artifact).read_text(encoding="utf-8"),
+        declared_format="coverage-istanbul-json",
+    )
+    (record,) = [
+        value for key, value in profile.files.items() if key.endswith("/roles.ts")
+    ]
+    injected_lines = INJECTED.read_text(encoding="utf-8").splitlines()
+
+    # The two body lines of the appended function, located by content rather
+    # than by a hardcoded number, so the assertion survives a snippet edit
+    # that the byte-equality test above would have already caught.
+    body = [
+        number
+        for number, text in enumerate(injected_lines, start=1)
+        if text.strip() in ("const doubled = value * 2 // assay-canary: executed by no test",
+                            "return doubled")
+    ]
+
+    assert len(body) == 2
+    assert set(body) <= record.missing
+    assert not (set(body) & record.executed)
+
+
+def test_the_suite_that_produced_the_canary_artifacts_still_passed():
+    """The other half of the R1 canary's contract, and the reason it isolates
+    an AXIS rather than just breaking things: the injected function is valid,
+    lint-clean and test-neutral, so the project's own tests still pass. Both
+    committed artifacts exist at all only because the run they came from
+    completed -- a suite that had failed would have produced no coverage
+    document to commit, exactly as an import-break injection does (which is
+    why THAT half has no artifact here and cannot have one)."""
+    for artifact in CANARY_ARTIFACTS:
+        assert (CANARY_FIXTURES / artifact).is_file()
+

@@ -20,6 +20,7 @@ from types import MappingProxyType
 
 import pytest
 
+from assay.adapters.go import GoAdapter
 from assay.adapters.javascript import JavaScriptAdapter
 from assay.adapters.python import PythonAdapter
 from assay.adapters.sql import SqlAdapter
@@ -53,6 +54,31 @@ def test_the_javascript_adapter_declares_the_expected_protocol_surface():
     )
     assert adapter.requires_span_attribution is False
     assert adapter.external_tools == ()
+
+
+def test_normalize_coverage_key_is_a_no_op_for_every_key_shape():
+    """A-341's own claim, pinned directly (round-1 review, Minor: an INERT
+    wrong strip -- one whose prefix never matches a real key -- survived the
+    whole suite, because every other test only ever exercises keys that a
+    correct implementation leaves alone anyway).
+
+    Istanbul's absolute keys are reconciled by the CORE
+    (:func:`assay.evaluate._to_repo_relative_key`); there is no
+    language-specific prefix for this adapter to strip, so the method must
+    return EVERY key unchanged -- absolute, relative, Windows-shaped, and the
+    empty string alike."""
+    adapter = JavaScriptAdapter()
+
+    for key in (
+        "/workspaces/repo/src/App.tsx",
+        "/build/agent/7/applications/ui/src/App.tsx",
+        "src/App.tsx",
+        "./src/App.tsx",
+        "C:\\Users\\dev\\project\\src\\App.tsx",
+        "node_modules/pkg/index.js",
+        "",
+    ):
+        assert adapter.normalize_coverage_key(key) == key
 
 
 def test_the_javascript_adapters_statement_spans_returns_none_unconditionally():
@@ -131,19 +157,29 @@ def test_all_four_adapters_coexist_in_one_registry_each_independently_addressabl
     """The mechanical proof of additivity, now at four languages: registering
     every real adapter together, none shadows or is required by another, and
     the registry (and every module it depends on) needed zero changes to
-    accommodate the fourth."""
+    accommodate the fourth.
+
+    Round-1 review nitpick: an earlier version of this test said "four" and
+    registered three -- `GoAdapter` was missing, so the claim in its own name
+    was not the claim it made. Go is registered here at R1 purely to prove
+    coexistence; `cli._built_in_registry` still reaches it at no rigor level
+    at all, which is a different fact and is pinned separately below."""
     javascript = JavaScriptAdapter()
     python = PythonAdapter()
     sql = SqlAdapter()
+    go = GoAdapter()
     registry = new_registry(
         RegistryEntry(adapter=javascript, rigor=frozenset({"R1"})),
         RegistryEntry(adapter=python, rigor=frozenset({"R1"})),
         RegistryEntry(adapter=sql, rigor=frozenset({"R2"})),
+        RegistryEntry(adapter=go, rigor=frozenset({"R1"})),
     )
 
     assert get_adapter(registry, "javascript", "R1") is javascript
     assert get_adapter(registry, "python", "R1") is python
     assert get_adapter(registry, "sql", "R2") is sql
+    assert get_adapter(registry, "go", "R1") is go
+    assert len(registry.entries) == 4
 
 
 # --- R1-only: at R2/R3 this build's own registry refuses --------------------

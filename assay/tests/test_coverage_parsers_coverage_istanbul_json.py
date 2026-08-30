@@ -353,10 +353,32 @@ def test_one_enormous_extent_is_refused_rather_than_expanded():
     assert "classified statement lines" in str(excinfo.value)
 
 
-def test_the_bound_is_spent_across_the_whole_document_not_per_record():
+@pytest.fixture
+def tiny_bound(monkeypatch: pytest.MonkeyPatch) -> int:
+    """:data:`~assay.coverage_parsers.coverage_istanbul_json.MAX_CLASSIFIED_LINES`
+    lowered to a handful of lines for the boundary tests.
+
+    Round-1 review, Minor: the previous must-succeed control drove a REAL
+    two-million-line extent, peaking at ~352 MB of resident memory on every
+    suite run, to prove an off-by-one in a single ``<`` comparison. The
+    comparison is identical at any ceiling, and :func:`.parse` reads the
+    constant at call time, so lowering it proves the same arithmetic for
+    nothing. The SHIPPED value's own justification is a product argument
+    about real artifact sizes and lives in the constant's docstring, where
+    the memory it implies is also stated — it is not something a test should
+    be paying to re-enact.
+    """
+    monkeypatch.setattr(coverage_istanbul_json, "MAX_CLASSIFIED_LINES", 12)
+    return 12
+
+
+def test_the_bound_is_spent_across_the_whole_document_not_per_record(
+    tiny_bound: int,
+):
     """A document made of many small records is refused by the same counter
-    that refuses one huge extent — the bound is an ARTIFACT property."""
-    per_record = coverage_istanbul_json.MAX_CLASSIFIED_LINES // 2 + 10
+    that refuses one huge extent — the bound is an ARTIFACT property. Neither
+    record here would breach it alone."""
+    per_record = tiny_bound // 2 + 1
     text = artifact(
         {
             f"/repo/src/{index}.ts": {
@@ -371,18 +393,32 @@ def test_the_bound_is_spent_across_the_whole_document_not_per_record():
     assert "classified statement lines" in str(excinfo.value)
 
 
-def test_an_extent_just_inside_the_bound_still_parses():
-    """The paired must-succeed control: the ceiling refuses documents past it,
-    not every document."""
+def test_an_extent_exactly_at_the_bound_still_parses(tiny_bound: int):
+    """The paired must-succeed control, and the real off-by-one pin: EXACTLY
+    the ceiling is allowed, so the refusal is strictly "past it", not "at
+    it"."""
     profile = load_coverage_profile(
-        one_file(
-            {"0": span(1, coverage_istanbul_json.MAX_CLASSIFIED_LINES)}, {"0": 1}
-        ),
-        declared_format=FORMAT,
+        one_file({"0": span(1, tiny_bound)}, {"0": 1}), declared_format=FORMAT
     )
-    assert len(profile.files["/repo/src/a.ts"].executed) == (
-        coverage_istanbul_json.MAX_CLASSIFIED_LINES
-    )
+    assert len(profile.files["/repo/src/a.ts"].executed) == tiny_bound
+
+
+def test_one_line_past_the_bound_is_refused(tiny_bound: int):
+    """The other side of the same off-by-one, which the old two-million-line
+    control never pinned at all: ceiling + 1 refuses."""
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(
+            one_file({"0": span(1, tiny_bound + 1)}, {"0": 1}), declared_format=FORMAT
+        )
+    assert "classified statement lines" in str(excinfo.value)
+
+
+def test_the_shipped_bound_is_the_documented_value():
+    """The constant is a product decision (see its own docstring for why two
+    million and not something tighter), so it is pinned literally — the tests
+    above deliberately run against a monkeypatched ceiling and would
+    otherwise say nothing about what actually ships."""
+    assert coverage_istanbul_json.MAX_CLASSIFIED_LINES == 2_000_000
 
 
 def test_fields_this_parser_does_not_read_are_ignored_not_rejected():

@@ -313,3 +313,113 @@ def test_the_two_providers_branch_maps_are_not_the_same_measurement():
 
     # Same file, same tests: 2/6 versus 1/4. Not the same measurement.
     assert (istanbul_arcs, istanbul_covered) != (v8_arcs, v8_covered)
+
+
+# --- ground truth: exactly which lines each provider leaves unattributed ----
+
+#: Every non-comment, non-blank source line of the probe project that the
+#: parser classifies into NEITHER `executed` nor `missing`, per provider.
+#: Hand-derived from the committed artifacts and pinned literally, because
+#: this is the one assertion in the suite that a parser-side regression
+#: actually breaks: reducing `_paint` to `istanbul-lib-coverage`'s own
+#: start-line-only `getLineCoverage` behaviour changes these sets
+#: immediately, where an expectation read back out of the same profile would
+#: move in lockstep and notice nothing (round-1 review, M2).
+#:
+#: The istanbul entries ARE the correction to A-342's original overclaim.
+#: They are, file by file: every function declaration line (`branchy.ts:1`,
+#: `hinted.ts:1`, `orphan.ts:1`, `roles.ts:17`, `format.ts:8`,
+#: `Badge.tsx:8`), every function-level closing brace (`branchy.ts:10`,
+#: `hinted.ts:7`, `orphan.ts:3`, `roles.ts:20`, `format.ts:39`), the
+#: interface/type declarations TypeScript erases before instrumentation, and
+#: `format.ts:12` -- a genuinely executable `const date =` line whose own
+#: recorded statement starts at 13, on its initialiser. Those lines take
+#: `evaluate.py`'s rule 4 and leave the denominator, exactly as an untracked
+#: line does for every other format in this registry.
+UNATTRIBUTED = {
+    V8_ARTIFACT: {
+        "src/Badge.tsx": [1, 3, 4, 5, 6, 18],
+        "src/roles.ts": [1],
+        "src/typesonly.ts": [1, 3, 4, 5, 6, 8],
+    },
+    ISTANBUL_ARTIFACT: {
+        "src/Badge.tsx": [1, 3, 4, 5, 6, 8, 9, 18, 19, 21, 24],
+        "src/branchy.ts": [1, 10],
+        "src/format.ts": [8, 12, 39],
+        "src/hinted.ts": [1, 7],
+        "src/orphan.ts": [1, 3],
+        "src/roles.ts": [1, 17, 20],
+    },
+}
+
+
+def _unattributed_lines(name: str) -> dict[str, list[int]]:
+    """Per measured file, the non-comment, non-blank source lines the parser
+    put in neither bucket -- computed from the real committed artifact and
+    the real committed source, never from an expectation."""
+    measured = _by_source_path(_load(name))
+    out: dict[str, list[int]] = {}
+    for relative, record in measured.items():
+        source = (FIXTURES / "probe-js" / relative).read_text(encoding="utf-8")
+        classified = record.executed | record.missing
+        lines = [
+            number
+            for number, text in enumerate(source.splitlines(), start=1)
+            if text.strip()
+            and not text.lstrip().startswith(("//", "/*", "*"))
+            and number not in classified
+        ]
+        if lines:
+            out[relative] = lines
+    return out
+
+
+@pytest.mark.parametrize("name", BOTH)
+def test_the_unattributed_line_set_is_exactly_what_was_measured(name: str):
+    assert _unattributed_lines(name) == UNATTRIBUTED[name]
+
+
+def test_the_istanbul_provider_leaves_strictly_more_lines_unattributed():
+    """The comparative fact A-342 now states instead of its original
+    overclaim: 23 non-comment lines under istanbul against 13 under v8, and
+    every one of the v8 thirteen is a type declaration TypeScript erases
+    before any instrumenter sees it, while istanbul's include real signature
+    lines, real closing braces, and one genuinely executable line."""
+    v8_total = sum(len(lines) for lines in UNATTRIBUTED[V8_ARTIFACT].values())
+    istanbul_total = sum(
+        len(lines) for lines in UNATTRIBUTED[ISTANBUL_ARTIFACT].values()
+    )
+
+    assert (v8_total, istanbul_total) == (13, 23)
+    assert _unattributed_lines(V8_ARTIFACT) == UNATTRIBUTED[V8_ARTIFACT]
+
+
+def test_extent_expansion_classifies_strictly_more_than_start_lines_alone():
+    """The measured size of what the expansion actually buys, on the real
+    istanbul artifact -- the honest replacement for "leaves no line
+    unattributed". `istanbul-lib-coverage`'s own `getLineCoverage` keys each
+    statement by its START line only; the parser expands the whole extent.
+    Both numbers are derived here from the artifact's own bytes."""
+    raw = {
+        key.split("/probe-js/", 1)[1]: record
+        for key, record in _raw(ISTANBUL_ARTIFACT).items()
+    }
+    start_lines = {
+        relative: {
+            location["start"]["line"] for location in record["statementMap"].values()
+        }
+        for relative, record in raw.items()
+    }
+    expanded = {
+        relative: record.executed | record.missing
+        for relative, record in _by_source_path(_load(ISTANBUL_ARTIFACT)).items()
+    }
+
+    start_total = sum(len(lines) for lines in start_lines.values())
+    expanded_total = sum(len(lines) for lines in expanded.values())
+
+    # Every start line is still classified, and the expansion strictly adds.
+    for relative, lines in start_lines.items():
+        assert lines <= expanded[relative], relative
+    assert (start_total, expanded_total) == (29, 54)
+
