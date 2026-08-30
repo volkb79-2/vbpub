@@ -3114,3 +3114,187 @@ alongside whatever else needs one, not force one on its own.
       `R0,R2` lane, not only for lanes declaring R1;
 - [ ] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
       the bump.
+
+---
+
+## B036 — a JavaScript/TypeScript `LanguageAdapter` for changed-line coverage (R1), first consumer dstdns's React UI
+
+**Filed 2026-08-30.** dstdns's new UI (`applications/webapp-ui-react` —
+React 19 + Vite 6 + TypeScript 5.8, test runner Vitest 3.2, no coverage
+provider installed yet, no assay lane declared yet) currently has zero
+changed-line coverage discipline: `docs/spec-react-ui-e2e.md` explicitly
+scopes coverage as non-gating for the Playwright e2e suite it's extending,
+and there is no gate at all for the Vitest unit/component layer. This is
+greenfield, not a repair — no existing lane breaks, nothing regresses.
+
+This must land as a genuinely general adapter, parallel to Python/Go/SQL —
+dstdns is the first consumer, the same relationship SQL had to B001. Nothing
+in this item is dstdns-specific; a lane declaring `judge.language =
+"javascript"` must work for any JS/TS project assay is pointed at.
+
+### Why this is a small, low-risk item — checked, not assumed
+
+`assay.coverage`'s own module contract (`src/assay/coverage.py`'s docstring)
+states plainly: **coverage format is declared data, not language
+knowledge** — `judge.coverage.format` selects a parser from
+`FORMAT_REGISTRY`, and the registry already holds four parsers for formats
+spanning multiple languages (`cobertura`, `lcov`, `go_cover`,
+`coverage_py_json`). Adding a fifth format is a self-contained parser
+module under `coverage_parsers/`, not a redesign of the fail-under/branch
+math, which is already format-agnostic.
+
+The registry/rigor-wiring precedent (`src/assay/registry.py`,
+`RegistryEntry.rigor`) already supports registering an adapter for a
+STRICT SUBSET of R1/R2/R3 — this is exactly how Python itself first shipped
+(R1 only, per `registry.py`'s own docstring, before P18/P19 added R2/R3
+later) and exactly how SQL ships today (R2 only, `cli.py:265`). The single
+wiring point is `src/assay/cli.py:261-265`'s `new_registry(...)` call. This
+item follows the Python-at-R1-only precedent exactly: register the new
+adapter for `frozenset({"R1"})` only. R2 (mutation) and wiring R3 into the
+registry are explicitly deferred — R2 to **B037** (filed alongside this
+item, design-first, same shape as B020), R3 as a natural, low-risk
+fast-follow once R1 has shipped and the canary injection methods are
+proven, not part of this item's acceptance.
+
+**No schema-version bump is needed.** Because R2 is not being registered for
+this language at all, `MUTATION_OPERATORS_BY_LANGUAGE`
+(`src/assay/vocabulary.py`) needs no new entry (not even an empty one, unlike
+Go's — Go registers no rigor level either, but P29 already reserved its
+future R2 namespace; this item can defer that same reservation to B037
+rather than pre-committing an empty vocabulary now). `judge.language` itself
+has no closed hardcoded list to extend — `assay.config` never validates a
+language name against a fixed set; `registry.get_adapter` is the sole
+point of truth, and an unregistered name is already refused there
+(`registry.py`'s own documented O2 guarantee). This item touches no verdict
+field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
+
+### Required design decisions before implementation
+
+1. **The `judge.language` string.** Recommend `"javascript"` as the umbrella
+   name covering `.js`/`.jsx`/`.ts`/`.tsx` — matching how `"python"` and
+   `"go"` don't split by dialect/runtime, and matching how most polyglot
+   coverage/lint tooling groups the whole family under one label. This is a
+   real, effectively-permanent naming choice (schema strings are consumer-
+   facing) — record it as a decisions.md entry with reasoning, don't just
+   pick it silently.
+2. **`normalize_coverage_key`'s actual job for this format.** Istanbul's
+   `coverage-final.json` keys its per-file map by **absolute filesystem
+   path**, not a repo-relative or package-qualified one — a different shape
+   of mismatch than Go's package-qualified import path (`go_cover.py`'s own
+   precedent for "the artifact's own path spelling differs from git-diff
+   spelling"). Read `coverage_parsers/go_cover.py` and `coverage.py`'s own
+   docstring on the universal-boundary/language-specific-strip split before
+   deciding whether the absolute-to-repo-relative conversion belongs in the
+   new parser (matching how each existing parser already normalizes its own
+   artifact's path spelling) or in `normalize_coverage_key` — check where
+   the existing four parsers actually do this today rather than assuming.
+3. **Whether `requires_span_attribution` is really `False` for this
+   adapter.** Unlike `coverage-py-json` (line-granular, needing Python's own
+   AST-based span-widening for unattributed lines), Istanbul's coverage map
+   already reports statement/branch/function extents directly. Verify this
+   holds for real Vitest+`@vitest/coverage-v8` output (the provider isn't
+   even installed in `webapp-ui-react` yet — you'll need to add
+   `@vitest/coverage-v8` as a devDependency and configure
+   `test.coverage.reporter: ['json']` in `vite.config.ts` to produce a real
+   artifact to test against) before committing to `False` the way Go's own
+   file warns its `False` claim was **"settled, not assumed"** only after a
+   real probe (A-172/A-217) — don't skip that step here.
+4. **Canary injection shape for JS/TS** (`inject_import_break` /
+   `inject_uncovered_line`, needed regardless of R3 registration timing
+   since the Protocol requires real implementations, not stubs, for every
+   adapter). JS/TS has an executable module top level like Python — a
+   top-level `throw new Error(...)` is the direct analogue of Python's bare
+   `raise`; a never-called top-level function covers the uncovered-line
+   half. Should be mechanical, but confirm against `adapters/python.py`'s
+   and `adapters/go.py`'s own implementations for the exact contract
+   (placement after leading imports, description string conventions).
+
+### Acceptance
+
+- [ ] a new `coverage-istanbul-json` (or equivalently named — match the
+      naming decision above) parser registered in `FORMAT_REGISTRY`, parsing
+      a real `coverage-final.json` produced by a real `vitest run --coverage`
+      against `webapp-ui-react` (or an equivalent minimal fixture project),
+      not a hand-written fixture alone;
+- [ ] a new adapter (`adapters/javascript.py` or matching the naming
+      decision) implementing all seven `LanguageAdapter` protocol methods,
+      `generate_mutation_sites` returning `"UNSUPPORTED"` (Go's own
+      precedent — legal to spell, not yet backed);
+- [ ] registered in `cli.py`'s `new_registry(...)` for `frozenset({"R1"})`
+      only;
+- [ ] `is_test_path` correctly excludes Vitest's own conventions
+      (`*.test.ts(x)`, `*.spec.ts(x)`, `__tests__/`) and `excluded_dir_names`
+      excludes `node_modules` and build output dirs at minimum;
+- [ ] `.d.ts` type-only declaration files are handled correctly by
+      `has_executable_code` (they contain no executable code at all — the
+      NoCode case, not a coverage gap);
+- [ ] a real end-to-end test: a lane declaring `judge.language =
+      "javascript"`, `R1` only, against a real (fixture or `webapp-ui-react`
+      itself) TS/TSX project, correctly reports changed-line coverage
+      pass/fail:
+- [ ] refusal paths covered explicitly: an unrecognised `judge.language`
+      value, a malformed/truncated `coverage-final.json`, a `judge.language
+      = "javascript"` lane declaring `R2` (must refuse — not registered for
+      this build);
+- [ ] `README.md`/`CONSUMERS.md`/`DESIGN-GUIDE.md` document the new language
+      and format the same way Python/Go/SQL already are;
+- [ ] the real registered gate (`tools/tester-unified-gate.sh`), not just
+      `pytest tests/`, run green before this is called done.
+
+---
+
+## B037 — JavaScript/TypeScript mutation rigor (R2): design first, do not implement against this entry directly
+
+**Filed 2026-08-30, alongside B036.** Same shape as B020: a scope boundary
+and required decisions, not a dispatchable implementation brief.
+
+### Scope boundary
+
+Every existing R2 producer (Python, SQL) is **native** — assay parses and
+mutates the source text itself, in-process, in Python. Doing the same for
+JS/TS/JSX means either shelling out to a real JS/TS parser anyway (assay has
+none of its own) or hand-writing a TS/JSX-aware AST layer in Python from
+scratch — a categorically larger undertaking than Python's own native
+operators (which mutate Python's own AST from within Python) or SQL's
+(a purpose-built lexer for one narrow grammar, `sql_lex.py`). This is
+plausibly the same class of overreach `ciu/docs/CIU-V8-TESTING-GATE-
+PROPOSAL.md` §1.12 already warns against for R4/property-testing generally:
+"specialized tools generate cases and produce structured evidence; Assay
+validates thresholds, binds evidence to commit/input, emits verdicts and
+fails loudly" — never reinventing mature tooling that already exists.
+
+**Leading candidate, not yet a ruling:** Stryker Mutator is the mature,
+widely-adopted JS/TS mutation-testing tool (first-party Vitest runner
+support via `@stryker-mutator/vitest-runner`), with a structured JSON
+report naming per-mutant status (Killed/Survived/NoCoverage/Timeout/
+CompileError/RuntimeError), file, line, and mutator name — a shape assay
+could plausibly validate and bind into its own verdict contract as
+**evidence from an external producer**, the same relationship the proposal
+already recommends for R4/fuzzing, rather than assay growing a native JS
+mutation engine. This would be the FIRST time assay's own R2 tier is
+evidence-ingestion rather than native construction — a real architectural
+precedent, not a mechanical extension, and needs a controller/operator
+ruling before any code, not an implementer's unilateral call.
+
+### Required design decisions before implementation
+
+- native (hand-rolled, matching every existing R2 producer) vs.
+  evidence-ingestion (Stryker or equivalent, a new pattern for assay) —
+  the central ruling this item exists to force;
+- if evidence-ingestion: how a foreign tool's report is bound to a verdict
+  with the same non-repudiation properties assay's own native producers
+  have today (commit binding, judge provenance per B018, no "process
+  returned zero" weakening — CIU proposal §1.10's own standing objection to
+  trusting exit status as proof applies here with double force for a
+  THIRD-PARTY process's exit status);
+- operator vocabulary: does a foreign tool's mutator taxonomy map cleanly
+  onto assay's own `mutation.*` bucket model (survived/killed/equivalent/
+  budget_exceeded), or does it need its own schema shape;
+- relationship to B018 (judge provenance) if evidence-ingestion is chosen —
+  whose identity is recorded, assay's or the ingested tool's, or both.
+
+### Acceptance
+
+- [ ] written design decision reviewed against every relevant standing
+      constraint above;
+- [ ] no implementation lands until the above four decisions are recorded.
