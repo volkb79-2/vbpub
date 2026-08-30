@@ -23,9 +23,8 @@ already; this one was measured before it was written. Real
 providers against ``tests/fixtures/coverage/probe-js`` (see that directory's
 own provenance section):
 
-* ``@vitest/coverage-v8`` emits one single-line ``statementMap`` entry per
-  executable physical line — no multi-line extent exists anywhere in the
-  artifact, so nothing is unattributed to begin with;
+* ``@vitest/coverage-v8`` (Vitest 3) emits one single-line ``statementMap``
+  entry per executable physical line;
 * ``@vitest/coverage-istanbul`` emits REAL statement extents, several of them
   multi-line (``format.ts``'s own ``[24, 32]`` array literal and ``[33, 37]``
   loop), which is exactly ``coverage.py``'s multi-line-statement gap in a
@@ -34,14 +33,30 @@ own provenance section):
 The second shape is closed by :mod:`assay.coverage_parsers.coverage_istanbul_json`
 itself, which expands each statement's own extent across its lines with
 innermost-wins resolution — a fact the ARTIFACT carries, not one this adapter
-would have to re-derive. So no line of a measured file reaches
-``evaluate.py``'s rule 3b at all, and :meth:`JavaScriptAdapter.statement_spans`
+would have to re-derive. :meth:`JavaScriptAdapter.statement_spans` therefore
 returns ``None`` unconditionally, existing only to satisfy the protocol's
 structural shape (A-101), exactly as Go's does. The alternative —
 ``True`` plus a real ``statement_spans`` — would require a TypeScript/JSX
 parser written in Python from scratch, which is the categorically larger
-undertaking B037's own scope boundary exists to rule on, and it would buy
-nothing the parser has not already recovered.
+undertaking B037's own scope boundary exists to rule on.
+
+**The guarantee this rests on, stated exactly (A-342, corrected by the
+round-1 review's M2).** It is NOT "no line of a measured file is
+unattributed" — that is false, and measured false: in the committed
+``@vitest/coverage-istanbul`` artifact 23 non-comment lines across six files
+sit in neither ``executed`` nor ``missing``, because that instrumenter
+records no statement for a function's own signature line, for a
+function-level closing brace, or for a ``const x =`` line whose recorded
+statement is its initialiser. Those lines take ``evaluate.py``'s rule 4 and
+leave the denominator, exactly as an untracked line does for every other
+format in this registry. The real guarantee is narrower and is what
+``requires_span_attribution = False`` actually needs: **every line any
+statement extent covers is classified, so no line is left unattributed that
+this artifact carried the information to attribute.** Span attribution
+(rule 3b) exists to recover interior lines of a multi-line construct from a
+re-parse; the extent expansion already recovers precisely those, from the
+artifact, which is why a ``statement_spans`` implementation would have
+nothing left to do here.
 
 **``has_executable_code`` answers ONE narrow question and refuses the moment
 its confidence runs out (A-343).** Consulted only for a changed, considered,

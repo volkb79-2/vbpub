@@ -23,6 +23,28 @@ independent producers, which is exactly why the registry is keyed by FORMAT
 rather than by language (DESIGN-GUIDE §11: "TypeScript alone emits three
 formats").
 
+.. warning::
+
+   **One of those producers is unsound for judging, and this parser cannot
+   tell (A-346, B040).** ``@vitest/coverage-v8`` reports provably-never-
+   executed lines as EXECUTED whenever a conditional (ternary) expression
+   appears earlier in the same block — measured on Vitest **3.2.4 and
+   4.1.11 alike**, one-line and multi-line ternaries alike, and NOT fixed by
+   ``coverage.experimentalAstAwareRemapping``. The committed
+   ``probe-js-provider-defect`` fixtures carry the witness under both
+   versions; ``@vitest/coverage-istanbul`` is correct on every one of them.
+
+   This parser reports faithfully what the artifact says, so a v8-provider
+   false green becomes an assay PASS on a line that never ran. Nothing in
+   the document distinguishes a true ``s`` count of 1 from a false one —
+   there is no inconsistency to detect — so this cannot be guarded here, and
+   guessing the producer from the artifact's shape is precisely the
+   declaration-versus-sniffing collapse A-007 forbids. The remedy is a
+   PRODUCT one, recorded in A-346: assay's documentation names
+   ``@vitest/coverage-istanbul`` as the only Vitest provider safe for a
+   judged lane. Nothing here changes for nyc/istanbul or Jest, whose output
+   this parser reads with no such caveat.
+
 **Only ``statementMap``/``s`` are read.** ``fnMap``/``f`` are function-entry
 counts, not line classification; ``branchMap``/``b`` are addressed below.
 Neither is needed to answer this registry's one question ("which physical
@@ -126,10 +148,26 @@ _SIGNATURE_KEY = '"statementMap"'
 #: :data:`assay.coverage.MAX_COVERAGE_ARTIFACT_BYTES`. Statement EXTENTS are
 #: expanded line by line, so a single ~60-byte record declaring ``"end":
 #: {"line": 999999999}`` would otherwise materialize a billion entries from an
-#: artifact that is well inside the 16 MiB read bound. Two million is already
-#: far past any real codebase measured in one artifact (the largest witnessed
-#: here is four figures), so a document that exceeds it is refused as
-#: unreadable rather than allowed to exhaust memory.
+#: artifact that is well inside the 16 MiB read bound.
+#:
+#: **Why two million and not something tighter** (round-1 review, Minor).
+#: The budget is spent per statement EXTENT, not per distinct line, so nested
+#: extents charge their own span at every level: a real
+#: ``@vitest/coverage-istanbul`` artifact charges roughly 3-4x its source line
+#: count, where a Vitest-3 ``@vitest/coverage-v8`` one charges about 1x. A
+#: 300k-line monorepo measured in one artifact therefore lands near 1.2M, so a
+#: ceiling of, say, 500k would refuse honest output from a project this format
+#: genuinely serves — the false-refusal direction A-272 already warned against
+#: one parser over. Two million keeps a real headroom above that while still
+#: refusing the ~60-byte billion-line record this bound exists for.
+#:
+#: The bound is on line COUNT, and the memory that count implies is real
+#: (roughly 175 bytes per classified line in CPython): a document sitting
+#: exactly at the ceiling peaks near 350 MB. That is the deliberate cost of
+#: not refusing honest large artifacts. **No test materializes it** — the
+#: boundary arithmetic is exercised by monkeypatching this constant down to a
+#: handful of lines (``test_coverage_parsers_coverage_istanbul_json.py``), so
+#: the suite pays nothing to prove the same off-by-one.
 MAX_CLASSIFIED_LINES = 2_000_000
 
 
