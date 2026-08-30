@@ -606,6 +606,16 @@ confirmation of the same commit §11's own transcript already covers, not a
 new artifact this REPORT adds; worktree confirmed clean throughout). No Wave
 B leakage found.
 
+**Confirming gate re-run, after the fixes below landed (controller, not the
+reviewer):** `bash assay/tools/tester-unified-gate.sh
+/workspaces/vbpub/.worktrees/assay-wave-a-js-consumer`, judged commit
+`cfe512a8` (this branch's tip after the fix commits). GREEN, full
+transcript committed verbatim at
+`nyxloom-trove/reports/assay-WAVE-A-gate-transcript-round1-fixes.txt`;
+`ASSAY_REGISTERED_GATE_COMPLETE=1` confirmed as the literal last line, and
+`git status --porcelain` was empty immediately after. This is the gate
+result the fix-verification round should treat as current.
+
 Three blockers, all documentation/backlog accuracy, none requiring a code
 change — all fixed in this same worktree before the confirming gate re-run:
 
