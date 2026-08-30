@@ -783,9 +783,14 @@ Vitest majors) and re-derived by
 `tests/test_coverage_istanbul_provider_accuracy.py` on every run. The ruling
 is A-346; B040 tracks it upstream. **`nyc`/`istanbul` and Jest with its
 default `babel` coverage provider share `@vitest/coverage-istanbul`'s own
-instrumenter and are unaffected.** Jest's `coverageProvider: "v8"` remains
-genuinely unmeasured — treat it as unsafe until a committed witness says
-otherwise. `c8` (a separate `coverage-final.json` producer some non-Vitest
+instrumenter and are unaffected.** Jest's `coverageProvider: "v8"` was not
+independently measured this wave — treat it as unsafe until a committed
+witness says otherwise — but it is not a clean unknown: `@jest/reporters`
+depends on `v8-to-istanbul@^9.0.1`, the identical remapper package `c8`
+uses (`^9.0.0`), and both ranges resolve to the same latest `9.3.0` absent a
+pinning lockfile, so Jest's v8 provider is a strong candidate to share
+`c8`'s own measured defect below, not merely an untested unrelated
+implementation. `c8` (a separate `coverage-final.json` producer some non-Vitest
 JS/TS test runners drive directly) **was measured** (B042 item 2) and is
 **not** safe to gate on either: on the identical `probe-js-provider-defect`
 ground truth, `c8@12.0.0`'s own `v8-to-istanbul` remapping reports lines
@@ -824,17 +829,22 @@ of them carries a `.test.`/`.spec.` segment or sits under `__tests__/`.**
 Keep them out of `source_roots`, and here is precisely why: with
 `coverage.include` declared — which every worked lane in this guide does —
 Vitest synthesises an ALL-ZERO coverage record for every file the glob
-matches, whether or not any test ever imports it (`resolveConfig`,
-`vitest@4.1.11`'s own `chunks/coverage.*.js`: matched files are transformed
-for instrumentation regardless of import, so an untested file reads as
-measured-and-uncovered rather than silently absent). **This is not Vitest's
-own hardcoded `coverage.exclude`** — that list covers only the one resolved
-config file actually in use, the `test.include` test-name glob, and declared
-setup files, never an arbitrary `*.config.*`/`*.stories.*` name (measured:
-under a plain `coverage.include = ['src/**']`, `.stories.tsx` and
-`.config.ts` files that happen to sit under `src/` DO appear in
-`coverage-final.json`, every statement at count `0`). The net effect a
-consumer actually has to avoid is the same regardless of the mechanism: a
+matches (except the small, fixed set below Vitest always removes
+regardless of `coverage.include`), whether or not any test ever imports it
+— measured directly, not just inferred: under a plain `coverage.include =
+['src/**']`, `.stories.tsx` and `.config.ts` files that happen to sit under
+`src/` DO appear in `coverage-final.json`, every statement at count `0`.
+**This is not Vitest's own hardcoded `coverage.exclude`** — that list covers
+only the one resolved config file actually in use, the `test.include`
+test-name glob, and declared setup files, never an arbitrary
+`*.config.*`/`*.stories.*` name. (Internals, version-scoped — re-locate
+before citing on a different release: `resolveConfig`/`vitest@4.1.11`'s own
+`chunks/coverage.*.js` computes the hardcoded list at a content-hashed
+chunk path that will differ across patch releases. This wave's own
+qualification harness and committed fixtures pin `vitest@3.2.4`; the
+BEHAVIOUR above was measured on `4.1.11` and was not separately
+re-measured on `3.2.4`.) The net effect a consumer actually has to avoid is
+the same regardless of the mechanism: a
 changed line inside one of these files is judged like ordinary source
 (the adapter's `is_test_path` does not exempt it) against a record that can
 never show anything but uncovered — fail-closed, and visible in the verdict,
@@ -847,9 +857,15 @@ Playwright/browser suite exercises the same UI a different way — through a
 real DOM, real user events, a real running build — and can be judged too,
 with no assay change: `judge.language = "javascript"` and
 `format = "coverage-istanbul-json"` are the SAME declaration either way,
-because `vite-plugin-istanbul` (`babel-plugin-istanbul`'s own instrumenter,
-the identical one `@vitest/coverage-istanbul` uses) produces the identical
-artifact shape a Playwright run's own `window.__coverage__` dump already is.
+because `vite-plugin-istanbul` (built on `istanbul-lib-instrument`, the same
+instrumenter core `@vitest/coverage-istanbul` uses — verified against this
+wave's own committed lockfile,
+`tests/fixtures/coverage/probe-js-vite-plugin-istanbul/package-lock.json`:
+`vite-plugin-istanbul@9.0.1` depends on `@babel/generator`,
+`@istanbuljs/load-nyc-config`, `espree` and `istanbul-lib-instrument@^6.0.3`
+— there is no `babel-plugin-istanbul` anywhere in the tree) produces the
+identical artifact shape a Playwright run's own `window.__coverage__` dump
+already is.
 
 ### The recipe
 
@@ -1016,7 +1032,15 @@ A gate wrapper reads this the way `assay run` would, without running it:
   further once a lane can declare a working directory other than the
   snapshot root — until then a `bash -c "cd … && …"` wrapper's real command
   is still hidden behind `argv0 = "bash"`, exactly as it is from
-  `assay run`'s own preflight today).
+  `assay run`'s own preflight today). **In this release, `external_tools` is
+  `()` for every shipped adapter** (Python `adapters/python.py:806`, SQL
+  `adapters/sql.py:671`, Go `adapters/go.py:501`, JavaScript
+  `adapters/javascript.py:322` — none declares a nonempty tuple), so this
+  field is structurally always `[]` today, not a per-lane fact a preflight
+  can meaningfully branch on yet. A gate consumer should not build a
+  `MISSING_EXTERNAL_TOOL` preflight around this field expecting it to name
+  `node`/`npm` for a `javascript` lane — that check today has to come from
+  `language` itself (the paragraph above), not from `external_tools`.
 - **`environment_command`** is a boolean, not the probe's own argv: a gate
   only needs to know ONE declares a probe must pass in the invoking
   environment before snapshot work, never to re-implement or repeat it

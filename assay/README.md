@@ -206,9 +206,14 @@ test: {
 > (`tests/fixtures/coverage/probe-js-provider-defect/`), the ruling is A-346,
 > and the follow-up is B038/B040. `nyc`/`istanbul` and Jest with its default
 > `babel` coverage provider share `@vitest/coverage-istanbul`'s own
-> instrumenter and are unaffected. Jest's `coverageProvider: "v8"` remains
-> genuinely unmeasured — treat it as unsafe until a committed witness says
-> otherwise. `c8` **was measured** (B042 item 2) and is **also** unsafe: on
+> instrumenter and are unaffected. Jest's `coverageProvider: "v8"` was not
+> independently measured this wave — treat it as unsafe until a committed
+> witness says otherwise — but it is not a clean unknown: `@jest/reporters`
+> depends on `v8-to-istanbul@^9.0.1`, the identical remapper package `c8`
+> uses (`^9.0.0`), and both ranges resolve to the same latest `9.3.0` absent
+> a pinning lockfile, so Jest's v8 provider is a strong candidate to share
+> `c8`'s own measured defect below, not merely an untested unrelated
+> implementation. `c8` **was measured** (B042 item 2) and is **also** unsafe: on
 > the identical ground truth, `c8@12.0.0`'s own `v8-to-istanbul` remapping
 > reports the same class of false-executed lines, triggered by the same
 > conditional expression — a related but not byte-identical defect (see

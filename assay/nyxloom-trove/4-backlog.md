@@ -4101,16 +4101,18 @@ as `[testing.lanes.<l>] request_base = true`, a second spelling of one fact
 - [x] a refusal test (bad lane file → exit 2, empty stdout) —
       `test_a_lane_file_that_fails_to_load_exits_two_with_no_json_on_stdout`,
       `test_a_missing_lane_file_exits_two_with_no_json_on_stdout`;
-- [x] CONSUMERS "CMRU / tester-unified integration" and the ciu handoff note
-      show a gate consuming it; CIU-72 references the exact key names —
-      `docs/CONSUMERS.md#preflighting-a-gate-environment-with-assay-lanes---json-b044`
+- [x] CONSUMERS "CMRU / tester-unified integration" shows a gate consuming
+      it — `docs/CONSUMERS.md#preflighting-a-gate-environment-with-assay-lanes---json-b044`
       added (2026-08-30, Wave A), showing the exact document shape and how a
       gate reads `rigor`/`rigor_reachable`, `language`, `base_source`,
-      `external_tools`/`argv0`, `environment_command`. The "ciu handoff
-      note" is CIU-72 itself, already filed in ciu's own backlog by the
-      design review that filed this item — out of scope here (Wave A
-      touches `assay/**` only); flagging for the controller/ciu owner to
-      cross-reference the exact key names above when CIU-72 is worked.
+      `external_tools`/`argv0`, `environment_command`.
+- [ ] (split out 2026-08-30, Wave A review round 1 — was incorrectly folded
+      into the box above as done) the ciu handoff note itself: CIU-72,
+      already filed in ciu's own backlog by the design review that filed
+      this item, still needs to be WORKED, not just filed — out of scope
+      here (Wave A touches `assay/**` only); flagging for the controller/ciu
+      owner to cross-reference the exact key names in the box above when
+      CIU-72 is worked.
 
 ---
 
@@ -4449,13 +4451,31 @@ Vitest's own default `coverage.clean = true`, `coverageConfigDefaults` in
 `vitest@4.1.11`'s own `chunks/defaults.*.js`) rather than writing into the ONE
 directory assay already opened, the held `parent_fd` is left pointing at an
 orphaned, now-empty directory inode. `consume()`'s lookup then raises
-`FileNotFoundError` inside `_safe_bounded_read` (`safeio.py:320`), which
-`consume()` returns as `None` (`safeio.py:339` — an empty read loop, same
-shape as "the file was never written"), and the caller reads that as "the
-command never produced an artifact" — reaching `check_empty_coverage`
-(`coverage.py:313`) and rendering `NO_MEASUREMENT`/`EMPTY_COVERAGE`. Nothing
-in that terminal or its message names the true cause; it reads exactly like
-"your tests produced no coverage."
+`FileNotFoundError` on the `os.open(basename, dir_fd=parent_fd)` at
+`safeio.py:318-319`, which `consume()` returns as `None`
+(`safeio.py:320-321`, `except FileNotFoundError: return None`), and the
+caller reads that as "the command never produced an artifact" — reaching
+`parse_coverage_artifact` (`coverage.py:161`), which raises
+`NO_MEASUREMENT`/`EMPTY_COVERAGE` for a `None` read (`coverage.py:179-187`).
+**The message that actually ships asserts a checkable falsehood**:
+`coverage.py:181-184` says "the lane's command exited without writing the
+declared artifact at all … there is nothing here to have failed to read" —
+demonstrably false here, over a complete, correctly-keyed 678-byte artifact
+that really existed on disk at the declared path the whole time (proved by
+the parallel `cp` below). **A fix needs no new schema const or reason code**:
+`coverage.py:171-173` already reserves `ERROR`/`UNREADABLE_ARTIFACT` for "an
+object that exists but cannot be trusted (… or a race the caller's own
+reservation already detected)" — this IS that race; the enum value this
+class of failure belongs under already exists in the frozen v8 schema, it is
+simply not the one raised here.
+
+(Corrected 2026-08-30, Wave A review round 1: the mechanism paragraph above
+originally miscited `safeio.py:339` — that line is `if not chunk: break`
+inside the read loop, reachable only past a successful `os.open`, not the
+`None` return — and `check_empty_coverage`/`coverage.py:313`, which is never
+reached because that function takes an already-parsed `CoverageProfile` that
+never exists on this path. Both corrected above against the code as it
+stands.)
 
 **Isolated by direct A/B measurement, real `assay run`, real Vitest, nothing
 mocked** (a two-commit git fixture, `npm ci --offline` against a warm cache,
@@ -4477,11 +4497,18 @@ tool truly writing nothing.
 ### Why this is filed, not fixed, in Wave A
 
 `safeio.py`/`runner.py` are core, language-free evaluation machinery shared by
-every adapter (Python R1/R2/R3, SQL R2, JavaScript R1) and every future one;
-the wave prompt scopes Wave A to the JS adapter's own consumer-facing gaps and
-explicitly excludes core-mechanism changes. The right fix is a real design
-call this backlog entry is not the place to make unilaterally — candidates,
-none chosen here:
+every adapter (Python R1/R2/R3, SQL R2, JavaScript R1) and every future one.
+(Corrected 2026-08-30, Wave A review round 1: the wave prompt's own NOT-IN-
+SCOPE list, `WAVE-PROMPT-2026-08-30-js-consumer-producer.md` lines 115-121,
+does not in fact name "core-mechanism changes" as excluded — it forbids
+verdict/schema/`verify.py`/drift-guard changes, R2/R3 registration,
+`cwd`/`link_paths`/`producer`, and Go changes, and none of those is what a
+B049 fix would touch. The prior wording overstated what the prompt actually
+excludes; this fix is filed rather than implemented because it is a real
+design call outside the wave's own ENUMERATED scope list, not because the
+prompt forbids core-mechanism changes as a category.) The right fix is a
+real design call this backlog entry is not the place to make unilaterally —
+candidates:
 
 1. Re-open the parent chain by NAME at `consume()` time instead of holding a
    directory descriptor across the whole command execution — loses the
@@ -4500,12 +4527,37 @@ none chosen here:
    or a consumer's own coverage wrapper) share Vitest's "clean the output
    directory first" convention — a common enough pattern that it should not
    be assumed unique to Vitest.
+4. **(Added 2026-08-30, Wave A review round 1)** A specific, name-free
+   implementation of (2): `os.fstat(parent_fd).st_nlink == 0` on the ALREADY
+   HELD descriptor, checked at `consume()` time, needs no by-name `stat` and
+   so no new TOCTOU surface (unlike (1) and a naive reading of (2)); a
+   deleted-and-recreated directory always leaves the OLD inode at `nlink=0`
+   even though a NEW inode now answers to the same path (verified: held fd
+   `nlink=0 ino=17860260` vs. the recreated directory `ino=17860261`). It
+   raises the SAME `ERROR`/`UNREADABLE_ARTIFACT` `coverage.py:171-173`
+   already reserves for this — no schema/enum change. Round-1 review
+   prototyped and ran it (against a scratch copy, not this branch): a
+   15-line pure-Python `rmtree`+`mkdir` fake reproduces the defect with no
+   JS/Vitest involved (the regression test option (1)/(2)'s own acceptance
+   box below asks for), and the full suite passed with zero regressions.
+   **Blast radius wider than this entry's own title states**: the identical
+   `None`-means-nothing-was-written fold also sits at `runner.py:1714` (SQL
+   R2's `equivalence_artifact`) and `mutation.py:1167`, where an absent read
+   is classified `crashed` (`mutation.py:1129`) and rolls up to
+   `ERROR`/`EXEC_FAILED` (`mutation.py:1808`) — a directory-recreating dump
+   step in a SQL lane's own tooling would report every mutant as CRASHED for
+   a command that ran perfectly, not just `EMPTY_COVERAGE` for a JS lane.
+   Not yet implemented on this branch; a maintainer ruling and a real
+   implementer round (with its own review) are still needed before this
+   lands, per this project's own standing practice for core-machinery
+   changes — see decision ask in
+   `nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md` §14.
 
 ### Acceptance
 
-- [ ] a product ruling among the three options above (or a fourth), recorded
+- [ ] a product ruling among the four options above (or a fifth), recorded
       as a decision;
-- [ ] if (1) or (2): a regression test that plants a directory-recreating
+- [ ] if (1), (2) or (4): a regression test that plants a directory-recreating
       fake tool (no real Vitest needed to prove the CORE mechanism) and
       asserts the new, non-silent behaviour;
 - [ ] CONSUMERS' `clean: false` note (added this wave) updated to match

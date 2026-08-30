@@ -6,22 +6,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Added
-- feat(assay): a JavaScript/TypeScript `LanguageAdapter` (`judge.language = "javascript"`,
-  covering `.js`/`.jsx`/`.ts`/`.tsx`) registered at **R1 only**, plus a fifth coverage format
-  `coverage-istanbul-json` — istanbul's own `coverage-final.json`, emitted natively by
-  nyc/istanbul, Jest, and both Vitest coverage providers. Changed-line coverage only: R2 waits
-  on B037's native-vs-ingest ruling, so `generate_mutation_sites` is `UNSUPPORTED` and a
-  `javascript` lane declaring R2 is refused; R3 is unwired though both canary injection
-  mechanisms are real. `excluded` and `branches` are reported unavailable for this format, both
-  as measured refusals (B036/A-340..A-345). **Use `@vitest/coverage-istanbul`, not
-  `@vitest/coverage-v8`, for any JavaScript lane you gate on:** the v8 provider reports
-  provably-never-executed lines as executed whenever a conditional expression appears
-  earlier in the same block, so an R1 lane PASSes on lines that never ran. Measured on
-  Vitest 3.2.4 and 4.1.11 alike, for one-line and multi-line ternaries, and not fixed by
-  `experimentalAstAwareRemapping`; assay cannot detect it, because nothing in the
-  artifact distinguishes a true execution count from a false one (A-346, B040).
-  nyc/istanbul and Jest are unaffected
-
 - feat(assay): `assay lanes --json [--file PATH]` — a machine-readable inventory of every
   declared lane (scope/rigor/enforcement, language, `rigor_reachable` from this build's own
   registry, coverage/mutation/canary shape, resolved `base_source`, external_tools/argv0,
