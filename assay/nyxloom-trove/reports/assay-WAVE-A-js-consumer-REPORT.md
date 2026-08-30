@@ -177,7 +177,7 @@ drives `assay.cli.main` — the real CLI entry point — against a real `npx
 
 **Both transcripts** (`ASSAY_NODE_QUALIFICATION=1 python3 -m pytest
 tests/qualification/ -v -s`, full log at
-`nyxloom-trove/reports/assay-WAVE-A-qualification-transcript.log`, excerpted
+`nyxloom-trove/reports/assay-WAVE-A-qualification-transcript.txt`, excerpted
 here):
 
 ```
