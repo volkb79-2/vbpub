@@ -1,0 +1,36 @@
+# infra/tailscale-node/ciu.defaults.toml.j2 — v8 notation (SPEC H §7)
+# Realization `tailscale_node` = the `mesh_node` LogicalService AND the transport
+# of [network.mesh] (`realized_by = "tailscale_node"`). Nobody depends on this
+# stack by name: every cross-host route over the mesh gains a DERIVED init edge
+# on it (plus a live route:<logical>.<endpoint>:reachable probe in the consumer
+# host's preflight), so it lands in wave 0 on every host of the `mesh` bundle.
+# DERIVED here: the container name (dstdns-<instance>-tailscale_node-tailscale),
+# the wave. No endpoints: the node publishes nothing — it IS the network.
+# Kept from the original: host networking, single-use auth key from the enrollment
+# seed file (never env; deleted after join), restart-from-state, authenticated
+# health check, peer-readiness gate (pre/post hooks).
+
+[ciu_stack.tailscale]
+image = "tailscale/tailscale:v1.82.5"
+host_network = true                  # network_mode: host — ciu injects no hostname and attaches no instance network
+
+[ciu_stack.tailscale.settings]       # consumer data read by the hooks and the compose template
+# Stable tailnet hostname for this node; compose interpolates the deploying
+# shell's $HOSTNAME. Override per deployment in ciu.toml.j2.
+tailnet_hostname = "${HOSTNAME}"
+# Enrollment seed file (mode 0400) holding the single-use auth key, written by the
+# SPEC F bootstrap action before `ciu up`; deleted by the pre_compose hook after a
+# successful join. NEVER passed via environment.
+auth_key_file = "/run/enrollment/tailscale-authkey"
+# Persistent tailscaled state: host-local storage (not a hostdir under the
+# checkout, not a docker volume) so the node survives stack teardown without
+# re-enrolling.
+state_dir = "/var/lib/tailscale-node"
+# Peers (hostnames or Tailscale IPs) that must be reachable before dependent
+# services start; [] = the gate is a no-op. Override per deployment.
+required_peers = []
+peer_gate_timeout_s = 120
+
+[hooks]
+pre_compose = ["./pre_compose_tailscale.py"]    # `tailscale up` with the seed-file key, verify join, delete the key
+post_compose = ["./post_compose_tailscale.py"]  # peer-readiness gate

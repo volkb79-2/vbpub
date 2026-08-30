@@ -1,0 +1,189 @@
+# infra-global/skywalking/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu per service: container_name/hostname
+# (dstdns-<instance>-skywalking-<svc>), networks, base labels, depends_on
+# conditions (from `depends_on` in the stack file), cgroup fields.
+# Features: dedicated telemetry postgres (JDBC), OAP self-observability, named
+# volumes (docker-managed — no permission issues).
+# References: storage   https://skywalking.apache.org/docs/main/next/en/setup/backend/storages/postgresql/
+#             telemetry https://skywalking.apache.org/docs/main/latest/en/setup/backend/backend-telemetry
+#             so11y     https://skywalking.apache.org/docs/main/latest/en/setup/backend/dashboards-so11y/
+services:
+  {% if ciu_stack.banyandb.enabled %}
+  # BanyanDB — retired 2026-07-17 (README "DB Backend Choice"); rendered only
+  # while [ciu_stack.banyandb] enabled = true. Runs as root internally.
+  banyandb:
+    image: {{ ciu_stack.banyandb.image }}
+    pull_policy: always
+    user: "0:0"
+    command:
+      - standalone
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - BANYANDB_LOGGING_LEVEL=info
+      {% for key, value in ciu_stack.banyandb.env.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+    volumes:
+      - banyandb-data:/tmp/banyandb-data
+      - banyandb-metadata:/tmp/banyandb-metadata
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:{{ ciu_stack.banyandb.endpoints.banyandb_http.port }}/api/healthz || exit 1"]
+      interval: {{ ciu_stack.banyandb.health.interval }}
+      timeout: {{ ciu_stack.banyandb.health.timeout }}
+      retries: {{ ciu_stack.banyandb.health.retries }}
+      start_period: {{ ciu_stack.banyandb.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=true"
+  {% endif %}
+
+  # Dedicated telemetry DB — deliberately NOT the app db-core postgres (operator
+  # decision 2026-07-17): glibc-dynamic, so the governance KSM shim reaches it.
+  # Data is 3-day-TTL disposable: on a major postgres bump (image policy: latest
+  # + pull always) drop the data volume and let it re-init.
+  postgres:
+    image: {{ ciu_stack.postgres.image }}
+    pull_policy: always
+    # The official entrypoint starts as root and drops to its own postgres user;
+    # overriding with the instance uid breaks named-volume permissions.
+    user: "0:0"
+    command:
+      - postgres
+      - -c
+      - shared_buffers={{ ciu_stack.postgres.settings.shared_buffers }}
+      - -c
+      - max_connections={{ ciu_stack.postgres.settings.max_connections }}
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - POSTGRES_DB={{ ciu_stack.postgres.settings.db }}
+      - POSTGRES_USER={{ ciu_stack.postgres.settings.user }}
+      - POSTGRES_PASSWORD=${SKYWALKING_SECRETS_POSTGRES_PASSWORD}      # stack-level secret, env delivery
+    volumes:
+      # postgres 18+ layout: mount the PARENT dir; the entrypoint places PGDATA in
+      # a versioned subdir (keeps pg_upgrade possible, avoids the 18+ refusal of
+      # a /var/lib/postgresql/data mount).
+      - skywalking-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ ciu_stack.postgres.settings.user }} -d {{ ciu_stack.postgres.settings.db }} || exit 1"]
+      interval: {{ ciu_stack.postgres.health.interval }}
+      timeout: {{ ciu_stack.postgres.health.timeout }}
+      retries: {{ ciu_stack.postgres.health.retries }}
+      start_period: {{ ciu_stack.postgres.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=true"
+
+  # OAP — Observability Analysis Platform (runs as the skywalking user, UID 10001)
+  oap:
+    image: {{ ciu_stack.oap.image }}
+    pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
+    user: "10001:10001"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      {% for key, value in ciu_stack.oap.env.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # ---- storage ----
+      {% if ciu_stack.oap.storage.type == "banyandb" %}
+      - SW_STORAGE=banyandb
+      - SW_STORAGE_BANYANDB_TARGETS={{ ciu_stack.banyandb.identity.hostname }}:{{ ciu_stack.banyandb.endpoints.banyandb_grpc.port }}
+      - SW_STORAGE_BANYANDB_MAX_BULK_SIZE={{ ciu_stack.banyandb.tuning.max_bulk_size }}
+      - SW_STORAGE_BANYANDB_FLUSH_INTERVAL={{ ciu_stack.banyandb.tuning.flush_interval }}
+      - SW_STORAGE_BANYANDB_FLUSH_TIMEOUT={{ ciu_stack.banyandb.tuning.flush_timeout }}
+      - SW_STORAGE_BANYANDB_CONCURRENT_WRITE_THREADS={{ ciu_stack.banyandb.tuning.concurrent_write_threads }}
+      - SW_STORAGE_BANYANDB_RECORDS_TTL_DAYS={{ ciu_stack.banyandb.tuning.records_ttl_days }}
+      - SW_STORAGE_BANYANDB_TRACE_TTL_DAYS={{ ciu_stack.banyandb.tuning.trace_ttl_days }}
+      - SW_STORAGE_BANYANDB_LOG_TTL_DAYS={{ ciu_stack.banyandb.tuning.log_ttl_days }}
+      - SW_STORAGE_BANYANDB_METRICS_MINUTE_TTL_DAYS={{ ciu_stack.banyandb.tuning.metrics_minute_ttl_days }}
+      - SW_STORAGE_BANYANDB_METRICS_HOUR_TTL_DAYS={{ ciu_stack.banyandb.tuning.metrics_hour_ttl_days }}
+      - SW_STORAGE_BANYANDB_METRICS_DAY_TTL_DAYS={{ ciu_stack.banyandb.tuning.metrics_day_ttl_days }}
+      {% else %}
+      # PostgreSQL (JDBC) since 2026-07-17. Verified at the switch: the native
+      # segment lane carries our traces (python agent), the log lane persists
+      # (banyandb silently dropped it), zipkin* tables installed (idle — the
+      # receiver stays enabled as a module dependency).
+      - SW_STORAGE=postgresql
+      - SW_JDBC_URL=jdbc:postgresql://{{ ciu_stack.postgres.identity.hostname }}:{{ ciu_stack.postgres.endpoints.sql.port }}/{{ ciu_stack.postgres.settings.db }}
+      - SW_DATA_SOURCE_USER={{ ciu_stack.postgres.settings.user }}
+      - SW_DATA_SOURCE_PASSWORD=${SKYWALKING_SECRETS_POSTGRES_PASSWORD}
+      - SW_CORE_RECORD_DATA_TTL={{ ciu_stack.oap.storage.record_data_ttl }}
+      - SW_CORE_METRICS_DATA_TTL={{ ciu_stack.oap.storage.metrics_data_ttl }}
+      {% endif %}
+      # ---- core ----
+      - SW_CORE_GRPC_HOST=0.0.0.0
+      - SW_CORE_REST_HOST=0.0.0.0
+      # ---- self-observability (so11y): Prometheus metrics on the `prometheus` endpoint ----
+      - SW_TELEMETRY={{ ciu_stack.oap.telemetry.provider }}
+      - SW_TELEMETRY_PROMETHEUS_HOST={{ ciu_stack.oap.telemetry.host }}
+      - SW_TELEMETRY_PROMETHEUS_PORT={{ ciu_stack.oap.endpoints.prometheus.port }}
+      # health checker module — required for /healthcheck
+      - SW_HEALTH_CHECKER=default
+      - SW_HEALTH_CHECKER_INTERVAL_SECONDS={{ ciu_stack.oap.health_checker.check_interval_seconds }}
+      # ---- OTLP/gRPC receiver: traces, metrics and logs on the `grpc` endpoint ----
+      - SW_OTEL_RECEIVER={{ ciu_stack.oap.self_observability.otel_receiver }}
+      - SW_OTEL_RECEIVER_ENABLED_HANDLERS=otlp-traces,otlp-metrics,otlp-logs
+      - SW_OTEL_RECEIVER_ENABLED_OTEL_METRICS_RULES={{ ciu_stack.oap.self_observability.otel_metrics_rules }}
+      - SW_OTEL_RECEIVER_ENABLED_OTEL_RULES=otel-rules
+      # ---- zipkin receiver: OTLP trace handling depends on it (apache/skywalking#8596) ----
+      - SW_RECEIVER_ZIPKIN=default
+      - SW_RECEIVER_ZIPKIN_REST_HOST=0.0.0.0
+      - SW_RECEIVER_ZIPKIN_REST_PORT={{ ciu_stack.oap.endpoints.zipkin.port }}
+    # No host ports: consumers route to tracing.grpc / tracing.rest on the instance network.
+    volumes:
+      - oap-data:/skywalking/data
+      - oap-logs:/skywalking/logs
+    healthcheck:
+      # The OAP image ships ONLY bash (no wget/curl): probe the REST port with
+      # /dev/tcp. Deep health (OAP<->storage round-trip) is a test's job.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/{{ ciu_stack.oap.endpoints.rest.port }}' || exit 1"]
+      interval: {{ ciu_stack.oap.health.interval }}
+      timeout: {{ ciu_stack.oap.health.timeout }}
+      retries: {{ ciu_stack.oap.health.retries }}
+      start_period: {{ ciu_stack.oap.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=true"
+
+  # UI — web dashboard (runs as the skywalking user internally)
+  ui:
+    image: {{ ciu_stack.ui.image }}
+    pull_policy: always
+    user: "10001:10001"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - SW_OAP_ADDRESS=http://{{ ciu_stack.oap.identity.hostname }}:{{ ciu_stack.oap.endpoints.rest.port }}
+      - SW_ZIPKIN_ADDRESS=http://{{ ciu_stack.oap.identity.hostname }}:{{ ciu_stack.oap.endpoints.zipkin.port }}
+    # No host ports: reached through the reverse proxy at the `ui` endpoint's path.
+    # TODO: basic auth or an OAuth2 proxy in front of the dashboard.
+    healthcheck:
+      # wget with output to /dev/null (--spider is unreliable here)
+      test: ["CMD-SHELL", "wget -qO/dev/null http://127.0.0.1:{{ ciu_stack.ui.endpoints.ui.port }}/ || exit 1"]
+      interval: {{ ciu_stack.ui.health.interval }}
+      timeout: {{ ciu_stack.ui.health.timeout }}
+      retries: {{ ciu_stack.ui.health.retries }}
+      start_period: {{ ciu_stack.ui.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=true"
+
+volumes:
+  skywalking-postgres-data:
+    name: {{ instance.project }}-{{ instance.id }}-skywalking-postgres-data
+  oap-data:
+    name: {{ instance.project }}-{{ instance.id }}-skywalking-oap-data
+  oap-logs:
+    name: {{ instance.project }}-{{ instance.id }}-skywalking-oap-logs
+  {% if ciu_stack.banyandb.enabled %}
+  banyandb-data:
+    name: {{ instance.project }}-{{ instance.id }}-skywalking-banyandb-data
+  banyandb-metadata:
+    name: {{ instance.project }}-{{ instance.id }}-skywalking-banyandb-metadata
+  {% endif %}

@@ -1,0 +1,20 @@
+# infra/db-core-seeded/ciu.compose.yml.j2 — v8 notation (identity, network, labels, cgroup fields injected by ciu)
+services:
+  postgres:
+    image: {{ ciu_stack.postgres.image }}
+    user: "1000:{{ instance.docker_gid }}"   # built FROM the same timescaledb-ha base as db_core: postgres uid 1000
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+    volumes:
+      - {{ ciu_stack.postgres.hostdir.data }}:/home/postgres/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U {{ registry.postgresql.superuser }}"]
+      interval: {{ ciu_stack.postgres.health.interval }}
+      timeout: {{ ciu_stack.postgres.health.timeout }}
+      retries: {{ ciu_stack.postgres.health.retries }}
+      start_period: {{ ciu_stack.postgres.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

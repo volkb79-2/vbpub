@@ -1,0 +1,105 @@
+# assay.toml — judge lane policy (assay lane schema v2; assay's own file, unchanged
+# in shape by CIU v8). Excerpt: three of dstdns's 25 lanes, showing the two
+# v8-facing changes: (1) `infrastructure.derived:` paths point at the derived
+# [ciu.instance.resolved.*] tables of the rendered ciu.global.toml, (2) a lane
+# that delegates its comparison base to the gate (`judge.base_source =
+# "request"`) — `ciu gate` passes --request-base for it.
+schema_version = 2
+
+[lanes.durable_dlq]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["pytest", "-q", "tests/unit/test_durable_dlq.py", "--cov=libs/common/dlq", "--cov-report=json:artifacts/coverage/durable_dlq.json"]
+env_passthrough = ["PATH", "PYTHONPATH"]
+budget = "15m"
+allow_argv_append = false
+[lanes.durable_dlq.isolation]
+snapshot_selection = "repository"
+[lanes.durable_dlq.judge]
+language = "python"
+source_roots = ["libs/common/dlq"]
+mode = "whole_target"
+targets = ["libs/common/dlq/durable.py"]
+fail_under = 0.9
+allow_excluded = false
+[lanes.durable_dlq.judge.coverage]
+format = "coverage-py-json"
+artifact = "artifacts/coverage/durable_dlq.json"
+
+[lanes.p129_enumeration_cursor]                 # changed-lines judging; base supplied per invocation by the gate
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["pytest", "-q", "tests/unit/test_enumeration_cursor.py", "--cov=applications/worker-io/enumeration", "--cov-report=json:artifacts/coverage/p129.json"]
+env_passthrough = ["PATH", "PYTHONPATH", "SCHEMA_GATE_PG_IMAGE"]
+env_required = ["SCHEMA_GATE_PG_IMAGE"]
+budget = "10m"
+allow_argv_append = false
+[lanes.p129_enumeration_cursor.isolation]
+snapshot_selection = "repository"
+[lanes.p129_enumeration_cursor.judge]
+language = "python"
+source_roots = ["applications/worker-io/enumeration"]
+mode = "changed_lines"
+base_source = "request"                         # never `base = "origin/main"` here: the gate knows the PR
+fail_under = 0.8
+allow_excluded = false
+require_branch = true
+[lanes.p129_enumeration_cursor.judge.coverage]
+format = "coverage-py-json"
+artifact = "artifacts/coverage/p129.json"
+
+[lanes.cw2b_schema]                             # SQL mutation lane against the live database
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["scripts/schema-gate-lane.sh"]
+env_passthrough = ["PATH", "SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]
+env_required = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]
+budget = "90m"
+allow_argv_append = false
+[lanes.cw2b_schema.infrastructure]              # facts injected from the instance — v8 paths
+network = "derived:ciu.instance.resolved.networks.instance.name"
+db_host = "derived:ciu.instance.resolved.routes.test_runner.main_db.sql.host"
+db_port = "derived:ciu.instance.resolved.routes.test_runner.main_db.sql.port"
+[lanes.cw2b_schema.isolation]
+snapshot_selection = "repository"
+[lanes.cw2b_schema.judge]
+language = "sql"
+source_roots = ["infra/db-init/init-scripts"]
+mode = "whole_target"
+targets = ["infra/db-init/init-scripts/10-schema.sql"]
+[lanes.cw2b_schema.judge.mutation]
+jobs = 2
+max_mutants = 200
+operators = ["sql:constraint-drop", "sql:default-swap"]
+equivalence_artifact = "artifacts/schema/equivalence.json"
+
+[lanes.ui_unit]                                 # CIU-73 / assay B041: a language-bound lane (javascript, assay >= 3.1.0)
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# assay's snapshot holds committed objects only — no node_modules. The closure is
+# rebuilt OFFLINE from the committed lockfile out of the npm cache the tester
+# environment provides (extra_mounts, ciu.global.defaults.toml.j2 [testing.environments.tester]);
+# --offline and --no-install make a missing package a refusal, never a fetch.
+# The `bash -c "cd …"` shape retires with assay B043 (`cwd`).
+argv = ["bash", "-c", "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "15m"
+allow_argv_append = false
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+[lanes.ui_unit.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+mode = "changed_lines"
+base_source = "request"
+fail_under = 100.0
+allow_excluded = false
+# require_branch stays unset until assay B045 (declared producer) — A-344.
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"               # vite.config.ts: coverage.provider = 'istanbul', NEVER 'v8' (assay A-346)
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"

@@ -1,0 +1,134 @@
+# infra-global/registry-lightweight/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-registry_lightweight-<svc>),
+# networks (the init job too — no implicit `<project>_default` bridge), base
+# labels, depends_on conditions, cgroup fields. `expose:` stanzas are gone: the
+# endpoints declare what listens.
+services:
+  init:
+    image: {{ ciu_stack.init.image }}
+    user: "0:0"                              # needs root to chown
+    # data dir owned root:docker with group write — the docker gid is an instance fact
+    command: >
+      sh -c "
+      mkdir -p /data/docker &&
+      chown -R 0:{{ instance.docker_gid }} /data &&
+      chmod -R 775 /data &&
+      echo 'Registry data directory initialized (root:docker, group-writable)'
+      "
+    volumes:
+      - {{ ciu_stack.registry.hostdir.data }}:/data
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"
+
+  registry:
+    image: {{ ciu_stack.registry.image }}
+    restart: unless-stopped
+    user: "0:{{ instance.docker_gid }}"      # root:docker — permission management on the data dir
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - REGISTRY_HTTP_SECRET=${REGISTRY_LIGHTWEIGHT_SECRETS_REGISTRY_HTTP_SECRET}
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+      # CORS headers for the UI
+      - "REGISTRY_HTTP_HEADERS_Access-Control-Origin=[\"*\"]"
+      - "REGISTRY_HTTP_HEADERS_Access-Control-Allow-Methods=[\"HEAD\",\"GET\",\"OPTIONS\",\"DELETE\"]"
+      - "REGISTRY_HTTP_HEADERS_Access-Control-Allow-Credentials=[\"true\"]"
+      - "REGISTRY_HTTP_HEADERS_Access-Control-Allow-Headers=[\"Authorization\",\"Accept\",\"Cache-Control\"]"
+      {% if ciu_stack.registry.settings.auth_enabled %}
+      # basic authentication — local htpasswd, not shared credentials
+      - REGISTRY_AUTH=htpasswd
+      - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
+      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
+      {% endif %}
+      {% if ciu_stack.registry.settings.proxy_enabled %}
+      # pull-through cache
+      - REGISTRY_PROXY_REMOTEURL={{ ciu_stack.registry.settings.proxy_remoteurl }}
+      {% if ciu_stack.registry.settings.proxy_use_credentials %}
+      - REGISTRY_PROXY_USERNAME=${REGISTRY_LIGHTWEIGHT_SECRETS_DOCKERHUB_USERNAME}
+      - REGISTRY_PROXY_PASSWORD=${REGISTRY_LIGHTWEIGHT_SECRETS_DOCKERHUB_PASSWORD}
+      {% endif %}
+      {% endif %}
+    volumes:
+      - {{ ciu_stack.registry.hostdir.data }}:/var/lib/registry
+      {% if ciu_stack.registry.settings.config_file %}
+      - "{{ ciu_stack.registry.settings.config_file }}:/etc/docker/registry/config.yml:ro"
+      {% endif %}
+      {% if ciu_stack.registry.settings.auth_enabled %}
+      # written by the pre_compose hook from the stack-level auth_password secret; HOST path
+      - {{ instance.physical_repo_root }}/infra-global/registry-lightweight/htpasswd:/auth/htpasswd:ro
+      {% endif %}
+    healthcheck:
+      # process check — works with auth enabled
+      test: ["CMD", "pgrep", "-f", "registry serve"]
+      interval: {{ ciu_stack.registry.health.interval }}
+      timeout: {{ ciu_stack.registry.health.timeout }}
+      retries: {{ ciu_stack.registry.health.retries }}
+      start_period: {{ ciu_stack.registry.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"
+
+  ui:
+    image: {{ ciu_stack.ui.image }}
+    restart: unless-stopped
+    user: "0:0"                              # the UI image rewrites its own files at startup
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - REGISTRY_TITLE={{ ciu_stack.ui.settings.title }}
+      - REGISTRY_URL=http://{{ ciu_stack.registry.identity.hostname }}:{{ ciu_stack.registry.endpoints.registry.port }}
+      - DELETE_IMAGES={{ ciu_stack.ui.settings.delete_images }}
+      - SHOW_CONTENT_DIGEST={{ ciu_stack.ui.settings.show_content_digest }}
+      - SHOW_CATALOG_NB_TAGS={{ ciu_stack.ui.settings.show_catalog_nb_tags }}
+      - SINGLE_REGISTRY=true
+      - CATALOG_MIN_BRANCHES=1
+      - CATALOG_MAX_BRANCHES=1
+      - TAGLIST_PAGE_SIZE=100
+      - REGISTRY_SECURED=false
+      - CATALOG_ELEMENTS_LIMIT=1000
+    # no healthcheck: dependants get `service_started`
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"
+
+  {% if ciu_stack.tls_proxy.enabled %}
+  # TLS termination for standalone external HTTPS access. In integrated mode the
+  # main reverse proxy fronts the registry and this service is switched off.
+  tls_proxy:
+    image: {{ ciu_stack.tls_proxy.image }}
+    restart: unless-stopped
+    user: "0:{{ instance.docker_gid }}"      # root with the docker group — certificate access via group membership
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - PUBLIC_FQDN={{ instance.public_fqdn }}
+    volumes:
+      # rendered by the pre_compose hook; HOST path
+      - {{ instance.physical_repo_root }}/infra-global/registry-lightweight/nginx-tls.conf:/etc/nginx/nginx.conf:ro
+      {% if ciu_stack.tls_proxy.tls.self_signed %}
+      # self-signed fallback: generated at container start
+      - {{ instance.physical_repo_root }}/infra-global/registry-lightweight/generate-self-signed.sh:/docker-entrypoint.d/90-generate-certs.sh:ro
+      - registry-tls-certs:/etc/nginx/certs
+      {% else %}
+      # the whole /etc/letsencrypt so the live/ symlinks resolve
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      {% endif %}
+    # ports: injected by ciu from [ciu_stack.tls_proxy.endpoints] (publish = "host"/"proxy")
+    healthcheck:
+      # process check: nginx is running (the TLS termination layer)
+      test: ["CMD", "pgrep", "-f", "nginx"]
+      interval: {{ ciu_stack.tls_proxy.health.interval }}
+      timeout: {{ ciu_stack.tls_proxy.health.timeout }}
+      retries: {{ ciu_stack.tls_proxy.health.retries }}
+      start_period: {{ ciu_stack.tls_proxy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.service-type=proxy"
+      - "{{ deploy.labels.prefix }}.service-container=false"
+  {% endif %}
+
+{% if ciu_stack.tls_proxy.enabled and ciu_stack.tls_proxy.tls.self_signed %}
+volumes:
+  registry-tls-certs:
+    name: {{ instance.project }}-{{ instance.id }}-registry-tls-certs
+{% endif %}

@@ -1,0 +1,114 @@
+# infra-global/skywalking/ciu.defaults.toml.j2 — v8 notation
+# Realization `skywalking` = the `tracing` LogicalService (contract:
+# vault:secret/skywalking/postgres_password). Four services:
+#   postgres  dedicated telemetry DB (JDBC storage — the live backend)
+#   oap       PRIMARY: the OAP server (health-bearing, the exec/image source)
+#   ui        the dashboard
+#   banyandb  RETIRED 2026-07-17 (a static Go binary the KSM shim cannot reach —
+#             README "DB Backend Choice"); declared `enabled = false` so the
+#             rollback is a flag flip, not archaeology.
+# Derived: identities (dstdns-<instance>-skywalking-<svc>), sibling addresses
+# (identity.hostname), depends_on conditions, the vault edge AND the contract
+# fact itself — a GEN_TO_VAULT:<path> directive derives vault:secret/<path>, so
+# nothing here repeats it in init_provides. The former
+# `requires = ["stack:infra/vault:healthy"]` is gone for the same reason.
+# Endpoint names are unique across the whole stack (routes key logical.endpoint).
+
+[ciu_stack.postgres]
+image = "postgres:alpine"
+probe_user = "postgres"              # the superuser ciu's pg:* probes exec as (this DB carries no pg:* facts today)
+endpoints.sql = { port = 5432, protocol = "tcp" }
+[ciu_stack.postgres.settings]        # sized for telemetry-only dev use (README "Optimizing resource usage")
+db = "skywalking"
+user = "skywalking"
+shared_buffers = "64MB"
+max_connections = 50
+[ciu_stack.postgres.health]          # the stack-wide 10s/5s/3 override kept; postgres is up well inside 30s
+interval = "10s"
+timeout = "5s"
+retries = 3
+start_period = "30s"
+
+[ciu_stack.oap]
+image = "apache/skywalking-oap-server:latest"
+primary = true
+depends_on = ["postgres"]            # + "banyandb" when that backend is re-enabled
+endpoints.grpc       = { port = 11800, protocol = "tcp" }    # agents / node collectors (native + OTLP)
+endpoints.rest       = { port = 12800, protocol = "http" }   # UI + aggregator
+endpoints.prometheus = { port = 1234,  protocol = "http" }   # self-observability metrics
+endpoints.zipkin     = { port = 9412,  protocol = "http" }   # zipkin receiver — an OAP module dependency (apache/skywalking#8596)
+[ciu_stack.oap.storage]
+type = "postgresql"                  # "banyandb" re-selects the retired backend (flip banyandb.enabled with it)
+record_data_ttl = 3                  # JDBC storages use the CORE TTL knobs (days)
+metrics_data_ttl = 7
+data_retention_days = 7
+[ciu_stack.oap.env]
+# The upstream image bakes JAVA_OPTS="-Xms2G" (no -Xmx) into its Dockerfile — a
+# forced 2 GiB committed heap (measured 2026-07-17: 2.04 GiB RSS+swap). Compose
+# env beats image ENV. If OAP OOMs, raise -Xmx here (NOT -Xms).
+JAVA_OPTS = "-Xms256m -Xmx768m -XX:MaxMetaspaceSize=256m -XX:MaxDirectMemorySize=256m"
+[ciu_stack.oap.telemetry]
+enabled = true
+provider = "prometheus"
+host = "0.0.0.0"                     # the port is the `prometheus` endpoint
+[ciu_stack.oap.health_checker]       # was [skywalking.oap.health] — `health` is ciu's table; this configures SW_HEALTH_CHECKER
+enabled = true
+check_interval_seconds = 5
+[ciu_stack.oap.self_observability]
+enabled = true
+otel_receiver = "default"
+otel_metrics_rules = "oap"
+[ciu_stack.oap.health]               # OAP needs ~60-90s to initialise; the probe is bash /dev/tcp (the image has no wget/curl)
+interval = "10s"
+timeout = "5s"
+retries = 10
+start_period = "90s"
+
+[ciu_stack.ui]
+image = "apache/skywalking-ui:latest"
+depends_on = ["oap"]
+endpoints.ui = { port = 8081, protocol = "http", path = "/skywalking-ui" }   # `path`: what the reverse proxy fronts when enable_skywalking is on
+[ciu_stack.ui.health]
+interval = "10s"
+timeout = "5s"
+retries = 3
+start_period = "90s"
+
+[ciu_stack.banyandb]
+image = "apache/skywalking-banyandb:0.10.2"   # last deployed version
+enabled = false                      # retired 2026-07-17; kept for rollback
+endpoints.banyandb_grpc = { port = 17912, protocol = "tcp" }
+endpoints.banyandb_http = { port = 17913, protocol = "http" }
+[ciu_stack.banyandb.tuning]          # OAP-side banyandb storage knobs (SW_STORAGE_BANYANDB_*), last values
+records_ttl_days = 3
+trace_ttl_days = 3
+log_ttl_days = 3
+metrics_minute_ttl_days = 7
+metrics_hour_ttl_days = 15
+metrics_day_ttl_days = 15
+max_bulk_size = 10000
+flush_interval = 15
+flush_timeout = 10
+concurrent_write_threads = 15
+[ciu_stack.banyandb.env]
+# RAM tuning (2026-07-17): GOMEMLIMIT = Go GC soft ceiling; BYDB_* = env form of
+# banyand flags. Image defaults were service-cache 100MiB, series caches 32MiB per group.
+GOMEMLIMIT = "256MiB"
+BYDB_SERVICE_CACHE_MAX_SIZE = "32M"
+BYDB_MEASURE_SERIES_CACHE_MAX_SIZE = "16M"
+BYDB_STREAM_SERIES_CACHE_MAX_SIZE = "16M"
+[ciu_stack.banyandb.health]
+interval = "10s"
+timeout = "5s"
+retries = 3
+start_period = "30s"
+
+# Shared by postgres (POSTGRES_PASSWORD) and oap (SW_DATA_SOURCE_PASSWORD):
+# declared ONCE at stack level. GEN_TO_VAULT derives the contract fact
+# vault:secret/skywalking/postgres_password; env delivery (the original's expose_env).
+[ciu_stack.secrets]
+postgres_password = { directive = "GEN_TO_VAULT:{{ vault.paths.skywalking_postgres_password }}", delivery = "env", env_name = "SKYWALKING_SECRETS_POSTGRES_PASSWORD" }
+
+[hooks]
+pre_compose = []
+post_compose = []

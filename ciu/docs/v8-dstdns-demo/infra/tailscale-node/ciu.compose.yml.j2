@@ -1,0 +1,48 @@
+# infra/tailscale-node/ciu.compose.yml.j2 — v8 notation (SPEC H §7)
+# Injected by ciu: container_name, base labels, cgroup fields. `host_network = true`
+# in the stack file tells ciu to inject neither `hostname:` (docker refuses it with
+# --network host) nor the instance network. The mesh's readiness edge for every
+# consumer is derived from [network.mesh] realized_by — nothing here declares it.
+services:
+  tailscale:
+    image: {{ ciu_stack.tailscale.image }}
+    # Host networking: tailscaled's TUN lives in the host namespace, so the whole
+    # host (every bound port) is reachable from tailnet peers — not just
+    # co-namespaced containers as with the old sidecar pattern.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      # persisted MachineKey/NodeKey: no re-enrollment after restart/recreation
+      - {{ ciu_stack.tailscale.settings.state_dir }}:/var/lib/tailscale
+      # enrollment seed dir (read-only); the key file is deleted by the hook post-join
+      - /run/enrollment:/run/enrollment:ro
+    environment:
+      - TZ={{ deploy.env.defaults.TZ }}
+      - TS_HOSTNAME={{ ciu_stack.tailscale.settings.tailnet_hostname }}
+      - TS_STATE_DIR=/var/lib/tailscale
+      # TS_AUTHKEY is NOT set: the pre_compose hook performs the initial join from the
+      # seed file; on later starts tailscaled resumes from state without a key.
+    # The container only runs tailscaled in the foreground; the join logic lives in
+    # pre_compose_tailscale.py.
+    command: >
+      tailscaled
+      --state=/var/lib/tailscale/tailscaled.state
+      --socket=/var/run/tailscale/tailscaled.sock
+      --tun=tailscale0
+    healthcheck:
+      # authenticated: Self.Online from `tailscale status --json`, not just process-up
+      test:
+        - "CMD-SHELL"
+        - >-
+          tailscale status --json 2>/dev/null |
+          python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('Self',{}).get('Online') else 1)"
+      interval: {{ ciu_stack.tailscale.health.interval }}
+      timeout: {{ ciu_stack.tailscale.health.timeout }}
+      retries: {{ ciu_stack.tailscale.health.retries }}
+      start_period: {{ ciu_stack.tailscale.health.start_period }}
+    restart: unless-stopped
+    # no labels of its own: ciu stamps the base labels (S4.5.1); a template label with a reserved key is refused (S4.5.2)

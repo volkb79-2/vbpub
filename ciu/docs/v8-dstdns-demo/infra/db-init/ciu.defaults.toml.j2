@@ -1,0 +1,37 @@
+# infra/db-init/ciu.defaults.toml.j2 — v8 notation
+# Realization `db_init` = the `app_schema` LogicalService (contract []: depending
+# on app_schema means "db_init.runner completed"). One-shot: applies the dstdns
+# application schema as controller_ddl, then exits 0 — Decision 8
+# (DATABASE-STRATEGY-AND-DECISIONS.md): the schema is owned by this container,
+# not by db_core's entrypoint (superuser) and not by any long-running app.
+# DERIVED: the container name (dstdns-<instance>-db_init-runner), the wave
+# (`init_requires` replaces phase order and the `stack:infra/db-init:completed`
+# self-fact apps used to spell out), the route to postgres (routes.main_db.sql
+# replaces topology.services.postgres), the Vault edge (ASK_VAULT).
+
+[ciu_stack.runner]
+image = "postgres:18-alpine"         # official image at the server's PG major; only the psql client is needed here
+one_shot = true                      # the gate waits for `completed`, not `healthy`
+# main_db = the database, the controller_ddl role and its Vault password (the
+# three pg:/vault: requires of v7, now one contract). `vault` is already implied
+# by the ASK_VAULT directive (ciu check shows the derived edge); listed for readers.
+init_requires = ["main_db", "vault"]
+
+[ciu_stack.runner.database]          # consumer data → env; host/port are ROUTES
+host = "{{ routes.main_db.sql.host }}"
+port = {{ routes.main_db.sql.port }}
+name = "{{ registry.postgresql.database }}"
+user = "{{ registry.postgresql.users.controller_ddl }}"
+# DML roles that controller_ddl grants to (90-grant-permissions.sh)
+controller_user = "{{ registry.postgresql.users.controller }}"
+workerdb_user = "{{ registry.postgresql.users.workerdb }}"
+webapp_user = "{{ registry.postgresql.users.webapp }}"
+
+# Minted by db_core (GEN_TO_VAULT), read here. env delivery: psql takes PGPASSWORD
+# from the environment (restart-bound; ciu check lists it).
+[ciu_stack.runner.secrets]
+postgres_controller_ddl_password = { directive = "ASK_VAULT:{{ vault.paths.postgres_controller_ddl_password }}", delivery = "env", env_name = "DB_INIT_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD" }
+
+[hooks]
+pre_compose = []
+post_compose = []

@@ -1,0 +1,60 @@
+# infra/docker-stats-exporter/ciu.defaults.toml.j2 — v8 notation
+# Realization `docker_stats_exporter` (bound by the registry) = the
+# `docker_stats_exporter` LogicalService. What became derived: the container/host
+# name (dstdns-<instance>-docker_stats_exporter-exporter), the network, the Redis /
+# Consul / OTLP addresses (routes — were app_identity.* / topology.* copies), the
+# landscape name-prefix filter (instance facts), the vault ordering edge (from the
+# ASK_VAULT directives) and the wave. The O2/P120 `requires` rows are now
+# `init_requires` by capability: those facts live in redis's and consul's contracts.
+# Policy (scrape interval, workers, *_enabled switches) stays in the image's L0
+# (config.defaults.toml) and Consul (L2) — never restated here (P119).
+
+[ciu_stack.exporter]
+image = "{{ deploy.registry.namespace }}/docker-stats-exporter:latest"
+init_requires = ["redis", "consul"]
+uses = ["otel_collector"]            # OTLP target read at run time: route only, no ordering edge (S7.8.3)
+# The compose env MUST carry the consul token (AGENTS.md §4.2a): an empty one is a
+# 403 on every KV read — a permanently degraded exporter that still looks healthy.
+# No fail-fast key on the service in v8: the secret's `env_name` below guarantees
+# the variable is present in the compose environment (S10.2.2, S11.6).
+[ciu_stack.exporter.endpoints]
+# B071: the scrape port is published on the host for the main landscape. An
+# isolated instance that would collide on 9558 overrides `publish = "instance"`
+# in its own ciu.toml.j2 — never here.
+metrics = { port = 9558, protocol = "http", publish = "host", host_port = 9558 }   # Prometheus surface
+health  = { port = 9559, protocol = "http" }   # = metrics + 1: exporter.py binds health_port there unconditionally (D-173 DA-1); keep in step
+
+[ciu_stack.exporter.settings]        # consumer data rendered into config.toml (configfile.app)
+label_filter = ""                    # the container-name prefix, not a label, is the landscape boundary
+name_prefix = "{{ instance.project }}-{{ instance.id }}-"   # every container of THIS instance (derived identity prefix)
+host_stats_channel = "{{ pubsub.host_stats }}"
+container_stats_channel = "{{ pubsub.container_stats }}"
+otlp_endpoint = "{{ routes.otel_collector.otlp_grpc.host }}:{{ routes.otel_collector.otlp_grpc.port }}"
+otlp_insecure = true
+swap_proc_path = "/host/proc"        # the same two keys render the read-only host binds in the compose template: paths cannot drift
+swap_sys_path = "/host/sys"
+
+[ciu_stack.exporter.consul]
+address = "http://{{ routes.consul.http.host }}:{{ routes.consul.http.port }}"
+kv_path = "services/docker-stats-exporter"   # this service's KV leaf under dstdns/<landscape>/ — the consul policy names this spelling; not an identity (was `name`)
+
+[ciu_stack.exporter.redis]
+host = "{{ routes.redis.redis.host }}"
+port = {{ routes.redis.redis.port }}
+db = 0
+username = "{{ registry.redis.users.docker_stats_exporter.username }}"
+
+[ciu_stack.exporter.secrets]         # delivery mandatory; env = compose process environment (restart-bound; ciu check lists it)
+redis_password = { directive = "ASK_VAULT:{{ vault.paths.redis_password }}",                      delivery = "env", env_name = "DOCKER_STATS_EXPORTER_REDIS_PASSWORD" }
+consul_token   = { directive = "ASK_VAULT:{{ vault.paths.consul_docker_stats_exporter_token }}", delivery = "env", env_name = "DOCKER_STATS_EXPORTER_CONSUL_TOKEN" }
+
+[ciu_stack.exporter.configfile.app]  # L1 instance file: rendered to ciu.rendered.exporter.app, mounted read-only at `target`
+template = "config.toml.j2"
+target = "/etc/docker-stats-exporter/config.toml"
+
+[ciu_stack.exporter.hostdir]
+data = ""                            # as in the original (the compose template does not mount it)
+
+[hooks]
+pre_compose = []
+post_compose = []

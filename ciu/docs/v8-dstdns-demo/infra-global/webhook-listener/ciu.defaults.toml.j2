@@ -1,0 +1,29 @@
+# infra-global/webhook-listener/ciu.defaults.toml.j2 — v8 notation
+# Realization `webhook_listener` = the `webhook_listener` LogicalService: one
+# service `webhook` (project-built image; receives GitHub push events and
+# triggers actions). Derived: the identity (dstdns-<instance>-webhook_listener-webhook),
+# the host-published port (an endpoint); the former [webhook_listener.public]
+# fqdn/port copy is the instance's public FQDN + the endpoint's host_port.
+
+[ciu_stack.webhook]
+image = "{{ deploy.registry.namespace }}/webhook-listener:latest"
+endpoints.http = { port = 9000, protocol = "http", publish = "host", host_port = 9000 }   # GitHub delivers to the host port
+[ciu_stack.webhook.hostdir]
+data = ""
+[ciu_stack.webhook.git]
+git_username = ""
+git_repo_name = ""
+[ciu_stack.webhook.public]           # payload URL the hook registers with GitHub (port = the http endpoint's host_port)
+fqdn = "{{ instance.public_fqdn }}"
+[ciu_stack.webhook.secrets]
+webhook_secret  = { directive = "ASK_EXTERNAL:WEBHOOK_SECRET",  delivery = "env", env_name = "WEBHOOK_LISTENER_SECRETS_WEBHOOK_SECRET" }
+webhook_git_pat = { directive = "ASK_EXTERNAL:WEBHOOK_GIT_PAT", delivery = "env", env_name = "WEBHOOK_LISTENER_SECRETS_WEBHOOK_GIT_PAT" }
+
+# Read by pre_compose_hook.py (ctx.secret_file) to register the webhook with
+# GitHub — not a service's secret.
+[ciu_stack.secrets]
+github_api_token = { directive = "ASK_EXTERNAL:GITHUB_API_TOKEN", delivery = "file", consumed_by = "hook" }
+
+[hooks]
+pre_compose = ["./pre_compose_hook.py"]
+post_compose = []

@@ -1,0 +1,100 @@
+# applications/worker-io/ciu.defaults.toml.j2 — v8 notation
+# Realization `worker_io` (bound by the global registry): ONE service `worker`
+# with `instances = 2`. The hand-declared worker-io-1/-2 services are gone —
+# ciu derives dstdns-<instance>-worker_io-worker-1/-2 and hands the compose
+# template the replica identities (`identity.replicas`, S6.5 — a compose-render
+# fact; this file cannot read `ciu_stack`, S3.5.2). Also derived: every host:port
+# this file copied from [topology.*]/[app_identity.*] (routes now), the
+# environment_tag (the instance id), the vault edge (from the ASK_VAULT
+# directives), the wave. D-095 still holds: ciu keeps PHYSICAL facts only —
+# app tunables live in applications/worker-io/config.defaults.toml.
+
+[ciu_stack.worker]
+image = "{{ deploy.registry.namespace }}/worker-io:latest"
+instances = 2
+# By capability, not by vault path: redis (password), consul (worker-io ACL
+# token), controller (internal_dlq_token is minted there), object_store (the
+# MinIO worker-io keys), vault (explicit; the ASK_VAULT directives derive it too).
+init_requires = ["redis", "consul", "controller", "object_store", "vault"]
+uses = ["tracing"]                   # route only, no ordering edge (S7.8.3): the SkyWalking OAP address is read at run time
+endpoints.http = { port = 8080, protocol = "http" }    # /health; instance network only
+
+[ciu_stack.worker.hostdir]
+logs = ""
+cache = ""
+
+[ciu_stack.worker.vantage]           # was [worker_io.identity] — `identity` is the DERIVED table now
+# Per-vantage geo zone label (GeoDNS multi-vantage, r1). "" = unlabelled
+# single-vantage default; per-instance overrides go in ciu.toml.j2.
+# Consumed by config.toml.j2 -> [settings.defaults.identity].
+geo_zone = ""
+
+[ciu_stack.worker.settings]
+controller_url = "{{ routes.controller.http.url }}"
+
+[ciu_stack.worker.redis]
+host = "{{ routes.redis.redis.host }}"
+port = {{ routes.redis.redis.port }}
+
+[ciu_stack.worker.minio]
+endpoint = "{{ routes.object_store.s3.host }}:{{ routes.object_store.s3.port }}"
+secure = false
+bucket = "{{ instance.project }}-{{ instance.id }}"
+repo_name = "{{ instance.project }}"
+instance_id = "{{ instance.id }}"
+prefix = "screenshots"
+
+[ciu_stack.worker.consul]
+address = "http://{{ routes.consul.http.host }}:{{ routes.consul.http.port }}"
+
+[ciu_stack.worker.tracing]
+oap = "{{ routes.tracing.grpc.host }}:{{ routes.tracing.grpc.port }}"
+
+# D-105 Q3: the SSRF baseline is security policy in the app's L0; ciu carries
+# only this deployment's deltas. Retuning is a re-render + restart, deliberately.
+[ciu_stack.worker.ssrf]
+extra_blocked_networks = []
+allowed_networks = []
+allowed_schemes = ["http", "https"]
+
+# dstdns-P84 (CW1): workflow work-stream consumption + result-publish topology.
+[ciu_stack.worker.workflow]
+work_stream_key = "{{ workflow.work_stream_key }}"
+work_consumer_group = "{{ workflow.work_consumer_group }}"
+work_stream_key_db = "{{ workflow.work_stream_key_db }}"
+work_consumer_group_db = "{{ workflow.work_consumer_group_db }}"
+cancel_cache_key = "{{ workflow.cancel_cache_key }}"
+result_stream_key = "{{ workflow.result_stream_key }}"
+result_consumer_group = "{{ workflow.result_consumer_group }}"
+dispatch_batch_size = {{ workflow.dispatch_batch_size }}
+dispatch_claim_lease_seconds = {{ workflow.dispatch_claim_lease_seconds }}
+attempt_deadline_seconds = {{ workflow.attempt_deadline_seconds }}
+max_attempts = {{ workflow.max_attempts }}
+result_ack_timeout_ms = {{ workflow.result_ack_timeout_ms }}
+retention_safety_margin = {{ workflow.retention_safety_margin }}
+max_in_flight = {{ workflow.max_in_flight }}
+
+[ciu_stack.worker.worker_execution]
+max_in_flight = 20
+max_per_run = 10
+max_per_resource_class = 15
+operation_resource_classes = { echo = "egress", query_domain_dns = "egress", scan_web_server = "egress", analyze_web_content = "egress", discover_dns_servers = "egress", test_dns_servers = "egress" }
+
+# Secrets: `delivery` is mandatory. env kept from the originals' expose_env
+# (restart-bound; ciu check lists them). The values also reach config.toml via
+# the configfile render; the env form is what makes the consul token VISIBLE to
+# the container (S4.20).
+[ciu_stack.worker.secrets]
+redis_password     = { directive = "ASK_VAULT:{{ vault.paths.redis_password }}",             delivery = "env", env_name = "WORKER_IO_REDIS_PASSWORD" }
+consul_token       = { directive = "ASK_VAULT:{{ vault.paths.consul_worker_io_token }}",      delivery = "env", env_name = "WORKER_IO_CONSUL_TOKEN" }
+internal_dlq_token = { directive = "ASK_VAULT:{{ vault.paths.internal_dlq_token }}",         delivery = "env", env_name = "WORKER_IO_SECRETS_INTERNAL_DLQ_TOKEN" }
+minio_access_key   = { directive = "ASK_VAULT:{{ vault.paths.minio_worker_io_access_key }}", delivery = "env", env_name = "WORKER_IO_MINIO_ACCESS_KEY" }
+minio_secret_key   = { directive = "ASK_VAULT:{{ vault.paths.minio_worker_io_secret_key }}", delivery = "env", env_name = "WORKER_IO_MINIO_SECRET_KEY" }
+
+[ciu_stack.worker.configfile.app]    # declared ONCE; ciu renders it per replica (each render sees that replica's identity)
+template = "config.toml.j2"
+target = "/etc/worker-io/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

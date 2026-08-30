@@ -1,0 +1,30 @@
+# examples/ciu.instance.generated.joined.toml — the CIU-OWNED generated file of the
+# package worktree whose overlay is examples/ciu.global.instance.joined.toml.j2.
+# Plain TOML, gitignored, rewritten whole by ciu (S14.2.1); merged AFTER that
+# overlay (S3.1.1). The overlay holds the operator's choices (layout, bundles,
+# label, the joins); this file holds what ciu derived or recorded: its OWN
+# identity (a different path hash than the primary's), the host facts of the
+# worktree checkout, the build facts, and the realness record — for joined
+# services the level the reference ACTUALLY runs (S9.5.2).
+
+[ciu.instance.generated]
+instance_id = "a1b2c3"                # sha256 of the worktree's physical path, not the primary's
+
+[ciu.host.generated]
+name = "localhost"
+repo_root = "/workspaces/dstdns/.worktrees/p146-fresh"
+physical_repo_root = "/home/vb/volkb79-2/dstdns/.worktrees/p146-fresh"
+public_fqdn = "gstammtisch.dchive.de"
+env_type = "devcontainer"
+user_uid = 1003
+user_gid = 1003
+docker_gid = 994
+
+[ciu.instance.build]                  # this worktree builds its own app images (`ciu build` here, not in the primary)
+build_version = "2026.08.30-4d1e77b"
+build_time = "2026-08-30T13:40:05Z"
+
+[ciu.instance.realness.local]
+main_db = "live"                      # recorded from the reference: the primary runs main_db=live (S9.5.2)
+app_schema = "live"
+probe_targets = "simulated"

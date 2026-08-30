@@ -1,0 +1,28 @@
+# infra-global/webhook-listener/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-webhook_listener-webhook),
+# networks, base labels, cgroup fields. hooks.yml is baked into the image.
+services:
+  webhook:
+    image: {{ ciu_stack.webhook.image }}
+    restart: unless-stopped
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    command: ["-verbose", "-hooks", "/etc/webhook/hooks.yml", "-hotreload"]
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - WEBHOOK_SECRET=${WEBHOOK_LISTENER_SECRETS_WEBHOOK_SECRET}       # env delivery
+      - WEBHOOK_GIT_PAT=${WEBHOOK_LISTENER_SECRETS_WEBHOOK_GIT_PAT}
+      - GIT_USERNAME={{ ciu_stack.webhook.git.git_username }}
+      - GIT_REPO_NAME={{ ciu_stack.webhook.git.git_repo_name }}
+    # ports: injected by ciu from [ciu_stack.webhook.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - {{ ciu_stack.webhook.hostdir.data }}:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.webhook.endpoints.http.port }}/"]
+      interval: {{ ciu_stack.webhook.health.interval }}
+      timeout: {{ ciu_stack.webhook.health.timeout }}
+      retries: {{ ciu_stack.webhook.health.retries }}
+      start_period: {{ ciu_stack.webhook.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

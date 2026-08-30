@@ -1,0 +1,29 @@
+# applications/webapp-ui-react/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-webapp_ui_react-ui),
+# the instance network, base labels, cgroup fields. No volume mount: static
+# assets are baked into the image at /usr/share/nginx/html/app.
+services:
+  ui:
+    image: {{ ciu_stack.ui.image }}
+    user: "0:0"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - NGINX_PORT={{ ciu_stack.ui.endpoints.http.port }}
+      # public values rendered to /app/env.js by the nginx entrypoint
+      - AUTH_MODE={{ ciu_stack.ui.auth.mode }}
+      # "" in the stack file = derive the same-origin authority from this container's own identity (S3.5.3)
+      - OIDC_AUTHORITY={{ (ciu_stack.ui.auth.oidc_authority or 'http://' ~ ciu_stack.ui.identity.hostname ~ '/application/o/' ~ authentik.oidc_slug ~ '/') if auth.enabled else '' }}
+      - OIDC_CLIENT_ID={{ ciu_stack.ui.auth.oidc_client_id }}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.ui.endpoints.http.port }}{{ ciu_stack.ui.endpoints.http.path }}/"]
+      interval: {{ ciu_stack.ui.health.interval }}
+      timeout: {{ ciu_stack.ui.health.timeout }}
+      retries: {{ ciu_stack.ui.health.retries }}
+      start_period: {{ ciu_stack.ui.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=application"      # extra label: docker-stats-exporter groups by it
+      - "{{ deploy.labels.prefix }}.service-type=frontend"
+      - "{{ deploy.labels.prefix }}.service-container=false"

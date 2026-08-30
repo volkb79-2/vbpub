@@ -1,0 +1,43 @@
+# infra-global/github-runner/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-github_runner-<svc>),
+# networks (the init job too — no implicit `<project>_default` bridge), base
+# labels, the init depends_on condition, cgroup fields.
+services:
+  # Init: runner directories with the right ownership (same pattern as postgres-init & co.)
+  init:
+    image: {{ ciu_stack.init.image }}
+    user: "0:0"                              # must run as root to chown
+    command: >
+      sh -c "
+      echo '[INIT] Setting up GitHub runner directories...';
+      mkdir -p /runner/_work /actions-runner;
+      chown -R {{ ciu_stack.runner.settings.runner_uid }}:{{ instance.docker_gid }} /runner /actions-runner;
+      chmod -R 775 /runner /actions-runner;
+      ls -la /runner /actions-runner;
+      echo '[INIT] Init container completed successfully';
+      "
+    volumes:
+      - {{ ciu_stack.runner.hostdir.work }}:/runner/_work
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"
+
+  # Main runner: runs as the service uid with the docker group
+  runner:
+    image: {{ ciu_stack.runner.image }}
+    restart: unless-stopped
+    user: "{{ ciu_stack.runner.settings.runner_uid }}:{{ instance.docker_gid }}"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - RUNNER_TOKEN=${GITHUB_RUNNER_SECRETS_RUNNER_TOKEN}          # env delivery
+      - RUNNER_NAME={{ ciu_stack.runner.identity.container_name }}
+      - REPO_URL={{ ciu_stack.runner.settings.repository_url }}
+      - RUNNER_WORKDIR=/runner/_work
+      - LABELS=self-hosted,linux,docker
+      # RUNNER_ALLOW_RUNASROOT deliberately absent — it conflicts with the user override
+    volumes:
+      - {{ ciu_stack.runner.hostdir.work }}:/runner/_work
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

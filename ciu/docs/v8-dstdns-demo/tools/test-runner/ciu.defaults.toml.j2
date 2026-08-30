@@ -1,0 +1,42 @@
+# tools/test-runner/ciu.defaults.toml.j2 — v8 notation
+# Realization `test_runner`, the `tester` LogicalService the gate execs into
+# ([testing.environments.tester] exec_in = "tester"). It is in the `test`
+# bundle, so `ciu up` brings it up with the rest of that bundle and `ciu clean`
+# removes it like everything else — no more "in no profile" special case.
+# The judge (assay) is baked into this image at a version satisfying
+# [testing.judge].version; the gate verifies `assay --version` and each
+# verdict's judge_provenance against that floor.
+
+[ciu_stack.runner]
+image = "{{ deploy.registry.namespace }}/test-runner:latest"
+init_requires = ["main_db", "redis"]
+uses = ["controller", "webapp_server", "browser_service"]   # lane targets read at run time: routes only, no ordering edge (S7.8.3); lanes gate on their health via requires.services
+[ciu_stack.runner.mounts]
+workspace = "{{ instance.physical_repo_root }}"      # bind-mounted at /workspace; the gate runs lanes with cwd there
+[ciu_stack.runner.database]
+host = "{{ routes.main_db.sql.host }}"
+port = {{ routes.main_db.sql.port }}
+database = "{{ registry.postgresql.database }}"
+user = "{{ registry.postgresql.users.controller }}"
+[ciu_stack.runner.redis]
+host = "{{ routes.redis.redis.host }}"
+port = {{ routes.redis.redis.port }}
+[ciu_stack.runner.controller]
+url = "{{ routes.controller.http.url }}"
+[ciu_stack.runner.webapp_server]
+url = "{{ routes.webapp_server.http.url }}"
+[ciu_stack.runner.browser]
+url = "{{ routes.browser_service.mcp.url }}"
+lease_seconds = 1800
+session_label = "dstdns-test-runner"
+[ciu_stack.runner.secrets]
+postgres_password = { directive = "ASK_VAULT:{{ vault.paths.postgres_controller_password }}", delivery = "env", env_name = "TEST_RUNNER_SECRETS_POSTGRES_PASSWORD" }
+redis_password    = { directive = "ASK_VAULT:{{ vault.paths.redis_password }}",               delivery = "env", env_name = "TEST_RUNNER_SECRETS_REDIS_PASSWORD" }
+
+[governance]                         # per-stack override of the global base
+memory_max = "800M"
+memory_swap_max = "17G"
+
+[hooks]
+pre_compose = []
+post_compose = []

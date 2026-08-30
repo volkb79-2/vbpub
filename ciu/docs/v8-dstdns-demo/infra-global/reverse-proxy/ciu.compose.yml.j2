@@ -1,0 +1,41 @@
+# infra-global/reverse-proxy/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-reverse_proxy-nginx),
+# networks, base labels, cgroup fields. nginx.conf is rendered by the
+# pre_compose hook into ./etc-nginx (directory bind-mount: nginx needs
+# mime.types & co. next to it).
+services:
+  nginx:
+    image: {{ ciu_stack.nginx.image }}
+    restart: unless-stopped
+    # non-root: nginx.conf is authored for high ports and /tmp pid/temp paths
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - PUBLIC_FQDN={{ network.edge.fqdn }}        # the network this proxy realizes
+      # TLS material for the https endpoint: the ASK_HOST secrets tls_cert / tls_key
+      # ([ciu_stack.nginx.secrets], file delivery) — ciu injects their mounts at these
+      # paths (S10.2.1, S11.4); nginx.conf.j2 points ssl_certificate(_key) there.
+      - TLS_CERT_FILE=/run/secrets/tls_cert
+      - TLS_KEY_FILE=/run/secrets/tls_key
+    # ports: injected by ciu from [ciu_stack.nginx.endpoints] (publish = "host"/"proxy")
+    volumes:
+      # Bind sources are HOST paths (the daemon reads them, not the devcontainer),
+      # hence the physical repo root rather than ${PWD}.
+      - {{ instance.physical_repo_root }}/infra-global/reverse-proxy/etc-nginx:/etc/nginx:ro
+      - {{ instance.physical_repo_root }}/infra-global/reverse-proxy/index.html:/usr/share/nginx/html/index.html:ro
+      {% if ciu_stack.nginx.auth.enabled %}
+      - {{ ciu_stack.nginx.hostdir.auth }}:/etc/nginx/auth:ro
+      {% endif %}
+      # no TLS mounts here: /run/secrets/tls_cert and /run/secrets/tls_key are
+      # injected secret mounts (a template writing `secrets:` is refused, S11.3)
+    healthcheck:
+      # 127.0.0.1, not localhost: BusyBox wget resolves localhost to ::1 while nginx listens on IPv4
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:{{ ciu_stack.nginx.endpoints.http.port }}/health"]
+      interval: {{ ciu_stack.nginx.health.interval }}
+      timeout: {{ ciu_stack.nginx.health.timeout }}
+      retries: {{ ciu_stack.nginx.health.retries }}
+      start_period: {{ ciu_stack.nginx.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

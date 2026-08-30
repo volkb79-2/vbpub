@@ -1,0 +1,23 @@
+# ciu.global.instance.toml.j2 — per-instance OVERLAY (gitignored; ALWAYS present,
+# the primary checkout included; HAND-EDITED ONLY). Merged after ciu.global.toml.j2.
+#
+# The split (S14.2): this file carries what the OPERATOR decides for this instance
+# — layout, bundles, label, host-port overrides, joins ([realization.<n>] kind =
+# "joined" + [service.<n>.<level>] rows, see examples/ciu.global.instance.joined.toml.j2).
+# Everything CIU knows about the instance (identity, host facts, build facts, the
+# realness record per layout) lives in the CIU-owned, plain-TOML
+# `ciu.instance.generated.toml`, merged AFTER this file and rewritten whole by ciu —
+# never hand-edit that file, never copy its tables in here.
+# This example is the primary devcontainer checkout of dstdns.
+
+[ciu.instance]
+layout = "local"                      # which placement this instance deploys (required for every mutating verb, S7.6.1)
+bundles = ["all", "test"]             # default bundle selection for `ciu up` here
+label = "primary"                     # shown by `ciu instance list`; never part of an identity
+
+# Optional per-instance host-port overrides, "<realization>.<svc>.<endpoint>" = port
+# (S6.3.2, S14.2): a second instance on the same machine moves a colliding
+# publish = "host" port here instead of editing a stack file. Unused in the primary:
+# [ciu.instance.host_ports]
+# "cadvisor.cadvisor.http" = 18080
+# "otel_collector_node.collector.otlp_grpc" = 14319

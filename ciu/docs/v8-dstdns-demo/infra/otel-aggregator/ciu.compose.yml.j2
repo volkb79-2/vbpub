@@ -1,0 +1,29 @@
+# infra/otel-aggregator/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname, the instance network, base labels,
+# the config-file mount (configfile.otel), cgroup fields.
+services:
+  collector:
+    image: {{ ciu_stack.collector.image }}
+    pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
+    command: ["--config={{ ciu_stack.collector.configfile.otel.target }}"]
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # expanded by the collector inside its config file (env: syntax)
+      - SKYWALKING_ENDPOINT={{ ciu_stack.collector.exporters.skywalking_endpoint }}
+      - SKYWALKING_OAP_HOST={{ ciu_stack.collector.exporters.skywalking_oap_host }}
+    # ports: injected by ciu from [ciu_stack.collector.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - {{ ciu_stack.collector.hostdir.data }}:/var/lib/otelcol/file_storage
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]    # distroless image: no shell, no wget/curl — the binary itself is the probe
+      interval: {{ ciu_stack.collector.health.interval }}
+      timeout: {{ ciu_stack.collector.health.timeout }}
+      retries: {{ ciu_stack.collector.health.retries }}
+      start_period: {{ ciu_stack.collector.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=observability"    # extra label: docker-stats-exporter groups by it
+      - "{{ deploy.labels.prefix }}.service-container=false"

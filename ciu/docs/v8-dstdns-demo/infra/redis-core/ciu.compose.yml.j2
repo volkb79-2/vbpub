@@ -1,0 +1,28 @@
+# infra/redis-core/ciu.compose.yml.j2 — v8 notation (identity, network, labels, cgroup fields injected by ciu)
+services:
+  redis:
+    image: {{ ciu_stack.redis.image }}
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_CORE_SECRETS_REDIS_PASSWORD}"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - REDIS_PASSWORD=${REDIS_CORE_SECRETS_REDIS_PASSWORD}
+    volumes:
+      - {{ ciu_stack.redis.hostdir.data }}:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "redis-cli -a $${REDIS_PASSWORD} ping | grep PONG"]
+      interval: {{ ciu_stack.redis.health.interval }}
+      timeout: {{ ciu_stack.redis.health.timeout }}
+      retries: {{ ciu_stack.redis.health.retries }}
+      start_period: {{ ciu_stack.redis.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

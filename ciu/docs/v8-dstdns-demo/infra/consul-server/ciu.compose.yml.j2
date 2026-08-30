@@ -1,0 +1,61 @@
+# infra/consul-server/ciu.compose.yml.j2 — v8 notation
+# ciu injects per service: container_name, hostname, networks (the instance
+# network — the init job is pinned to it too, so compose never auto-creates a
+# `<project>_default` bridge), base labels, depends_on conditions, cgroup fields.
+# `ports:` is never written here: ciu injects it for the endpoints an instance
+# publishes on the host (S11.3/S11.4).
+services:
+  init:
+    image: {{ ciu_stack.init.image }}
+    pull_policy: always                # `:latest` is otherwise pulled once and cached forever
+    user: "root"                       # must chown
+    command: >
+      sh -c "
+      mkdir -p /consul/data /consul/config;
+      chown -R {{ instance.user_uid }}:{{ instance.user_gid }} /consul/data /consul/config;
+      chmod -R 775 /consul/data /consul/config;
+      echo '[INFO] Consul directories initialized for {{ instance.user_uid }}:{{ instance.user_gid }}'
+      "
+    volumes:
+      - {{ ciu_stack.consul.hostdir.data }}:/consul/data
+      - {{ ciu_stack.consul.hostdir.config }}:/consul/config
+
+  consul:
+    image: {{ ciu_stack.consul.image }}
+    pull_policy: always
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"   # non-root; init pre-chowned the volumes
+    command: >
+      agent -server
+      -bootstrap-expect=1
+      -ui
+      -client=0.0.0.0
+      -bind=0.0.0.0
+      -data-dir=/consul/data
+      -config-dir=/consul/config
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # acl{} comes from [registry.consul.acl] (omitted entirely when disabled, so the
+      # hook skips provisioning); auto_config{} (SPEC H §3.3 JWT enrollment: a fresh
+      # host gets a token scoped to cmru/landscapes/<ls>/nodes/<node_id>/*) only when
+      # registry.consul.deploy.auto_config.enabled.
+      - CONSUL_LOCAL_CONFIG={"datacenter":"{{ ciu_stack.consul.settings.datacenter }}","server":true,"ui_config":{"enabled":true}{% if registry.consul.acl.enabled %},"acl":{"enabled":true,"default_policy":"{{ registry.consul.acl.default_policy }}","enable_token_persistence":{{ registry.consul.acl.enable_token_persistence | lower }},"down_policy":"{{ registry.consul.acl.down_policy }}"}{% endif %}{% if registry.consul.deploy.auto_config.enabled %},"auto_config":{"enabled":true,"authorization":{"enabled":true,"static":{"jwt_validation_pub_keys":[],"claim_mappings":{"node_id":"node_id"},"bound_audiences":["consul"],"list_claim_mappings":{},"bound_issuer":"{{ registry.consul.deploy.auto_config.jwt_issuer }}"}}}{% endif %}}
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_ALLOW_PRIVILEGED_PORTS=true
+      - CONSUL_DISABLE_PERM_MGMT=true  # no entrypoint chown when running as non-root
+    # ports: injected by ciu from [ciu_stack.consul.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - {{ ciu_stack.consul.hostdir.data }}:/consul/data
+      - {{ ciu_stack.consul.hostdir.config }}:/consul/config
+    healthcheck:
+      # ACL-immune: /v1/status/leader is not ACL-gated (`consul members` 403s under
+      # default_policy=deny); a non-empty "ip:port" (contains ':') = leader elected.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:{{ ciu_stack.consul.endpoints.http.port }}/v1/status/leader | grep -q ':'"]
+      interval: {{ ciu_stack.consul.health.interval }}
+      timeout: {{ ciu_stack.consul.health.timeout }}
+      retries: {{ ciu_stack.consul.health.retries }}
+      start_period: {{ ciu_stack.consul.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

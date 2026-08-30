@@ -1,0 +1,30 @@
+# infra/cadvisor/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-cadvisor), the
+# instance network, base labels (incl. component), cgroup fields.
+services:
+  cadvisor:
+    image: {{ ciu_stack.cadvisor.image }}
+    privileged: true                         # host-level access by design (contrast: docker-stats-exporter runs unprivileged)
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    # ports: injected by ciu from [ciu_stack.cadvisor.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.cadvisor.endpoints.http.port }}/healthz"]
+      interval: {{ ciu_stack.cadvisor.health.interval }}
+      timeout: {{ ciu_stack.cadvisor.health.timeout }}
+      retries: {{ ciu_stack.cadvisor.health.retries }}
+      start_period: {{ ciu_stack.cadvisor.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=observability"    # extra label: docker-stats-exporter groups by it
+      - "{{ deploy.labels.prefix }}.service-container=false"

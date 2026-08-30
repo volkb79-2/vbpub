@@ -1,0 +1,49 @@
+# applications/webapp-server/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-webapp_server-server),
+# the instance network, base labels, the config-file and secret mounts, cgroup fields.
+services:
+  server:
+    image: {{ ciu_stack.server.image }}
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # Build metadata for the health endpoint / schema key (N8/D-116(7)):
+      # derived by ciu, never `${BUILD_VERSION:-dev}`; the app REQUIRES it.
+      - BUILD_VERSION={{ instance.build_version }}
+      - BUILD_TIME={{ instance.build_time }}
+      # S5.5 bootstrap pointers — all config is in the mounted TOML file; none
+      # of these can override a config key, all are needed BEFORE the merge.
+      - WEBAPP_SERVER_CONFIG_FILE={{ ciu_stack.server.configfile.app.target }}
+      - DSTDNS_LANDSCAPE_ID={{ instance.landscape_id }}
+      - DSTDNS_INSTANCE_ID={{ ciu_stack.server.identity.container_name }}
+      - DSTDNS_SERVICE_PROFILE=default
+      # env delivery: the AppRole bootstrap pair
+      - WEBAPP_SERVER_VAULT_ROLE_ID=${WEBAPP_SERVER_VAULT_ROLE_ID}
+      - WEBAPP_SERVER_VAULT_SECRET_ID=${WEBAPP_SERVER_VAULT_SECRET_ID}
+      # file delivery (mounts injected)
+      - WEBAPP_SERVER_CONSUL_TOKEN_FILE=/run/secrets/consul_token
+      - WEBAPP_SERVER_DATABASE_PASSWORD_FILE=/run/secrets/postgres_password
+      - WEBAPP_SERVER_REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - WEBAPP_SERVER_MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
+      - WEBAPP_SERVER_MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
+      # SkyWalking native agent — OAP gRPC through a route
+      - SW_AGENT_COLLECTOR_BACKEND_SERVICES={{ ciu_stack.server.skywalking.oap }}
+      # sw_asyncpg's bind_execute_many wrapper is incompatible with asyncpg>=0.29
+      # on Python 3.14 (same workaround as controller); drop at apache-skywalking>=1.3.0.
+      - SW_AGENT_DISABLE_PLUGINS=sw_asyncpg
+    # no ports: reached on the instance network, or through the reverse proxy (endpoint path)
+    volumes:
+      - {{ ciu_stack.server.hostdir.logs }}:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.server.endpoints.http.port }}/health')"]   # python: no wget/curl in the slim image
+      interval: {{ ciu_stack.server.health.interval }}
+      timeout: {{ ciu_stack.server.health.timeout }}
+      retries: {{ ciu_stack.server.health.retries }}
+      start_period: {{ ciu_stack.server.health.start_period }}
+    restart: unless-stopped                  # survives provider restarts; first-boot ordering is the wave gate's job
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=application"      # extra label: docker-stats-exporter groups by it
+      - "{{ deploy.labels.prefix }}.service-type=api"
+      - "{{ deploy.labels.prefix }}.service-container=false"

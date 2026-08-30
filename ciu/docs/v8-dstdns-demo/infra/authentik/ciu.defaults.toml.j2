@@ -1,0 +1,106 @@
+# infra/authentik/ciu.defaults.toml.j2 — v8 notation
+# Realization `authentik` = the `identity_provider` LogicalService. DERIVED, never
+# written here: container/host names (dstdns-<instance>-authentik-server / -worker),
+# the compose project, the instance network, the DB/Redis host:ports (routes,
+# replacing app_identity.*), the public origin (network.edge.fqdn, replacing
+# topology.external.public_fqdn), the Vault edge and the
+# vault:secret/authentik/bootstrap_token fact (from the GEN_TO_VAULT directive),
+# the wave, and the reverse-proxy path (endpoint `path`).
+
+[ciu_stack.server]
+image = "ghcr.io/goauthentik/server:latest"
+primary = true                       # health-bearing; the hook drives the OIDC/RBAC setup against its API
+# main_db: the authentik role + database + its Vault password (minted by db_core);
+# redis: the password. `vault` is implied by the directives (derived edge); listed for readers.
+init_requires = ["main_db", "redis", "vault"]
+# webapp_ui's route is read at RUN time only (the redirect-URI origins below): a
+# route without an ordering edge (S7.8.3) — webapp_ui comes up in a later wave.
+uses = ["webapp_ui"]
+# `path` = what the reverse proxy fronts. In prod3 the proxy (tsstammtisch) is on another host than this stack
+# (gstammtisch), so publish = "proxy" needs host_port + allow_from (S7.4.3); minio's 9000 on that host is instance-only.
+# rs1002 is admitted too: webapp_server (apps bundle) reads the JWKS over the mesh in prod3 (its `uses`, S7.8 step 5).
+endpoints.http  = { port = 9000, protocol = "http", publish = "proxy", host_port = 9000, path = "/auth", allow_from = ["host.tsstammtisch", "host.rs1002"] }
+endpoints.https = { port = 9443, protocol = "https" }
+
+[ciu_stack.server.database]          # consumer data; host/port are ROUTES. Authentik owns its own database (django_tenants).
+host = "{{ routes.main_db.sql.host }}"
+port = {{ routes.main_db.sql.port }}
+name = "{{ registry.postgresql.authentik_database }}"
+user = "{{ registry.postgresql.users.authentik }}"
+
+[ciu_stack.server.redis]             # dedicated logical DB index
+host = "{{ routes.redis.redis.host }}"
+port = {{ routes.redis.redis.port }}
+db_index = 1
+
+[ciu_stack.server.settings]
+bootstrap_email = "admin@authentik.local"       # the akadmin account
+oidc_client_id = "dstdns-ui"
+# Full-URL redirect URIs (matching_mode=strict): the SPA builds them from
+# window.location.origin (<origin>/app/auth/callback, /app/auth/silent). The
+# in-instance origin is webapp_ui's route (e2e via pwmcp), the public origin is
+# the edge network's FQDN — both derived, so every instance gets its own entries.
+# Operators add further production origins in ciu.toml.j2.
+oidc_redirect_uris = [
+  "{{ routes.webapp_ui.http.url }}/app/auth/callback",
+  "{{ routes.webapp_ui.http.url }}/app/auth/silent",
+  "http://localhost:5173/app/auth/callback",
+  "http://localhost:5173/app/auth/silent",
+  "https://{{ network.edge.fqdn }}/app/auth/callback",
+  "https://{{ network.edge.fqdn }}/app/auth/silent",
+]
+groups = ["dstdns-admin", "dstdns-power-user", "dstdns-analyst"]   # Authentik groups → dstdns roles
+google_source_enabled = false        # created disabled; the operator fills in credentials
+google_source_slug = "google"
+templates_dir = ""                   # optional custom templates dir (host path); "" = the image's own (not mounted)
+
+# Hostdirs are per service in v8. media/certs are shared with the worker (its
+# template mounts ciu_stack.server.hostdir.*); blueprints are the worker's own.
+[ciu_stack.server.hostdir]
+media = ""
+certs = ""
+
+[ciu_stack.worker]
+image = "ghcr.io/goauthentik/server:latest"
+depends_on = ["server"]              # rendered as depends_on: server: condition: service_healthy
+
+[ciu_stack.worker.hostdir]
+blueprints = ""                      # custom blueprints (mounted at /blueprints/custom)
+
+# `ak healthcheck` checks the live worker and PostgreSQL; a slow cadence on purpose
+# so monitoring stays cheap on a memory-pressured host. Slow first boot (migrations).
+[ciu_stack.worker.health]
+interval = "60s"
+timeout = "30s"
+retries = 5
+start_period = "300s"
+# gate_timeout derives to 300s + 60s*5 + 30s = 630s; declare it only to tighten.
+
+# Secrets shared by server and worker: declared ONCE at stack level (env delivery
+# goes through the stack's compose process environment, so both env blocks
+# interpolate the same ${…} names). All in Vault; delivery is mandatory.
+[ciu_stack.secrets]
+secret_key         = { directive = "GEN_TO_VAULT:{{ vault.paths.authentik_secret_key }}",         delivery = "env", env_name = "AUTHENTIK_SECRETS_SECRET_KEY" }         # Django secret key
+postgres_password  = { directive = "ASK_VAULT:{{ vault.paths.postgres_authentik_password }}",     delivery = "env", env_name = "AUTHENTIK_SECRETS_POSTGRES_PASSWORD" }   # minted by db_core so the role exists first
+redis_password     = { directive = "ASK_VAULT:{{ vault.paths.redis_password }}",                  delivery = "env", env_name = "AUTHENTIK_SECRETS_REDIS_PASSWORD" }
+# GEN_TO_VAULT, not ASK_VAULT: secrets are materialized BEFORE compose-up and the
+# post_compose hook runs AFTER, so the token must exist up front. Authentik creates
+# akadmin with it; the hook reads it back from Vault to drive the OIDC setup.
+bootstrap_token    = { directive = "GEN_TO_VAULT:{{ vault.paths.authentik_bootstrap_token }}",    delivery = "env", env_name = "AUTHENTIK_SECRETS_BOOTSTRAP_TOKEN" }
+# first-admin password: `vault kv get secret/{{ vault.paths.authentik_bootstrap_password }}`
+bootstrap_password = { directive = "GEN_TO_VAULT:{{ vault.paths.authentik_bootstrap_password }}", delivery = "env", env_name = "AUTHENTIK_SECRETS_BOOTSTRAP_PASSWORD" }
+
+# The worker once grew unbounded on a 15-months-stale cached `:latest` (README.md
+# "Root cause"); pull_policy: always fixed that, the cap stays as defense-in-depth.
+# v8 caps are stack-scoped cgroup-v2 governance (no per-service resources table),
+# so server + worker share this budget. memswap_limit 8g was RAM+swap → 6G swap.
+[governance]
+memory_max = "2G"
+memory_swap_max = "6G"
+memory_low = "1G"
+
+[hooks]
+pre_compose = []
+post_compose = ["./post_compose_authentik.py"]   # OIDC provider/app, groups, google source, ddcli's service password → Vault; identities from ctx
+[hooks.provides]                     # keyed by the service the facts are probed in (S8.6.3)
+server = ["vault:secret/ddcli/service_password"]   # minted by the hook; identity_provider's other contract fact derives from bootstrap_token's GEN_TO_VAULT

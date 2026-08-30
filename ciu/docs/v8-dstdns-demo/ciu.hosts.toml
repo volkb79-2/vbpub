@@ -1,0 +1,71 @@
+# ciu.hosts.toml — host inventory (gitignored; secrets referenced by directive only)
+# Replaces .ciu.hosts.toml. Declared ONCE; layouts in ciu.global.*.toml.j2 place
+# bundles on these names. Every host lists one address per network it sits on;
+# route derivation picks the first network in the consumer host's `reach` that
+# both hosts share.
+#
+# Inventory source: hosts-avail.md (netcup VPS). r12 is listed there with an
+# incomplete row and is deliberately not declared.
+
+[deploy.hosts.localhost]
+local = true                                   # the machine running ciu (devcontainer/laptop); no SSH facts
+[deploy.hosts.localhost.secrets]               # the `local` layout places the edge bundle here too: reverse_proxy's ASK_HOST
+tls_cert_pem = "ASK_FILE:~/.config/ciu/dev-tls/fullchain.pem"   # secrets need both entries on EVERY host the stack lands on (S10.1.3);
+tls_key_pem = "ASK_FILE:~/.config/ciu/dev-tls/privkey.pem"      # a self-signed dev pair — path recorded, value never stored (S10.1)
+
+[deploy.hosts.gstammtisch]                     # 8 cores / 16 GB — core, db, identity, worker-db
+ssh_host = "gstammtisch.dchive.de"
+ssh_user = "ops"
+ssh_port = 22
+ssh_key = "~/.ssh/ciu_deploy_ed25519"
+known_host = "gstammtisch.dchive.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI<redacted-demo>"
+bundle_dir = "/opt/ciu/current"
+push_mode = "rsync"
+bundle_excludes = [".git", "node_modules", "artifacts"]
+[deploy.hosts.gstammtisch.addresses]
+mesh = "100.64.0.11"                           # tailscale
+public = "152.53.179.117"
+[deploy.hosts.gstammtisch.activate]          # the conventional commands (S17.4); --host regenerates [ciu.host.generated] for THIS host (S14.2.3)
+bootstrap = "ciu instance init --host gstammtisch && ciu check --layout prod3"
+apply = "ciu up --layout prod3"
+health = "ciu check --live --layout prod3"
+rollback = "ciu down"
+
+[deploy.hosts.rs1002]                          # 4 cores / 8 GB — apps, worker-io, observability
+ssh_host = "rs1002.dchive.de"
+ssh_user = "ops"
+ssh_key = "~/.ssh/ciu_deploy_ed25519"
+known_host = "rs1002.dchive.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI<redacted-demo>"
+[deploy.hosts.rs1002.addresses]
+mesh = "100.64.0.12"
+public = "203.0.113.12"
+[deploy.hosts.rs1002.activate]
+bootstrap = "ciu instance init --host rs1002 && ciu check --layout prod3"
+apply = "ciu up --layout prod3"
+health = "ciu check --live --layout prod3"
+rollback = "ciu down"
+
+[deploy.hosts.tsstammtisch]                    # 4 cores / 4 GB — edge (public ingress), global services
+ssh_host = "tsstammtisch.dchive.de"
+ssh_user = "ops"
+ssh_key = "~/.ssh/ciu_deploy_ed25519"
+known_host = "tsstammtisch.dchive.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI<redacted-demo>"
+[deploy.hosts.tsstammtisch.addresses]
+mesh = "100.64.0.13"
+public = "203.0.113.13"
+[deploy.hosts.tsstammtisch.activate]
+bootstrap = "ciu instance init --host tsstammtisch && ciu check --layout prod3"
+apply = "ciu up --layout prod3"
+health = "ciu check --live --layout prod3"
+rollback = "ciu down"
+[deploy.hosts.tsstammtisch.secrets]
+tls_cert_pem = "ASK_EXTERNAL:EDGE_TLS_CRT"     # host-scoped: only this host's bundle gets it
+tls_key_pem = "ASK_EXTERNAL:EDGE_TLS_KEY"
+
+[deploy.hosts.nano1]                           # 2 cores / 2 GB — in the inventory, placed by no layout yet
+ssh_host = "nano1.dchive.de"
+ssh_user = "ops"
+ssh_key = "~/.ssh/ciu_deploy_ed25519"
+known_host = "nano1.dchive.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI<redacted-demo>"
+[deploy.hosts.nano1.addresses]
+mesh = "100.64.0.14"

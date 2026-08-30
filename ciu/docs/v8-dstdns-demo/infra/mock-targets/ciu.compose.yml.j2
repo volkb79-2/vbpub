@@ -1,0 +1,36 @@
+# infra/mock-targets/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname, the instance network, base labels,
+# cgroup fields. Sibling containers reach the servers through derived routes
+# (routes.probe_targets.dns.host:port UDP, routes.probe_targets.http.host:port).
+# One image, built here from the Dockerfile in [mock_image] (build context =
+# repo root so it can COPY tests/ and libs/).
+services:
+  dns:
+    build:
+      context: {{ mock_image.context }}
+      dockerfile: {{ mock_image.dockerfile }}
+      args:
+        PYTHON_BASE_IMAGE: "{{ mock_image.python_base_image }}"
+    image: {{ ciu_stack.dns.image }}
+    command: ["python", "-m", "tests._harness.mock_targets.mock_dns"]
+    restart: unless-stopped
+    environment:
+      {% for key, value in ciu_stack.dns.env.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - MOCK_DNS_PORT={{ ciu_stack.dns.endpoints.dns.port }}
+
+  http:
+    build:
+      context: {{ mock_image.context }}
+      dockerfile: {{ mock_image.dockerfile }}
+      args:
+        PYTHON_BASE_IMAGE: "{{ mock_image.python_base_image }}"
+    image: {{ ciu_stack.http.image }}
+    command: ["python", "-m", "tests._harness.mock_targets.http_target"]
+    restart: unless-stopped
+    environment:
+      {% for key, value in ciu_stack.http.env.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - MOCK_HTTP_PORT={{ ciu_stack.http.endpoints.http.port }}

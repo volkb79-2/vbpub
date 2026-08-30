@@ -1,0 +1,25 @@
+# infra-global/github-runner-webhook/ciu.defaults.toml.j2 — v8 notation
+# Realization `github_runner_webhook` = the `github_runner_webhook` LogicalService:
+# ONE service `webhook` (almir/webhook). The v7 stack also carried a second
+# `github-runner` service; that is the `github_runner` realization's job and is
+# not duplicated here (its runner_token secret and work hostdir went with it).
+# Derived: the identity (dstdns-<instance>-github_runner_webhook-webhook), the
+# host-published port (an endpoint), the public FQDN the hook registers.
+
+[ciu_stack.webhook]
+image = "almir/webhook:latest"
+endpoints.http = { port = 9000, protocol = "http", publish = "host", host_port = 9001 }   # GitHub delivers to the host port; 9001 because webhook_listener holds 9000 on the same host (global-services bundle, S6.3.2)
+[ciu_stack.webhook.hostdir]
+data = ""
+[ciu_stack.webhook.settings]
+repository_url = ""                  # set per deployment in ciu.toml.j2
+[ciu_stack.webhook.git]
+git_username = ""
+git_repo_name = ""
+[ciu_stack.webhook.secrets]
+webhook_secret  = { directive = "ASK_EXTERNAL:WEBHOOK_SECRET",  delivery = "env", env_name = "GITHUB_RUNNER_WEBHOOK_SECRETS_WEBHOOK_SECRET" }
+webhook_git_pat = { directive = "ASK_EXTERNAL:WEBHOOK_GIT_PAT", delivery = "env", env_name = "GITHUB_RUNNER_WEBHOOK_SECRETS_WEBHOOK_GIT_PAT" }
+
+[hooks]
+pre_compose = ["./pre_compose_hook.py"]   # registers the webhook with GitHub (payload URL = instance.public_fqdn + the http endpoint's host_port)
+post_compose = []

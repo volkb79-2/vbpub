@@ -1,0 +1,62 @@
+# infra/pwmcp/ciu.defaults.toml.j2 — v8 notation
+# Realization `pwmcp` (bound by the global registry) = the `browser_service`
+# LogicalService: Playwright-as-a-Service on the OFFICIAL unified image, so no
+# project installs a browser into its devcontainer / CI runner. ONE container
+# hosts both surfaces (Playwright connect() WebSocket + the @playwright/mcp
+# HTTP/SSE server); browser-isolation hardening is the whole reason it is offloaded.
+# What became derived: the container/host name (dstdns-<instance>-pwmcp-unified),
+# the instance network, and the consumer-facing addresses: a consumer reads
+# routes.browser_service.mcp.* / .ws.* and never a hand-written hostname. The old
+# [pwmcp.consumer] alias mechanism survives only as `aliases` on the service
+# (extra DNS names ciu attaches to the injected network stanza) for consumers
+# that still resolve the well-known names; routes are the canonical way.
+# Gone entirely: [pwmcp.external] + [pwmcp.network] (Traefik ingress, basicAuth
+# guard). Public exposure is an endpoint property in v8 (`publish = "proxy"`
+# over the `edge` network); a per-route auth guard has no v8 endpoint key — it
+# is the proxy realization's concern. The default was disabled: nothing active is lost.
+
+[ciu_stack.unified]
+image = "ghcr.io/volkb79-2/pwmcp:latest"           # one key (was registry/namespace/name/tag)
+aliases = ["pwmcp", "pwmcp-mcp", "pwmcp-playwright"]   # compatibility DNS names on the instance network (was the base service alias + [consumer] aliases)
+endpoints.ws  = { port = 3000, protocol = "http" } # Playwright connect(): WebSocket upgrade on an HTTP listener (also serves /health)
+endpoints.mcp = { port = 8931, protocol = "http" } # @playwright/mcp HTTP/SSE surface (path /mcp)
+# Both publish = "instance" (default). The old `expose = true` (127.0.0.1 only,
+# dev convenience) is a `publish = "host"` override in ciu.toml.j2.
+
+[ciu_stack.unified.health]           # override kept: a fast, shallow probe; the global start_period is sized for authentik migrations
+interval = "30s"
+timeout = "5s"
+retries = 5
+start_period = "30s"
+
+[ciu_stack.unified.playwright]       # the ONE Playwright version pin: base image tag, the JS package baked into the
+version = "1.61.0"                   # unified image, and what connect() consumers must `pip install playwright==<version>`
+image_distro = "noble"               # mcr.microsoft.com/playwright:v<version>-<distro>
+
+[ciu_stack.unified.run_server]       # native run-server safeguards (passed as env to supervisord)
+upstream_port = 3001                 # container-internal hop and admin listener: deliberately NOT endpoints,
+admin_port = 8940                    # nobody routes to them (the admin surface is never published outside the container)
+default_lease_s = 1800               # clients may ask for shorter/longer absolute leases; the server clamps to max_lease_s
+max_lease_s = 7200
+max_clients = 2
+idle_recycle_s = 30
+
+[ciu_stack.unified.mcp_server]
+# --allowed-hosts (MCP DNS-rebinding protection): @playwright/mcp rejects a Host
+# header outside its allowlist. The compose template pins the list to the DERIVED
+# names of this container (container name, qualified compose key) plus `aliases`
+# — never "*". extra_args appends more comma-separated "host:port" entries.
+extra_args = ""
+
+[ciu_stack.unified.hardening]        # applied always (non-root, dropped caps, no-new-privileges)
+run_as_uid = 1000                    # the official image's non-root user
+run_as_gid = 1000
+no_new_privileges = true
+drop_all_caps = true
+shm_size = "2gb"                     # Chromium needs shared memory
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# No [state] table: hook-persisted state lives in <location>/ciu.state.toml (S6.10); a [state] table in a stack file is an ERROR.

@@ -1,0 +1,50 @@
+# applications/ddcli/ciu.defaults.toml.j2 — v8 notation
+# Realization `ddcli`: a CLI tool container (no endpoints, no healthcheck,
+# restart "no"; exec into it). The service is keyed like the realization, so
+# its container is dstdns-<instance>-ddcli. Derived: that identity, the
+# Authentik issuer host:port (a route), the vault edge (from the ASK_VAULT
+# directive). It belongs to the `admin` bundle now — the O2 parity note ("a CLI
+# in no profile") is moot: the fail-fast secret rule applies to every stack.
+
+[ciu_stack.ddcli]
+image = "{{ deploy.registry.namespace }}/ddcli:latest"
+init_requires = ["identity_provider"]   # vault:secret/ddcli/service_password is identity_provider's contract fact
+
+[ciu_stack.ddcli.settings]           # CLI behaviour, rendered into config.toml.j2 (strings, as the app expects)
+timeout = "30"
+verify_ssl = "false"
+output_format = "pretty"
+output_color = "true"
+output_table_style = "rounded"
+demo_wait_interval = "2"
+demo_show_progress = "true"
+
+# Service identity (D-035, D-103): ddcli authenticates to the controller as the
+# Authentik service account `dstdns-cli-svc` (group dstdns-power-user), minting
+# a short-lived bearer via OAuth2 client_credentials. The non-secret half lives
+# here; the credential comes from Vault ([secrets] below).
+# issuer_url is the OIDC `iss`; ddcli reads the TOKEN endpoint from the issuer's
+# discovery document (the endpoint is at the base, the issuer per application —
+# never concatenate). Rendered only when auth is enabled: an auth-off deploy
+# sends NO credential. The OIDC slug is [authentik] oidc_slug in the global
+# config now — the P104 "third copy of dstdns-ui" finding is closed.
+[ciu_stack.ddcli.auth]
+enabled = {{ auth.enabled | string | lower }}
+issuer_url = "{{ routes.identity_provider.http.url ~ '/application/o/' ~ authentik.oidc_slug ~ '/' if auth.enabled else '' }}"
+client_id = "{{ authentik.oidc_slug if auth.enabled else '' }}"
+service_user = "{{ 'dstdns-cli-svc' if auth.enabled else '' }}"
+
+[ciu_stack.ddcli.secrets]
+# env on purpose (D-112's scoped exception to D-094): ddcli/config.py reads the
+# app-password token from ${DDCLI_AUTH_PASSWORD}; nothing writes a file into this image.
+service_password = { directive = "ASK_VAULT:{{ vault.paths.ddcli_service_password }}", delivery = "env", env_name = "DDCLI_AUTH_PASSWORD" }
+
+[ciu_stack.ddcli.env]                # optional extra environment (empty by default)
+
+[ciu_stack.ddcli.configfile.app]     # P107 configfile pattern (D-118 #1): rendered to ciu.rendered.ddcli.app, mounted at target
+template = "config.toml.j2"
+target = "/etc/ddcli/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

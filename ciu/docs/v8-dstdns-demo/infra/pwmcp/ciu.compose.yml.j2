@@ -1,0 +1,37 @@
+# infra/pwmcp/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname (dstdns-<instance>-pwmcp-unified), the
+# instance network with the DNS names from `aliases`, base labels, cgroup fields.
+# No command override: supervisord is the ENTRYPOINT and manages both services.
+services:
+  unified:
+    image: {{ ciu_stack.unified.image }}
+    pull_policy: always
+    user: "{{ ciu_stack.unified.hardening.run_as_uid }}:{{ ciu_stack.unified.hardening.run_as_gid }}"
+    {% if ciu_stack.unified.hardening.drop_all_caps %}
+    cap_drop:
+      - ALL
+    {% endif %}
+    {% if ciu_stack.unified.hardening.no_new_privileges %}
+    security_opt:
+      - no-new-privileges:true
+    {% endif %}
+    shm_size: "{{ ciu_stack.unified.hardening.shm_size }}"
+    restart: unless-stopped
+    environment:
+      # supervisord passes this to playwright-mcp as --allowed-hosts. Every entry
+      # is a derived name: what routes.browser_service.mcp.host resolves to (the
+      # container name), the qualified compose-DNS key, and the declared aliases.
+      - "PWMCP_MCP_ALLOWED_HOSTS={{ ciu_stack.unified.identity.container_name }}:{{ ciu_stack.unified.endpoints.mcp.port }},{{ ciu_stack.unified.identity.compose_key }}:{{ ciu_stack.unified.endpoints.mcp.port }}{% for alias in ciu_stack.unified.aliases %},{{ alias }}:{{ ciu_stack.unified.endpoints.mcp.port }}{% endfor %}{% if ciu_stack.unified.mcp_server.extra_args %},{{ ciu_stack.unified.mcp_server.extra_args }}{% endif %}"
+      - PWMCP_RUN_SERVER_PORT={{ ciu_stack.unified.endpoints.ws.port }}
+      - PWMCP_RUN_SERVER_UPSTREAM_PORT={{ ciu_stack.unified.run_server.upstream_port }}
+      - PWMCP_RUN_SERVER_ADMIN_PORT={{ ciu_stack.unified.run_server.admin_port }}
+      - PWMCP_RUN_SERVER_DEFAULT_LEASE_S={{ ciu_stack.unified.run_server.default_lease_s }}
+      - PWMCP_RUN_SERVER_MAX_LEASE_S={{ ciu_stack.unified.run_server.max_lease_s }}
+      - PWMCP_RUN_SERVER_MAX_CLIENTS={{ ciu_stack.unified.run_server.max_clients }}
+      - PWMCP_RUN_SERVER_IDLE_RECYCLE_S={{ ciu_stack.unified.run_server.idle_recycle_s }}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:{{ ciu_stack.unified.endpoints.ws.port }}/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: {{ ciu_stack.unified.health.interval }}
+      timeout: {{ ciu_stack.unified.health.timeout }}
+      retries: {{ ciu_stack.unified.health.retries }}
+      start_period: {{ ciu_stack.unified.health.start_period }}

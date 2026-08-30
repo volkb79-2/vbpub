@@ -1,0 +1,36 @@
+# infra/vault/ciu.defaults.toml.j2 — v8 notation
+# The stack does not know its own name: the global registry binds
+# `realization.vault` → this directory. Services live under [ciu_stack.<svc>].
+# DERIVED (never written here): container/host names, the compose project, the
+# instance network, ordering (waves), routes, secrets stanzas.
+# The AppRole credentials this stack mints (post_compose_vault.py) are its
+# `[hooks.provides] vault` facts; every stack with a *_VAULT directive gains a
+# derived edge onto this realization, so nobody declares `requires vault:healthy` any more.
+
+[ciu_stack.init]
+image = "hashicorp/vault:latest"
+one_shot = true                      # fixes volume ownership, then exits 0
+
+[ciu_stack.vault]
+image = "hashicorp/vault:latest"
+primary = true                       # the health-bearing service of this two-service stack (gate, probes, exec target)
+depends_on = ["init"]                # rendered as depends_on: init: condition: service_completed_successfully
+endpoints.api = { port = 8200, protocol = "http" }     # publish = "instance" (default): instance network only
+[ciu_stack.vault.health]             # slow steady-state check on purpose: `vault status` is a CLI process
+interval = "60s"
+timeout = "10s"
+retries = 5
+start_period = "240s"
+# gate_timeout derives to 240s + 60s*5 + 30s = 570s; declare it only to tighten.
+
+[hooks]
+pre_compose = []
+post_compose = ["./post_compose_vault.py"]   # init/unseal, policies, AppRoles; bootstrap values go to ciu.secrets.toml via the hook API
+[hooks.provides]                     # facts the hook creates, keyed by the service they are probed in (S8.6.3)
+vault = [
+  "vault:secret/vault/controller/role_id", "vault:secret/vault/controller/secret_id",
+  "vault:secret/vault/webapp-server/role_id", "vault:secret/vault/webapp-server/secret_id",
+]
+
+# No [state] table here: the hook's non-secret state (initialized, initialized_at) lives in
+# <location>/ciu.state.toml, written by ciu from the hook's output (S6.10, S12.3); root_token/unseal_key are in ciu.secrets.toml.

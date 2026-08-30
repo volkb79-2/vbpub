@@ -1,0 +1,33 @@
+# infra/db-init/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name (dstdns-<instance>-db_init-runner), networks,
+# base labels, cgroup fields. No compose depends_on on postgres — it lives in
+# another compose project (cross-project depends_on is invalid); the wave gate
+# (init_requires = main_db) orders it, and run-schema.sh still polls pg_isready.
+services:
+  runner:
+    image: {{ ciu_stack.runner.image }}
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # TCP connection as controller_ddl (not the entrypoint's unix socket)
+      - DATABASE_HOST={{ ciu_stack.runner.database.host }}
+      - DATABASE_PORT={{ ciu_stack.runner.database.port }}
+      - DATABASE_NAME={{ ciu_stack.runner.database.name }}
+      - DATABASE_DDL_USER={{ ciu_stack.runner.database.user }}
+      - PGPASSWORD=${DB_INIT_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD}      # env delivery
+      # DML role names forwarded to 90-grant-permissions.sh
+      - DATABASE_USER_CONTROLLER={{ ciu_stack.runner.database.controller_user }}
+      - DATABASE_USER_WORKERDB={{ ciu_stack.runner.database.workerdb_user }}
+      - DATABASE_USER_WEBAPP={{ ciu_stack.runner.database.webapp_user }}
+    # run-schema.sh (thin wrapper) delegates to the shared scripts/schema-apply.sh op
+    # (D-042: one op shared with schema-gate.sh) over init-scripts; all read-only.
+    # Sources are host-visible paths (Docker-outside-Docker).
+    volumes:
+      - {{ instance.physical_repo_root }}/infra/db-init/run-schema.sh:/run-schema.sh:ro
+      - {{ instance.physical_repo_root }}/scripts/schema-apply.sh:/schema-apply.sh:ro
+      - {{ instance.physical_repo_root }}/infra/db-init/init-scripts:/init-scripts:ro
+    command: ["/bin/sh", "/run-schema.sh"]
+    restart: "no"                              # one-shot; ciu gates later waves on its completion
+    labels:
+      - "{{ deploy.labels.prefix }}.service-container=false"

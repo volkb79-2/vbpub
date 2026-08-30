@@ -1,0 +1,31 @@
+# infra/otel-collector-node/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname, the instance network, base labels,
+# the config-file mount (configfile.otel), cgroup fields.
+services:
+  collector:
+    image: {{ ciu_stack.collector.image }}
+    pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
+    command: ["--config={{ ciu_stack.collector.configfile.otel.target }}"]
+    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # expanded by the collector inside its config file (env: syntax)
+      - OTEL_AGGREGATOR_ENDPOINT={{ ciu_stack.collector.exporters.aggregator_endpoint }}
+    # ports: injected by ciu from [ciu_stack.collector.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - {{ ciu_stack.collector.hostdir.data }}:{{ ciu_stack.collector.file_storage.directory }}
+    healthcheck:
+      # Distroless image: no shell, no wget/curl. Docker already guarantees the
+      # main process is running while a healthcheck executes; validate the
+      # mounted config with the collector binary itself instead.
+      test: ["CMD", "/otelcol-contrib", "validate", "--config={{ ciu_stack.collector.configfile.otel.target }}"]
+      interval: {{ ciu_stack.collector.health.interval }}
+      timeout: {{ ciu_stack.collector.health.timeout }}
+      retries: {{ ciu_stack.collector.health.retries }}
+      start_period: {{ ciu_stack.collector.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=observability"    # extra label: docker-stats-exporter groups by it
+      - "{{ deploy.labels.prefix }}.service-container=false"

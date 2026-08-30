@@ -1,0 +1,43 @@
+# infra/docker-stats-exporter/ciu.compose.yml.j2 — v8 notation
+# Injected by ciu: container_name/hostname, the instance network, base labels,
+# the config-file mount (configfile.app), cgroup fields.
+services:
+  exporter:
+    image: {{ ciu_stack.exporter.image }}
+    user: "{{ instance.user_uid }}:{{ instance.docker_gid }}"   # docker group: reads the socket
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # Build metadata for the published schema key (N8/D-116(7)): derived by
+      # ciu, never a host shell variable; require_app_version() fails without it.
+      - BUILD_VERSION={{ instance.build_version }}
+      - BUILD_TIME={{ instance.build_time }}
+      # S5.5 bootstrap POINTERS only — every config VALUE lives in L0/L1/L2; the
+      # DSTDNS_* ones are needed BEFORE the merge, to locate the Consul tree.
+      - DOCKER_STATS_EXPORTER_CONFIG_FILE={{ ciu_stack.exporter.configfile.app.target }}
+      - DSTDNS_LANDSCAPE_ID={{ instance.landscape_id }}
+      - DSTDNS_INSTANCE_ID={{ ciu_stack.exporter.identity.container_name }}
+      - DSTDNS_SERVICE_PROFILE=default
+      # env delivery. The loader reads the token from L1 (the rendered config);
+      # this line makes the secret visible to the service. Plain ${VAR}: the
+      # secret's env_name guarantees the variable is present (S10.2.2, S11.6) —
+      # the v7 fail-if-unset interpolation form is refused by ciu (S11.3).
+      - DOCKER_STATS_EXPORTER_CONSUL_TOKEN=${DOCKER_STATS_EXPORTER_CONSUL_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro    # the socket, read-only: no privileged mode, no host mounts beyond swap metrics
+      - /proc:{{ ciu_stack.exporter.settings.swap_proc_path }}:ro
+      - /sys:{{ ciu_stack.exporter.settings.swap_sys_path }}:ro
+    # ports: injected by ciu from [ciu_stack.exporter.endpoints] (publish = "host"/"proxy")
+    restart: unless-stopped
+    healthcheck:
+      # The HEALTH server, not the Prometheus port: prometheus_client answers 200
+      # on ANY path, so a probe there could never fail (D-173 DA-1).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.exporter.endpoints.health.port }}/health').read()"]
+      interval: {{ ciu_stack.exporter.health.interval }}
+      timeout: {{ ciu_stack.exporter.health.timeout }}
+      retries: {{ ciu_stack.exporter.health.retries }}
+      start_period: {{ ciu_stack.exporter.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.stack=observability"    # extra label: the exporter itself groups by it
+      - "{{ deploy.labels.prefix }}.service-container=false"
