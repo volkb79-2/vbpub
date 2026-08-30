@@ -14,16 +14,18 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1, R2 and R3 for Python, and R2 for SQL**
-  (P19 closes sol finding 1 in full for Python; P34/W6 adds SQL at R2
-  only): ``_built_in_registry`` is the CLI's own closed capability
-  declaration (work item 2, widened by every rigor-wiring package since)
-  — Python is registered at R1, R2 and R3, SQL at R2 only, and nothing
-  else, so a lane declaring ``judge.language`` as anything but
-  ``"python"``/``"sql"``, a SQL lane declaring R1 or R3, or a rigor level
-  for a language this registry does not know at all (Go, at any level —
-  P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's
-  command ever runs. A declared R3 lane's own canary run happens in
+  This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, and R1
+  for JavaScript/TypeScript** (P19 closes sol finding 1 in full for Python;
+  P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only):
+  ``_built_in_registry`` is the CLI's own closed capability declaration
+  (work item 2, widened by every rigor-wiring package since) — Python is
+  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 only, and
+  nothing else, so a lane declaring ``judge.language`` as anything but
+  ``"python"``/``"sql"``/``"javascript"``, a SQL lane declaring R1 or R3, a
+  JavaScript lane declaring R2 or R3, or a rigor level for a language this
+  registry does not know at all (Go, at any level — P22), is refused
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
+  declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
@@ -162,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, and SQL R2."
+            "Python R2, Python R3, JavaScript R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
