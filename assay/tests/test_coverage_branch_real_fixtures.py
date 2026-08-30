@@ -1,9 +1,12 @@
 """O1/O2 — the real coverage artifacts under ``tests/fixtures/coverage/``
 parse to the real numbers ``PROVENANCE.md`` documents.
 
-These EIGHT files are carver-owned evidence (see ``PROVENANCE.md``) and are
-never edited, never hand-authored, and never referenced by a path outside
-this directory's own ``FIXTURES`` constant. Every number asserted here is
+These EIGHT coverage.py files are carver-owned evidence (see
+``PROVENANCE.md``; the two ``coverage-istanbul-json.*`` documents that joined
+that directory in B036 belong to
+``test_coverage_istanbul_real_fixtures.py``) and are never edited, never
+hand-authored, and never referenced by a path outside this directory's own
+``FIXTURES`` constant. Every number asserted here is
 independently re-derived in this module's own comments from the artifact's
 own bytes (grep the raw file, not this test, to re-verify one) -- "the one
 the tool printed", not a hand-computed value (O1's own wording).
