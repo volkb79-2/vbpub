@@ -7,6 +7,20 @@ strict over-approximation that attributes function signatures, closing braces an
 statement continuations. A-218 closed the inclusive-versus-half-open question as
 inert; A-217 ruled option 2. This file has an explicit scope status for the
 re-carve per A-217(b). Do not re-derive the correction from this docstring.
+
+**B039/B047 item 4.** This module's own block-range expansion below (``for
+file_line in range(start, end + 1)``) had no bound at all until this wave: a
+single ~60-byte block line reading ``pkg/x.go:1.1,999999999.1 1 1`` sits far
+inside the 16 MiB ``MAX_COVERAGE_ARTIFACT_BYTES`` read bound and would
+materialize close to a billion dict entries — the identical shape
+:mod:`.coverage_istanbul_json` was given a fixed ceiling for precisely
+because "the shape is dangerous," while this parser's own equivalent
+expansion shipped with none. `parse` now spends
+:class:`~assay.coverage_parsers.model.ClassifiedLineBudget` (the ONE shared
+bound both expanding parsers enforce, per B039's own acceptance box 2) before
+materializing each block's range, refusing ``ERROR``/``UNREADABLE_ARTIFACT``
+past it exactly as the istanbul parser does.
+
 Go coverprofile parser (``go test -coverprofile=...``).
 
 Format: a ``mode: <mode>`` header line, then one BLOCK per subsequent line::
@@ -60,7 +74,8 @@ from __future__ import annotations
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
-from .model import CoverageProfile, FileCoverage
+from .model import ClassifiedLineBudget, CoverageProfile, FileCoverage
+from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
 
 _MODE_PREFIX = "mode:"
 
@@ -85,8 +100,12 @@ def parse(text: str) -> CoverageProfile:
     # that line in the whole profile (a path can also recur across multiple
     # block lines, not only within one block's own range).
     hits_by_file: dict[str, dict[int, int]] = {}
+    budget = ClassifiedLineBudget(
+        format_name="go coverprofile", remaining=MAX_CLASSIFIED_LINES
+    )
     for raw_line in lines[1:]:
         path, start, end, count = _parse_block(raw_line)
+        budget.spend(end - start + 1, path)
         hits = hits_by_file.setdefault(path, {})
         for file_line in range(start, end + 1):
             already_executed = hits.get(file_line) == 1

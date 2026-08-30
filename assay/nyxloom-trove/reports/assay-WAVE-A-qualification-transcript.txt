@@ -1,0 +1,232 @@
+Real-`vitest` qualification transcript (B041(c)), captured 2026-08-30.
+
+Command: ASSAY_NODE_QUALIFICATION=1 python3 -m pytest tests/qualification/test_javascript_real_vitest.py -v -s
+
+============================= test session starts ==============================
+platform linux -- Python 3.14.6, pytest-8.4.2, pluggy-1.6.0 -- /home/vscode/.venv/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /workspaces/vbpub/.worktrees/assay-wave-a-js-consumer/assay
+configfile: pyproject.toml
+plugins: xdist-3.8.0, cov-7.1.0, anyio-4.12.1, mock-3.15.1, asyncio-1.4.0, schemathesis-3.39.16, subtests-0.14.2, hypothesis-6.165.10
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/qualification/test_javascript_real_vitest.py::test_a_real_javascript_lane_passes_end_to_end $ assay run ui --file /tmp/pytest-of-vscode/pytest-4686/test_a_real_javascript_lane_pa0/repo/assay.toml --verdict-json -
+exit=0
+STDERR:
+assay: no judge_provenance recorded -- this process imported 'assay' from '/workspaces/vbpub/.worktrees/assay-wave-a-js-consumer/assay/src/assay/__init__.py', which is outside the installed distribution at '/home/vscode/.venv/lib/python3.14/site-packages' -- the running code is not the code that artifact contains, so its digest would name the wrong build; pass --require-judge-provenance to refuse instead of proceeding
+
+STDOUT:
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "bash",
+    "-c",
+    "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"
+  ],
+  "argv_effective": [
+    "bash",
+    "-c",
+    "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"
+  ],
+  "argv_modified": false,
+  "assay_version": "3.1.0",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "unavailable",
+        "branches_covered": 0,
+        "branches_total": 0,
+        "considered": 1,
+        "covered": 1,
+        "excluded_lines": {},
+        "exclusion_capability": "unavailable",
+        "executable": 1,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {},
+        "pct": 100.0,
+        "unclassified_lines": {}
+      },
+      "rigor": "R1",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "a49be151514e959f4a0732510a532bfe6183b743",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "ended": "2026-08-30T14:50:05.948078+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "npm_config_cache": "/tmp/pytest-of-vscode/pytest-4686/npm-cache0"
+  },
+  "env_effective": {
+    "HOME": "/home/vscode",
+    "PATH": "<devcontainer PATH, elided>",
+    "npm_config_cache": "/tmp/pytest-of-vscode/pytest-4686/npm-cache0"
+  },
+  "evidence": [],
+  "exit_code": 0,
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": ".assay/coverage-final.json",
+      "coverage_format": "coverage-istanbul-json",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": false
+    },
+    "resolved": {
+      "base": "1cbe5a70b63573b945ceac75c260ae9f8a720564",
+      "base_resolution": "merge-base",
+      "language": "javascript",
+      "source_roots": [
+        "src"
+      ]
+    }
+  },
+  "lane": "ui",
+  "outcome": "PASS",
+  "schema_version": 8,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "2026-08-30T14:50:02.180291+00:00"
+}
+
+PASSED
+tests/qualification/test_javascript_real_vitest.py::test_a_real_javascript_lane_fails_and_names_the_uncovered_line $ assay run ui --file /tmp/pytest-of-vscode/pytest-4686/test_a_real_javascript_lane_fa0/repo/assay.toml --verdict-json -
+exit=1
+STDERR:
+assay: no judge_provenance recorded -- this process imported 'assay' from '/workspaces/vbpub/.worktrees/assay-wave-a-js-consumer/assay/src/assay/__init__.py', which is outside the installed distribution at '/home/vscode/.venv/lib/python3.14/site-packages' -- the running code is not the code that artifact contains, so its digest would name the wrong build; pass --require-judge-provenance to refuse instead of proceeding
+
+STDOUT:
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "bash",
+    "-c",
+    "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"
+  ],
+  "argv_effective": [
+    "bash",
+    "-c",
+    "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"
+  ],
+  "argv_modified": false,
+  "assay_version": "3.1.0",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "coverage": {
+        "branch_capability": "unavailable",
+        "branches_covered": 0,
+        "branches_total": 0,
+        "considered": 1,
+        "covered": 3,
+        "excluded_lines": {},
+        "exclusion_capability": "unavailable",
+        "executable": 4,
+        "files_missing_coverage": [],
+        "files_with_excluded_lines": [],
+        "files_with_missing_branch_lines": [],
+        "files_with_unclassified_lines": [],
+        "missing_branch_lines": {},
+        "missing_lines": {
+          "src/app.ts": [
+            7
+          ]
+        },
+        "pct": 75.0,
+        "unclassified_lines": {}
+      },
+      "reason_code": "UNCOVERED_LINES",
+      "rigor": "R1",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "08c5962f8e92bf4b0e23f04ea6695391f48773f6",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1"
+  ],
+  "ended": "2026-08-30T14:50:09.770221+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "npm_config_cache": "/tmp/pytest-of-vscode/pytest-4686/npm-cache0"
+  },
+  "env_effective": {
+    "HOME": "/home/vscode",
+    "PATH": "<devcontainer PATH, elided>",
+    "npm_config_cache": "/tmp/pytest-of-vscode/pytest-4686/npm-cache0"
+  },
+  "evidence": [],
+  "exit_code": 1,
+  "judgment": {
+    "r1": {
+      "allow_excluded": false,
+      "coverage_artifact": ".assay/coverage-final.json",
+      "coverage_format": "coverage-istanbul-json",
+      "fail_under": 100.0,
+      "mode": "changed_lines",
+      "require_branch": false
+    },
+    "resolved": {
+      "base": "4cdd0bc2636bfb2befb4c5614c5d1376c72dfcaf",
+      "base_resolution": "merge-base",
+      "language": "javascript",
+      "source_roots": [
+        "src"
+      ]
+    }
+  },
+  "lane": "ui",
+  "outcome": "FAIL",
+  "reason_code": "UNCOVERED_LINES",
+  "schema_version": 8,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "2026-08-30T14:50:06.433355+00:00"
+}
+
+PASSED
+
+=============================== warnings summary ===============================
+../../../../../home/vscode/.venv/lib/python3.14/site-packages/schemathesis/generation/coverage.py:305
+  /home/vscode/.venv/lib/python3.14/site-packages/schemathesis/generation/coverage.py:305: DeprecationWarning: jsonschema.exceptions.RefResolutionError is deprecated as of version 4.18.0. If you wish to catch potential reference resolution errors, directly catch referencing.exceptions.Unresolvable.
+    ref_error: type[Exception] = jsonschema.RefResolutionError,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 2 passed, 1 warning in 11.22s =========================
+
+--- Re-verified: no-env-var path skips cleanly ---
+
+$ python3 -m pytest tests/qualification/test_javascript_real_vitest.py -q
+ss
+2 skipped, 1 warning in 0.19s

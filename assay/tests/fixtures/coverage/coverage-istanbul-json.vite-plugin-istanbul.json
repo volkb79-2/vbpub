@@ -1,0 +1,256 @@
+{
+  "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/main.ts": {
+    "_coverageSchema": "1a1c01bbd47fc00a2c39e90264f33305004495a9",
+    "b": {
+      "0": [
+        1,
+        0
+      ]
+    },
+    "branchMap": {
+      "0": {
+        "line": 4,
+        "loc": {
+          "end": {
+            "column": 1,
+            "line": 6
+          },
+          "start": {
+            "column": 0,
+            "line": 4
+          }
+        },
+        "locations": [
+          {
+            "end": {
+              "column": 1,
+              "line": 6
+            },
+            "start": {
+              "column": 0,
+              "line": 4
+            }
+          },
+          {
+            "end": {},
+            "start": {}
+          }
+        ],
+        "type": "if"
+      }
+    },
+    "f": {},
+    "fnMap": {},
+    "hash": "be5922adb430b588b6e3f2b2f353e30aa8ca036a",
+    "inputSourceMap": {
+      "mappings": "AAAA,SAAS,KAAK,gBAAgB;AAE9B,MAAM,SAAS,SAAS,eAAe,QAAQ;AAC/C,MAAM,QAAQ,IAAI,GAAG,CAAC,IAAI,SAAS,IAAI,CAAC;AACxC,IAAI,QAAQ;CACV,OAAO,cAAc,OAAO,KAAK;AACnC",
+      "names": [],
+      "sources": [
+        "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/main.ts"
+      ],
+      "version": 3
+    },
+    "path": "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/main.ts",
+    "s": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1
+    },
+    "statementMap": {
+      "0": {
+        "end": {
+          "column": 48,
+          "line": 2
+        },
+        "start": {
+          "column": 15,
+          "line": 2
+        }
+      },
+      "1": {
+        "end": {
+          "column": 41,
+          "line": 3
+        },
+        "start": {
+          "column": 14,
+          "line": 3
+        }
+      },
+      "2": {
+        "end": {
+          "column": 1,
+          "line": 6
+        },
+        "start": {
+          "column": 0,
+          "line": 4
+        }
+      },
+      "3": {
+        "end": {
+          "column": 36,
+          "line": 5
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      }
+    }
+  },
+  "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/math.ts": {
+    "_coverageSchema": "1a1c01bbd47fc00a2c39e90264f33305004495a9",
+    "b": {
+      "0": [
+        0,
+        1
+      ]
+    },
+    "branchMap": {
+      "0": {
+        "line": 5,
+        "loc": {
+          "end": {
+            "column": 2,
+            "line": 7
+          },
+          "start": {
+            "column": 1,
+            "line": 5
+          }
+        },
+        "locations": [
+          {
+            "end": {
+              "column": 2,
+              "line": 7
+            },
+            "start": {
+              "column": 1,
+              "line": 5
+            }
+          },
+          {
+            "end": {},
+            "start": {}
+          }
+        ],
+        "type": "if"
+      }
+    },
+    "f": {
+      "0": 1,
+      "1": 1
+    },
+    "fnMap": {
+      "0": {
+        "decl": {
+          "end": {
+            "column": 19,
+            "line": 1
+          },
+          "start": {
+            "column": 16,
+            "line": 1
+          }
+        },
+        "line": 1,
+        "loc": {
+          "end": {
+            "column": 1,
+            "line": 3
+          },
+          "start": {
+            "column": 26,
+            "line": 1
+          }
+        },
+        "name": "add"
+      },
+      "1": {
+        "decl": {
+          "end": {
+            "column": 24,
+            "line": 4
+          },
+          "start": {
+            "column": 16,
+            "line": 4
+          }
+        },
+        "line": 4,
+        "loc": {
+          "end": {
+            "column": 1,
+            "line": 9
+          },
+          "start": {
+            "column": 31,
+            "line": 4
+          }
+        },
+        "name": "subtract"
+      }
+    },
+    "hash": "190300dbae574fdc35cc7d1e5a0ac21266cbae60",
+    "inputSourceMap": {
+      "mappings": "AAAA,OAAO,SAAS,IAAI,GAAW,GAAmB;CAChD,OAAO,IAAI;AACb;AAEA,OAAO,SAAS,SAAS,GAAW,GAAmB;CACrD,IAAI,IAAI,GAAG;EACT,OAAO,EAAE,IAAI;CACf;CACA,OAAO,IAAI;AACb",
+      "names": [],
+      "sources": [
+        "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/math.ts"
+      ],
+      "version": 3
+    },
+    "path": "/tmp/claude-1003/-workspaces-vbpub/cd6f26f0-7284-4ac3-8a19-343c377d835b/scratchpad/vite-istanbul/src/math.ts",
+    "s": {
+      "0": 1,
+      "1": 1,
+      "2": 0,
+      "3": 1
+    },
+    "statementMap": {
+      "0": {
+        "end": {
+          "column": 14,
+          "line": 2
+        },
+        "start": {
+          "column": 1,
+          "line": 2
+        }
+      },
+      "1": {
+        "end": {
+          "column": 2,
+          "line": 7
+        },
+        "start": {
+          "column": 1,
+          "line": 5
+        }
+      },
+      "2": {
+        "end": {
+          "column": 18,
+          "line": 6
+        },
+        "start": {
+          "column": 2,
+          "line": 6
+        }
+      },
+      "3": {
+        "end": {
+          "column": 14,
+          "line": 8
+        },
+        "start": {
+          "column": 1,
+          "line": 8
+        }
+      }
+    }
+  }
+}

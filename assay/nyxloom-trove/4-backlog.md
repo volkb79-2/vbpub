@@ -3643,11 +3643,23 @@ elsewhere.
 
 ### Acceptance
 
-- [ ] a fixed, documented ceiling on total classified lines per artifact in
+- [x] a fixed, documented ceiling on total classified lines per artifact in
       `go_cover.parse`, refusing `ERROR`/`UNREADABLE_ARTIFACT` past it, with
-      a paired must-succeed control proving an ordinary profile still parses;
-- [ ] check whether the bound belongs in ONE shared place rather than once
-      per expanding parser (`coverage_istanbul_json` has its own today).
+      a paired must-succeed control proving an ordinary profile still parses
+      — `go_cover.py:230-232` (`budget.spend` before the range expansion),
+      `tests/test_coverage_parsers_go_cover.py`
+      `test_one_enormous_block_is_refused_rather_than_expanded` +
+      `test_an_ordinary_real_shaped_profile_still_parses_under_the_shared_bound`
+      (2026-08-30, Wave A);
+- [x] check whether the bound belongs in ONE shared place rather than once
+      per expanding parser (`coverage_istanbul_json` has its own today) —
+      moved to `coverage_parsers/model.py:MAX_CLASSIFIED_LINES` +
+      `ClassifiedLineBudget` (2026-08-30, Wave A); both parsers re-export the
+      name into their own module namespace so each module's own
+      `monkeypatch.setattr(<module>, "MAX_CLASSIFIED_LINES", ...)` test
+      idiom keeps working —
+      `test_coverage_parsers_go_cover.py::test_the_shipped_bound_is_the_one_shared_documented_value`
+      pins object identity, not merely equal values. See A-348.
 
 ---
 
@@ -3878,22 +3890,46 @@ type-only module (`src/auth/types.ts`, B038(b)).
 
 ### Acceptance
 
-- [ ] `docs/CONSUMERS.md`: a new section "JavaScript lanes and the dependency
+**Wave A discharges (a)+(c) only** (`WAVE-PROMPT-2026-08-30-js-consumer-
+producer.md`'s own explicit split — this item's acceptance boxes were
+written assuming one implementer might do (a)+(b) together; the wave prompt
+supersedes that for THIS wave). (b) `link_paths` remains open for Wave B.
+
+- [x] `docs/CONSUMERS.md`: a new section "JavaScript lanes and the dependency
       closure" carrying the mechanism, pattern (a) with the worked monorepo
       lane above, the image-side cache recipe, the `npx` fetch hazard and
-      `--no-install`, the `environment_command` caveat, the R3 cost, and
-      pattern (b) with its purity trade-off and what the verdict records;
-      README's JS section links to it;
-- [ ] the qualification harness in (c) exists, is skipped in the registered
+      `--no-install`, the `environment_command` caveat, and the R3 cost —
+      landed 2026-08-30. Pattern (b) is a ONE-PARAGRAPH PREVIEW marked
+      "Wave B, schema v9" per the wave prompt's own instruction, not the
+      full purity-trade-off write-up this box originally asked for (that
+      lands with the real implementation in Wave B); README's JS section
+      links to it (both directions, B042 item 5);
+- [x] the qualification harness in (c) exists, is skipped in the registered
       gate with a named reason, and its transcript (PASS and FAIL runs) is in
-      the wave REPORT;
+      the wave REPORT — `tests/qualification/test_javascript_real_vitest.py`
+      (2026-08-30); `pytestmark = pytest.mark.skipif(...)` names the reason
+      (`ASSAY_NODE_QUALIFICATION=1` + node/npm on PATH; tester-unified has no
+      Node, DESIGN-GUIDE §10); both transcripts are in
+      `reports/assay-WAVE-A-js-consumer-REPORT.md`. Running it for real
+      surfaced a genuine, previously-unknown defect (B049/A-347: Vitest's
+      default `coverage.clean = true` orphans assay's own coverage-artifact
+      reservation) — not anticipated by this item's own text, and the kind
+      of finding only a real run (not a heredoc) can surface;
 - [ ] `link_paths` implemented per rules 1–6 with a gate-runnable test per
-      rule, including the teardown-preserves-target canary;
+      rule, including the teardown-preserves-target canary — **Wave B**;
 - [ ] `snapshot_policy.link_paths` in the schema, the dataclass and
-      `verify.py`; the frozen drift-guard asset updated at the v9 cut;
-- [ ] `assay lanes --json` (B044) exposes `link_paths`;
+      `verify.py`; the frozen drift-guard asset updated at the v9 cut —
+      **Wave B**;
+- [ ] `assay lanes --json` (B044) exposes `link_paths` — B044 itself SHIPPED
+      this wave and already emits `"link_paths": []` unconditionally (Wave-B
+      key, stable shape per B044's own contract); wiring it to a REAL
+      declared value is **Wave B**'s work, alongside the feature itself;
 - [ ] R3 for `javascript` wired in `cli.py`'s registry ONLY after the
-      qualification harness has run a real canary pair, never before.
+      qualification harness has run a real canary pair, never before — NOT
+      done this wave (out of scope per the wave prompt's own "NOT IN SCOPE"
+      list: "registering javascript at R2 or R3"); the qualification harness
+      shipped this wave proves R1 only, so this box's own precondition is
+      not yet met regardless.
 
 ---
 
@@ -3939,11 +3975,32 @@ replacement so the change is mechanical.
 
 ### Acceptance
 
-- [ ] items 1–5 landed with the exact wording or better, each checked
-      against the current files (line numbers above are 3.1.0's);
-- [ ] no doc still says the two Vitest providers are interchangeable or that
+- [x] items 1–5 landed with the exact wording or better, each checked
+      against the current files (line numbers above are 3.1.0's) — item 1
+      discharged by B041(a)'s new CONSUMERS section (the old worked lane at
+      the cited lines is replaced, monorepo-shaped, offline-pattern
+      example); item 2 landed in `README.md`/`docs/CONSUMERS.md`'s v8-
+      provider warnings, WITH a real, measured `c8` result (2026-08-30) —
+      not left "untested": `tests/fixtures/coverage/probe-js-provider-
+      defect-c8/`, `coverage-istanbul-json.provider-defect.c8.json`,
+      `test_coverage_istanbul_provider_accuracy.py`'s `C8`/
+      `C8_FALSE_GREENS` cases; item 3 landed as `docs/CONSUMERS.md`'s new
+      "support files" paragraph, corrected past the backlog's own assumed
+      mechanism (measured: it is `coverage.include`'s zero-coverage
+      synthesis for a matched-but-unimported file, never a
+      `*.config.*`/`*.stories.*` exclude glob — Vitest's own hardcoded
+      excludes cover only its resolved config file, the test-name glob and
+      declared setup files); item 4 landed in `README.md`'s snippet comment;
+      item 5 landed both directions (README → CONSUMERS' new section;
+      CONSUMERS "Practices" gained "Dependency closures come from the
+      image, never the working tree");
+- [x] no doc still says the two Vitest providers are interchangeable or that
       Jest is unconditionally unaffected (grep for "Jest" in README/CONSUMERS/
-      DESIGN-GUIDE/the parser docstring).
+      DESIGN-GUIDE/the parser docstring) — re-grepped 2026-08-30 after every
+      edit above; every remaining "Jest" mention is scoped to its default
+      `babel` provider, and `src/assay/coverage_parsers/coverage_istanbul_json.py`'s
+      own module docstring (the one hit outside README/CONSUMERS) corrected
+      to match.
 
 ---
 
@@ -4038,12 +4095,29 @@ as `[testing.lanes.<l>] request_base = true`, a second spelling of one fact
 
 ### Acceptance
 
-- [ ] golden JSON for every fixture lane file under `tests/fixtures/lanes/`
+- [x] golden JSON for every fixture lane file under `tests/fixtures/lanes/`
       (or the existing lane fixtures), including a `javascript`, a `sql` and
-      a delegating lane;
-- [ ] a refusal test (bad lane file → exit 2, empty stdout);
-- [ ] CONSUMERS "CMRU / tester-unified integration" and the ciu handoff note
-      show a gate consuming it; CIU-72 references the exact key names.
+      a delegating lane — `tests/test_cli_lanes_json.py` (2026-08-30, Wave
+      A): `test_an_r0_only_lane`, `test_a_python_r1_lane_with_a_declared_base`,
+      `test_a_javascript_r1_lane_that_delegates_its_base`,
+      `test_a_sql_r2_lane`, plus a standalone
+      `test_a_lane_delegating_its_base_records_base_source_request` reusing
+      B019's own `_delegating_r1_lane()` pattern;
+- [x] a refusal test (bad lane file → exit 2, empty stdout) —
+      `test_a_lane_file_that_fails_to_load_exits_two_with_no_json_on_stdout`,
+      `test_a_missing_lane_file_exits_two_with_no_json_on_stdout`;
+- [x] CONSUMERS "CMRU / tester-unified integration" shows a gate consuming
+      it — `docs/CONSUMERS.md#preflighting-a-gate-environment-with-assay-lanes---json-b044`
+      added (2026-08-30, Wave A), showing the exact document shape and how a
+      gate reads `rigor`/`rigor_reachable`, `language`, `base_source`,
+      `external_tools`/`argv0`, `environment_command`.
+- [ ] (split out 2026-08-30, Wave A review round 1 — was incorrectly folded
+      into the box above as done) the ciu handoff note itself: CIU-72,
+      already filed in ciu's own backlog by the design review that filed
+      this item, still needs to be WORKED, not just filed — out of scope
+      here (Wave A touches `assay/**` only); flagging for the controller/ciu
+      owner to cross-reference the exact key names in the box above when
+      CIU-72 is worked.
 
 ---
 
@@ -4288,7 +4362,9 @@ discover them. Each item names what is already ruled and what is not.
 ### Acceptance
 
 - [ ] the P27 re-carve cites items 1–6 explicitly (carve reviewer checks);
-- [ ] item 4 landed (may ride the v9 wave or the Go wave — whichever is first).
+- [x] item 4 landed (may ride the v9 wave or the Go wave — whichever is
+      first) — landed in Wave A instead, ahead of both: see B039's own
+      acceptance boxes.
 
 ---
 
@@ -4331,10 +4407,164 @@ first assay judgment with no commit binding of its own.
 
 ### Acceptance
 
-- [ ] a CONSUMERS section "Browser coverage of a UI as an R1 lane" with the
-      recipe above and the limit paragraph verbatim in spirit;
-- [ ] a small committed `vite-plugin-istanbul` artifact (produced outside
+- [x] a CONSUMERS section "Browser coverage of a UI as an R1 lane" with the
+      recipe above and the limit paragraph verbatim in spirit — landed
+      2026-08-30;
+- [x] a small committed `vite-plugin-istanbul` artifact (produced outside
       assay like `probe-js`, `PROVENANCE.md` entry) proving the keys and the
-      parser path, plus a parser test over it;
+      parser path, plus a parser test over it — real `vite build`
+      (`forceBuildInstrument: true`) executed in real jsdom, node `v26.5.1`/
+      `vite` `8.2.2`/`vite-plugin-istanbul` `9.0.1`:
+      `tests/fixtures/coverage/probe-js-vite-plugin-istanbul/`,
+      `tests/fixtures/coverage/coverage-istanbul-json.vite-plugin-istanbul.json`,
+      `tests/fixtures/coverage/PROVENANCE.md`'s new section,
+      `tests/test_coverage_parsers_vite_plugin_istanbul_artifact.py` (3
+      tests: keys are `src/*.ts`, never `dist/`; the real bundle reports
+      genuine partial coverage — `subtract`'s untaken branch, not a
+      trivially-all-green fixture; the existing parser needed no change);
 - [ ] the consumer-side `__coverage__` dump fixture is dstdns's package, listed
-      in the review report §7.
+      in the review report §7 — not this repo's work, unchanged.
+
+---
+
+## B049 — a coverage/mutation tool that deletes-and-recreates its own output directory silently orphans assay's held reservation, reading `EMPTY_COVERAGE` over a genuinely complete artifact
+
+**Filed 2026-08-30, Wave A (B041(c)'s real-`vitest` qualification harness) — the
+first time a real external coverage tool has run inside an assay snapshot.**
+Not JS-specific in mechanism (`safeio.reserve_output`/`consume` is
+language-free core), but JS-specific in *discovery*: Python's `coverage.py`
+writes its report file directly, with no directory-delete step, so nothing in
+this project's existing test suite (all pre-B041 R1/R2 lanes, real or
+heredoc'd) ever exercised this path. A-334's own lesson, one layer further:
+even a REAL run through the REAL CLI does not prove a claim about behaviour a
+test double never triggered.
+
+### The mechanism, measured
+
+`runner.py:1692` (`safeio.reserve_output(..., create_missing_parents=True)`,
+threaded from B006(b)) opens (and, for a fresh snapshot, creates) the coverage
+artifact's PARENT DIRECTORY once, before the lane's own command runs, and
+holds that directory's own file descriptor (`OutputReservation._parent_fd`,
+`safeio.py:212`) for the lane's whole execution. `runner.py:1771`
+(`reservation.consume()`) reads the artifact AFTER the command exits by
+opening the declared basename relative to that SAME held descriptor
+(`safeio.py:319`, `os.open(basename, dir_fd=parent_fd)`).
+
+If the lane's own tool deletes and recreates that directory (`rm -rf
+reportsDirectory && mkdir reportsDirectory && write coverage-final.json` —
+Vitest's own default `coverage.clean = true`, `coverageConfigDefaults` in
+`vitest@4.1.11`'s own `chunks/defaults.*.js`) rather than writing into the ONE
+directory assay already opened, the held `parent_fd` is left pointing at an
+orphaned, now-empty directory inode. `consume()`'s lookup then raises
+`FileNotFoundError` on the `os.open(basename, dir_fd=parent_fd)` at
+`safeio.py:318-319`, which `consume()` returns as `None`
+(`safeio.py:320-321`, `except FileNotFoundError: return None`), and the
+caller reads that as "the command never produced an artifact" — reaching
+`parse_coverage_artifact` (`coverage.py:161`), which raises
+`NO_MEASUREMENT`/`EMPTY_COVERAGE` for a `None` read (`coverage.py:179-187`).
+**The message that actually ships asserts a checkable falsehood**:
+`coverage.py:181-184` says "the lane's command exited without writing the
+declared artifact at all … there is nothing here to have failed to read" —
+demonstrably false here, over a complete, correctly-keyed 678-byte artifact
+that really existed on disk at the declared path the whole time (proved by
+the parallel `cp` below). **A fix needs no new schema const or reason code**:
+`coverage.py:171-173` already reserves `ERROR`/`UNREADABLE_ARTIFACT` for "an
+object that exists but cannot be trusted (… or a race the caller's own
+reservation already detected)" — this IS that race; the enum value this
+class of failure belongs under already exists in the frozen v8 schema, it is
+simply not the one raised here.
+
+(Corrected 2026-08-30, Wave A review round 1: the mechanism paragraph above
+originally miscited `safeio.py:339` — that line is `if not chunk: break`
+inside the read loop, reachable only past a successful `os.open`, not the
+`None` return — and `check_empty_coverage`/`coverage.py:313`, which is never
+reached because that function takes an already-parsed `CoverageProfile` that
+never exists on this path. Both corrected above against the code as it
+stands.)
+
+**Isolated by direct A/B measurement, real `assay run`, real Vitest, nothing
+mocked** (a two-commit git fixture, `npm ci --offline` against a warm cache,
+`npx --no-install vitest run --coverage`, `fail_under = 100.0`, a fully
+covered diff):
+
+| `vitest.config.ts` | `assay run` result |
+|---|---|
+| `coverage.clean` unset (Vitest's own default, `true`) | `NO_MEASUREMENT`/`EMPTY_COVERAGE`, exit 3 |
+| `coverage.clean = false`, nothing else changed | `PASS`, `pct: 100.0`, `covered: 1`, `executable: 1` |
+
+A parallel `cp .assay/coverage-final.json /tmp/…` appended to the SAME lane
+command, executed immediately after the real `vitest run` step and BEFORE
+assay's own post-command read, proves the artifact was genuinely complete and
+correctly keyed on disk at the declared path the whole time — the reservation
+mechanism failed to find something that was really there, not a case of the
+tool truly writing nothing.
+
+### Why this is filed, not fixed, in Wave A
+
+`safeio.py`/`runner.py` are core, language-free evaluation machinery shared by
+every adapter (Python R1/R2/R3, SQL R2, JavaScript R1) and every future one.
+(Corrected 2026-08-30, Wave A review round 1: the wave prompt's own NOT-IN-
+SCOPE list, `WAVE-PROMPT-2026-08-30-js-consumer-producer.md` lines 115-121,
+does not in fact name "core-mechanism changes" as excluded — it forbids
+verdict/schema/`verify.py`/drift-guard changes, R2/R3 registration,
+`cwd`/`link_paths`/`producer`, and Go changes, and none of those is what a
+B049 fix would touch. The prior wording overstated what the prompt actually
+excludes; this fix is filed rather than implemented because it is a real
+design call outside the wave's own ENUMERATED scope list, not because the
+prompt forbids core-mechanism changes as a category.) The right fix is a
+real design call this backlog entry is not the place to make unilaterally —
+candidates:
+
+1. Re-open the parent chain by NAME at `consume()` time instead of holding a
+   directory descriptor across the whole command execution — loses the
+   TOCTOU protection `arm()`'s pre-command unlink currently buys against a
+   symlink swapped in mid-run, unless re-derived some other way.
+2. Detect a recreated directory (compare the parent's own inode/device
+   identity, not just the basename's) and raise a NAMED, distinguishable
+   reason (`UNREADABLE_ARTIFACT`/something naming "your tool replaced its own
+   output directory") instead of the current silent fold into
+   `EMPTY_COVERAGE` — cheaper than (1), still leaves the underlying tools
+   working around it via `clean = false`, but stops the failure from reading
+   as "you produced no coverage" when the true cause is diagnosable.
+3. Document only (today's mitigation, shipped this wave): every JS lane's
+   `vitest.config.ts` declares `coverage.clean = false`. Costs nothing in
+   code, but is silent about whether OTHER external tools (a future adapter,
+   or a consumer's own coverage wrapper) share Vitest's "clean the output
+   directory first" convention — a common enough pattern that it should not
+   be assumed unique to Vitest.
+4. **(Added 2026-08-30, Wave A review round 1)** A specific, name-free
+   implementation of (2): `os.fstat(parent_fd).st_nlink == 0` on the ALREADY
+   HELD descriptor, checked at `consume()` time, needs no by-name `stat` and
+   so no new TOCTOU surface (unlike (1) and a naive reading of (2)); a
+   deleted-and-recreated directory always leaves the OLD inode at `nlink=0`
+   even though a NEW inode now answers to the same path (verified: held fd
+   `nlink=0 ino=17860260` vs. the recreated directory `ino=17860261`). It
+   raises the SAME `ERROR`/`UNREADABLE_ARTIFACT` `coverage.py:171-173`
+   already reserves for this — no schema/enum change. Round-1 review
+   prototyped and ran it (against a scratch copy, not this branch): a
+   15-line pure-Python `rmtree`+`mkdir` fake reproduces the defect with no
+   JS/Vitest involved (the regression test option (1)/(2)'s own acceptance
+   box below asks for), and the full suite passed with zero regressions.
+   **Blast radius wider than this entry's own title states**: the identical
+   `None`-means-nothing-was-written fold also sits at `runner.py:1714` (SQL
+   R2's `equivalence_artifact`) and `mutation.py:1167`, where an absent read
+   is classified `crashed` (`mutation.py:1129`) and rolls up to
+   `ERROR`/`EXEC_FAILED` (`mutation.py:1808`) — a directory-recreating dump
+   step in a SQL lane's own tooling would report every mutant as CRASHED for
+   a command that ran perfectly, not just `EMPTY_COVERAGE` for a JS lane.
+   Not yet implemented on this branch; a maintainer ruling and a real
+   implementer round (with its own review) are still needed before this
+   lands, per this project's own standing practice for core-machinery
+   changes — see decision ask in
+   `nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md` §14.
+
+### Acceptance
+
+- [ ] a product ruling among the four options above (or a fifth), recorded
+      as a decision;
+- [ ] if (1), (2) or (4): a regression test that plants a directory-recreating
+      fake tool (no real Vitest needed to prove the CORE mechanism) and
+      asserts the new, non-silent behaviour;
+- [ ] CONSUMERS' `clean: false` note (added this wave) updated to match
+      whatever ships — either it stays required with the same reason, or it
+      becomes optional with the new diagnostic named instead.

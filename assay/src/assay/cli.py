@@ -14,16 +14,18 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1, R2 and R3 for Python, and R2 for SQL**
-  (P19 closes sol finding 1 in full for Python; P34/W6 adds SQL at R2
-  only): ``_built_in_registry`` is the CLI's own closed capability
-  declaration (work item 2, widened by every rigor-wiring package since)
-  — Python is registered at R1, R2 and R3, SQL at R2 only, and nothing
-  else, so a lane declaring ``judge.language`` as anything but
-  ``"python"``/``"sql"``, a SQL lane declaring R1 or R3, or a rigor level
-  for a language this registry does not know at all (Go, at any level —
-  P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's
-  command ever runs. A declared R3 lane's own canary run happens in
+  This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, and R1
+  for JavaScript/TypeScript** (P19 closes sol finding 1 in full for Python;
+  P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only):
+  ``_built_in_registry`` is the CLI's own closed capability declaration
+  (work item 2, widened by every rigor-wiring package since) — Python is
+  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 only, and
+  nothing else, so a lane declaring ``judge.language`` as anything but
+  ``"python"``/``"sql"``/``"javascript"``, a SQL lane declaring R1 or R3, a
+  JavaScript lane declaring R2 or R3, or a rigor level for a language this
+  registry does not know at all (Go, at any level — P22), is refused
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
+  declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
@@ -139,6 +141,20 @@ def build_parser() -> argparse.ArgumentParser:
             "current directory"
         ),
     )
+    lanes.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "write one machine-readable inventory document to stdout instead "
+            "of the human-readable listing (B044): every declared lane's "
+            "scope/rigor/enforcement, the coverage/mutation/canary shape, "
+            "which rigor levels THIS build actually reaches for its "
+            "language, and the facts a gate tool needs to preflight an "
+            "environment without re-parsing assay.toml itself. Runs nothing, "
+            "exactly like the text form; a lane file that fails to load "
+            "exits 2 with no JSON on stdout."
+        ),
+    )
 
     run = subparsers.add_parser(
         "run",
@@ -148,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, and SQL R2."
+            "Python R2, Python R3, JavaScript R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -253,7 +269,11 @@ def main(
     args = build_parser().parse_args(cli_argv)
     try:
         if args.command == "lanes":
-            _render_lanes(_resolve_lane_file(args.file), out)
+            lane_file = _resolve_lane_file(args.file)
+            if args.json:
+                _render_lanes_json(lane_file, out)
+            else:
+                _render_lanes(lane_file, out)
         elif args.command == "run":
             return _cmd_run(args, appended, out, err)
         elif args.command == "plan":
@@ -915,6 +935,134 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
                 f"(relative to {lane_file.project_root})",
                 file=out,
             )
+
+
+#: (B044) The document's own top-level version. Bumped ONLY when an existing
+#: key's MEANING changes -- adding a key (B043's `cwd`, B041's `link_paths`,
+#: B045's `coverage.producer`, all `null`/`[]` here since this build does not
+#: implement them yet) is additive and does not move this number, exactly as
+#: `LANE_FILE_NAME`'s own `schema_version` distinguishes a meaning change from
+#: an addition (A-thread in `config.py`).
+LANE_INVENTORY_SCHEMA_VERSION = 1
+
+
+def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
+    """B044 -- ``assay lanes --json``: one machine-readable inventory
+    document, so a gate tool (CIU stage 12, CIU-72) can learn what a project
+    declared without re-parsing ``assay.toml`` itself and without asking the
+    judge to run anything.
+
+    **Every field has exactly one producer** -- the loaded ``Lane``/
+    ``JudgeConfig`` (this process's own :mod:`assay.config` parse) or this
+    build's own closed registry (:func:`_built_in_registry`, the identical
+    object ``assay run`` resolves an adapter through) -- nothing here
+    re-derives a fact from the raw TOML text a second, independent way.
+    ``rigor_reachable``/``external_tools`` come from the registry entry (or
+    are empty when the declared language is not registered at all -- an
+    absent capability, not a refusal: unlike ``assay run``, this subcommand
+    never raises for a rigor level or language this build cannot reach, so a
+    gate can compare ``rigor`` against ``rigor_reachable`` itself instead of
+    discovering the mismatch only when a real run refuses). Like the text
+    form above, this renders nothing that would let a lane's declared argv
+    run, and writes no verdict artifact (A-054).
+
+    ``base_source`` resolves ``JudgeConfig.base_source``'s own documented
+    absent-means-``"declared"`` default (A-328) rather than passing the raw
+    ``None`` through -- the one place this function derives instead of
+    reads, and it derives only the ALREADY-established meaning of that
+    field's own absence, never a new one (A-347 records why: the whole point
+    of this inventory is to let a gate tell "this lane owns its base" apart
+    from "this lane delegates it" without reimplementing A-328 itself,
+    which is exactly the four-copies divergence this project exists to
+    close one layer up). It is ``null`` where the lane has no base concept
+    at all -- no ``judge`` table, ``judge.mode == "whole_target"``, or
+    neither R1 nor R2 declared -- mirroring :mod:`assay.config`'s own load
+    time refusal of ``base_source`` in exactly those three shapes.
+
+    A lane file that fails to load raises before this function is ever
+    called (:func:`_resolve_lane_file` runs first in :func:`main`), so the
+    existing ``except AssayError`` in :func:`main` already gives this
+    subcommand its required exit 2 with an empty stdout and no partial JSON
+    -- nothing below needs its own try/except for that.
+    """
+    built_in = _built_in_registry()
+    document = {
+        "inventory_schema": LANE_INVENTORY_SCHEMA_VERSION,
+        "assay_version": __version__,
+        "lanes": [
+            _lane_inventory_entry(lane, built_in)
+            for lane in lane_file.lanes.values()
+        ],
+    }
+    print(json.dumps(document, indent=2, sort_keys=True), file=out)
+
+
+def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, Any]:
+    """One lane's own entry in :func:`_render_lanes_json`'s document."""
+    judge = lane.judge
+    language = judge.language if judge is not None else None
+    entry = built_in.entries.get(language) if language is not None else None
+    rigor_reachable = sorted(entry.rigor) if entry is not None else []
+    external_tools = list(entry.adapter.external_tools) if entry is not None else []
+
+    coverage: dict[str, Any] | None = None
+    if judge is not None and judge.coverage is not None:
+        coverage = {
+            "format": judge.coverage.format,
+            "artifact": judge.coverage.artifact,
+            # (B045/schema v9) not yet declarable -- kept null so a v9-aware
+            # consumer's key set does not have to branch on which assay
+            # version produced this document.
+            "producer": None,
+        }
+
+    mutation = (
+        judge.mutation.as_declared()
+        if judge is not None and judge.mutation is not None
+        else None
+    )
+    canary = (
+        judge.canary.as_declared()
+        if judge is not None and judge.canary is not None
+        else None
+    )
+
+    base_source: str | None = None
+    if (
+        judge is not None
+        and judge.mode != "whole_target"
+        and ("R1" in lane.rigor or "R2" in lane.rigor)
+    ):
+        base_source = judge.base_source or "declared"
+
+    return {
+        "name": lane.name,
+        "scope": lane.scope,
+        "rigor": list(lane.rigor),
+        "enforcement": lane.enforcement,
+        "language": language,
+        "rigor_reachable": rigor_reachable,
+        "coverage": coverage,
+        "mutation": mutation,
+        "canary": canary,
+        "base_source": base_source,
+        "external_tools": external_tools,
+        "argv0": lane.argv[0],
+        "env_required": list(lane.env_required),
+        "environment_command": lane.environment_command is not None,
+        "infrastructure_facts": sorted(lane.infrastructure)
+        if lane.infrastructure
+        else [],
+        "budget": lane.budget,
+        # (B043/schema v9) not yet declarable -- see the `coverage.producer`
+        # note above.
+        "cwd": None,
+        # (B041(b)/schema v9) ditto.
+        "link_paths": [],
+        "snapshot_selection": (
+            lane.isolation.snapshot_selection if lane.isolation is not None else None
+        ),
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess

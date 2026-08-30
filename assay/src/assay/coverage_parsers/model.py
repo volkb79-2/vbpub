@@ -21,6 +21,19 @@ import cycle. **P15 (A-067 finding 4, sol's post-series review) enforces the
 common model's own invariants here, in the one place every format's output
 passes through**, rather than trusting each parser to have gotten it right
 independently — see :meth:`FileCoverage.__post_init__`.
+
+**B039/B047 item 4: this module also owns the one shared classified-line
+ceiling every EXPANDING parser enforces** (:data:`MAX_CLASSIFIED_LINES`,
+:class:`ClassifiedLineBudget`) — an "expanding" parser being one that turns a
+compact RANGE declaration (a byte-span extent, a block's start/end line) into
+one dict entry per physical line it covers, as opposed to a parser that reads
+one summed count per line directly and never expands anything
+(``coverage_py_json``, ``lcov``, ``cobertura``). :mod:`.coverage_istanbul_json`
+(statement extents) shipped this ceiling first, alone; :mod:`.go_cover` (block
+ranges) had the identical unbounded-expansion shape with no bound at all —
+B039's own finding. Importing :class:`~assay.errors.AssayError` here does not
+break the leaf property above: :mod:`assay.errors` is itself a leaf (stdlib
+only, no import of ``model`` or any parser), so no cycle is introduced.
 """
 
 from __future__ import annotations
@@ -28,7 +41,93 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-__all__ = ["BranchCoverage", "CoverageProfile", "FileCoverage"]
+from ..errors import AssayError, Outcome, ReasonCode
+
+__all__ = [
+    "MAX_CLASSIFIED_LINES",
+    "BranchCoverage",
+    "ClassifiedLineBudget",
+    "CoverageProfile",
+    "FileCoverage",
+]
+
+#: A fixed ceiling on how many (line) classifications one artifact may ask an
+#: EXPANDING parser to materialize — O4's "a fixed bound, never an ambient or
+#: elapsed-time guess", one level below
+#: :data:`assay.coverage.MAX_COVERAGE_ARTIFACT_BYTES`. A range is expanded
+#: line by line, so a single ~60-100-byte record declaring an end line of
+#: ``999999999`` would otherwise materialize close to a billion entries from
+#: an artifact well inside the 16 MiB read bound — measured for both formats
+#: this ceiling now guards: istanbul's ``"end": {"line": 999999999}`` and Go's
+#: ``pkg/x.go:1.1,999999999.1 1 1``.
+#:
+#: **Why two million and not something tighter** (originally
+#: ``coverage_istanbul_json``'s own reasoning, round-1 review, Minor; carried
+#: over verbatim since the argument is about real artifact SIZE, not about
+#: which format produced it). The budget is spent per RANGE, not per distinct
+#: line, so nested or overlapping ranges charge their own span at every
+#: level: a real ``@vitest/coverage-istanbul`` artifact charges roughly 3-4x
+#: its source line count, where a Vitest-3 ``@vitest/coverage-v8`` one
+#: charges about 1x, and a Go coverprofile charges close to 1x per block
+#: (blocks do not nest the way istanbul statement extents can). A 300k-line
+#: monorepo measured in one artifact therefore lands near 1.2M, so a ceiling
+#: of, say, 500k would refuse honest output from a project either format
+#: genuinely serves — the false-refusal direction A-272 already warned
+#: against one parser over. Two million keeps real headroom above that while
+#: still refusing the ~60-100-byte billion-line record this bound exists for.
+#:
+#: The bound is on line COUNT, and the memory that count implies is real
+#: (roughly 175 bytes per classified line in CPython): a document sitting
+#: exactly at the ceiling peaks near 350 MB. That is the deliberate cost of
+#: not refusing honest large artifacts. **No test drives the shipped value to
+#: its own limit** — the boundary arithmetic is exercised by monkeypatching
+#: each parser module's own re-exported name down to a handful of lines, so
+#: the suite pays nothing to prove the same off-by-one twice over.
+MAX_CLASSIFIED_LINES = 2_000_000
+
+
+class ClassifiedLineBudget:
+    """The remaining share of a classified-line ceiling for one whole
+    artifact, spent as an expanding parser materializes range extents.
+
+    A plain mutable holder, not a running total threaded through return
+    values: the bound is a property of the ARTIFACT, not of any one record,
+    so a document made of a million small records is refused by the same
+    counter that refuses one record with a million-line extent.
+
+    *format_name* names the caller in the refusal message (``"istanbul
+    coverage JSON"``, ``"go coverprofile"``, ...) so a consumer reading the
+    error is told which artifact tripped it, exactly as each parser's own
+    ``_malformed`` helper already does for every other refusal it raises.
+    *remaining* is a REQUIRED keyword, never defaulted to
+    :data:`MAX_CLASSIFIED_LINES` here: each call site passes its own
+    module's re-exported ``MAX_CLASSIFIED_LINES`` name explicitly, read
+    fresh at call time, which is what keeps that module's own
+    ``monkeypatch.setattr(<module>, "MAX_CLASSIFIED_LINES", ...)`` test
+    idiom working after this class moved here — a default bound into this
+    class's own signature would capture the value once, at class-definition
+    time, and a later monkeypatch of either module would silently stop
+    mattering.
+    """
+
+    __slots__ = ("remaining", "_format_name", "_ceiling")
+
+    def __init__(self, *, format_name: str, remaining: int) -> None:
+        self.remaining = remaining
+        self._format_name = format_name
+        self._ceiling = remaining
+
+    def spend(self, amount: int, path: str) -> None:
+        self.remaining -= amount
+        if self.remaining < 0:
+            raise AssayError(
+                f"{self._format_name}: record for {path!r} pushes this "
+                f"artifact past {self._ceiling} classified lines; a "
+                f"document declaring more line classifications than any "
+                f"real codebase contains is refused rather than expanded",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
