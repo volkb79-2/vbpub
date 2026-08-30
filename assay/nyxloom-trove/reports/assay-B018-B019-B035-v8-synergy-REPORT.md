@@ -3,10 +3,10 @@
 **Branch:** `feature/assay-b018-b019-b035-v8-synergy`
 **Worktree:** `/workspaces/vbpub/.worktrees/assay-v8-synergy-wave/assay`
 **Base:** `4575501434ceab4d7bb4f731f95a72155b731da5`
-**Head at report time:** `97a82a1f`
+**Head at report time:** `745ac377`
 **Status:** implementation complete, real registered gate run — **not merged, not pushed, not released.**
 
-All 87 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
+All 89 changed files are under `assay/`; `git diff --name-only <base>..HEAD | grep -v '^assay/'`
 returns nothing. Nothing in `ciu/` or `dstdns/` was touched, and B020 was not opened.
 
 Paths below are relative to `assay/` unless stated otherwise.
@@ -23,6 +23,9 @@ Paths below are relative to `assay/` unless stated otherwise.
 | `b72a3c5b` | `docs(assay): record A-327..A-331 and document the v8 contract (B018/B019/B035)` — decisions, CHANGES, README/CONSUMERS/DESIGN-GUIDE. |
 | `28d6e41d` | `fix(assay): name the dirtying paths when the self-hosted lane goes DIRTY_TREE` — a gate diagnostic gap this wave hit head-on (§5.1). |
 | `97a82a1f` | `docs(assay): B017 — third recurrence, first inside vbpub's own worktree` (§5.2). |
+| `ef3a6930` | `docs(assay): wave report for B018/B019/B035 with the real gate transcript` — this file. |
+| `4753288d` | `docs(assay): mark A-326's "legal at v7" half superseded by A-331` — the two CHANGES entries contradicted each other in one section. |
+| `745ac377` | `test(assay): prove the zipapp provenance branch against a real .pyz (B018)` — plus the A-327 field-name correction. See §6.5; this is a defect I found in my own work. |
 
 **Batching honesty note.** The brief's default was three commits, one per item. I could not
 produce a clean three-way split: B018, B019 and B035 all edit `verdict.py`, `runner.py`,
@@ -397,16 +400,14 @@ GATE_EXIT=0
 ### Actual output tail (verbatim; only pytest's `....[ NN%]` progress lines are elided)
 
 ```
-13 passed, 31 deselected in 21.25s
-ASSAY_GATE_PHASE=verdict-v5-accepted
-17 passed in 0.77s
+17 passed in 0.72s
 ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
 v6/v7 hard-cut guard passed for 12 frozen templates
 ASSAY_GATE_PHASE=verdict-v6-v7-hard-cut-verified
-40 passed in 0.84s
+40 passed in 0.78s
 ASSAY_GATE_PHASE=verdict-v8-successors-verified
 tester-unified: PASS (exit 0)
-  commit: 97a82a1ff994ae2889a1878f9dd6a2bd68b3fbbe
+  commit: 745ac377fd7509cbd48fc7daf3e20a6255d710b0
   argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
 ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
 ASSAY_GATE_PHASE=self-hosted-lane-passed
@@ -426,7 +427,7 @@ snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlin
 omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
 ASSAY_B006A_CMRU_QUALIFIED=1
 ASSAY_GATE_PHASE=cmru-b006a-qualified
-7 passed in 10.82s
+7 passed in 11.33s
 ASSAY_GATE_PHASE=independent-self-hosting-passed
 ASSAY_REGISTERED_GATE_COMPLETE=1
 ```
@@ -448,15 +449,14 @@ All eleven phase markers fired, in order, ending with
   `--require-judge-provenance`, so a run that had somehow imported source instead of the wheel
   would have refused rather than produced evidence.
 
-The self-hosted lane itself reports `tester-unified: PASS (exit 0)` at commit `97a82a1f` — the
+The self-hosted lane itself reports `tester-unified: PASS (exit 0)` at commit `745ac377` — the
 head of this branch, i.e. the gate judged the tree this report describes.
 
 ### Full-suite state
 
-`python -m pytest tests -q` from the worktree: **3352 passed, 11 skipped** (308s). Note this is
-the developer-convenience run; the gate figure differs (3345) because the lane excludes
-`tests/test_self_hosting.py`, which the independent witness then runs separately against the
-emitted artifact.
+`python -m pytest tests -q` from the worktree: **3354 passed, 11 skipped** (303s). The gate's own
+figure is lower because its lane excludes `tests/test_self_hosting.py`, which the independent
+witness then runs separately against the emitted artifact.
 
 ### One caveat on reproducing this run
 

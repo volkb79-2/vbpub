@@ -54,9 +54,11 @@ described.
 these are hand-migrated documents with no build behind them; inventing a digest
 for a template is precisely the laundering B018 exists to prevent. Its accepted
 and refused shapes are exercised by `test_acceptance_v8.py` against constructed
-documents, and its REAL value is measured against a genuinely built wheel in
-`tests/test_standalone.py` and against the gate's own run-venv wheel in
-`gate/python/qualify_topos.py`.
+documents, and its REAL value is measured against genuinely built artifacts
+elsewhere: a wheel in `tests/test_standalone.py`, a zipapp in
+`tests/test_distribution_build_release.py`, and the gate's own run-venv wheel in
+`gate/python/qualify_topos.py` plus `tools/tester-unified-gate.sh`'s
+`require_emitted_judge_provenance`.
 
 ## The two guards this directory carries forward
 
