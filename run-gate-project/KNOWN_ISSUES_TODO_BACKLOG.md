@@ -41,6 +41,7 @@ SPEC §9.
 | RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
+| RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | OPEN 2026-08-30 |
 
 ---
 
@@ -1110,3 +1111,120 @@ after: present once `forward_env` is corrected, refused loudly by
       env vars it relied on implicitly before `ba8908d6`;
 - [ ] dstdns's own fix (see above) tracked and confirmed landed — cross-repo
       pointer, not owned here.
+
+## RG-24 — `resolve_container_name()` reads `ciu.global.toml` from the shared-`.git`-owning repo, never from the judged worktree, so a multi-instance (Mode-B) worktree's exec-mode lane silently targets the WRONG deployed container
+
+**Filed:** 2026-08-30, dstdns-P147b (`dstdns@1171d8d3`,
+`nyxloom-trove/decisions.md` D-247; worktree
+`/workspaces/dstdns/.worktrees/p147b-vertical-corpus-e2e`).
+
+### The bug
+
+`resolve_container_name()` (`run_gate.py:1319-1361`), for an exec-mode
+environment with no declared `container_name`, derives the container name
+from `repo / "ciu.global.toml"`'s `[deploy] project_name`+`environment_tag`
+(or, failing that, `network_name` stripped of `-network`). `repo` here is
+NOT the judged worktree — per `resolve_repo_and_worktree()`'s own
+docstring, `repo` is deliberately "the checkout owning the shared `.git`"
+(worktrees live under it), i.e. the MAIN checkout, for ANY git worktree,
+regardless of the `--worktree` CLI argument. This split (`repo` for
+git-object-store concerns, `worktree` for judged-tree concerns) is the
+right design for locating SOURCE CODE — a linked worktree shares one
+object store with its main checkout — but it is the WRONG source for
+locating a LIVE DEPLOYED CONTAINER's name under any consumer that runs a
+genuinely separate, per-worktree deployment (dstdns's own "Mode-B"
+pattern, `nyxloom-trove/GUIDE.md` §3: `ciu worktree adopt` gives a
+worktree its OWN isolated stack, its OWN rendered `ciu.global.toml` with a
+worktree-specific `project_name`/`environment_tag`, and its OWN persistent
+`test-runner` container on its OWN docker network).
+
+### Reproduced
+
+A dstdns Mode-B worktree at
+`/workspaces/dstdns/.worktrees/p147b-vertical-corpus-e2e` has its own
+correctly-rendered `ciu.global.toml`
+(`project_name = "p147b-vertical-corpus-e2e"`, `environment_tag =
+"8a6bc3"`) and its own deployed, healthy
+`p147b-vertical-corpus-e2e-8a6bc3-test-runner` container on its own
+network. Running `run-gate <live-lane> --worktree
+/workspaces/dstdns/.worktrees/p147b-vertical-corpus-e2e` from within that
+worktree (so the worktree's OWN `run-gate.toml` is correctly loaded for
+lane/environment table lookup — that half works) nonetheless executed the
+lane's pytest INSIDE `dstdns-98535c-test-runner` — the MAIN landscape's
+own, separately-deployed, pre-existing `test-runner` container —
+confirmed by the failing test's own `controller_url` fixture resolving to
+`http://dstdns-98535c-controller:8080` (the MAIN landscape's controller
+alias) rather than `http://p147b-vertical-corpus-e2e-8a6bc3-controller:8080`
+(this worktree's own). `resolve_container_name()` had derived
+`dstdns-98535c-test-runner` from the MAIN checkout's `ciu.global.toml`
+(`project_name = "dstdns"`, `environment_tag = "98535c"`), exactly as its
+current logic dictates.
+
+**Why the failure mode is partial, not total, and easy to miss:** both
+`test-runner` containers bind-mount the SAME host repo root (`.worktrees/`
+is a subdirectory of it in both), so the lane's own `cd {worktree} &&
+pytest ...` argv still `cd`s to and collects the CORRECT test files even
+when exec'd into the wrong container — only that container's OWN baked
+runtime environment (network attachment, env vars such as
+`CONTROLLER_URL`) is wrong. A lane with no live-network dependency
+(dstdns's own MOCK_MODE fast lane; a schema lane provisioning its own
+throwaway Postgres) produces IDENTICAL, believable results regardless of
+which container ran it — only a lane depending on THIS worktree's own
+live, instance-scoped network resources exposes the defect. Worse, a
+fixture that shells out to `docker exec <container-name-from-config> ...`
+and returns only `.stdout` (discarding `.stderr`/`.returncode`) can fail
+completely SILENTLY under this misrouting — an empty string, not a loud
+crash — if the wrongly-resolved config also causes it to target a
+nonexistent resource in the wrong deployment (observed independently as a
+dstdns-side defect, `nyxloom-trove/decisions.md` D-246, compounding this
+one's symptoms in the same live run).
+
+### Why no existing mechanism helps
+
+An explicit `container_name` on `[environments.test-runner]` is the only
+current escape hatch, and it does not fit: it would have to be hardcoded
+to ONE instance's own generated name (`p147b-vertical-corpus-e2e-8a6bc3-
+test-runner`) in the TRACKED `run-gate.toml`, which is shared by every
+OTHER lane using that environment AND by every future worktree/instance —
+correct for exactly one running instance, wrong for the very next one
+created (the same class of hazard dstdns's own AGENTS.md §4.2a names for
+a "shadowing default": a literal standing in for a value that has an
+authoritative source elsewhere).
+
+### Fix
+
+`resolve_container_name()` should read `ciu.global.toml` relative to the
+JUDGED WORKTREE (the function already receives enough context — or could
+receive the `worktree` parameter already threaded through
+`run_exec_lane`'s own call site — to do this) for THIS ONE purpose:
+deriving a live deployed container's name. `repo`-relative resolution
+remains correct for everything else `resolve_repo_and_worktree()` serves
+(e.g. pin-sidecar existence checks, which are legitimately about the
+shared object store's own tree, not a live deployment). A worktree with no
+own `ciu.global.toml` (i.e. not itself a `ciu worktree adopt`-managed
+Mode-B instance) should fall back to the current `repo`-relative
+resolution unchanged — this is an ADDITIVE precedence fix, not a
+replacement.
+
+### Workaround used (disclosed, not a fix)
+
+This package's own live-lane evidence was gathered via a direct `docker
+exec -w <worktree> <correct-instance-test-runner-container> bash -c
+'<the lane's own argv, verbatim>'` — the identical command `run-gate`
+would run, against the container `run-gate` should have chosen — rather
+than trusting `run-gate`'s own container resolution for this one
+worktree-scoped live lane.
+
+### Acceptance
+
+- [ ] `resolve_container_name()` (or its caller) accepts/derives the
+      judged worktree and prefers `<worktree>/ciu.global.toml` over
+      `<repo>/ciu.global.toml` when the former exists and differs;
+- [ ] a regression test constructs two `ciu.global.toml`s (one at a fake
+      "repo", one at a fake "worktree" beneath it) with different
+      `project_name`/`environment_tag` and asserts the worktree's own
+      config wins;
+- [ ] `SPEC.md`/`CONSUMERS.md` document the worktree-vs-repo distinction
+      for this one resolution path explicitly, since it is easy to
+      conflate with the (correct, unchanged) repo-relative resolution used
+      elsewhere.
