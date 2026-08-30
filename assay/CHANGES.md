@@ -22,6 +22,39 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   artifact distinguishes a true execution count from a false one (A-346, B040).
   nyc/istanbul and Jest are unaffected
 
+- feat(assay): `assay lanes --json [--file PATH]` — a machine-readable inventory of every
+  declared lane (scope/rigor/enforcement, language, `rigor_reachable` from this build's own
+  registry, coverage/mutation/canary shape, resolved `base_source`, external_tools/argv0,
+  budget, snapshot_selection), so a gate tool can preflight environment fitness and delegation
+  policy without re-parsing `assay.toml` or restating a fact assay already knows (B044).
+
+### Fixed
+- fix(assay): `go_cover.parse` now refuses `ERROR`/`UNREADABLE_ARTIFACT` past a fixed
+  classified-line ceiling instead of expanding an unbounded block range — the identical
+  resource-exhaustion shape `coverage-istanbul-json` already had a bound for. The bound now
+  lives in one shared place (`coverage_parsers/model.py`) both expanding parsers spend from
+  (B039/B047-4).
+
+### Documentation
+- docs(assay): "JavaScript lanes and the dependency closure" — the offline npm-install pattern
+  every JS lane needs (`node_modules` is absent from every snapshot by construction), a worked
+  monorepo lane, the `npx` fetch hazard, and the R3 cost (B041(a)). `link_paths` (B041(b))
+  remains a Wave-B preview, not yet implemented.
+- docs(assay): corrected JavaScript consumer documentation — Jest's "unaffected" claim narrowed
+  to its default `babel` coverage provider (its `v8` provider remains unmeasured; `c8` is
+  measured this wave and is UNsafe, sharing the same false-executed-line defect class as
+  `@vitest/coverage-v8`); the support-files trap's real mechanism corrected (`coverage.include`'s
+  zero-coverage synthesis for a matched-but-unimported file, not a `*.config.*`/`*.stories.*`
+  exclude glob); the `vitest/config` `defineConfig` import note (B042).
+- docs(assay): "Browser coverage of a UI as an R1 lane" — `vite-plugin-istanbul` inside one
+  lane, proved against a real committed artifact that its keys are the original `src/*.ts(x)`
+  paths, never a built `dist/` bundle path (B048).
+- docs(assay): every committed JavaScript `vitest.config.ts` example now declares
+  `coverage.clean = false` — REQUIRED, not a style preference: Vitest's own default silently
+  orphans assay's coverage-artifact reservation, reading a fully-covered real lane as
+  `NO_MEASUREMENT`/`EMPTY_COVERAGE`. Filed as B049 (not fixed in code this release); see the
+  CONSUMERS note for the measured mechanism.
+
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
      range, but it does NOT clear the hand-written block that fed it -- so
