@@ -350,7 +350,7 @@ def test_one_enormous_extent_is_refused_rather_than_expanded():
             one_file({"0": span(1, 999_999_999)}, {"0": 1}), declared_format=FORMAT
         )
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert "classified statement lines" in str(excinfo.value)
+    assert "classified lines" in str(excinfo.value)
 
 
 @pytest.fixture
@@ -390,7 +390,7 @@ def test_the_bound_is_spent_across_the_whole_document_not_per_record(
     )
     with pytest.raises(AssayError) as excinfo:
         load_coverage_profile(text, declared_format=FORMAT)
-    assert "classified statement lines" in str(excinfo.value)
+    assert "classified lines" in str(excinfo.value)
 
 
 def test_an_extent_exactly_at_the_bound_still_parses(tiny_bound: int):
@@ -410,7 +410,7 @@ def test_one_line_past_the_bound_is_refused(tiny_bound: int):
         load_coverage_profile(
             one_file({"0": span(1, tiny_bound + 1)}, {"0": 1}), declared_format=FORMAT
         )
-    assert "classified statement lines" in str(excinfo.value)
+    assert "classified lines" in str(excinfo.value)
 
 
 def test_the_shipped_bound_is_the_documented_value():

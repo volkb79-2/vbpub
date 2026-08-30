@@ -163,3 +163,89 @@ def test_sniff_is_a_cheap_signature_check_not_a_parse():
 def test_sniff_skips_leading_blank_lines_to_find_the_first_real_line():
     assert go_cover.sniff("\n   \nmode: set\npkg/f.go:1.1,1.1 1 1\n") is True
     assert go_cover.sniff("\n   \nnot a mode line\n") is False
+
+
+# --- B039/B047 item 4: the shared classified-line ceiling -------------------
+#
+# `parse` used to expand a block's `range(start, end + 1)` with no fixed
+# bound at all -- the identical unbounded-materialization shape
+# `coverage_istanbul_json` was given a fixed ceiling for. These tests pin the
+# SAME shared `ClassifiedLineBudget` (`assay.coverage_parsers.model`) both
+# parsers now spend from, exercised through go_cover's own call site --
+# `test_coverage_parsers_coverage_istanbul_json.py`'s own boundary tests
+# prove the identical arithmetic for the sibling parser.
+
+
+def test_one_enormous_block_is_refused_rather_than_expanded():
+    """The malicious shape B039 exists for: a ~60-byte block declaring an end
+    line of 999999999 sits far inside the 16 MiB
+    ``MAX_COVERAGE_ARTIFACT_BYTES`` read bound and would otherwise
+    materialize close to a billion dict entries."""
+    artifact = "mode: set\npkg/f.go:1.1,999999999.1 1 1\n"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_an_ordinary_real_shaped_profile_still_parses_under_the_shared_bound():
+    """The paired must-succeed control: an ordinary profile -- the exact
+    fixture every other test in this module already proves normalizes
+    correctly -- still parses cleanly now that every block spends the SAME
+    shared budget istanbul's parser does, at the SHIPPED ceiling (not
+    monkeypatched down for this one)."""
+    profile = load_coverage_profile(
+        DRIVE_LETTER_AND_OVERLAP_ARTIFACT, declared_format="go-cover"
+    )
+    assert profile.files["github.com/example/pkg/foo.go"] == FileCoverage(
+        executed=frozenset({3, 4, 5}), missing=frozenset({6, 7}), excluded=None
+    )
+
+
+@pytest.fixture
+def tiny_bound(monkeypatch: pytest.MonkeyPatch) -> int:
+    """go_cover's own re-exported ``MAX_CLASSIFIED_LINES`` lowered to a
+    handful of lines, the same off-by-one boundary pin
+    ``test_coverage_parsers_coverage_istanbul_json.py``'s own ``tiny_bound``
+    fixture already proves for istanbul -- here through go_cover's own call
+    site, over the identical shared class."""
+    monkeypatch.setattr(go_cover, "MAX_CLASSIFIED_LINES", 6)
+    return 6
+
+
+def test_a_block_exactly_at_the_bound_still_parses(tiny_bound: int):
+    artifact = f"mode: set\npkg/f.go:1.1,{tiny_bound}.1 1 1\n"
+    profile = load_coverage_profile(artifact, declared_format="go-cover")
+    assert profile.files["pkg/f.go"].executed == frozenset(range(1, tiny_bound + 1))
+
+
+def test_a_block_one_line_past_the_bound_is_refused(tiny_bound: int):
+    artifact = f"mode: set\npkg/f.go:1.1,{tiny_bound + 1}.1 1 1\n"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_the_bound_is_spent_across_the_whole_profile_not_per_block(tiny_bound: int):
+    """A profile made of many small blocks is refused by the same counter
+    that refuses one huge block -- the bound is a PROFILE property, exactly
+    as it already is for istanbul. Neither block here would breach it
+    alone."""
+    per_block = tiny_bound // 2 + 1
+    artifact = "mode: set\n" + "".join(
+        f"pkg/f{index}.go:1.1,{per_block}.1 1 1\n" for index in range(2)
+    )
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_the_shipped_bound_is_the_one_shared_documented_value():
+    """The constant lives in ONE place now (B039's own acceptance box 2):
+    go_cover's re-exported name and model's canonical one are the identical
+    object, not two literals that happen to agree today."""
+    from assay.coverage_parsers.model import MAX_CLASSIFIED_LINES as shared_ceiling
+
+    assert go_cover.MAX_CLASSIFIED_LINES is shared_ceiling
+    assert go_cover.MAX_CLASSIFIED_LINES == 2_000_000

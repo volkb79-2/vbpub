@@ -42,8 +42,16 @@ formats").
    declaration-versus-sniffing collapse A-007 forbids. The remedy is a
    PRODUCT one, recorded in A-346: assay's documentation names
    ``@vitest/coverage-istanbul`` as the only Vitest provider safe for a
-   judged lane. Nothing here changes for nyc/istanbul or Jest, whose output
-   this parser reads with no such caveat.
+   judged lane. Nothing here changes for nyc/istanbul or Jest's DEFAULT
+   ``babel`` coverage provider, which share ``@vitest/coverage-istanbul``'s
+   own instrumenter -- but this is scoped, not blanket: Jest's
+   ``coverageProvider: "v8"`` remains genuinely unmeasured, and a THIRD,
+   independently-buggy producer of this same format, ``c8``'s own
+   ``v8-to-istanbul`` remapping, was measured (B042) and shares the defect
+   CLASS (not a byte-identical false-positive set) -- see
+   ``docs/CONSUMERS.md``'s "The v8 provider is not safe to gate on" section.
+   Every producer of this format reaches this parser identically; only the
+   documentation says which ones to trust.
 
 **Only ``statementMap``/``s`` are read.** ``fnMap``/``f`` are function-entry
 counts, not line classification; ``branchMap``/``b`` are addressed below.
@@ -138,37 +146,10 @@ import json
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
-from .model import CoverageProfile, FileCoverage
+from .model import ClassifiedLineBudget, CoverageProfile, FileCoverage
+from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
 
 _SIGNATURE_KEY = '"statementMap"'
-
-#: A fixed ceiling on how many (line, statement) classifications one artifact
-#: may ask this parser to materialize — O4's "a fixed bound, never an ambient
-#: or elapsed-time guess", one level below
-#: :data:`assay.coverage.MAX_COVERAGE_ARTIFACT_BYTES`. Statement EXTENTS are
-#: expanded line by line, so a single ~60-byte record declaring ``"end":
-#: {"line": 999999999}`` would otherwise materialize a billion entries from an
-#: artifact that is well inside the 16 MiB read bound.
-#:
-#: **Why two million and not something tighter** (round-1 review, Minor).
-#: The budget is spent per statement EXTENT, not per distinct line, so nested
-#: extents charge their own span at every level: a real
-#: ``@vitest/coverage-istanbul`` artifact charges roughly 3-4x its source line
-#: count, where a Vitest-3 ``@vitest/coverage-v8`` one charges about 1x. A
-#: 300k-line monorepo measured in one artifact therefore lands near 1.2M, so a
-#: ceiling of, say, 500k would refuse honest output from a project this format
-#: genuinely serves — the false-refusal direction A-272 already warned against
-#: one parser over. Two million keeps a real headroom above that while still
-#: refusing the ~60-byte billion-line record this bound exists for.
-#:
-#: The bound is on line COUNT, and the memory that count implies is real
-#: (roughly 175 bytes per classified line in CPython): a document sitting
-#: exactly at the ceiling peaks near 350 MB. That is the deliberate cost of
-#: not refusing honest large artifacts. **No test materializes it** — the
-#: boundary arithmetic is exercised by monkeypatching this constant down to a
-#: handful of lines (``test_coverage_parsers_coverage_istanbul_json.py``), so
-#: the suite pays nothing to prove the same off-by-one.
-MAX_CLASSIFIED_LINES = 2_000_000
 
 
 def sniff(text: str) -> bool:
@@ -202,38 +183,17 @@ def parse(text: str) -> CoverageProfile:
         raise _malformed(f"top level is {type(document).__name__}, expected object")
 
     files: dict[str, FileCoverage] = {}
-    budget = _Budget(remaining=MAX_CLASSIFIED_LINES)
+    budget = ClassifiedLineBudget(
+        format_name="istanbul coverage JSON", remaining=MAX_CLASSIFIED_LINES
+    )
     for path, record in document.items():
         files[path] = _parse_record(path, record, budget)
     return CoverageProfile(files=MappingProxyType(files))
 
 
-class _Budget:
-    """The remaining share of :data:`MAX_CLASSIFIED_LINES` for one whole
-    document, spent as statement extents are expanded. A plain mutable holder
-    rather than a running total threaded through return values: the bound is a
-    property of the ARTIFACT, not of any one record, so a document made of a
-    million small records is refused by the same counter that refuses one
-    record with a million-line extent.
-    """
-
-    __slots__ = ("remaining",)
-
-    def __init__(self, *, remaining: int) -> None:
-        self.remaining = remaining
-
-    def spend(self, amount: int, path: str) -> None:
-        self.remaining -= amount
-        if self.remaining < 0:
-            raise _malformed(
-                f"record for {path!r} pushes this artifact past "
-                f"{MAX_CLASSIFIED_LINES} classified statement lines; a "
-                f"document declaring more line classifications than any real "
-                f"codebase contains is refused rather than expanded"
-            )
-
-
-def _parse_record(path: str, record: object, budget: _Budget) -> FileCoverage:
+def _parse_record(
+    path: str, record: object, budget: ClassifiedLineBudget
+) -> FileCoverage:
     if not isinstance(record, dict):
         raise _malformed(
             f"record for {path!r} is {type(record).__name__}, expected object"
