@@ -1775,6 +1775,46 @@ only): every new CIU-generated per-worktree render-input filename repeats
 this exact gap until it's added to the ignore file by hand, one file at a
 time, after someone hits it.
 
+**Recurrence 3, 2026-08-30 (assay B018/B019/B035 wave, in VBPUB'S OWN
+worktree) — the first occurrence outside dstdns, and it reds assay's own
+registered gate.** `tools/tester-unified-gate.sh`'s self-hosted lane refused
+`NO_MEASUREMENT/DIRTY_TREE` in
+`/workspaces/vbpub/.worktrees/assay-v8-synergy-wave` with a tree that
+`git status --porcelain` reported as completely clean — including the gate's
+own newly added post-lane status diagnostic, which printed nothing. The file
+is `ciu.worktree-instance.json`, i.e. **recurrence 1's original filename**,
+excluded by `/workspaces/vbpub/.git/info/exclude:18` (`/ciu.worktree-instance.json`)
+and by nothing committed; `git check-ignore -v` names that source directly,
+and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+query — lists it. `vbpub/.gitignore` does carry `ciu.env` (line 163) but not
+this one.
+
+Two things this recurrence establishes that the first two did not:
+
+1. **The fix is per-REPOSITORY, and vbpub never got it.** `dstdns@08b789f5`
+   and `dstdns@5c8c14c6` fixed dstdns's committed `.gitignore`. vbpub's was
+   never touched, so the identical gap sat unnoticed here until a wave
+   happened to run the registered gate from a ciu-created worktree. The
+   one-line fix (`ciu.worktree-instance.json` in vbpub's committed
+   `.gitignore`, alongside the `ciu.env` line already there) is NOT taken in
+   this wave: `.gitignore` at the vbpub root is outside this branch's assay
+   subtree and belongs to whoever owns the estate root, and the brief
+   scoping this wave excludes it. Flagged for the reviewer/controller as a
+   one-line follow-up rather than done unilaterally.
+2. **This entry's own "if the symptom recurs, re-verify against the current
+   `.gitignore`" instruction is now three-for-three**, and each time the
+   answer has been the same missing line. The per-file, after-someone-hits-it
+   loop that recurrence 2 flagged for CIU's attention is not hypothetical
+   anymore — it has now cost three separate investigations across two repos,
+   the third of which presented as an unexplained gate failure in a wave that
+   had nothing to do with git ignore rules.
+
+Workaround used to get a real gate run in this wave (recurrence 1's, verified
+again): move the file out, run the gate, move it back. Assay-side behaviour is
+correct and unchanged — A-177's refusal to honour `.git/info/exclude` is the
+whole point, and a fix that made assay honour it would reopen the hole that
+rule exists to close.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
