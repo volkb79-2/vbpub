@@ -654,3 +654,100 @@ ASSAY_REGISTERED_GATE_COMPLETE=1
 Eleven phase markers, **zero** `ASSAY_GATE_DIAGNOSTIC` lines, exit 0, self-hosted lane naming
 the remediation commit. Full suite: **3365 passed, 11 skipped** (was 3354; the eleven new tests
 are M2's four, M3's six, and N6's one).
+
+---
+
+## 9. Round-2 review — two of my root causes retracted
+
+Round 2 returned **ACCEPT-conditional** again, with no condition touching behaviour. Three of the
+four findings were about *my records being wrong*, and the reviewer was right on all three. I
+re-measured each one before acting.
+
+### R2-M1 — the "extra bug" I reported in round 2 was not real
+
+I told the coordinator I had found a bug the review missed: a `#sha256=` URL fragment making a
+pinned-wheel install unidentifiable. **It is not reachable.** pip builds the PEP 610 record from
+`link.url_without_fragment`, so the fragment is gone before assay ever sees the URL. Measured
+properly this time — against installers, not against my own object:
+
+```
+REAL local install:   pip install "file:///…/assay-….whl#sha256=<d>"
+  direct_url.json ->  "url": "file:///…/assay-2.4.3….whl"          <- no fragment
+
+REAL remote install:  pip install "http://127.0.0.1:18731/assay-….whl#sha256=<d>"
+  direct_url.json ->  "url": "http://127.0.0.1:18731/assay-2.4.3….whl"   <- no fragment
+  identify_judge  ->  wheel, digest ea0adc015540dc4e… == host sha256sum
+```
+
+That second one is the exact "gate pins its judge by URL and digest" shape I had claimed was
+broken. It works, and it worked before my change. My "four real URL forms" were strings I passed
+to a `_FakeDistribution` I wrote myself — a test that could only confirm what I already believed
+PEP 610 said. One `pip install` and one `cat` refute it, and that pair takes under a minute.
+
+The **code** is kept, rescoped honestly as defensive hardening for a shape the spec permits and no
+current installer emits. The **record** is corrected in all four places it reached: A-332's text,
+`provenance.py`'s comment, `docs/CONSUMERS.md`'s table, and the `CHANGES.md` entry — which moved
+from **### Fixed** to **### Changed**, because a Fixed entry tells consumers they were exposed to
+a defect, and here they never were.
+
+### R2-M2 — the diagnostic still could not see B017, on its second attempt
+
+`run_self_hosted_lane` does `cd "$worktree/assay"`, and `git ls-files` is **cwd-scoped**. The B017
+files live at the worktree root, so my round-2 "fix" listed nothing. Now `git -C "$worktree"` for
+both queries, which also matches the repo-top paths `git.dirty_paths` actually reports. Verified
+against a scratch repo reproducing B017's exact shape — two root-level untracked files, one hidden
+by `.git/info/exclude`:
+
+```
+from assay/ (what the gate really does):
+  new form (-C $worktree) -> ciu.global.worktree.toml.j2
+                             ciu.worktree-instance.json    <- the one that caused the red lane
+  old form (bare)         -> (empty)
+```
+
+### R2-M3 — there was no ciu invocation
+
+My round-2 report said a ciu process regenerated `ciu.env` at 01:38 and removed both render
+inputs, and concluded the B017 failure is "intermittent". **That was the round-1 reviewer's own
+restore** — stated in their appendix, in a document I had read and quoted. The mtime is a `cp`,
+not a regeneration; the content is byte-identical to the original. I inferred a process from one
+timestamp.
+
+Retracted, and **B017's strong reading restored**: on a ciu-created worktree whose repository
+lacks the committed `.gitignore` entries, this reproduces *every time*. The claim mattered because
+it had downgraded a reproducible failure and softened the warning to a future reader from *will*
+to *may*. The same paragraph's misattribution of the reviewer's own gate run as "ciu-orchestrated"
+is fixed too.
+
+### R2-m1 — `uv` breaks the table's implicit rule
+
+Measured on uv 0.12.1: installing a wheel from a direct URL writes
+`"archive_info": {}` — record present, **no digest** — so assay refuses it. The table's implicit
+rule "a direct install records a digest" is wrong; the rule is "**the installer** recorded a
+digest". Own row in `CONSUMERS.md`, plus a test pinning a clean refusal rather than a `KeyError`.
+
+### The pattern, recorded as A-334
+
+Three confidently-stated root causes in this wave were reconstructions the mechanism's own query
+refuses — the pre-flight claim, the fragment bug, and the ciu invocation — and **two were written
+after A-333 was recorded to forbid exactly that.** The common shape is not indifference to
+evidence; each was checked against *something*. It is checking against a **proxy that shares the
+hypothesis's own assumption**: a fake `Distribution`, a single mtime, a remembered symptom.
+
+A-334 states the sharper rule this earned: *when the claim is about what an external system does —
+an installer, git, another agent — a test double is not evidence, because it is a recording of the
+belief under test. Run the external system.* And: a defect claim announced to consumers has a
+higher bar than an internal note, because it tells people they were harmed; when the harm turns
+out to be hypothetical, the entry changes category rather than softening.
+
+### Gate, re-run
+
+```
+GATE_EXIT=0
+tester-unified: PASS (exit 0)
+  commit: 652962aff74e8037b79cff99ef8f162fec7c15ba
+ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+Eleven phase markers, **zero** `ASSAY_GATE_DIAGNOSTIC` lines. Suite: **3366 passed, 11 skipped**
+(+1 for the `uv` case). Nothing behavioural moved, as expected.
