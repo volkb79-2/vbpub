@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import types
 from pathlib import Path
 
@@ -44,6 +45,52 @@ def _write_and_commit_lane(repo: GitRepo, text: str) -> Path:
     path = repo.write("assay.toml", text)
     repo.commit_all("add assay.toml")
     return path
+
+
+# --- controlling the judge's identity, instead of inheriting it -------------
+#
+# (A-335) These fixtures exist because six tests in this suite and
+# `test_cli_run.py` used to assume that "however this pytest process happens to
+# be invoked" is always the unidentifiable source-checkout shape. That is true
+# in a dev checkout and FALSE under the registered gate, which installs a real
+# wheel into a clean `run-venv` (`--no-index --no-deps`) and runs `tests/` with
+# that interpreter -- a genuine PEP 610 install with a real identity. The real
+# `cmru release` pipeline runs it that way, so the suite passed for three
+# review rounds and failed the moment the actual release ran it.
+#
+# `run()` above calls `main()` IN-PROCESS, so the CLI's own dependency is
+# patchable and the scenario can be controlled outright rather than inherited.
+# A test about the unidentified path now GETS the unidentified path, in every
+# invocation shape.
+
+_STUB_REASON = (
+    "stubbed for this test: the running build cannot be identified"
+)
+
+
+@pytest.fixture
+def judge_is_unidentifiable(monkeypatch):
+    """Force `identify_judge` to report no identity, whatever this process is."""
+    monkeypatch.setattr(
+        provenance, "identify_judge", lambda *a, **k: (None, _STUB_REASON)
+    )
+    return _STUB_REASON
+
+
+@pytest.fixture
+def judge_is_identified(monkeypatch):
+    """Force `identify_judge` to report a complete identity, whatever this
+    process is -- the shape the registered gate really runs in, which nothing
+    in this suite exercised through the CLI before A-335."""
+    identity = JudgeProvenance(
+        name="assay",
+        version="9.9.9",
+        artifact="wheel",
+        digest_algorithm="sha256",
+        digest="ab" * 32,
+    )
+    monkeypatch.setattr(provenance, "identify_judge", lambda *a, **k: (identity, None))
+    return identity
 
 
 # ===========================================================================
@@ -329,19 +376,44 @@ def test_metadata_without_a_name_or_version_names_nothing(tmp_path: Path):
         assert reason and "cannot name" in reason
 
 
-def test_the_live_source_checkout_this_suite_runs_from_identifies_nothing():
-    """Not a stand-in: the real interpreter running this test. If this ever
-    starts returning an identity, every source-tree assertion in the suite is
-    resting on a false premise and should fail here first."""
+def test_the_live_process_reports_a_coherent_identity_in_whichever_shape_it_runs():
+    """Not a stand-in: the real interpreter running this test.
+
+    (A-335) This used to assert `identity is None` -- i.e. that the suite is
+    ALWAYS a source checkout. That is true in a dev tree and false under the
+    registered gate, which installs a real wheel into a clean `run-venv` and
+    runs this file with that interpreter. The old assertion made the real
+    `cmru release` pipeline red while every manual gate run stayed green.
+
+    What is actually invariant is not WHICH shape this process is, but that
+    `identify_judge` answers coherently about it: exactly one of identity or
+    reason, never both, never neither, and a complete identity when there is
+    one. Both shapes are legitimate and both are now exercised deliberately by
+    the `judge_is_identified` / `judge_is_unidentifiable` fixtures, so no test
+    depends on this process's own shape any more.
+    """
     identity, reason = provenance.identify_judge()
-    assert identity is None
-    assert reason
+
+    assert (identity is None) != (reason is None), (
+        f"identify_judge must populate exactly one half, got "
+        f"identity={identity!r} reason={reason!r}"
+    )
+    if identity is None:
+        assert reason, "an unidentified judge must say why"
+    else:
+        # Absent-or-COMPLETE (A-051/A-327): no half-populated identity.
+        assert identity.name and identity.version
+        assert identity.artifact in ("wheel", "zipapp")
+        assert identity.digest_algorithm == "sha256"
+        assert re.fullmatch(r"[0-9a-f]{64}", identity.digest), identity.digest
 
 
 # --- ...and what the CLI does with it ---------------------------------------
 
 
-def test_an_unidentifiable_run_records_no_identity_and_says_so(git_repo: GitRepo):
+def test_an_unidentifiable_run_records_no_identity_and_says_so(
+    git_repo: GitRepo, judge_is_unidentifiable
+):
     lane = set_key(R0_LANE, "argv", '["/bin/sh", "-c", "exit 0"]')
     path = _write_and_commit_lane(git_repo, lane)
 
@@ -355,7 +427,9 @@ def test_an_unidentifiable_run_records_no_identity_and_says_so(git_repo: GitRepo
     assert "--require-judge-provenance" in err
 
 
-def test_require_judge_provenance_refuses_an_unidentifiable_run(git_repo: GitRepo):
+def test_require_judge_provenance_refuses_an_unidentifiable_run(
+    git_repo: GitRepo, judge_is_unidentifiable
+):
     """A gate that binds evidence to a verified judge passes this flag, and
     gets a refusal rather than evidence it cannot attribute."""
     lane = set_key(R0_LANE, "argv", '["/bin/sh", "-c", "exit 0"]')
@@ -371,7 +445,7 @@ def test_require_judge_provenance_refuses_an_unidentifiable_run(git_repo: GitRep
 
 
 def test_the_refusal_happens_before_the_lane_command_ever_runs(
-    git_repo: GitRepo, tmp_path: Path
+    git_repo: GitRepo, tmp_path: Path, judge_is_unidentifiable
 ):
     """"Before any work" is the claim, so it is measured: the lane's own argv
     would create a file, and the refusal means that file never appears."""
@@ -385,6 +459,59 @@ def test_the_refusal_happens_before_the_lane_command_ever_runs(
 
     assert code == 2
     assert not witness.exists(), "the lane command ran despite the refusal"
+
+
+# --- the IDENTIFIED path through the CLI, which nothing covered before A-335
+
+
+def test_an_identified_run_records_the_identity_and_announces_nothing(
+    git_repo: GitRepo, judge_is_identified
+):
+    """(A-335) The other half of the CLI contract, and a genuine coverage gap
+    until the real `cmru release` pipeline exposed it.
+
+    Every CLI-level provenance test asserted the ABSENT path, because the
+    suite silently assumed it always ran from a source checkout. Under the
+    registered gate it runs from an installed wheel, where the correct
+    behaviour is the opposite: record the identity, and say NOTHING on stderr
+    -- the notice exists to announce an absence, so printing it on a run that
+    has an identity would be noise on every gated run.
+    """
+    lane = set_key(R0_LANE, "argv", '["/bin/sh", "-c", "exit 0"]')
+    path = _write_and_commit_lane(git_repo, lane)
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 0
+    document = json.loads(out)
+    assert document["judge_provenance"] == judge_is_identified.to_dict()
+    assert err == "", f"an identified run must announce nothing, got {err!r}"
+
+
+def test_require_judge_provenance_accepts_an_identified_run(
+    git_repo: GitRepo, judge_is_identified
+):
+    """The flag refuses an absence; it must not refuse an identity. Without
+    this, a bug making the flag refuse unconditionally would be invisible --
+    the refusal test alone cannot tell "refuses when it should" from
+    "refuses always"."""
+    lane = set_key(R0_LANE, "argv", '["/bin/sh", "-c", "exit 0"]')
+    path = _write_and_commit_lane(git_repo, lane)
+
+    code, out, err = run(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--require-judge-provenance",
+            "--verdict-json",
+            "-",
+        ]
+    )
+
+    assert code == 0, err
+    assert json.loads(out)["judge_provenance"]["digest"] == judge_is_identified.digest
 
 
 # ===========================================================================

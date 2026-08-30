@@ -35,7 +35,7 @@ from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay import cli as cli_module
-from assay import git
+from assay import git, provenance
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -58,10 +58,31 @@ JUDGE_PROVENANCE_ABSENT_SUFFIX = (
 def assert_stderr_is_only_the_judge_provenance_notice(err: str) -> None:
     """The successor to this module's old ``assert err == ""``.
 
-    It is still an "assay said nothing else" assertion -- the exactly-one-line
-    check is what carries that -- and it additionally proves B018's loudness:
-    an unidentifiable judge is ANNOUNCED, never silently omitted.
+    It is an "assay said nothing else" assertion, and it additionally proves
+    B018's loudness: an unidentifiable judge is ANNOUNCED, never silently
+    omitted.
+
+    **(A-335) Which of the two correct outputs to expect is DERIVED, not
+    assumed.** This helper used to require the notice unconditionally, which
+    silently encoded "this suite always runs from an unidentifiable source
+    checkout". That holds in a dev tree and is false under the registered
+    gate, which installs a real wheel into a clean `run-venv` and runs these
+    tests with that interpreter -- so the real `cmru release` pipeline went
+    red while every hand-run gate stayed green. The invariant these callers
+    actually care about is "assay printed nothing UNEXPECTED"; what counts as
+    expected depends on whether this process has an identity, so we ask.
     """
+    identity, _reason = provenance.identify_judge()
+    if identity is not None:
+        # An identified run has nothing to announce -- the notice exists to
+        # report an absence, and emitting it here would be noise on every
+        # gated run.
+        assert err == "", (
+            f"this process HAS a judge identity ({identity.artifact} "
+            f"{identity.version}), so assay should have printed nothing, "
+            f"got {err!r}"
+        )
+        return
     assert err.startswith(JUDGE_PROVENANCE_ABSENT_PREFIX), err
     assert err.endswith(JUDGE_PROVENANCE_ABSENT_SUFFIX), err
     assert err.count("\n") == 1, err
