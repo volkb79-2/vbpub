@@ -85,6 +85,26 @@ V8_FALSE_GREENS = {
     V8_4: [10, 11, 17, 18],
 }
 
+#: B042 item 2 -- the SAME ground-truth project, measured a THIRD way:
+#: `c8@12.0.0`'s own `v8-to-istanbul` remapping (no Vitest involved at all --
+#: a plain Node script imported via Node's own native TypeScript support,
+#: `tests/fixtures/coverage/probe-js-provider-defect-c8/`), so README/
+#: CONSUMERS can state a measured result for `c8` instead of "not measured."
+C8 = "coverage-istanbul-json.provider-defect.c8.json"
+
+#: Measured, not assumed equal to `V8_FALSE_GREENS`. `c8` shares the same
+#: TRIGGER (a conditional expression) and the same UNAFFECTED shapes (binary/
+#: call/object-literal, below), but its own false-positive SET is not
+#: byte-identical to either Vitest v8 measurement: it is a strict superset of
+#: `V8_FALSE_GREENS[V8_3]` (line 9 -- the ternary's own second arm, `: 20` --
+#: is ALSO falsely reported executed here, where neither Vitest major gets
+#: that line wrong) and matches `V8_3`'s ternaryOneLine reading (all of
+#: 16/17/18 wrong) rather than `V8_4`'s narrower one (17/18 only). Two
+#: different remappers sharing a defect CLASS is not the same claim as
+#: sharing a defect, and this constant is what stops the two from being
+#: quietly conflated.
+C8_FALSE_GREENS = [9, 10, 11, 16, 17, 18]
+
 
 def _load(name: str) -> CoverageProfile:
     return load_coverage_profile(
@@ -225,6 +245,50 @@ def test_the_v8_defect_is_not_a_version_that_can_be_upgraded_past():
     # that differs, not the Vitest version.
     for name in ISTANBUL_ARTIFACTS:
         assert not (set(_all_never_executed()) & _shapes(name).executed)
+
+
+# --- c8: a THIRD, independent remapper, measured rather than left "untested" -
+
+
+def test_c8_also_falsely_reports_never_executed_lines_as_executed():
+    """B042 item 2. `c8`'s own `v8-to-istanbul` remapping was NOT measured by
+    the 3.1.0 wave -- README/CONSUMERS said so plainly rather than guessing.
+    Cheaply reproducible here (Node is on PATH, no Vitest needed at all), so
+    it no longer has to say that. **This asserts a bug exists, against a
+    COMMITTED artifact** -- it cannot go red from an upstream `c8`/
+    `v8-to-istanbul` fix on its own; that would be the signal to re-measure
+    and relax the doc claim, not to relax this test."""
+    record = _shapes(C8)
+    false_greens = sorted(set(_all_never_executed()) & record.executed)
+
+    assert false_greens == C8_FALSE_GREENS
+
+
+def test_c8s_false_positive_set_is_not_identical_to_either_vitest_v8_reading():
+    """The measured claim is "shares the defect CLASS", never "identical to
+    Vitest's own v8 provider" -- a stronger claim than what was actually run.
+    `c8` additionally mis-attributes the ternary's own second arm (line 9),
+    which NEITHER Vitest major gets wrong; collapsing the two producers into
+    one set would be exactly the kind of overclaim B042 exists to correct."""
+    assert set(C8_FALSE_GREENS) != set(V8_FALSE_GREENS[V8_3])
+    assert set(C8_FALSE_GREENS) != set(V8_FALSE_GREENS[V8_4])
+    assert set(C8_FALSE_GREENS) > set(V8_FALSE_GREENS[V8_3])
+
+
+def test_only_the_ternary_shapes_trigger_c8s_mis_attribution_too():
+    """Same characterisation as `@vitest/coverage-v8` (above), independently
+    measured for `c8`: a multi-line binary expression, a multi-line call and
+    a multi-line object literal are all reported correctly."""
+    record = _shapes(C8)
+    unaffected = ("binaryMultiLine", "callMultiLine", "objectLiteralMultiLine")
+
+    for function in unaffected:
+        _guard, body = NEVER_EXECUTED[function]
+        assert not (set(body) & record.executed), function
+
+    for function in ("ternaryMultiLine", "ternaryOneLine"):
+        _guard, body = NEVER_EXECUTED[function]
+        assert set(body) & record.executed, function
 
 
 # --- what it costs an actual R1 lane ----------------------------------------
