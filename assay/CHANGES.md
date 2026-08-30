@@ -49,6 +49,41 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [3.2.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=71ddc7d952720ea2cf1d0e2dcb56ddf2489f01e5 -->
+
+### Added
+- feat(assay): B044 -- `assay lanes --json`, a machine-readable lane inventory (04ad5688)
+
+### Fixed
+- fix(assay): list JavaScript R1 in `assay run`'s own help/docstring (64e9382a)
+- fix(assay): B039/B047-4 -- one shared classified-line ceiling for every expanding coverage parser (1eeab9db)
+
+### Changed
+- merge(assay): Wave A -- JS consumer wave (B044/B042/B041(a,c)/B039/B047-4/B048) (71ddc7d9)
+- backlog(assay): Wave A -- file B049, record A-347..A-350, tick acceptance boxes (917c1e92)
+- backlog(run-gate,ciu,assay): RG-25/RG-26 -- backport ciu CIU-72 (b)/(c) to the current gate; CIU-73 needs no code (b2884e76)
+- backlog(assay,ciu): 3.1.0 design review -- file B041-B048, resolve B037, rule the v9 producer wave; CIU-72/73 (8b196f0b)
+
+### Documentation
+- docs(assay): commit the confirming registered-gate transcript (fix commits) (70bd6775)
+- docs(assay): Wave A REPORT/LOG -- record review round 1 verdict and fixes (cfe512a8)
+- docs(assay): Wave A review round 1 -- fix 3 blockers + 6 should-fixes (efb825bc)
+- docs(assay): the gate transcript, and the REPORT's final gate section (225dd6ad)
+- docs(assay): commit the qualification transcript (renamed past *.log gitignore) (e9424676)
+- docs(assay): Wave A REPORT, and LOG entries for the housekeeping commits (8353ff25)
+- docs(assay): fix a dangling "see the qualification harness below" reference (4a70e09e)
+- docs(assay): Wave A commit LOG (4a4056b6)
+- docs(assay): B041(a)/B042/B044/B048/B049 -- README and CONSUMERS updates (5bd20c71)
+- docs(assay): PROVENANCE entries for the c8 and vite-plugin-istanbul artifacts (28b39344)
+
+### Testing
+- test(assay): B044 golden coverage for env_required/environment_command/infrastructure_facts (15e24ffa)
+- test(assay): B041(c) -- real Vitest qualification through the real assay CLI (0ea21a05)
+- test(assay): B048 -- a real `vite-plugin-istanbul` artifact proves original src/*.ts(x) keys (0fbe1261)
+- test(assay): B042 item 2 -- measure `c8`'s v8-to-istanbul remapper against the same defect probe (5e347d04)
+
 ## [3.1.0] - 2026-08-30
 <!-- cmru: generated -->
 <!-- cmru: source-end=c0b0e18225935138628099d44f23e93d5f5e7f49 -->
