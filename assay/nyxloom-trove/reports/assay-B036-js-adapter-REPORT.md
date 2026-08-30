@@ -368,7 +368,7 @@ run-gate: lane 'tester-unified' exit 0
 GATE_EXIT=0
 ```
 
-All eight phase markers present and in order — `wheel-installed`,
+All ten phase markers present and in order — `wheel-installed`,
 `attestation-hardened`, `verdict-v5-accepted`,
 `lane-schema-v2-successors-verified`, `verdict-v6-successors-verified`,
 `verdict-v7-successors-verified`, `self-hosted-lane-passed`,
