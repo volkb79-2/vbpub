@@ -79,6 +79,43 @@ changes. Concrete steps for consumers, in the order you'll likely hit them:
 
 <!-- cmru: release history -->
 
+## [3.0.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=b6aca39de509ab188148c149d352a74401d09fa0 -->
+
+### Added
+- feat(assay)!: drop the withdrawn operator spellings at the v8 cut (A-331) (74c89475)
+- feat(assay): judge provenance, request-supplied base, r2 judging scope (B018/B019/B035) (86ceb527)
+
+### Fixed
+- fix(assay): round-2 review remediation -- retract two false root causes, fix the diagnostic properly (A-334) (652962af)
+- fix(assay): round-1 review remediation -- M1/M2/M3 + m1..m8, N1/N3/N6 (A-332/A-333) (0fad7842)
+- fix(assay): name the dirtying paths when the self-hosted lane goes DIRTY_TREE (28d6e41d)
+
+### Changed
+- merge(assay): B018/B019/B035 -- judge provenance, request-supplied base, r2 judging scope (v7->v8) (b6aca39d)
+- backlog(assay): B036/B037 -- JS/TS language adapter for dstdns's React UI (62fe368f)
+
+### Documentation
+- docs(assay): round-3 review polish, release housekeeping, migration notes (B018/B019/B035) (feff8948)
+- docs(assay): make the report's gate invariant self-checking, not self-dating (ea6c2daa)
+- docs(assay): report section 9 -- round-2 outcome and the retractions (ba62cd54)
+- docs(assay): correct the changed-file count (91 -> 92) (c27273af)
+- docs(assay): point the report's gate invariant at the remediation commit (e8990bf5)
+- docs(assay): report section 8 -- round-1 review outcome and the re-run gate (15dea56d)
+- docs(assay): state the gate coverage as an invariant, not a hash that goes stale (6b40e3ad)
+- docs(assay): B017 recurrence 3 resolved upstream; record the second green gate (9c39e271)
+- docs(assay): state which commit the gate judged, and prove the gap is prose (0a315100)
+- docs(assay): final gate transcript at 745ac377 and complete the commit table (7515c57d)
+- docs(assay): wave report for B018/B019/B035 with the real gate transcript (ef3a6930)
+- docs(assay): B017 -- third recurrence, first inside vbpub's own worktree (97a82a1f)
+- docs(assay): record A-327..A-331 and document the v8 contract (B018/B019/B035) (b72a3c5b)
+- docs(assay): B017 -- second recurrence of the untracked CIU render-input class (45755014)
+
+### Testing
+- test(assay): prove the zipapp provenance branch against a real .pyz (B018) (745ac377)
+- test(assay): cover B018 provenance, B019 base delegation, and the v8 vocabularies (f7450b0a)
+
 ## [2.4.2] - 2026-08-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=fd6cbb5fafcec4255f2d9b74d098fc559ab9957d -->
