@@ -104,7 +104,7 @@ from .config import (
 )
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage, evaluate_targets
 from .output import VerdictOutput
 from .verdict import (
@@ -113,6 +113,7 @@ from .verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    JudgeProvenance,
     Judgment,
     JudgmentR1,
     JudgmentR2,
@@ -1059,6 +1060,7 @@ def assemble_verdict(
     result: CommandResult,
     claims: tuple[Claim, ...],
     assay_version: str,
+    judge_provenance: JudgeProvenance | None = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     mutation_claim: Claim | None = None,
@@ -1190,6 +1192,7 @@ def assemble_verdict(
         started=result.started,
         ended=result.ended if ended is None else ended,
         assay_version=assay_version,
+        judge_provenance=judge_provenance,
         declared_rigor=lane.rigor,
         declared_evidence=declared_evidence,
         argv_declared=plan.argv_declared,
@@ -1242,6 +1245,7 @@ def refuse_lane(
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     assay_version: str,
+    judge_provenance: JudgeProvenance | None = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
@@ -1327,6 +1331,7 @@ def refuse_lane(
         status=status,
         reason_code=reason_code,
         assay_version=assay_version,
+        judge_provenance=judge_provenance,
         evidence=evidence,
         declared_evidence=declared_evidence,
         clock=clock,
@@ -1341,6 +1346,7 @@ def _refuse_lane_with_plan(
     status: Outcome,
     reason_code: ReasonCode,
     assay_version: str,
+    judge_provenance: JudgeProvenance | None = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
@@ -1384,6 +1390,7 @@ def _refuse_lane_with_plan(
         result=result,
         claims=claims,
         assay_version=assay_version,
+        judge_provenance=judge_provenance,
         evidence=evidence,
         declared_evidence=declared_evidence,
         env_effective_incomplete=env_effective_incomplete,
@@ -2008,6 +2015,61 @@ class _PreparedOutcome:
     ended: str
 
 
+def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None:
+    """(B019/A-328) WHICH comparison ref this run judges against, before any
+    Git call -- the lane's own ``judge.base``, or the one the invoking gate
+    request supplied, or ``None`` when no tier here reads a base at all.
+
+    ``judge.base_source`` is the lane's declaration of WHO owns that identity,
+    and the two owners are mutually exclusive by construction. Every
+    disagreement between them is refused by name rather than resolved by a
+    precedence rule, for A-062's reason: whichever side lost a precedence
+    contest would be config that nothing reads, and therefore config that
+    cannot fail loudly if it is wrong. The migration is one line either way,
+    and the message says which line.
+
+    A missing request base on a lane that delegated is a configuration
+    refusal, never a fallback to ``HEAD`` or any other invented value -- the
+    single rule B019 exists to install (A-018's "no invented values", at the
+    request boundary rather than the file boundary).
+    """
+    judge = lane.judge
+    declared = judge.base if judge is not None else None
+    delegates = judge is not None and judge.base_source == "request"
+
+    if delegates:
+        if request_base is None:
+            raise LaneConfigError(
+                f"lane {lane.name!r} declares judge.base_source = 'request', "
+                f"so the invoking gate request owns the comparison base and "
+                f"must supply it with --request-base. None was given. assay "
+                f"does not fall back to HEAD, to a default branch, or to any "
+                f"other invented value: a changed-line judgment whose base "
+                f"was guessed is not a changed-line judgment."
+            )
+        return request_base
+
+    if request_base is not None:
+        if declared is not None:
+            raise LaneConfigError(
+                f"--request-base {request_base!r} was supplied, but lane "
+                f"{lane.name!r} declares its own judge.base {declared!r} and "
+                f"does not delegate. Exactly one of the two can be judged "
+                f"against, so accepting either silently would leave the other "
+                f"inert (A-062). Declare judge.base_source = 'request' and "
+                f"delete judge.base to let the request own it, or drop "
+                f"--request-base."
+            )
+        raise LaneConfigError(
+            f"--request-base {request_base!r} was supplied, but lane "
+            f"{lane.name!r} reads no comparison base at all -- it declares "
+            f"neither R1 nor R2, or it declares judge.mode = 'whole_target', "
+            f"whose scope replaces the diff at every tier. A base supplied "
+            f"here would be recorded against a comparison that never runs."
+        )
+    return declared
+
+
 def _resolve_declared_base(
     repo: Path, base: str | None, *, remaining: git.Remaining | None = None
 ) -> str | None:
@@ -2586,6 +2648,11 @@ def _build_judgment_r2(
     """
     mutation_config = lane.judge.mutation
     kill_signal_artifact = getattr(mutation_config, "kill_signal_artifact", None)
+    # B035/A-329: the EFFECTIVE lane scope, resolved here the way
+    # `_run_prepared_lane` already resolves it for `judgment.r1` -- the lane
+    # file's `judge.mode` is optional and `None` means `"changed_lines"`, so
+    # the artifact records what judged rather than what a human typed.
+    effective_mode = lane.judge.mode if lane.judge.mode is not None else "changed_lines"
     return JudgmentR2(
         jobs=mutation_config.jobs,
         max_mutants=mutation_config.max_mutants,
@@ -2595,6 +2662,12 @@ def _build_judgment_r2(
         ),
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=getattr(mutation_config, "equivalence_artifact", None),
+        mode=effective_mode,
+        # `judge.targets` is `None` unless the lane is whole-target (config
+        # refuses it otherwise), so this is the declared set exactly where
+        # `JudgmentR2` requires it and `None` exactly where it forbids it --
+        # the same expression `judgment.r1` is built from.
+        targets=lane.judge.targets,
         shard_index=shard_index,
         shard_count=shard_count,
     )
@@ -2644,6 +2717,7 @@ def _run_higher_rigor_lane(
     project_root: Path,
     adapter: LanguageAdapter | None,
     assay_version: str,
+    judge_provenance: JudgeProvenance | None = None,
     argv_append: Sequence[str],
     passthrough_source: Mapping[str, str] | None,
     process_runner: ProcessRunner,
@@ -2662,6 +2736,13 @@ def _run_higher_rigor_lane(
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
+    #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
+    #: the lane's `judge.base` or the gate request's `--request-base`,
+    #: whichever the lane's `judge.base_source` named, with every
+    #: disagreement between the two already refused. `None` when the lane
+    #: reads no base. Passed rather than recomputed so exactly one call to
+    #: `resolve_base_declaration` decides it for the whole run.
+    base_declaration: str | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """P23's committed-snapshot state machine (A-189): any lane declaring
@@ -2712,6 +2793,7 @@ def _run_higher_rigor_lane(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
@@ -2726,6 +2808,7 @@ def _run_higher_rigor_lane(
             status=status,
             reason_code=reason_code,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
@@ -2742,16 +2825,20 @@ def _run_higher_rigor_lane(
         # closure, never a branch/tag REF -- a symbolic `judge.base` (the
         # common case) only the CONSUMER's own repository can resolve.
         # Resolved once, here, before any snapshot exists.
+        # B019/A-328: ONE effective declaration, decided by
+        # `resolve_base_declaration` in `run_lane` before the dispatch, then
+        # resolved through exactly the same merge-base contract `judge.base`
+        # always went through -- a request-supplied ref is not a second code
+        # path, it is a second source for the same argument.
         resolved_base = _resolve_declared_base(
-            repo, lane.judge.base if lane.judge is not None else None,
-            remaining=deadline.remaining,
+            repo, base_declaration, remaining=deadline.remaining,
         )
         # (B008) Sibling to resolved_base, not derived from it -- a lane
         # declaring no base has nothing to classify, and this must reflect
         # HEAD's shape at the SAME pre-snapshot point resolved_base did.
         base_resolution = (
             git.base_resolution_mode(repo, remaining=deadline.remaining)
-            if lane.judge is not None and lane.judge.base is not None
+            if base_declaration is not None
             else None
         )
         with scratch_root_factory() as scratch_root:
@@ -2833,6 +2920,7 @@ def _run_higher_rigor_lane(
         result=outcome.result,
         claims=outcome.claims,
         assay_version=assay_version,
+        judge_provenance=judge_provenance,
         evidence=evidence,
         declared_evidence=declared_evidence,
         judgment=outcome.judgment,
@@ -2848,6 +2936,7 @@ def run_lane(
     project_root: Path,
     adapter: LanguageAdapter | None,
     assay_version: str,
+    judge_provenance: JudgeProvenance | None = None,
     argv_append: Sequence[str] = (),
     passthrough_source: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
@@ -2862,6 +2951,12 @@ def run_lane(
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
+    #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
+    #: for a lane that declared `judge.base_source = "request"`. It is a ref
+    #: or an already-resolved commit and goes through the identical merge-base
+    #: contract `judge.base` does; `resolve_base_declaration` refuses every
+    #: disagreement between the two owners before any Git call.
+    request_base: str | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """``assay run``'s entry point (P17-P19; P23 two-state split A-189):
@@ -2920,6 +3015,15 @@ def run_lane(
     """
     _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
 
+    # B019/A-328: resolved HERE, above the R0/higher-rigor dispatch, so an
+    # R0-only lane handed a stray --request-base refuses on the same terms a
+    # higher-rigor one does. Below the dispatch it would have been reachable
+    # only from the snapshot path, and a request-supplied base silently
+    # ignored by an R0 lane is the same class of inert input the refusal
+    # exists to remove. No Git call happens here -- this is the DECLARATION,
+    # and `_resolve_declared_base` still owns turning it into a commit.
+    base_declaration = resolve_base_declaration(lane, request_base)
+
     # (A-253/A-284, W3) The external-tool PATH preflight, at the TOP of this
     # function -- before ANY snapshot, command or Git work -- guarded on
     # *adapter* being resolved. There is no earlier "the adapter was just
@@ -2952,6 +3056,7 @@ def run_lane(
                     infrastructure_source=infrastructure_source,
                     infrastructure_environment=infrastructure_environment,
                     assay_version=assay_version,
+                    judge_provenance=judge_provenance,
                     evidence=evidence,
                     declared_evidence=declared_evidence,
                     clock=clock,
@@ -3002,6 +3107,7 @@ def run_lane(
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 assay_version=assay_version,
+                judge_provenance=judge_provenance,
                 evidence=evidence,
                 declared_evidence=declared_evidence,
                 clock=clock,
@@ -3051,6 +3157,7 @@ def run_lane(
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 assay_version=assay_version,
+                judge_provenance=judge_provenance,
                 evidence=evidence,
                 declared_evidence=declared_evidence,
                 clock=clock,
@@ -3095,6 +3202,7 @@ def run_lane(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
@@ -3139,6 +3247,7 @@ def run_lane(
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 assay_version=assay_version,
+                judge_provenance=judge_provenance,
                 evidence=evidence,
                 declared_evidence=declared_evidence,
                 clock=clock,
@@ -3158,6 +3267,7 @@ def run_lane(
             project_root=project_root,
             adapter=adapter,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             process_runner=process_runner,
@@ -3176,6 +3286,7 @@ def run_lane(
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_artifact=progress_artifact,
+            base_declaration=base_declaration,
             diagnostics=diagnostics,
         )
 
@@ -3206,6 +3317,7 @@ def run_lane(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
@@ -3242,6 +3354,7 @@ def run_lane(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
@@ -3302,6 +3415,7 @@ def run_lane(
                 ),
             ),
             assay_version=assay_version,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
             ended=iso_utc(clock()),
@@ -3313,6 +3427,7 @@ def run_lane(
         result=result,
         claims=(r0_claim,),
         assay_version=assay_version,
+        judge_provenance=judge_provenance,
         evidence=evidence,
         declared_evidence=declared_evidence,
     )

@@ -1,5 +1,5 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -42,7 +42,8 @@
         "sql:drop-check"
       ],
       "kill_attribution": "unattributed",
-      "equivalence_artifact": ".assay/schema-dump.sql"
+      "equivalence_artifact": ".assay/schema-dump.sql",
+      "mode": "changed_lines"
     }
   },
   "snapshot_policy": {

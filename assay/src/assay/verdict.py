@@ -84,6 +84,8 @@ __all__ = [
     "EXCLUSION_CAPABILITIES",
     "EXIT_CODES",
     "HELPER_ROLES",
+    "JUDGE_ARTIFACT_KINDS",
+    "JUDGE_DIGEST_ALGORITHMS",
     "JUDGE_MODES",
     "KILL_ATTRIBUTIONS",
     "MUTATION_BUCKETS",
@@ -102,6 +104,7 @@ __all__ = [
     "Evidence",
     "EvidenceDeclaration",
     "Helper",
+    "JudgeProvenance",
     "Judgment",
     "JudgmentR1",
     "JudgmentR2",
@@ -180,7 +183,22 @@ __all__ = [
 #: dual-version verifier, no compatibility shim (A-170's rule, restated):
 #: producers emit v6 only, and `assay verify` refuses v5 exactly as it
 #: refuses v4 today.
-VERDICT_SCHEMA_VERSION = 7
+#:
+#: **v7 -> v8 (B035/A-329, with B018/A-327 riding it).** `judgment.r2` gains
+#: `mode` (required) and `targets`, mirroring `judgment.r1`'s pair. This is a
+#: BUMP and not a widening for one mechanical reason, the same one B014's
+#: 6->7 turned on: the packaged schema sets `additionalProperties: false` on
+#: the `judgment.r2` object, so a consumer holding a released v7 copy would
+#: reject any document carrying the new keys. With `r2.mode` on the wire the
+#: `judgment.resolved.base` rule becomes enforceable for an `R0,R2` lane --
+#: every SQL lane, dstdns's `cw2b_schema` by name -- which A-325 had to stop
+#: enforcing entirely to make honest whole-target R2 artifacts producible.
+#: The optional top-level `judge_provenance` (B018/A-327) is a pure widening
+#: that needed no bump of its own and rides this one rather than shipping a
+#: second. Same rule as every cut before it: no dual-version verifier, no
+#: compatibility shim -- producers emit v8, and `assay verify` refuses v7
+#: exactly as it refuses v6.
+VERDICT_SCHEMA_VERSION = 8
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -207,6 +225,20 @@ BRANCH_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 #: this discriminator exists to make that limit visible in every artifact
 #: rather than absent from all of them (A-220).
 KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
+
+#: (B018/A-327) the one digest algorithm a judge identity may name. Recorded in
+#: the artifact rather than assumed by the consumer: a digest whose algorithm is
+#: implied silently changes meaning the day a second one is added, and CIU V8
+#: compares this value against a digest IT resolved, from its own configuration.
+JUDGE_DIGEST_ALGORITHMS: tuple[str, ...] = ("sha256",)
+
+#: (B018/A-327) the closed set of build artifacts assay ships --
+#: `gate/distribution/build_release.py` builds exactly these two, each with its
+#: own `.sha256` sidecar. The KIND is recorded beside the digest because a
+#: release publishes both files and their digests necessarily differ; a bare hex
+#: string would leave a consumer unable to say which of the two it should be
+#: comparing against.
+JUDGE_ARTIFACT_KINDS: tuple[str, ...] = ("wheel", "zipapp")
 
 #: (P33/V5-5) the closed `helpers[].role` vocabulary -- exactly the three
 #: helper jobs that exist or are ruled (A-227): `statement-positions`
@@ -1371,6 +1403,75 @@ class Mutation:
 
 
 @dataclass(frozen=True, kw_only=True)
+class JudgeProvenance:
+    """(B018/A-327) WHICH build of assay produced this verdict.
+
+    ``assay_version`` names a version string, and any process at all can print
+    one. CIU V8's central tool resolution (proposal §11.3) verifies a
+    *download* -- it resolves a judge from ``[testing.judge]``, fetches an
+    artifact, checks its digest -- and then has nothing that binds the verdict
+    in front of it to that artifact. This object is that binding: the running
+    process identifies the build artifact it was installed FROM and records its
+    digest, so a consumer can compare it against the digest it resolved itself.
+
+    Every field is required, and :mod:`assay.provenance` returns this object or
+    a refusal reason -- never a partial one. A-051's "omitted, never null",
+    applied to an identity: half an identity is worse than none, because it
+    reads as an identity.
+    """
+
+    #: The distribution name as the installed artifact's OWN metadata declares
+    #: it, never the literal ``"assay"`` -- the point of the field is to record
+    #: what the artifact says it is, which is exactly the claim under audit.
+    name: str
+    #: The exact version, from the same distribution metadata
+    #: ``assay.__version__`` reads.
+    version: str
+    #: Which of :data:`JUDGE_ARTIFACT_KINDS` the digest identifies.
+    artifact: str
+    #: One of :data:`JUDGE_DIGEST_ALGORITHMS`.
+    digest_algorithm: str
+    #: Lowercase hex, exactly 64 characters for ``sha256``.
+    digest: str
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.name, "judge_provenance.name")
+        _check_nonempty(self.version, "judge_provenance.version")
+        if self.artifact not in JUDGE_ARTIFACT_KINDS:
+            raise ValueError(
+                f"judge_provenance.artifact must be one of "
+                f"{list(JUDGE_ARTIFACT_KINDS)}, got {self.artifact!r}"
+            )
+        if self.digest_algorithm not in JUDGE_DIGEST_ALGORITHMS:
+            raise ValueError(
+                f"judge_provenance.digest_algorithm must be one of "
+                f"{list(JUDGE_DIGEST_ALGORITHMS)}, got "
+                f"{self.digest_algorithm!r}"
+            )
+        # Lowercase is part of the contract, not a formatting preference: a
+        # consumer comparing against its own resolved digest compares strings,
+        # and two spellings of one digest would not be equal.
+        if (
+            not isinstance(self.digest, str)
+            or len(self.digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.digest)
+        ):
+            raise ValueError(
+                f"judge_provenance.digest must be exactly 64 lowercase "
+                f"hexadecimal characters, got {self.digest!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "artifact": self.artifact,
+            "digest_algorithm": self.digest_algorithm,
+            "digest": self.digest,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class JudgmentResolved:
     """(P33/V5-1) What was judged, shared by every computed tier above R0.
 
@@ -1614,6 +1715,23 @@ class JudgmentR2:
     #: command-written artifacts is what keeps A-215's no-DSN boundary
     #: exactly where it is -- assay never connects to a database.
     equivalence_artifact: str | None = None
+    #: (B035/A-329, schema v8) the scope R2 judged under, mirroring
+    #: :attr:`JudgmentR1.mode` exactly. Until v8 an ``R0,R2`` document put
+    #: NOTHING on the wire distinguishing a diff-based R2 (which must carry
+    #: `judgment.resolved.base`) from a whole-target one (which must not), so
+    #: A-325 had to stop enforcing that rule for the one lane shape that most
+    #: needs it -- every SQL lane, dstdns's `cw2b_schema` included. Defaulted
+    #: to ``"changed_lines"`` for `JudgmentR1.mode`'s reason: it is the only
+    #: mode that existed before whole-target scope, so it is the faithful
+    #: historical value.
+    mode: str = "changed_lines"
+    #: (B035/A-329) the DECLARED target set, required/non-empty/unique/sorted
+    #: iff ``mode == "whole_target"`` and forbidden otherwise -- the exact
+    #: contract :attr:`JudgmentR1.targets` already carries. Without it a
+    #: declared target that legitimately produced zero mutation sites is
+    #: indistinguishable from one that was never considered: `mutation.*[].
+    #: path` names only files that yielded a mutant.
+    targets: tuple[str, ...] | None = None
     #: (B012) The declared zero-based shard position. ``None`` with
     #: :attr:`shard_count` means the whole workload.
     shard_index: int | None = None
@@ -1690,6 +1808,41 @@ class JudgmentR2:
             _check_nonempty(
                 self.equivalence_artifact, "judgment.r2.equivalence_artifact"
             )
+        # B035/A-329: word-for-word the checks `JudgmentR1.__post_init__`
+        # already applies to its own `mode`/`targets` pair. Written out here
+        # rather than factored into a shared helper deliberately: the two
+        # objects are independent records of one lane-level scope, and a
+        # shared implementation would mean a single edit could silently
+        # weaken both halves of the agreement the layer above now checks.
+        if self.mode not in JUDGE_MODES:
+            raise ValueError(
+                f"judgment.r2.mode must be one of {list(JUDGE_MODES)}, got "
+                f"{self.mode!r}"
+            )
+        if self.mode == "whole_target":
+            if not isinstance(self.targets, tuple) or not self.targets:
+                raise ValueError(
+                    f"judgment.r2.targets must be a non-empty tuple when "
+                    f"mode is 'whole_target', got {self.targets!r}"
+                )
+            for target in self.targets:
+                _check_wire_path(target, "judgment.r2.targets entry")
+            if len(set(self.targets)) != len(self.targets):
+                raise ValueError(
+                    f"judgment.r2.targets contains a duplicate: "
+                    f"{list(self.targets)}"
+                )
+            if list(self.targets) != sorted(self.targets):
+                raise ValueError(
+                    f"judgment.r2.targets must be sorted, got "
+                    f"{list(self.targets)}"
+                )
+        elif self.targets is not None:
+            raise ValueError(
+                f"judgment.r2.targets is present ({list(self.targets)}) but "
+                f"mode is {self.mode!r}, not 'whole_target' -- targets "
+                f"describes nothing outside whole-target mode"
+            )
         shard_specified = self.shard_index is not None or self.shard_count is not None
         if shard_specified and (
             self.shard_index is None
@@ -1721,7 +1874,14 @@ class JudgmentR2:
             "max_mutants": self.max_mutants,
             "operators": list(self.operators),
             "kill_attribution": self.kill_attribution,
+            # B035/A-329: always emitted, exactly as `judgment.r1.mode` is.
+            # An optional scope field would leave the r1-absent case back
+            # where B035 found it -- unable to witness its own rule -- for
+            # every producer that simply omitted it.
+            "mode": self.mode,
         }
+        if self.targets is not None:
+            payload["targets"] = list(self.targets)
         # Omitted, never null (A-051).
         if self.kill_signal_artifact is not None:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
@@ -1814,42 +1974,72 @@ class Judgment:
         # NEITHER tier compares a base, and A-223a's own "present exactly
         # when a tier that reads one is" makes the base FORBIDDEN there.
         #
-        # What the artifact can WITNESS is narrower than what is true, and
-        # this check is deliberately written to the witnessable part only:
-        # `judgment.r1.mode` is on the wire, `judgment.r2`'s scope is not
-        # (v7 gives r2 no `mode`/`targets` field of its own -- filed as
-        # B035, since adding one is a schema-version change, not a fix).
-        # Hence three cases rather than two:
+        # **B035/A-329 completes it, at schema v8.** A-325 had to write this
+        # check to the witnessable part only, and in v7 that part had a hole
+        # exactly where it mattered most: `judgment.r1.mode` was on the wire
+        # and `judgment.r2`'s scope was not, so for an `R0,R2` lane -- every
+        # SQL lane, and dstdns's `cw2b_schema` specifically -- NOTHING
+        # distinguished a diff-based R2 (which must carry a base) from a
+        # whole-target one (which must not), and neither half of the rule
+        # could be enforced. `judgment.r2.mode` now records that scope, so
+        # the check below reads the lane's mode off whichever tier witnesses
+        # it and enforces both halves for every shape:
         #
-        # * r1 present -- its `mode` IS the lane's mode, so the base is
-        #   required for `changed_lines` and forbidden for `whole_target`,
-        #   for both tiers together. This is now enforced for an R1,R2 lane
-        #   too, where the old rule wrongly demanded a base.
-        # * r1 absent, r2 present -- unwitnessable: a diff-based R2 requires
-        #   a base and a whole-target R2 forbids one, and nothing on the
-        #   wire distinguishes them. Neither is enforced; the producer
-        #   (`runner._run_prepared_lane`) decides, and B035 is what would
-        #   let this object check the producer's work.
+        # * r1 present -- its `mode` IS the lane's mode.
+        # * r1 absent, r2 present -- `r2.mode` is, and this is the case B035
+        #   existed for. A diff-based `R0,R2` verdict that omits its base is
+        #   refused again, which 2.4.1 did and 2.4.2 (A-325) could not.
         # * neither -- R3 alone never has a base.
+        #
+        # Where BOTH tiers are present their modes must AGREE, because there
+        # is only one lane scope to record: two disagreeing tiers would make
+        # "the lane's mode" ambiguous, and an ambiguous premise cannot carry
+        # a rule. The same argument applies to `targets`, which both tiers
+        # record as *the declared set* -- so they are compared too, for
+        # A-152's reason one level over (an equality no JSON Schema can
+        # express belongs to this layer and the raw verifier, not the
+        # document).
+        lane_mode: str | None = None
+        witness = ""
         if self.r1 is not None:
-            r1_compares_a_base = self.r1.mode == "changed_lines"
-            if r1_compares_a_base and self.resolved.base is None:
+            lane_mode, witness = self.r1.mode, "r1"
+            if self.r2 is not None:
+                if self.r2.mode != self.r1.mode:
+                    raise ValueError(
+                        f"judgment.r1 records mode {self.r1.mode!r} but "
+                        f"judgment.r2 records {self.r2.mode!r} -- mode is a "
+                        f"LANE-level scope that both tiers judge under, so "
+                        f"one judgment cannot hold two of them"
+                    )
+                if self.r2.targets != self.r1.targets:
+                    raise ValueError(
+                        f"judgment.r1 records targets "
+                        f"{list(self.r1.targets or ())} but judgment.r2 "
+                        f"records {list(self.r2.targets or ())} -- both "
+                        f"record the DECLARED target set of one lane, so "
+                        f"they cannot differ"
+                    )
+        elif self.r2 is not None:
+            lane_mode, witness = self.r2.mode, "r2"
+
+        if lane_mode == "changed_lines":
+            if self.resolved.base is None:
                 raise ValueError(
-                    "judgment carries r1 in changed-line mode but "
-                    "judgment.resolved records no base -- a changed-line "
-                    "judgment is scoped to a resolved comparison commit, so "
-                    "omitting it leaves the judgment unre-derivable"
+                    f"judgment carries {witness} in changed-line mode but "
+                    f"judgment.resolved records no base -- a changed-line "
+                    f"judgment is scoped to a resolved comparison commit, so "
+                    f"omitting it leaves the judgment unre-derivable"
                 )
-            if not r1_compares_a_base and self.resolved.base is not None:
+        elif self.resolved.base is not None:
+            if lane_mode == "whole_target":
                 raise ValueError(
                     f"judgment.resolved records base {self.resolved.base!r} "
-                    f"but judgment carries r1 in whole-target mode -- "
+                    f"but judgment carries {witness} in whole-target mode -- "
                     f"whole-target scope replaces the diff at EVERY tier, so "
                     f"neither R1 nor R2 resolved anything against that "
                     f"commit and recording it would imply a comparison that "
                     f"never happened"
                 )
-        elif self.r2 is None and self.resolved.base is not None:
             raise ValueError(
                 f"judgment.resolved records base {self.resolved.base!r} but "
                 f"judgment carries neither r1 nor r2 -- R3 alone never "
@@ -2400,6 +2590,13 @@ class Verdict:
     started: str
     ended: str
     assay_version: str
+    #: (B018/A-327) the producing judge's build identity -- see
+    #: :class:`JudgeProvenance`. OPTIONAL, and absent rather than partial: a
+    #: source-tree invocation has no build artifact to name, and inventing a
+    #: digest for `src/` would be exactly the laundering this field exists to
+    #: prevent. `assay run --require-judge-provenance` is how a consumer that
+    #: needs the binding turns its absence into a refusal instead of a silence.
+    judge_provenance: JudgeProvenance | None = None
     claims: tuple[Claim, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     reason_code: ReasonCode | None = None
@@ -2471,6 +2668,13 @@ class Verdict:
             raise ValueError(
                 f"schema_version must be {VERDICT_SCHEMA_VERSION}, got "
                 f"{self.schema_version!r}"
+            )
+        if self.judge_provenance is not None and not isinstance(
+            self.judge_provenance, JudgeProvenance
+        ):
+            raise ValueError(
+                f"judge_provenance must be a JudgeProvenance, got "
+                f"{self.judge_provenance!r}"
             )
         if self.env_effective_incomplete and self.declared_rigor is None:
             raise ValueError(
@@ -3045,6 +3249,10 @@ class Verdict:
             "started": self.started,
             "ended": self.ended,
         }
+        # B018/A-327. Omitted, never null (A-051) and never partial: an
+        # unidentifiable invocation records no identity at all.
+        if self.judge_provenance is not None:
+            payload["judge_provenance"] = self.judge_provenance.to_dict()
         if self.reason_code is not None:
             payload["reason_code"] = self.reason_code.value
         if self.declared_rigor is not None:

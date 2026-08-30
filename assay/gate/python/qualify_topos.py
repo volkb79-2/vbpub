@@ -20,6 +20,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,7 +79,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # unfrozen transform is machinery to be trusted, whereas a frozen expectation
 # is evidence to be checked, and the whole point of comparing against a
 # locked template is that nothing in the run under test produced it.
-_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W2" / "expected"
+# B035/A-329: moved again, by the same rule and for the third time -- W4's
+# `p25-pass-v8-template.json`/`p25-missing-v8-template.json` are the named
+# one-for-one successors to W2's v7 pair, which stays frozen and unedited
+# beside W1's v6 pair and P33's v5 pair. Each generation is the historical
+# record of what P25 actually proved under the contract that existed when it
+# proved it; rewriting one would falsify that record.
+_EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W4" / "expected"
 _QUALIFICATION_MANIFEST = (
     _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25" / "qualification-manifest.json"
 )
@@ -772,6 +779,57 @@ def run_scenario(
     )
 
 
+def _check_judge_provenance(normalized: dict[str, Any], *, assay_version: str) -> None:
+    """(B018/A-327) The judge identity, checked against what this harness
+    knows out of band, THEN placeholdered -- exactly `assay_version`'s own
+    treatment one field over.
+
+    This qualification drives the INSTALLED console script from
+    ``run-venv/bin/assay``, which is a wheel install, so the identity is not
+    merely optional-and-tolerated here: its ABSENCE is a failure. That is
+    what makes this the gate's own end-to-end witness that B018's wheel path
+    produces a real digest rather than only being able to.
+
+    The block is then REMOVED rather than placeholdered -- the treatment the
+    four B014 output tails already get in :func:`normalize_artifact`, not
+    ``assay_version``'s. A placeholder would have to live in the locked
+    template, and the locked templates are also fed to ``verify_document`` by
+    ``carve-assets/W4/test_acceptance_v8.py``, which requires a real 64-hex
+    digest and would reject a token. One of the two oracles has to give, and
+    the one to keep is the one that checks real bytes: the digest is the hash
+    of the wheel THIS gate run built, a different number on every commit, so
+    a frozen template could never have stated it anyway.
+    """
+    identity = normalized.get("judge_provenance")
+    if not isinstance(identity, dict):
+        raise QualificationError(
+            "the artifact records no judge_provenance, though this "
+            "qualification runs an installed wheel, which always identifies "
+            "itself (B018)"
+        )
+    if identity.get("name") != "assay" or identity.get("version") != assay_version:
+        raise QualificationError(
+            "the artifact judge_provenance does not name the installed owner"
+        )
+    if identity.get("artifact") != "wheel":
+        raise QualificationError(
+            f"the artifact judge_provenance names a "
+            f"{identity.get('artifact')!r} artifact, but this qualification "
+            f"installs a wheel"
+        )
+    if identity.get("digest_algorithm") != "sha256":
+        raise QualificationError(
+            "the artifact judge_provenance does not declare a sha256 digest"
+        )
+    digest = identity.get("digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise QualificationError(
+            f"the artifact judge_provenance.digest {digest!r} is not 64 "
+            f"lowercase hexadecimal characters"
+        )
+    normalized.pop("judge_provenance")
+
+
 def normalize_artifact(
     document: Mapping[str, Any],
     *,
@@ -783,10 +841,11 @@ def normalize_artifact(
 ) -> dict[str, Any]:
     """Replace only runtime identities whose real value is checked separately."""
     normalized = copy.deepcopy(dict(document))
-    if normalized.get("schema_version") != 7:
-        raise QualificationError("artifact schema_version is not the current v7 contract")
+    if normalized.get("schema_version") != 8:
+        raise QualificationError("artifact schema_version is not the current v8 contract")
     if normalized.get("assay_version") != assay_version:
         raise QualificationError("artifact assay_version is not the installed version")
+    _check_judge_provenance(normalized, assay_version=assay_version)
     if normalized.get("commit") != head_oid:
         raise QualificationError("artifact commit is not disposable HEAD")
     # P33/V5-1: the comparison commit hoisted out of `judgment.r1` into the
@@ -839,8 +898,8 @@ def compare_complete_artifact(
         pytest_log=pytest_log,
     )
     expected = json.loads(template.read_text(encoding="utf-8"))
-    if expected.get("schema_version") != 7:
-        raise QualificationError("locked template is not a v7 successor")
+    if expected.get("schema_version") != 8:
+        raise QualificationError("locked template is not a v8 successor")
     if normalized != expected:
         differing = sorted(
             key
@@ -1105,7 +1164,7 @@ def _check_wrong_source_root(source_repo: Path, scratch: Path, current_assay: Pa
         pytest_log=pytest_log,
     )
     expected = json.loads(
-        (_EXPECTED_ROOT / "p25-missing-v7-template.json").read_text(encoding="utf-8")
+        (_EXPECTED_ROOT / "p25-missing-v8-template.json").read_text(encoding="utf-8")
     )
     differing = sorted(key for key in set(normalized) | set(expected) if normalized.get(key) != expected.get(key))
     if not differing:
@@ -1142,7 +1201,7 @@ def _check_universal_pass_mutation(missing_result: ScenarioResult) -> None:
     try:
         compare_complete_artifact(
             actual=forged,
-            template=_EXPECTED_ROOT / "p25-missing-v7-template.json",
+            template=_EXPECTED_ROOT / "p25-missing-v8-template.json",
             assay_version=forged["assay_version"],
             base_oid=missing_result.base_oid,
             head_oid=missing_result.head_oid,
@@ -1190,8 +1249,8 @@ def qualify(
     primary = results[PRIMARY.name]
     missing = results[MISSING.name]
     for result, template_name in (
-        (primary, "p25-pass-v7-template.json"),
-        (missing, "p25-missing-v7-template.json"),
+        (primary, "p25-pass-v8-template.json"),
+        (missing, "p25-missing-v8-template.json"),
     ):
         # The version and the witness/log paths come from the committed plan
         # (the owner this scenario was run with, and the deterministic scratch

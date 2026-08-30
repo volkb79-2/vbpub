@@ -58,7 +58,17 @@ from collections import Counter
 from typing import Any, Sequence, TextIO
 
 from . import __version__
-from . import attestation, diff, git, isolation, measurability, mutation, registry, runner
+from . import (
+    attestation,
+    diff,
+    git,
+    isolation,
+    measurability,
+    mutation,
+    provenance,
+    registry,
+    runner,
+)
 from .adapters.base import LanguageAdapter
 from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
@@ -71,6 +81,36 @@ from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
+
+
+def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
+    """(B019/A-328) ``--request-base``, on both verbs that resolve one.
+
+    Named for its OWNER, not for the value: ``--base`` would read as an
+    override of ``judge.base`` and this is not one -- it is the other side of
+    a lane's own ``judge.base_source = "request"`` declaration, and supplying
+    it to a lane that did not delegate is a refusal, never a precedence
+    contest. ``run`` and ``plan`` both take it because ``plan`` performs the
+    identical merge-base resolution before discovering candidates, and a plan
+    that silently scoped itself differently from the run it predicts would be
+    worse than no plan.
+    """
+    subparser.add_argument(
+        "--request-base",
+        default=None,
+        metavar="REF",
+        help=(
+            "the comparison base THIS gate request judges against: a ref or "
+            "an already-resolved commit, resolved through the same merge-base "
+            "contract judge.base uses and recorded in the verdict as "
+            "judgment.resolved.base (B019). Required by a lane declaring "
+            "judge.base_source = 'request', which requires changed-line "
+            "judging but delegates the base identity to its invoker; refused "
+            "on any other lane, because one of the two declarations would "
+            "then be inert. Its absence on a delegating lane is a refusal, "
+            "never a fallback to HEAD."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true")
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    _add_request_base_argument(run)
 
     plan = subparsers.add_parser(
         "plan",
@@ -139,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("lane", help="the mutation lane name to inspect")
     plan.add_argument("--operators", default=None)
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    _add_request_base_argument(plan)
     plan.add_argument(
         "--file",
         type=Path,
@@ -173,6 +215,20 @@ def build_parser() -> argparse.ArgumentParser:
             "(or at a gitignored path) -- a progress file inside the work "
             "tree makes the next run of the same lane refuse "
             "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
+        ),
+    )
+    run.add_argument(
+        "--require-judge-provenance",
+        action="store_true",
+        help=(
+            "refuse, before any work, unless this assay can identify the "
+            "build artifact it was installed from and record its sha256 in "
+            "the verdict as judge_provenance (B018). Without this flag an "
+            "unidentifiable invocation -- a source checkout, an editable "
+            "install -- still runs, emits no judge_provenance at all, and "
+            "says so on stderr; assay never invents a digest either way. A "
+            "gate that binds its evidence to a verified judge binary passes "
+            "this flag."
         ),
     )
 
@@ -363,13 +419,14 @@ def _cmd_run(
     lane: Lane = lane_file.lane(args.lane)
     if getattr(args, "operators", None):
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -380,6 +437,9 @@ def _cmd_run(
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         mutation_config = replace(
             lane.judge.mutation, operators=requested
         )
@@ -467,6 +527,27 @@ def _run_reserved(
     # `deadline=None` to run_lane; the exact sequence below is the contract:
     # lane/output already reserved -> deadline -> HEAD -> attestation ->
     # adapter -> command -> emit once.
+    # B018/A-327: resolved ONCE, here, before the lane deadline even starts.
+    # Identity is a fact of this process, not of the run, and a consumer that
+    # demanded the binding must learn it is unavailable before assay spends a
+    # budget producing evidence that consumer would refuse anyway.
+    judge_provenance, unidentified = provenance.identify_judge()
+    if unidentified is not None:
+        if getattr(args, "require_judge_provenance", False):
+            raise LaneConfigError(
+                f"--require-judge-provenance: this assay cannot identify the "
+                f"build artifact it is running from, so no verdict it emits "
+                f"could be bound to a verified judge -- {unidentified}"
+            )
+        # Loud, never silent (B018's own acceptance criterion): the absence is
+        # announced on the diagnostics stream every time, because a consumer
+        # reading only the artifact would otherwise find a field that is
+        # simply not there, with nothing saying why.
+        print(
+            f"assay: no judge_provenance recorded -- {unidentified}; pass "
+            f"--require-judge-provenance to refuse instead of proceeding",
+            file=err,
+        )
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
@@ -511,6 +592,7 @@ def _run_reserved(
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 assay_version=__version__,
+                judge_provenance=judge_provenance,
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
@@ -543,6 +625,7 @@ def _run_reserved(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=__version__,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
         )
@@ -555,6 +638,7 @@ def _run_reserved(
             project_root=lane_file.project_root,
             adapter=adapter,
             assay_version=__version__,
+            judge_provenance=judge_provenance,
             argv_append=appended,
             evidence=evidence,
             declared_evidence=declared_evidence,
@@ -572,6 +656,10 @@ def _run_reserved(
                 if (progress_arg := getattr(args, "progress", None)) is not None
                 else None
             ),
+            # B019/A-328: the gate request's own comparison base, threaded
+            # verbatim. `run_lane` decides whether this lane delegated to it,
+            # and refuses every disagreement -- the CLI does not adjudicate.
+            request_base=getattr(args, "request_base", None),
             # B032/A-322: where the `environment_command` probe's refusal
             # message goes. `run_lane` returns a Verdict and carries no
             # free-text field for a cause (A-138/A-170), so B010's "refuse
@@ -618,18 +706,27 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     if adapter is None:
         raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
 
+    # B019/A-328: decided once, before any snapshot -- exactly where
+    # `run_lane` decides it, and by the same function, so `plan` refuses a
+    # delegating lane with no --request-base (and a non-delegating lane with
+    # one) on identical terms rather than discovering the mismatch mid-walk.
+    base_declaration = runner.resolve_base_declaration(
+        lane, getattr(args, "request_base", None)
+    )
+
     operators = lane.judge.mutation.operators
     shard_index: int | None = None
     shard_count: int | None = None
     if args.operators:
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -640,6 +737,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         operators = requested
     if args.shard:
         try:
@@ -691,14 +791,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             # must be compared against here are the ones the lane actually
             # declares.
             source_root_paths = lane.judge.source_root_paths
-            resolved_base = (
-                runner._resolve_declared_base(
-                    lane_file.project_root,
-                    lane.judge.base,
-                    remaining=deadline.remaining,
-                )
-                if lane.judge.base is not None
-                else None
+            # B019/A-328: the identical declaration `run` resolves, through
+            # the identical helper -- `plan` predicts a run, so a plan scoped
+            # against a different base than the run it predicts would be
+            # worse than emitting none.
+            resolved_base = runner._resolve_declared_base(
+                lane_file.project_root,
+                base_declaration,
+                remaining=deadline.remaining,
             )
             if lane.judge.mode == "whole_target":
                 targets = runner._mutation_targets_whole(

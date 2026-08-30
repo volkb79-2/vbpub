@@ -114,6 +114,7 @@
       "kill_attribution": "declared",
       "kill_signal_artifact": ".assay/kill-signal.txt",
       "max_mutants": 6,
+      "mode": "changed_lines",
       "operators": [
         "sql:drop-not-null"
       ]
@@ -130,7 +131,7 @@
   "lane": "dstdns_sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 7,
+  "schema_version": 8,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

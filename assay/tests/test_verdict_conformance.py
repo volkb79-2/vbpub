@@ -968,6 +968,10 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
             "kill_attribution": "unattributed",
+            # B035/A-329: required at v8, and it is `changed_lines` that
+            # makes the `base` above legal -- under whole-target scope this
+            # same document is now refused.
+            "mode": "changed_lines",
         },
     }
     assert verify_document(document) == []
@@ -1010,6 +1014,7 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
             "kill_attribution": "unattributed",
+            "mode": "changed_lines",
         },
     }
     assert r2_claim["mutation"]["total"] == 2
@@ -1136,7 +1141,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 7,
+            "schema_version": 8,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1248,9 +1253,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 7: a verdict "
+        "schema_version 2 is not this verifier's version 8: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 7"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 8"
     ]
 
 
@@ -1269,7 +1274,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 7" in failures[0]
+    assert "schema_version 3 is not this verifier's version 8" in failures[0]
 
 
 # ============================================================================

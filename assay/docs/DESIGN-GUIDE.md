@@ -850,8 +850,36 @@ claims knowledge must say what it knows it from.
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 6` (an integer, bumped on any breaking shape change) and
-`assay_version`.
+carries `schema_version: 8` (an integer, bumped on any breaking shape change),
+`assay_version`, and — when the running build can identify itself — the
+optional `judge_provenance` block (B018/A-327).
+
+**`assay_version` names a version; `judge_provenance` names a build.** Any
+process can print a version string, so a consumer that resolved a judge
+artifact, verified its digest and then received a verdict had nothing binding
+the second to the first (CIU's V8 testing-gate proposal §11.3 is the concrete
+ask). `judge_provenance` records the distribution name, exact version,
+artifact kind (`wheel`/`zipapp` — a release publishes both, with different
+digests, so the kind is recorded rather than guessed), digest algorithm, and
+the artifact's own lowercase sha256. It is derived per invocation form from a
+handle that form actually exposes, each MEASURED rather than assumed: a
+zipapp's `zipimport.zipimporter.archive` is hashed directly; a wheel install
+reports the sha256 the installer wrote into PEP 610 `direct_url.json`, which
+is the only statement about the wheel that survives its own installation. A
+process whose imported code lies outside the distribution it found is refused
+too — reporting an installed wheel's digest for source imported over it would
+be a record that is not absent but false, which is worse.
+
+**The field is optional and its absence is meaningful, which is the whole
+design.** A source checkout has no build artifact; hashing `src/` and calling
+the result an artifact digest is exactly the laundering the field exists to
+prevent, so an unidentifiable invocation records NOTHING — never four of five
+fields — and announces the reason on the diagnostics stream. Making the
+identity mandatory instead would have forced either an invented digest or a
+tool that cannot run from a checkout at all. A consumer that genuinely needs
+the binding says so per invocation with `assay run
+--require-judge-provenance`, which refuses before any lane work rather than
+producing evidence it cannot attribute.
 
 **A version bump is a migration for the consumer, never an upgrade by the
 producer.** `assay verify` refuses any `schema_version` but its own, with a
@@ -934,6 +962,52 @@ happened. `JUDGE_FIELDS_BY_RIGOR` stays the single source for this — the
 required-field set becomes mode-dependent rather than duplicated into a second
 table — and an `R0,R1,R2` lane in whole-target mode declares no `base` and
 records none.
+
+**And at schema v8, the artifact can finally CHECK all of that for an `R0,R2`
+lane (B035/A-329).** A-325's correction was right and incomplete in one
+specific way: it wrote the rule to the part the document could witness, and
+for a lane declaring no R1 that part was empty. `judgment.r1.mode` was on the
+wire; `judgment.r2` had no `mode` at all, so nothing distinguished a
+diff-based R2 (which must carry a base) from a whole-target one (which must
+not) — and the shape with no R1 is not a corner case, it is every SQL lane,
+including dstdns's `cw2b_schema`. Both halves therefore went unenforced
+exactly where they mattered most, and a diff-based `R0,R2` verdict that
+omitted the base it was scoped against was accepted by 2.4.2 where 2.4.1 had
+refused it.
+
+`judgment.r2` now records `mode` (required, like R1's) and `targets`
+(required, non-empty, unique and sorted iff `mode = "whole_target"`, forbidden
+otherwise — R1's contract word for word). The model, `verify.py`'s raw layer
+and the packaged schema each read the lane's mode off `r1` if present and off
+`r2` otherwise, and enforce `base` required-or-forbidden for every shape.
+Where BOTH tiers are present their modes must agree and their target sets must
+be equal: one judgment records one lane's scope, and an ambiguous premise
+cannot carry a rule. `targets` also closes B035's smaller half — a
+whole-target verdict names mutated files only through `mutation.*[].path`, so
+without it a declared target that legitimately produced zero mutation sites is
+indistinguishable from one that was never considered.
+
+This is the one thing in the v7→v8 cut that *required* a bump rather than a
+widening, and the reason is mechanical rather than semantic: the packaged
+schema sets `additionalProperties: false` on the `judgment.r2` object, so a
+released consumer holding a v7 copy would reject any document carrying the new
+keys. B014's own 6→7 bump turned on the identical fact.
+
+**Who supplies the base is separable from whether one is required
+(B019/A-328).** `judge.base_source = "request"` lets a lane require
+changed-line judging while delegating the base's IDENTITY to the invoking gate
+request (`assay run --request-base REF`), so one static lane declaration stays
+correct across every branch and worktree while an orchestrator owns branch
+awareness. The request-supplied value is not a second code path: it is a
+second *source* for the same argument, resolved by the same
+`_resolve_declared_base` merge-base contract and recorded once in
+`judgment.resolved.base`, so nothing downstream can tell which owner supplied
+it — and nothing downstream needs to. The two owners are mutually exclusive
+and every disagreement is refused by name, applying A-062's inert-config rule
+rather than inventing a precedence order: whichever side lost a precedence
+contest would be configuration nothing reads. `base_source` is itself refused
+wherever `judge.base` would be (R0/R3-only lanes, whole-target lanes), because
+a policy about an inert field is inert.
 
 ### Branch coverage is judged whenever the artifact reports it (A-258)
 
