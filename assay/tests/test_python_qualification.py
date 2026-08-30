@@ -321,14 +321,30 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: P33's carver-supplied v5 siblings, so this consumer follows it. Reading
 #: the v4 original here would test the harness against a contract the
 #: product no longer emits.
-P25_V7_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W2" / "expected"
+#: B035/A-329 moves it again, to W4's v8 siblings, for the same reason.
+P25_V8_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W4" / "expected"
+
+#: (B018/A-327) The harness now REQUIRES a judge identity, because the
+#: qualification it drives runs an installed wheel, which always has one. The
+#: locked templates deliberately carry none (they are hand-migrated documents
+#: with no build behind them), so a consumer feeding a template to
+#: `normalize_artifact` directly has to supply one -- an honest, complete one,
+#: whose only fictional part is that no wheel with this digest exists.
+_A_COMPLETE_JUDGE_IDENTITY = {
+    "name": "assay",
+    "version": "1.3.0",
+    "artifact": "wheel",
+    "digest_algorithm": "sha256",
+    "digest": "3c" * 32,
+}
 
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P25_V7_EXPECTED_ROOT / "p25-pass-v7-template.json").read_text()
+        (P25_V8_EXPECTED_ROOT / "p25-pass-v8-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
+    actual["judge_provenance"] = dict(_A_COMPLETE_JUDGE_IDENTITY)
     substitutions: dict[str, object] = {
         "@ASSAY_VERSION@": "1.3.0",
         "@HEAD_OID@": "1" * 40,

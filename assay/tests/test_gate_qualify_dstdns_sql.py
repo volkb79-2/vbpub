@@ -532,9 +532,14 @@ def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
         )
 
 
-def test_witness_file_is_valid_json_with_the_v7_schema_version() -> None:
+def test_witness_file_is_valid_json_with_the_v8_schema_version() -> None:
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 7
+    assert document["schema_version"] == 8
+    # B035/A-329: the witness is an `R0,R2` document -- the exact shape whose
+    # `base` rule was unenforceable until `judgment.r2` could say which scope
+    # it judged under. It carries a base, so it must say `changed_lines`.
+    assert document["judgment"]["r2"]["mode"] == "changed_lines"
+    assert "base" in document["judgment"]["resolved"]
     assert document["judgment"]["resolved"]["language"] == "sql"
     assert document["outcome"] == "FAIL"
     assert document["reason_code"] == "MUTANTS_SURVIVED"

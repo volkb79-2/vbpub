@@ -37,6 +37,7 @@ import pytest
 
 from assay.cli import _built_in_registry
 from assay.config import (
+    JUDGE_BASE_SOURCES,
     JUDGE_MODES,
     LANE_SCHEMA_VERSION,
     RIGOR_LEVELS,
@@ -45,7 +46,7 @@ from assay.config import (
     load_lane_file,
 )
 from assay.coverage import FORMAT_REGISTRY
-from assay.verdict import ReasonCode
+from assay.verdict import JUDGE_ARTIFACT_KINDS, ReasonCode
 from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +302,25 @@ def test_every_judge_mode_value_is_documented():
     assert not missing, f"undocumented judge.mode value(s): {missing}"
 
 
+def test_every_judge_base_source_value_is_documented():
+    """(B019/A-328) `judge.base_source` is a closed vocabulary a consumer
+    TYPES, so it joins `judge.mode` and `isolation.snapshot_selection` under
+    the same rule: a value nobody can find in the docs is a value nobody can
+    adopt."""
+    assert JUDGE_BASE_SOURCES, "JUDGE_BASE_SOURCES must not be empty"
+    missing = _missing_from(JUDGE_BASE_SOURCES, _docs_text())
+    assert not missing, f"undocumented judge.base_source value(s): {missing}"
+
+
+def test_every_judge_artifact_kind_is_documented():
+    """(B018/A-327) `judge_provenance.artifact` is not typed into a lane file,
+    but it IS read out of every verdict, and a consumer comparing a digest has
+    to know which of the two release files each kind names."""
+    assert JUDGE_ARTIFACT_KINDS, "JUDGE_ARTIFACT_KINDS must not be empty"
+    missing = _missing_from(JUDGE_ARTIFACT_KINDS, _docs_text())
+    assert not missing, f"undocumented judge_provenance.artifact value(s): {missing}"
+
+
 def test_every_rigor_level_is_documented():
     assert RIGOR_LEVELS, "RIGOR_LEVELS must not be empty"
     missing = _missing_from(RIGOR_LEVELS, _docs_text())
@@ -408,6 +428,10 @@ def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
     assert REQUIRED_MUTATION_OPERATORS != set(RIGOR_LEVELS)
     assert REQUIRED_MUTATION_OPERATORS != set(FORMAT_REGISTRY)
     assert REQUIRED_MUTATION_OPERATORS != reason_codes
+    assert JUDGE_BASE_SOURCES != JUDGE_MODES
+    assert JUDGE_BASE_SOURCES != SNAPSHOT_SELECTIONS
+    assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_BASE_SOURCES
+    assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_MODES
 
 
 # --- (3) DESIGN-GUIDE anchor resolution --------------------------------------
