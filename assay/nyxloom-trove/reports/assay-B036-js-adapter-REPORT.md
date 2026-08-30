@@ -3,8 +3,9 @@
 **Branch:** `feature/assay-b036-js-adapter`
 **Base:** `main` at `62fe368f` (the commit that filed B036/B037)
 **Filing:** B036 in `nyxloom-trove/4-backlog.md`
-**Decisions recorded:** A-340 … A-345 (`nyxloom-trove/decisions.md`)
-**New filings out of this work:** B038, B039
+**Decisions recorded:** A-340 … A-346 (`nyxloom-trove/decisions.md`)
+**New filings out of this work:** B038, B039, B040
+**Rounds:** round 1 as filed; round 2 answers the adversarial review — see §6a
 **Scope:** R1 only. R2 is B037's ruling and is not touched; R3 is not wired,
 though both canary injection methods are real implementations.
 
@@ -24,11 +25,13 @@ could only be settled by running something, the transcript is pasted below.
 | `src/assay/coverage.py:118` | fifth `FORMAT_REGISTRY` entry, `coverage-istanbul-json` |
 | `src/assay/adapters/javascript.py` | new `JavaScriptAdapter`, all seven protocol methods |
 | `src/assay/cli.py:282` | `_built_in_registry` entry, `rigor=frozenset({"R1"})` |
-| `tests/fixtures/coverage/probe-js/**` | the committed Vitest driver project (12 files, no `node_modules`) |
+| `tests/fixtures/coverage/probe-js/**` | the committed Vitest driver project (13 files incl. its lockfile, no `node_modules`) |
 | `tests/fixtures/coverage/coverage-istanbul-json.vitest-v8.json` | real artifact, `@vitest/coverage-v8` |
 | `tests/fixtures/coverage/coverage-istanbul-json.vitest-istanbul.json` | real artifact, `@vitest/coverage-istanbul` |
-| `tests/fixtures/coverage/PROVENANCE.md` | new section: how both were produced, and the 12 facts they witness |
-| 8 new test modules | 153 new tests (see §5) |
+| `tests/fixtures/coverage/probe-js-provider-defect/**` | round 2: a second project whose ground truth needs no coverage tool, + 4 real artifacts (both providers × Vitest 3.2.4 and 4.1.11) |
+| `tests/fixtures/canary/javascript/**` | round 2: the injected canary source + its real artifacts from both providers |
+| `tests/fixtures/coverage/PROVENANCE.md` | new sections: how every artifact was produced, and the facts they witness |
+| 9 new test modules | 188 new tests (see §5) |
 | `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` | the new language and format documented alongside Python/Go/SQL |
 | `CHANGES.md` `[Unreleased]` → `### Added` | one entry, alongside the existing ones (untouched) |
 
@@ -150,11 +153,25 @@ Three options were compared:
    `evaluate.py`'s rule 4. That is srdm's silent-excuse direction on lines a
    human actually edited. Rejected.
 3. **Chosen:** expand each statement's own `[start.line, end.line]` extent in
-   the parser (`coverage_istanbul_json._paint`, line 251), innermost extent
-   winning, ties resolving by MAX count. The extent is the ARTIFACT's own
-   claim about which source range a statement occupies, so this recovers
-   exactly what Python's AST walk recovers — from data, not a re-parse — and
-   leaves no line of a measured file unattributed.
+   the parser (`coverage_istanbul_json._paint`), innermost extent winning,
+   ties resolving by MAX count. The extent is the ARTIFACT's own claim about
+   which source range a statement occupies, so this recovers exactly what
+   Python's AST walk recovers — from data, not a re-parse.
+
+   **Corrected after round-1 review (M2).** This section originally ended
+   "…and leaves no line of a measured file unattributed". That is false, and
+   measured false: 23 non-comment lines across six files in the committed
+   istanbul artifact are in neither bucket — every function signature line,
+   every function-level closing brace, and `format.ts:12`, a genuinely
+   executable `const date =` whose recorded statement starts at 13 on its
+   initialiser. They take rule 4 and leave the denominator. The real
+   guarantee, which is all `requires_span_attribution = False` needs, is that
+   **every line any statement extent covers is classified** — span
+   attribution exists to recover a multi-line construct's interior lines, and
+   the expansion already recovers precisely those. Measured value of the
+   expansion on that artifact: 29 statement start lines become 54 classified
+   lines. A-342 carries the correction; `coverage_istanbul_json.py`'s own
+   docstring and one test docstring had said it correctly all along.
 
 **Innermost-wins is load-bearing, not a refinement.** In the real
 istanbul-provider artifact, `branchy.ts`'s `if` extent `[2,4]` has count 1
@@ -281,7 +298,17 @@ Error: assay-canary-import-break
 The appended top-level `throw` fires during module evaluation, exactly as
 A-345 argues — a real transcript, not a structural claim.
 
-### 4.3 The registered gate — `bash tools/tester-unified-gate.sh`
+**Round 2: §4.1 is no longer only a transcript.** The review's fair objection
+was that a pasted transcript rots silently. The injected `roles.ts` and the
+coverage documents both providers produced for it are now committed under
+`tests/fixtures/canary/javascript/`, and a test asserts that file is
+byte-for-byte what `inject_uncovered_line` produces today — so if the snippet
+changes, the fixture and the evidence break together instead of drifting.
+§4.2 stays a transcript by necessity and not by preference: the import-break
+canary makes the run fail, and a failed Vitest run writes no coverage
+document. Go's adapter records the same constraint.
+
+### 4.3 The registered gate, round 1 — `bash tools/tester-unified-gate.sh`
 
 Invoked exactly the way `nyxloom-trove/nyxloom.toml`'s own
 `[gates.tester-unified]` invokes it (the SSOT pointer: the lane lives in
@@ -385,23 +412,32 @@ $ python -m pytest tests/ -q
 3454 passed, 11 skipped, 1 warning in 374.01s (0:06:14)
 ```
 
+### 4.4 The registered gate, round 2 — after the review fixes
+
+Same invocation, on the round-2 tree with all five commits in.
+
+<!-- GATE-TRANSCRIPT-ROUND-2 -->
+
 
 ---
 
 ## 5. Tests
 
-8 new modules, 153 new tests. Every one drives real code; none asserts a
-value this implementation computed and then copied back.
+9 new modules, 188 new tests (round 1: 8 modules / 153; round 2 added the
+provider-accuracy module and 35 tests across the others). Every one drives real
+code; none asserts a value this implementation computed and then copied
+back — with one deliberate exception, called out in its own row below.
 
 | module | tests | what it pins |
 |---|---|---|
-| `tests/test_coverage_parsers_coverage_istanbul_json.py` | 43 | sniffing (incl. non-collision with the other four formats), single/multi-line extents, three-level nesting, tie resolution both ways, empty statement map, both capabilities, 6 document-level + 14 record-level refusals, truncation, the size bound and its must-succeed control, unread fields ignored |
-| `tests/test_coverage_istanbul_real_fixtures.py` | 18 | every PROVENANCE fact re-derived from the two REAL artifacts: absolute keys, which files each provider measures, `.d.ts`/test-file absence, single-line vs. real extents, null end columns, the nesting witness, the ignore-hint witness, the two branch maps not being the same measurement |
-| `tests/test_adapters_javascript_registration.py` | 11 | protocol surface as literal values, `UNSUPPORTED`, registry equivalence, four adapters coexisting, R2/R3 refusal through `cli._built_in_registry()` itself, the R1 must-succeed control, unknown-language refusal, and the exact language→rigor map this build declares |
+| `tests/test_coverage_parsers_coverage_istanbul_json.py` | 45 | sniffing (incl. non-collision with the other four formats), single/multi-line extents, three-level nesting, tie resolution both ways, empty statement map, both capabilities, 6 document-level + 14 record-level refusals, truncation, the size bound and its must-succeed control, unread fields ignored |
+| `tests/test_coverage_istanbul_real_fixtures.py` | 22 | every PROVENANCE fact re-derived from the two REAL artifacts: absolute keys, which files each provider measures, `.d.ts`/test-file absence, single-line vs. real extents, null end columns, the nesting witness, the ignore-hint witness, the two branch maps not being the same measurement. **Round 2** added the literal unattributed-line sets per provider (13 v8 / 23 istanbul) and the 29 start lines → 54 classified lines measurement — the pins that actually fail if `_paint` regresses to start-lines-only |
+| `tests/test_adapters_javascript_registration.py` | 12 | protocol surface as literal values, `UNSUPPORTED`, registry equivalence, all four adapters coexisting (Go included — round 2), `normalize_coverage_key` as a no-op across six key shapes (round 2), R2/R3 refusal through `cli._built_in_registry()` itself, the R1 must-succeed control, unknown-language refusal, and the exact language→rigor map this build declares |
 | `tests/test_adapters_javascript_test_path.py` | 31 | 16 test-path spellings, 15 non-test spellings incl. `latest.ts`/`respec.ts`/`my__tests__/`, and `.d.ts` not being a test path |
 | `tests/test_adapters_javascript_has_executable_code.py` | 21 | `.d.ts` decided from the path, comments-only files, 8 shapes that must stay `True` (incl. the type-only module), unterminated block comment, comment-delimiter-in-string, `.d.ts` still being adapter source |
-| `tests/test_adapters_javascript_canary_injection.py` | 11 | byte-preservation as a prefix, clean append boundary, purity/totality, both snippets' shape, no TS-only syntax, the `export` requirement, the two transforms being independent |
-| `tests/test_evaluate_javascript_end_to_end.py` | 10 | the REAL v8 artifact rebased onto a temp repo: PASS, FAIL-with-named-lines, the floor control, zero unclassified lines across all five measured files, test files skipped, `.d.ts` as NoCode, an unmeasured module as a real gap, excluded directories, an out-of-repo key staying inert, capabilities on the evaluation |
+| `tests/test_adapters_javascript_canary_injection.py` | 15 | byte-preservation as a prefix, clean append boundary, purity/totality, both snippets' shape, no TS-only syntax, the `export` requirement, the two transforms being independent. **Round 2**: the committed canary fixture is asserted byte-for-byte equal to what the adapter produces today, and its body lines are asserted `missing` in both real artifacts — so the evidence is a test, not a transcript |
+| `tests/test_evaluate_javascript_end_to_end.py` | 15 | **round 2: parametrized over BOTH real artifacts**, rebased onto a temp repo: PASS, FAIL-with-named-lines, the floor control, denominator-equals-classified-lines (which pins the evaluation against the profile, *not* the parser — its docstring says so), rule 3b never reached, test files skipped, `.d.ts` as NoCode, an unmeasured module as a real gap, excluded directories, an out-of-repo key staying inert, capabilities on the evaluation |
+| `tests/test_coverage_istanbul_provider_accuracy.py` | 19 | **round 2, the M1 module.** Five function shapes whose never-executed lines are known without any coverage tool, measured under both providers on both Vitest majors: which lines each provider calls executed, that the v8 numbers are lies and the istanbul ones are not, that the same lines give `PASS 100.0%` under v8 and `FAIL 0.0%` under istanbul through the shipped `evaluate_coverage`, and the instance hiding inside the round-1 committed fixture. Three of its tests deliberately assert the upstream defect **still exists** — a failure there means a provider was fixed and A-346 needs revisiting, not that the test needs relaxing |
 | `tests/test_cli_run_javascript.py` | 8 | through the real CLI on a real two-commit git repo: R1 PASS, R1 FAIL naming every line of a multi-line extent, R2 refusal with a marker proving the command never ran, unknown-language refusal with the same marker, 3 malformed-artifact shapes → `ERROR`/`UNREADABLE_ARTIFACT`, and the must-distinguish `EMPTY_COVERAGE` control |
 
 ---
@@ -422,6 +458,124 @@ value this implementation computed and then copied back.
 
 ---
 
+## 6a. Round-1 adversarial review — response
+
+Review: `nyxloom-trove/reports/assay-B036-js-adapter-REVIEW.md`, verdict
+ACCEPT-conditional, three conditions. **All three are addressed, and both
+Major findings were reproduced here from scratch before anything was
+changed.** The reviewer's own verification (installing Node, regenerating both
+artifacts byte-for-byte, mutation-testing `normalize_coverage_key`) is
+gratefully noted and is not re-litigated below.
+
+### M1 — `@vitest/coverage-v8` produces false greens. Confirmed, and it is worse than reported.
+
+Reproduced independently, then extended. The review characterised the trigger
+as a **multi-line** ternary; it is not:
+
+| shape | `@vitest/coverage-v8` | `@vitest/coverage-istanbul` |
+|---|---|---|
+| multi-line ternary | **false green** (lines below it executed) | correct |
+| **one-line** ternary (`const a = v > 3 ? 10 : 20`) | **false green** | correct |
+| multi-line binary expression | correct | correct |
+| multi-line call | correct | correct |
+| multi-line object literal | correct | correct |
+
+A one-line ternary is idiomatic React code, so this is not a formatting hazard
+anyone could lint their way around. And it is not a version to upgrade past:
+**measured on Vitest 4.1.11 as well as 3.2.4** — the newest release at time of
+writing still reports lines 7-8 of the repro as executed. (Vitest 4 fixed only
+the ternary's *own* line, not the lines after it.) The istanbul provider is
+correct in both majors, so it is the provider that differs, not the version.
+
+**The ruling (A-346): option (a), and here is why (b) is not available.**
+Nothing in the artifact separates a true `s` count of 1 from a false one —
+there is no internal inconsistency to detect, and `fnMap`/`f` corroborate the
+lie, because the enclosing function really did run. The only mechanical route
+is inferring the PRODUCER from the document's shape, which is the
+declaration-versus-sniffing collapse A-007 forbids — and which would already
+have broken between the two versions measured here, since Vitest 4's v8
+provider emits multi-line statement extents where Vitest 3's emitted
+single-line ones. A shape-based discriminator written today would be silently
+wrong tomorrow while still returning an answer. So the remedy is documentary,
+and the *reason* is recorded as a decision rather than left as a doc edit.
+
+What shipped for it:
+
+- **`probe-js-provider-defect/`** — a project whose ground truth needs no
+  coverage tool (five guarded functions, one test calling each with `0`), plus
+  **four** real artifacts: both providers × both Vitest majors;
+- **`tests/test_coverage_istanbul_provider_accuracy.py`** — 19 tests that
+  re-derive the defect from those artifacts, drive it through the shipped
+  `evaluate_coverage` to show `PASS 100.0%` vs `FAIL 0.0%` on the same lines,
+  and pin the `format.ts:17-18` instance the review found inside the *existing*
+  committed fixture. **Three of them assert the bug still exists** — if a
+  future provider fixes it they fail, and that failure is the signal to
+  revisit A-346, not a test to relax;
+- **docs flipped** — README's config block, CONSUMERS' install line and worked
+  config now say `provider: 'istanbul'`; the "prefer the v8 provider" sentence
+  is gone; a new CONSUMERS section, *"The v8 provider is not safe to gate on"*,
+  carries the reproduction, the four measured facts, and an explicit statement
+  that assay cannot detect this and does not pretend to;
+- **B040 filed** — upstream report plus the producer-declaration question it
+  shares with B038.
+
+The review's framing is accepted without qualification: this change measured
+both producers exhaustively for *shape* and never once for *accuracy*, which
+is the one property R1 rests on. That sentence is now in A-346 as the
+transferable lesson.
+
+### M2 — A-342 overclaimed, and its pin could not fail. Both confirmed.
+
+23 unattributed non-comment lines under istanbul, 13 under v8 — reproduced
+exactly. And `evaluate.py:426` does make `unclassified_lines == {}`
+unfalsifiable for a `requires_span_attribution=False` adapter.
+
+- **A-342 corrected in place**, in the A-326 round-2 style (the correction is
+  written into the row and marked, so the withdrawn claim stays visible),
+  stating the true, weaker guarantee. Report §3.3 above corrected to match.
+  `adapters/javascript.py`'s own docstring gains the same correction, since it
+  is where a reader looks first.
+- **The vacuous test is replaced by two that can fail**, and the difference
+  between them is itself the point:
+  - a *ground-truth* pin in `test_coverage_istanbul_real_fixtures.py` — the
+    literal unattributed line sets per provider, plus the 29→54 expansion
+    measurement. **Mutation-verified**: reducing `_paint` to a start-line-only
+    reduction fails it (along with three others);
+  - a denominator-consistency check in the end-to-end module. Note this one
+    does **not** pin the parser: its expectation is read from the same
+    profile, so a parser regression moves both sides together — verified, it
+    survives that same mutation. Its docstring now says so explicitly rather
+    than implying otherwise. It pins the evaluation against the profile, which
+    is a different and also worth having.
+- **The end-to-end module is parametrized over both committed artifacts**, not
+  v8 only — which is how it came to iterate over `format.ts` (an M1 instance)
+  and assert nothing that noticed.
+- **CONSUMERS gains a fourth "behaves differently" entry** telling consumers
+  that a function signature line or a lone closing brace leaves the
+  denominator, with the measured numbers and what to do about it.
+
+### Minor and nitpick findings
+
+| finding | disposition |
+|---|---|
+| canary evidence was a transcript | **Fixed with committed evidence, not a caveat.** `tests/fixtures/canary/javascript/` now holds the exact injected source plus real coverage artifacts from both providers; four new tests assert the injected file is byte-for-byte what the adapter produces *today* (so the two cannot drift) and that the canary body lines are reported `missing`. No artifact exists for `inject_import_break` and cannot: that injection makes the run fail, and a failed run writes no coverage document — Go's file records the same constraint |
+| `MAX_CLASSIFIED_LINES` test cost ~352 MB | **Fixed at the test, kept at the product value.** Boundary tests now monkeypatch the ceiling down to 12 lines, which pins the same off-by-one — and pins it *better*, since both sides (exactly-at, one-past) are now covered where only one was before. Measured peak RSS for that module: **352 MB → 76 MB**. The shipped 2,000,000 is unchanged and now carries its justification in the constant's own docstring: the budget is spent per statement *extent*, so nesting charges 3-4× source line count under istanbul, and a 300k-line monorepo lands near 1.2M — a tighter ceiling would refuse honest output, which is the A-272 false-refusal direction. A separate test pins the shipped value literally, since the others run monkeypatched |
+| no direct pin on `normalize_coverage_key` | **Fixed** — `test_normalize_coverage_key_is_a_no_op_for_every_key_shape` covers absolute, relative, `./`-prefixed, Windows-shaped, `node_modules` and empty keys, which is what kills the *inert* wrong strip the review demonstrated survives everything else |
+| `cli.py` named the wrong refusal layer | **Fixed, and the finding was understated.** Not just wording: `mutation` is a required key for an R2 lane and `operators` must be non-empty, while `MUTATION_OPERATORS_BY_LANGUAGE` has no `javascript` entry — so a config-valid `javascript` R2 lane is **not constructible at all**, and the registry refusal is unreachable except by direct call. The docstring now documents both layers, which one a real lane meets, and why the second still matters (it is what holds if B037 ever adds a `javascript:*` vocabulary ahead of an engine — the `go:*` situation today) |
+| "four adapters" test registered three | **Fixed** — `GoAdapter` added, `len(registry.entries) == 4` asserted, and the docstring notes that Go coexisting in a registry is a different fact from `_built_in_registry` reaching it |
+| gap note said A-333, now A-334 | **Fixed** in the decisions.md header note |
+| no `package-lock.json` with `probe-js` | **Fixed** — lockfiles committed for `probe-js` and for both dependency sets of `probe-js-provider-defect`, so the recipes are exactly reproducible rather than reproducible in practice (+288 KB) |
+| PROVENANCE omitted the empty-object else-arm | **Fixed** — new row, flagged for B038 |
+| the closing-brace over-approximation is defensible | Agreed, no action — the reviewer tried to construct a misleading case and could not, and innermost-wins already rescues the nested case |
+
+### What did not change
+
+The parser, the adapter's behaviour, the protocol, the core, the registry and
+the schema are all untouched by this round, exactly as the review predicted.
+Every change is a test, a fixture, a docstring, a document or a decision —
+which is the right shape for a round whose central finding is that a
+*producer* is wrong and assay reports it faithfully.
+
 ## 7. What a reviewer should push on
 
 1. **§3.3's over-approximation.** A lone closing brace inside a never-executed
@@ -440,8 +594,18 @@ value this implementation computed and then copied back.
    artifact, which A-007 forbids doing silently.
 4. **The decision-id gap (A-327…A-339).** Deliberate, to avoid colliding with
    the in-flight `feature/assay-b018-b019-b035-v8-synergy` wave, which had
-   consumed through A-333 when this was written. If that wave lands with
-   fewer, the gap stays. Reasoning is in the decisions.md section header.
+   consumed through A-334 when the round-1 review re-checked. If that wave
+   lands with fewer, the gap stays. Reasoning is in the decisions.md header.
 5. **B039 was filed, not fixed.** `go_cover.parse` has the same unbounded
    expansion this parser was given a ceiling for. Leaving a known
    resource-exhaustion shape in place for one more cycle is a choice.
+6. **A-346 is a documentary mitigation, not a fix (round 2).** A consumer who
+   does not read the warning still gets false-clean verdicts. The alternative
+   — refusing artifacts identified as v8-produced — requires sniffing the
+   producer, which A-007 forbids and which the two Vitest majors already
+   demonstrate is unstable. If a reviewer thinks assay should refuse anyway,
+   that is a coherent position and it needs B038/B040's producer-declaration
+   mechanism, not a heuristic.
+7. **Three tests deliberately assert that an upstream bug still exists.** If
+   `@vitest/coverage-v8` is fixed, assay's suite goes red until someone
+   revisits A-346. That is the intent, and it is a real maintenance cost.
