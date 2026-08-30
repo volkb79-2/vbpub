@@ -792,3 +792,161 @@ cd "$worktree"       && git ls-files --others --exclude-per-directory=.gitignore
 # R2-M3: was ciu.env regenerated, or restored?
 cmp <stashed original> "$worktree/ciu.env"          # -> identical
 ```
+
+---
+---
+
+# Round 3 — verification of the four corrections
+
+**Reviewed:** 2026-08-30
+**Head reviewed:** `ea6c2daa` (the implementer's transcript covers `652962af`, two
+markdown-only commits earlier — checked: `git diff --name-only 652962af..HEAD | grep -v '\.md$'`
+is empty, and the only file that moved is the report itself)
+**Round-3 commits:** `652962af`, `ba62cd54`, `ea6c2daa`
+
+Spot-check as scoped, plus a full gate run because the project's own rule is never to accept a
+pasted transcript.
+
+## Gate and suite — green at the true head
+
+| claim | check | result |
+|---|---|---|
+| gate exit 0 | ran `bash tools/tester-unified-gate.sh ..` from `assay/` at **`ea6c2daa`**; exit code and markers read separately | **GATE_EXIT=0**, 11 phase markers in order, `ASSAY_B006A_CMRU_QUALIFIED=1`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, **zero** `ASSAY_GATE_DIAGNOSTIC` lines. Self-hosted lane names `commit: ea6c2daa…` |
+| `3366 passed` (+1) | `python -m pytest tests -q`, exit read separately | **exact**: `3366 passed, 11 skipped, 1 warning in 354.80s`, exit 0 |
+
+## The four corrections
+
+### R2-M1 — retraction is correct, and matches what I measured independently in round 2
+
+`provenance.py:149-166` (comment at `:149`) now says the fragment strip is "DEFENSIVE parsing, not … a fix for a
+reachable defect", names `link.url_without_fragment` as the reason, and says both pip and uv
+strip it. That is exactly what I measured in round 2 (two real pip installs — local and remote
+over loopback — plus pip's own source at `direct_url_helpers.py:78,89`, plus uv 0.12.1). The
+report's §9 transcript reproduces the same result on their own wheel.
+
+`CHANGES.md:44-49` moved from **### Fixed** to **### Changed**, and the entry now leads with
+"**This fixes no reachable defect**". That is the right call — a `Fixed` entry is a statement to
+consumers that they were exposed, and they were not. The second entry was recategorised
+`docs(assay)`, which is also right.
+
+The **code is kept**, which I agree with: stripping a spec-legal fragment costs one `split` and
+the sdist negative still pins the guard.
+
+### R2-M2 — fixed, and I verified it against B017's exact shape
+
+`tools/tester-unified-gate.sh:262-264` now anchors **both** queries with `-C "$worktree"` (they
+also anchored `git status`, which I had not asked for and which is a genuine improvement: it
+makes the paths repo-top-relative, i.e. the same paths `git.dirty_paths` reports). Reproduced in
+a scratch repo with two root-level untracked files, one hidden by `.git/info/exclude`, from
+`assay/` — the directory `run_self_hosted_lane` actually runs in:
+
+```
+OLD form (round-2 code):
+  git ls-files --others --exclude-per-directory=.gitignore        -> (empty)
+NEW form (round-3 code):
+  git -C "$worktree" ls-files --others --exclude-per-directory=…  -> ciu.global.worktree.toml.j2
+                                                                     ciu.worktree-instance.json
+```
+
+The second name is the one that caused the red lane and is invisible to `git status`. **The
+diagnostic now sees it.** `$worktree` is a `local` in that function, so it is in scope.
+
+### R2-M3 — retracted properly, and the strong reading restored
+
+`4-backlog.md:1858-1873` strikes the transience bullet through, marks it **"RETRACTED after
+round-2 review (R2-M3). No ciu ran."**, credits my round-1 restoration, gives the byte-identity
+argument, and — the part that mattered — restores *"on a ciu-created worktree whose repository
+lacks the committed `.gitignore` entries, this reproduces every time."* The mechanism bullet is
+correctly left standing as unaffected.
+
+`R2-m2` is fixed too: the report at `:525` now says "The round-1 **reviewer** ran the full gate",
+with the old wording quoted as a correction note at `:530`, consistent with the header at `:7`.
+
+### R2-m1 (uv) — better than I asked for
+
+`docs/CONSUMERS.md:812` gains a measured `uv` row (`"archive_info": {}` on uv 0.12.1 — exactly
+what I observed), and the paragraph below it corrects the organising rule from *"the install was
+direct"* to *"the installer recorded a digest"*, then adds "pin the installer as well as the
+artifact" and recommends the `.pyz` as the shape that depends on no installer metadata at all.
+The new test
+(`tests/test_cli_provenance_and_request_base.py:167`) pins a clean refusal rather than a
+`KeyError`, and its docstring is careful to say the *shape* was measured against a real uv
+install while the test itself is a fake — which is A-334's discipline applied correctly rather
+than recited.
+
+### A-334 — a good record
+
+It names all three reconstructions, notes that two were written after A-333 forbade the pattern,
+and identifies the actual common shape ("checking against a proxy that shares the hypothesis's
+own assumption"). That is a more useful rule than "measure things", and it is the right lesson
+from this wave.
+
+## The one thing still wrong
+
+### R3-m1 — A-332 now asserts both the correction and the retracted claim, in the same row
+
+The coordinator asked specifically whether `decisions.md` and `CHANGES.md` read consistently.
+`CHANGES.md` does. `decisions.md:746` does not — the retraction was inserted into A-332's
+**reason** cell but two statements of the original false claim were left standing around it:
+
+1. **The decision cell is untouched.** It still reads:
+   > "(a) a **REAL BUG** is fixed — the URL fragment is now stripped before the `.whl` test, so
+   > `pip install https://.../assay-1.0-py3-none-any.whl#sha256=...` **is identified where it was
+   > silently refused**"
+
+   with no `CORRECTED` marker anywhere in that cell (checked programmatically: none of
+   `CORRECTED`, `A-334`, `retract`, `hardening`, `no reachable` appear in it). The decision column
+   is the ruling; a reader scanning rulings gets the false one.
+
+2. **The reason cell contradicts itself.** The corrected sentence and the original conclusion now
+   sit consecutively:
+   > "… So (a) **fixes no reachable defect**: it is defensive hardening for a shape PEP 610
+   > permits and no current installer emits … **So the single install shape this feature's most
+   > important consumer is most likely to use reported no identity, and a gate … would have
+   > hard-refused a correctly pinned, correctly verified judge.**"
+
+   The second "So" is the un-deleted tail of the original argument. As it stands the row asserts
+   both *P* and *not-P* about the same fact.
+
+This is the same failure A-334 names one row later — the reader who stops before the correction
+gets the false version — and A-331 was fixed the right way in round 2 (sentence edited in place,
+marked). A-332 was fixed only halfway.
+
+Third site, lower stakes because it is a wave artifact rather than the ledger: report §8
+(`:570-583`) still carries the original "including a bug the review did not find" heading, the
+`-> None <-- silently unidentifiable` table and the prose conclusion, unannotated. §9 retracts it
+130 lines later with no forward pointer from §8.
+
+**Fix:** delete the trailing "So the single install shape …" sentence from A-332's reason cell;
+amend "(a) a REAL BUG is fixed … where it was silently refused" in the decision cell to
+"(a) the URL fragment is stripped before the `.whl` test — defensive hardening, not a reachable
+defect (corrected by A-334)"; and add a one-line "**Superseded by §9**" marker at the top of
+report §8's M3 subsection. No code, no tests, no gate.
+
+## Round-3 verdict
+
+**ACCEPT-conditional** — on one prose edit, and I would not hold a merge for it if the
+coordinator prefers to take it as a follow-up.
+
+All four round-2 conditions are genuinely discharged. I re-verified the two that were checkable
+by measurement — the `git -C` diagnostic against B017's exact shape, and the retraction's factual
+content against my own round-2 measurements — and both hold. The gate is green at the true head
+(`ea6c2daa`, better than the transcript's `652962af`), the suite is 3366 as claimed, the
+gated-commit-to-head gap is markdown-only, and the `uv` remediation went further than the finding
+required. A-334 is the most valuable artifact this wave produced.
+
+Condition:
+
+1. **R3-m1 — finish the A-332 retraction.** One sentence deleted, one clause amended in the
+   decision cell, one "superseded" marker in report §8. Until then the project's durable decision
+   ledger asserts, in a single row, both that the fragment bug was real and that it was not.
+
+Everything else is ready. Three green gate runs at three different commits, all reproduced
+independently by me at the true head each time; the only source changes across three rounds of
+review are nine lines of parser hardening, one `-C` on two shell lines, and thirteen tests.
+
+## Appendix — round-3 hand-back
+
+Nothing in the worktree was modified this round: no source edits were needed, so no restores were
+required beyond the two B017 files, which were moved aside for the gate and put back
+byte-identical to the round-1 stash. The only tracked change is this file.

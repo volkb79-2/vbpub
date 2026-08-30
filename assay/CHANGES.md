@@ -5,24 +5,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-<!-- STALE-ENTRY WARNING, added 2026-08-30 by the B018/B019/B035 wave after its
-     round-1 review flagged it (m8). Everything below tagged (B033/A-325) or
-     (B034/A-326) ALREADY SHIPPED in 2.4.2 -- see the generated `## [2.4.2]`
-     section further down, which names `a667862c` and `6e0dca84`. Those
-     hand-written entries were never cleared when 2.4.2 was cut, so as it
-     stands the next release re-announces them.
+### Migration notes (upgrading from 2.4.x)
 
-     WHOEVER CUTS THE NEXT RELEASE: delete the B033/B034 entries from this
-     section before generating. This file's own release-history comment says
-     clearing `[Unreleased]` "is part of releasing", so this wave deliberately
-     did NOT clear them -- it is not authorised to release, and silently
-     deleting another wave's release notes is not an implementation change.
-     Flagged here rather than left to be rediscovered.
+This release cuts verdict schema **v7 → v8** and carries several breaking lane-config
+changes. Concrete steps for consumers, in the order you'll likely hit them:
 
-     The entries this wave itself added (B018/A-327, B019/A-328, B035/A-329,
-     A-331, A-332) are genuinely unreleased and must stay. -->
-
-<!-- ADDED BY THIS WAVE (B018/B019/B035 + A-331/A-332) -- genuinely unreleased -->
+1. **Pin or upgrade your verifier together with your producer.** A v8 verdict fails
+   validation under a v7 `assay verify` (the new `judgment.r2.mode`/`targets` fields are
+   `additionalProperties: false`-rejected), and a v7 verdict is refused by a v8 `assay
+   verify` (`schema_version` is checked first, before any other field). This is a hard cut,
+   not a rolling upgrade — verify with the same major schema version you produced with.
+2. **If any lane declares `judge.mode = "whole_target"`, it must not also declare
+   `judge.base`.** Already true since 2.4.2 (B033) but restated here because the schema-v8
+   cut is when a leftover `base` line stops being merely inert and starts being refused
+   consistently across every tier. dstdns's own `cw2b_schema` lane needed this fix and has
+   already applied it.
+3. **`python:uuid-equality-swap` and `python:enum-comparison-swap` are now gone from the
+   schema, not just from what assay produces.** If any lane file or `--operators` override
+   still names either, delete it — the refusal now correctly points at
+   `python:compare-swap` instead of a bare "unknown operator". A verdict already on disk
+   from before this release that used either spelling still verifies against a v7
+   `assay verify`; it will not validate as v8.
+4. **New, entirely opt-in:** `judge_provenance` (name/version/artifact/digest) appears on a
+   verdict when assay can identify its own build artifact. Nothing changes unless you pass
+   `--require-judge-provenance`, which turns an unidentifiable invocation into a refusal —
+   read `docs/CONSUMERS.md`'s install-shape table first if you plan to use it inside a
+   container image: a plain `pip install assay` from an index cannot be identified (no
+   on-disk record survives that install shape); install from the wheel file/URL or the
+   `.pyz` instead if you want this flag to work.
+5. **New, entirely opt-in:** a lane can delegate its comparison base to the invoking gate
+   with `judge.base_source = "request"` + `assay run|plan --request-base REF`, instead of
+   hardcoding `judge.base`. Declaring both is refused, not resolved by precedence — pick
+   one per lane.
 
 ### Added
 - feat(assay): every verdict may now carry `judge_provenance` — the resolved judge name, its exact
@@ -54,134 +68,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `docs/CONSUMERS.md` carries the full table of which install shapes can be identified, including
   that **uv records no digest even for a direct-URL install**, so a uv-installed wheel is not
   identifiable today (A-332)
-
-<!-- END of this wave's entries. Everything below belongs to 2.4.2 — see the warning above. -->
-
-- feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
-- feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
-- feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
-- feat(assay): infrastructure fact injection (`required-env:`/`derived:`) for isolated lanes (B013)
-
-### Changed
-- **BREAKING (verdict schema v7 → v8):** `judgment.r2` now REQUIRES `mode`, so every verdict emitted
-  before this release fails validation under v8 and must be verified with a v7 `assay` — a hard cut
-  (A-170), not an upgrade-in-place. `judge.mode` is enforced as a lane-level scope across tiers: an
-  r1 and an r2 in the same judgment must agree on `mode` and `targets`, and the `resolved.base`
-  rules are expressed against whichever tier witnesses the scope rather than r1 alone (B035/A-329)
-- **BREAKING (verdict schema v7 → v8):** `python:uuid-equality-swap` and `python:enum-comparison-swap`
-  lose their SPELLINGS as well as their behaviour — both are gone from the packaged schema's
-  per-language `oneOf`, discharging A-326's "the spellings go at the next bump" at the bump it named.
-  A lane file still naming either still gets the *withdrawn* refusal pointing at `python:compare-swap`,
-  not a bare "unknown operator", because that check now runs first (A-331)
-- **BREAKING (lane config):** a lane declaring `judge.mode = "whole_target"` may no longer
-  declare `judge.base` — no tier reads one under whole-target scope, so it is now refused as
-  inert config, in every language and at every rigor. A whole-target R2 lane that declared a
-  base (dstdns's `cw2b_schema` is the known one) must delete that line (B033/A-325)
-- **BREAKING (lane config):** a SQL lane declaring `judge.targets` must now also declare
-  `judge.mode = "whole_target"`, exactly as every other language always had to; the
-  `declared_language != "sql"` carve-out on the vacuity guard is gone, and `targets` no longer
-  sits in the surplus exemption (B033/A-325)
-- **BREAKING (lane config):** `python:uuid-equality-swap` and `python:enum-comparison-swap` are
-  withdrawn — a lane declaring either, or an `--operators` override naming either, is refused at
-  load. The two names stay legal in a schema-v7 artifact, so verdicts already emitted by
-  2.3.0/2.4.x keep verifying; nothing produces them (B034/A-326). **Superseded in part by the
-  v8 entry above:** that "stay legal" half was explicitly scoped to v7 and is discharged by
-  A-331 at this release's schema cut — the spellings are gone from v8 entirely
-
-### Fixed
-- fix(assay): R2 whole-target mutation silently dropped a declared `judge.targets` entry that
-  failed a containment gate (excluded directory, non-matching source glob, test path) and
-  reported PASS/FAIL over the narrowed set, where R1's own resolver refuses the identical
-  shapes by name; R2 now refuses `ERROR`/`BAD_LANE_CONFIG` naming the target and the gate on
-  the diagnostics stream, and also names a target that is absent at the judged commit instead
-  of surfacing an unnamed `GIT_FAILED` (B033/A-325)
-- fix(assay): a whole-target verdict recorded `judgment.resolved.base`/`base_resolution` for a
-  comparison that never ran — whole-target R2 skips both the base check and the diff, and
-  whole-target R1 resolves no base either; both fields are now omitted. The model, `verify.py`
-  and the packaged schema are relaxed in step (a pure widening: no document that validated
-  before stops validating, and schema v7 is not bumped) (B033/A-325)
-- fix(assay): B015's two "semantic" Python operators produced a byte-identical subset of
-  `python:compare-swap`'s own sites (87 sites measured over `src/assay/**.py`, zero new), so
-  co-selecting them ran every shared mutation twice for no added coverage, inflated
-  `mutation.total`/`candidate_count`, halved the effective `--max-mutants` budget and
-  misattributed kills; the enum predicate matched any `name.attr` access rather than an enum
-  member. Both are withdrawn (B034/A-326)
-- fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
-- fix(assay): `assay plan` reported `candidate_count: 0` for every lane, unconditionally, and a
-  `mode = "whole_target"` lane failed outright naming a scratch directory that never existed;
-  `plan`'s candidate discovery now matches a real `assay run`'s candidate count and IDs
-  byte-for-byte (B030)
-- fix(assay): the R2 progress artifact wrote unconditionally into the CONSUMER's live worktree
-  (`.assay/<lane>.progress.jsonl`), so a passing R2 lane refused `NO_MEASUREMENT`/`DIRTY_TREE` on
-  its very next run; progress reporting is now opt-in and consumer-directed
-  (`assay run --progress PATH`), never written unless asked for (B031)
-- fix(assay): removed the unused, never-populated `mutation.progress_artifact` verdict field
-  (schema v7 unchanged — no released `assay verify` ever accepted a document carrying it, so no
-  existing document is invalidated by the removal); `candidate_ids` and
-  `judgment.r2.shard_index`/`shard_count` are registered in `verify.py`'s reconstruction layer,
-  closing a gap where assay's own schema-valid output failed `assay verify` (B031)
-- fix(assay): an `environment_command` preflight probe that genuinely exhausted its own timeout
-  was misreported `ERROR`/`BAD_LANE_CONFIG`, exit 2, instead of `BUDGET_EXCEEDED`/`LANE_TIMEOUT`,
-  exit 4; the probe's cap is now enforced where `execute_plan` actually reads it, and a probe
-  refusal writes a clear cause (lane, cause, declared wrapper) to stderr instead of 0 bytes (B032)
-- fix(assay): a probe-timeout refusal always named the fixed 30s preflight cap even when the
-  lane's own, tighter remaining budget was the bound that actually fired; the message now names
-  whichever bound actually applied (B032, round-2 review)
-- fix(assay): a bad `--progress` destination (an existing directory, or an empty `--progress ""`,
-  which resolves to the invoking directory) ran the whole lane and only then surfaced an unrelated
-  `ERROR`/`GIT_FAILED`; it is now refused before any repository work with the same
-  `ERROR`/`OUTPUT_WRITE_FAILED` `--verdict-json` gives for the identical mistake (B031, round-2
-  review)
-- fix(assay): snapshot manifest leaf verification now rejects a symlink standing in for a
-  declared regular-file entry, using `lstat`/`S_ISREG` instead of `Path.is_file()` (B016)
-- fix(assay): `assay run`/`assay plan` crashed with `NameError` on an `--operators`/`--shard`
-  refusal, and on any lane declaring `[lanes.<name>.infrastructure]`, from two missing imports
-  (B012/B013)
-- fix(assay): `--shard` was 1-based against the 0-based contract in config/schema/docs; a
-  sharded verdict now records the executed shard instead of the lane's static declaration (B012)
-- fix(assay): mutation shard-merge validation now verifies each candidate's assignment against
-  its claimed shard and refuses an all-empty merge, instead of trusting the caller (B012)
-- fix(assay): verdict schema placed `mutation.candidate_ids`/`progress_artifact` on the wrong
-  `$defs` entries; a populated shard verdict violated its own published schema (B012)
-- fix(assay): a routine pre-gate merge silently narrowed R1/R2's changed-line scope to
-  first-parent instead of the declared merge-base, with no record of which fired; a new
-  additive `judgment.resolved.base_resolution` field (`"merge-base"`/`"first-parent"`) makes it
-  auditable (B008)
-- fix(assay): mutation-state resume's stale-record disposition was inverted — a tampered
-  `source_sha256` (folded into the record's own filename) silently reran instead of raising, and
-  a routine `schema_version` bump (the one field NOT folded in) raised instead of silently
-  rerunning; both now correct (B021)
-- fix(assay): `env_passthrough` could silently overwrite a declared infrastructure fact at
-  runtime with no defence beyond the lane loader; `resolve_command_plan` now refuses the
-  collision itself, and a resolved infrastructure value is now bounded at 64 KiB instead of
-  failing late and opaquely at `E2BIG` on exec (B022)
-- fix(assay): an unresolvable infrastructure declaration could crash a refusal uncaught, with no
-  verdict artifact, at four independent `resolve_command_plan` call sites (the direct R0-only
-  path, the `environment_command` probe, `_run_higher_rigor_lane`'s primary resolution, and
-  `refuse_lane`'s own recording call) — all four now degrade to a real, schema-valid verdict; a
-  new additive `env_effective_incomplete` field marks the one case where `env_effective` is a
-  fallback (`lane.env` alone) rather than the real resolved environment (B025)
-- fix(assay): a mutant-induced pytest timeout crashed `execute_plan` instead of reaching
-  `BUDGET_EXCEEDED`/`LANE_TIMEOUT` — `subprocess.TimeoutExpired.stdout`/`.stderr` is `bytes` even
-  under `text=True`, the one path CPython does not text-decode for you; the SAME undecodable-bytes
-  crash was also live on the normal completion path (`default_process_runner` had no `errors=`) —
-  both now tolerantly decode instead of raising (B027)
-- fix(assay): `judge.mutation.shard_count`'s bound accidentally reused a DIFFERENT ceiling
-  (`MAX_MAX_MUTANTS`) that only happened to equal the same value; a dedicated `MAX_SHARD_COUNT`
-  decouples the two so a future change to either cannot silently drift the other (B026)
-
-### Changed
-- docs(assay): pyflakes sweep of `src/assay/` (recursive) to zero findings — four unused imports,
-  one needless `f"..."` prefix, one dead local variable, and 24 annotation-only undefined names
-  now resolved with real or `TYPE_CHECKING`-guarded imports; wiring a lint phase into the shared
-  `tester-unified` gate is deliberately deferred (cross-project Docker image change, out of scope
-  for this pass) (B024)
-- docs(assay): `judge.mutation.shard_index`/`shard_count` (lane-declared, never consumed at
-  runtime) documented explicitly as reserved-for-future-use, not wired or removed (B026)
-- docs(assay): a bad `--shard`/`--operators` refusal's three-way stderr-diagnostic asymmetry
-  (`run`+shard writes an artifact and no message; `run`+operators writes a message and no
-  artifact; `plan`'s own refusal is a third shape again) is now documented as an accepted,
-  understood tradeoff rather than left implicit (B026)
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

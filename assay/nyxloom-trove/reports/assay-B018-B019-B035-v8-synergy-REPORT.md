@@ -566,7 +566,9 @@ one of those checks turned up a real bug the review had not found.
 | **M3** | `--require-judge-provenance` hard-fails an index-installed wheel — the CIU §10.5 "runner image already carrying the pinned judge" path — and the refusal message reads as exhaustive while omitting that case | Real fix + honest limit + recorded refusal to fake it. See below. |
 | **m1+m2** | My B017 causal story is wrong (the pre-flight is pathspec-limited to `assay/`), and the diagnostic I added for it runs only the half that cannot see the failure | Both corrected; the diagnostic now runs assay's own `ls-files` query beside `git status`. |
 
-### M3 in detail — including a bug the review did not find
+### M3 in detail — a bug I believed I'd found, RETRACTED below (see "R2-M1", further down this
+### report) — the table and narrative immediately below are the ORIGINAL, now-false claim, kept
+### for the record rather than deleted; do not act on them as stated
 
 Checking the reviewer's index-install finding, I probed the wheel branch against the four URL
 forms a real installer produces. One was broken:
