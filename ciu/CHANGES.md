@@ -21,6 +21,36 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.7.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e4bdae68e9b419bd3c44850cc7500c9bfeefedf -->
+
+### Added
+- feat(ciu)!: CIU-75 -- the overlay becomes the sole instance-fact source (BREAKING) (ebcc7ad7)
+
+### Fixed
+- fix(ciu)!: CIU-75 review round 1 -- complete the cutover at STEP 1, and stop the notice breaking `ciu check --json` (c979de02)
+- fix(ciu): CIU-77 -- bump vendored gate judge assay-2.3.0.pyz -> assay-3.2.0.pyz (b81d6c3b)
+- fix(ciu): CIU-81 -- scaffold.py's two Jinja render paths adopt StrictUndefined (597ce58d)
+- fix(ciu): CIU-80 -- HookContext.identity_unreadable disambiguates unmanaged from unparseable ciu.env (cd5fadea)
+- fix(ciu): CIU-79 -- ciu dev's _build_dev_image resolves build.context against repo_root (7b2d288b)
+
+### Changed
+- report(ciu): ciu-P42 -- record review round 1 (REJECT -> completed cutover) in LOG/REPORT (55d4d017)
+- backlog+docs(ciu): CIU-83 -- ciu-P43 landed no CHANGES entries; REPORT/LOG carry the final gate verdict (95ec5803)
+- docs+test(ciu): ciu-P42 -- record the ciu-P43 rebase, the merged identity contract, and the post-rebase gate (8cc79745)
+- report(ciu): ciu-P42 -- CIU-75 REPORT + LOG gate/hash record (67a588f8)
+- docs+test(ciu): ciu-P43 review round 1 fixes -- CIU-79 is breaking, test fixture was wrong (274230af)
+
+### Documentation
+- docs(ciu): CIU-83 -- add [7.7.0] CHANGES.md entries for ciu-P43's CIU-77/79/80/81 (9e4bdae6)
+- docs(ciu): CIU-75 review round 2 -- finish the documentation sweep, correct CIU-82 again, file CIU-84/85 (54425f98)
+- docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; CIU-75 FIXED, CIU-82 filed (f8f29778)
+- docs(ciu): CIU-79's backlog row names the breaking change (review polish) (8a1b7d53)
+- docs(ciu): ciu-P43 -- record the post-review-fix gate re-run verdict (8431f966)
+- docs(ciu): ciu-P43 LOG + REPORT -- four-item bundle, real gate green (28e29b90)
+- docs(ciu): CIU-75 -- retarget its release version from 7.6.0 to 7.7.0 (332af5a1)
+
 ## [7.7.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose.** The estate's
