@@ -56,7 +56,7 @@ def test_preflight_reports_unsatisfied_typed_requirement(monkeypatch):
     monkeypatch.setattr(
         provisioning,
         "probe_ref",
-        lambda ref, config, repo_root: ProbeResult(
+        lambda ref, config, repo_root, **_kw: ProbeResult(
             ref=ref, satisfied=False, reason="database is not ready"
         ),
     )

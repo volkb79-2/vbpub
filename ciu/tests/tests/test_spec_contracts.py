@@ -1312,6 +1312,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={"registry": {"postgresql": {"database": "dstdns_demo"}}},
             repo_root=Path("/tmp"),
             docker_exec_fn=_exec,
+            stacks={"pgstack": {"provides": ["pg:schema/public_ext"]}},
         )
         assert result.satisfied is True
         assert "-d" in captured["cmd"]
@@ -1332,6 +1333,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={},
             repo_root=Path("/tmp"),
             docker_exec_fn=_exec,
+            stacks={"pgstack": {"provides": ["pg:schema/public_ext"]}},
         )
         assert result.satisfied is True
         # Without a db config, -d should NOT be injected
@@ -1344,6 +1346,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={"registry": {"postgresql": {"database": "dstdns_demo"}}},
             repo_root=Path("/tmp"),
             docker_exec_fn=lambda c, cmd: (0, "\n"),
+            stacks={"pgstack": {"provides": ["pg:schema/missing_schema"]}},
         )
         assert result.satisfied is False
 

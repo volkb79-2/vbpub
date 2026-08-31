@@ -2635,7 +2635,7 @@ def test_check_json_reports_the_live_probe_verdict_separately(tmp_path, capsys, 
     """--live is the ONLY exit-1 class, so it is not a stage in the envelope."""
     monkeypatch.setattr(
         "ciu.provisioning.probe_ref",
-        lambda ref, _c, _r: provisioning.ProbeResult(ref, False, "absent"),
+        lambda ref, _c, _r, **_kw: provisioning.ProbeResult(ref, False, "absent"),
     )
     rendered = {
         "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},
@@ -2654,7 +2654,7 @@ def test_check_json_reports_the_live_probe_verdict_separately(tmp_path, capsys, 
 def test_check_json_records_a_passing_live_probe(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         "ciu.provisioning.probe_ref",
-        lambda ref, _c, _r: provisioning.ProbeResult(ref, True, "ok"),
+        lambda ref, _c, _r, **_kw: provisioning.ProbeResult(ref, True, "ok"),
     )
     rendered = {
         "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},

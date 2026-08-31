@@ -62,7 +62,7 @@ def test_check_live_reports_every_unsatisfied_requirement_and_stays_red(monkeypa
     }
     selection = [{"path": "infra/db"}, {"path": "applications/api"}]
 
-    def fake_probe(ref, _config, _root):
+    def fake_probe(ref, _config, _root, **_kw):
         return ProbeResult(ref, ref == "pg:db/app", "database reachable" if ref == "pg:db/app" else "role absent")
 
     monkeypatch.setattr("ciu.provisioning.probe_ref", fake_probe)
