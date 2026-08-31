@@ -350,9 +350,18 @@ class TestBoundedRequirementPoll:
         def run(results: list[provisioning.ProbeResult], config: dict | None = None):
             pending = list(results)
             calls: list[str] = []
+            graphs: list[object] = []
+            run.graphs = graphs  # type: ignore[attr-defined]  # readable even if the call raises
 
-            def fake_probe(ref, _config, _root):
+            def fake_probe(ref, _config, _root, *, stacks=None):
+                # CIU-70 × CIU-68(b): `stacks` is the resolution graph the
+                # probe resolves its target container from. It is recorded,
+                # not ignored — the merge of these two changes is the one
+                # place where dropping it on the RE-probe would silently
+                # regress CIU-70 only on the retry path, which no CIU-70 test
+                # exercises (nothing there retries).
                 calls.append(ref)
+                graphs.append(stacks)
                 return pending.pop(0) if len(pending) > 1 else pending[0]
 
             from ciu import provisioning as provisioning_pkg
@@ -388,6 +397,40 @@ class TestBoundedRequirementPoll:
         out = capsys.readouterr().out
         assert "waiting up to 90s" in out
         assert "satisfied while waiting" in out
+
+    def test_the_resolution_graph_reaches_every_reprobe_not_just_the_first(
+        self, run_preflight
+    ):
+        """CIU-70 × CIU-68(b), the merge point — this is the ONE assertion
+        that catches the resolution these two changes' textual conflict
+        invites getting wrong.
+
+        CIU-70 passes `stacks=probe_graph` so a probe resolves its target
+        container from the stack that PROVIDES the ref; without it a `pg:` /
+        `minio:` ref fails closed. CIU-68(b) wraps that call in a bounded
+        retry. Threading the graph through the FIRST call and dropping it on
+        the RE-probe would look correct in every CIU-70 test (none of them
+        retry) and in every CIU-68 test that only counts calls — and would
+        fail live, on the retry path only, exactly where the original
+        `starting` failure lived.
+        """
+        starting = provisioning.ProbeResult(
+            ref="stack:vault:healthy", satisfied=False, retryable=True,
+            reason="starting",
+        )
+        healthy = provisioning.ProbeResult(
+            ref="stack:vault:healthy", satisfied=True, reason="healthy",
+        )
+        calls, _clock = run_preflight([starting, starting, healthy])
+        graphs = run_preflight.graphs
+
+        assert len(graphs) == len(calls) == 3
+        expected = deploy.provisioning_graph(_preflight_rendered())
+        assert graphs == [expected] * 3, (
+            "every probe — initial AND each re-probe — must receive the same "
+            "CIU-70 resolution graph"
+        )
+        assert expected, "the fixture must actually produce a non-empty graph"
 
     def test_a_never_converging_dependency_fails_after_the_budget(self, run_preflight):
         stuck = provisioning.ProbeResult(

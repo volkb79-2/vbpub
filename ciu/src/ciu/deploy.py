@@ -2222,7 +2222,32 @@ def _workspace_identity(repo_root: Path) -> dict:
         return {}
     try:
         return parse_workspace_env(env_path)
-    except (OSError, UnicodeDecodeError, WorkspaceEnvError):
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        # CIU-62 review ruling: the `{}` degradation stays (symmetry with
+        # engine.py's real-run twin is the point), but it must not be
+        # SILENT. Without this line the estate's own default test — "if this
+        # default is wrong, does anything fail loudly?" — answered no: a hook
+        # seeing `ctx.instance_id is None` could not tell "genuinely
+        # unmanaged workspace" from "corrupt ciu.env, swallowed". The warning
+        # names the file so the operator can repair it; the contract itself
+        # is unchanged. CIU-80 tracks the stricter variant.
+        #
+        # STDERR, not `warn()` — deliberate, and the reason is a contract, not
+        # a style preference. `warn()` prints to STDOUT, and under
+        # `ciu check --json` (S13.4a) the versioned JSON document is the only
+        # thing this path may put on stdout; a `[WARN]` line ahead of it would
+        # break every machine consumer's parse. Same rule `ciu graph
+        # --format json` already follows: "diagnostics go to the logger
+        # (stderr); only the graph itself goes to stdout". engine.py's twin
+        # warning stays on stdout because that path has no machine-readable
+        # stdout channel to protect and stdout `[WARN]` is its own idiom.
+        print(
+            f"[WARN] [S3.12] could not read workspace identity from "
+            f"{env_path}: {exc}. Hook context identity (instance_id, network) "
+            "will be None for this check — repair with `ciu env generate`",
+            file=sys.stderr,
+            flush=True,
+        )
         return {}
 
 

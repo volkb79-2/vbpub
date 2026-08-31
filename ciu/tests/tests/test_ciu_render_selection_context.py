@@ -387,7 +387,7 @@ def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
     ],
 )
 def test_engine_identity_read_survives_an_unparseable_ciu_env(
-    tmp_path, monkeypatch, kind, payload
+    tmp_path, monkeypatch, capsys, kind, payload
 ):
     """CIU-62 — the real-run twin of `deploy._workspace_identity`.
 
@@ -419,6 +419,14 @@ def test_engine_identity_read_survives_an_unparseable_ciu_env(
         "the hook must be told the documented 'no identity', never a "
         "half-parsed or fabricated one"
     )
+    # CIU-62 review ruling: the degradation stays, the SILENCE does not.
+    # Without this the estate's own default test — "if this default is wrong,
+    # does anything fail loudly?" — answers no, and a hook seeing
+    # instance_id=None cannot distinguish "unmanaged" from "corrupt, swallowed".
+    out = capsys.readouterr().out
+    assert "[WARN] [S3.12] could not read workspace identity" in out
+    assert "ciu.env" in out
+    assert "ciu env generate" in out, "the warning must name the repair"
 
 
 from ciu.hooks_runner import HookContext  # noqa: E402

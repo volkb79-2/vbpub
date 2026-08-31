@@ -1540,7 +1540,21 @@ def main_execution(
                 from .workspace_env import parse_workspace_env as _parse_env
 
                 _hook_identity = _parse_env(_env_path)
-        except (OSError, UnicodeDecodeError, WorkspaceEnvError):
+        except (OSError, UnicodeDecodeError, WorkspaceEnvError) as _identity_exc:
+            # CIU-62 review ruling — the twin of deploy._workspace_identity's
+            # own warning, and it must stay a PAIR with it. The `{}`
+            # degradation is deliberate (preflight and real run must answer
+            # the identity question identically), but silence made it
+            # indistinguishable from a genuinely unmanaged workspace: a hook
+            # reading `ctx.instance_id is None` had no way to tell. CIU-80
+            # tracks making both sites raise instead.
+            print(
+                f"[WARN] [S3.12] could not read workspace identity from "
+                f"{_env_path}: {_identity_exc}. Hook context identity "
+                "(instance_id, network) will be None for this run — repair "
+                "with `ciu env generate`",
+                flush=True,
+            )
             _hook_identity = {}
 
         ctx = hooks_runner.HookContext(

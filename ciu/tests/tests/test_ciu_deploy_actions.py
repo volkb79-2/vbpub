@@ -2470,6 +2470,53 @@ def test_check_identity_survives_a_malformed_ciu_env_entry(tmp_path, capsys):
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
 
 
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        ("non-UTF-8 byte", b'export INSTANCE_ID="\xff\xfe"\n'),
+        ("malformed entry", b'this is not = valid "shell\n'),
+        ("unreadable file", None),  # OSError, via a directory where a file is expected
+    ],
+)
+def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, payload):
+    """CIU-62 review ruling: the `{}` degradation stays, the SILENCE does not.
+
+    Two oracles, and the second is the load-bearing one:
+
+    1. the degradation is ANNOUNCED — without this, the estate's own default
+       test ("if this default is wrong, does anything fail loudly?") answers
+       no, and a hook reading `ctx.instance_id is None` cannot tell a
+       genuinely unmanaged workspace from a corrupt `ciu.env` swallowed;
+    2. it is announced on STDERR, never stdout. `warn()` prints to stdout,
+       and under `ciu check --json` (S13.4a) the versioned JSON document is
+       the ONLY thing that path may put on stdout — a `[WARN]` line ahead of
+       it breaks every machine consumer's parse. Using `warn()` here is a
+       real regression that this assertion is what catches.
+    """
+    env_path = tmp_path / "ciu.env"
+    if payload is None:
+        env_path.mkdir()  # is_file() False -> the absent path, no warning
+    else:
+        env_path.write_bytes(payload)
+
+    identity = deploy._workspace_identity(tmp_path)
+
+    assert identity == {}
+    captured = capsys.readouterr()
+    if payload is None:
+        # A directory is not a file: this is the ABSENT path, which is a
+        # legitimate state and must stay silent — a warning on every
+        # unprovisioned workspace is a warning nobody reads.
+        assert captured.err == "" and captured.out == ""
+        return
+    assert "[WARN] [S3.12] could not read workspace identity" in captured.err
+    assert "ciu env generate" in captured.err, "the warning must name the repair"
+    assert captured.out == "", (
+        "nothing may reach stdout here — `ciu check --json` puts only the "
+        "JSON document there (S13.4a)"
+    )
+
+
 def test_check_secret_file_callback_refuses_every_name(tmp_path):
     """The named design decision, pinned: KeyError for ANY name during check."""
     with pytest.raises(KeyError, match="unavailable during"):

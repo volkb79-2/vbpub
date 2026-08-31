@@ -313,6 +313,20 @@ restatement of the technical detail below it.
   are left alone, as is `engine.py`'s `except WorkspaceEnvError: raise` at
   STEP 1 — it re-raises and swallows nothing, so it is not this class of
   defect.
+
+  The two HookContext identity readers keep degrading to `{}` (that symmetry
+  is what stops `ciu check`'s preflight from seeing an identity the real run
+  will not) but **no longer do it silently**: both now emit a
+  `[WARN] [S3.12] could not read workspace identity from <path>` naming the
+  file and the `ciu env generate` repair, so a hook reading
+  `ctx.instance_id is None` is no longer unable to tell "genuinely unmanaged
+  workspace" from "corrupt `ciu.env`, swallowed". The `ciu check` side writes
+  that line to **stderr**, not stdout, because `ciu check --json` puts only
+  its JSON document on stdout (S13.4a) — the same split `ciu graph
+  --format json` already uses. An ABSENT `ciu.env` stays silent: it is a
+  legitimate state, and warning on every unprovisioned workspace is a warning
+  nobody reads. The stricter variant (both sites refuse, or `HookContext`
+  gains a third "unreadable" state) is filed as **CIU-80**.
 - fix(ciu)!: **CIU-62 — `ciu clean` no longer reads an unreadable `ciu.env`
   as "this workspace has no identity network"** (S6.4a clause 1, ciu-P41).
   The one site where widening the clause was a semantics decision rather than
