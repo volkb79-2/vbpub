@@ -11,6 +11,7 @@ are not affected.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -733,12 +734,19 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
             except ValueError:
                 declared_one_shot = False
             if declared_one_shot:
+                # CIU-84: STDERR, not stdout — this fires from inside
+                # `action_check`'s `--live` probe loop, which `ciu check
+                # --json` may reach (S13.4a: the JSON document is the ONLY
+                # thing that action puts on stdout). Same idiom CIU-75's
+                # deprecation-notice fix and CIU-62's identity-degradation
+                # warning already established for exactly this reason.
                 print(
                     f"[WARN] stack:{parsed.selector}:healthy references a stack "
                     "declared 'one_shot = true' (a run-to-completion service). "
                     f"Use 'stack:{parsed.selector}:completed' instead: it checks "
                     "the same clean-exit signal without depending on the "
                     "absence of a Docker healthcheck.",
+                    file=sys.stderr,
                     flush=True,
                 )
 
@@ -805,11 +813,13 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
         # longer running).
         exit_code = state.get('ExitCode')
         if exit_code == 0:
+            # CIU-84: STDERR — same reason as the sibling warning above.
             print(
                 f"[WARN] stack:{parsed.selector}:healthy was satisfied only via "
                 "the exit-0-no-healthcheck fallback (one-shot semantics). Use "
                 f"'stack:{parsed.selector}:completed' instead — V8 removes "
                 "this fallback.",
+                file=sys.stderr,
                 flush=True,
             )
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (one-shot, exited 0)")

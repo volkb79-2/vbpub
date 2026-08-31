@@ -4311,6 +4311,46 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 def _run(args: argparse.Namespace, raw: list[str]) -> int:
     """Drive the requested actions. Returns an int (no sys.exit; S7.3)."""
+
+    # CIU-84: `_run`'s OWN top-level prose (as opposed to `action_check`'s,
+    # which already gates every line it prints through its local `say`/
+    # `complain` closures) printed unconditionally with `info()` — straight
+    # to stdout — regardless of `--json`. `--json` is documented as
+    # meaningful "With --check" only (S13.4a: the JSON document is the ONLY
+    # thing that action puts on stdout), so every one of `_run`'s own
+    # info() calls below routes to stderr instead whenever `--json` is set,
+    # rather than tracking exactly which action combination would actually
+    # reach `_emit_check_report` — the simpler invariant ("no `_run`-level
+    # prose on stdout under --json, full stop") is also the more robust one:
+    # it stays correct even if a future action combination changes which of
+    # these lines run before `check` dispatches. Same idiom CIU-75's
+    # deprecation-notice fix and CIU-62's identity-degradation warning
+    # already established for exactly this reason.
+    #
+    # `--format json` (S13.5, `ciu graph`) gets the identical treatment: S13.4a's
+    # own prose named this exact leak as shared with `ciu graph --format
+    # json` ("the orchestrator's own [INFO] lines still precede the document
+    # on stdout"), and S13.5's own contract ("only the graph itself goes to
+    # stdout") was equally false for the same `_run`-level reason before this
+    # fix. `action_graph`'s OWN internal `info()`/`error()` calls (its empty-
+    # selection note, its shape/provisioning-validation error paths) are a
+    # SEPARATE, still-open gap — not `_run`-level, and out of THIS package's
+    # scope — filed as CIU-86.
+    def _run_info(msg: str) -> None:
+        # getattr, not args.json_output: matches the rest of this function's
+        # own established idiom for this exact attribute (e.g. the
+        # action_check call below), and keeps a hand-built argparse.Namespace
+        # missing the attribute (several unit tests construct one directly)
+        # defaulting to non-json prose rather than raising AttributeError.
+        wants_pure_stdout = (
+            getattr(args, "json_output", False)
+            or getattr(args, "graph_format", None) == "json"
+        )
+        if wants_pure_stdout:
+            print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+        else:
+            info(msg)
+
     # --- env bootstrap (S2 / S2.8) ---
     define_root = Path(args.define_root).resolve() if args.define_root else None
 
@@ -4347,7 +4387,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     else:
         cli_profiles = None
     profile = resolve_profiles(global_cfg, cli_profiles)
-    info(f"Active service profile(s): {profile.name or '(default — all phases)'}")
+    _run_info(f"Active service profile(s): {profile.name or '(default — all phases)'}")
 
     cli_phases = _parse_phase_filter(args.phases)
     selection = build_selection(profile, cli_phases)
@@ -4356,7 +4396,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     actions = build_action_sequence(raw)
     if not actions:
         actions = ["deploy"]
-        info("No action specified; defaulting to --deploy")
+        _run_info("No action specified; defaulting to --deploy")
     rc = 0
     deploy_needs_preflight = any(a in ("deploy",) for a in actions)
 
@@ -4439,14 +4479,14 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         gate_ref = selection_stack_health_requirement(selection, rendered)
         if gate_ref is not None:
             health_after_phase = True
-            info(
+            _run_info(
                 f"[S7.7] health gate enabled for this run: a selected stack "
                 f"requires '{gate_ref}', which only the inter-phase health "
                 "gate can make reliable (CIU-68)"
             )
 
     for action in actions:
-        info(f">>> action: {action}")
+        _run_info(f">>> action: {action}")
         if action == "render_toml":
             ac = action_render_toml(repo_root, profile, selection)
         elif action == "list_phases":

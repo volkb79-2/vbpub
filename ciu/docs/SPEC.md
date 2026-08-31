@@ -2139,8 +2139,17 @@ and, since CIU-65, a NOTE carries the same three keys, so a WARN-severity
 `--live` run additionally carries a top-level `live` key
 (`{status, unsatisfied}`) — deliberately not a stage, because it is the one
 failure class that maps to exit 1. Under `--json` the action emits no prose
-of its own; the orchestrator's own `[INFO]` lines still precede the document
-on stdout, exactly as for `ciu graph --format json`.
+of its own, and — since CIU-84 — the orchestrator's OWN top-level `info()`
+calls ahead of dispatch (active-profile / action-dispatch prose) route to
+stderr instead of stdout too, so the JSON document really is the only thing
+on stdout, matching this section's opening promise and `_emit_check_report`'s
+own docstring; `ciu check --json | jq` no longer sees a leading `[INFO]`
+line. `ciu graph --format json` (S13.5) shares the same orchestrator-level
+fix. `--live`'s own probe layer (`provisioning.probe_ref`) had a second,
+independent leak of the identical shape — two deprecation `[WARN]` notices
+printed unconditionally to stdout — also closed by CIU-84, unconditionally
+to stderr (not gated on `--json`, since a deprecation notice belongs on
+stderr regardless of output mode).
 
 ### S13.4c — `ciu up`'s automatic static preflight (CIU-64, normative)
 
@@ -2182,6 +2191,11 @@ to eliminate elsewhere.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+  The orchestrator-level half of this promise (the `_run`-level `[INFO]` lines
+  ahead of dispatch) is enforced since CIU-84, the same fix as S13.4a's.
+  `action_graph`'s OWN `info()`/`error()` calls (the empty-graph note, the
+  two shape/provisioning-validation error paths) are NOT yet gated on
+  `--format json` — a real, narrower remaining gap, filed as CIU-86.
 
 ### S13.4b — `[registry.*]` schema validation (`ciu check` stage 7)
 
