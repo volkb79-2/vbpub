@@ -175,10 +175,20 @@ Backlog: **B056** (covergate's extent expansion). **Next free: B057.**
 
 ## 7. Gate
 
-**Run 5, on `367bbdf5`** — verdict recorded in REPORT §22 and in the LOG,
-read from the log's own `GATE_EXIT` / `ASSAY_REGISTERED_GATE_COMPLETE=1` in a
-separate step, as always. Do not start work on a tip whose gate you have not
-read yourself.
+**Run 6: PASS on `91b05186`**, the tip you inherit — 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, and the installed wheel
+(`assay-4.0.1.dev23+g91b05186`) names the judged commit itself. The only
+commit after run 6 is docs-only (REPORT §22/§23, the LOG's gate paragraph and
+this section) — no source, test, packaging, vocabulary or decision-file
+changes after `91b05186`. Full transcript in REPORT §22.
+
+Run 5 was RED and is recorded rather than buried: I wrote this brief as an
+untracked file WHILE the gate was running, and the self-hosted lane correctly
+refused `NO_MEASUREMENT/DIRTY_TREE`. Commit before you gate. Note the suite
+inside that red run was green, which is exactly how a red gate gets reported
+as a pass.
+
+Do not start work on a tip whose gate you have not read yourself.
 
 **The wrapper-vs-job trap fired a FOURTH time this wave** (REPORT §21), and
 this instance is the most persuasive yet: the harness's own *structured

@@ -659,3 +659,97 @@ believe. Had the wrapper been trusted, this report would have recorded a
 green suite on a commit whose registry change had silently made a docs gate
 demand documentation for unreachable operators — the A-400 defect, shipped,
 with a passing suite cited as evidence it was fine.
+
+## 22. Gate — run 5 RED (my own fault), run 6 PASS on commit `91b05186`
+
+### Run 5 — RED, and worth recording rather than quietly re-running
+
+```text
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+tester-unified: NO_MEASUREMENT/DIRTY_TREE (exit 3)
+  commit: 367bbdf5d3c5a8444e4d9204136663383ec925ee
+ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics
+ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query
+assay/nyxloom-trove/reports/assay-WAVE-C-go-BRIEF-4.md
+3845 passed, 13 skipped in 442.64s (0:07:22)
+GATE_EXIT=1
+```
+
+**My error, not the gate's**: I wrote `BRIEF-4.md` as an untracked file while
+the gate was already running, and the self-hosted lane refused a dirty tree —
+correctly, and by the same rule that produced generation 1's run-1 refusal.
+Recorded rather than suppressed because the interesting part is what it
+proves about the diagnostic: the gate named the offending file by assay's own
+untracked-file query, so the cause was readable in one line instead of
+inferred. Note the suite itself was green inside the wheel (`3845 passed, 13
+skipped`) — a fact that would have been very easy to report as a pass. It was
+not a pass. `GATE_EXIT=1` is the verdict.
+
+### Run 6 — PASS, on commit `91b05186` (the current tip)
+
+Command, from `/workspaces/vbpub`:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+**Which commit it judged, from the gate's own output rather than my
+assertion:** the `wheel-installed` phase built and installed
+`assay-4.0.1.dev23+g91b05186-py3-none-any.whl` — `setuptools_scm` derives that
+suffix from the commit under judgment, so the artifact names `91b05186`
+itself.
+
+Verdict read in a SEPARATE step from the wrapper:
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+All 11 phases, completion marker present, exit 0, no `FAILED`/`ERROR`/`DIRTY`
+lines. (The log carries `GATE_EXIT=0` twice — once from the gate script's own
+epilogue and once from the marker I append. They agree; both are recorded so
+the duplication is not mistaken for a second run.)
+
+**The phase that matters most for this change is `self-hosted-lane-passed`,
+for a new reason.** It drives assay's own R1 lane through the freshly-changed
+`_built_in_registry` — the function every language resolution passes through.
+A registry entry with a bad rigor frozenset, or an import that failed to
+resolve `GoAdapter` at module load, would take assay's own lane down rather
+than showing up in a unit test. It did not. `topos-qualified` and
+`cmru-b006a-qualified` add two more real downstream consumers resolving
+adapters through the same changed function.
+
+**The only commit after run 6 is docs-only** (this section, the LOG's gate
+line and BRIEF-4 §7). No source, test, packaging, vocabulary or decision-file
+changes after `91b05186`.
+
+## 23. The trap's running total for this wave: SIX, and two of them today
+
+§7 recorded two, §13 a third, §21 a fourth. Two more fired during this
+generation's own closing sequence, both as *structured completion
+notifications* rather than command output:
+
+5. The second full-suite run: notification **"completed (exit code 0)"**,
+   job's own marker `PYTEST_EXIT=1`, `3 failed, 3849 passed`.
+6. **Gate run 5: notification "completed (exit code 0)" over `GATE_EXIT=1`
+   on a gate that REFUSED its self-hosted lane.** This is the incident
+   AGENTS.md's rule was written from, reproduced exactly, on the gate itself.
+
+Six instances in one wave, every one self-caught by appending a marker and
+reading it in a separate step. The failure mode has been stable across three
+generations and two different delivery channels (command output and the
+harness's own notification), which is the argument for treating the rule as
+unconditional rather than as a precaution for risky-looking commands. Nothing
+about gate run 5 looked risky; the suite inside it was green.

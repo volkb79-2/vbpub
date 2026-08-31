@@ -412,3 +412,30 @@ what was established about covergate from its own source (its expansion rule
 is byte-for-byte the one assay just removed, so the two disagree by
 construction and assay is the correct side), and §19 records the measured
 environment fact that makes the remaining items buildable.
+
+**Gate: run 5 RED, run 6 PASS on `91b05186`.** Run 5 was my own error — I
+created `BRIEF-4.md` untracked while the gate was already running, and the
+self-hosted lane refused `NO_MEASUREMENT/DIRTY_TREE`. Recorded rather than
+quietly re-run, because the suite inside it was green (`3845 passed, 13
+skipped`) and reporting that as a pass would have been effortless. It was not
+a pass. Run 6, on a clean tree: 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, with the installed wheel
+`assay-4.0.1.dev23+g91b05186` naming the judged commit itself. Read from the
+log in a separate step. Full transcripts in REPORT §22.
+
+`self-hosted-lane-passed` is the load-bearing phase for this change and for a
+new reason: it drives assay's own R1 lane through the freshly-changed
+`_built_in_registry`, which every language resolution passes through, so a
+bad rigor frozenset or a failed `GoAdapter` import would take assay's own
+lane down rather than surfacing in a unit test. `topos-qualified` and
+`cmru-b006a-qualified` exercise the same changed function from two real
+downstream consumers.
+
+**The trap's running total for this wave is now SIX** (REPORT §23), two of
+them during this generation's closing sequence and both delivered as the
+harness's own structured completion notification: the second full-suite run
+("exit code 0" over `PYTEST_EXIT=1`), and **gate run 5 ("exit code 0" over
+`GATE_EXIT=1` on a gate that refused its self-hosted lane)** — the incident
+AGENTS.md's rule was written from, reproduced exactly, on the gate. Nothing
+about run 5 looked risky; the suite inside it was green. That is the argument
+for the rule being unconditional rather than reserved for suspicious commands.
