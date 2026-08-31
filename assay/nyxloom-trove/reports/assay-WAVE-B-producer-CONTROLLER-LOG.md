@@ -29,3 +29,21 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   coherent boundary, write a numbered brief + commit + end turn; controller
   dispatches a fresh successor seeded with the brief (external compaction,
   never resume/fork for this step — E-008 + operator instruction).
+
+- **2026-08-31 (checkpoint 1)** — Generation 1 checkpointed clean after 2
+  commits (`384f3c0f` real StrykerJS fixture for B046, `fac1b73b` B045's
+  config half) + the brief commit. ~1/8 of the wave done: B045 split at the
+  schema boundary, its verdict-field/arcs/lexer half deferred to ride the v9
+  cut with B046/B043/B041(b), none of which have started except B046's
+  Stryker fixture + vocabulary constants. **No blocking decision asks** — two
+  items flagged for the REVIEWER only, not a controller call: (a) whether
+  `go-cover`'s unshipped producers (`go-test`/`covdata`) should ship now
+  under B045's contract text, (b) the coverage-parser protocol widening
+  needed for producer-aware branch arcs, deliberately left undecided rather
+  than pre-decided. One housekeeping defect self-reported: one batch of
+  fixture-lane migrations used a Python `write_text` script instead of
+  Edit/apply_patch (durable rule violation, memory
+  `repo-edit-with-apply-patch`) — edits are correct but flagged for the
+  successor and reviewer. Dispatching generation 2, fresh, seeded with
+  `assay-WAVE-B-producer-BRIEF-1.md`. Continuing without pausing per the
+  goal's report-and-continue rule.
