@@ -578,6 +578,15 @@ class TestApplyLease:
         assert record.lease.mode == "perpetual"
         assert record.lease.expires_at_utc is None
 
+    def test_perpetual_honours_an_injected_now(self, tmp_repo, fake_generate_env):
+        """CIU-76 review: `apply_lease`'s `now=` must actually reach
+        `make_lease_perpetual` -- deleting that threading left the whole
+        suite green (nothing exercised it), so assert the injected instant
+        directly rather than only a mode/None check."""
+        worktree.create(tmp_repo, "one", base="main")
+        record = worktree.apply_lease(tmp_repo, "one", perpetual=True, now=NOW)
+        assert record.lease.renewed_at_utc == worktree._utc_stamp(NOW)
+
     def test_release_drops_the_claim(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "one", base="main")
         worktree.apply_lease(tmp_repo, "one", extend="24h")
