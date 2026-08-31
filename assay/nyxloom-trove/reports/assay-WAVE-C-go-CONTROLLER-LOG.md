@@ -85,3 +85,78 @@ principles don't already resolve.
   Next: wait for the implementer's first checkpoint or completion signal,
   per the same external-compaction / fresh-successor pattern used
   throughout Wave B.
+
+- **2026-08-31 (checkpoint 1)** — Implementer's first checkpoint arrived
+  ~21 min in, at commit `4408622b` on `feature/assay-wave-c-go`. Real
+  progress: built `tester-unified-go:local` (not on this host — from the
+  committed Dockerfile), then proved the statement-position oracle
+  (`assay/helpers/go/stmtpos/`, transcribed from `cmd/cover`'s own
+  instrumenter per A-217's implementation note) against **all eight**
+  frozen `carve-assets/P27/witness/` fixtures, including the impossibility
+  proof itself — `collision-colA`→`{4,6}`, `collision-colB`→`{4,5}`,
+  derived from byte-identical profile bytes. New evidence filed under
+  `carve-assets/P27-recarve/` (the frozen `P27/` originals untouched, per
+  instruction). The `blocks`/model half of item 1 (A-239) is also done:
+  `CoverageBlock`, `FileCoverage.blocks`, `CoverageProfile.
+  statement_attributed`, `go_cover.parse` keeping columns, the pure join
+  in the new `statement_attribution.py` — 14 tests, all green. Correctly
+  did NOT claim `lit.go`'s laundering is fixed (it structurally cannot be,
+  at line granularity, per the caveat's own nature) — documented,
+  asserted by a test, recorded as `A-393`, filed as `B053`.
+  Self-caught, twice, the exact wrapper-exit-code trap AGENTS.md warns
+  about (a reported "exit 0" while the real pytest/gate result was
+  nonzero) by reading the job's own status in a separate step rather than
+  trusting the wrapper's own summary — no controller action needed, this
+  is the discipline working as designed.
+  Left the gate running detached (`gate2.log`, PID confirmed alive via
+  `ps`/`docker ps` on the controller side) and ended its turn per the
+  E-008 checkpoint clause with two decision asks open rather than
+  improvised, and a very thorough continuation brief (`BRIEF-1.md`) naming
+  every remaining seam by file:line.
+
+  **Decision ask 1 — register `GoAdapter` in `cli.py`'s built-in registry
+  (currently python/sql/javascript only)?** F008-A5 (srdm covergate
+  qualification) needs a runnable Go lane through the real CLI, so
+  registration is implied by an acceptance criterion already ruled this
+  wave, not new scope. **Controller decision: yes, but strictly as the
+  LAST step of item 1's wiring, after `requires_statement_attribution`,
+  the new `statement_blocks` hook, the `evaluate` refusal (`A-392`), and
+  `external_tools = ("go",)` (item 4) all land — never registered with
+  only the oracle standing alone.** Registering earlier would let a Go
+  lane run today still reading block-extent-as-truth (`requires_
+  statement_attribution` unset), reintroducing exactly the wrong-verdict
+  problem A-217 exists to fix — an A-334/A-335-style honesty violation
+  (a Go R1 claim going out as if audited when it structurally is not).
+  Once the guard is wired, an unavailable Go toolchain (true in this
+  devcontainer) correctly refuses `MISSING_EXTERNAL_TOOL` rather than
+  crashing (A-253's mechanism, already built) — registration is then
+  safe in every environment, audited or cleanly refused, never silently
+  wrong.
+
+  **Decision ask 2 — `tests/test_cli_run.py:406` asserts `"helpers" not
+  in document`; this wave becomes the first real producer.** Controller
+  decision: this is item 6 (B047 item 5, gate-envelope check) — already
+  in scope, not new work, exactly as the implementer's own brief already
+  concluded ("item 6 is therefore more than a doc check"). Do not weaken
+  the existing assertion for adapters that still produce none; add a
+  parallel test asserting `helpers` IS present with the right shape
+  (`role="statement-positions"`, identity naming `go version …`) for a Go
+  lane specifically, once decision 1's full chain make that lane
+  actually runnable — real end-to-end proof still needs
+  `tester-unified-go:local` (A-334), matching Wave A/B's own real-tool
+  qualification-harness pattern rather than a mock standing in for the
+  toolchain.
+
+  Both relayed to the SAME agent via `SendMessage` (resume, not a fresh
+  `Agent` call — per the standing memory on that mistake), confirming the
+  natural next step is finishing item 1's "STILL TO WIRE" list from
+  `BRIEF-1.md` §3 (the new hook, the evaluate refusal, updating every
+  other adapter's two new members, the runner wiring, THEN
+  external_tools + registration), plus the packaging fix the implementer
+  already flagged as a real shipping blocker on its own
+  (`pyproject.toml`'s package-data omits the helper's `.go`/`.mod`
+  files — would silently vanish from the wheel) — no controller
+  disagreement there, just confirming it's correctly on the list.
+  Gate on the checkpoint's own tip (`4408622b`) confirmed still genuinely
+  running (docker container live, log advancing through the normal phase
+  sequence) — not yet complete; will be read on the next contact.
