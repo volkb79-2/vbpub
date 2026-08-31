@@ -13,6 +13,37 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      recurred on the 2.1.0 release itself. Until cmru clears this itself,
      clearing it is part of releasing. -->
 
+### Added
+- **B045 — the coverage PRODUCER is a declared fact.**
+  `[lanes.<n>.judge.coverage] producer = "<name>"`, a closed vocabulary kept
+  per FORMAT in `assay/vocabulary.py`. `coverage-istanbul-json` REQUIRES it
+  (its producers disagree about what `branchMap` means and about whether a
+  line ran, so no implied value is correct in every context);
+  `coverage-py-json` accepts the single name `coverage.py` optionally; every
+  other format has no open vocabulary yet and refuses the key rather than
+  accepting a name assay cannot check or explain. `assay lanes --json` now
+  emits the real declared value in `coverage.producer` (the key's meaning is
+  unchanged, so `inventory_schema` stays 1).
+- **The three v8-remapping producers are refused at load BY NAME**, each with
+  its own reason and its own fix: `vitest-v8` (measured defect, A-346/B040 —
+  reports never-executed lines as executed), `c8` (measured, same false
+  greens), `jest-v8` (unproven — refused as unmeasured, deliberately not
+  blurred with the two measured ones).
+
+### Migration notes (v8 -> v9)
+
+- **Every `coverage-istanbul-json` lane must add `producer = "istanbul"`.**
+  One line, no other change. A lane that omits it is refused at load with a
+  message naming the disagreement and listing the accepted values. If the lane
+  really was running `@vitest/coverage-v8`, the refusal is the point: switch
+  the Vitest coverage provider to `istanbul`, do not declare `vitest-v8`.
+- **Python lanes are unchanged.** `coverage-py-json`'s producer key is
+  optional and its omission has no effect.
+- **`assay verify` refuses a v8 document at v9**, exactly as v8 refused v7
+  (A-138/A-170 — a schema version is a hard cut, never a widening). Re-emit
+  the verdict with a 4.0.0 build; there is no in-place upgrade path and there
+  deliberately never has been.
+
 <!-- cmru: release history -->
 
 ## [3.2.0] - 2026-08-30

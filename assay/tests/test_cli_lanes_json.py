@@ -43,7 +43,7 @@ language = "javascript"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
-coverage = { format = "coverage-istanbul-json", artifact = ".assay/coverage-final.json" }
+coverage = { format = "coverage-istanbul-json", artifact = ".assay/coverage-final.json", producer = "istanbul" }
 base_source = "request"
 """
 
@@ -222,8 +222,8 @@ def test_a_javascript_r1_lane_that_delegates_its_base(project: Project):
             "coverage": {
                 "format": "coverage-istanbul-json",
                 "artifact": ".assay/coverage-final.json",
-                # B045/schema v9 -- not yet declarable.
-                "producer": None,
+                # B045/schema v9 -- the DECLARED producer, wired in Wave B.
+                "producer": "istanbul",
             },
             "mutation": None,
             "canary": None,

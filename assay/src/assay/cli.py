@@ -1010,10 +1010,15 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         coverage = {
             "format": judge.coverage.format,
             "artifact": judge.coverage.artifact,
-            # (B045/schema v9) not yet declarable -- kept null so a v9-aware
-            # consumer's key set does not have to branch on which assay
-            # version produced this document.
-            "producer": None,
+            # (B045/schema v9) the DECLARED producer, or `null` when the
+            # format allows the omission and the lane took it. Wave A shipped
+            # this key as an unconditional `null` placeholder so a v9-aware
+            # consumer's key set would not have to branch on which assay
+            # version produced the document; Wave B wires it to the real
+            # declared value. The key's MEANING is unchanged ("the declared
+            # producer, or null"), so `inventory_schema` does not move
+            # (A-349's own stability rule).
+            "producer": judge.coverage.producer,
         }
 
     mutation = (

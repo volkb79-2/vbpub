@@ -99,7 +99,7 @@ language = "{language}"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
-coverage = {{ format = "coverage-istanbul-json", artifact = "coverage-final.json" }}
+coverage = {{ format = "coverage-istanbul-json", artifact = "coverage-final.json", producer = "istanbul" }}
 base = "{base}"
 """
 

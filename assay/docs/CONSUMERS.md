@@ -645,7 +645,15 @@ base_source = "request"
 [lanes.ui_unit.judge.coverage]
 format = "coverage-istanbul-json"
 artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
 ```
+
+`producer` is **required** on a `coverage-istanbul-json` lane, and a lane that
+omits it is refused at load. That format is written by several toolchains
+that disagree about what parts of the document mean, so there is no value
+assay could imply that would be correct in every context — see
+[Declaring the coverage producer](#declaring-the-coverage-producer-b045)
+below for the full vocabulary and the refusals.
 
 A root-level app — no monorepo `cd` needed, `package.json` sits beside
 `assay.toml` — keeps the short form instead:
@@ -727,6 +735,90 @@ declares the format, not the producer — so no honest single translation
 exists yet, and a fabricated branch percentage is worse than an absent one.
 Leave `require_branch` unset (or `false`) on a JavaScript lane; B038 tracks
 adding real arc support once a producer can be declared.
+
+### Declaring the coverage producer (B045)
+
+A coverage **format** says what SHAPE a document has. It does not say what
+WROTE it — and `coverage-istanbul-json` is written by several toolchains that
+disagree about what parts of it mean. Since schema v9 the lane declares the
+producer too, and assay records it in the verdict as
+`judgment.r1.coverage_producer`.
+
+<!-- assay-doc-example:skip reason="one table of the worked lane above, quoted on its own to show the key in isolation; the whole loadable lane is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
+```
+
+The vocabulary is closed **per format**. A producer name that is real for a
+different format is refused here, because the key answers "what wrote THIS
+artifact", not "is this a producer somewhere".
+
+| format | producer values | required? |
+|---|---|---|
+| `coverage-istanbul-json` | `istanbul` — the babel-plugin-istanbul family: `nyc`/`istanbul`, Jest with its default `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-istanbul`. They share one instrumenter, so they are one producer for every purpose assay has. | **yes** |
+| | `vitest-v8`, `jest-v8`, `c8` — spellable, and **refused at load by name** (see below) | |
+| `coverage-py-json` | `coverage.py` — the only producer | no |
+| `lcov`, `cobertura`, `go-cover` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
+
+**Why it is REQUIRED for `coverage-istanbul-json` and optional elsewhere.** If
+an implied `istanbul` were wrong — the lane really runs
+`@vitest/coverage-v8` — nothing would fail loudly: the run would report PASS
+over lines that never executed. A default is legitimate only when it is
+correct in the absence of information, and here it is not. `coverage-py-json`
+has exactly one producer, so an omission cannot silently pick the wrong one.
+
+**`go-cover`'s two names are deliberately not shipped yet.** They belong to
+the Go wave that can measure the difference between `go test -coverprofile`
+and `go tool covdata textfmt`. Shipping a closed vocabulary nothing in this
+build can produce, check or explain would be exactly the speculative naming
+this project refuses.
+
+#### The three producers assay refuses, and how to fix each
+
+Each of these is refused *by name*, at load, with its reason and its fix —
+never as "unknown producer", which would tell you that you had made a typo
+when in fact your coverage is unsound.
+
+| producer | why it is refused | the fix |
+|---|---|---|
+| `vitest-v8` | **Measured defect** (A-346, next section): reports never-executed lines as executed when a ternary appears earlier in the same block. Reproduces on both released Vitest majors. | `provider: 'istanbul'` in the Vitest coverage config, install `@vitest/coverage-istanbul`, declare `producer = "istanbul"` |
+| `c8` | Remaps v8 ranges the same way and **reproduces the same false greens** (measured: `tests/fixtures/coverage/probe-js-provider-defect-c8/`) | instrument with `nyc`/`istanbul` or `@vitest/coverage-istanbul` |
+| `jest-v8` | Jest's `coverageProvider: "v8"` remaps through the same layer and has **not** been measured against a committed witness — refused as *unproven*, which is a weaker ground than the two above and deliberately not blurred with them | Jest's default `coverageProvider: "babel"`, which shares istanbul's instrumenter |
+
+#### What declaring `istanbul` buys you
+
+`require_branch = true` becomes legal on a JavaScript lane. Only the istanbul
+family emits `branchMap` entries that are real **arcs** — one location and one
+count per branch ARM — which is what a branch percentage has to be computed
+from. Every other producer of the same format keeps
+`branch_capability = "unavailable"`, and that is a measured refusal rather
+than an omission: `@vitest/coverage-v8` emits one location and one count per
+branch RECORD, describing v8's own executed ranges, so a single translation
+could not be honest for both.
+
+Declaring `istanbul` also closes the **type-only module** gap. Under the
+istanbul provider a `.ts` file holding nothing but `export type` /
+`interface` declarations is absent from the artifact entirely, so a changed
+one used to read as missing coverage. See the "Four things that behave
+differently from a Python lane" section for what happens now.
+
+#### Migrating a lane written before this key existed
+
+Add one line. There are no other changes:
+
+```diff
+ [lanes.ui_unit.judge.coverage]
+ format = "coverage-istanbul-json"
+ artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
++producer = "istanbul"
+```
+
+...unless your lane really was running the v8 provider, in which case the
+refusal is the point and the fix is the provider switch, not the declaration.
+Python lanes (`coverage-py-json`) need nothing.
 
 ### The v8 provider is not safe to gate on
 

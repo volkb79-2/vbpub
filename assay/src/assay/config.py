@@ -66,8 +66,11 @@ from typing import Any, Iterable, Mapping
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
 from .vocabulary import (
+    COVERAGE_PRODUCERS_BY_FORMAT,
+    COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
+    REFUSED_COVERAGE_PRODUCERS,
     WITHDRAWN_MUTATION_OPERATORS,
     operator_language,
 )
@@ -250,7 +253,14 @@ JUDGE_BASE_SOURCES: frozenset[str] = frozenset({"declared", "request"})
 #: (:mod:`assay.runner`'s `evaluate_r1`).
 JUDGE_MODES: frozenset[str] = frozenset({"changed_lines", "whole_target"})
 
+#: The two fields every `[judge.coverage]` table must declare.
 _COVERAGE_FIELDS: tuple[str, ...] = ("format", "artifact")
+
+#: (B045, schema v9) `producer` -- the toolchain that WRITES the artifact --
+#: is a THIRD key, listed separately because it is required for some formats
+#: and refused for others, so it cannot join the flat required tuple above.
+#: See :data:`assay.vocabulary.COVERAGE_PRODUCERS_BY_FORMAT`.
+_COVERAGE_OPTIONAL_FIELDS: tuple[str, ...] = ("producer",)
 
 # A duration is one or more <number><unit> segments in descending order, e.g.
 # "5m", "90s", "1h30m". A bare number is REFUSED: unit-less is ambiguous, and
@@ -285,13 +295,30 @@ def parse_duration(text: str) -> float:
 
 @dataclass(frozen=True)
 class CoverageConfig:
-    """``[lanes.X.judge.coverage]`` — the declared format and artifact path."""
+    """``[lanes.X.judge.coverage]`` — the declared format, artifact path and
+    (B045, schema v9) the declared PRODUCER.
+
+    ``producer`` is ``None`` exactly when the file omitted it, never a
+    filled-in default: for ``coverage-istanbul-json`` the loader REFUSES the
+    omission outright (its producers disagree, so no implied value is correct
+    -- DESIGN-GUIDE §5), and for every other format ``None`` is a real,
+    meaningful "not declared" that the verdict records by ABSENCE.
+    """
 
     format: str
     artifact: str
+    producer: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
-        return {"format": self.format, "artifact": self.artifact}
+        declared: dict[str, Any] = {
+            "format": self.format,
+            "artifact": self.artifact,
+        }
+        # Omitted, never null (A-051) -- `as_declared` must compare equal to
+        # tomllib's own parse of the table.
+        if self.producer is not None:
+            declared["producer"] = self.producer
+        return declared
 
 
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
@@ -1706,11 +1733,12 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
         raise LaneConfigError(
             f"{where}: 'judge.coverage' must be a table, got {_type_name(value)}"
         )
-    unknown = sorted(set(value) - set(_COVERAGE_FIELDS))
+    known = (*_COVERAGE_FIELDS, *_COVERAGE_OPTIONAL_FIELDS)
+    unknown = sorted(set(value) - set(known))
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge.coverage key(s): {', '.join(unknown)}; "
-            f"expected only: {', '.join(_COVERAGE_FIELDS)}"
+            f"expected only: {', '.join(known)}"
         )
     for field in _COVERAGE_FIELDS:
         if field not in value:
@@ -1732,7 +1760,76 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
             f"parser registry knows; declared formats: "
             f"{sorted(FORMAT_REGISTRY)}"
         )
-    return CoverageConfig(format=fmt, artifact=artifact)
+    producer = _load_coverage_producer(value, where, fmt)
+    return CoverageConfig(format=fmt, artifact=artifact, producer=producer)
+
+
+def _load_coverage_producer(
+    value: Mapping[str, Any], where: str, fmt: str
+) -> str | None:
+    """``judge.coverage.producer`` (B045) -- the declared, closed, PER-FORMAT
+    producer name, or ``None`` when the format allows the omission and the
+    file took it.
+
+    The refusal order is deliberate and is the whole point of the key. A name
+    this build KNOWS but refuses (``vitest-v8``, ``jest-v8``, ``c8``) is
+    tested BEFORE catalogue membership, exactly as
+    ``WITHDRAWN_MUTATION_OPERATORS`` already is one field over: a consumer who
+    declared the unsound Vitest provider must be told what is wrong with it
+    and how to fix it, not merely that the string is not in a list.
+    """
+    open_vocabulary = COVERAGE_PRODUCERS_BY_FORMAT.get(fmt)
+    declared = value.get("producer")
+
+    if declared is None:
+        if fmt in COVERAGE_PRODUCER_REQUIRED_FORMATS:
+            assert open_vocabulary is not None
+            allowed = [
+                name
+                for name in open_vocabulary
+                if name not in REFUSED_COVERAGE_PRODUCERS
+            ]
+            raise LaneConfigError(
+                f"{where}: missing required field 'judge.coverage.producer'; "
+                f"format {fmt!r} is written by several producers that "
+                f"DISAGREE about what its contents mean (A-344: what "
+                f"`branchMap` is; A-346: whether a line ran), so there is no "
+                f"value assay could imply that is correct in every context. "
+                f"Declare one of: {allowed}"
+            )
+        return None
+
+    producer = _as_str(declared, where, "judge.coverage.producer")
+    if not producer:
+        raise LaneConfigError(f"{where}: 'judge.coverage.producer' is empty")
+
+    if open_vocabulary is None:
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is declared for "
+            f"format {fmt!r}, which has no open producer vocabulary; assay "
+            f"does not accept a producer name it cannot check or explain "
+            f"(DESIGN-GUIDE §5 -- no speculative names). Formats with an open "
+            f"vocabulary: {sorted(COVERAGE_PRODUCERS_BY_FORMAT)}"
+        )
+
+    if producer in REFUSED_COVERAGE_PRODUCERS and producer in open_vocabulary:
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is a known "
+            f"producer of {fmt!r} that assay REFUSES to gate on: "
+            f"{REFUSED_COVERAGE_PRODUCERS[producer]}"
+        )
+
+    if producer not in open_vocabulary:
+        allowed = [
+            name for name in open_vocabulary if name not in REFUSED_COVERAGE_PRODUCERS
+        ]
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is not a "
+            f"producer of format {fmt!r}; the vocabulary is closed per "
+            f"format, and {fmt!r} accepts: {allowed}"
+        )
+
+    return producer
 
 
 def _load_mutation(
