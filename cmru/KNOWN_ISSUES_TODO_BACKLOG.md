@@ -792,3 +792,80 @@ cannot express today.
 - `--ref` naming something genuinely behind `origin/main` AND touching the
   target project's path → the refusal still fires, now against the
   caller-named target instead of the implicit local `main`.
+
+### KI-21 — `cmru worktrees` crashes on a retained release worktree whose branch has no `/`
+
+**Status:** open (filed 2026-08-31, live-hit operating vbpub's own shared `.git` from the
+controller session running the ciu+run-gate backlog wave, while recovering a run-gate-project
+release from a build-step failure — see KI-22, filed alongside this from the same incident).
+
+**Mechanism.** `cmru worktrees` and `cmru worktrees --json` both crash:
+
+```
+Traceback (most recent call last):
+  ...
+  File "cmru/cli.py", line 1943, in main
+    purpose = workspace.branch.split("/", 2)[1]
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+IndexError: list index out of range
+```
+
+A retained release worktree's branch is named
+`cmru-release-<timestamp>-<project>-<hash>` — zero `/` characters. `split("/", 2)[1]`
+unconditionally assumes at least two segments (a `<kind>/<purpose>` shape) and indexes
+element `[1]` with no length check. Reproduced directly: a release of `run-gate-project`
+failed at the build/publish step (missing `wheel-builder:local` image, unrelated
+environment gap, not a cmru defect) and retained its worktree/branch for inspection per
+S-CLI.1; `cmru worktrees` on that same checkout crashed instead of listing it.
+
+**Why it matters.** `worktrees` is the documented way to discover what a `--resume`/`--abandon`
+should target after exactly this kind of failure — the one command an operator reaches for
+immediately after a failed release is the one that crashes, forcing a manual
+`ls .worktrees/` + branch-name guess instead (which is how the resume in this incident
+actually proceeded).
+
+**Proposed fix.** Guard the split: if `branch.split("/", 2)` has fewer than 2 elements,
+report the raw branch name as `purpose` (or a fixed placeholder) rather than indexing
+blind. Add a regression fixture: a retained worktree whose branch is a bare
+`cmru-release-...-<hash>` name (today's actual release-branch shape) must list without
+crashing, in both plain and `--json` output.
+
+### KI-22 — a release's tag is pushed before build/publish; a build failure reverts `origin/main` but leaves the tag pointing at reverted content, and it goes undetected
+
+**Status:** open (filed 2026-08-31, same incident as KI-21).
+
+**Mechanism.** The release transaction's step order is: prepare → gate → **promote
+`origin/main`** → **tag + push tag** → build → publish. When build/publish fails (this
+incident: `wheel-builder:local` image absent locally, a `docker run --rm ... wheel-builder:local`
+pull-access-denied), the transaction's own failure handler reverts `origin/main` with an
+auto-generated `revert:` commit — but does **not** delete or move the tag it already pushed
+one step earlier. The tag (e.g. `run-gate-v23.1.0`) is left pointing at the now-reverted
+commit, which remains a real ancestor of the reverted `main` (the revert adds an inverse
+commit on top; it does not rewrite history) — so `S12.2b`'s three-state classification reads
+this as the ordinary **"behind"** case (case 3: ordinary, ancestor tag, ancestor of HEAD) and
+silently skips it as "genuinely unchanged" on the next `cmru release` invocation, rather than
+recognizing it as the "ahead"-shaped half-completed-release anomaly `S12.2b` case 2 already has
+a named remedy for (`--allow-tag-ahead-of-head`). The tag therefore permanently names a commit
+with no corresponding published wheel, undetectably to a later release run — which is exactly
+the state `S12.2c` says "a hand-made tag is indistinguishable from a completed release" warns
+about, just reached by cmru's own transaction instead of an operator.
+
+**Live recovery used (not a fix, a workaround):** `git tag -d <tag> && git push origin
+:refs/tags/<tag>`, then re-run `cmru release --project <name>` fresh from the already-reverted
+`main` (confirmed byte-identical to pre-prep content via `git diff`) — this re-created the
+tag correctly once the actual root cause (missing docker image) was fixed, and the second
+attempt built, published, and promoted cleanly.
+
+**Proposed fix.** Either (a) don't push the tag until build+publish have both succeeded — move
+tag creation/push to after `publish`, so a build/publish failure has nothing to revert on the
+tag side at all; or (b) if the tag must be pushed early (some ordering reason not evaluated
+here), the failure-handler's auto-revert must also delete/move the now-orphaned tag it just
+pushed, so a subsequent release run hits a clean "nothing tagged yet" state instead of a
+silent, permanent S12.2b-case-3 false skip.
+
+**Oracles.** A release whose build/publish step fails after the tag-push (fault-injected, e.g.
+point the wheel-builder image at a nonexistent tag) must leave the repository in a state where
+a subsequent `cmru release --project <name>` either (a) proceeds to actually build/publish
+against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently reporting
+"Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
+was ever actually published for that tag.
