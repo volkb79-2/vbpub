@@ -226,6 +226,52 @@ rebased onto: `comm -12` over `git diff --name-only` from `815c50d6` shows
 **Gate after the rebase:** `ciu: PASS (exit 0)`, `run-gate: lane 'ciu' exit 0`,
 `GATE_EXIT=0`, verdict artifact `"commit": "67a588f8…"` == HEAD at that run,
 now under assay **3.2.0** (P43 bumped the judge from 2.3.0) and verdict schema
-8. Verbatim in `ciu-P42-REPORT.md` §6. A second run followed this LOG/REPORT
-commit so that the LAST gate invocation of the package is the one against the
-branch tip.
+8. Further runs followed each later commit so that the LAST gate invocation of
+the package is the one against the branch tip; §6 of the REPORT quotes the
+latest.
+
+---
+
+## Entry 5 — `8cc79745` — `docs+test(ciu): ciu-P42 -- record the ciu-P43 rebase, the merged identity contract, and the post-rebase gate`
+
+**What it did.** Entries 3 and 4 above, REPORT §11, the re-quoted post-rebase
+gate verdict in REPORT §6 — and three pieces of test hygiene that this
+cutover's own earlier commits left stale in
+`test_ciu_render_selection_context.py`: an `import os` orphaned when a
+chmod-based fixture became a reader injection, the comment still describing
+that chmod, and
+`test_engine_identity_read_survives_an_unparseable_ciu_env` →
+`…_an_unparseable_identity_record` (the test no longer touches `ciu.env`; a
+name that says otherwise is the same defect class as a wrong error message).
+
+Suite after the rename: `3399 passed`, coverage `100%` line+branch, exit 0.
+
+**Gate at this commit:** `ciu: PASS (exit 0)`, `run-gate: lane 'ciu' exit 0`,
+`GATE_EXIT=0`, artifact `"commit": "8cc79745…"` == HEAD at that run. Quoted
+verbatim in REPORT §6, together with the two output changes it surfaced (the
+gate is now `rev 30`, and RG-27's new lane-history book-keeping warns that
+`.run-gate/` is not git-ignored on a branch based on `815c50d6`, which
+predates main's `.gitignore` line for it — it wrote nothing, the worktree is
+clean, the lane exits 0).
+
+---
+
+## Entry 6 — this commit — `backlog+docs(ciu): CIU-83 filed; REPORT/LOG carry the final gate verdict`
+
+**What it did.** Filed **CIU-83** and recorded the final verdict.
+
+CIU-83 is a finding the rebase surfaced and this package deliberately did NOT
+fix: `git show 815c50d6 --stat` does not list `ciu/CHANGES.md`, so ciu-P43's
+CIU-77/79/80/81 landed with SPEC/CONSUMERS/CONFIG updates but no changelog
+entry — and `[7.7.0]`, the section all five of this checkpoint's items ship
+in, therefore announces CIU-75's breaking change while **CIU-79 is breaking
+too** by ciu-P43's own merge message. Writing another package's changelog from
+its merge message is how release notes become fiction, so the entry names what
+is owed and who owes it instead. The backlog header and REPORT §11 both carry
+it.
+
+This entry cannot name its own hash (no file can). `git log -1` names it, and
+the gate artifact on disk names it too: the LAST gate run of this package is
+the one against this commit, so `.assay/verdict-ciu.json`'s `"commit"` equals
+`git rev-parse HEAD` — one command for a reviewer to check, no quoted hash to
+trust.

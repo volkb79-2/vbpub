@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-31 — **CIU-75 FIXED (ciu-P42); CIU-82 FILED.** The v8 F2
+Last updated: 2026-08-31 — **CIU-75 FIXED (ciu-P42); CIU-82, CIU-83 FILED.** The v8 F2
 identity cutover landed: `[ciu.instance.generated]` in
 `ciu.global.worktree.toml.j2` is now the SOLE instance-fact source CIU reads,
 and `ciu.env` is a legacy write-only export (still written, unchanged key set,
@@ -21,11 +21,15 @@ migrated; `docs/CONSUMERS.md` §11b carries the consumer migration, including
 four affected shapes found by a real grep across dstdns. CIU-82 tracks the
 dstdns-side notification that must be filed in that repo's own backlog.
 
-It rebased onto ciu-P43 below and merged with CIU-80's
+The cutover rebased onto ciu-P43 below and merged with CIU-80's
 `HookContext.identity_unreadable`: that flag is kept and re-pointed at the
 overlay, and CIU-75 additionally makes its absent-vs-unreadable boundary
 honest (P43's `is_file()` guard called a DIRECTORY where the record belongs
-"absent"). CIU-82 was numbered around P43's CIU-81, which is FIXED below.
+"absent"). Read CIU-80's row below as pre-CIU-75 history: the field is the
+same field, the record it is about is now the overlay's generated table.
+CIU-82 was numbered around P43's CIU-81, which is FIXED below. **CIU-83 FILED**
+by the same rebase: ciu-P43 landed no `CHANGES.md` entries, so `[7.7.0]`
+currently announces one of its two breaking changes.
 
 Previously, 2026-08-31 — **CIU-79, CIU-80, CIU-81, CIU-77 FIXED (ciu-P43, a
 four-item bundle).** CIU-79: `ciu dev`'s `_build_dev_image` resolves
@@ -2682,6 +2686,40 @@ notification is not lost between repos.
       can follow;
 - [ ] only after all consumers are off it may a later ciu release stop
       WRITING `ciu.env` (S3.1c clause 2 keeps the write until then).
+
+---
+
+## CIU-83 — ciu-P43's four items are in SPEC/CONSUMERS but in no `CHANGES.md` entry, so 7.7.0's release notes omit a BREAKING change
+
+**Filed by:** ciu-P42, 2026-08-31, found while rebasing onto ciu-P43
+(`815c50d6`) — not a defect in this package, and not fixed here.
+
+`git show 815c50d6 --stat` does not list `ciu/CHANGES.md`: CIU-77 (vendored
+judge `assay-2.3.0` → `3.2.0`), CIU-79, CIU-80 and CIU-81 landed with SPEC,
+CONSUMERS, CONFIG and report updates but no changelog entry at all. Nothing is
+undocumented in the normative sense — the SPEC and CONSUMERS halves are there —
+but `## [7.7.0]` is the section all five of this checkpoint's items ship in,
+and it currently describes CIU-75 only (plus one CIU-75 × CIU-80 interaction
+bullet this package added, which is the sole changelog mention CIU-80 has).
+
+Why this is worth an entry rather than a silent fix by the next package:
+
+- **CIU-79 is BREAKING** by ciu-P43's own merge message — a `[<root>.dev].build`
+  profile whose Dockerfile sits in the stack dir now fails until `dockerfile`
+  is repointed repo-root-relative. A reader of 7.7.0's notes, which open by
+  declaring the release's one deliberate breaking change (CIU-75), would not
+  learn about it. Two breaking changes, one announced.
+- **CIU-77 changed the gate's judge**, which is exactly the kind of fact a
+  consumer pinning ciu's own toolchain reads release notes for.
+- The estate rule is that user-facing docs land WITH the change; a release
+  section assembled at tag time from memory is the failure mode that rule
+  exists to prevent.
+
+- [ ] add `[7.7.0]` entries for CIU-77, CIU-79 (marked BREAKING, with the
+      migration CONSUMERS #18 already carries), CIU-80 and CIU-81, before
+      7.7.0 is tagged;
+- [ ] whoever tags 7.7.0: check the section against the merge list for the
+      whole checkpoint, not against one package's report.
 
 ---
 

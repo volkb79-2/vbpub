@@ -209,17 +209,35 @@ invocation; it is in the raw capture and says nothing about the verdict):
 
 ```
 run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
-run-gate: rev 29 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: rev 30 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
 run-gate: ephemeral env (nothing declared)
 run-gate: budget 30m (advisory)
 assay-3.2.0.pyz: OK
 ciu: PASS (exit 0)
-  commit: 67a588f854d1ee7bd9bdd18e1d997bffe92e5026
+  commit: 8cc79745f281087fe5dceba2422df33ace300e34
   argv: /opt/tester-venv/bin/python run-ciu-tests.py
 run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2/ciu/.assay/verdict-ciu.json
 run-gate: lane 'ciu' exit 0
+run-gate: WARNING: lane history not recorded: /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2/ciu/.run-gate is not fully git-ignored, and writing there would leave the judged tree dirty for the NEXT lane's clean-tree check — add '.run-gate/' to the .gitignore covering /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2
+```
+
+```
 GATE_EXIT=0
 ```
+
+Two things in that output are new since this package's first run and are
+**not** verdict problems, so they are named rather than left to be wondered
+about:
+
+- `rev 30`, not `rev 29`. `main` gained run-gate-P03 (RG-27, lane invocation
+  history) between the runs, and `run-gate.py` is invoked from the primary
+  checkout. The lane, environment, judge and verdict artifact are unchanged.
+- the `WARNING: lane history not recorded` line is RG-27's brand-new
+  book-keeping declining to write `.run-gate/` into a tree whose `.gitignore`
+  does not cover it — this branch is based on `815c50d6`, which predates the
+  `.gitignore` line main added alongside RG-27. It is a warning about the
+  gate's own history file, it did not write anything, `git status` in the
+  worktree is clean, and the lane still exits 0. It resolves itself on merge.
 
 `GATE_EXIT` was captured with its own marker and read in a separate step, never
 from a pipe tail.
@@ -235,7 +253,7 @@ artifact on disk is this run's, and nothing about it is inherited.
 
 ```
 $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
-67a588f854d1ee7bd9bdd18e1d997bffe92e5026
+8cc79745f281087fe5dceba2422df33ace300e34
 ```
 
 `.assay/verdict-ciu.json` (verbatim, abridged only where noted):
@@ -254,11 +272,11 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
         "branch_capability": "reported",
         "branches_covered": 18,
         "branches_total": 18,
-        "considered": 10,
-        "covered": 278,
+        "considered": 8,
+        "covered": 236,
         "excluded_lines": {},
         "exclusion_capability": "reported",
-        "executable": 278,
+        "executable": 236,
         "files_missing_coverage": [],
         "files_with_excluded_lines": [],
         "files_with_missing_branch_lines": [],
@@ -271,7 +289,7 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
       "rigor": "R1", "source": "computed", "status": "PASS", "verified_by_assay": true
     }
   ],
-  "commit": "67a588f854d1ee7bd9bdd18e1d997bffe92e5026",
+  "commit": "8cc79745f281087fe5dceba2422df33ace300e34",
   "declared_evidence": [],
   "declared_rigor": ["R0", "R1"],
   "enforcement": "gate",
@@ -287,7 +305,7 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
     "r1": { "allow_excluded": false, "coverage_artifact": "coverage.json",
             "coverage_format": "coverage-py-json", "fail_under": 100.0,
             "mode": "changed_lines", "require_branch": true },
-    "resolved": { "base": "a1d1dec310d4fc26e4f71fe9a7153e4885abbf9e",
+    "resolved": { "base": "815c50d6723e038f97f28e3dc4cc7de2016bf845",
                   "base_resolution": "merge-base",
                   "language": "python", "source_roots": ["src"] }
   },
@@ -297,8 +315,8 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
   "scope": "S1",
   "snapshot_policy": { "selection": "repository-minus-unsafe-symlinks",
                        "unsafe_symlink_omissions": ["… 3 topos fixture links …"] },
-  "started": "2026-08-31T04:05:21.069907+00:00",
-  "ended":   "2026-08-31T04:05:55.633988+00:00"
+  "started": "2026-08-31T04:12:51.377665+00:00",
+  "ended":   "2026-08-31T04:13:27.999704+00:00"
 }
 ```
 
@@ -307,25 +325,26 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
 `unsafe_symlink_omissions` paths, which are `topos/` fixtures unrelated to
 this lane.)
 
-`verdict-ciu.json.commit` == `HEAD` == `67a588f854d1ee7bd9bdd18e1d997bffe92e5026`. **Match confirmed.**
+`verdict-ciu.json.commit` == `HEAD` at that run == `8cc79745f281087fe5dceba2422df33ace300e34`. **Match confirmed.**
 
 **No baseline or comparison gate was run at any point in this package**, so
 there is nothing that could have overwritten this artifact. (The R1
-`considered: 10 / covered: 278 / pct 100.0` figures are the *changed-line*
+`considered: 8 / covered: 236 / pct 100.0` figures are the *changed-line*
 judgment; the 100% whole-source line+branch floor is enforced inside R0's own
 argv — `run-ciu-tests.py` carries `--cov-fail-under=100 --cov-branch` — and its
 exit 0 is that floor being met.)
 
-One thing a reviewer should notice rather than take on trust: R1's resolved
-`base` is `a1d1dec3`, `main`'s tip *before* the ciu-P43 merge commit, not
-`815c50d6`. That makes the changed-line set a **superset** — P43's lines are
-judged alongside mine — which is the conservative direction for a
-`mode: changed_lines` judgment, not a gap. R0's whole-source floor is
-unaffected either way.
+R1's resolved `base` is `815c50d6`, the ciu-P43 merge — correct for a branch
+rebased onto it, and worth checking rather than assuming, because it is the
+gate-base trap: judge against the wrong base and `changed_lines` silently
+measures the wrong set. (The first post-rebase run, at `67a588f8`, resolved
+`a1d1dec3` instead — `main`'s ref had not yet advanced past the P43 merge at
+that moment — which made its changed-line set a superset, the conservative
+direction. Both runs pass; this one is the one on disk.)
 
 ### Final confirmation run (against the last commit on this branch)
 
-The verdict quoted above was produced at `67a588f8`, the branch tip when it
+The verdict quoted above was produced at `8cc79745`, the branch tip when it
 ran. This LOG/REPORT update is a later, report-only commit, so the gate was
 **re-run against that final commit** after it was written, and
 `ciu/.assay/verdict-ciu.json` on disk is that run's artifact. Its `"commit"`
@@ -551,6 +570,24 @@ CIU-80 entry — an adopter reading one release's notes should not have to infer
 the interaction of two entries in it. The consumer-facing conclusion is stated
 plainly: *a hook that was branching on `identity_unreadable` needs no change;
 it just stops being lied to.*
+
+### A finding the rebase surfaced, filed as CIU-83 (not fixed here)
+
+`git show 815c50d6 --stat` does not list `ciu/CHANGES.md`. ciu-P43's four items
+landed with SPEC, CONSUMERS, CONFIG and report updates but **no changelog
+entry**, and `## [7.7.0]` is the section all five of this checkpoint's items
+ship in. As it stands the release notes describe CIU-75 only — plus the one
+CIU-75 × CIU-80 bullet added here, which is currently CIU-80's sole changelog
+mention — while **CIU-79 is breaking by ciu-P43's own merge message**. A
+release whose notes open by declaring its one deliberate breaking change, and
+which contains two, is exactly the kind of thing a reviewer should catch before
+the tag rather than after.
+
+Filed as **CIU-83** rather than fixed here: those entries are ciu-P43's to
+write, this worktree's dispatch is the cutover, and writing another package's
+changelog from its merge message is how release notes become fiction. The entry
+carries both checkboxes (write the four entries; check the section against the
+checkpoint's merge list, not one package's report).
 
 ### `main` moved again, and was deliberately not chased
 
