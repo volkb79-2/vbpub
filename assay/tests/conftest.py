@@ -611,6 +611,10 @@ def make_lane(
     judge: "JudgeConfig | None" = None,
     isolation: "IsolationConfig | None" = _ISOLATION_UNSET,  # type: ignore[assignment]
     infrastructure: Mapping[str, str] | None = None,
+    #: (B043) the lane's declared working directory. Defaults to `None` --
+    #: absent, the only value that existed before v9 -- so every test written
+    #: before this key is unchanged.
+    cwd: str | None = None,
 ) -> Lane:
     if isolation is _ISOLATION_UNSET:
         # (B006a/A-269 WI-2) `run_lane` now enforces the SAME R0/R1+
@@ -643,6 +647,7 @@ def make_lane(
         where=None,
         isolation=isolation,
         infrastructure=None if infrastructure is None else MappingProxyType(dict(infrastructure)),
+        cwd=cwd,
     )
 
 

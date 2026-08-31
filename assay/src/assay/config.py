@@ -156,6 +156,8 @@ _OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
     "env_required",
     "environment_command",
     "infrastructure",
+    # (B043, schema v9) the lane command's declared working directory.
+    "cwd",
 )
 
 INFRASTRUCTURE_SOURCES: frozenset[str] = frozenset({"required-env", "derived"})
@@ -731,6 +733,20 @@ class Lane:
     #: (B013) Declared infrastructure facts, resolved in the invoking context
     #: before snapshot execution and injected into the isolated command.
     infrastructure: Mapping[str, str] | None = None
+    #: (B043, schema v9) The lane command's declared working directory,
+    #: repository-top-relative, forward-slash. ``None`` -- the only value that
+    #: existed before v9 -- means every command of this lane runs at the
+    #: snapshot's project root, and the verdict then records NO
+    #: ``cwd_declared`` at all (absent, never ``"."``).
+    #:
+    #: **Nothing else re-roots** (A-271, one path grammar):
+    #: ``judge.coverage.artifact``, ``judge.mutation.equivalence_artifact``/
+    #: ``kill_signal_artifact``/``artifact``, ``source_roots``, ``targets``
+    #: and every ``infrastructure`` fact stay project-root-relative whatever
+    #: this says. ``environment_command`` is likewise unaffected: it is a
+    #: probe of the INVOKING environment (B010/DESIGN-GUIDE §4), not the lane
+    #: command, and keeps running in the invoking cwd.
+    cwd: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -756,6 +772,8 @@ class Lane:
             declared["environment_command"] = list(self.environment_command)
         if self.infrastructure is not None:
             declared["infrastructure"] = dict(self.infrastructure)
+        if self.cwd is not None:
+            declared["cwd"] = self.cwd
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -1116,6 +1134,8 @@ def _load_lane(
 
     isolation = _load_isolation_for_lane(table.get("isolation"), rigor, where)
 
+    cwd = _load_lane_cwd(table.get("cwd"), where, project_root)
+
     return Lane(
         name=name,
         scope=scope,
@@ -1133,7 +1153,59 @@ def _load_lane(
         judge=judge,
         where=None if where_table is None else MappingProxyType(dict(where_table)),
         isolation=isolation,
+        cwd=cwd,
     )
+
+
+def _load_lane_cwd(value: Any, where: str, project_root: Path) -> str | None:
+    """``cwd`` (B043) -- the lane command's declared working directory, or
+    ``None`` when the file omitted the key.
+
+    Three checks, each refusing a genuinely different thing:
+
+    1. the SPELLING -- :func:`_validate_omission_path`'s own grammar, shared
+       verbatim with ``unsafe_symlink_omissions`` rather than re-derived
+       (repo-relative, forward-slash, no empty/``.``/``..``/``.git``
+       component, no backslash or NUL, never absolute). ``..`` is what makes
+       this more than cosmetic: a lane whose cwd escapes the project would
+       run its command outside the snapshot the verdict names;
+    2. CONTAINMENT after symlink collapse -- exactly
+       :func:`_validate_artifact_path`'s check one field over. The grammar
+       above cannot see a symlink, so the two are complementary, not
+       redundant;
+    3. that it names a real DIRECTORY in the INVOKING checkout. This is the
+       load-time half of the contract's "must resolve to a tracked directory
+       at the resolved commit": at load there is no resolved commit yet
+       (base resolution happens per-run, well after ``assay.toml`` is read),
+       so the commit-bound half is checked by :mod:`assay.runner` against the
+       materialised snapshot, where the commit IS known and can be named in
+       the message. A typo is caught here, at the earliest moment the fact
+       exists; a path that is present-but-untracked is caught there, at the
+       earliest moment ITS fact exists. Neither check can stand in for the
+       other, and a lane file that passes this one and fails that one is a
+       real, reportable state (an ignored build directory, say).
+    """
+    if value is None:
+        return None
+    cwd = _validate_omission_path(value, where=where, field="cwd")
+    resolved = (project_root / cwd).resolve()
+    if not resolved.is_relative_to(project_root.resolve()):
+        raise LaneConfigError(
+            f"{where}: 'cwd' {cwd!r} resolves to {resolved}, which is not "
+            f"contained beneath the project root {project_root} (via a "
+            f"symlink) -- a lane must not be able to run its command outside "
+            f"the project it declares"
+        )
+    if not resolved.is_dir():
+        raise LaneConfigError(
+            f"{where}: 'cwd' {cwd!r} is not a directory in the checkout at "
+            f"{project_root}; the lane command's working directory must "
+            f"exist, and (because every command runs inside a snapshot built "
+            f"from committed objects) must be tracked at the commit the run "
+            f"resolves -- which assay.runner re-checks against the "
+            f"materialised snapshot, where the commit is known"
+        )
+    return cwd
 
 
 def _load_isolation_for_lane(

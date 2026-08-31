@@ -83,6 +83,76 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
 
+## Run the lane somewhere other than the project root: `cwd` (B043)
+
+A monorepo app's own tooling — `npm run`, `go test ./...` inside a module,
+`cargo` — resolves its configuration from the directory it is invoked in, not
+from the repository top. Before schema v9 the only way to say that was a shell
+wrapper:
+
+<!-- assay-doc-example:skip reason="a one-line ANTI-pattern being argued against, not a lane; the loadable monorepo lane using cwd is in the dependency-closure section" -->
+```toml
+argv = ["bash", "-c", "cd applications/webapp-ui-react && npm test"]   # don't
+```
+
+That wrapper costs three real things. `argv[0]` becomes `bash`, so assay's
+`MISSING_EXTERNAL_TOOL` preflight checks for `bash` and never for `npm`.
+`allow_argv_append` becomes meaningless — an appended argument lands after the
+closing quote, not on the inner command. And shell quoting sits between the
+lane file and what actually ran, which `argv_effective` then records opaquely.
+
+Declare the directory instead:
+
+<!-- assay-doc-example:skip reason="the two keys under discussion, quoted on their own; the whole loadable lane using cwd is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit]
+cwd = "applications/webapp-ui-react"
+argv = ["npm", "test"]
+```
+
+**The grammar.** Repository-top-relative, forward slashes, no leading `/`, no
+`..`, no `.` or `.git` component — and it must name a real directory. Anything
+else is `ERROR`/`BAD_LANE_CONFIG` at load, naming the key and the path. One
+further refusal happens later, at run time, and names the commit: a directory
+that exists in your checkout but is **not tracked at the resolved commit** is
+genuinely absent from the snapshot, because a snapshot holds committed objects
+only. A `build/` or `dist/` directory your `.gitignore` covers is the usual
+way to hit this.
+
+**Where it applies.** The lane command, every R2 candidate re-execution and
+every R3 canary run — all of them, always the same resolved directory. There
+is no way to have one of them disagree with the others.
+
+**What it does NOT re-root.** Everything else in a lane file stays
+project-root-relative, whatever `cwd` says — one path grammar, one meaning
+per path (A-271):
+
+| stays project-root-relative | why it matters |
+|---|---|
+| `judge.coverage.artifact` | the reservation is armed before the command runs, from the project root |
+| `judge.mutation.artifact` / `equivalence_artifact` / `kill_signal_artifact` | same reservation discipline |
+| `judge.source_roots`, `judge.targets`, `judge.canary.target` | these name repository content, not a working directory |
+| `infrastructure` facts | resolved in the invoking context, before any snapshot exists |
+
+So a lane with `cwd = "applications/webapp-ui-react"` writing coverage into
+that app still declares
+`artifact = "applications/webapp-ui-react/.assay/coverage-final.json"`, with
+the prefix, even though its command writes `.assay/coverage-final.json`
+without one. That is deliberate: the two paths are read by different parties
+at different times, and giving them one grammar is what keeps a path in a
+verdict meaning the same thing wherever it appears.
+
+`environment_command` is likewise unaffected. It probes the INVOKING
+environment before any snapshot work (see [Add a lane, then gate
+it](#add-a-lane-then-gate-it)); it is not the lane command and keeps the
+invoking working directory.
+
+**In the verdict.** A lane that declares `cwd` records `cwd_declared` at the
+verdict's top level, beside `argv_declared`. A lane that declares none records
+*no key at all* — never `"."`. `assay lanes --json` exposes the same value as
+`"cwd"` (`null` when undeclared), so a gate tool can preflight the directory
+without parsing `argv`.
+
 ## A whole-target floor: a coverage gate that survives a docstring-only change
 
 Ordinary R1 judges the `base..HEAD` diff, so "fixing" a method by editing only its docstring
@@ -613,10 +683,10 @@ missing `vitest` binary into a refusal instead of an `npx` fetch.
 
 A worked MONOREPO lane — a real layout, not a root-level toy: the app lives
 under `applications/webapp-ui-react/`, which is where its own `package.json`,
-`node_modules` and `vitest.config.ts` all resolve, so the lane's `argv`
-must `cd` there (until B043's `cwd` retires the wrapper — Wave B) and its
-`artifact` path must be spelled relative to the PROJECT root, not the app
-root:
+`node_modules` and `vitest.config.ts` all resolve, so the lane declares that
+directory as its `cwd` (B043, schema v9 — this is what retired the old
+`bash -c "cd … && …"` wrapper) while its `artifact` path stays spelled
+relative to the PROJECT root, not the app root:
 
 ```toml
 schema_version = 2
@@ -625,8 +695,9 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
+cwd = "applications/webapp-ui-react"
 argv = ["bash", "-c",
-  "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]
+  "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"]
 env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
 env_passthrough = ["PATH", "HOME"]
 budget = "15m"
@@ -1131,11 +1202,12 @@ A gate wrapper reads this the way `assay run` would, without running it:
   `assay run` for the identical reason.
 - **`external_tools`** and **`argv0`** are what a `MISSING_EXTERNAL_TOOL`-
   style preflight actually checks against the environment's `PATH`, without
-  a gate having to parse `argv` itself (B043's `cwd` will sharpen `argv0`
-  further once a lane can declare a working directory other than the
-  snapshot root — until then a `bash -c "cd … && …"` wrapper's real command
-  is still hidden behind `argv0 = "bash"`, exactly as it is from
-  `assay run`'s own preflight today). **In this release, `external_tools` is
+  a gate having to parse `argv` itself. Since schema v9 a lane that declares
+  [`cwd`](#run-the-lane-somewhere-other-than-the-project-root-cwd-b043) no
+  longer needs a `bash -c "cd … && …"` wrapper, so `argv0` on such a lane
+  now names the real command instead of `bash`. A lane that still carries
+  the wrapper still hides its command behind `argv0 = "bash"`, exactly as it
+  does from `assay run`'s own preflight. **In this release, `external_tools` is
   `()` for every shipped adapter** (Python `adapters/python.py:806`, SQL
   `adapters/sql.py:671`, Go `adapters/go.py:501`, JavaScript
   `adapters/javascript.py:322` — none declares a nonempty tuple), so this
@@ -1149,13 +1221,22 @@ A gate wrapper reads this the way `assay run` would, without running it:
   environment before snapshot work, never to re-implement or repeat it
   (DESIGN-GUIDE §4).
 
-`cwd`, `link_paths` and `coverage.producer` are always `null`/`[]` in this
-release — they are declarable starting at Wave B's schema v9 (B043, B041's
-`link_paths`, B045) — so a consumer reading them today learns nothing beyond
-"not yet declared," and its key-handling code does not need an
-`inventory_schema` branch to add them later: `inventory_schema` stays `1`
-until an EXISTING key's meaning changes, never merely because a new key was
-added.
+- **`cwd`** (B043, schema v9) is the lane's declared working directory or
+  `null` when it declared none. `null` is the honest answer for that lane,
+  not a placeholder — `"."` would be a value the file never wrote. A
+  preflight that wants to check a directory exists in the environment reads
+  this rather than parsing a `bash -c "cd …"` wrapper out of `argv`.
+- **`link_paths`** (B041(b), schema v9) is the declared
+  `[lanes.<n>.isolation] link_paths` list, `[]` when the lane declared none.
+  A non-empty list tells a gate that this lane's snapshot will NOT be purely
+  committed objects — see [Linking a dependency closure into the
+  snapshot](#linking-a-dependency-closure-into-the-snapshot-link_paths-b041b).
+
+`inventory_schema` stays `1`: it changes when an EXISTING key's meaning
+changes, never merely because a new key was added — which is why `cwd`,
+`link_paths` and `coverage.producer` becoming really declarable at v9 did not
+bump it. A consumer written against the previous release, which saw them
+always `null`/`[]`, reads real values now with no key-handling change.
 
 A lane file that fails to load exits `2` with the loader's own message on
 stderr and **no JSON on stdout** — never a partial document — exactly like

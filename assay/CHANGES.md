@@ -48,6 +48,28 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   lexer (not a TypeScript parser) now classifies it as code-free. Anything the
   lexer does not recognise still answers "has code".
 
+- **B043 — a lane-level `cwd`.** `[lanes.<n>] cwd = "applications/webapp-ui"`
+  declares the working directory the lane's command runs in, retiring the
+  `argv = ["bash", "-c", "cd … && …"]` wrapper a monorepo lane needed. The
+  wrapper cost three real things and all three go away: `argv[0]` is the real
+  command again (so the `MISSING_EXTERNAL_TOOL` preflight checks it, not
+  `bash`), `allow_argv_append` applies to the command that actually runs, and
+  no shell quoting sits between the lane file and `argv_effective`.
+  Repository-top-relative, forward-slash, no `..` and no `.git` component;
+  refused at load when it is not a directory in the checkout, and refused at
+  run time — naming the commit — when it is not tracked at the resolved
+  commit (a snapshot holds committed objects only, so an ignored `build/` is
+  genuinely absent from it). The lane command, every R2 candidate
+  re-execution and every R3 canary run enter the same resolved directory:
+  there is ONE join, on the resolved `CommandPlan` (A-367), not four. Recorded
+  in the verdict as `cwd_declared` — absent, never `"."`, when undeclared —
+  and exposed by `assay lanes --json` as `cwd`. **Nothing else re-roots**
+  (A-369/A-271): `judge.coverage.artifact`, the `judge.mutation` artifact
+  paths, `source_roots`, `targets` and every `infrastructure` fact stay
+  project-root-relative, and `environment_command` keeps the invoking
+  working directory because it probes the invoking environment rather than
+  running the lane.
+
 ### Changed
 - **BREAKING — the verdict schema is v9 (A-359).** One bump carrying all four
   of B045, B046, B043 and B041(b), because each of them lands a new key inside

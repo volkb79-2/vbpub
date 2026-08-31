@@ -418,6 +418,25 @@ class CommandPlan:
     allow_argv_append: bool
     budget_seconds: float
     project_prefix: PurePosixPath | None
+    #: (B043, schema v9) the lane's declared ``cwd``, verbatim, or ``None``.
+    #:
+    #: **This field is why the four execution sites cannot disagree.** B043's
+    #: contract says the lane command, every R2 candidate re-execution and
+    #: every R3 canary run must use the SAME resolved working directory; the
+    #: obvious implementation -- teaching each of those four call sites to
+    #: join `lane.cwd` onto its own root -- is four places to get it right
+    #: and four places for a later edit to get it wrong. Carrying the
+    #: declaration on the PLAN instead means :func:`execute_plan` does the
+    #: join exactly once, and every executor that runs a lane's command
+    #: already goes through :func:`execute_plan`.
+    #:
+    #: A plan built by hand rather than by :func:`resolve_command_plan`
+    #: leaves this ``None`` and is therefore NOT re-rooted -- which is
+    #: precisely the behaviour the ``environment_command`` probe needs
+    #: (B010: it probes the INVOKING environment, and is not the lane
+    #: command), and it gets that behaviour by construction rather than by
+    #: remembering to opt out.
+    cwd_declared: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -589,7 +608,23 @@ def resolve_command_plan(
         allow_argv_append=lane.allow_argv_append,
         budget_seconds=lane.budget_seconds,
         project_prefix=project_prefix,
+        cwd_declared=lane.cwd,
     )
+
+
+def resolve_run_cwd(root: Path, plan: CommandPlan) -> Path:
+    """(B043) The directory *plan* actually runs in, given the project *root*
+    it was handed.
+
+    The ONE join, called from :func:`execute_plan` alone. ``cwd_declared``'s
+    grammar (:func:`assay.config._load_lane_cwd`) already refuses ``..``, a
+    leading ``/`` and every ``.``/``.git`` component, so this cannot escape
+    *root* -- the containment is a property of the accepted spelling, not of
+    a check repeated here.
+    """
+    if plan.cwd_declared is None:
+        return root
+    return root / plan.cwd_declared
 
 
 def execute_plan(
@@ -624,7 +659,12 @@ def execute_plan(
         proc = process_runner(
             plan.argv_effective,
             env=plan.env_effective,
-            cwd=cwd,
+            # (B043) The single re-rooting site. *cwd* is the project root
+            # the caller resolved (a snapshot's, or the invoking checkout's);
+            # the lane's own declared subdirectory is joined here, once, so
+            # the lane command, every R2 candidate and every R3 canary run
+            # in the same place by construction.
+            cwd=resolve_run_cwd(cwd, plan),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -1214,6 +1254,12 @@ def assemble_verdict(
         claims=claims,
         evidence=evidence,
         snapshot_policy=_verdict_snapshot_policy(lane),
+        # (B043) Straight from the loaded lane, at the SINGLE verdict
+        # construction site every producer path funnels through -- normal
+        # completion, `refuse_lane`, and every CLI refusal branch alike. A
+        # lane that declared no cwd records none: `None` here is absent on
+        # the wire, never `"."` (A-051).
+        cwd_declared=lane.cwd,
     )
 
 
@@ -1690,6 +1736,37 @@ def _execute_snapshot_unit(
     PASSING baseline has no reason to write, so it gets the tracked check
     only, never a reservation.
     """
+    # (B043) The commit-bound half of `cwd`'s contract, and the FIRST thing
+    # checked -- before any reservation is constructed, because a lane whose
+    # declared working directory is not in the snapshot cannot run at all and
+    # reserving an output for it would be work done on behalf of a command
+    # that will never start.
+    #
+    # `assay.config._load_lane_cwd` already proved the directory exists in the
+    # INVOKING checkout; that says nothing about the resolved commit, and the
+    # two genuinely differ -- an ignored or merely-untracked directory is
+    # present there and absent from a snapshot built by `git read-tree`. This
+    # is the check that can name the commit, so it is the one that does.
+    #
+    # Checked ONCE, here, for every unit this function runs: every later
+    # snapshot a lane materialises (each R2 mutant's, each R3 canary half's)
+    # is built from the SAME commit, so tracked-ness is invariant across them
+    # -- the identical reasoning the tracked-artifact checks below already
+    # state for themselves.
+    if plan.cwd_declared is not None:
+        run_cwd = resolve_run_cwd(snapshot.project_root, plan)
+        if not run_cwd.is_dir():
+            raise AssayError(
+                f"the declared lane cwd {plan.cwd_declared!r} is not a "
+                f"directory at commit {snapshot.commit} -- the snapshot holds "
+                f"committed objects only (A-161), so a working directory that "
+                f"exists in the checkout but is not tracked at the resolved "
+                f"commit cannot be entered here. Commit it, or drop the cwd "
+                f"declaration.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+
     reservation: safeio.OutputReservation | None = None
     if wants_coverage:
         assert coverage_artifact is not None and coverage_format is not None

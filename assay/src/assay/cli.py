@@ -1059,9 +1059,10 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         if lane.infrastructure
         else [],
         "budget": lane.budget,
-        # (B043/schema v9) not yet declarable -- see the `coverage.producer`
-        # note above.
-        "cwd": None,
+        # (B043/schema v9) the declared working directory, or `null` when the
+        # lane declared none. `null` is the honest answer for that lane, not
+        # a placeholder: `"."` would be a value the file never wrote.
+        "cwd": lane.cwd,
         # (B041(b)/schema v9) ditto.
         "link_paths": [],
         "snapshot_selection": (

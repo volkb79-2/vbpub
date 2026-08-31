@@ -396,3 +396,79 @@ hand-transcribing 77 KB of JSON would be strictly worse and is precisely what
 the drift guard exists to catch. The six template migrations were `cp` (to
 create) followed by `Edit` (for every content change). Every other file this
 session, including this LOG, went through `Edit`/`Write`.
+
+## 9 — `feat(assay): B043 -- a lane-level cwd, honoured at every execution site`
+
+**Scope item (C).** The wire half landed with the schema cut; this is the
+loader and the four execution sites.
+
+**Order changed, deliberately.** Brief 3 §5 lists (B) B046 before (C) B043. I
+inverted them because B046 DEPENDS on B043 and the dependency is not
+cosmetic: an ingested Stryker report's `projectRoot` is the directory the tool
+ran in, and its `files` keys are relative to that — so with a monorepo lane
+(which is the shape B046's own backlog entry uses as its worked example,
+`cwd = "applications/webapp-ui-react"`) the report's paths cannot be resolved
+to repository-relative ones without knowing the lane's `cwd`. Implementing
+B046 first would have meant either hardcoding "projectRoot == snapshot root"
+and rewriting it an hour later, or building the path resolution twice.
+
+**What landed.**
+
+- `config.py`: `cwd` joins `_OPTIONAL_LANE_FIELDS`; `Lane.cwd`; `as_declared`
+  emits it only when declared; `_load_lane_cwd` runs three checks with three
+  distinct messages — the shared `_validate_omission_path` grammar (so `..`,
+  a leading `/`, and `.`/`.git` components are refused by the SAME code that
+  refuses them in `unsafe_symlink_omissions`, not a second transcription),
+  containment after symlink collapse (`_validate_artifact_path`'s check, which
+  the grammar cannot do because a symlink has no `..` in its spelling), and
+  "is a directory in the invoking checkout".
+- `runner.py`: `CommandPlan.cwd_declared` + `resolve_run_cwd`, joined ONCE
+  inside `execute_plan` (A-367). `resolve_command_plan` fills it from
+  `lane.cwd`. `assemble_verdict` — the single Verdict construction site every
+  producer path funnels through — passes `cwd_declared=lane.cwd`.
+  `_execute_snapshot_unit` gains the commit-bound refusal (A-368), placed
+  before any reservation is constructed.
+- `cli.py`: `lanes --json` emits the real `cwd`.
+- `docs/CONSUMERS.md`: a new section for the key (grammar, both refusals,
+  where it applies, and a TABLE of what does NOT re-root), the JS worked
+  monorepo lane rewritten to use `cwd` instead of the `bash -c` wrapper, and
+  the now-stale `lanes --json` prose about `cwd`/`link_paths` being
+  permanently `null`/`[]` replaced with their real descriptions.
+
+**Two things worth not rediscovering.**
+
+1. **`environment_command` gets the right answer by CONSTRUCTION, not by an
+   opt-out.** It is the one call site that builds its own `CommandPlan`
+   literal rather than going through `resolve_command_plan`, so
+   `cwd_declared` defaults to `None` there and the probe keeps the invoking
+   working directory — which is exactly what B010/DESIGN-GUIDE §4 requires. A
+   design that had put the join in the four executors would have needed that
+   site to remember to skip it.
+2. **The contract's "tracked at the resolved commit ... at load" cannot be
+   done at load** (A-368). There is no resolved commit when `assay.toml` is
+   read. The check is split, and the split is better than the contract's own
+   wording: a typo is caught while a human is editing the file, and the
+   realistic failure (an ignored `build/` that exists in the checkout and not
+   in the object store) is caught by the only layer that can name the commit.
+
+**Verification, this commit.** `tests/test_config_lane_cwd.py` — 19 nodes, all
+load-time accept/refuse pairs. `tests/test_runner_lane_cwd.py` — 8 nodes
+through the REAL runner with REAL subprocesses (A-334), where the oracle is a
+`/bin/sh` command appending its own `$PWD` to a log outside the snapshot: the
+lane command, both R3 canary halves, and the baseline-plus-mutant pair of a
+real R2 run are each asserted to have entered `<snapshot>/app`. The R2 node
+carries a second, mechanical proof — its command greps `src/mod.py`, spelled
+relative to the declared cwd, so a mutant run at the snapshot root could not
+find the file at all; the single generated mutant is killed by the real
+command or the test fails. Two negative controls: a lane with no `cwd` runs at
+the project root (without it, "ends with `/app`" would prove nothing), and the
+`environment_command` probe's own log is asserted NOT to end in `/app` while
+the same lane's command log does. Affected-module sweep including both new
+modules — `test_config_accept`, `test_config_reject`, `test_cli_lanes`,
+`test_cli_lanes_json`, `test_runner_execute`, `test_runner_plan_env`,
+`test_standalone`, `test_docs_examples_and_vocabulary`,
+`test_config_lane_cwd`, `test_runner_lane_cwd` — **188 passed, 1 skipped**.
+The docs guard went RED first on the two new illustrative fragments in the
+`cwd` section (it loads every unmarked ```toml block through the real loader);
+both now carry a `assay-doc-example:skip` marker naming why they are
+fragments, which is the convention, not a workaround.
