@@ -288,3 +288,12 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   No further reviewer round needed for this trivial addendum — the ACCEPT
   already stands unconditionally. Then: merge --no-ff, real `cmru
   release`, deploy, dstdns notify.
+
+- **2026-08-31 (merged to main)** — Final trivial fix landed clean:
+  `7263716f`, gate green with a real captured exit code (0), literal-last-
+  line marker confirmed, the corrected docstring verified present in the
+  gated blob itself (not just the working tree). `git merge --no-ff
+  feature/assay-wave-b-producer` into `main` — clean, zero conflicts (127
+  files, +23708/-433), pushed as `5692ad37`. Starting the real
+  `cmru release --project assay` next; expect 4.0.0 (the range's one and
+  only `!` commit is `af14021f`).
