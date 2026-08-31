@@ -73,7 +73,7 @@ the parser.
 
 ---
 
-## 2 — `14df397a` · `feat(assay): B045 (1/2) -- the coverage PRODUCER as a declared, per-format, closed fact`
+## 2 — `fac1b73b` · `feat(assay): B045 (1/2) -- the coverage PRODUCER as a declared, per-format, closed fact`
 
 **B045's CONFIG half.** The verdict field
 (`judgment.r1.coverage_producer`), the real branch arcs and the type-only
