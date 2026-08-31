@@ -315,4 +315,7 @@ reds that one test.
 CIU-80 filed for the stricter variant, recording that the two sites must
 change as a PAIR.
 
-Gate after this commit: see the REPORT's "Round-2 gate" section.
+Gate after this commit (and after the docs commit `75e54875` that followed
+it): **`ciu: PASS (exit 0)` at `75e54875`**, R0 PASS + R1 PASS at 100.0%
+(285/285 lines, 42/42 branches, base `e936dd70` — current main). Verbatim in
+the REPORT.

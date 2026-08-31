@@ -715,6 +715,58 @@ must change as a PAIR, because fixing one alone reintroduces exactly the
 preflight-vs-real-run divergence CIU-62 avoided. Cross-referenced from
 CIU-62's own row and from CHANGES.md.
 
-## Round-2 gate — commit `<R2_HASH>` — **<R2_VERDICT>**
+## Round-2 gate — commit `75e54875` — **PASS**
 
-<!-- R2_GATE -->
+Run AFTER the rebase, the conflict resolution and both rulings, on a tree
+that includes every code change — `75e54875` is the branch tip at run time,
+so nothing was gated by proxy. Verdict read from the artifact in a SEPARATE
+step from the run (LESSONS L4), never off a pipe tail:
+
+```
+assay-2.3.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 75e54875301d7303be6a7d876c7cb30134c03b23
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: lane 'ciu' exit 0
+EXIT=0
+```
+
+From the verdict artifact:
+
+```
+outcome: PASS | exit_code: 0
+commit: 75e54875301d7303be6a7d876c7cb30134c03b23
+  R0 PASS
+  R1 PASS  pct=100.0  lines=285/285  branches=42/42  files_missing_coverage=[]
+judgment.r1: fail_under=100.0, mode=changed_lines, require_branch=True,
+             allow_excluded=False
+base: e936dd70876c8796feb2960ca80abb7381e8c2f7   (current main)
+```
+
+The R1 base is now `e936dd70` — i.e. the changed-line floor was judged
+against **current main including CIU-70**, not the stale base of the round-1
+run. Devcontainer cross-check on the same tree: **3354 passed, 0 failed**,
+`TOTAL 9821 statements / 0 missing / 4018 branches / 0 partial = 100%`, with
+`deploy.py`, `engine.py` and `provisioning.py` each at 100%.
+
+## Final state (round 2)
+
+| | |
+|---|---|
+| branch | `fix/ciu-P41-checkpoint1-remainder` |
+| based on | `e936dd70` (current main, includes ciu-P40/CIU-70) |
+| gated commit | **`75e54875`** — PASS, and the branch tip at run time |
+| commits | 10 |
+| items | CIU-62, CIU-64, CIU-65, CIU-67, CIU-68 FIXED · CIU-66 BLOCKED with its analysis in the backlog · CIU-80 newly filed |
+
+Only a docs-only commit pasting this verdict follows `75e54875`; `git diff
+75e54875 HEAD --stat` lists nothing but this REPORT and the LOG.
+
+Still open for the controller, none blocking:
+
+- **CIU-66's next step** is named in its backlog row (expose a per-stack
+  identity fact in `render_ciu_context`, its own small additive package).
+- **CIU-80** — the stricter identity-degradation variant, with the
+  change-as-a-PAIR constraint recorded.
+- **`ciu up --dir <stack>`** does not get CIU-64's preflight — different code
+  path.
