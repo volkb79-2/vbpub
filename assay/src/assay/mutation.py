@@ -113,12 +113,14 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 from . import git, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .isolation import SnapshotRepository
+from .mutation_parsers.model import IngestedMutationReport
 from .verdict import (
     MUTATION_BUCKETS,
     MAX_CANDIDATE_CEILING,
@@ -126,6 +128,8 @@ from .verdict import (
     Claim,
     Mutation,
     MutantOutcome,
+    MutationProducerTool,
+    SourcePosition,
     iso_utc,
 )
 from .vocabulary import MUTATION_OPERATORS
@@ -1797,6 +1801,386 @@ def _execute_mutation_jobs(
     )
 
 
+#: (B046) The upstream `MutantStatus` -> assay-bucket map, each direction
+#: chosen for the VISIBLE-FAILURE side. Named once, here, rather than written
+#: out at the two sites that consume it, for `MUTATION_BUCKETS`' own reason:
+#: A-228's root cause was a mapping that reached some layers and not others.
+#:
+#: * `Killed` -> `killed`, `Survived` -> `survived`: the identity cases.
+#: * `NoCoverage` -> `survived`, AND separately listed in
+#:   `judgment.r2.survived_uncovered`. A mutant no test even exercised is not
+#:   killed, so it belongs in `survived`; it is also the WORST kind of
+#:   survivor, and burying it inside a count would hide exactly the fact a
+#:   consumer most needs.
+#: * `Timeout` -> `budget_exceeded`: Stryker's per-mutant timeout IS the
+#:   per-candidate budget one name over. Not `killed` -- a mutant that hung is
+#:   not a mutant the suite caught, and Stryker's own docs describe treating
+#:   timeouts as kills, which is precisely the conflation
+#:   `MUTATION_BUCKETS`' five-way split exists to refuse (A-122: nyxloom's own
+#:   `MutationResult` collapsed crashed and budget-exceeded into "killed").
+#:
+#: `CompileError`/`RuntimeError` and `Ignored` are deliberately ABSENT from
+#: this map: neither is a bucket. See `_INGESTED_DISCARDED_STATUSES` and
+#: A-377.
+INGESTED_STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(
+    {
+        "Killed": "killed",
+        "Survived": "survived",
+        "NoCoverage": "survived",
+        "Timeout": "budget_exceeded",
+    }
+)
+
+#: (B046) Statuses counted in `judgment.r2.discarded` and excluded from the
+#: `pct` denominator: an invalid mutant assay's native engine never emits at
+#: all. Excluded because a mutant that could not compile tested nothing;
+#: COUNTED because a report that could not compile most of its own mutants
+#: measured far less than its score implies, and a bare percentage cannot say
+#: so.
+_INGESTED_DISCARDED_STATUSES: frozenset[str] = frozenset(
+    {"CompileError", "RuntimeError"}
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class IngestedMutationResult:
+    """(B046) What :func:`ingest_mutation_report` produces: the R2 payload
+    plus the four ingested-only facts ``judgment.r2`` records beside it.
+
+    A separate type from :class:`Mutation` because the payload and the
+    judgment are two different objects on the wire with two different owners
+    -- and because bundling `discarded` into `Mutation` would put a number in
+    the CLAIM that no bucket accounts for, which is the arithmetic
+    `Mutation._check_arithmetic` exists to keep total.
+    """
+
+    mutation: Mutation
+    producer_tool: MutationProducerTool
+    survived_uncovered: tuple[SourcePosition, ...]
+    discarded: int
+    lines_without_candidates: tuple[SourcePosition, ...]
+
+
+def ingest_mutation_report(
+    report: IngestedMutationReport,
+    *,
+    run_cwd: Path,
+    repo_top: Path,
+    source_root_paths: Sequence[Path],
+    mode: str,
+    added: AddedLines | None,
+    targets: Sequence[str] | None,
+) -> IngestedMutationResult:
+    """Turn a parsed foreign mutation report into assay's own R2 payload.
+
+    **Scope is assay's computation, not the tool's** (B046's own "Judgment"
+    section). Stryker mutated whatever its configuration told it to; which of
+    those mutants COUNTS is decided here, by the same rule native R2 uses:
+    under ``changed_lines`` a mutant counts iff its start line is an added
+    line of the resolved diff; under ``whole_target`` iff its file is a
+    declared target. Reading the tool's own score instead would be judging by
+    a scope assay never declared.
+
+    *run_cwd* is the directory the lane's command actually ran in inside the
+    snapshot -- ``snapshot.project_root`` joined with the lane's ``cwd``
+    (B043). It is what the report's own ``projectRoot`` must equal and what
+    its relative ``files`` keys are anchored at. This is the coupling that
+    made B043 a prerequisite for this item rather than a sibling of it: with
+    a monorepo lane (the shape B046's own worked example uses) the report's
+    keys are relative to the app directory, and resolving them to
+    repository-relative paths is impossible without knowing which directory
+    that was.
+
+    Every path on the wire is REPO-TOP-relative, exactly as a natively
+    generated :class:`MutantOutcome` already is -- one spelling, so an
+    ingested and a native verdict can be read by the same consumer code.
+    """
+    if report.producer.name and report.producer.version:
+        producer_tool = MutationProducerTool(
+            name=report.producer.name,
+            version=report.producer.version,
+            report_schema_version=report.producer.report_schema_version,
+        )
+    else:  # pragma: no cover - the parser already refuses this shape
+        raise AssayError(
+            "mutation report carries no producer identity",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+
+    _check_report_project_root(report, run_cwd=run_cwd)
+    wire_paths = _resolve_report_paths(
+        report, run_cwd=run_cwd, repo_top=repo_top, source_root_paths=source_root_paths
+    )
+    in_scope = _in_scope_predicate(mode=mode, added=added, targets=targets)
+
+    buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
+    # A SET of positions, not a list per mutant. `survived_uncovered` is
+    # documented as "listed BY POSITION so a consumer sees the untested line",
+    # and the model enforces uniqueness -- correctly: one line with nine
+    # NoCoverage mutants on it is still one untested line, and repeating it
+    # nine times would turn a list of places into a disguised count of
+    # mutants. The real committed report has exactly this shape (ten
+    # NoCoverage mutants share `src/format.ts` line 34).
+    survived_uncovered: set[tuple[str, int]] = set()
+    discarded = 0
+    mutated_lines: set[tuple[str, int]] = set()
+
+    for mutant in report.mutants:
+        wire_path = wire_paths[mutant.path]
+        if not in_scope(wire_path, mutant.lineno):
+            continue
+        if mutant.status == "Ignored":
+            # A-377: no v9 field can state this fact, and both alternatives
+            # misstate it -- dropping it launders a suppressed mutant into
+            # nothing, and folding it into `discarded` would report a
+            # deliberately ignored mutant as one that failed to COMPILE,
+            # which the schema's own description of that field forbids.
+            raise AssayError(
+                f"mutation report marks an IN-SCOPE mutant "
+                f"{wire_path}:{mutant.lineno} ({mutant.operator}) as "
+                f"'Ignored'. The tool was told to skip it -- by "
+                f"`mutator.excludedMutations`, or by a `// Stryker disable` "
+                f"comment -- and the v9 verdict has no field that can say so: "
+                f"`discarded` means a mutant that failed to COMPILE, and "
+                f"reporting a suppressed mutant there would be a false "
+                f"statement about why it did not run. Assay will not silently "
+                f"drop it either, because a mutant suppressed inside the "
+                f"tool's own config is exactly how a gate is made green "
+                f"without being passed. Remove the suppression, or move the "
+                f"line out of the lane's declared scope.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        mutated_lines.add((wire_path, mutant.lineno))
+        if mutant.status in _INGESTED_DISCARDED_STATUSES:
+            discarded += 1
+            continue
+        bucket = INGESTED_STATUS_BUCKETS.get(mutant.status)
+        if bucket is None:  # pragma: no cover - the parser closes the set
+            raise AssayError(
+                f"mutation report carries unmapped status {mutant.status!r}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        outcome = MutantOutcome(
+            path=wire_path,
+            lineno=mutant.lineno,
+            start_byte=mutant.start_byte,
+            end_byte=mutant.end_byte,
+            replacement_sha256=mutant.replacement_sha256,
+            operator=mutant.operator,
+            description=mutant.description,
+        )
+        buckets[bucket].append(outcome)
+        if mutant.status == "NoCoverage":
+            survived_uncovered.add((wire_path, mutant.lineno))
+
+    for name in MUTATION_BUCKETS:
+        buckets[name].sort(key=lambda item: item.identity)
+    attempted = sum(len(items) for items in buckets.values())
+    try:
+        payload = Mutation(
+            candidate_count=attempted,
+            total=attempted,
+            **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
+        )
+    except ValueError as exc:
+        # The one shape the model refuses that a real report can produce: two
+        # mutants with the identical (path, span, replacement, operator). A
+        # bare ValueError escaping here would surface as a crash rather than a
+        # judged terminal.
+        raise AssayError(
+            f"mutation report does not yield a well-formed R2 payload: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+
+    return IngestedMutationResult(
+        mutation=payload,
+        producer_tool=producer_tool,
+        survived_uncovered=tuple(
+            SourcePosition(path=path, lineno=lineno)
+            for path, lineno in sorted(survived_uncovered)
+        ),
+        discarded=discarded,
+        lines_without_candidates=_lines_without_candidates(
+            report,
+            wire_paths=wire_paths,
+            in_scope=in_scope,
+            mutated_lines=mutated_lines,
+        ),
+    )
+
+
+def _check_report_project_root(
+    report: IngestedMutationReport, *, run_cwd: Path
+) -> None:
+    """B046 non-repudiation (iii), first half: the report must describe THIS
+    run's own directory, not some other checkout the same tool ran in.
+
+    Compared through :func:`os.path.realpath` on both sides rather than by
+    string: a snapshot lives under a caller-supplied scratch root, and on a
+    great many systems ``/tmp`` is itself a symlink, so two spellings of one
+    directory is the normal case rather than the suspicious one.
+    """
+    declared = os.path.realpath(report.project_root)
+    actual = os.path.realpath(run_cwd)
+    if declared != actual:
+        raise AssayError(
+            f"mutation report declares projectRoot {report.project_root!r}, "
+            f"which is not the directory this lane's command ran in "
+            f"({run_cwd}). This report was produced somewhere else -- a stale "
+            f"artifact committed into the repository, or one copied in from "
+            f"another run -- and a judgment computed from it would be about a "
+            f"tree this verdict does not name.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+
+
+def _resolve_report_paths(
+    report: IngestedMutationReport,
+    *,
+    run_cwd: Path,
+    repo_top: Path,
+    source_root_paths: Sequence[Path],
+) -> Mapping[str, str]:
+    """B046 non-repudiation (iii), second half: every ``files`` key resolves
+    under a declared source root, and to its repo-top-relative wire spelling.
+
+    A key that does not is ``ERROR``/``UNREADABLE_ARTIFACT`` -- "an artifact
+    from elsewhere" -- rather than a file quietly skipped. The distinction is
+    the whole point: skipping would let a report about a DIFFERENT project be
+    judged as though it were about this one and simply score zero mutants,
+    which is a PASS-shaped answer to a question that was never asked.
+    """
+    resolved: dict[str, str] = {}
+    for key in sorted(report.sources):
+        if PurePosixPath(key).is_absolute() or ".." in PurePosixPath(key).parts:
+            raise AssayError(
+                f"mutation report names file {key!r}; keys must be relative "
+                f"to the report's own projectRoot, with no '..' component",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        absolute = (run_cwd / key).resolve()
+        if not any(
+            absolute.is_relative_to(Path(root).resolve()) for root in source_root_paths
+        ):
+            raise AssayError(
+                f"mutation report names file {key!r}, which resolves to "
+                f"{absolute} -- not under any declared judge.source_roots "
+                f"entry. Assay judges the sources the lane declared; a report "
+                f"describing files outside them is an artifact from "
+                f"elsewhere, not a measurement of this lane.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        try:
+            relative = absolute.relative_to(Path(repo_top).resolve())
+        except ValueError as exc:
+            raise AssayError(
+                f"mutation report names file {key!r}, which resolves outside "
+                f"the snapshot repository at {repo_top}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
+        resolved[key] = relative.as_posix()
+    return resolved
+
+
+def _in_scope_predicate(
+    *, mode: str, added: AddedLines | None, targets: Sequence[str] | None
+) -> Callable[[str, int], bool]:
+    """The SAME scope rule native R2 applies, expressed per (path, line).
+
+    Under ``whole_target`` a declared target's every line is in scope, and
+    membership is by repo-top-relative path. Under ``changed_lines`` a line is
+    in scope iff the resolved diff added it -- which is why an ingested lane
+    needs the diff at all, and why it is threaded in from the caller rather
+    than re-derived (P18's own "R2 target selection must consume the same
+    measurement, not invoke Git independently with a second base").
+    """
+    if mode == "whole_target":
+        declared = frozenset(targets or ())
+
+        def by_target(path: str, _lineno: int) -> bool:
+            return path in declared
+
+        return by_target
+
+    by_file = added.by_file if added is not None else {}
+
+    def by_added_line(path: str, lineno: int) -> bool:
+        return lineno in by_file.get(path, frozenset())
+
+    return by_added_line
+
+
+def _lines_without_candidates(
+    report: IngestedMutationReport,
+    *,
+    wire_paths: Mapping[str, str],
+    in_scope: Callable[[str, int], bool],
+    mutated_lines: set[tuple[str, int]],
+) -> tuple[SourcePosition, ...]:
+    """(B046) In-scope source lines the foreign tool produced NO mutant for.
+
+    **"Executable" is approximated, and the approximation is stated rather
+    than hidden** (A-378). Assay has no per-line executability oracle for an
+    ingested language: `generate_mutation_sites` is `UNSUPPORTED` for
+    JavaScript by design (that is what makes this the ingested path), and the
+    type-only lexer B038(b) shipped answers a question about a whole FILE, not
+    a line. So the set here is: every in-scope line of a file the report
+    measured, minus blank lines, minus the lines a mutant already starts on.
+
+    The approximation errs toward OVER-reporting, which is the safe
+    direction: an entry says "the tool declined to mutate this line", and that
+    is a true statement about the tool for an import line or a closing brace
+    just as it is for a genuinely untested expression. Under-reporting would
+    be the dangerous direction -- it would hide the case the field exists for,
+    a changed line the mutation tool never touched at all.
+
+    Lines come from the report's OWN `source` text, not from the snapshot:
+    that is the text the tool actually read, so a line number here means the
+    same thing the tool's own line numbers mean.
+    """
+    positions: list[SourcePosition] = []
+    for key, source in sorted(report.sources.items()):
+        wire_path = wire_paths[key]
+        for index, line in enumerate(source.split("\n"), start=1):
+            if not line.strip():
+                continue
+            if not in_scope(wire_path, index):
+                continue
+            if (wire_path, index) in mutated_lines:
+                continue
+            positions.append(SourcePosition(path=wire_path, lineno=index))
+    return tuple(sorted(positions, key=lambda position: position.sort_key))
+
+
+def mutation_pct(mutation: Mutation) -> float:
+    """(B046) The mutation score: ``killed / (killed + survived)``, percent.
+
+    The denominator is deliberately NOT ``total``. ``budget_exceeded`` says
+    the experiment did not finish and ``equivalent`` says the mutant could
+    never have been caught -- neither is evidence about the tests, so
+    including them would move the score for reasons that have nothing to do
+    with what the suite does. ``discarded`` is not in the payload at all, for
+    the same reason one field over.
+
+    A zero denominator is ``0.0``, never ``100.0``: this is A-026/A-035's
+    0/0-is-100% bug, and the only caller reaches this function on a branch
+    where ``survived`` is already non-empty, so the guard is defence rather
+    than live arithmetic.
+    """
+    denominator = len(mutation.killed) + len(mutation.survived)
+    if denominator == 0:
+        return 0.0
+    return 100.0 * len(mutation.killed) / denominator
+
+
 def judge_mutation(
     baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
 ) -> tuple[Outcome, ReasonCode | None]:
@@ -1822,6 +2206,22 @@ def judge_mutation(
     order-insensitive given the ``killed + survived == 0`` guard (a non-empty
     ``survived`` has already returned by then); it sits here for readability,
     not because the position is load-bearing.
+
+    **B046 takes NO producer fork, and that is a decision rather than an
+    omission (A-379).** An ingested R2 judgment is judged by exactly this
+    function, unchanged: same precedence, same terminals, same
+    "any survivor is ``FAIL``/``MUTANTS_SURVIVED``". A ``fail_under``
+    parameter was written here and then removed, because it would have broken
+    the one property :class:`~assay.verdict.JudgmentR2`'s own docstring
+    promises -- *"an independent consumer can already re-derive the R2 claim's
+    status from* :class:`~assay.verdict.Mutation`'s *own bucket fields
+    alone"*. The v9 wire has no ``judgment.r2`` field that could record a
+    mutation-score floor, so a lane judging at 90% would emit a PASS beside
+    survivors with nothing in the document explaining it, and
+    :func:`assay.verify._check_r2_rederivation` -- which reuses THIS function
+    -- would correctly call that document a lie. See
+    ``config._load_ingested_mutation`` for the load-time refusal that keeps
+    the two in agreement, and B050 for the wire field a later cut needs.
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code

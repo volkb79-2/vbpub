@@ -142,7 +142,7 @@ def test_missing_mode_header_raises_unreadable_artifact_when_parsed_directly():
     # module directly -- exactly what this test does, to prove `parse()`
     # itself still guards it independent of the registry's sniff cross-check.
     with pytest.raises(AssayError) as excinfo:
-        go_cover.parse("pkg/f.go:1.1,2.2 1 1\n")
+        go_cover.parse("pkg/f.go:1.1,2.2 1 1\n", producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 

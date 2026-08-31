@@ -70,7 +70,12 @@ def sniff(text: str) -> bool:
     return any(line.startswith(_SF_PREFIX) for line in text.splitlines())
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
+    # `producer` is part of the uniform parser protocol (package docstring,
+    # B045) and is deliberately unread here: `lcov`'s producer vocabulary is
+    # still CLOSED AND EMPTY (no speculative names, DESIGN-GUIDE §5), so no
+    # lane can declare one to branch on.
+    del producer
     raw_lines = text.splitlines()
     # Artifact-level (§3.2): whether branch tracking was on for this WHOLE
     # tracefile, decided before any one file's FileCoverage is built, since

@@ -83,6 +83,93 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
 
+## Run the lane somewhere other than the project root: `cwd` (B043)
+
+A monorepo app's own tooling — `npm run`, `go test ./...` inside a module,
+`cargo` — resolves its configuration from the directory it is invoked in, not
+from the repository top. Before schema v9 the only way to say that was a shell
+wrapper:
+
+<!-- assay-doc-example:skip reason="a one-line ANTI-pattern being argued against, not a lane; the loadable monorepo lane using cwd is in the dependency-closure section" -->
+```toml
+argv = ["bash", "-c", "cd applications/webapp-ui-react && npm test"]   # don't
+```
+
+That wrapper costs three real things. `argv[0]` becomes `bash`, so assay's
+`MISSING_EXTERNAL_TOOL` preflight checks for `bash` and never for `npm`.
+`allow_argv_append` becomes meaningless — an appended argument lands after the
+closing quote, not on the inner command. And shell quoting sits between the
+lane file and what actually ran, which `argv_effective` then records opaquely.
+
+Declare the directory instead:
+
+<!-- assay-doc-example:skip reason="the two keys under discussion, quoted on their own; the whole loadable lane using cwd is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit]
+cwd = "applications/webapp-ui-react"
+argv = ["npm", "test"]
+```
+
+**The grammar.** Repository-top-relative, forward slashes, no leading `/`, no
+`..`, no `.` or `.git` component — and it must name a real directory. Anything
+else is `ERROR`/`BAD_LANE_CONFIG` at load, naming the key and the path.
+
+**The commit-bound refusal.** One further refusal happens later, at run time,
+and names the commit: `cwd` must be a directory **the resolved commit's own
+tree contains**. Assay decides that from the commit's tree, not by looking at
+the snapshot directory — so it is a statement about what you committed, and
+nothing standing in the snapshot for another reason can satisfy it. A `build/`
+or `dist/` directory your `.gitignore` covers is the usual way to hit this.
+
+Be precise about what that does and does not promise. A snapshot's *committed*
+content is exactly the commit's, but a snapshot is not only committed content:
+`link_paths` (§ "Linking a dependency closure into the snapshot", below) is a
+declared, recorded way to put working-checkout content into it as symlinks. So
+"absent from your commit" does **not** by itself mean "absent from the
+snapshot" — an untracked `deps/` that the same lane also links is present
+there, as a link into your checkout. What assay guarantees is the thing that
+actually matters for `cwd`: your command runs in a directory the commit
+contains, never in one reached through such a link, and therefore never in
+your own working tree. `cwd` and `link_paths` naming the same path is refused
+outright, at load, naming both keys — a linked path is by rule untracked and a
+`cwd` is by rule tracked, so no commit can satisfy both. A link *beneath* the
+`cwd` (`cwd = "app"` with `link_paths = ["app/node_modules"]`) is the ordinary,
+supported shape and is unaffected.
+
+**Where it applies.** The lane command, every R2 candidate re-execution and
+every R3 canary run — all of them, always the same resolved directory. There
+is no way to have one of them disagree with the others.
+
+**What it does NOT re-root.** Everything else in a lane file stays
+project-root-relative, whatever `cwd` says — one path grammar, one meaning
+per path (A-271):
+
+| stays project-root-relative | why it matters |
+|---|---|
+| `judge.coverage.artifact` | the reservation is armed before the command runs, from the project root |
+| `judge.mutation.artifact` / `equivalence_artifact` / `kill_signal_artifact` | same reservation discipline |
+| `judge.source_roots`, `judge.targets`, `judge.canary.target` | these name repository content, not a working directory |
+| `infrastructure` facts | resolved in the invoking context, before any snapshot exists |
+
+So a lane with `cwd = "applications/webapp-ui-react"` writing coverage into
+that app still declares
+`artifact = "applications/webapp-ui-react/.assay/coverage-final.json"`, with
+the prefix, even though its command writes `.assay/coverage-final.json`
+without one. That is deliberate: the two paths are read by different parties
+at different times, and giving them one grammar is what keeps a path in a
+verdict meaning the same thing wherever it appears.
+
+`environment_command` is likewise unaffected. It probes the INVOKING
+environment before any snapshot work (see [Add a lane, then gate
+it](#add-a-lane-then-gate-it)); it is not the lane command and keeps the
+invoking working directory.
+
+**In the verdict.** A lane that declares `cwd` records `cwd_declared` at the
+verdict's top level, beside `argv_declared`. A lane that declares none records
+*no key at all* — never `"."`. `assay lanes --json` exposes the same value as
+`"cwd"` (`null` when undeclared), so a gate tool can preflight the directory
+without parsing `argv`.
+
 ## A whole-target floor: a coverage gate that survives a docstring-only change
 
 Ordinary R1 judges the `base..HEAD` diff, so "fixing" a method by editing only its docstring
@@ -494,14 +581,16 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
-## JavaScript/TypeScript lanes (R1 only)
+## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
 
-`judge.language = "javascript"` is a changed-line coverage lane over
+`judge.language = "javascript"` is a changed-line lane over
 `.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
-**R1 only**: R2 waits on a real architectural ruling (B037: a native JS/TS
-mutation engine, or ingesting Stryker's evidence), and R3 is unwired, so a
-lane declaring either is refused `ERROR`/`BAD_LANE_CONFIG` before anything
-runs.
+**R1** (coverage) and, since schema v9, at **R2 by evidence ingestion** — your
+own argv runs StrykerJS inside the snapshot and assay judges the report
+([below](#r2-for-javascript-by-ingesting-strykers-report-b046)). Assay still
+ships no JS/TS mutation engine, so a *native* R2 lane is still refused. **R3
+is unwired**, and a lane declaring it is refused `ERROR`/`BAD_LANE_CONFIG`
+before anything runs.
 
 ### Make your test runner emit `coverage-final.json`
 
@@ -613,10 +702,10 @@ missing `vitest` binary into a refusal instead of an `npx` fetch.
 
 A worked MONOREPO lane — a real layout, not a root-level toy: the app lives
 under `applications/webapp-ui-react/`, which is where its own `package.json`,
-`node_modules` and `vitest.config.ts` all resolve, so the lane's `argv`
-must `cd` there (until B043's `cwd` retires the wrapper — Wave B) and its
-`artifact` path must be spelled relative to the PROJECT root, not the app
-root:
+`node_modules` and `vitest.config.ts` all resolve, so the lane declares that
+directory as its `cwd` (B043, schema v9 — this is what retired the old
+`bash -c "cd … && …"` wrapper) while its `artifact` path stays spelled
+relative to the PROJECT root, not the app root:
 
 ```toml
 schema_version = 2
@@ -625,8 +714,9 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
+cwd = "applications/webapp-ui-react"
 argv = ["bash", "-c",
-  "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]
+  "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"]
 env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
 env_passthrough = ["PATH", "HOME"]
 budget = "15m"
@@ -645,7 +735,15 @@ base_source = "request"
 [lanes.ui_unit.judge.coverage]
 format = "coverage-istanbul-json"
 artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
 ```
+
+`producer` is **required** on a `coverage-istanbul-json` lane, and a lane that
+omits it is refused at load. That format is written by several toolchains
+that disagree about what parts of the document mean, so there is no value
+assay could imply that would be correct in every context — see
+[Declaring the coverage producer](#declaring-the-coverage-producer-b045)
+below for the full vocabulary and the refusals.
 
 A root-level app — no monorepo `cd` needed, `package.json` sits beside
 `assay.toml` — keeps the short form instead:
@@ -672,18 +770,70 @@ runner drops beside it — in the same change that adds the lane:
 applications/webapp-ui-react/.assay/
 ```
 
-#### (b) The declared speed path — `isolation.link_paths` (Wave B, schema v9)
+#### (b) Linking a dependency closure into the snapshot: `link_paths` (B041(b))
 
-Rebuilding the closure inside every snapshot is correct but not free: a
-`link_paths` declaration (`[lanes.<n>.isolation] link_paths = [...]`) will
-let a lane symlink an already-materialised `node_modules` directly into its
-snapshot instead of reinstalling it, recorded in the verdict's
-`snapshot_policy.link_paths` so a reviewer can always tell a lane ran
-against a purely-committed snapshot from one that borrowed part of the
-checkout. This is **not implemented in this release** — it rides the same
-schema-v9 cut as B045's declared coverage producer (B041 acceptance item;
-tracked in `4-backlog.md` B041). Pattern (a) above is the one every consumer
-adopts today.
+Rebuilding the closure inside every snapshot is correct but not free, and R3
+triples the cost. `link_paths` is the declared alternative: named directories
+from the **invoking checkout** are symlinked into every snapshot the lane
+creates, immediately after `read-tree` and before any command runs.
+
+<!-- assay-doc-example:skip reason="the isolation sub-table of the worked lane above, quoted on its own to show the key; the whole loadable lane is in pattern (a)" -->
+```toml
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+link_paths = ["applications/webapp-ui-react/node_modules"]
+```
+
+**The trade-off, stated plainly.** Pattern (a) is still the honest default.
+A snapshot is normally built from committed objects alone, so what it holds
+is bound to the recorded commit; a linked path is not — it is whatever the
+checkout happened to hold when the lane ran. That is exactly why the verdict
+records `snapshot_policy.link_paths` (sorted, and omitted entirely when the
+lane declared none): a reviewer reading a verdict with a non-empty
+`link_paths` knows the judgment's dependency closure is only as reproducible
+as that checkout was.
+
+**The rules, each with its own refusal.**
+
+| rule | refusal when broken |
+|---|---|
+| repo-top-relative, forward-slash, no `..`, no leading `/`, no `.git` component; strictly ascending, unique, at most 64 entries; declared-but-empty is refused (omit the key instead) | `ERROR`/`BAD_LANE_CONFIG` at **load** |
+| the directory must exist in the invoking checkout | `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` at run time, naming the path |
+| the path must **not** be tracked at the resolved commit | `ERROR`/`BAD_LANE_CONFIG` — linking a tracked path would replace committed content with working-tree content |
+| the path's parent must exist in the snapshot | `ERROR`/`BAD_LANE_CONFIG` — assay never `mkdir -p`s into a snapshot |
+| the path must be ignored by a **committed** `.gitignore` | `ERROR`/`BAD_LANE_CONFIG` — see the trailing-slash trap below |
+| the lane's own `cwd` must not be the path, or lie beneath it | `ERROR`/`BAD_LANE_CONFIG` at **load**, naming both keys — a linked path is untracked and a `cwd` must be tracked, so no commit satisfies both. A link *beneath* the `cwd` is the ordinary shape and is fine |
+
+An absent directory is `MISSING_EXTERNAL_TOOL` rather than `BAD_LANE_CONFIG`
+on purpose: the same lane file is correct on a machine whose image ran the
+offline install and incorrect on one that did not, so the lane file is not
+what is wrong — a declared prerequisite the environment did not provide is.
+
+**The trailing-slash trap — read this one.** Your existing rule is almost
+certainly `node_modules/`, with a trailing slash, because that is what every
+JS project's `.gitignore` carries. **It will not work here.** Git treats a
+trailing-slash pattern as directory-only, and what assay plants is a
+*symlink*, which git does not count as a directory — so the link shows up as
+untracked content and assay refuses the lane. Drop the slash:
+
+```text
+applications/webapp-ui-react/node_modules
+```
+
+That single rule ignores both the real directory in your checkout and the
+link in the snapshot. Assay refuses at materialisation, with a message naming
+the slash and this fix, rather than letting the lane's own command be blamed
+for a `DIRTY_TREE` afterwards.
+
+**Teardown never touches your files.** Snapshot teardown removes the *link*,
+never what it points at — proven by a test that plants a real symlink to a
+real directory, puts a canary file inside it, tears the snapshot down on both
+the success and the failure path, and asserts the canary's bytes are intact.
+
+`excluded_dir_names` already excludes `node_modules` from judging, the link is
+not a tracked path so the diff never sees it, and istanbul keys under it are
+inert — so linking a closure changes what is *available* to the command, never
+what is measured.
 
 ### Four things that behave differently from a Python lane
 
@@ -719,14 +869,109 @@ invents a status for a line the instrumenter did not record. If that matters
 for your gate, `judge.mode = "whole_target"` judges whole files instead of a
 diff.
 
-**`require_branch = true` will refuse this format.** `branch_capability` is
-`"unavailable"`, deliberately: istanbul's `branchMap` means one thing under
-`@vitest/coverage-istanbul` (real per-arm arcs) and a different thing under
-`@vitest/coverage-v8` (v8's own executed/unexecuted ranges), and a lane
-declares the format, not the producer — so no honest single translation
-exists yet, and a fabricated branch percentage is worse than an absent one.
-Leave `require_branch` unset (or `false`) on a JavaScript lane; B038 tracks
-adding real arc support once a producer can be declared.
+**`require_branch = true` is legal on this format when — and only when — you
+declare `producer = "istanbul"`.** Istanbul's `branchMap` means one thing
+under the istanbul instrumenter family (real per-arm arcs) and a different
+thing under `@vitest/coverage-v8`/`c8` (v8's own executed/unexecuted ranges),
+so the answer depends on a fact the format name does not carry. Declare the
+producer and `branch_capability` is `"reported"` with real arcs; declare no
+producer and it stays `"unavailable"`, which is a measured refusal rather
+than a gap. See **Declaring the coverage producer** below.
+
+**A type-only module is not a coverage failure.** A `.ts`/`.tsx` file whose
+top-level statements are all `import type` / `export type` /
+`export interface` / `type` / `interface` / `declare` is erased by the
+TypeScript compiler, so no instrumenter records it and it is absent from the
+artifact. assay classifies such a file as code-free rather than failing the
+lane over it. The recogniser is a narrow lexer, not a TypeScript parser:
+anything it does not recognise — a declaration split over several top-level
+lines, a `.js` file, a runtime statement sharing a line with a type — answers
+"has code", which shows up as a visible unmeasured-file failure you can act
+on rather than a file silently dropped from the judgement.
+
+### Declaring the coverage producer (B045)
+
+A coverage **format** says what SHAPE a document has. It does not say what
+WROTE it — and `coverage-istanbul-json` is written by several toolchains that
+disagree about what parts of it mean. Since schema v9 the lane declares the
+producer too, and assay records it in the verdict as
+`judgment.r1.coverage_producer`.
+
+<!-- assay-doc-example:skip reason="one table of the worked lane above, quoted on its own to show the key in isolation; the whole loadable lane is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
+```
+
+The vocabulary is closed **per format**. A producer name that is real for a
+different format is refused here, because the key answers "what wrote THIS
+artifact", not "is this a producer somewhere".
+
+| format | producer values | required? |
+|---|---|---|
+| `coverage-istanbul-json` | `istanbul` — the babel-plugin-istanbul family: `nyc`/`istanbul`, Jest with its default `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-istanbul`. They share one instrumenter, so they are one producer for every purpose assay has. | **yes** |
+| | `vitest-v8`, `jest-v8`, `c8` — spellable, and **refused at load by name** (see below) | |
+| `coverage-py-json` | `coverage.py` — the only producer | no |
+| `lcov`, `cobertura`, `go-cover` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
+
+**Why it is REQUIRED for `coverage-istanbul-json` and optional elsewhere.** If
+an implied `istanbul` were wrong — the lane really runs
+`@vitest/coverage-v8` — nothing would fail loudly: the run would report PASS
+over lines that never executed. A default is legitimate only when it is
+correct in the absence of information, and here it is not. `coverage-py-json`
+has exactly one producer, so an omission cannot silently pick the wrong one.
+
+**`go-cover`'s two names are deliberately not shipped yet.** They belong to
+the Go wave that can measure the difference between `go test -coverprofile`
+and `go tool covdata textfmt`. Shipping a closed vocabulary nothing in this
+build can produce, check or explain would be exactly the speculative naming
+this project refuses.
+
+#### The three producers assay refuses, and how to fix each
+
+Each of these is refused *by name*, at load, with its reason and its fix —
+never as "unknown producer", which would tell you that you had made a typo
+when in fact your coverage is unsound.
+
+| producer | why it is refused | the fix |
+|---|---|---|
+| `vitest-v8` | **Measured defect** (A-346, next section): reports never-executed lines as executed when a ternary appears earlier in the same block. Reproduces on both released Vitest majors. | `provider: 'istanbul'` in the Vitest coverage config, install `@vitest/coverage-istanbul`, declare `producer = "istanbul"` |
+| `c8` | Remaps v8 ranges the same way and **reproduces the same false greens** (measured: `tests/fixtures/coverage/probe-js-provider-defect-c8/`) | instrument with `nyc`/`istanbul` or `@vitest/coverage-istanbul` |
+| `jest-v8` | Jest's `coverageProvider: "v8"` remaps through the same layer and has **not** been measured against a committed witness — refused as *unproven*, which is a weaker ground than the two above and deliberately not blurred with them | Jest's default `coverageProvider: "babel"`, which shares istanbul's instrumenter |
+
+#### What declaring `istanbul` buys you
+
+`require_branch = true` becomes legal on a JavaScript lane. Only the istanbul
+family emits `branchMap` entries that are real **arcs** — one location and one
+count per branch ARM — which is what a branch percentage has to be computed
+from. Every other producer of the same format keeps
+`branch_capability = "unavailable"`, and that is a measured refusal rather
+than an omission: `@vitest/coverage-v8` emits one location and one count per
+branch RECORD, describing v8's own executed ranges, so a single translation
+could not be honest for both.
+
+Declaring `istanbul` also closes the **type-only module** gap. Under the
+istanbul provider a `.ts` file holding nothing but `export type` /
+`interface` declarations is absent from the artifact entirely, so a changed
+one used to read as missing coverage. See the "Four things that behave
+differently from a Python lane" section for what happens now.
+
+#### Migrating a lane written before this key existed
+
+Add one line. There are no other changes:
+
+```diff
+ [lanes.ui_unit.judge.coverage]
+ format = "coverage-istanbul-json"
+ artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
++producer = "istanbul"
+```
+
+...unless your lane really was running the v8 provider, in which case the
+refusal is the point and the fix is the provider switch, not the declaration.
+Python lanes (`coverage-py-json`) need nothing.
 
 ### The v8 provider is not safe to gate on
 
@@ -849,6 +1094,127 @@ changed line inside one of these files is judged like ordinary source
 (the adapter's `is_test_path` does not exempt it) against a record that can
 never show anything but uncovered — fail-closed, and visible in the verdict,
 never a silent pass.
+
+### R2 for JavaScript, by ingesting Stryker's report (B046)
+
+Assay ships no JavaScript mutation engine and does not pretend to. What it
+does instead is the thing it has always done for coverage: **your lane's own
+argv runs the mutation tool inside the private snapshot, and assay judges the
+report it wrote.** Assay never invokes Stryker, and never accepts a report it
+did not watch being produced — the report is bound to the resolved commit by
+the snapshot itself, and the declared artifact is held through the same
+single-owner reservation the coverage artifact uses, so a committed or stale
+report cannot satisfy the path.
+
+```toml
+schema_version = 2
+
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund && npx --no-install stryker run --reporters json"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+base_source = "request"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"
+artifact = "applications/webapp-ui-react/reports/mutation/mutation.json"
+fail_under = 100.0
+```
+
+**Set `thresholds.break: null` in your Stryker config.** This is a mandate,
+not a preference. Stryker exits non-zero when the score is under ITS OWN
+thresholds, and assay reads a non-zero exit as R0's `COMMAND_FAILED` — so a
+break threshold makes Stryker's judgment pre-empt assay's, and the lane fails
+at R0 before assay ever reads the report. With `break: null` the exit status
+carries only crash information and assay judges the score.
+
+**What assay declares, and what it deliberately does not.** `judge.mutation`
+on an ingested lane takes exactly three keys: `format`, `artifact`,
+`fail_under`. `jobs`, `max_mutants`, `operators` and `equivalence_artifact`
+are **refused at load** with a message saying why: they are assay's own
+execution policy, and assay decided none of it — Stryker's config chose the
+mutators, the concurrency and the ceiling. Declaring them in two places is the
+P1 hazard; recording them in the verdict under assay's name would be worse.
+`budget_per_candidate`, `shard_index` and `shard_count` are refused for a
+related reason: they bound or partition an execution assay performs, and here
+assay executes no mutant at all.
+
+**`fail_under` must be `100.0` in this release.** A lower floor means some
+survivors are acceptable, and verdict schema v9 has no `judgment.r2` field
+that records WHICH floor was applied — so the verdict would report PASS beside
+recorded survivors with nothing in it to explain that, and `assay verify`
+(which re-derives the R2 status from the payload's own buckets) would
+correctly call the document inconsistent. A lower value is refused with that
+explanation rather than accepted and quietly ignored. Tracked as **B050**.
+
+**The status map**, each direction chosen for the visible-failure side:
+
+| Stryker status | assay | why |
+|---|---|---|
+| `Killed` | `killed` | — |
+| `Survived` | `survived` | — |
+| `NoCoverage` | `survived`, **and** listed in `judgment.r2.survived_uncovered` | a mutant no test exercised is not killed — and it is the worst kind of survivor, so it is listed by position rather than buried in a count |
+| `Timeout` | `budget_exceeded` | Stryker's per-mutant timeout IS the per-candidate budget. Never `killed`: a mutant that hung is not one the suite caught |
+| `CompileError`, `RuntimeError` | counted in `judgment.r2.discarded` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and counted — a report that could not compile most of its mutants measured far less than its score implies |
+| `Ignored` | **refuses the lane** | see below |
+| `Pending` | **refuses the report** | pending means the run did not finish; incomplete evidence is not weaker evidence |
+
+**An `Ignored` mutant in scope refuses the lane.** Stryker marks a mutant
+`Ignored` when your own config suppressed it (`mutator.excludedMutations`, or
+a `// Stryker disable` comment). The v9 verdict has no field that can state
+that fact, and both alternatives lie: silently dropping it is how a gate gets
+made green from inside the mutation tool's own config, and folding it into
+`discarded` would report a deliberately suppressed mutant as one that failed
+to *compile*. So assay refuses, naming the mutant. Remove the suppression, or
+move the line out of the lane's declared scope.
+
+**What the verdict records.** `judgment.r2.producer = "ingested"`;
+`producer_tool` = `{name, version, report_schema_version}` copied verbatim
+from the report and **declared by artifact, not verified** — it is not a
+`helpers[]` entry, because `helpers[]` records tools assay itself invoked;
+`survived_uncovered` (untested lines, by position, deduplicated — it lists
+places, not mutants); `discarded`; `lines_without_candidates` (in-scope
+non-blank lines the tool produced no mutant for at all).
+`kill_attribution` is `"unattributed"` and cannot be anything else: a killed
+mutant here proves the foreign tool's test command failed, not that it failed
+for the reason the mutant created. Every mutant carries its operator as
+`stryker:<MutatorName>` — a namespace assay owns, so a foreign mutator name
+can never collide with a native operator.
+
+**Scope is assay's, not the tool's.** Stryker mutated whatever its config told
+it to; which mutants COUNT is decided by your lane's `mode` — under
+`changed_lines` a mutant counts iff its start line is an added line of the
+resolved diff, under `whole_target` iff its file is a declared target. Assay
+does not read Stryker's own score.
+
+**Refusals worth knowing before you hit them.** The report's `projectRoot`
+must equal the directory your command ran in (the snapshot's project root
+joined with `cwd`) — a report produced anywhere else is an artifact from
+elsewhere. Every `files` key must resolve under a declared `source_roots`
+entry. `projectRoot` itself must be present: the upstream schema makes it
+optional, assay requires it, because it is the only field saying where the
+report's relative keys are anchored. A mutant with no `replacement`, an
+unknown status, or a `schemaVersion` major assay has never seen each refuse
+with their own message. **Assay reads `mutation-testing-report-schema` major
+1** — the major the committed real artifact carries. A later major is refused
+as unproven rather than as broken: assay has no report in that shape to have
+been measured against, and reading one as if the shape had held is the
+assumption the version field exists to prevent. And a command that writes no report at all is
+`NO_MEASUREMENT`, never a pass.
 
 ## Browser coverage of a UI as an R1 lane
 
@@ -1028,11 +1394,12 @@ A gate wrapper reads this the way `assay run` would, without running it:
   `assay run` for the identical reason.
 - **`external_tools`** and **`argv0`** are what a `MISSING_EXTERNAL_TOOL`-
   style preflight actually checks against the environment's `PATH`, without
-  a gate having to parse `argv` itself (B043's `cwd` will sharpen `argv0`
-  further once a lane can declare a working directory other than the
-  snapshot root — until then a `bash -c "cd … && …"` wrapper's real command
-  is still hidden behind `argv0 = "bash"`, exactly as it is from
-  `assay run`'s own preflight today). **In this release, `external_tools` is
+  a gate having to parse `argv` itself. Since schema v9 a lane that declares
+  [`cwd`](#run-the-lane-somewhere-other-than-the-project-root-cwd-b043) no
+  longer needs a `bash -c "cd … && …"` wrapper, so `argv0` on such a lane
+  now names the real command instead of `bash`. A lane that still carries
+  the wrapper still hides its command behind `argv0 = "bash"`, exactly as it
+  does from `assay run`'s own preflight. **In this release, `external_tools` is
   `()` for every shipped adapter** (Python `adapters/python.py:806`, SQL
   `adapters/sql.py:671`, Go `adapters/go.py:501`, JavaScript
   `adapters/javascript.py:322` — none declares a nonempty tuple), so this
@@ -1046,13 +1413,22 @@ A gate wrapper reads this the way `assay run` would, without running it:
   environment before snapshot work, never to re-implement or repeat it
   (DESIGN-GUIDE §4).
 
-`cwd`, `link_paths` and `coverage.producer` are always `null`/`[]` in this
-release — they are declarable starting at Wave B's schema v9 (B043, B041's
-`link_paths`, B045) — so a consumer reading them today learns nothing beyond
-"not yet declared," and its key-handling code does not need an
-`inventory_schema` branch to add them later: `inventory_schema` stays `1`
-until an EXISTING key's meaning changes, never merely because a new key was
-added.
+- **`cwd`** (B043, schema v9) is the lane's declared working directory or
+  `null` when it declared none. `null` is the honest answer for that lane,
+  not a placeholder — `"."` would be a value the file never wrote. A
+  preflight that wants to check a directory exists in the environment reads
+  this rather than parsing a `bash -c "cd …"` wrapper out of `argv`.
+- **`link_paths`** (B041(b), schema v9) is the declared
+  `[lanes.<n>.isolation] link_paths` list, `[]` when the lane declared none.
+  A non-empty list tells a gate that this lane's snapshot will NOT be purely
+  committed objects — see [Linking a dependency closure into the
+  snapshot](#linking-a-dependency-closure-into-the-snapshot-link_paths-b041b).
+
+`inventory_schema` stays `1`: it changes when an EXISTING key's meaning
+changes, never merely because a new key was added — which is why `cwd`,
+`link_paths` and `coverage.producer` becoming really declarable at v9 did not
+bump it. A consumer written against the previous release, which saw them
+always `null`/`[]`, reads real values now with no key-handling change.
 
 A lane file that fails to load exits `2` with the loader's own message on
 stderr and **no JSON on stdout** — never a partial document — exactly like

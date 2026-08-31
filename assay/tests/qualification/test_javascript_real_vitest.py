@@ -119,6 +119,7 @@ base = "{base}"
 [lanes.ui.judge.coverage]
 format = "coverage-istanbul-json"
 artifact = ".assay/coverage-final.json"
+producer = "istanbul"
 """
 
 _ADD_ONLY = """\

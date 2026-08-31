@@ -161,10 +161,19 @@ of the two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
 `.ts` and one `.tsx` file to declare two languages for one measurement.
 
-Declare `format = "coverage-istanbul-json"` and point `artifact` at
-istanbul's own `coverage-final.json`. That document is emitted natively by
-nyc/istanbul and by Jest (`--coverageReporters=json`), and by Vitest through
-either coverage provider:
+Declare `format = "coverage-istanbul-json"`, point `artifact` at istanbul's
+own `coverage-final.json`, and declare `producer = "istanbul"` — that third
+key is **required** for this format, because several toolchains write it and
+they disagree about what parts of it mean, so there is no value assay could
+imply that is correct in every context. `producer` is recorded in the verdict
+as `judgment.r1.coverage_producer`; declaring `istanbul` is also what makes
+`require_branch = true` legal on a JavaScript lane. The vocabulary, the three
+producers assay refuses **by name**, and the one-line migration are in
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
+
+The `coverage-final.json` document is emitted natively by nyc/istanbul and by
+Jest (`--coverageReporters=json`), and by Vitest through either coverage
+provider:
 
 ```jsonc
 // vite.config.ts / vitest.config.ts -- import `defineConfig` from
@@ -246,12 +255,14 @@ until it is, `judge.language = "javascript"` declaring R2 is refused
 cause-sensitive canary) is unwired for the same "a method existing is not a
 producer path" reason, though both canary injection mechanisms are real.
 
-**Branch coverage is reported as unavailable for this format**, and that is a
-measured refusal rather than a gap: istanbul's `branchMap` means different
-things under the two Vitest providers (real per-arm arcs under `istanbul`,
-v8's own executed/unexecuted ranges under `v8`), and a lane declares the
-format, not the producer. `require_branch = true` on a JavaScript lane will
-therefore refuse. See **B038**.
+**Branch coverage depends on the declared producer.** istanbul's `branchMap`
+means different things under different producers (real per-arm arcs under the
+`istanbul` instrumenter family, v8's own executed/unexecuted ranges under
+`@vitest/coverage-v8` and `c8`), so the format name alone cannot answer it.
+Declare `producer = "istanbul"` and the arcs are real, `branch_capability` is
+`"reported"`, and `require_branch = true` is legal; without that declaration
+`branch_capability` stays `"unavailable"` — a measured refusal rather than a
+gap. See [Declaring the coverage producer](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
 
 ### SQL/DDL mutation testing (R2 only)
 

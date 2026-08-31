@@ -346,37 +346,59 @@ def _built_in_registry() -> registry.Registry:
     a producer path is a separate claim from a method existing
     (DESIGN-GUIDE §7), and wiring one is a fast-follow, not part of B036.
 
-    **Which layer actually refuses a ``javascript`` R2 lane** (round-1
-    review, Minor -- an earlier version of this docstring named only the
-    second). TWO independent guards refuse it, and the one a real lane meets
-    is the FIRST:
+    **B046 (schema v9) RESOLVED B037, and ``javascript`` is now registered at
+    ``{"R1", "R2"}`` -- through the INGESTED path only.** The paragraph above
+    stands as history; what changed is which of its two options was taken.
+    Neither: assay ships no JS/TS mutation engine and still does not.
+    :meth:`~assay.adapters.javascript.JavaScriptAdapter.generate_mutation_sites`
+    is STILL unconditionally ``"UNSUPPORTED"``, and that is not an oversight
+    left standing -- it is what makes this the ingested path. The lane's own
+    argv runs StrykerJS inside the private snapshot, exactly as it already
+    runs Vitest for R1, and assay judges the
+    ``mutation-testing-report-schema`` document it wrote.
 
-    1. :mod:`assay.config` at load time. ``mutation`` is a REQUIRED key for
-       an R2 lane (:data:`assay.config.JUDGE_FIELDS_BY_RIGOR`) and
-       ``judge.mutation.operators`` must be non-empty, while
+    **The runner selects native vs ingested by ``judge.mutation.format``'s
+    presence, and by nothing else** -- not by the language and not by the
+    artifact's content (A-007). So this registry entry says only "a
+    ``javascript`` lane may declare R2 at all"; WHICH R2 it gets is the lane
+    file's own declaration.
+
+    **Which layer refuses a NATIVE ``javascript`` R2 lane** -- still refused,
+    and still by the FIRST of two independent guards:
+
+    1. :mod:`assay.config` at load time. A native R2 lane must declare a
+       non-empty ``judge.mutation.operators``, while
        :data:`assay.vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` has no
-       ``javascript`` entry at all -- so every operator a lane could spell is
-       FOREIGN to it, and the foreign-operator guard refuses
-       ``BAD_LANE_CONFIG`` naming the language. A config-valid
-       ``javascript`` R2 lane is therefore not constructible at all.
-    2. :func:`assay.registry.get_adapter`, this entry's own
-       ``rigor=frozenset({"R1"})``, which refuses with the same
-       ``ERROR``/``BAD_LANE_CONFIG`` an unknown language gets. Reachable by a
-       direct call (and tested that way), never by a loaded lane while (1)
-       stands.
+       ``javascript`` entry at all -- so every operator such a lane could
+       spell is FOREIGN to it, and the foreign-operator guard refuses
+       ``BAD_LANE_CONFIG`` naming the language. A config-valid NATIVE
+       ``javascript`` R2 lane is therefore still not constructible. An
+       INGESTED one declares no operators at all (they are forbidden there,
+       A-360), so it never meets this guard -- which is precisely why
+       registering ``{"R1", "R2"}`` here does not reopen the native path.
+    2. :func:`assay.registry.get_adapter` and this entry's own ``rigor``
+       frozenset, which since B046 admits R2 and so no longer refuses on this
+       axis. The guarantee that a native JS R2 lane cannot run now rests on
+       (1) plus ``generate_mutation_sites`` returning ``"UNSUPPORTED"``,
+       which :func:`assay.mutation.run_mutation` renders as
+       ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` -- a stated absence of
+       capability, never a PASS.
 
-    Both are honest and both name ``javascript``; (2) is the one that keeps
-    the guarantee if B037 ever adds a ``javascript:*`` operator vocabulary
-    ahead of a registered engine, which is exactly the ``go:*`` situation
-    today.
+    R3 is still NOT registered for ``javascript``: the two canary injection
+    methods are real implementations, but a producer path is a separate claim
+    from a method existing (DESIGN-GUIDE §7), and B041(c)'s qualification
+    harness has proven R1 only -- a real canary PAIR has never run.
     """
     return registry.new_registry(
         registry.RegistryEntry(
             adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
         registry.RegistryEntry(adapter=SqlAdapter(), rigor=frozenset({"R2"})),
+        # (B046) R2 admitted for the INGESTED path only -- see this
+        # function's docstring for why that is a property of the lane's own
+        # `judge.mutation.format` declaration rather than of this frozenset.
         registry.RegistryEntry(
-            adapter=JavaScriptAdapter(), rigor=frozenset({"R1"})
+            adapter=JavaScriptAdapter(), rigor=frozenset({"R1", "R2"})
         ),
     )
 
@@ -1010,10 +1032,15 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         coverage = {
             "format": judge.coverage.format,
             "artifact": judge.coverage.artifact,
-            # (B045/schema v9) not yet declarable -- kept null so a v9-aware
-            # consumer's key set does not have to branch on which assay
-            # version produced this document.
-            "producer": None,
+            # (B045/schema v9) the DECLARED producer, or `null` when the
+            # format allows the omission and the lane took it. Wave A shipped
+            # this key as an unconditional `null` placeholder so a v9-aware
+            # consumer's key set would not have to branch on which assay
+            # version produced the document; Wave B wires it to the real
+            # declared value. The key's MEANING is unchanged ("the declared
+            # producer, or null"), so `inventory_schema` does not move
+            # (A-349's own stability rule).
+            "producer": judge.coverage.producer,
         }
 
     mutation = (
@@ -1054,11 +1081,15 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         if lane.infrastructure
         else [],
         "budget": lane.budget,
-        # (B043/schema v9) not yet declarable -- see the `coverage.producer`
-        # note above.
-        "cwd": None,
-        # (B041(b)/schema v9) ditto.
-        "link_paths": [],
+        # (B043/schema v9) the declared working directory, or `null` when the
+        # lane declared none. `null` is the honest answer for that lane, not
+        # a placeholder: `"."` would be a value the file never wrote.
+        "cwd": lane.cwd,
+        # (B041(b)/schema v9) the declared link_paths, `[]` when the lane
+        # declared none. A non-empty list tells a gate that this lane's
+        # snapshot will NOT be purely committed objects, and that the listed
+        # directories must exist in the environment before the lane runs.
+        "link_paths": list(lane.isolation.link_paths) if lane.isolation else [],
         "snapshot_selection": (
             lane.isolation.snapshot_selection if lane.isolation is not None else None
         ),

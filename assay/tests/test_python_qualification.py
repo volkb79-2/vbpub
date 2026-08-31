@@ -322,7 +322,11 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: the v4 original here would test the harness against a contract the
 #: product no longer emits.
 #: B035/A-329 moves it again, to W4's v8 siblings, for the same reason.
-P25_V8_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W4" / "expected"
+#: A-359 (wave B, the producer cut) moves it once more, to W5's v9 siblings,
+#: for the same reason a third time: W4's v8 documents are now history, and a
+#: v9 verifier refuses them, so reading one here would test the harness
+#: against a contract the product no longer emits.
+P25_V9_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W5" / "expected"
 
 #: (B018/A-327) The harness now REQUIRES a judge identity, because the
 #: qualification it drives runs an installed wheel, which always has one. The
@@ -341,7 +345,7 @@ _A_COMPLETE_JUDGE_IDENTITY = {
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P25_V8_EXPECTED_ROOT / "p25-pass-v8-template.json").read_text()
+        (P25_V9_EXPECTED_ROOT / "p25-pass-v9-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
     actual["judge_provenance"] = dict(_A_COMPLETE_JUDGE_IDENTITY)

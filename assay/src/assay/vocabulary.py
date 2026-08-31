@@ -43,10 +43,18 @@ re-read under the new vocabulary.
 
 from __future__ import annotations
 
+import re
 from types import MappingProxyType
 from typing import Mapping
 
 __all__ = [
+    "COVERAGE_PRODUCERS_BY_FORMAT",
+    "COVERAGE_PRODUCER_REQUIRED_FORMATS",
+    "ARC_BEARING_COVERAGE_PRODUCERS",
+    "REFUSED_COVERAGE_PRODUCERS",
+    "INGESTED_OPERATOR_NAMESPACES",
+    "INGESTED_OPERATOR_RE",
+    "is_ingested_operator",
     "MUTATION_OPERATORS",
     "MUTATION_OPERATORS_BY_LANGUAGE",
     "WITHDRAWN_MUTATION_OPERATORS",
@@ -148,6 +156,161 @@ MUTATION_OPERATORS: tuple[str, ...] = tuple(
     for operators in MUTATION_OPERATORS_BY_LANGUAGE.values()
     for operator in operators
 )
+
+
+#: (B045, schema v9) The closed coverage-PRODUCER vocabulary, keyed by the
+#: format the producer writes. A producer is the toolchain that WROTE a
+#: coverage artifact; a format is the document shape it wrote. Through v8
+#: assay knew only the second, and `coverage-istanbul-json` is one format
+#: several producers disagree about -- about what `branchMap` MEANS (A-344)
+#: and about whether a line ran at all (A-346). B038 and B040 exist to force
+#: exactly this: the producer becomes a DECLARED fact.
+#:
+#: **Declared, never sniffed (A-007).** Deriving the producer from the
+#: artifact's own shape ("every `branchMap` entry is typed `branch` with one
+#: location") is the declaration-versus-sniffing collapse
+#: `coverage.py`'s module docstring forbids, and it would already have broken
+#: between the two Vitest majors measured in B040 (Vitest 4's v8 provider
+#: emits multi-line extents where Vitest 3's emitted single-line ones).
+#:
+#: **A per-producer FORMAT was rejected** (B045): registering
+#: `coverage-istanbul-json-v8` as a second format name would bind a TRUST
+#: property to a format name, and the identical document from nyc, Jest-babel
+#: and `@vitest/coverage-istanbul` would then need three names for one shape.
+#:
+#: A format absent from this table -- `lcov`, `cobertura`, `go-cover` -- has
+#: NO open producer vocabulary, and declaring `producer` on such a lane is
+#: refused rather than accepted-and-ignored. That is DESIGN-GUIDE §5's "no
+#: speculative names" applied literally: a vocabulary opens when a consumer
+#: needs it and can say what each name MEANS, not in advance. `go-cover`'s
+#: two names (`go-test`, `covdata`) are B047's to open, with the Go wave that
+#: can measure the difference between them; naming them here would ship a
+#: closed vocabulary nothing in this build can produce, check or explain.
+COVERAGE_PRODUCERS_BY_FORMAT: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        # The babel-plugin-istanbul family (nyc/istanbul, Jest's default
+        # `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-
+        # istanbul`) share ONE instrumenter, so they are one producer for
+        # every purpose assay has: they agree about `branchMap` (real arcs,
+        # one location per arm) and they were measured correct on every
+        # case in `probe-js-provider-defect`. The three v8-remapping
+        # producers are SPELLABLE so the refusal can name them and say why
+        # -- see `REFUSED_COVERAGE_PRODUCERS`.
+        "coverage-istanbul-json": ("istanbul", "vitest-v8", "jest-v8", "c8"),
+        # One format, one producer. Optional rather than required for that
+        # exact reason: there is no second producer to disagree with, so an
+        # omitted value cannot be a silently wrong answer -- but a DECLARED
+        # value must still be the right one, so the name is closed here
+        # rather than accepted free-form.
+        "coverage-py-json": ("coverage.py",),
+    }
+)
+
+#: (B045) The formats for which `judge.coverage.producer` is REQUIRED, not
+#: merely permitted. `coverage-istanbul-json` is required because its
+#: producers DISAGREE: no implied value is correct in every context, which is
+#: precisely DESIGN-GUIDE §5's test for when a default is a hazard rather
+#: than a policy. Every other format's key is optional.
+COVERAGE_PRODUCER_REQUIRED_FORMATS: frozenset[str] = frozenset(
+    {"coverage-istanbul-json"}
+)
+
+#: (B045/B038(a)) The producers whose `branchMap` really is a set of ARCS --
+#: one location and one count per branch ARM -- and can therefore answer
+#: `branch_capability = "reported"`. Every other producer of the same format
+#: keeps `branches = None` and `"unavailable"`, which is A-344's measured
+#: refusal, not an omission: `@vitest/coverage-v8` emits one location and one
+#: count per branch RECORD describing v8's own executed ranges, so a single
+#: translation cannot be honest for both.
+ARC_BEARING_COVERAGE_PRODUCERS: frozenset[str] = frozenset({"istanbul"})
+
+#: (B045/B040(b)) Producers that are SPELLABLE -- so the refusal can name the
+#: producer and its reason rather than reporting an unknown value -- but that
+#: no lane may declare. The value is the reason, quoted into the loader's own
+#: message. This is `WITHDRAWN_MUTATION_OPERATORS`' pattern one field over,
+#: and for the same reason: "that is not a known producer" is a much weaker
+#: message than "that producer is known, measured, and unsound; here is the
+#: fix".
+#:
+#: `vitest-v8` is refused on MEASURED evidence (A-346/B040): over
+#: `probe-js-provider-defect`, five functions whose every line below a guard
+#: provably never runs, it reports those lines as EXECUTED whenever a ternary
+#: appears earlier in the same block -- PASS at 100.0% where
+#: `@vitest/coverage-istanbul` correctly FAILs at 0.0%. It reproduces on both
+#: released Vitest majors, a one-line ternary triggers it, and
+#: `experimentalAstAwareRemapping` does not fix it.
+#:
+#: `jest-v8` and `c8` are refused on a DIFFERENT and weaker ground, and the
+#: two grounds are deliberately not blurred: they remap v8 ranges through the
+#: same layer. For `c8` this is now measured, not assumed (B042 item 2,
+#: `probe-js-provider-defect-c8/`); `jest-v8` remains unmeasured and is
+#: refused as unproven rather than as proven-defective. Either way a
+#: consumer gets a refusal naming the fix instead of a green verdict over
+#: coverage nothing has qualified.
+REFUSED_COVERAGE_PRODUCERS: Mapping[str, str] = MappingProxyType(
+    {
+        "vitest-v8": (
+            "'@vitest/coverage-v8' reports never-executed lines as executed "
+            "when a ternary appears earlier in the same block (A-346/B040, "
+            "measured on both released Vitest majors over "
+            "tests/fixtures/coverage/probe-js-provider-defect); a lane "
+            "gating on it can PASS at 100% over code that never ran. Fix: "
+            "set `provider: 'istanbul'` in the Vitest coverage config, "
+            "install @vitest/coverage-istanbul, and declare "
+            "producer = \"istanbul\""
+        ),
+        "jest-v8": (
+            "Jest's `coverageProvider: \"v8\"` remaps v8 ranges through the "
+            "same layer @vitest/coverage-v8 does and has NOT been measured "
+            "against a committed witness (B042 item 2), so assay will not "
+            "gate on it. Fix: use Jest's default `coverageProvider: "
+            "\"babel\"`, which shares istanbul's instrumenter, and declare "
+            "producer = \"istanbul\""
+        ),
+        "c8": (
+            "`c8` remaps v8 ranges the same way and reproduces the same "
+            "false greens (B042 item 2, measured: "
+            "tests/fixtures/coverage/probe-js-provider-defect-c8/). Fix: "
+            "instrument with nyc/istanbul or "
+            "@vitest/coverage-istanbul and declare producer = \"istanbul\""
+        ),
+    }
+)
+
+#: (B046, schema v9) Namespaces under which an INGESTED R2 producer's own
+#: mutator names are admitted as operator identities. A foreign tool's
+#: mutator taxonomy is DATA, not assay's closed catalogue: Stryker alone
+#: emitted nine distinct `mutatorName` values in the single committed real
+#: run (`tests/fixtures/mutation/PROVENANCE.md`), none of them one of assay's
+#: native operator names, and the set grows with the tool rather than with
+#: assay. Mapping them onto `MUTATION_OPERATORS` would be a lie about which
+#: mutation actually ran; leaving them unqualified would let a foreign name
+#: collide with a native one.
+#:
+#: The namespace is therefore a PREFIX assay owns and the tool's name is the
+#: suffix, verbatim. `INGESTED_OPERATOR_RE` is the shipped predicate and is
+#: normative for the schema's own `mutation_operator` pattern branch: no
+#: assay-native name can match it (every native name's prefix is a LANGUAGE,
+#: and no language is named `stryker`), and no ingested name can be confused
+#: for a native one.
+INGESTED_OPERATOR_NAMESPACES: tuple[str, ...] = ("stryker",)
+
+#: The pattern the schema's `mutation_operator` gains as a v9 branch. Kept
+#: here so the schema, the model and the parser cannot drift -- the same
+#: single-owner discipline `MUTATION_OPERATORS` already gets.
+INGESTED_OPERATOR_RE = re.compile(
+    r"^(?:" + "|".join(INGESTED_OPERATOR_NAMESPACES) + r"):[A-Za-z0-9]+$"
+)
+
+
+def is_ingested_operator(operator: str) -> bool:
+    """True iff *operator* is an ingested producer's namespaced mutator name.
+
+    Derived from :data:`INGESTED_OPERATOR_RE` rather than by re-splitting on
+    ``:``, so the model, the config loader and the schema all answer this
+    question with one implementation.
+    """
+    return bool(INGESTED_OPERATOR_RE.fullmatch(operator))
 
 
 def operator_language(operator: str) -> str | None:

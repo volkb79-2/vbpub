@@ -47,7 +47,12 @@ from assay.config import (
 )
 from assay.coverage import FORMAT_REGISTRY
 from assay.verdict import JUDGE_ARTIFACT_KINDS, ReasonCode
-from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
+from assay.vocabulary import (
+    COVERAGE_PRODUCERS_BY_FORMAT,
+    COVERAGE_PRODUCER_REQUIRED_FORMATS,
+    MUTATION_OPERATORS,
+    MUTATION_OPERATORS_BY_LANGUAGE,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
@@ -358,6 +363,43 @@ def test_every_coverage_format_is_documented():
     assert formats, "FORMAT_REGISTRY must not be empty"
     missing = _missing_from(formats, _docs_text())
     assert not missing, f"undocumented coverage format(s): {missing}"
+
+
+def test_every_coverage_producer_is_documented():
+    """(B045) The sixth derived vocabulary.
+
+    A producer name is a value a consumer must TYPE into `assay.toml`, so
+    AGENTS.md's mandate 2 applies to it in full: every value of every closed
+    public vocabulary a consumer must type appears in at least one of the
+    three documents, so a capability cannot ship undocumented.
+
+    This deliberately covers the REFUSED names too (`vitest-v8`, `jest-v8`,
+    `c8`). They are the values a consumer is most likely to reach for, and a
+    refusal that names a producer the documentation never mentions is a
+    refusal a reader cannot act on.
+    """
+    producers = tuple(
+        name
+        for vocabulary in COVERAGE_PRODUCERS_BY_FORMAT.values()
+        for name in vocabulary
+    )
+    assert producers, "COVERAGE_PRODUCERS_BY_FORMAT must not be empty"
+    missing = _missing_from(producers, _docs_text())
+    assert not missing, f"undocumented coverage producer(s): {missing}"
+
+
+def test_every_format_requiring_a_producer_is_documented_as_requiring_one():
+    """A vocabulary value being *mentioned* is not the same as its
+    REQUIREDNESS being documented — the fact a consumer actually trips over.
+    Checked as a co-occurrence rather than an exact sentence so the prose can
+    be rewritten without this going red for the wrong reason.
+    """
+    text = _docs_text()
+    for fmt in COVERAGE_PRODUCER_REQUIRED_FORMATS:
+        assert fmt in text, f"format {fmt} requiring a producer is undocumented"
+        assert "required" in text.lower(), (
+            f"nothing in the three documents says {fmt}'s producer is required"
+        )
 
 
 def test_every_reason_code_is_documented():

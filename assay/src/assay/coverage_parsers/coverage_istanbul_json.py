@@ -53,8 +53,9 @@ formats").
    Every producer of this format reaches this parser identically; only the
    documentation says which ones to trust.
 
-**Only ``statementMap``/``s`` are read.** ``fnMap``/``f`` are function-entry
-counts, not line classification; ``branchMap``/``b`` are addressed below.
+**``statementMap``/``s`` classify lines; ``branchMap``/``b`` are read only
+under an arc-bearing producer (below); ``fnMap``/``f`` are never read** —
+they are function-entry counts, not line classification.
 Neither is needed to answer this registry's one question ("which physical
 lines did this format measure, and did they run"), and every field this parser
 does not need is ignored rather than rejected — the same rule
@@ -117,10 +118,10 @@ code — lcov's exact situation, and lcov's exact answer. Reporting
 ``frozenset()`` would claim "this file reports zero exclusions, verified",
 which nothing verified.
 
-**``branches`` is always ``None`` (A-344), and this is a MEASURED refusal, not
-an omission.** ``branchMap`` exists in this format, but its two real producers
-disagree about what it MEANS, measured on the same source file
-(``probe-js/src/branchy.ts``, two ifs and one ternary):
+**``branches`` depends on the declared PRODUCER (B045/B038(a), schema v9).**
+``branchMap`` exists in this format, but its real producers disagree about
+what it MEANS, measured on the same source file (``probe-js/src/branchy.ts``,
+two ifs and one ternary):
 
 * ``@vitest/coverage-istanbul`` emits real typed arcs — three entries typed
   ``if``/``if``/``cond-expr``, each with one location per arm and one count per
@@ -130,14 +131,44 @@ disagree about what it MEANS, measured on the same source file
   RANGES (one of them spans the whole function; another starts at a closing
   brace) rather than the arms of a branch: four "arcs", one covered.
 
-A single translation cannot be honest for both, and the producer is not
-declared anywhere in a lane's config, so any :class:`~.model.BranchCoverage`
-built here would put a number on the wire whose meaning depends on an
-undeclared fact — the ``declared_unverified``-class lie A-O12 was corrected
-for. ``None`` is this project's existing spelling for "this artifact carries
-no branch detail this parser can honestly read" (lcov and Cobertura already
-return it for an artifact produced without branch tracking). B038 tracks
-adding real arc support once a producer can be declared.
+A single translation cannot be honest for both. Through v8 the producer was
+not declared anywhere in a lane's config, so ``None`` — "this artifact carries
+no branch detail this parser can honestly read" — was the only truthful
+answer, and A-344 recorded why. **B045 removes that constraint**: a lane
+declares ``judge.coverage.producer``, this parser receives it, and arcs are
+read for the producers :data:`assay.vocabulary.ARC_BEARING_COVERAGE_PRODUCERS`
+names — today exactly ``istanbul``, the babel-plugin-istanbul instrumenter
+family. Every OTHER producer, and an undeclared one, still gets ``None`` and
+therefore ``branch_capability = "unavailable"``. The two facts are now
+separable, which is the whole point of the declaration: "this format cannot
+say" and "this producer's ``branchMap`` means something else" were previously
+one answer.
+
+**The arc reduction, and where it departs from its source.**
+``istanbul-lib-coverage``'s own ``FileCoverage.getBranchCoverageByLine``
+attributes an ENTIRE ``branchMap`` entry to one line — ``map.line ||
+map.loc.start.line`` — and pushes every arm's count onto it. This parser keys
+each arm by the arm's OWN ``locations[i].start.line`` where the artifact
+gives one, and falls back to the entry's line where it does not. That is
+strictly more detail than the upstream reduction (A-265: detail over
+metadata) — a ``switch``'s cases and a ``binary-expr``'s operands land on the
+lines a reader would point at — and the fallback is MEASURED, not defensive:
+real ``@vitest/coverage-istanbul`` output writes an implicit ``else`` arm as
+``{"start": {}, "end": {}}``, a location object carrying no line at all
+(seven such arms across the committed artifacts). Keying strictly per-arm
+would have to drop those, and an untaken implicit ``else`` is precisely the
+arc a consumer most needs to see; dropping it would shrink the denominator
+and report a GREENER branch percentage than the artifact supports.
+
+Arcs aggregate per line as ``(covered, total)``: one arm contributes one to
+``total`` and one to ``covered`` iff its count is nonzero. An entry typed
+anything outside :data:`_ARM_STRUCTURED_BRANCH_TYPES` REFUSES the artifact
+rather than being skipped — see that constant's own note.
+
+**``excluded`` is still always ``None``** (A-008/A-343, above): the producer
+declaration changes what ``branchMap`` can be read as, and nothing about
+exclusions, because no producer of this format writes a per-line exclusion
+field at all.
 """
 
 from __future__ import annotations
@@ -146,10 +177,29 @@ import json
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
-from .model import ClassifiedLineBudget, CoverageProfile, FileCoverage
+from ..vocabulary import ARC_BEARING_COVERAGE_PRODUCERS
+from .model import BranchCoverage, ClassifiedLineBudget, CoverageProfile, FileCoverage
 from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
 
 _SIGNATURE_KEY = '"statementMap"'
+
+#: The ``branchMap`` entry types the babel-plugin-istanbul instrumenter emits
+#: for a real, arm-structured branch, transcribed from the instrumenter's own
+#: ``visitor.js`` rather than invented (A-112's transcribe-don't-invent rule
+#: applied to a foreign vocabulary). Every one of them carries one location
+#: and one count PER ARM, which is what makes the arc reduction below
+#: meaningful.
+#:
+#: Any other type is REFUSED rather than skipped, and that is the guard that
+#: catches a v8-shaped document declared as ``istanbul``: both
+#: ``@vitest/coverage-v8`` and ``c8`` emit every entry typed ``"branch"``
+#: with exactly one location, describing v8's executed RANGES (A-344).
+#: Skipping unknown types would silently shrink the denominator -- a smaller,
+#: greener branch percentage over an artifact assay could not read -- so the
+#: fail-closed direction is to refuse the artifact.
+_ARM_STRUCTURED_BRANCH_TYPES: frozenset[str] = frozenset(
+    {"if", "cond-expr", "binary-expr", "switch", "default-arg"}
+)
 
 
 def sniff(text: str) -> bool:
@@ -174,7 +224,7 @@ def sniff(text: str) -> bool:
     return stripped.startswith("{") and _SIGNATURE_KEY in text
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
     try:
         document = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -182,17 +232,24 @@ def parse(text: str) -> CoverageProfile:
     if not isinstance(document, dict):
         raise _malformed(f"top level is {type(document).__name__}, expected object")
 
+    # ARTIFACT-level, decided once before any record is built (§3.2's own
+    # "capability derivation is ARTIFACT-level"): every record this call
+    # emits carries a real `BranchCoverage` or every record carries `None`,
+    # never a mix -- `coverage.derive_branch_capability` refuses a mixed
+    # profile as a parser defect, and it would be right to.
+    read_arcs = producer in ARC_BEARING_COVERAGE_PRODUCERS
+
     files: dict[str, FileCoverage] = {}
     budget = ClassifiedLineBudget(
         format_name="istanbul coverage JSON", remaining=MAX_CLASSIFIED_LINES
     )
     for path, record in document.items():
-        files[path] = _parse_record(path, record, budget)
+        files[path] = _parse_record(path, record, budget, read_arcs=read_arcs)
     return CoverageProfile(files=MappingProxyType(files))
 
 
 def _parse_record(
-    path: str, record: object, budget: ClassifiedLineBudget
+    path: str, record: object, budget: ClassifiedLineBudget, *, read_arcs: bool
 ) -> FileCoverage:
     if not isinstance(record, dict):
         raise _malformed(
@@ -228,22 +285,203 @@ def _parse_record(
         budget.spend(end - start + 1, path)
 
     hits = _paint(extents)
-    # Deliberately NOT wrapped in a try/except, unlike
-    # `coverage_py_json._parse_record`: none of `FileCoverage`'s own
-    # invariants can be violated by anything this parser accepts.
-    # `_position_line` already refuses a non-positive line number, `_paint`
-    # assigns each line exactly ONE count so `executed` and `missing` are
-    # disjoint by construction, and `excluded`/`branches` are both `None`, so
-    # every cross-bucket invariant is vacuous here. A guard around a call that
-    # cannot raise would be a line no honest test could cover -- the same
-    # reasoning `lcov._finish_record` states for its own `BranchCoverage`
-    # construction, one field over.
-    return FileCoverage(
-        executed=frozenset(line for line, count in hits.items() if count > 0),
-        missing=frozenset(line for line, count in hits.items() if count == 0),
-        excluded=None,
-        branches=None,
-    )
+    executed = frozenset(line for line, count in hits.items() if count > 0)
+    missing = frozenset(line for line, count in hits.items() if count == 0)
+    branches = _branch_arcs(path, record) if read_arcs else None
+
+    # The `branches is None` path can violate none of `FileCoverage`'s
+    # invariants: `_position_line` already refuses a non-positive line
+    # number, `_paint` assigns each line exactly ONE count so `executed` and
+    # `missing` are disjoint by construction, and `excluded` is `None`, so
+    # every cross-bucket invariant is vacuous -- which is why this
+    # construction carried no guard before B045.
+    #
+    # Real ARCS change that, and the wrap is now load-bearing rather than
+    # defensive. `branchMap` is an INDEPENDENT array from `statementMap`,
+    # read straight from external input, exactly the situation
+    # `coverage_py_json` states for its own three independent arrays: an
+    # artifact can name a branch on a line no statement extent covers
+    # (invariant 3), or claim a covered arc on a line whose statement count
+    # is 0 (invariant 5, the anti-tamper one). Both are real properties of a
+    # document, not parser defects, so they must reach a consumer as this
+    # format's own ERROR/UNREADABLE_ARTIFACT rather than as a bare
+    # `ValueError` from a dataclass.
+    try:
+        return FileCoverage(
+            executed=executed,
+            missing=missing,
+            excluded=None,
+            branches=branches,
+        )
+    except ValueError as exc:
+        raise _malformed(
+            f"record for {path!r}: its 'branchMap' arcs contradict its own "
+            f"'statementMap'/'s' line classification -- {exc}"
+        ) from exc
+
+
+def _branch_arcs(path: str, record: dict) -> BranchCoverage:
+    """*record*'s ``branchMap``/``b`` reduced to per-line ``(covered, total)``
+    arc counts (module docstring's arc rules).
+
+    Called only for an arc-bearing producer. Every entry is validated BEFORE
+    a single arc is aggregated, because aggregation is lossy: once arm counts
+    have been summed onto a line, an entry whose ``locations`` and counts had
+    different lengths is no longer visible as the defect it is.
+    """
+    branch_map = record.get("branchMap")
+    counts = record.get("b")
+    # Under an arc-bearing producer both keys are REQUIRED, and a file with
+    # no branches is `{}`/`{}` rather than absent -- which is what every
+    # committed real `@vitest/coverage-istanbul` and `vite-plugin-istanbul`
+    # artifact writes. Absence here is not "this file has no branches"; it is
+    # an artifact that is not the document the declared producer writes.
+    if not isinstance(branch_map, dict):
+        raise _malformed(
+            f"record for {path!r}: 'branchMap' is "
+            f"{type(branch_map).__name__ if branch_map is not None else 'absent'}"
+            f", expected object -- an arc-bearing producer was declared, and "
+            f"this producer's own output always carries it (empty for a file "
+            f"with no branches)"
+        )
+    if not isinstance(counts, dict):
+        raise _malformed(
+            f"record for {path!r}: 'b' is "
+            f"{type(counts).__name__ if counts is not None else 'absent'}, "
+            f"expected object"
+        )
+    if set(branch_map) != set(counts):
+        raise _malformed(
+            f"record for {path!r}: 'branchMap' and 'b' name different branch "
+            f"ids ({sorted(set(branch_map) ^ set(counts))!r} appear in only "
+            f"one of them) -- a branch with no counts, or counts with no "
+            f"branch, cannot be reduced to arcs"
+        )
+
+    arcs: dict[int, tuple[int, int]] = {}
+    for branch_id, entry in branch_map.items():
+        for line, taken in _entry_arcs(path, branch_id, entry, counts[branch_id]):
+            covered, total = arcs.get(line, (0, 0))
+            arcs[line] = (covered + (1 if taken else 0), total + 1)
+    return BranchCoverage(by_line=MappingProxyType(arcs))
+
+
+def _entry_arcs(
+    path: str, branch_id: str, entry: object, arm_counts: object
+) -> list[tuple[int, bool]]:
+    """One ``branchMap`` entry as ``(line, was_taken)`` per arm."""
+    if not isinstance(entry, dict):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} is "
+            f"{type(entry).__name__}, expected object"
+        )
+    branch_type = entry.get("type")
+    if branch_type not in _ARM_STRUCTURED_BRANCH_TYPES:
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} is typed "
+            f"{branch_type!r}, which is not one of the arm-structured branch "
+            f"types this format's arc-bearing producers emit "
+            f"({sorted(_ARM_STRUCTURED_BRANCH_TYPES)}). An artifact whose "
+            f"entries are typed 'branch' with one location each is a v8-range "
+            f"document (@vitest/coverage-v8 or c8), not an istanbul-"
+            f"instrumented one: its 'branchMap' describes executed RANGES, "
+            f"not the arms of a branch (A-344), so judge.coverage.producer "
+            f"does not describe the artifact the lane actually produced"
+        )
+    entry_line = _entry_line(path, branch_id, entry)
+    locations = entry.get("locations")
+    if not isinstance(locations, list):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} has 'locations' = "
+            f"{type(locations).__name__ if locations is not None else 'absent'}"
+            f", expected array"
+        )
+    if not isinstance(arm_counts, list):
+        raise _malformed(
+            f"record for {path!r}: b[{branch_id!r}] is "
+            f"{type(arm_counts).__name__}, expected array"
+        )
+    if len(locations) != len(arm_counts):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} declares "
+            f"{len(locations)} arm location(s) but {len(arm_counts)} arm "
+            f"count(s) -- which arm each count belongs to is unknowable"
+        )
+    if not locations:
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} has zero arms; a "
+            f"branch with no arms is malformed, not \"no branches\" (a file "
+            f"with no branches carries an empty 'branchMap' instead)"
+        )
+
+    arms: list[tuple[int, bool]] = []
+    for index, (location, count) in enumerate(zip(locations, arm_counts)):
+        arms.append(
+            (
+                _arm_line(path, branch_id, index, location, entry_line),
+                _arm_count(path, branch_id, index, count) > 0,
+            )
+        )
+    return arms
+
+
+def _entry_line(path: str, branch_id: str, entry: dict) -> int:
+    """The line the WHOLE branch is attributed to —
+    ``istanbul-lib-coverage``'s own ``map.line || map.loc.start.line``."""
+    line = entry.get("line")
+    if line is not None:
+        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            raise _malformed(
+                f"record for {path!r}: branch {branch_id!r} has line = "
+                f"{line!r}, expected a positive integer"
+            )
+        return line
+    location = entry.get("loc")
+    if not isinstance(location, dict):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} carries neither a "
+            f"'line' nor a 'loc' object, so nothing attributes it to a line"
+        )
+    return _position_line(path, f"branch {branch_id!r}", location, "start")
+
+
+def _arm_line(
+    path: str, branch_id: str, index: int, location: object, entry_line: int
+) -> int:
+    """One arm's own source line, falling back to the branch's line.
+
+    The fallback is MEASURED, not defensive: real ``@vitest/coverage-istanbul``
+    output writes an implicit ``else`` arm as ``{"start": {}, "end": {}}`` --
+    a location object with no line at all (module docstring).
+    """
+    if not isinstance(location, dict):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} arm {index} is "
+            f"{type(location).__name__}, expected object"
+        )
+    start = location.get("start")
+    if not isinstance(start, dict):
+        raise _malformed(
+            f"record for {path!r}: branch {branch_id!r} arm {index} has no "
+            f"'start' position object"
+        )
+    if "line" not in start:
+        return entry_line
+    return _position_line(path, f"branch {branch_id!r} arm {index}", location, "start")
+
+
+def _arm_count(path: str, branch_id: str, index: int, count: object) -> int:
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise _malformed(
+            f"record for {path!r}: b[{branch_id!r}][{index}] is "
+            f"{type(count).__name__} ({count!r}), expected int"
+        )
+    if count < 0:
+        raise _malformed(
+            f"record for {path!r}: b[{branch_id!r}][{index}] is {count}, a "
+            f"negative execution count"
+        )
+    return count
 
 
 def _paint(extents: list[tuple[int, int, int]]) -> dict[int, int]:
@@ -271,8 +509,8 @@ def _statement_lines(path: str, statement_id: str, location: object) -> tuple[in
             f"record for {path!r}: statement {statement_id!r} is "
             f"{type(location).__name__}, expected object"
         )
-    start = _position_line(path, statement_id, location, "start")
-    end = _position_line(path, statement_id, location, "end")
+    start = _position_line(path, f"statement {statement_id!r}", location, "start")
+    end = _position_line(path, f"statement {statement_id!r}", location, "end")
     if end < start:
         raise _malformed(
             f"record for {path!r}: statement {statement_id!r} ends on line "
@@ -281,28 +519,32 @@ def _statement_lines(path: str, statement_id: str, location: object) -> tuple[in
     return start, end
 
 
-def _position_line(path: str, statement_id: str, location: dict, side: str) -> int:
+def _position_line(path: str, subject: str, location: dict, side: str) -> int:
     """*location*'s ``start``/``end`` line number. Only ``line`` is read;
     ``column`` is deliberately never validated, because real
     ``@vitest/coverage-istanbul`` output writes ``"column": null`` on an end
     position and a parser that required an integer there would reject its
-    genuine output."""
+    genuine output.
+
+    *subject* is the already-rendered noun phrase naming what carries the
+    position (``"statement '3'"``, ``"branch 0 arm 1"``) rather than a bare
+    id, so one message template serves ``statementMap`` and ``branchMap``
+    alike without either claiming to be the other."""
     position = location.get(side)
     if not isinstance(position, dict):
         raise _malformed(
-            f"record for {path!r}: statement {statement_id!r} has no {side!r} "
-            f"position object"
+            f"record for {path!r}: {subject} has no {side!r} position object"
         )
     line = position.get("line")
     if isinstance(line, bool) or not isinstance(line, int):
         raise _malformed(
-            f"record for {path!r}: statement {statement_id!r} has "
-            f"{side}.line = {line!r}, expected an integer"
+            f"record for {path!r}: {subject} has {side}.line = {line!r}, "
+            f"expected an integer"
         )
     if line < 1:
         raise _malformed(
-            f"record for {path!r}: statement {statement_id!r} has "
-            f"{side}.line = {line}, which is not a positive line number"
+            f"record for {path!r}: {subject} has {side}.line = {line}, which "
+            f"is not a positive line number"
         )
     return line
 

@@ -141,7 +141,7 @@ def test_no_files_key_still_raises_unreadable_artifact_when_parsed_directly():
     # a future direct caller, might) still gets a guarded, typed failure from
     # the parser module itself, not a bare KeyError/AttributeError.
     with pytest.raises(AssayError) as excinfo:
-        coverage_py_json.parse(json.dumps({"meta": {}}))
+        coverage_py_json.parse(json.dumps({"meta": {}}), producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
@@ -153,7 +153,7 @@ def test_not_valid_json_fails_the_signature_cross_check_before_parsing():
 
 def test_not_valid_json_still_raises_unreadable_artifact_when_parsed_directly():
     with pytest.raises(AssayError) as excinfo:
-        coverage_py_json.parse("{not valid json")
+        coverage_py_json.parse("{not valid json", producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
@@ -161,7 +161,7 @@ def test_top_level_not_an_object_raises_unreadable_artifact_when_parsed_directly
     # A JSON array can never sniff as this format (sniff requires a leading
     # "{"), so this defect is only reachable through a direct parse() call.
     with pytest.raises(AssayError) as excinfo:
-        coverage_py_json.parse("[1, 2, 3]")
+        coverage_py_json.parse("[1, 2, 3]", producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert "expected object" in str(excinfo.value)
 

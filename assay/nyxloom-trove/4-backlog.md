@@ -3439,6 +3439,18 @@ field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
 
 ## B037 — JavaScript/TypeScript mutation rigor (R2): design first, do not implement against this entry directly
 
+> **RESOLVED 2026-08-31 by B046** (Wave B, assay-4.0.0 / schema v9). B037's
+> three open decisions were answered by B046's ratified design and are now
+> implemented: the lane's own argv runs StrykerJS inside the private snapshot
+> and assay ingests the report (neither "shell out" nor "accept a
+> CIU-supplied report"); non-repudiation rests on the snapshot's commit
+> binding plus four named refusals; and the foreign tool's mutator taxonomy
+> is DATA under a `stryker:` namespace assay owns, never a mapping onto
+> assay's closed catalogue. `javascript` now registers at `{"R1", "R2"}`
+> through the ingested path only — `generate_mutation_sites` is still
+> unconditionally `"UNSUPPORTED"`, which is what MAKES it the ingested path.
+> Decisions: A-375–A-383, plus A-360/A-361/A-362 from the schema cut.
+
 **Filed 2026-08-30, alongside B036.** Same shape as B020: a scope boundary
 and required decisions, not a dispatchable implementation brief.
 
@@ -3542,6 +3554,17 @@ ruling closes the architectural fork, not the implementation.
 ---
 
 ## B038 — `coverage-istanbul-json`: real branch arcs, and the type-only-module gap, once a producer can be declared
+
+> **RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9). Both
+> halves shipped once the producer became declarable.
+> **(a)** real branch arcs under `producer = "istanbul"` — decided as
+> **A-356** (arcs key per-ARM with an entry-line fallback, departing from
+> `istanbul-lib-coverage`'s entry-only reduction because real output writes
+> lineless implicit-`else` arms) and **A-357** (an unrecognised `branchMap`
+> entry type REFUSES the artifact rather than degrading silently).
+> **(b)** the type-only-module gap — decided as **A-358** (the lexer's exact
+> scope, its all-or-nothing rule, and its stated limitation; anything it does
+> not recognise answers "has code", fail-closed).
 
 **Filed 2026-08-30 by B036's own implementation, from measured evidence.**
 Two consequences of one root cause: `coverage-final.json` is a format with
@@ -3664,6 +3687,15 @@ elsewhere.
 ---
 
 ## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
+
+> **(b) RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9),
+> decided as **A-353**: the three v8-remapping producers are SPELLABLE so the
+> refusal can name them, and are refused at LOAD by name, before any lane
+> runs — with the three grounds kept deliberately distinct rather than
+> blurred (`vitest-v8` and `c8` refused on MEASURED evidence, `jest-v8`
+> refused as unmeasured-and-therefore-unproven). "That is not a known
+> producer" is a much weaker message than "that producer is known, measured,
+> and unsound; here is the fix", and the loader now emits the second.
 
 **Filed 2026-08-30 by B036's round-1 adversarial review, reproduced and ruled
 on as A-346 before filing.** The ruling (documentation names
@@ -3915,15 +3947,32 @@ supersedes that for THIS wave). (b) `link_paths` remains open for Wave B.
       default `coverage.clean = true` orphans assay's own coverage-artifact
       reservation) — not anticipated by this item's own text, and the kind
       of finding only a real run (not a heredoc) can surface;
-- [ ] `link_paths` implemented per rules 1–6 with a gate-runnable test per
-      rule, including the teardown-preserves-target canary — **Wave B**;
-- [ ] `snapshot_policy.link_paths` in the schema, the dataclass and
+- [x] `link_paths` implemented per rules 1–6 with a gate-runnable test per
+      rule, including the teardown-preserves-target canary — **Wave B,
+      2026-08-31**. `IsolationConfig.link_paths` + grammar/bound/order checks;
+      `SnapshotRepository._plant_link_paths`, called from `_build` AFTER
+      `_verify` (A-370) so the committed-objects-only proof stays true of
+      exactly the committed objects, and so BOTH materialisation entry points
+      (`materialize` and `materialize_replacement`, an R2 mutant's own) carry
+      the link structurally. `tests/test_isolation_link_paths.py`, 32 nodes.
+      Rule 6 is proven EMPIRICALLY (A-373), never by "stdlib `rmtree` unlinks
+      symlinks": a real symlink to a real directory outside the snapshot, a
+      canary file inside it, and the canary's BYTES asserted after teardown on
+      the success path, on `_materialize`'s exception path, and against
+      `_remove_owned_tree` directly. **A FIFTH refusal the contract does not
+      list** was needed (A-371): a link must be covered by a COMMITTED
+      `.gitignore`, or the runner's own dirt check reports it as `DIRTY_TREE`
+      after the lane's command — blaming the command for something the lane
+      declared. And a MEASURED finding (A-372): a trailing-slash rule
+      (`node_modules/`) does NOT cover the link, because git treats such a
+      pattern as directory-only and does not count a symlink as a directory;
+- [x] `snapshot_policy.link_paths` in the schema, the dataclass and
       `verify.py`; the frozen drift-guard asset updated at the v9 cut —
-      **Wave B**;
-- [ ] `assay lanes --json` (B044) exposes `link_paths` — B044 itself SHIPPED
-      this wave and already emits `"link_paths": []` unconditionally (Wave-B
-      key, stable shape per B044's own contract); wiring it to a REAL
-      declared value is **Wave B**'s work, alongside the feature itself;
+      landed with the cut (`af14021f`/`1577fa45`); `_verdict_snapshot_policy`
+      populates it here (omitted, never empty — A-051);
+- [x] `assay lanes --json` (B044) exposes `link_paths` — now emits the real
+      declared list; `inventory_schema` stays `1`, since it changes when an
+      EXISTING key's meaning changes, never because a key gained real values;
 - [ ] R3 for `javascript` wired in `cli.py`'s registry ONLY after the
       qualification harness has run a real canary pair, never before — NOT
       done this wave (out of scope per the wave prompt's own "NOT IN SCOPE"
@@ -4041,13 +4090,36 @@ not `npm`), (2) makes `allow_argv_append` meaningless for the inner command,
 
 ### Acceptance
 
-- [ ] loader accepts/refuses per the contract with a test per refusal;
-- [ ] the command, every R2 candidate execution and every R3 canary run use
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).**
+
+- [x] loader accepts/refuses per the contract with a test per refusal —
+      `config._load_lane_cwd`; `tests/test_config_lane_cwd.py` (19 nodes).
+      One deviation from the contract's wording, recorded as A-368: the
+      "tracked at the resolved commit" half CANNOT be checked at load (there
+      is no resolved commit when `assay.toml` is read), so it is checked by
+      `runner._execute_snapshot_unit` against the materialised snapshot,
+      where the commit is known and is named in the message. The loader
+      checks the grammar, containment after symlink collapse, and that the
+      path is a directory in the invoking checkout;
+- [x] the command, every R2 candidate execution and every R3 canary run use
       the same resolved cwd (one test each, proven by a command that writes
-      `$PWD` to its artifact);
-- [ ] schema/dataclass/`verify.py` carry `cwd_declared`; drift-guard updated;
-- [ ] CONSUMERS' JS worked lane and the SQL lane example use `cwd` where the
-      wrapper was; `assay lanes --json` (B044) exposes it.
+      `$PWD` to its artifact) — `tests/test_runner_lane_cwd.py`, where the
+      oracle is a real `/bin/sh` command appending its own `$PWD` to a log
+      outside the snapshot. Stronger than "one test each": there is ONE join,
+      on the resolved `CommandPlan` inside `execute_plan` (A-367), so the
+      four sites agree structurally rather than by four tests happening to
+      pass. Two negative controls: a lane with no `cwd` runs at the project
+      root, and the `environment_command` probe keeps the invoking cwd;
+- [x] schema/dataclass/`verify.py` carry `cwd_declared`; drift-guard updated —
+      landed with the cut (`af14021f`/`1577fa45`); `assemble_verdict` (the
+      single verdict construction site) populates it here;
+- [x] CONSUMERS' JS worked lane and the SQL lane example use `cwd` where the
+      wrapper was; `assay lanes --json` (B044) exposes it — the JS worked
+      monorepo lane now declares `cwd` instead of its `bash -c "cd … && …"`
+      wrapper, and there is a new section for the key with a TABLE of what
+      does not re-root. **The SQL example had no wrapper to retire** (its
+      argv is `["scripts/schema-gate.sh"]`, already project-root-relative),
+      so nothing there changed; `lanes --json` emits the real value.
 
 ---
 
@@ -4186,17 +4258,35 @@ were at v8.
 
 ### Acceptance
 
-- [ ] vocabulary, loader refusals (unknown name; name not in the format's
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).**
+
+- [x] vocabulary, loader refusals (unknown name; name not in the format's
       set; `vitest-v8`/`jest-v8`/`c8` by name with their reasons; missing on
-      istanbul-json), each with a test;
-- [ ] `judgment.r1.coverage_producer` in schema/dataclass/`verify.py`;
-      drift-guard v9 asset; migration notes in CHANGES.md;
-- [ ] branch arcs under `istanbul` on both committed real artifacts, with
+      istanbul-json), each with a test — `assay/vocabulary.py`
+      (`COVERAGE_PRODUCERS_BY_FORMAT`, `COVERAGE_PRODUCER_REQUIRED_FORMATS`,
+      `REFUSED_COVERAGE_PRODUCERS`), `config._load_coverage_producer`,
+      `tests/test_config_coverage_producer.py`. Refusal-by-name is tested
+      BEFORE catalogue membership (A-352), so a consumer who declared the
+      unsound provider is told what is wrong with it and how to fix it;
+- [x] `judgment.r1.coverage_producer` in schema/dataclass/`verify.py`;
+      drift-guard v9 asset; migration notes in CHANGES.md — landed with the
+      cut (`af14021f`/`1577fa45`), and wired at `runner.py`'s `JudgmentR1`
+      construction in the same commit so the field is never
+      declared-but-never-populated;
+- [x] branch arcs under `istanbul` on both committed real artifacts, with
       the A-265 detail-over-metadata discipline and uniqueness/disjointness
-      validation before aggregation; `unavailable` for every other producer;
-- [ ] the type-only lexer with its fail-closed controls;
-- [ ] README/CONSUMERS/DESIGN-GUIDE §11 updated: "leave `require_branch`
-      unset" guidance replaced; B038 and B040 (b) marked resolved by this item.
+      validation before aggregation; `unavailable` for every other producer —
+      `coverage_parsers/coverage_istanbul_json.py` (commit `cc4e955f`);
+      A-355 widened every parser's `parse` to take the producer keyword-only
+      with NO default, so a caller that forgets it fails loudly rather than
+      losing arcs silently;
+- [x] the type-only lexer with its fail-closed controls —
+      `adapters/javascript.py`; scoped exactly to B045's list and answering
+      "has code" for anything it does not recognise (A-358);
+- [x] README/CONSUMERS/DESIGN-GUIDE §11 updated: "leave `require_branch`
+      unset" guidance replaced; B038 and B040 (b) marked resolved by this
+      item — both marked above; B038(a) = A-356/A-357, B038(b) = A-358,
+      B040(b) = A-353.
 
 ---
 
@@ -4306,24 +4396,53 @@ mutant, not a number.
 
 ### Acceptance
 
-- [ ] a REAL Stryker report from `tests/fixtures/coverage/probe-js` (Stryker
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).** One deviation,
+filed rather than fudged: `fail_under` is honoured at `100.0` only — see
+**B050** and A-380.
+
+- [x] a REAL Stryker report from `tests/fixtures/coverage/probe-js` (Stryker
       + `@stryker-mutator/vitest-runner`, versions and lockfile committed
       under `PROVENANCE.md`) is the primary fixture (A-334); synthetic
       reports cover every status, `Pending`, a foreign `projectRoot`, a key
-      outside the source roots, and an over-ceiling mutant count;
-- [ ] `mutation_parsers/mutation_report_json.py` + registry + loader keys
+      outside the source roots, and an over-ceiling mutant count —
+      `tests/fixtures/mutation/mutation-report-json.probe-js-stryker.json`
+      (StrykerJS 10.0.0, 109 mutants over 6 files) drives every happy-path
+      node in `tests/test_runner_ingested_r2.py`, and each refusal node
+      mutates ONE field of that same real document rather than hand-building
+      a synthetic one;
+- [x] `mutation_parsers/mutation_report_json.py` + registry + loader keys
       (`format`, `artifact`, `fail_under`; `operators`/`jobs`/`max_mutants`/
-      `equivalence_artifact` refused on an ingested lane with reasons);
-- [ ] `judgment.r2.producer`/`producer_tool`/`survived_uncovered`/
+      `equivalence_artifact` refused on an ingested lane with reasons) —
+      `src/assay/mutation_parsers/{__init__,model,mutation_report_json}.py`;
+      the registry lives in the package rather than in `assay.mutation` to
+      keep the `config -> mutation -> config` cycle closed (A-376);
+      `config._load_ingested_mutation` carries the refusals, each naming WHY
+      rather than merely that the key is not allowed;
+- [x] `judgment.r2.producer`/`producer_tool`/`survived_uncovered`/
       `discarded`/`lines_without_candidates` in schema, dataclass, `verify.py`
-      (re-derivation of `pct` and buckets from the payload), drift-guard v9;
-- [ ] `cli.py` registers `javascript` at `{"R1", "R2"}` ONLY through the
+      (re-derivation of `pct` and buckets from the payload), drift-guard v9 —
+      schema/dataclass/drift-guard landed with the cut (`af14021f`/`1577fa45`);
+      the `verify.py` half landed here as
+      `_check_ingested_r2_agrees_with_its_payload`, which closes a real hole:
+      every PRE-EXISTING raw R2 check is guarded on `judgment.r2.operators`
+      and therefore SKIPPED on an ingested document rather than passing. The
+      score itself is re-derived by the existing `_check_r2_rederivation`
+      through `judge_mutation`, which an ingested claim goes through unchanged
+      (A-379) — one owner, not two that could disagree;
+- [x] `cli.py` registers `javascript` at `{"R1", "R2"}` ONLY through the
       ingested path (`generate_mutation_sites` stays `UNSUPPORTED`; the
-      runner selects native vs ingested by `judge.mutation.format` presence);
-- [ ] CONSUMERS: worked lane, the `thresholds.break: null` mandate, the
+      runner selects native vs ingested by `judge.mutation.format` presence) —
+      and a NATIVE javascript R2 lane is still not constructible, because it
+      would have to declare non-empty `operators` and no `javascript` operator
+      catalogue exists; the 340-374 docstring is rewritten to say which of its
+      two guards now carries that guarantee;
+- [x] CONSUMERS: worked lane, the `thresholds.break: null` mandate, the
       status map table, what the verdict records; DESIGN-GUIDE §11 "Mutation
       is source-oriented" gains the ingested paragraph and the tier
-      statement; B037 marked RESOLVED by this item; decisions recorded.
+      statement; B037 marked RESOLVED by this item; decisions recorded —
+      CONSUMERS §"R2 for JavaScript, by ingesting Stryker's report (B046)"
+      (its worked lane is a LOADABLE example, verified by the docs guard);
+      DESIGN-GUIDE §11's new "Ingested R2" paragraphs; decisions A-375–A-383.
 
 ---
 
@@ -4568,3 +4687,332 @@ candidates:
 - [ ] CONSUMERS' `clean: false` note (added this wave) updated to match
       whatever ships — either it stays required with the same reason, or it
       becomes optional with the new diagnostic named instead.
+
+---
+
+## B050 — an ingested R2 lane cannot declare a mutation-score floor below 100: `judgment.r2` has no field recording WHICH floor was applied
+
+**Filed 2026-08-31 from Wave B (B046's implementation), with evidence.
+Refused loudly rather than half-implemented — the gap is a WIRE field, so the
+fix belongs to the next schema cut, not to a patch release.**
+
+### The problem
+
+B046's contract says `judge.mutation.fail_under` "compares against" the
+ingested mutation score `pct = killed / (killed + survived)`. The lane key
+ships (required, validated, in the worked example) but **this build honours
+only `100.0`**, and any other value is refused at load naming this entry.
+
+The reason is a wire gap, not an implementation shortcut.
+`JudgmentR2`'s own docstring states the property that makes R2 auditable:
+
+> an independent consumer can already re-derive the R2 claim's *status* from
+> `Mutation`'s own bucket fields alone (`judge_mutation`'s mapping needs no
+> external policy input)
+
+`judgment.r1` carries `fail_under`, so an R1 PASS is explicable from the
+document. `judgment.r2` carries no such field — under v8 it needed none,
+because native R2 fails on any survivor at all. A lane judging at 90 would
+therefore emit `PASS` beside recorded survivors with **nothing in the document
+explaining it**, and `verify.py`'s `_check_r2_rederivation` — which reuses
+`judge_mutation` — would correctly report the verdict as inconsistent. The
+verdict would be un-auditable by exactly the tool that exists to audit it.
+
+Three options were weighed at implementation time (A-380). Dropping the key
+leaves B046's own acceptance unmet and the documented worked lane unloadable.
+Accepting the key and ignoring it is inert config that cannot fail loudly when
+it is wrong (AGENTS.md 4.2a's own test). The third — ship the key, honour its
+one currently-expressible value, refuse the rest with the reason — is what
+landed.
+
+### Evidence
+
+- `src/assay/config.py` `_load_ingested_mutation`: the refusal, naming this
+  entry.
+- `tests/test_config_ingested_mutation.py::test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap`.
+- `src/assay/mutation.py` `judge_mutation`: the `fail_under` parameter was
+  written and then removed; the docstring records why.
+- `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties`: no
+  floor field, in v9 as in v8.
+
+### The fix, when a schema cut next opens
+
+Add `judgment.r2.fail_under` (number, 0..100), **required under
+`producer = "ingested"` and forbidden under `"native"`** — the producer fork
+A-360 already established is exactly the right shape for it, since native R2
+genuinely has no floor to record. Then:
+
+1. `judge_mutation` takes the floor (the parameter that was removed) and the
+   `survived` branch consults `mutation_pct` — already implemented and tested
+   in `assay.mutation`, so this is a re-wiring, not new arithmetic;
+2. `verify._check_r2_rederivation` reads the floor FROM the document, which is
+   what keeps the re-derivation total rather than partial;
+3. the load-time refusal in `_load_ingested_mutation` is deleted, and the
+   range check (`0.0..100.0`) is all that remains.
+
+### Acceptance
+
+- [ ] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
+      (the 2.4.0 lesson: three places), forked on `producer`, with the frozen
+      drift-guard asset updated at that cut;
+- [ ] `judge_mutation` honours it and `verify.py` re-derives the R2 status
+      from the document alone — proven by a verdict that PASSes with recorded
+      survivors and verifies clean, which is exactly the document this build
+      cannot produce;
+- [ ] the load-time refusal deleted, and
+      `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced
+      by its positive counterpart;
+- [ ] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph.
+
+---
+
+## B051 — `judgment.r2.discarded` is accepted on the producer's word alone: never derived, never cross-checked, and a materially false value rides the wire uncontradicted
+
+**Filed 2026-08-31 from Wave B fix round 1, with evidence. FILE, DO NOT BUILD
+— what "derived" would even mean here is a real product question, not an
+implementation shortcut.**
+
+> **Numbering note.** The controller's fix-round brief asked for this to be
+> filed as **B052**, citing "the same file-don't-build pattern as
+> B049/B050/B051". There is no B051: `main` carries entries through B049 and
+> this wave filed B050, so B051 is the genuinely next free identifier —
+> verified against this file and against `git show main:.../4-backlog.md`
+> before choosing. Filing it as B052 would have left a permanent phantom gap
+> at B051 that a later reader would go looking for. Filed as **B051**, and
+> called out here and in the wave REPORT so the controller can see the
+> substitution rather than discover it.
+
+### The problem
+
+Every other fact an ingested `judgment.r2` carries is re-derived from the
+payload the same document holds. `survived_uncovered` must name positions the
+`survived` bucket actually records; `lines_without_candidates` must not name a
+line a recorded mutant starts on; `survived_uncovered` must be a subset of
+`survived`, never of the whole payload; the mutation SCORE is re-derived
+through `judge_mutation` (A-379). That is what makes an ingested R2 claim
+auditable from the artifact rather than believed.
+
+`discarded` is the exception. It is checked for **presence and
+non-negativity** and for nothing else:
+
+```
+src/assay/verify.py:964-974   # `_check_ingested_r2_agrees_with_its_payload`
+    discarded = r2.get("discarded")
+    if isinstance(discarded, bool) or not isinstance(discarded, int): ...
+    elif discarded < 0: ...
+```
+
+The schema's own bounds (`integer`, `0..10000`) say the same thing one layer
+up, so the raw layer adds no independent statement about this field at all.
+
+**Reproduced:** an adversarial reviewer edited a real ingested verdict's
+`judgment.r2.discarded` to `9999` — a count larger than the whole report's
+109 mutants, and ~9999 more invalid mutants than the run actually had — and
+`verify_document` accepted it with no failures. The document says "assay
+measured much less than this score implies" in the strongest possible terms
+and nothing contradicts it; equally, a run that really did discard most of its
+mutants could report `0` and be believed.
+
+This is not exploitable into a false GREEN — `discarded` is excluded from the
+pct denominator, so it cannot move a claim's status. It is a **credibility**
+defect: the field exists precisely so a consumer can see that a report which
+could not compile most of its own mutants has measured far less than its score
+suggests, and a value nothing checks cannot carry that.
+
+### Why this is not fixable in Wave B
+
+Because there is no derivation available, and inventing one would be worse
+than the gap.
+
+Assay sees the mutants the report LISTS. `discarded` counts mutants the report
+describes as `CompileError`/`RuntimeError` — and in
+`mutation-testing-report-schema` those mutants ARE listed, with those statuses,
+so a count is derivable *for reports shaped like the committed fixture*. What
+is NOT derivable is the thing the field is actually for: whether the foreign
+tool discarded mutants it never listed at all. Stryker does not reveal why a
+mutant was dropped before reporting, and a tool that dropped 900 candidates
+silently emits a document indistinguishable from one that generated 109. So a
+re-derivation would check the easy half, report agreement, and leave the half
+that matters exactly as unchecked as it is now — while LOOKING like the field
+had been audited. A green bar that says "checked" about the wrong half is
+worse than one that says nothing.
+
+The real question is a product call: does `discarded` mean "invalid mutants
+this report listed" (derivable, and then it should be derived and the field
+made redundant on the wire) or "invalid mutants the tool encountered"
+(not derivable from any artifact assay receives, and then it should be
+explicitly marked declared-not-verified, the way `producer_tool` already is
+under A-230a/A-361)? Those are different fields with the same name, and the
+v9 schema description — "how many mutants the ingested report marked
+CompileError or RuntimeError" — reads as the first while the field's stated
+PURPOSE reads as the second.
+
+### Evidence
+
+- `src/assay/verify.py:964-974` — the whole of the check.
+- `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties.discarded`
+  — `integer`, `minimum: 0`, `maximum: 10000`; the raw layer restates exactly
+  this and adds nothing.
+- `src/assay/verdict.py` `JudgmentR2.__post_init__` — `0..10_000`, same range,
+  no payload cross-check.
+- `tests/test_verify_ingested_r2.py::test_a_negative_discarded_count_is_caught`
+  — the ONLY negative test the field has, and it tests the range.
+- The committed real artifact
+  (`tests/fixtures/mutation/mutation-report-json.probe-js-stryker.json`) has
+  **zero** `CompileError`/`RuntimeError` mutants, so `discarded` is `0` in
+  every document this project has ever produced — the field has no non-trivial
+  witness anywhere.
+
+### The fix, once the meaning is ruled
+
+1. **Rule which field it is** — record the ruling as an A-row. "Listed" and
+   "encountered" are different contracts and only one of them is checkable.
+2. If **listed**: derive it in `assay.mutation.ingest_mutation_report` from the
+   report's own statuses, re-derive it in
+   `verify._check_ingested_r2_agrees_with_its_payload` against the payload the
+   way the other three facts are, and refuse a document whose `discarded`
+   disagrees.
+3. If **encountered**: it is declared-not-verified evidence and must say so —
+   the schema description gains that phrase in the words `producer_tool`'s
+   already uses, DESIGN-GUIDE §11's tier paragraph names it beside
+   `producer_tool`, and CONSUMERS says plainly that assay records this number
+   and does not check it.
+4. Either way, commit a real report carrying a non-zero `discarded` (a
+   deliberately uncompilable mutant is easy to produce with Stryker) so the
+   field finally has a witness.
+
+### Acceptance
+
+- [ ] the "listed vs encountered" ruling recorded as an A-row, naming which
+      alternative was rejected and why;
+- [ ] under **listed**: `discarded` re-derived from the payload in `verify.py`
+      beside the other three re-derivations, with a test that mutates it on a
+      REAL document and asserts a NAMED failure (the `9999` reproduction above
+      is the test to write);
+- [ ] under **encountered**: the declared-not-verified statement in the schema
+      description, DESIGN-GUIDE §11 and CONSUMERS, and a test asserting the
+      schema description says so — the same three-place discipline
+      `producer_tool` already carries;
+- [ ] a committed real report with a non-zero `discarded`, and a frozen
+      W-generation document carrying it, so the field has a witness at all.
+
+---
+
+## B052 — an ingested report's embedded `source` is never compared against the snapshot's own committed bytes: assay derives every mutant position from text it takes entirely on the tool's word
+
+**Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
+FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
+
+> **Numbering note.** B051 is the `discarded` finding. This entry was filed
+> second and takes the next free identifier. See B051's own numbering note for
+> why the fix-round brief's "B052" ended up applied to neither item in the
+> order it expected.
+
+### The problem
+
+`mutation-testing-report-schema` embeds, for every measured file, the full
+`source` text the tool read. Assay **requires** it and leans on it hard:
+
+- `mutation_parsers/mutation_report_json.py:170-186` refuses a file record
+  with no `source` string, then builds `_line_byte_offsets(source)` and
+  `len(source.encode("utf-8"))` from it — so **every mutant's byte span is
+  derived from this text**;
+- `mutation.py:2150-2160` (`lines_without_candidates`) walks the same text
+  line by line, and its docstring says so plainly: *"Lines come from the
+  report's OWN `source` text, not from the snapshot: that is the text the tool
+  actually read, so a line number here means the same thing the tool's own
+  line numbers mean."*
+
+That reasoning is correct as far as it goes — and it is exactly why nothing
+checks the text. Assay already holds the snapshot's own committed blobs for
+those same paths (`isolation.SnapshotRepository.read_regular_file`), and never
+compares the two. A report whose `source` differs from the commit's bytes —
+in whitespace, in whole functions, in file identity — is ingested and judged
+without a word.
+
+B046's non-repudiation items already ask for `projectRoot` to match the
+directory the command ran in, and for every `files` key to resolve under a
+declared `source_root`. Those establish that the report is **about this
+checkout**. They do not establish that it is about **this commit's content**,
+which is the stronger property assay's own committed-object snapshot exists to
+make checkable, and the only one that closes "an artifact from an earlier
+state of the same tree".
+
+### Why this is not implementable without a ruling first
+
+The comparison is trivial. Its VERDICT is not, and shipping the check with the
+wrong terminal would be worse than the gap.
+
+A mismatch has at least four causes with genuinely different correct
+responses:
+
+1. **a stale report** — the tool ran before the last edit. `ERROR`, and the
+   consumer should re-run. Almost certainly what a mismatch usually is;
+2. **a tool that rewrites sources in flight** — transpilation, a formatter in
+   the test command, Stryker's own instrumentation writing back. Here the
+   report is *honest about what was mutated* and the snapshot is *honest about
+   what was committed*, and refusing would break lanes that are working
+   correctly. This is not hypothetical for a JS/TS toolchain;
+3. **a genuinely foreign report** — the non-repudiation case, which should
+   refuse loudly;
+4. **line-ending or trailing-newline normalisation** — a mismatch in bytes
+   that is not a mismatch in meaning, and a byte-equality check would refuse a
+   correct lane on a `.gitattributes` setting.
+
+(2) and (4) are why "compare and refuse" cannot simply be written. A check
+that cannot distinguish them either refuses honest lanes or is downgraded to a
+warning nobody reads — and `judgment` has no field for "the evidence text
+differed from the commit", so today there is nowhere to *record* the fact
+short of refusing.
+
+This is the same shape as B051: the code is a morning's work and the contract
+is the actual question.
+
+### Evidence
+
+- `src/assay/mutation_parsers/mutation_report_json.py:170-186` — `source`
+  required; byte offsets and file length derived from it; no snapshot read.
+- `src/assay/mutation.py:2150-2160` — `lines_without_candidates` walks the
+  report's own text, with the docstring stating the choice explicitly.
+- `src/assay/isolation.py` `SnapshotRepository.read_regular_file` — the
+  committed bytes ARE available at ingestion time, from the same snapshot the
+  lane's command ran in. Nothing calls it from the ingest path.
+- `src/assay/runner.py` `_ingest_r2_report` — the whole ingest path; the only
+  snapshot facts it uses are `project_root` (via `resolve_run_cwd`) and the
+  commit identity.
+- Wave B REPORT §13 ("What I did NOT do, and why") — the implementer flagged
+  this at the end of the wave and deliberately did not file it, wanting a
+  reviewer's opinion on whether it was worth filing. The reviewer's answer,
+  relayed by the controller, is that it is.
+
+### The fix, once the meaning is ruled
+
+1. **Rule what a mismatch MEANS**, as an A-row, naming which of the four
+   causes above the terminal is claiming. The likely shape is a third
+   non-repudiation tier: identity (does the report describe this project),
+   anchoring (do the paths resolve), and *content* (is the text the commit's).
+2. Read the committed blob for each measured path through
+   `read_regular_file`, inside the baseline snapshot's own `with` block where
+   `_ingest_r2_report` already runs.
+3. Compare under a **stated** normalisation — decide explicitly whether line
+   endings and a trailing newline are in or out, and test both ways round.
+4. Give the mismatch a terminal and a message naming the file, or a wire field
+   if the ruling is "record, do not refuse" — in which case it is a schema
+   field and belongs to the next cut, exactly as B050 does.
+
+### Acceptance
+
+- [ ] the mismatch ruling recorded as an A-row, naming the rejected
+      alternatives (refuse-always / warn / record-on-the-wire) and why;
+- [ ] the committed bytes read from the snapshot at ingest time and compared
+      under a documented normalisation, with a test that mutates ONE file's
+      `source` in the REAL committed Stryker fixture and asserts a NAMED
+      failure — and a companion test proving a byte-identical report still
+      passes, so the check is not vacuous;
+- [ ] a test for the transpiled/rewritten-source case (2), asserting whatever
+      the ruling says should happen to it — this is the case that decides
+      whether the feature is safe to ship at all;
+- [ ] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
+      "what assay checks about your report" paragraph as `projectRoot`;
+- [ ] if the ruling is "record, do not refuse": the wire field in schema,
+      dataclass and `verify.py` (three places), at the next schema cut.
