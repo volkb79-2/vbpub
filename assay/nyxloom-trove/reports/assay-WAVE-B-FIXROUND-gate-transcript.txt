@@ -1,0 +1,61 @@
+Looking in links: /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-wave-b-producer/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.K7KSxrwsoh/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-3.2.1.dev20+g4780c4ba-py3-none-any.whl size=457150 sha256=fdefb8927fbec0ad5a0e7ddc44f709d9cb3de8fc9b20e1b13d8c621f52231055
+  Stored in directory: /tmp/pip-ephem-wheel-cache-1xwmzns4/wheels/84/5a/02/2b6aea75d60eaea22b6067b20882057f2d9c92783e487c039d
+Successfully built assay
+Processing ./tmp/tmp.K7KSxrwsoh/dist/assay-3.2.1.dev20+g4780c4ba-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-3.2.1.dev20+g4780c4ba
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 1.26s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 20.74s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.75s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6/v7/v8 hard-cut guard passed for 18 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+...............................................                          [100%]
+47 passed in 0.92s
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 4780c4ba6f7259740aacea9a98d9973fdd09ecf5
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"description": "Eq->NotEq", "end_byte": 52, "lineno": 2, "operator": "python:compare-swap", "path": "cmru/src/cmru/_b006a_probe.py", "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2", "start_byte": 50}
+r3_canary={"control_outcome": "PASS", "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file", "expected_reason_code": "UNCOVERED_LINES", "mechanism": "uncovered-line", "observed_reason_code": "UNCOVERED_LINES", "target": "src/cmru/_b006a_probe.py", "transformed_outcome": "FAIL"}
+snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlink_omissions": ["topos/tests/fixtures/inspect_files/_danger/passwd_link", "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape", "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"]}
+omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 10.73s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1

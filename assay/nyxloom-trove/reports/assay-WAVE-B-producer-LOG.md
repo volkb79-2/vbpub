@@ -661,3 +661,160 @@ that still make a native JavaScript R2 lane impossible —
 declaring native R2 operators is refused by the loader naming the language.
 Without it, "R2 is registered, through the ingested path only" would have
 become a claim in a docstring with nothing testing it.
+
+---
+
+# Fix round 1 (fresh reviewer's ACCEPT-conditional on `a4bf1bc3`)
+
+One code blocker, five must-fix items, three controller-bundled. Fresh
+session, no inherited context. Full account in REPORT §15; this is the
+working log.
+
+## `52b1f86b` — BLOCKER: `cwd` x `link_paths` is a snapshot escape
+
+Read the seam before touching it, and the reviewer's account was exactly
+right. `_plant_link_paths` runs from `_build` AFTER `_verify` (A-370), so the
+symlink is already standing at `<snapshot>/deps` when
+`_execute_snapshot_unit`'s commit-bound check runs — and that check was
+`run_cwd.is_dir()`, which follows the link into the invoking checkout.
+
+**The design question the fix brief asked me to record: why a manifest lookup
+rather than a better filesystem test.** Because no filesystem test can answer
+this question. `is_dir()` follows links; `lstat` would reject the link but
+would also reject nothing else about commit-boundness, and would still be
+answering "what stands here" when the question is "what does the commit
+contain". Those are different questions and the snapshot deliberately contains
+one thing that is not committed content. The manifest answers the actual
+question and cannot be fooled by anything on disk.
+
+**Threading it.** `_execute_snapshot_unit` receives a `Snapshot`, not the
+`SnapshotRepository`, so `_manifest` was not in scope. Three options weighed:
+pass the repository through (one call site, but a new parameter on the ONE
+shared unit engine, and an optional one would let the check silently skip —
+the exact failure mode being fixed); re-ask git with `ls-files` the way
+`_coverage_artifact_is_tracked` beside it does (correct, but a subprocess for
+a fact already in memory, and a second tracked-ness oracle in one function);
+or put the commit's directory set on `Snapshot` itself. Took the third:
+`Snapshot` has exactly ONE construction site (`isolation.py:520`), no test
+constructs it, and the object becomes self-describing about what its commit
+holds — which is a property worth having independently of this bug.
+
+**The second question: is TRACKED+LINKED legitimate, and did the load-time
+refusal give up something real?** No, and this took checking rather than
+assuming. `_plant_link_paths` rule 2 already refuses to link a TRACKED path.
+So "cwd is tracked AND cwd is linked" cannot reach a successful run under any
+commit — the snapshot build refuses first. The load-time pair refusal is
+therefore exact, not conservative: it turns an unreachable-anyway state into
+an early, well-diagnosed one. What IS legitimate is a link *beneath* the cwd
+(`cwd = "app"`, `link_paths = ["app/node_modules"]`), so the rule is
+one-directional and there is a passing end-to-end node for it. A blanket "cwd
+may not coexist with link_paths" would have closed the escape by deleting the
+feature.
+
+**Proving the test reproduces.** Wrote the negative, watched it pass, and did
+not trust that. Temporarily restored `is_dir()` — still passed, because my own
+new symlink check caught it. Disabled that too: **FAILED**, with the command
+running and `escaped.txt` landing in the checkout. Restored both. A
+reproduction test that has never been seen to fail is not a reproduction test.
+
+One knock-on: `plan.project_prefix` is `PurePosixPath | None`, and `cwd` is
+project-relative while the manifest is repo-top-relative, so the declared
+spelling is re-anchored rather than the two grammars compared across each
+other.
+
+## `9848d5ca` — the schema-major pin, and a stale docstring
+
+`SUPPORTED_REPORT_SCHEMA_MAJORS = {"1", "2"}` sat directly under a docstring
+saying it is "pinned to the major the committed real fixture carries". The
+fixture carries `1.0`. Dropped `"2"`. Added a second test asserting the
+FIXTURE's own major equals the admitted set, so the constant cannot drift away
+from its witness again without a red bar — the first test alone would have
+allowed `{"1", "3"}`.
+
+## `4780c4ba` — the raw layer's independence, twice over
+
+**Producer vocabulary.** Traced both `== "ingested"` sites. The interesting
+part is not that a misspelling skipped the ingested checks — it is that it
+then took the NATIVE branch, which fired on the document's `stryker:`
+operators and produced a plausible-looking failure about language catalogues.
+So the bar went red for the wrong reason while four real checks stayed silent:
+strictly worse than a clean skip, because it looks like the checker worked.
+The test for this asserts the native message is now ABSENT, not just that some
+failure appears.
+
+**The three order checks.** Verified the claim before acting: `verify.py`'s
+only ordering check was `unsafe_symlink_omissions`', and `verdict.py`'s model
+half was real (`:2185`, `:2950`). So the schema descriptions were half-true.
+Built the raw halves. Two things that needed care: `link_paths`' check has to
+sit before `_check_snapshot_policy`'s `selection` fork, because that function
+returns early under `selection = "repository"` — putting it after would have
+been dead code for the selection most lanes declare (A-366's own reasoning,
+one layer down); and the checks are worded differently from the model's so a
+test can prove which layer fired, since the model refuses these documents too
+and "it went red" would prove nothing.
+
+**Consequence worth stating: no schema byte changed.** Implementing the checks
+made the descriptions true, so the shipped schema is untouched and the W5
+freeze needed no regeneration — `cmp` re-run, byte-identical, and the gate's
+own byte-identity node passes.
+
+**The W5 ingested template.** W5's MANIFEST said freezing no ingested document
+was deliberate, and its reasoning was sound *when written* — the schema is cut
+before the features that fill it (A-359), so no real ingested verdict existed
+yet. It expired when B046 landed three commits later and nobody revisited the
+corpus. Generated one by running the real producer through the same harness
+`test_runner_ingested_r2.py` drives (a throwaway test file, deleted after it
+wrote the artifact). It came out `FAIL`/`MUTANTS_SURVIVED`, which is correct
+for that artifact — 19 Survived + 69 NoCoverage — and I kept it rather than
+contriving a PASS: a real FAIL with a real payload is better evidence than a
+synthetic PASS.
+
+**B051, not B052.** The brief said B052 and cited "B049/B050/B051". Checked
+before writing: no B051 in this worktree, none in `git show
+main:assay/nyxloom-trove/4-backlog.md` (which ends at B049), and this wave
+filed B050. So B051 is next free and B052 would have left a permanent hole.
+Filed at B051 with the substitution stated in the entry itself. Same
+discipline as verifying the next free A-row against the real file — and it
+caught something for the same reason.
+
+## Corrections to the wave's own record
+
+Every one re-derived from the real file rather than taken on the reviewer's
+word (they were all correct):
+
+- `test_config_coverage_producer.py` — LOG said 20 tests, `--collect-only`
+  says 18. (`test_config_ingested_mutation.py`'s "20 nodes" IS right: 17
+  functions, 20 collected under parametrize.)
+- §11 said run 1 judged `d0aab6fd`; the wheel name is
+  `assay-3.2.1.dev16+g1a783f3e`. The wheel is the evidence.
+- §11 said phase 5 covers 18 templates "including W5". `tester-unified-gate.sh:491`
+  loops `("W1", 6), ("W2", 7), ("W4", 8)` and asserts REFUSAL under v9 — W5
+  could not be in it, since its documents are v9. W5 is phase 6. Cross-ref was
+  §9, should be §7.
+- §6's `verify.py:1393` / `:1322` pointed at neither registration. Now
+  `:1727-1728` / `:1656`, given with function names, because these very
+  numbers moved again during this round.
+- §7's "77 KB" — `wc -c` says 89,596.
+- §1 listed 12 of 13 commits.
+
+## `docs(assay): fix round 1` — the gate record
+
+§14 rewrote itself around one admission: the run-2 PASS row was written inside
+the commit it claimed to judge, so it recorded something that could not have
+been observed, and no gate log existed on disk to check it against. Struck and
+labelled rather than quietly deleted. Run 1's real-but-incomplete evidence
+(receipt + in-band `exit 0`, no captured process status) is stated as such;
+the wave tip's evidence is attributed to the reviewer's own independent run
+rather than claimed as mine.
+
+## Verification
+
+- full suite before the gate: **3801 passed, 13 skipped, 0 failed** in
+  344.14 s (wave's own: 3779 — this round adds 22 nodes);
+- registered gate over `4780c4ba`, **exit code `0` captured to its own file**
+  this time, `ASSAY_REGISTERED_GATE_COMPLETE=1` the literal last line (61 of
+  61), in-band `commit: 4780c4ba6f72…`, wheel `assay-3.2.1.dev20+g4780c4ba`;
+- transcript committed verbatim at
+  `nyxloom-trove/reports/assay-WAVE-B-FIXROUND-gate-transcript.txt`;
+- phase 6 reads **47 passed** where the wave's run read 44 — the new W5
+  template and its two guards, from the installed wheel.
