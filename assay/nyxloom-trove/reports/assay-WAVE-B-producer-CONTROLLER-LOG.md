@@ -47,3 +47,31 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   successor and reviewer. Dispatching generation 2, fresh, seeded with
   `assay-WAVE-B-producer-BRIEF-1.md`. Continuing without pausing per the
   goal's report-and-continue rule.
+
+- **2026-08-31 (checkpoint 2)** — Generation 2 checkpointed clean after one
+  commit (`cc4e955f`, B045's non-schema half: real istanbul branch arcs +
+  the type-only lexer, closes B038(a)/(b)); full `pytest tests/` green at
+  that commit (3668 passed / 13 skipped / 0 failed). B046/B043/B041(b)
+  untouched beyond brief 1's state. **Controller decision, resolved (not
+  paused on)**: brief 2 §6 flagged one real schema fork — `judgment_r2`'s
+  `required` list (`jobs`/`max_mutants`/`operators`/...) can't hold for an
+  ingested R2 lane, since B046 refuses those very fields on that path. The
+  implementer's own recommendation, option (i) — make them conditional on
+  `producer` via an `allOf if/then` (the schema's own existing pattern at
+  1501-1576) rather than backfilling them from the report — is endorsed:
+  it follows A-230a's precedent directly (assay's own policy fields must
+  stay honestly empty for an ingested lane, not filled from what the
+  external tool decided, the same declared-vs-verified line `helpers[]`
+  already draws). Not a breaking/irreversible call — it's resolved by an
+  existing rule, so no operator pause; instructing generation 3 to proceed
+  with it and record the A-row, flagged for the reviewer as the brief
+  already planned. Also endorsed: the implementer's re-ordering of the
+  remaining work (schema cut ONCE with the full v9 field set, BEFORE the
+  B046/B043/B041(b) feature commits — brief 1's original order would leave
+  every intermediate B046 commit red until the schema catches up, and the
+  W5 freeze must be byte-identical to the shipped schema so it has to be
+  the last schema-touching commit regardless). Housekeeping: the
+  Edit/apply_patch-only rule was violated a second time (a LOG append via
+  heredoc, self-corrected) — reinforced again, explicitly, in generation
+  3's dispatch. Dispatching generation 3, fresh, seeded with
+  `assay-WAVE-B-producer-BRIEF-2.md`.
