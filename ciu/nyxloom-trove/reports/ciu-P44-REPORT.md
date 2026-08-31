@@ -277,6 +277,29 @@ this package's actual five-commit HEAD, and it is green.**
 
 ---
 
+## Addendum — real gate re-run after the LOG/REPORT commit (commit `ca8eff8d`)
+
+Writing this REPORT/the LOG added a sixth commit (`ca8eff8d`, docs-only —
+`git diff --stat 7201224f..ca8eff8d`: two new files under
+`nyxloom-trove/reports/`, zero source or test changes) AFTER the gate run
+quoted above, which moved `HEAD` past the commit that run actually judged.
+Re-ran `./run-gate.py ciu --worktree
+/workspaces/vbpub/.worktrees/ciu-P44-small-followups` once more against the
+true final HEAD rather than leave a stale verdict standing:
+
+```
+ciu: PASS (exit 0)
+  commit: ca8eff8d9bdfa68e4f21d82678b3dc781cc75fb8
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: lane 'ciu' exit 0
+```
+
+Verdict artifact (`ciu/.assay/verdict-ciu.json`), read directly in a
+separate step, commit confirmed against `git rev-parse HEAD` =
+`ca8eff8d9bdfa68e4f21d82678b3dc781cc75fb8` (exact match): `outcome: PASS`,
+`exit_code: 0`, R0 `PASS`, R1 `PASS` at coverage `pct: 100.0`. Same green
+outcome as the original run, now at the actual commit this package ends on.
+
 ## Follow-up filed
 
 **CIU-86** (Low, OPEN): `action_graph`'s own `info()`/`error()` calls (the
