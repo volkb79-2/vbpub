@@ -188,3 +188,92 @@ def test_a_symlink_inside_the_project_is_accepted(project: Project):
 def test_the_refusal_names_the_offending_key(project: Project):
     error = _refusal(project, _with_cwd(R1_LANE, '"applications/nope"'))
     assert "'cwd'" in str(error)
+
+
+# --------------------------------------------------------------------------
+# cwd x isolation.link_paths (fix round 1) — the PAIR
+#
+# Each key was individually valid and individually checked, and together they
+# composed into a snapshot escape: `link_paths` planted a symlink at
+# `<snapshot>/deps` pointing back into the invoking checkout, and the runner's
+# commit-bound `cwd` check was a filesystem test that followed it and accepted
+# an untracked directory as committed. The lane's command then ran in the
+# consumer's REAL working tree. `test_runner_lane_cwd.py` owns the reproduction
+# and the authoritative, commit-bound refusal; this section owns the early
+# refusal, in the layer that can name the file being edited.
+#
+# The rule is one-directional, and both directions are pinned below: a cwd AT
+# or BENEATH a linked path can never be satisfied by any commit (a link must be
+# untracked, a cwd must be tracked, and a tracked directory's ancestors are
+# tracked), while a link BENEATH the cwd is the ordinary `cwd = "app"` +
+# `link_paths = ["app/node_modules"]` shape B041(b) exists for.
+# --------------------------------------------------------------------------
+
+
+def _with_link_paths(text: str, value: str) -> str:
+    return text.replace(
+        'snapshot_selection = "repository"\n',
+        f'snapshot_selection = "repository"\nlink_paths = {value}\n',
+        1,
+    )
+
+
+def test_a_cwd_that_is_also_a_declared_link_path_is_refused(project: Project):
+    project.dir("deps")
+    error = _refusal(
+        project, _with_link_paths(_with_cwd(R1_LANE, '"deps"'), '["deps"]')
+    )
+    assert "'cwd'" in str(error)
+    assert "link_paths" in str(error)
+    assert "deps" in str(error)
+
+
+def test_a_cwd_BENEATH_a_declared_link_path_is_refused(project: Project):
+    """The same impossibility one level down: if `deps` is not tracked then
+    `deps/pkg` cannot be a tracked directory either, so naming it as a cwd is
+    wrong for exactly the same reason and must not need its own escape."""
+    project.dir("deps", "pkg")
+    error = _refusal(
+        project, _with_link_paths(_with_cwd(R1_LANE, '"deps/pkg"'), '["deps"]')
+    )
+    assert "'deps'" in str(error)
+
+
+def test_a_link_path_BENEATH_the_cwd_is_accepted(project: Project):
+    """The legitimate composition, and the reason the check is not symmetric.
+    `cwd = "app"` with `link_paths = ["app/node_modules"]` is the exact shape
+    B041(b) was built for: a committed application directory to run in, with
+    an uncommitted dependency closure linked in beside its sources."""
+    project.dir("app")
+    lane = _load(
+        project,
+        _with_link_paths(_with_cwd(R1_LANE, '"app"'), '["app/node_modules"]'),
+    ).lane("package")
+    assert lane.cwd == "app"
+    assert lane.isolation is not None
+    assert lane.isolation.link_paths == ("app/node_modules",)
+
+
+def test_an_unrelated_link_path_leaves_the_cwd_alone(project: Project):
+    """The control for the two refusals above: `link_paths` and `cwd` naming
+    disjoint paths is not an interaction at all, and a check that refused it
+    would be refusing the feature rather than the escape."""
+    project.dir("app")
+    lane = _load(
+        project, _with_link_paths(_with_cwd(R1_LANE, '"app"'), '["node_modules"]')
+    ).lane("package")
+    assert lane.cwd == "app"
+    assert lane.isolation is not None
+    assert lane.isolation.link_paths == ("node_modules",)
+
+
+def test_a_link_path_that_merely_shares_a_name_prefix_is_not_an_ancestor(
+    project: Project,
+):
+    """Component-wise, never string-prefix: `deps-extra` is not `deps`, and a
+    `startswith` implementation would refuse a lane with nothing wrong."""
+    project.dir("deps-extra")
+    lane = _load(
+        project, _with_link_paths(_with_cwd(R1_LANE, '"deps-extra"'), '["deps"]')
+    ).lane("package")
+    assert lane.cwd == "deps-extra"

@@ -1777,16 +1777,54 @@ def _execute_snapshot_unit(
     # is built from the SAME commit, so tracked-ness is invariant across them
     # -- the identical reasoning the tracked-artifact checks below already
     # state for themselves.
+    # The question is answered from the COMMIT'S OWN TREE
+    # (:attr:`isolation.Snapshot.tracked_directories`, the manifest that
+    # `_plant_link_paths`' rule 2 already consults), never from the
+    # filesystem. A filesystem test was the shipped implementation and was
+    # WRONG: `link_paths` plants real symlinks into this tree after
+    # `_verify` (A-370), so a lane declaring both `cwd = "deps"` and
+    # `link_paths = ["deps"]` over an untracked, gitignored `deps/` made
+    # `(project_root / "deps").is_dir()` answer True by following the link
+    # back into the INVOKING CHECKOUT -- and the command then ran in the
+    # consumer's real working tree, writing to it for real. The manifest
+    # cannot be fooled that way: it is derived from the tree the commit
+    # names and knows nothing about what is on disk.
     if plan.cwd_declared is not None:
         run_cwd = resolve_run_cwd(snapshot.project_root, plan)
-        if not run_cwd.is_dir():
+        # `cwd_declared` is PROJECT-relative (A-145) and the manifest is
+        # repo-top-relative, so the declared spelling is re-anchored here
+        # rather than the two grammars being compared across each other.
+        declared_in_tree = (
+            plan.project_prefix or PurePosixPath(".")
+        ) / plan.cwd_declared
+        if declared_in_tree not in snapshot.tracked_directories:
             raise AssayError(
                 f"the declared lane cwd {plan.cwd_declared!r} is not a "
-                f"directory at commit {snapshot.commit} -- the snapshot holds "
-                f"committed objects only (A-161), so a working directory that "
-                f"exists in the checkout but is not tracked at the resolved "
-                f"commit cannot be entered here. Commit it, or drop the cwd "
-                f"declaration.",
+                f"directory in the tree of commit {snapshot.commit} -- the "
+                f"snapshot holds committed objects only (A-161), so a working "
+                f"directory that exists in the checkout but is not tracked at "
+                f"the resolved commit cannot be entered here. This is decided "
+                f"from the commit's own manifest, so a path standing there in "
+                f"the snapshot for some other reason (an isolation.link_paths "
+                f"symlink, say) does not make it committed. Commit it, or drop "
+                f"the cwd declaration.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        # Defense in depth, and the enforcement of an already-STATED contract
+        # clause ("symlink components are refused") that nothing was actually
+        # checking. Unreachable by construction today -- a tracked directory
+        # materialises as a real directory, and `_plant_link_paths` refuses to
+        # link a tracked path at all -- which is exactly why it is cheap to
+        # keep: if either of those two facts ever stops holding, the escape
+        # this whole check exists to close comes back silently.
+        if run_cwd.is_symlink():
+            raise AssayError(
+                f"the declared lane cwd {plan.cwd_declared!r} is a SYMLINK in "
+                f"the snapshot of commit {snapshot.commit}; a lane's working "
+                f"directory must be the committed directory itself, because a "
+                f"link can point at content the commit does not name -- "
+                f"including back into the invoking checkout.",
                 outcome=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
@@ -2641,6 +2679,7 @@ def _run_prepared_lane(
                             unit.mutation_report_bytes,
                             lane=lane,
                             relocated_lane=relocated_lane_r2,
+                            plan=plan,
                             snapshot=baseline_snapshot,
                             added=added,
                             project_prefix=project_prefix,
@@ -2909,6 +2948,7 @@ def _ingest_r2_report(
     *,
     lane: Lane,
     relocated_lane: Lane,
+    plan: CommandPlan,
     snapshot: "isolation.Snapshot",
     added: diff.AddedLines | None,
     project_prefix: PurePosixPath,
@@ -2938,15 +2978,15 @@ def _ingest_r2_report(
     report = mutation_parsers.load_mutation_report(
         text, declared_format=lane.judge.mutation.format
     )
-    # (B043) The directory the command actually ran in -- the snapshot's
-    # project root joined with the lane's declared `cwd`. This is what the
-    # report's own `projectRoot` must equal and what its relative file keys
-    # are anchored at.
-    run_cwd = (
-        snapshot.project_root
-        if lane.cwd is None
-        else snapshot.project_root / lane.cwd
-    )
+    # (B043/A-367) The directory the command actually ran in. This is what the
+    # report's own `projectRoot` must equal and what its relative file keys are
+    # anchored at, so it must be the SAME answer `execute_plan` used when it
+    # started that command -- which is why it comes from the one join,
+    # `resolve_run_cwd`, over the very `CommandPlan` that ran, and not from a
+    # fifth hand-rederivation of `project_root / lane.cwd`. The two agreed when
+    # this was written; A-367 exists precisely because "agrees today" is not a
+    # property an edit to either side preserves.
+    run_cwd = resolve_run_cwd(snapshot.project_root, plan)
     assert relocated_lane.judge is not None
     # `judge.targets` is PROJECT-relative (A-145) and every wire path is
     # repo-top-relative, so the declared targets are re-spelled here rather

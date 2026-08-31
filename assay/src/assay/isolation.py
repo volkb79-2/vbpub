@@ -209,6 +209,26 @@ class Snapshot:
     root: Path
     project_root: Path
     commit: str
+    #: (B043, fix round 1) Every DIRECTORY the prepared commit's own tree
+    #: contains, repo-top-relative and including ``.`` for the top itself --
+    #: :attr:`_Manifest.directories` verbatim, frozen for a caller that only
+    #: ever asks about membership.
+    #:
+    #: Carried on the snapshot rather than answered by a filesystem test
+    #: because a filesystem test cannot tell a committed directory from
+    #: something else standing where one would be. ``link_paths`` plants real
+    #: symlinks into this tree AFTER :meth:`SnapshotRepository._verify`
+    #: (A-370), so ``(root / p).is_dir()`` follows a link into the INVOKING
+    #: CHECKOUT and answers ``True`` for a path the commit does not have --
+    #: the exact confusion that let a lane declaring both ``cwd = "deps"`` and
+    #: ``link_paths = ["deps"]`` execute its command in the consumer's real
+    #: working tree. This set is derived from the commit's tree and knows
+    #: nothing about what is on disk, so no link can enter it.
+    #:
+    #: It is the SAME oracle ``_plant_link_paths``' own tracked-ness rule
+    #: already consults (rule 2), now shared with the one other question that
+    #: needed it instead of being asked a second, weaker way.
+    tracked_directories: frozenset[PurePosixPath]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -497,6 +517,7 @@ class SnapshotRepository:
                 root=root,
                 project_root=_join_prefix(root, self._spec.project_prefix),
                 commit=commit,
+                tracked_directories=frozenset(self._manifest.directories),
             )
             yield snapshot
         except BaseException:

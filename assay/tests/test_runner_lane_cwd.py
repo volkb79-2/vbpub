@@ -34,7 +34,7 @@ from conftest import GitRepo, make_lane, make_r2_judge, make_r3_judge
 
 from assay import runner
 from assay.adapters.python import PythonAdapter
-from assay.config import CanaryConfig, MutationConfig
+from assay.config import CanaryConfig, IsolationConfig, MutationConfig
 from assay.errors import Outcome, ReasonCode
 
 _MUTATION = MutationConfig(jobs=1, max_mutants=50, operators=("python:compare-swap",))
@@ -365,3 +365,203 @@ def test_the_environment_command_probe_keeps_the_invoking_cwd(
     ]
     assert probed and not any(entry.endswith("/app") for entry in probed), probed
     assert all(entry.endswith("/app") for entry in _recorded(lane_log))
+
+
+# --------------------------------------------------------------------------
+# cwd x isolation.link_paths (fix round 1) — the SNAPSHOT ESCAPE
+#
+# The two keys were individually correct and composed into a real escape.
+# `_plant_link_paths` plants its symlinks from `_build`, AFTER `_verify`
+# (A-370), so by the time the commit-bound `cwd` check ran there was a live
+# symlink at `<snapshot>/deps` pointing at `<checkout>/deps`. That check was
+# `run_cwd.is_dir()` — a filesystem test, which FOLLOWS the link and answers
+# True — so an untracked, gitignored directory was accepted as commit-bound
+# and the lane's command executed in the consumer's real working tree, writing
+# to it for real.
+#
+# The fix decides the question from the commit's own manifest
+# (`isolation.Snapshot.tracked_directories`), the same oracle `_plant_link_paths`
+# rule 2 already consults, so no symlink can enter the answer. `assay.config`
+# additionally refuses the declaration pair outright, which is why the lane
+# below is built through `make_lane` rather than loaded from a file: this is
+# the layer that must hold even if that one is ever bypassed.
+# --------------------------------------------------------------------------
+
+
+def _link_isolation(*paths: str) -> IsolationConfig:
+    return IsolationConfig(
+        snapshot_selection="repository",
+        unsafe_symlink_omissions=(),
+        link_paths=paths,
+    )
+
+
+def test_an_untracked_cwd_reached_through_a_link_path_is_refused_not_followed(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The reproduction, and the proof the escape is closed.
+
+    Three independent witnesses, because "the verdict says ERROR" alone would
+    not distinguish a closed escape from a differently-worded one: the lane is
+    refused, the command's own `$PWD` log does not exist (it never started),
+    and the file that command would have created is absent from the CHECKOUT
+    — which is where it landed before the fix.
+    """
+    log = _pwd_log(tmp_path)
+    # `deps` must be covered by a COMMITTED .gitignore or `_plant_link_paths`'
+    # own cleanliness rule (A-371) refuses first, and this test would then pass
+    # for the wrong reason. No trailing slash: A-372.
+    git_repo.write(".gitignore", "cov.json\ndeps\n")
+    git_repo.write("src/mod.py", "x = 1\n")
+    git_repo.commit_all("seed")
+    head = git_repo.head()
+    # Present in the invoking checkout, absent from the commit: the state the
+    # planted symlink used to disguise.
+    deps = git_repo.path / "deps"
+    deps.mkdir()
+    (deps / "canary.txt").write_text("a real dependency closure\n", encoding="utf-8")
+
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        argv=("/bin/sh", "-c", _logging('printf escaped > escaped.txt')),
+        env={"PWDLOG": str(log)},
+        cwd="deps",
+        isolation=_link_isolation("deps"),
+        judge=make_r2_judge(
+            source_root_paths=(git_repo.path / "src",),
+            base=head,
+            mutation=_MUTATION,
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert not log.exists(), "the lane's command ran; it must never have started"
+    assert not (deps / "escaped.txt").exists(), (
+        "the lane's command wrote into the CONSUMER'S OWN CHECKOUT — the "
+        "snapshot escape this test exists to close"
+    )
+    # B041(b) rule 6, one assertion wide: teardown left the linked closure
+    # alone even on this refusal path.
+    assert (deps / "canary.txt").read_text(encoding="utf-8") == (
+        "a real dependency closure\n"
+    )
+
+
+def test_the_same_lane_without_link_paths_is_refused_identically(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The negative control that makes the test above about the PAIR.
+
+    Strip `link_paths` and nothing else: the cwd is still untracked and is
+    still refused with the same terminal. Without this, a reader could not
+    tell whether the refusal above came from the escape being closed or from
+    `link_paths` being refused for some unrelated reason of its own.
+    """
+    log = _pwd_log(tmp_path)
+    git_repo.write(".gitignore", "cov.json\ndeps\n")
+    git_repo.write("src/mod.py", "x = 1\n")
+    git_repo.commit_all("seed")
+    head = git_repo.head()
+    (git_repo.path / "deps").mkdir()
+
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        argv=("/bin/sh", "-c", _logging("exit 0")),
+        env={"PWDLOG": str(log)},
+        cwd="deps",
+        judge=make_r2_judge(
+            source_root_paths=(git_repo.path / "src",),
+            base=head,
+            mutation=_MUTATION,
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert not log.exists()
+
+
+def test_a_TRACKED_cwd_still_composes_with_a_link_path_beside_it(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The positive half: the fix refuses the escape, not the feature.
+
+    `cwd = "app"` (a committed directory) with `link_paths = ["app/node_modules"]`
+    (an uncommitted dependency closure linked in beside its sources) is the
+    exact shape B041(b) and B043 were built to compose into, and it is what a
+    manifest-based check keeps working where a blanket "cwd may not coexist
+    with link_paths" rule would have broken it.
+
+    The command proves BOTH halves from inside the snapshot: it reads the
+    linked marker through a path relative to the declared cwd, and it logs a
+    `$PWD` asserted afterwards to end in `/app` and to be outside the
+    consumer's checkout entirely.
+    """
+    log = _pwd_log(tmp_path)
+    git_repo.write(".gitignore", "cov.json\napp/node_modules\n")
+    git_repo.write("app/src/mod.py", "def f(x):\n    return 0\n")
+    base_rev = git_repo.commit_all("add app/")
+    git_repo.write("app/src/mod.py", "def f(x):\n    return x > 0\n")
+    head = git_repo.commit_all("introduce a compare-swap site")
+    modules = git_repo.path / "app" / "node_modules"
+    modules.mkdir(parents=True)
+    (modules / "marker.txt").write_text("linked\n", encoding="utf-8")
+
+    lane = make_lane(
+        rigor=("R0", "R2"),
+        argv=(
+            "/bin/sh",
+            "-c",
+            _logging(
+                'grep -q linked node_modules/marker.txt && grep -q "x > 0" src/mod.py'
+            ),
+        ),
+        env={"PWDLOG": str(log)},
+        cwd="app",
+        isolation=_link_isolation("app/node_modules"),
+        judge=make_r2_judge(
+            source_root_paths=(git_repo.path / "app" / "src",),
+            base=base_rev,
+            mutation=_MUTATION,
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.PASS, verdict.reason_code
+    assert verdict.snapshot_policy is not None
+    assert verdict.snapshot_policy.link_paths == ("app/node_modules",)
+    recorded = _recorded(log)
+    assert len(recorded) >= 2, recorded
+    assert all(entry.endswith("/app") for entry in recorded), recorded
+    assert not any(
+        entry.startswith(f"{git_repo.path}/") for entry in recorded
+    ), f"a process ran inside the consumer's own checkout: {recorded}"
+    # The link is the snapshot's, never the checkout's own directory.
+    assert (modules / "marker.txt").exists()

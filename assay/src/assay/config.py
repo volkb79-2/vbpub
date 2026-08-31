@@ -1272,6 +1272,11 @@ def _load_lane(
     isolation = _load_isolation_for_lane(table.get("isolation"), rigor, where)
 
     cwd = _load_lane_cwd(table.get("cwd"), where, project_root)
+    # (B043 x B041(b), fix round 1) The two keys are individually valid and
+    # were individually checked; this is the check on the PAIR, and it needs
+    # neither a resolved commit nor snapshot machinery -- both facts are on
+    # the same `Lane` the moment they are read.
+    _check_cwd_is_not_under_a_link_path(cwd, isolation, where)
 
     return Lane(
         name=name,
@@ -1343,6 +1348,63 @@ def _load_lane_cwd(value: Any, where: str, project_root: Path) -> str | None:
             f"materialised snapshot, where the commit is known"
         )
     return cwd
+
+
+def _check_cwd_is_not_under_a_link_path(
+    cwd: str | None, isolation: IsolationConfig | None, where: str
+) -> None:
+    """(B043 x B041(b), fix round 1) Refuse a lane whose ``cwd`` IS, or lies
+    beneath, one of its own ``isolation.link_paths`` entries.
+
+    **This combination is never satisfiable, so refusing it is exact rather
+    than merely cautious.** A ``link_paths`` entry must be UNTRACKED at the
+    resolved commit -- :meth:`assay.isolation.SnapshotRepository._plant_link_paths`
+    rule 2 refuses to link a tracked path, because doing so would replace
+    committed content with whatever the invoking checkout holds. A ``cwd``
+    must be a TRACKED DIRECTORY at that same commit. A tracked directory's
+    ancestors are themselves tracked directories, so no lane can satisfy both
+    rules about the same path: whichever way the run goes, one of the two
+    keys is wrong, and it is better to say so while a human is editing the
+    file than to discover it per-run.
+
+    **What it actually prevented.** Shipped, the two keys COMPOSED into a
+    snapshot escape. ``_plant_link_paths`` plants its symlinks after
+    ``_verify`` (A-370), and the runner's commit-bound ``cwd`` check was a
+    filesystem test -- which followed the freshly planted link back into the
+    invoking checkout and accepted an untracked directory as committed. The
+    lane's command then ran in the consumer's REAL working tree and wrote
+    there for real. :func:`assay.runner._execute_snapshot_unit` now decides
+    that question from the commit's own manifest and is the authoritative,
+    commit-bound refusal; this one is the cheap, early, better-diagnosed
+    half, in the layer that can name the file being edited.
+
+    The comparison is between the two DECLARED SPELLINGS. ``link_paths`` is
+    repo-top-relative and ``cwd`` is project-relative (A-145), which coincide
+    for the ordinary single-project repository and can differ under a
+    ``project_prefix``. That makes this check deliberately approximate in
+    exactly one direction -- it can refuse a same-named pair that a prefix
+    would have kept apart -- and never the other: the runner's manifest check
+    is prefix-exact and catches everything this one lets past. An approximate
+    refusal that names both keys is the right trade for a defense-in-depth
+    layer; it would be the wrong trade for the only layer.
+    """
+    if cwd is None or isolation is None or not isolation.link_paths:
+        return
+    linked = set(isolation.link_paths)
+    parts = cwd.split("/")
+    for index in range(1, len(parts) + 1):
+        ancestor = "/".join(parts[:index])
+        if ancestor in linked:
+            raise LaneConfigError(
+                f"{where}: 'cwd' {cwd!r} is at or beneath "
+                f"'isolation.link_paths' entry {ancestor!r}. A linked path is "
+                f"by rule NOT tracked at the resolved commit, and a lane's "
+                f"working directory by rule IS -- so no commit can satisfy "
+                f"both, and a run that appeared to would be running the "
+                f"command through the link, in the invoking checkout rather "
+                f"than in the snapshot. Point 'cwd' at a committed directory, "
+                f"or stop linking the one it names"
+            )
 
 
 def _load_isolation_for_lane(

@@ -112,12 +112,29 @@ argv = ["npm", "test"]
 
 **The grammar.** Repository-top-relative, forward slashes, no leading `/`, no
 `..`, no `.` or `.git` component — and it must name a real directory. Anything
-else is `ERROR`/`BAD_LANE_CONFIG` at load, naming the key and the path. One
-further refusal happens later, at run time, and names the commit: a directory
-that exists in your checkout but is **not tracked at the resolved commit** is
-genuinely absent from the snapshot, because a snapshot holds committed objects
-only. A `build/` or `dist/` directory your `.gitignore` covers is the usual
-way to hit this.
+else is `ERROR`/`BAD_LANE_CONFIG` at load, naming the key and the path.
+
+**The commit-bound refusal.** One further refusal happens later, at run time,
+and names the commit: `cwd` must be a directory **the resolved commit's own
+tree contains**. Assay decides that from the commit's tree, not by looking at
+the snapshot directory — so it is a statement about what you committed, and
+nothing standing in the snapshot for another reason can satisfy it. A `build/`
+or `dist/` directory your `.gitignore` covers is the usual way to hit this.
+
+Be precise about what that does and does not promise. A snapshot's *committed*
+content is exactly the commit's, but a snapshot is not only committed content:
+`link_paths` (§ "Linking a dependency closure into the snapshot", below) is a
+declared, recorded way to put working-checkout content into it as symlinks. So
+"absent from your commit" does **not** by itself mean "absent from the
+snapshot" — an untracked `deps/` that the same lane also links is present
+there, as a link into your checkout. What assay guarantees is the thing that
+actually matters for `cwd`: your command runs in a directory the commit
+contains, never in one reached through such a link, and therefore never in
+your own working tree. `cwd` and `link_paths` naming the same path is refused
+outright, at load, naming both keys — a linked path is by rule untracked and a
+`cwd` is by rule tracked, so no commit can satisfy both. A link *beneath* the
+`cwd` (`cwd = "app"` with `link_paths = ["app/node_modules"]`) is the ordinary,
+supported shape and is unaffected.
 
 **Where it applies.** The lane command, every R2 candidate re-execution and
 every R3 canary run — all of them, always the same resolved directory. There
@@ -785,6 +802,7 @@ as that checkout was.
 | the path must **not** be tracked at the resolved commit | `ERROR`/`BAD_LANE_CONFIG` — linking a tracked path would replace committed content with working-tree content |
 | the path's parent must exist in the snapshot | `ERROR`/`BAD_LANE_CONFIG` — assay never `mkdir -p`s into a snapshot |
 | the path must be ignored by a **committed** `.gitignore` | `ERROR`/`BAD_LANE_CONFIG` — see the trailing-slash trap below |
+| the lane's own `cwd` must not be the path, or lie beneath it | `ERROR`/`BAD_LANE_CONFIG` at **load**, naming both keys — a linked path is untracked and a `cwd` must be tracked, so no commit satisfies both. A link *beneath* the `cwd` is the ordinary shape and is fine |
 
 An absent directory is `MISSING_EXTERNAL_TOOL` rather than `BAD_LANE_CONFIG`
 on purpose: the same lane file is correct on a machine whose image ran the
