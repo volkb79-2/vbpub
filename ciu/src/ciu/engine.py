@@ -1518,6 +1518,21 @@ def main_execution(
         # S3.12 / CIU-44: identity + selection facts on the hook context, so
         # ciu-conforming hooks read them from ctx instead of re-parsing the
         # identity record or trusting ambient environment state.
+        #
+        # CIU-62: this is the REAL-RUN twin of deploy.py's `_workspace_identity`
+        # (the `ciu check` preflight builds the same two HookContext fields),
+        # and it carried the identical gap. `parse_workspace_env` fails three
+        # unrelated ways — `OSError` (the read), `UnicodeDecodeError` (a
+        # non-UTF-8 byte) and `WorkspaceEnvError` (a malformed entry) — and the
+        # last two are SIBLING `ValueError` subclasses, so naming either alone
+        # catches neither the other nor `OSError`. Before this, a non-UTF-8
+        # ciu.env escaped here and crashed `ciu up` at STEP 12 with a raw
+        # traceback. The degradation it falls back to is deliberately the same
+        # one `_workspace_identity` documents: `{}`, so `ctx.instance_id` /
+        # `ctx.network` are None exactly as during a run outside a provisioned
+        # workspace. Both preflight and real run must answer this question the
+        # same way, or a hook's `validate_config` would see an identity its own
+        # `run()` will not.
         _hook_identity: dict = {}
         try:
             _env_path = repo_root / "ciu.env"
@@ -1525,7 +1540,7 @@ def main_execution(
                 from .workspace_env import parse_workspace_env as _parse_env
 
                 _hook_identity = _parse_env(_env_path)
-        except (WorkspaceEnvError, OSError):
+        except (OSError, UnicodeDecodeError, WorkspaceEnvError):
             _hook_identity = {}
 
         ctx = hooks_runner.HookContext(

@@ -295,14 +295,24 @@ restatement of the technical detail below it.
   can fail three unrelated ways — `OSError` (the read), `UnicodeDecodeError`
   (a non-UTF-8 byte) and `WorkspaceEnvError` (a malformed entry). The last
   two are SIBLING `ValueError` subclasses, so naming either one alone catches
-  neither the other nor `OSError`. Six sites carried four different clause
-  shapes; the four genuinely narrow ones now name all three types:
-  `worktree.py`'s shared-infra add preflight and post-up join (S16.1), its
-  `_clean_in` target-identity read (S16), its S16.3 budget-candidate survey,
-  and `deploy.py`'s `_workspace_identity` (the `ciu check` hook context,
+  neither the other nor `OSError`. Seven narrow sites now name all three
+  types: `worktree.py`'s shared-infra add preflight and post-up join (S16.1),
+  its `_clean_in` target-identity read (S16), its S16.3 budget-candidate
+  survey, `deploy.py`'s `_workspace_identity` (the `ciu check` hook context,
   which already DOCUMENTED "absent or unreadable yields `{}`" but crashed on
-  a non-UTF-8 byte). The three bare-`except OSError` sites failed on the
-  COMMON malformed-entry case, not just the exotic byte.
+  a non-UTF-8 byte) and `engine.py`'s S3.12 identity read — that last one is
+  the REAL-RUN twin of `_workspace_identity`, building the same two
+  `HookContext` fields, and it carried the identical gap, so a non-UTF-8
+  `ciu.env` crashed `ciu up` at STEP 12 where `ciu check` degraded cleanly.
+  Both now degrade the same way: a preflight that sees an identity its own
+  real run would not is exactly the divergence S3.12/CIU-44 exists to
+  prevent. The three bare-`except OSError` sites failed on the COMMON
+  malformed-entry case, not just the exotic byte.
+
+  `worktree.py`'s two `(OSError, ValueError)` sites are already correct and
+  are left alone, as is `engine.py`'s `except WorkspaceEnvError: raise` at
+  STEP 1 — it re-raises and swallows nothing, so it is not this class of
+  defect.
 - fix(ciu)!: **CIU-62 — `ciu clean` no longer reads an unreadable `ciu.env`
   as "this workspace has no identity network"** (S6.4a clause 1, ciu-P41).
   The one site where widening the clause was a semantics decision rather than
