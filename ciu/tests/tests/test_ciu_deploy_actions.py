@@ -2164,20 +2164,27 @@ def test_check_suppresses_bytecode_writes_while_importing_hooks(tmp_path):
     _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
 
+    # CIU-78: restore must be compared against the AMBIENT value, not a
+    # hardcoded False — assay.toml's own declared gate environment sets
+    # PYTHONDONTWRITEBYTECODE=1, so sys.dont_write_bytecode starts True in
+    # the real gate.
+    ambient = sys.dont_write_bytecode
     before = _tree_snapshot(tmp_path)
     assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
     assert _tree_snapshot(tmp_path) == before
-    assert sys.dont_write_bytecode is False  # restored
+    assert sys.dont_write_bytecode is ambient  # restored to whatever it was
 
 
 def test_check_restores_the_bytecode_flag_after_a_failed_import(tmp_path, capsys):
     _write(tmp_path / "infra/app/h.py", "raise RuntimeError('nope')\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
 
+    # CIU-78: see note above — restore must match the ambient value.
+    ambient = sys.dont_write_bytecode
     rc, _doc = _run_check_json(tmp_path, rendered, capsys)
 
     assert rc == 2
-    assert sys.dont_write_bytecode is False
+    assert sys.dont_write_bytecode is ambient
 
 
 def test_check_ignores_malformed_hook_declarations(tmp_path, capsys):
