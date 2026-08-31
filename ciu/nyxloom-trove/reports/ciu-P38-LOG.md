@@ -268,3 +268,53 @@ package's fix round was in flight.
 No behavior change; no code outside comments/docs touched. Full gate re-run
 was not required per the coordinator's own instruction (rename only) --
 skipped.
+
+---
+
+## Review round 2, part 2 -- rebase onto main (35 commits), final green gate
+
+`git merge-tree --write-tree main HEAD` run BEFORE rebasing, per the
+coordinator's explicit instruction. Caught a real, unexpected second
+conflict path beyond the anticipated `KNOWN_ISSUES_TODO_BACKLOG.md`:
+`ciu/README.md`, where this package's own bullet-3 edit sits on the line
+immediately adjacent to two of `main`'s own bullet-4/bullet-7 edits (CIU-71,
+CIU-64/65) -- confirmed via `--unified=0` diffs that the actual changed lines
+never overlap, but git's line-based merge still conflicts on zero-context
+adjacency. Backed up to `backup/ciu-P38-before-rebase-2` first.
+
+`git rebase main` (target `main`@`1f47601c`, 35 commits ahead of the prior
+base): 4 of 9 real commits conflicted --
+1. First fix commit: the README.md adjacent-bullet conflict, resolved by
+   combining both bullets' additions.
+2. Mark-CIU-74-FIXED commit: `main` had independently fixed CIU-70
+   (ciu-P40) and CIU-71 (ciu-P37) since this package's stale snapshot;
+   verified `ours == base` for the CIU-74 row itself before resolving, kept
+   `main`'s CIU-70/71 FIXED rows, applied only this package's own edit.
+3. File-CIU-79 commit: `main` had independently acquired its own real
+   CIU-79 (ciu-P37) by this point. Rather than replay the two-hop rename
+   through two more commits, inserted this package's row directly as
+   **CIU-81**, skipping the CIU-80 hop.
+4. First rename commit `a70871af`: became self-inconsistent after step 3
+   (table already at CIU-81, but this commit's own diff pushed
+   scaffold.py/header text to an intermediate CIU-80) -- made every file
+   self-consistent at CIU-81 in this one step, verifying via
+   `git show bc888e84 -- ...` that its payload for the two main-independent
+   files (KNOWN_ISSUES_TODO_BACKLOG.md, scaffold.py) was pure ID-text
+   substitution matching what was already applied by hand, and copying
+   LOG.md/REPORT.md wholesale from `bc888e84` (safe: those two files are
+   exclusively this package's own).
+5. Second rename commit `bc888e84`: one residual redundant table-row
+   conflict (kept the already-correct state), then auto-dropped as empty by
+   git (confirmed via reflog) -- both renames collapsed into the one
+   commit `a70871af`, now correctly self-consistent.
+
+Post-rebase: `git merge-base --is-ancestor 1f47601c main` confirms the
+rebase target is still a real ancestor of current `main` (which kept moving
+during this session -- 7 more unrelated commits landed after this rebase,
+none touching this package's files, not re-chased). Full grep sweep and
+targeted row-uniqueness check both clean (see REPORT §10 for the exact
+commands and output). Local full suite: 3360 passed, 100% coverage. Real
+gate at final commit `a7388015`: **PASS, exit 0**, R0 PASS, R1 PASS at
+100.0% (base `44581f72`).
+
+**Final commit of this package: `a7388015`.**

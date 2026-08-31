@@ -5,17 +5,17 @@
 | Package | `ciu-P38-strict-undefined` |
 | Branch | `fix/ciu-P38-strict-undefined` |
 | Worktree | `/workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/ciu` |
-| Backlog | CIU-74 fixed and closed; CIU-78 found, then superseded by main's own fix (`aa6cf1fd`) once rebased; CIU-81 filed (scaffold.py StrictUndefined adoption decision, NOT fixed -- out of scope by design) |
-| Base | rebased onto `main` @ `384993b6` (`git rebase main`, one commit skipped, one conflict resolved -- see §8) |
-| Final commit | `00f57308` |
-| Gate (final, post-rebase) | `./run-gate.py ciu --worktree <worktree-root>` -- **PASS, exit 0** (R0 PASS, R1 PASS at 100.0%) -- see §4 |
+| Backlog | CIU-74 fixed and closed; CIU-78 found, then superseded by main's own fix (`aa6cf1fd`) once rebased; scaffold.py StrictUndefined-adoption decision filed as CIU-79, renamed to CIU-80 (collision with ciu-P37), then to **CIU-81** (second collision, with ciu-P41) -- NOT fixed, out of scope by design |
+| Base | rebased onto `main` @ `1f47601c` (35 commits; `git rebase main`, 4 of 9 real commits hit conflicts -- see §10) |
+| Final commit | `a7388015` |
+| Gate (FINAL, post-renumber, post-rebase) | `./run-gate.py ciu --worktree <worktree-root>` -- **PASS, exit 0** (R0 PASS, R1 PASS at 100.0%) -- see §10 |
 
-This REPORT was updated after a coordinator review (round 1, 4 blockers, all
-addressed -- §8). §§1-3 and §5-7 describe the original implementation and are
-still accurate; §4 now carries the FINAL post-rebase gate verdict (the
-original pre-rebase FAIL verdict, and why it was never this package's fault,
-is kept in §4a for the record since the review independently verified that
-reasoning before prescribing the rebase).
+This REPORT covers two coordinator review rounds. Round 1 (4 blockers, §8)
+and round 2 (a second backlog-ID collision plus the `main` rebase, §9-§10)
+are both fully addressed. §§1-3 and §5-7 describe the original
+implementation and are still accurate; §4 carries round 1's post-rebase gate
+verdict (superseded by §10's, which is the truly final one); the original
+pre-round-1-rebase FAIL verdict is kept in §4a for the record.
 
 ## 1. What was done
 
@@ -349,3 +349,148 @@ purpose.
 
 Rebase onto current `main` and its own resulting REPORT update follow in
 §10 below.
+
+## 10. Rebase onto current `main` (35 commits) -- and the second collision it exposed
+
+The fresh adversarial reviewer verified all four round-1 blockers fully
+closed (independently re-ran the `render_configfiles` deletion probe --
+confirmed it now catches TWO failures with the setdefault removed, this
+package's own new test plus a pre-existing one -- and confirmed the CIU-78
+skip left zero trace in `test_ciu_deploy_actions.py`; confirmed the gate
+artifact: PASS, R0 PASS, R1 100% at 6/6 lines). One new blocker, not this
+package's fault: **CIU-80 collided a second time**, with `ciu-P41`, which
+merged to `main` (`27ab3574`: "file CIU-80 for the stricter variant") while
+this package's fix round was still in flight -- covered in §9 above
+(renumber to CIU-81, commit `bc888e84` pre-rebase).
+
+**Action 1: renumber, done first (§9).** Already covered above.
+
+**Action 2: rebase onto current `main`.** Backup ref
+`backup/ciu-P38-before-rebase-2` created first. `main` had moved to `1f47601c`
+by the time of this rebase (35 commits ahead of the branch's previous base
+`384993b6`; the coordinator's cited `0ad5372d` had itself already been
+superseded by 2 more commits by the time this session checked fresh, exactly
+as the coordinator warned it might).
+
+**`git merge-tree --write-tree main HEAD` run BEFORE the rebase, per the
+coordinator's explicit instruction** ("do a `git merge-tree` check before
+finalizing rather than assuming clean, the same way P41's reviewer caught a
+real hazard there") -- and it caught a real one: TWO conflicting paths, not
+the one (`KNOWN_ISSUES_TODO_BACKLOG.md`) both the coordinator and this
+package expected. **`ciu/README.md` also conflicted.** Root cause: this
+package's own README edit (bullet 3, the "one template adapts to every
+host" line, S3.2/StrictUndefined callout) sits on the line immediately
+ADJACENT to two of `main`'s own edits to the same numbered list (bullet 4,
+CIU-71's `--project-directory` addition; bullet 7, CIU-64/65's `ciu check`
+integration addition) -- confirmed via `git diff --unified=0` on both sides
+that the actual edited LINES never overlap (mine: line 76 only; main's:
+lines 77 and 80), but git's line-based 3-way merge still conflicts on
+adjacent changed lines with zero shared context between them. Not a logical
+conflict -- both edits are independent, additive sentences on different
+bullets -- but git cannot auto-resolve it, so it would have silently become
+a real rebase conflict if `--dry-run`-style verification hadn't been done
+first (matching exactly the class of hazard the coordinator described from
+P41's own review).
+
+**Rebase execution** (`git rebase main`, from `main`@`1f47601c`): the
+branch's own prior sync-merge commit (`616637c1`, no unique content) was
+dropped automatically as expected; conflicts hit at 4 of the 9 real commits:
+
+1. **First fix commit** (`README.md`): the adjacent-bullet conflict found by
+   `merge-tree` above. Resolved by hand -- combined both bullets' additions
+   (mine on bullet 3, main's on bullet 4), verified the numbered list reads
+   correctly afterward with no duplication.
+2. **Mark-CIU-74-FIXED commit** (`KNOWN_ISSUES_TODO_BACKLOG.md`): the
+   CIU-70/CIU-71 rows this package's stale snapshot still showed OPEN had
+   since been independently FIXED by `ciu-P40`/`ciu-P37` on `main` --
+   confirmed by diffing "ours" vs "theirs" vs "base" directly (ours == base
+   for the CIU-74 row itself; the CIU-70/71 rows differed only in
+   FIXED-status text, not structure) before resolving, to avoid silently
+   reverting either already-fixed entry. Resolution: kept `main`'s CIU-70/71
+   FIXED rows verbatim, applied only this package's own CIU-74 FIXED-row
+   edit on top.
+3. **File-CIU-79 commit** (`KNOWN_ISSUES_TODO_BACKLOG.md`, two separate
+   conflict blocks -- header paragraph and table row): `main` had
+   independently acquired its OWN legitimate `CIU-79` (ciu-P37: `ciu dev`'s
+   `_build_dev_image`) since this package's original filing point. Rather
+   than replay the two-hop 79->80->81 rename dance through two more
+   increasingly fragile conflict-prone commits, resolved by inserting this
+   package's row directly as **CIU-81** here (skipping the intermediate
+   CIU-80 state entirely) -- confirmed `main`'s real CIU-79 (P37) and CIU-80
+   (P41) rows both survive untouched, and this package's own row lands at
+   its final correct number in one step.
+4. **First rename commit `a70871af`** (all four files it touches): since the
+   backlog table had already jumped straight to CIU-81 in step 3, this
+   commit's own diff (which expects to find, and rename, `CIU-79`) no longer
+   matched cleanly anywhere consistent -- `scaffold.py`'s two comments and
+   the backlog header paragraph auto-merged to an inconsistent intermediate
+   `CIU-80` while the table row already said `CIU-81`. Rather than leave
+   that inconsistency to (maybe) self-resolve across the two remaining
+   original rename commits, made this commit's resulting tree fully
+   self-consistent at `CIU-81` across all four files in one step, copying
+   this package's own already-verified final LOG.md/REPORT.md content
+   directly from the (not-yet-replayed) `bc888e84` commit for the two files
+   that are exclusively this package's own (never touched by `main`) --
+   `scaffold.py`/`KNOWN_ISSUES_TODO_BACKLOG.md` got the equivalent hand
+   edits instead, since `main` has independent content in both that a
+   wholesale copy would have regressed. Verified via `git show bc888e84 --
+   ciu/KNOWN_ISSUES_TODO_BACKLOG.md ciu/src/ciu/scaffold.py` that its
+   payload for those two files is PURELY the same ID-text substitution
+   already applied by hand, at the same four locations -- nothing else.
+5. **Second rename commit `bc888e84`**: became genuinely empty as a direct
+   consequence of step 4 (every file it would have touched already matched
+   its target content) except for one final residual table-row conflict
+   (this package's own already-correct CIU-81 row vs. the commit's own
+   now-redundant attempt to delete/recreate it) -- resolved by keeping the
+   already-correct state. Reflog confirms git auto-dropped the remainder of
+   this commit as empty after that (`rebase (finish)` follows directly after
+   the conflict-resolution `rebase (continue)` for this step, with no
+   separate pick step logged) -- the branch's final commit is `a7388015`
+   (the renamed `a70871af`), one fewer real commit than before the rebase,
+   which is correct: two renames collapsed into one clean, fully-resolved
+   rename once both collisions were known at the same time.
+
+**Post-rebase verification:**
+- `git merge-base --is-ancestor 1f47601c main` confirms the rebase target
+  (`main` as of this rebase) is still a real ancestor of whatever `main` has
+  become since (it kept moving during this session -- confirmed 7 more
+  commits landed on `main` after this rebase, none touching
+  `config_model.py`/`composefile.py`/`scaffold.py`; not re-chased, matching
+  the coordinator's own framing that one fresh rebase per review round is
+  the expectation, not a moving-target chase).
+- `grep -rln "CIU-79\|CIU-80\|CIU-81" ciu/` lists this package's 4 files
+  (`KNOWN_ISSUES_TODO_BACKLOG.md`, `scaffold.py`, this LOG/REPORT) alongside
+  `main`'s own unrelated hits (`CHANGES.md`, `deploy.py`, `engine.py`,
+  `ciu-P37-LOG/REPORT.md`, `ciu-P41-LOG/REPORT.md`) -- all of the latter are
+  `main`'s own legitimate content, untouched by this package.
+- Targeted check confirms this package's own scaffold.py backlog row exists
+  exactly ONCE, correctly labeled `CIU-81` (a small script located the row by
+  its distinctive body text rather than by ID, to rule out a stray duplicate
+  under a stale ID).
+- `grep -rln "CIU-79\|CIU-80\|CIU-81" ciu/tests/` returns nothing -- no test
+  asserts on any of the three literal strings.
+- Local full suite post-rebase (`PYTHONPATH=src python3 -m pytest tests -q
+  --cov=ciu --cov-branch`): **3360 passed**, `TOTAL` coverage 100%
+  line+branch (module/test counts are higher than earlier rounds simply
+  because `main`'s own 35 new commits, mostly `ciu-P39`'s CIU-63 fix and
+  `ciu-P40`/`P41`'s work, add their own tests/coverage -- none of it
+  overlaps this package's own files).
+
+**Final real gate, post-rebase, at commit `a7388015`:**
+
+```
+assay-2.3.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: a73880151f221c5a437b66cbeb6e1fd514b6ae0b
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+GATE_EXIT=0
+```
+
+Verdict artifact: `outcome: PASS`, `exit_code: 0`, R0 PASS, R1 PASS at
+100.0% (`considered: 3, covered: 6`), judged against base `44581f72` (the
+merge-base with `main` at gate-run time, confirming R1 judged this
+package's actual diff, not a stale one).
+
+**Final commit: `a7388015`.**
