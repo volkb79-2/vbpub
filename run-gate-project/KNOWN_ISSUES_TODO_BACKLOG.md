@@ -40,7 +40,7 @@ SPEC §9.
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
 | RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
-| RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
+| RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | FIXED 2026-08-31 (rev 25) — run-gate half; dstdns half open in its own repo |
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
 | RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
@@ -1114,6 +1114,51 @@ after: present once `forward_env` is corrected, refused loudly by
       env vars it relied on implicitly before `ba8908d6`;
 - [ ] dstdns's own fix (see above) tracked and confirmed landed — cross-repo
       pointer, not owned here.
+
+**FIXED 2026-08-31 (rev 25) — the run-gate half. The dstdns half stays OPEN
+in its own repo (cross-repo pointer, deliberately not owned here).**
+
+1. *Breaking change documented, with the migration.* SPEC `R-24a` (forwarding
+   is DECLARED, never implicit — `CGROUP_PARENT_DEV_BACKGROUND` is the sole
+   exception, being infrastructure the tool itself owns), CONSUMERS "BREAKING
+   CHANGE — migrate if you use `mode = "exec"`" (a pasteable two-half
+   migration: `forward_env` restores the old behaviour, `required_env` is
+   what converts the silent-skip into a loud refusal), README env-forwarding
+   bullet. The implicit names deliberately do NOT return: reinstating them
+   would re-create the shadowing default the declarative key removed. The
+   entry's own preferred shape — document + consider extending `--check-env`
+   — is what shipped; the allowlist was NOT restored.
+
+2. *Decision on `--check-env` (the entry's open question): EXTENDED, not
+   documented away.* A sweep whose comparison is narrower than its message
+   issues a false certification, which is worse than no check (AGENTS "a
+   check is only as strong as what it actually compares") — and this one had
+   already certified a clean bill of health over the exact variable whose
+   absence made the lane green. `scan_env_references()` replaces the line
+   regex with an AST pass that sees `os.environ[...]`,
+   `.get/.setdefault/.pop`, `getenv`, `"X" in os.environ`, and a literal
+   handed to the project's own env-reader helper (a function reading the
+   environment through one of its parameters — dstdns's
+   `_env_flag_enabled("RUN_LIVE_TESTS")` shape), with bound-method parameter
+   offsets accounted for so a method never reports a name taken from the
+   wrong argument position. It remains ADVISORY (exit 0) and `R-24b`
+   documents what it still cannot see (runtime-assembled names, non-Python
+   sources) so a clean sweep reads as evidence, not a certificate. An
+   unparseable file is named and falls back to the old regex — "could not
+   read it" is never rendered as "there is nothing there".
+
+3. *Estate audit performed.* At rev 25 NO vbpub project declares
+   `mode = "exec"`, none declares `forward_env`, and none references
+   `MOCK_MODE`/`RUN_LIVE_TESTS` in any `run-gate.toml` — the estate-side
+   blast radius is empty and the confirmed impact is dstdns alone. The audit
+   is kept as a TEST (`TestEstateExecForwardEnvAudit`) rather than a note, so
+   a future estate exec-mode adopter that reacquires the assumption fails
+   here instead of shipping a false green.
+
+Tests: `TestEnvReferenceScan` ×9 (every read shape, the helper oracle, the
+async/bound-method offset, the positional-only position, lookalike dict reads
+NOT reported, too-few-arguments call sites, `SyntaxError` propagation, and
+both end-to-end `--check-env` paths) + `TestEstateExecForwardEnvAudit`.
 
 ## RG-24 — `resolve_container_name()` reads `ciu.global.toml` from the shared-`.git`-owning repo, never from the judged worktree, so a multi-instance (Mode-B) worktree's exec-mode lane silently targets the WRONG deployed container
 

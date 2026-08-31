@@ -10,6 +10,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Fixed
+- **RG-23 — env forwarding: breaking change documented + the drift sweep
+  widened (rev 25).** The exec-mode forwarding loop's hardcoded
+  `MOCK_MODE`/`RUN_LIVE_TESTS` pair was replaced by declarative `forward_env`
+  with no migration pass and no note; consumers relying on either name
+  silently stopped receiving it, and the symptom is a false GREEN (a suite
+  that skips its live tests on the flag's absence exits 0 having run none).
+  The change is now stated as breaking with its migration in SPEC `R-24a`,
+  CONSUMERS ("BREAKING CHANGE — migrate if you use `mode = "exec"`") and the
+  README. The implicit names do NOT return. `--check-env` is now AST-based
+  (`R-24b`): it additionally sees a literal handed to the project's own
+  env-reader helper — `_env_flag_enabled("RUN_LIVE_TESTS")` whose body does
+  `os.getenv(name, "")`, exactly the shape the old line regex could not see —
+  plus `setdefault`/`pop`/`"X" in os.environ`, with bound-method parameter
+  offsets accounted for. It stays advisory (exit 0). An unparseable file is
+  reported by name and falls back to the line regex rather than being counted
+  as clean. Estate audit: no vbpub project declares `mode = "exec"` or
+  `forward_env`, so the confirmed blast radius is dstdns alone (its own
+  repo's fix). A regression test keeps that audit from silently regressing.
 - **RG-24 — exec-mode container resolution is worktree-scoped (rev 24).**
   `resolve_container_name()` now prefers the JUDGED worktree's own
   `ciu.global.toml` over the shared-`.git`-owning repo's, falling back to the

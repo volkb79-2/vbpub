@@ -278,10 +278,40 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   forwarding keys were present and which were declared-but-absent — NAMES
   ONLY, never values; the printed docker argv masks forwarded
   `-e KEY=...` payloads for the same reason. `--check-env` runs an ADVISORY
-  drift sweep over the project's Python sources (`os.environ[...]`,
-  `os.environ.get(...)`, `getenv(...)` literals) flagging names covered by
+  drift sweep over the project's Python sources flagging names covered by
   neither `forward_env` nor `required_env`; it warns and exits 0 — the
   enforcement mechanisms are `required_env` + preflight.
+
+- `R-24a` **Forwarding is DECLARED, never implicit (RG-23).** The ONLY
+  variable an exec- or container-mode lane forwards without a declaration is
+  `CGROUP_PARENT_DEV_BACKGROUND` (infrastructure the tool itself owns).
+  Everything else must be named in the environment's `forward_env`.
+  **Breaking change, and the migration it requires:** revisions before this
+  one hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
+  forwarding loop. That allowlist was replaced by `forward_env` with no
+  migration pass, so any consumer that relied on either name silently stopped
+  receiving it — and the failure is a false GREEN, not an error: a suite that
+  skips its live tests on the flag's absence exits 0 having executed none of
+  them. Every exec-mode consumer relying on those two names MUST add them to
+  its environment's `forward_env`, and SHOULD add them to the lane's
+  `required_env` so absence refuses loudly (R-24) instead of skipping
+  quietly. No implicit name is coming back: a value that has an
+  authoritative source (the consumer's own config) must not be shadowed by a
+  literal in the tool.
+
+- `R-24b` **What the drift sweep can and cannot see (RG-23).** The sweep is
+  AST-based: `os.environ["X"]`, `os.environ.get/setdefault/pop("X", …)`,
+  `getenv("X")`, `"X" in os.environ`, and — the shape that motivated this —
+  a literal passed to the project's OWN env-reader helper (a function that
+  reads the environment through one of its parameters, e.g.
+  `_env_flag_enabled("RUN_LIVE_TESTS")` whose body does
+  `os.getenv(name, "")`). Bound-method parameter offsets are accounted for.
+  It CANNOT see a name assembled at runtime (`os.getenv(prefix + suffix)`),
+  a name read in a non-Python source, or one reached through an
+  indirection the pass does not model — so a clean sweep is evidence, never
+  a certificate, and `--check-env` stays advisory. A source file that does
+  not parse is reported as such and falls back to the old line regex: "could
+  not read it" is never rendered as "there is nothing there".
 
 - `R-25` **Override-reachability guard (RG-1):** a container command lane
   (ephemeral or exec) invoked with `--worktree` whose argv contains NO

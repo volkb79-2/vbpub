@@ -147,6 +147,14 @@ the tool's reason to exist and MUST be implemented + tested:
   directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
   `version` is a claim the artifact must satisfy — the lane probes
   `<assay_command> --version` and refuses mismatches (no provenance theater).
+- **Env forwarding is declared, never implicit (RG-23):** a container/exec
+  lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
+  infrastructure) plus exactly the environment's `forward_env` list. The
+  early hardcoded `MOCK_MODE`/`RUN_LIVE_TESTS` pair is GONE — consumers
+  relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
+  absence produces a false GREEN, not an error. `--check-env` sweeps the
+  project's Python for env reads no lane forwards or requires, including
+  reads wrapped in the project's own helper functions.
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.

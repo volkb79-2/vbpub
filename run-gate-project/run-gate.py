@@ -12,9 +12,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 24  # rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 25  # rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
+import ast
 import fcntl
 import os
 import re
@@ -748,14 +749,121 @@ ENV_REF_RE = re.compile(
     r"(?:os\.environ\[|os\.environ\.get\(|\bgetenv\()"
     r"\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]")
 
+_ENV_READ_ATTRS = {"get", "setdefault", "pop"}
+
+
+def _is_environ(node: ast.AST) -> bool:
+    """`os.environ`, or a bare `environ` (`from os import environ`)."""
+    return (isinstance(node, ast.Attribute) and node.attr == "environ") \
+        or (isinstance(node, ast.Name) and node.id == "environ")
+
+
+def _env_name_expr(node: ast.AST) -> ast.AST | None:
+    """The expression NAMING the variable this node reads from the
+    environment, or None when the node is not an environment read."""
+    if isinstance(node, ast.Subscript) and _is_environ(node.value):
+        return node.slice
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _ENV_READ_ATTRS \
+                and _is_environ(func.value) and node.args:
+            return node.args[0]
+        called = func.attr if isinstance(func, ast.Attribute) else \
+            func.id if isinstance(func, ast.Name) else None
+        if called == "getenv" and node.args:
+            return node.args[0]
+    return None
+
+
+def _called_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else None
+
+
+def scan_env_references(text: str) -> list[tuple[str, int, str]]:
+    """Every environment-variable NAME a Python source reads → (name, line,
+    shape). Raises SyntaxError when the source does not parse.
+
+    RG-23: the line regex this replaces could only see a name spelled as a
+    literal INSIDE `getenv(...)`/`os.environ[...]`. dstdns reads its live-test
+    flag through `_env_flag_enabled("RUN_LIVE_TESTS")`, whose body does
+    `os.getenv(name, "")` — the literal and the read are in different
+    functions, so the regex saw nothing and `--check-env` certified a clean
+    sweep over the exact variable whose silent absence turned an all-skipped
+    pytest run into a green live-test lane. A check whose comparison is
+    narrower than its message issues a false certification (AGENTS "a check is
+    only as strong as what it actually compares"), so the comparison is
+    widened rather than the message weakened.
+
+    Two passes over the AST:
+      1. direct reads with a literal name — `os.environ["X"]`,
+         `os.environ.get("X")/setdefault/pop`, `getenv("X")`, `"X" in
+         os.environ` — plus, in the same walk, any function whose body reads
+         the environment through one of its own PARAMETERS (an env-reader
+         helper) and the position of that parameter;
+      2. calls to those helpers, taking the literal at that position.
+
+    Still a heuristic, and still ADVISORY: a name assembled at runtime
+    (`os.getenv(prefix + suffix)`) is invisible to any static pass, which is
+    why enforcement lives in `required_env` (R-24), not here.
+    """
+    tree = ast.parse(text)
+    refs: list[tuple[str, int, str]] = []
+    helpers: dict[str, int] = {}
+    # A bound method's `self`/`cls` is not passed at the call site, so its
+    # parameter positions are offset by one against the argv the caller
+    # writes. Getting this wrong does not merely miss a read — it reports a
+    # CONFIDENT name taken from the wrong position.
+    methods = {id(fn) for cls in ast.walk(tree)
+               if isinstance(cls, ast.ClassDef) for fn in cls.body
+               if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for node in ast.walk(tree):
+        named = _env_name_expr(node)
+        if isinstance(named, ast.Constant) and isinstance(named.value, str):
+            refs.append((named.value, node.lineno,
+                         "subscript" if isinstance(node, ast.Subscript)
+                         else "access"))
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1 \
+                and isinstance(node.ops[0], ast.In) \
+                and _is_environ(node.comparators[0]) \
+                and isinstance(node.left, ast.Constant) \
+                and isinstance(node.left.value, str):
+            refs.append((node.left.value, node.lineno, "membership"))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
+            if id(node) in methods and params and params[0] in ("self", "cls"):
+                params = params[1:]
+            for inner in ast.walk(node):
+                inner_named = _env_name_expr(inner)
+                if isinstance(inner_named, ast.Name) and inner_named.id in params:
+                    helpers[node.name] = params.index(inner_named.id)
+                    break
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        pos = helpers.get(_called_name(node))
+        if pos is None or pos >= len(node.args):
+            continue
+        arg = node.args[pos]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            refs.append((arg.value, node.lineno,
+                         f"helper {_called_name(node)}()"))
+    return refs
+
 
 def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                   cfg_path: Path, central_path: Path | None) -> int:
     """RG-17 drift sweep (ADVISORY): scan the project's Python sources for
-    os.environ[...] / os.environ.get(...) / getenv(...) literals and flag
-    names covered by neither forward_env nor required_env. Heuristic by
-    nature (a .get with a default may be deliberately optional), so this
-    WARNS; enforcement lives in required_env + the preflight."""
+    environment reads and flag names covered by neither forward_env nor
+    required_env. Heuristic by nature (a .get with a default may be
+    deliberately optional), so this WARNS; enforcement lives in required_env
+    + the preflight.
+
+    RG-23: the scan is AST-based (`scan_env_references`) so it also sees
+    reads wrapped in a project's own helper — the shape that hid dstdns's
+    `RUN_LIVE_TESTS` from the previous line regex."""
     covered = {CGROUP_ENV_VAR}
     for name, lane in lanes.items():
         covered.update(lane.get("required_env", []))
@@ -772,22 +880,31 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             text = path.read_text()
         except OSError:
             continue
-        for lineno, line in enumerate(text.splitlines(), 1):
-            for match in ENV_REF_RE.finditer(line):
-                var = match.group(1)
-                if var not in covered:
-                    form = "subscript" if "environ[" in line else "access"
-                    findings.append((var, path.relative_to(project_dir),
-                                     lineno, form))
+        rel = path.relative_to(project_dir)
+        try:
+            refs = scan_env_references(text)
+        except SyntaxError as exc:
+            # "Could not read it" must never look like "there is nothing
+            # there" (AGENTS anti-pattern #2). Say so, and keep the old line
+            # regex as the degraded-but-real fallback for this file.
+            print(f"run-gate: env-drift: {rel} does not parse "
+                  f"({exc.msg} line {exc.lineno}) — fell back to a line regex, "
+                  f"which cannot see helper-wrapped reads", flush=True)
+            refs = [(m.group(1), n, "subscript" if "environ[" in line else "access")
+                    for n, line in enumerate(text.splitlines(), 1)
+                    for m in ENV_REF_RE.finditer(line)]
+        for var, lineno, form in refs:
+            if var not in covered:
+                findings.append((var, rel, lineno, form))
     seen = set()
     for var, rel, lineno, form in findings:
         if (var, str(rel)) in seen:
             continue
         seen.add((var, str(rel)))
         print(f"run-gate: env-drift: ${var} referenced in {rel}:{lineno} "
-              f"is neither forwarded nor declared required_env — add it to "
-              f"the environment's forward_env or the lane's required_env",
-              flush=True)
+              f"({form}) is neither forwarded nor declared required_env — "
+              f"add it to the environment's forward_env or the lane's "
+              f"required_env", flush=True)
     print(f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
           f"{' — ADVISORY ONLY, the run was not affected' if seen else ''}",
           flush=True)

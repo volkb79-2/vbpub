@@ -123,6 +123,36 @@ outside the devcontainer namespace — where no second view is derivable — the
 lane refuses rather than silently mounting once; declare the alias with
 `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` (host side must equal the repo root).
 
+> **BREAKING CHANGE — migrate if you use `mode = "exec"` (RG-23).** Early
+> revisions hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
+> forwarding loop; they were replaced by declarative `forward_env` with no
+> migration pass. If your lane relies on either name, **it is not reaching
+> your container today** — and the symptom is a false GREEN, not an error: a
+> suite that skips its live tests when the flag is absent exits 0 having run
+> none of them. Migrate both halves:
+>
+> ```toml
+> [environments.test-runner]
+> image = "yourproj/test-runner:latest"
+> mode = "exec"
+> forward_env = ["RUN_LIVE_TESTS", "MOCK_MODE"]   # was implicit; now required
+>
+> [lanes.release]
+> kind = "command"
+> environment = "test-runner"
+> argv = ["bash", "-c", "cd {worktree} && pytest -m 'integration or e2e' -q"]
+> required_env = ["RUN_LIVE_TESTS"]   # absence now REFUSES instead of skipping
+> ```
+>
+> `forward_env` alone restores the old behaviour; adding `required_env` is
+> what turns the silent-skip class into a loud refusal, and is why the
+> implicit names are not coming back — a value with an authoritative source
+> (your config) must not be shadowed by a literal inside the tool. Audit
+> your own configs with `./run-gate.py --check-env` (limits below) and
+> `grep -n forward_env run-gate.toml`. Estate audit at rev 25: no vbpub
+> project declares `mode = "exec"` or `forward_env` at all, so the confirmed
+> blast radius is dstdns, which is tracked in its own repo.
+
 Container lanes forward only the implicit cgroup infrastructure variable plus
 the environment's explicit `forward_env = ["SCHEMA_GATE_DSN"]` allowlist. A
 declared but unset value remains absent rather than becoming a default; the
@@ -134,6 +164,34 @@ prints which forwarding keys were present at start — names only, never
 values (the docker-argv print redacts them too). Run
 `./run-gate.py --check-env` for an advisory sweep of env references in the
 project's Python sources that no lane forwards or requires.
+
+**What `--check-env` can and cannot see (RG-23).** It parses each `*.py` and
+reports `os.environ["X"]`, `os.environ.get/setdefault/pop("X", …)`,
+`getenv("X")`, `"X" in os.environ`, **and** a literal handed to your own
+env-reader helper — a function that reads the environment through one of its
+parameters, which is how the flag that motivated this hid from the previous
+line-based sweep:
+
+```python
+def _env_flag_enabled(name):        # the read is here …
+    return os.getenv(name, "").lower() in ("1", "true")
+
+RUN_LIVE = _env_flag_enabled("RUN_LIVE_TESTS")    # … the NAME is here
+```
+
+```
+run-gate: env-drift: $RUN_LIVE_TESTS referenced in conftest.py:6
+  (helper _env_flag_enabled()) is neither forwarded nor declared
+  required_env — add it to the environment's forward_env or the lane's
+  required_env
+```
+
+It CANNOT see a name assembled at runtime (`os.getenv(prefix + suffix)`), a
+name read from a non-Python source, or an indirection it does not model. A
+file that does not parse is reported by name and falls back to the old line
+regex, so a parse failure is never silently reported as "nothing found".
+**A clean sweep is evidence, not a certificate** — it stays advisory (always
+exit 0 for drift); `required_env` is the mechanism that actually refuses.
 
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 

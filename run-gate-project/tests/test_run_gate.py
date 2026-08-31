@@ -1130,7 +1130,8 @@ def test_no_stdlib_violations():
     imports = [l.split()[1].split(".")[0] for l in src.splitlines()
                if l.startswith("import ") or l.startswith("from ")]
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
-               "time", "tomllib", "pathlib", "fcntl"}  # fcntl: stdlib, Linux-only (RG-20 locks)
+               "time", "tomllib", "pathlib", "fcntl",  # fcntl: stdlib, Linux-only (RG-20 locks)
+               "ast"}  # ast: RG-23 helper-wrapped env reads in --check-env
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -2074,6 +2075,173 @@ class TestRequiredEnv:
             proc = run_tool(proj, "--list")
             assert proc.returncode == 2, bad
             assert "'required_env'" in proc.stderr
+
+
+class TestEnvReferenceScan:
+    """RG-23: `--check-env`'s comparison must be as wide as its message.
+
+    The line regex it replaces could only see a name spelled as a literal
+    inside `getenv(...)`/`os.environ[...]`. dstdns reads its live-test flag
+    through `_env_flag_enabled("RUN_LIVE_TESTS")`, whose body does
+    `os.getenv(name, "")` — literal and read in different functions — so the
+    sweep certified a clean bill of health over the exact variable whose
+    silent absence made an all-skipped pytest run report GREEN.
+    """
+
+    def scan(self, src: str):
+        return run_gate.scan_env_references(textwrap.dedent(src))
+
+    def names(self, src: str):
+        return sorted({name for name, _line, _form in self.scan(src)})
+
+    def test_direct_shapes_all_seen(self):
+        assert self.names("""\
+            import os
+            from os import environ
+            a = os.environ["SUBSCRIPT_VAR"]
+            b = os.environ.get("GET_VAR")
+            c = os.environ.setdefault("SETDEFAULT_VAR", "x")
+            d = os.environ.pop("POP_VAR", None)
+            e = os.getenv("GETENV_VAR")
+            f = getenv("BARE_GETENV_VAR")
+            g = environ["BARE_ENVIRON_VAR"]
+            h = "MEMBERSHIP_VAR" in os.environ
+        """) == ["BARE_ENVIRON_VAR", "BARE_GETENV_VAR", "GETENV_VAR",
+                 "GET_VAR", "MEMBERSHIP_VAR", "POP_VAR", "SETDEFAULT_VAR",
+                 "SUBSCRIPT_VAR"]
+
+    def test_helper_wrapped_read_is_seen(self):
+        """THE RG-23 oracle — dstdns conftest's real shape."""
+        refs = self.scan("""\
+            import os
+
+            def _env_flag_enabled(name: str) -> bool:
+                return os.getenv(name, "").lower() in ("1", "true")
+
+            RUN_LIVE = _env_flag_enabled("RUN_LIVE_TESTS")
+        """)
+        assert ("RUN_LIVE_TESTS", 6, "helper _env_flag_enabled()") in refs
+
+    def test_async_helper_and_method_call_site(self):
+        refs = self.scan("""\
+            import os
+
+            class C:
+                async def flag(self, name):
+                    return os.environ.get(name)
+
+            async def go(c):
+                return await c.flag("METHOD_WRAPPED_VAR")
+        """)
+        assert ("METHOD_WRAPPED_VAR", 8, "helper flag()") in refs
+
+    def test_positional_only_parameter_position_respected(self):
+        """The literal is taken from the parameter position that is actually
+        read — a helper reading its SECOND argument must not report the
+        first, which would name the wrong variable with full confidence."""
+        refs = self.scan("""\
+            import os
+
+            def read(default, name, /):
+                return os.environ.get(name, default)
+
+            V = read("FALLBACK", "SECOND_POSITION_VAR")
+        """)
+        assert [r for r in refs if r[2].startswith("helper")] == \
+            [("SECOND_POSITION_VAR", 6, "helper read()")]
+
+    def test_non_env_lookalikes_are_not_reported(self):
+        """Superset refusal is the failure mode here: a sweep that flags
+        ordinary dict reads trains its consumers to ignore it."""
+        assert self.names("""\
+            import os
+            cfg = {}
+            a = cfg["NOT_AN_ENV_VAR"]
+            b = cfg.get("ALSO_NOT")
+            c = "NOT_EITHER" in cfg
+            d = os.environ.get(computed_name)
+            e = os.path.join("NOR_THIS", "x")
+            f = (lambda: 1)()
+        """) == []
+
+    def test_helper_call_with_too_few_arguments_is_skipped(self):
+        assert self.names("""\
+            import os
+
+            def reader(name):
+                return os.getenv(name)
+
+            V = reader()
+        """) == []
+
+    def test_syntax_error_propagates_for_the_caller_to_disclose(self):
+        with pytest.raises(SyntaxError):
+            run_gate.scan_env_references("def broken(:\n")
+
+    def test_check_env_reports_helper_shape_and_its_form(self, tmp_path,
+                                                         monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        (proj / "conftest.py").write_text(textwrap.dedent("""\
+            import os
+
+            def _env_flag_enabled(name):
+                return os.getenv(name, "") == "1"
+
+            LIVE = _env_flag_enabled("RUN_LIVE_TESTS")
+        """))
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["--check-env"]) == 0   # advisory, never refuses
+        out = capsys.readouterr().out
+        assert "$RUN_LIVE_TESTS" in out
+        assert "helper _env_flag_enabled()" in out
+        assert "1 uncovered reference(s)" in out
+
+    def test_check_env_unparseable_file_says_so_instead_of_nothing(
+            self, tmp_path, monkeypatch, capsys):
+        """'Could not read it' must never be reported as 'nothing there'."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        (proj / "future_syntax.py").write_text(
+            "import os\nX = os.environ['REGEX_ONLY_VAR']\ndef broken(:\n")
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["--check-env"]) == 0
+        out = capsys.readouterr().out
+        assert "future_syntax.py does not parse" in out
+        assert "fell back to a line regex" in out
+        assert "$REGEX_ONLY_VAR" in out   # degraded, but not silent
+
+
+class TestEstateExecForwardEnvAudit:
+    """RG-23 acceptance: the estate audit is a TEST, not a one-off note — a
+    new vbpub exec-mode consumer must not silently re-acquire the assumption
+    that `MOCK_MODE`/`RUN_LIVE_TESTS` are forwarded implicitly (they were
+    until assay's ba8908d6; they are not since)."""
+
+    IMPLICIT_BEFORE = ("MOCK_MODE", "RUN_LIVE_TESTS")
+
+    def test_no_estate_lane_argv_relies_on_the_dropped_implicit_names(self):
+        offenders = []
+        for cfg_path in sorted(RUN_GATE_DIR.parent.glob("*/run-gate.toml")):
+            cfg = tomllib.loads(cfg_path.read_text())
+            environments = cfg.get("environments", {})
+            exec_envs = {name for name, env in environments.items()
+                         if env.get("mode") == "exec"}
+            if not exec_envs:
+                continue
+            for lane_name, lane in cfg.get("lanes", {}).items():
+                if lane.get("environment") not in exec_envs:
+                    continue
+                forwarded = set(
+                    environments[lane["environment"]].get("forward_env", []))
+                text = " ".join(lane.get("argv", []))
+                for var in self.IMPLICIT_BEFORE:
+                    if var in text and var not in forwarded:
+                        offenders.append(f"{cfg_path}:[lanes.{lane_name}] "
+                                         f"uses ${var} but environment "
+                                         f"{lane['environment']!r} does not "
+                                         f"forward it")
+        assert not offenders, "\n".join(offenders)
 
 
 class TestConjunctionOverrideGuard:
