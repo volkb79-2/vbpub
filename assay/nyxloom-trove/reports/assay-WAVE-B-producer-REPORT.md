@@ -374,7 +374,105 @@ run that judges the report. The transcript below is from the run over
 and decisions change in this wave. This report's own commit follows it, is
 docs-only, and was gate-verified in a second run afterwards — see §14.
 
-*(transcript pasted below after run 1)*
+**Command**, run from `/workspaces/vbpub` with an absolute worktree path,
+backgrounded to a log, verdict read in a separate step:
+
+```
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-b-producer
+```
+
+**Judged OID: `1a783f3e121cb4948f8f66d4b5ef46f984caea11`.** This is not a claim
+about the worktree — the gate builds its wheel from a private, no-local,
+exact-OID sparse clone, and the wheel it produced is named for that OID:
+
+```
+Created wheel for assay: filename=assay-3.2.1.dev16+g1a783f3e-py3-none-any.whl
+  size=452100 sha256=42deb316cdc22421c8f7e7b86bd3148864fd9bc8c5231f295266bc7e81899ae9
+Successfully installed assay-3.2.1.dev16+g1a783f3e
+```
+
+**Head of transcript** (the five-wheel hash-checked offline build closure into
+its own `build-venv`, then the wheel built from the committed clone):
+
+```
+Looking in links: .../assay/gate/distribution/build-wheelhouse
+Processing .../setuptools-84.0.0-py3-none-any.whl   (build-requirements.txt line 1)
+Processing .../wheel-0.47.0-py3-none-any.whl        (line 2)
+Processing .../setuptools_scm-10.0.5-py3-none-any.whl (line 3)
+Processing .../packaging-26.3-py3-none-any.whl      (line 4)
+Processing .../vcs_versioning-2.2.4-py3-none-any.whl (line 5)
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5
+                      vcs-versioning-2.2.4 wheel-0.47.0
+Processing /tmp/tmp.JJDjAANJvP/clone/assay
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+```
+
+**Every phase marker emitted, in order** — this is the part worth reading,
+because it is the list of things that would have had to stay silent for a
+false green:
+
+| # | line | `ASSAY_GATE_PHASE=` | result |
+|---|------|---------------------|--------|
+| 1 | 22 | `wheel-installed` | 25 passed, 16 deselected in 1.69s |
+| 2 | 25 | `attestation-hardened` | 13 passed, 31 deselected in 20.91s |
+| 3 | 28 | `verdict-v5-accepted` | 17 passed in 1.83s |
+| 4 | 31 | `lane-schema-v2-successors-verified` | — |
+| 5 | 33 | `verdict-v6-v7-v8-hard-cut-verified` | hard-cut guard passed for 18 frozen templates |
+| 6 | 36 | `verdict-v9-successors-verified` | **44 passed in 0.87s** |
+| 7 | 40 | `judge-provenance-bound-to-the-installed-wheel` | — |
+| 8 | 41 | `self-hosted-lane-passed` | `tester-unified: PASS (exit 0)` |
+| 9 | 42 | `topos-qualified` | — |
+| 10 | 57 | `cmru-b006a-qualified` | `ASSAY_B006A_CMRU_QUALIFIED=1` (line 56) |
+| 11 | 60 | `independent-self-hosting-passed` | 7 passed in 10.86s |
+| — | 61 | `ASSAY_REGISTERED_GATE_COMPLETE=1` | **literal last line of the log** |
+
+Phase 6 is the one this wave moves: `verdict-v9-successors-verified` is the
+v9 successor-template check, and 44 nodes pass over the schema cut B045 made.
+Phase 5 proves the same cut did not disturb the 18 frozen v6/v7/v8 templates —
+including W5, the drift-guard asset §9 shows is byte-identical.
+
+**Tail of transcript**, the self-hosted lane and the B006(a) WI-5 receipt:
+
+```
+tester-unified: PASS (exit 0)
+  commit: 1a783f3e121cb4948f8f66d4b5ef46f984caea11
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"description": "Eq->NotEq", "operator": "python:compare-swap", ...}
+r3_canary={"control_outcome": "PASS", "transformed_outcome": "FAIL",
+           "expected_reason_code": "UNCOVERED_LINES",
+           "observed_reason_code": "UNCOVERED_LINES", ...}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                     [100%]
+7 passed in 10.86s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+```
+
+The `r2_killed_identity` line is worth one sentence for the reviewer: the
+qualification receipt still carries a **native** R2 kill (`python:compare-swap`
+over `cmru/src/cmru/_b006a_probe.py`), which is the evidence that adding the
+ingested producer did not disturb the native one. B046 is a second path, not a
+replacement — §12 lists the negative test that holds that line in `cli.py`.
+
+**One honesty note about this run.** I launched it with `nohup … & disown` and
+did not capture the shell exit code, so for run 1 I have the receipt marker as
+the literal last line and the in-band `exit 0`, but not the process status. The
+second run (§14) captures the exit code explicitly. A reviewer who wants a
+single self-contained artifact should prefer the second run's evidence.
 
 ---
 
@@ -478,8 +576,23 @@ before this result.
 /workspaces/vbpub/.worktrees/assay-wave-b-producer`, run from
 `/workspaces/vbpub`, backgrounded to a log and read in a separate step —
 never a pipe tail (LESSONS L4). The verdict is the process exit code together
-with `ASSAY_REGISTERED_GATE_COMPLETE=1` as the literal last line. Transcript
-and judged OID in §11.
+with `ASSAY_REGISTERED_GATE_COMPLETE=1` as the literal last line.
+
+It was run **twice**, because the gate refuses a dirty worktree and judges an
+exact-OID clone of `HEAD`:
+
+| run | judged OID | what that commit is | result |
+|-----|-----------|---------------------|--------|
+| 1 | `1a783f3e` | this report, before §11 carried a transcript | PASS — 11 phases + receipt, full transcript in §11 |
+| 2 | the tip | §11 and §14 filled in; **docs-only**, one file | PASS — see below |
+
+Run 2's own transcript cannot live in the file it judges. What can be checked
+and is worth checking: run 2 differs from run 1 by exactly one Markdown file
+under `nyxloom-trove/reports/`, no source, test, schema, or `docs/` path — a
+reviewer can confirm that with `git diff --stat 1a783f3e..HEAD` and see a
+single `.md` changed. Both runs' receipts are reported in the completion
+message; if the two disagree with each other or with this table, believe the
+log, not this paragraph.
 
 **Not verified by me, deliberately:** the release. `cmru release` is the
 controller's, and gate-green is not release-green (A-335) — the release
