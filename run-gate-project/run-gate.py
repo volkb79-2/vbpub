@@ -964,6 +964,20 @@ def record_invocation(project_dir: Path, worktree: Path, record: dict,
         return False
 
 
+def flush_run_record(record: dict | None, *, exit_code: int | None = None,
+                     error: BaseException | None = None) -> None:
+    """Close and persist in ONE step, so main()'s three exits — normal
+    return, refusal, abort — cannot drift in how they record. `None` means
+    there was nothing to record (a dry run, or a failure before the lane
+    resolved); the caller does not branch on it."""
+    if record is None:
+        return
+    record_invocation(record["_project_dir"], Path(record["worktree"]),
+                      finish_run_record(record, exit_code=exit_code,
+                                        error=error),
+                      record["_keep"])
+
+
 def duration_stats(entries: list[dict]) -> dict:
     """min / median / max over a set of history entries.
 
@@ -2691,6 +2705,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--help", "-h", action="store_true")
     args = parser.parse_args(argv)
 
+    record = None  # RG-27: set once the lane resolves; see flush_run_record
     try:
         project_dir = find_project_dir()
         if args.help or (args.lane is None and not args.list
@@ -2789,94 +2804,85 @@ def main(argv: list[str] | None = None) -> int:
         # line is a configuration error that names no invocation to record
         # against. `--dry-run` records nothing at all: no lane started, so
         # nothing was measured and there is no result to be `latest`.
-        keep, _keep_src = resolve_history_keep(cfg, cfg_path, central,
-                                               central_path)
-        record = None if args.dry_run \
-            else start_run_record(args.lane, worktree, repo)
+        if not args.dry_run:
+            record = start_run_record(args.lane, worktree, repo)
+            record["_project_dir"] = eff_proj
+            record["_keep"] = resolve_history_keep(cfg, cfg_path, central,
+                                                   central_path)[0]
+        if lane.get("clean_tree", True) and not args.allow_dirty:
+            check_clean_tree(worktree)
+        # RG-20 resource-aware admission: slice-memory accounting FIRST
+        # (fast-fail — review fix: a gate blocked on a held lock used to
+        # wait before receiving an admission refusal it could have been
+        # given instantly), THEN shared-infra serialization — the only
+        # potentially-blocking step, in sorted-name order, released in
+        # finally.
+        slice_name = slice_src = None
+        if env and env.get("mode") == "exec":
+            # Review fix (R-05): exec lanes DISCLOSE their slice but never
+            # memory-admit or cap: the persistent runner predates this
+            # invocation (its placement was decided when CIU started it) and
+            # `docker exec` can neither place nor cap work in a slice.
+            if env.get("cgroup_slice"):
+                print(f"run-gate: WARNING: cgroup_slice on exec environment "
+                      f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
+                      f"— docker exec cannot enforce slice placement or caps; "
+                      f"the runner is governed by how it was started",
+                      flush=True)
+                slice_name = env["cgroup_slice"]
+                slice_src = f"declared {env_source}, naming-only"
+            else:
+                ambient = os.environ.get(CGROUP_ENV_VAR)
+                if ambient:
+                    slice_name = ambient
+                    slice_src = f"${CGROUP_ENV_VAR}, naming-only"
+                else:
+                    slice_src = (f"no cgroup_slice declared and no "
+                                 f"${CGROUP_ENV_VAR}")
+            if lane.get("resources") or lane.get("memory"):
+                print(f"run-gate: WARNING: lane {args.lane!r} declares "
+                      f"resources/memory but its environment is exec-mode — "
+                      f"resource admission and --memory caps apply to "
+                      f"ephemeral container lanes only", flush=True)
+        elif env:
+            slice_name, slice_src = resolve_slice(env, env_source)
+            check_slice_memory_admission(lane, args.lane, slice_name,
+                                         slice_src)
+        locks = acquire_shared_locks(lane, args.lane, args.dry_run)
         try:
-            code = _run_selected_lane(args, lane, env, env_source, eff_proj,
-                                      repo, worktree, request_base)
-        except BaseException as exc:
-            if record is not None:
-                record_invocation(eff_proj, worktree,
-                                  finish_run_record(record, error=exc), keep)
-            raise
-        if record is not None:
-            record_invocation(eff_proj, worktree,
-                              finish_run_record(record, exit_code=code), keep)
+            if not env:  # built-in 'host'
+                code = run_host_lane(lane, args.lane, eff_proj, worktree,
+                                     dry_run=args.dry_run,
+                                     request_base=request_base)
+            elif env.get("mode") == "exec":
+                code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
+                                     env, env_source, lane_environment_name(lane),
+                                     slice_name, slice_src,
+                                     dry_run=args.dry_run,
+                                     request_base=request_base)
+            else:
+                code = run_container_lane(lane, args.lane, eff_proj, repo,
+                                          worktree, env, env_source,
+                                          slice_name, slice_src,
+                                          dry_run=args.dry_run,
+                                          request_base=request_base)
+            print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
+        finally:
+            for fd in locks:
+                os.close(fd)  # releases the flock
+        # RG-27: outside the shared-infra lock — telemetry never extends a
+        # hold another gate is waiting on.
+        flush_run_record(record, exit_code=code)
         return code
     except GateError as exc:
+        flush_run_record(record, error=exc)
         print(f"{PROG}: {exc}", file=sys.stderr)
         return exc.exit_code
-
-
-def _run_selected_lane(args, lane: dict, env: dict, env_source: str,
-                       eff_proj: Path, repo: Path, worktree: Path,
-                       request_base: str | None) -> int:
-    """Everything from the clean-tree refusal to the lane's own exit status —
-    i.e. exactly the span RG-27 treats as ONE invocation. Split out of main()
-    so that span has a single entry and a single exit to wrap."""
-    if lane.get("clean_tree", True) and not args.allow_dirty:
-        check_clean_tree(worktree)
-    # RG-20 resource-aware admission: slice-memory accounting FIRST
-    # (fast-fail — review fix: a gate blocked on a held lock used to
-    # wait before receiving an admission refusal it could have been
-    # given instantly), THEN shared-infra serialization — the only
-    # potentially-blocking step, in sorted-name order, released in
-    # finally.
-    slice_name = slice_src = None
-    if env and env.get("mode") == "exec":
-        # Review fix (R-05): exec lanes DISCLOSE their slice but never
-        # memory-admit or cap: the persistent runner predates this
-        # invocation (its placement was decided when CIU started it) and
-        # `docker exec` can neither place nor cap work in a slice.
-        if env.get("cgroup_slice"):
-            print(f"run-gate: WARNING: cgroup_slice on exec environment "
-                  f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
-                  f"— docker exec cannot enforce slice placement or caps; "
-                  f"the runner is governed by how it was started",
-                  flush=True)
-            slice_name = env["cgroup_slice"]
-            slice_src = f"declared {env_source}, naming-only"
-        else:
-            ambient = os.environ.get(CGROUP_ENV_VAR)
-            if ambient:
-                slice_name = ambient
-                slice_src = f"${CGROUP_ENV_VAR}, naming-only"
-            else:
-                slice_src = (f"no cgroup_slice declared and no "
-                             f"${CGROUP_ENV_VAR}")
-        if lane.get("resources") or lane.get("memory"):
-            print(f"run-gate: WARNING: lane {args.lane!r} declares "
-                  f"resources/memory but its environment is exec-mode — "
-                  f"resource admission and --memory caps apply to "
-                  f"ephemeral container lanes only", flush=True)
-    elif env:
-        slice_name, slice_src = resolve_slice(env, env_source)
-        check_slice_memory_admission(lane, args.lane, slice_name, slice_src)
-    locks = acquire_shared_locks(lane, args.lane, args.dry_run)
-    try:
-        if not env:  # built-in 'host'
-            code = run_host_lane(lane, args.lane, eff_proj, worktree,
-                                 dry_run=args.dry_run,
-                                 request_base=request_base)
-        elif env.get("mode") == "exec":
-            code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                 env, env_source, lane_environment_name(lane),
-                                 slice_name, slice_src,
-                                 dry_run=args.dry_run,
-                                 request_base=request_base)
-        else:
-            code = run_container_lane(lane, args.lane, eff_proj, repo,
-                                      worktree, env, env_source,
-                                      slice_name, slice_src,
-                                      dry_run=args.dry_run,
-                                      request_base=request_base)
-        print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
-        return code
-    finally:
-        for fd in locks:
-            os.close(fd)  # releases the flock
+    except BaseException as exc:
+        # Ctrl-C and friends (RG-27): `latest` records the abort, and the
+        # exception continues on its way completely untouched.
+        flush_run_record(record, error=exc)
+        raise
 
 
 if __name__ == "__main__":

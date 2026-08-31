@@ -5044,6 +5044,16 @@ class TestHistoryStoreSafety:
         assert run_gate.paths_are_git_ignored(
             repo, run_gate.history_written_paths(proj)) is False
 
+    def test_git_error_status_is_indeterminate_not_a_green_light(self,
+                                                                 tmp_path):
+        """git exits 128 outside a repo. That is 'I could not answer', and
+        folding it into either answer would be the absence-for-emptiness
+        anti-pattern — here in its dangerous direction."""
+        outside = tmp_path / "not-a-repo"
+        outside.mkdir()
+        assert run_gate.paths_are_git_ignored(
+            outside, run_gate.history_written_paths(outside)) is None
+
     def test_git_failure_is_indeterminate_not_a_green_light(self, tmp_path,
                                                             monkeypatch):
         repo, proj = make_history_repo(tmp_path)
@@ -5231,3 +5241,206 @@ class TestHistoryQueryVerb:
         assert ".run-gate/history.json" in out.stdout
         assert "[history] keep" in out.stdout
         assert "MUST be git-ignored" in out.stdout
+
+
+class TestHistoryInProcess:
+    """The same surfaces as above, driven THROUGH `main()` in-process — the
+    subprocess tests prove the shipped entrypoint, these reach the wiring
+    (and the printer) where coverage can see it."""
+
+    def _project(self, tmp_path, monkeypatch, config=HISTORY_LANE):
+        repo, proj = make_history_repo(tmp_path, config)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        return repo, proj
+
+    def test_main_records_a_pass_then_the_verb_prints_it(self, tmp_path,
+                                                         monkeypatch, capsys):
+        repo, proj = self._project(tmp_path, monkeypatch)
+        sha = new_commit(repo, "a")
+        assert run_gate.main(["suite"]) == 0
+        capsys.readouterr()
+        assert run_gate.main(["history", "suite"]) == 0
+        out = capsys.readouterr().out
+        assert "lane suite" in out
+        assert "latest:  pass exit 0" in out
+        assert sha[:12] in out
+        assert "history: 1 of at most 10 commit(s)" in out
+        assert "passes: n=1 median" in out
+        assert "completed (passes + fails): n=1" in out
+
+    def test_main_records_a_refusal_into_latest_only(self, tmp_path,
+                                                     monkeypatch, capsys):
+        repo, proj = self._project(
+            tmp_path, monkeypatch,
+            HISTORY_LANE.replace("clean_tree = false", "clean_tree = true"))
+        new_commit(repo, "a")
+        (repo / "dirt.txt").write_text("x")
+        assert run_gate.main(["suite"]) == 2
+        assert "refusing to judge a dirty tree" in capsys.readouterr().err
+        slot = lane_slot(proj)
+        assert slot["latest"]["outcome"] == "error"
+        assert slot["history"] == []
+
+    def test_main_records_an_abort_and_re_raises_untouched(self, tmp_path,
+                                                           monkeypatch):
+        repo, proj = self._project(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+
+        def interrupted(*_a, **_k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(run_gate, "run_container_lane", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.main(["suite"])
+        slot = lane_slot(proj)
+        assert slot["latest"]["outcome"] == "aborted"
+        assert slot["latest"]["history_eligible"] is False
+        assert slot["history"] == []
+
+    def test_verb_prints_the_exclusion_reason_and_an_empty_series(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._project(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        record_run(proj, repo, error=KeyboardInterrupt(), seconds=1.0)
+        assert run_gate.main(["history"]) == 0
+        out = capsys.readouterr().out
+        assert "NOT in history:" in out
+        assert "history: (empty; keep=10)" in out
+        assert "keep:  10  (default (10))" in out
+
+    def test_verb_reports_an_untouched_lane_and_a_missing_store(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["history"]) == 0
+        out = capsys.readouterr().out
+        assert "(not written yet)" in out
+        assert "(no recorded invocation)" in out
+        assert "history: (empty; keep=10)" in out
+
+    def test_verb_json_shape(self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._project(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=4.0)
+        assert run_gate.main(["history", "suite", "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["lanes"]["suite"]["stats"]["passes"]["count"] == 1
+        assert payload["store"].endswith(".run-gate/history.json")
+
+    def test_verb_refuses_an_unknown_lane(self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "nope"]) == 2
+        assert "unknown lane 'nope'" in capsys.readouterr().err
+
+    def test_verb_survives_a_project_with_no_lanes(self, tmp_path,
+                                                   monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch, "schema_version = 1\n")
+        assert run_gate.main(["history"]) == 0
+        assert "(no lanes defined)" in capsys.readouterr().out
+
+    def test_dry_run_through_main_records_nothing(self, tmp_path, monkeypatch,
+                                                  capsys):
+        repo, proj = self._project(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        capsys.readouterr()
+        assert not (proj / ".run-gate").exists()
+
+
+class TestHistoryDegradedInputs:
+    """Every "could not determine" path, proven to answer *indeterminate*
+    rather than inventing a convenient value (AGENTS 'defaults are hazards',
+    'absence for emptiness')."""
+
+    @staticmethod
+    def _no_git(monkeypatch):
+        def boom(*_a, **_k):
+            raise OSError("git is gone")
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+
+    def test_dirtiness_is_indeterminate_when_git_cannot_run(self, tmp_path,
+                                                            monkeypatch):
+        repo, _ = make_history_repo(tmp_path)
+        self._no_git(monkeypatch)
+        assert run_gate.worktree_is_dirty(repo) is None
+
+    def test_dirtiness_is_indeterminate_when_git_errors(self, tmp_path):
+        assert run_gate.worktree_is_dirty(tmp_path / "not-a-repo") is None
+
+    def test_git_operation_is_indeterminate_when_git_cannot_run(self, tmp_path,
+                                                                monkeypatch):
+        repo, _ = make_history_repo(tmp_path)
+        self._no_git(monkeypatch)
+        assert run_gate.git_operation_in_progress(repo) is None
+
+    def test_git_operation_is_none_outside_a_repo(self, tmp_path):
+        assert run_gate.git_operation_in_progress(tmp_path) is None
+
+    def test_git_operation_resolves_a_relative_git_dir(self, tmp_path):
+        """`rev-parse --git-dir` answers a RELATIVE path from inside the
+        toplevel; resolving it against CWD instead of the worktree would
+        look for the markers in the wrong place and always answer 'none'."""
+        repo, _ = make_history_repo(tmp_path)
+        (repo / ".git" / "MERGE_HEAD").write_text("deadbeef\n")
+        assert run_gate.git_operation_in_progress(repo) == "MERGE_HEAD"
+
+    def test_head_commit_is_none_when_git_cannot_run(self, tmp_path,
+                                                     monkeypatch):
+        repo, _ = make_history_repo(tmp_path)
+        self._no_git(monkeypatch)
+        assert run_gate.head_commit(repo) is None
+
+    def test_head_commit_is_none_before_the_first_commit(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        git(empty, "init", "-q", "-b", "main")
+        assert run_gate.head_commit(empty) is None
+
+    def test_history_table_must_be_a_table(self, tmp_path):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE.replace("schema_version = 1",
+                                           "schema_version = 1\nhistory = 3"))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "'history' must be a table" in str(exc.value)
+
+    @pytest.mark.parametrize("body", ['["not", "a", "store"]', '{"lanes": 3}',
+                                      '"scalar"'])
+    def test_a_wrongly_shaped_store_reads_as_empty(self, tmp_path, body):
+        path = tmp_path / "history.json"
+        path.write_text(body)
+        assert run_gate.load_history_store(path) == {"schema": 1, "lanes": {}}
+
+    def test_a_missing_store_reads_as_empty(self, tmp_path):
+        assert run_gate.load_history_store(tmp_path / "nope.json") == \
+            {"schema": 1, "lanes": {}}
+
+    def test_stats_over_nothing_report_nothing_not_zero(self):
+        """`min 0.0s` would be a measurement nobody took."""
+        assert run_gate.duration_stats([]) == {
+            "count": 0, "min_seconds": None, "median_seconds": None,
+            "max_seconds": None}
+        assert run_gate.duration_stats([{"duration_seconds": None}])["count"] \
+            == 0
+        assert run_gate._fmt_seconds(None) == "-"
+        assert "none recorded" in run_gate._fmt_stats(
+            "passes", run_gate.duration_stats([]))
+
+    def test_odd_and_even_series_both_get_a_median(self):
+        assert run_gate.duration_stats(
+            [{"duration_seconds": v} for v in (1.0, 9.0, 2.0)]
+        )["median_seconds"] == 2.0
+        assert run_gate.duration_stats(
+            [{"duration_seconds": v} for v in (1.0, 2.0, 3.0, 100.0)]
+        )["median_seconds"] == 2.5
+
+    def test_a_record_with_no_commit_still_renders(self, tmp_path,
+                                                   monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.setattr(run_gate, "head_commit", lambda _wt: None)
+        record_run(proj, repo, seconds=1.0)
+        run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", False)
+        assert "(no commit)" in capsys.readouterr().out
