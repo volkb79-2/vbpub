@@ -121,11 +121,20 @@ to `carve-assets/P27-recarve/`.
   srdm covergate qualification needs a runnable Go lane.** Registering Go at
   R1 is arguably inside "F008-A5" but is not named in the wave prompt's scope
   list — resolve explicitly, do not silently register.
-* **Packaging**: `pyproject.toml:46-47` package-data is `assay =
-  ["schemas/*.json"]` ONLY. The helper's `.go`/`.mod` files **will silently
-  vanish from the wheel** unless that list is extended — and
-  `tests/test_verdict_schema_is_packaged.py` is the precedent for proving both
-  sides. **This is not yet done and is a shipping blocker.**
+* **Packaging — THIS BULLET WAS WRONG, see A-396.** It claimed the helper's
+  `.go`/`.mod` files "will silently vanish from the wheel" unless
+  `pyproject.toml`'s package-data was extended, and called it a shipping
+  blocker. **Retracted.** Measured afterwards with one `python -m build`: with
+  the ENTIRE `[tool.setuptools.package-data]` stanza deleted the wheel still
+  carries `assay/helpers/go/stmtpos/{stmtpos.go,go.mod}` and the schema,
+  because `setuptools_scm` installs a git file finder and
+  `include_package_data` defaults to true under pyproject metadata. The
+  declaration was still ADDED, rescoped as explicitness for the
+  git-metadata-absent build `fallback_version` anticipates, and
+  `tests/test_go_helper_is_packaged.py` asserts the OUTCOME (in the wheel,
+  resolves from the venv) rather than the mechanism. The stale mechanism claim
+  this exposed in `test_verdict_schema_is_packaged.py`'s own docstring is
+  filed as B054.
 * **`external_tools` preflight** is inline at `runner.py:3472-3489`
   (`shutil.which`), tested by `tests/test_runner_external_tool_preflight.py`.
   Adding `("go",)` to `GoAdapter` (`go.py:501`) means every Go lane refuses in

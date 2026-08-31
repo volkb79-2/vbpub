@@ -5090,3 +5090,69 @@ Go R1 line claim is statement-granular **to the line**, not to the statement.
 - [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
       updated (it asserts today's behaviour deliberately, so it MUST go red
       when this is fixed).
+
+---
+
+## B054 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
+
+**Filed 2026-08-31, Wave C, as a side finding while packaging the Go helper.**
+Recorded as decision **A-396**. Not fixed here: the fix is a real call, not a
+typo repair.
+
+### What the test says
+
+`tests/test_verdict_schema_is_packaged.py`'s module docstring names its
+negative — *"the schema is not declared as package data, so it exists in the
+source tree and vanishes on install"* — and then states a measurement:
+
+> Measured in the gate image while writing this: with
+> `[tool.setuptools.package-data]` the wheel carries
+> `assay/schemas/verdict.schema.json`; without it the wheel carries only
+> `assay/__init__.py`, `assay/cli.py`, `assay/config.py`, `assay/errors.py` and
+> `assay/verdict.py`. **Both sides are real.**
+
+### What is true now
+
+Both sides are NOT real any more. Built from the current tree with the entire
+`[tool.setuptools.package-data]` stanza deleted, the wheel still carries
+`assay/schemas/verdict.schema.json` — and 47 members in total, not five.
+`setuptools_scm` installs a git file finder, and setuptools'
+`include_package_data` defaults to true under pyproject metadata, so every
+GIT-TRACKED file under the package directory ships regardless of the stanza.
+
+So the test's stated negative cannot currently be produced by the change it
+names. The test still PASSES, and what it asserts (the schema is in the wheel,
+and resolves from inside the venv) is still worth asserting — but it can no
+longer fail for the reason it says it exists to catch. That is AGENTS.md's
+"a check is only as strong as what it actually compares": the message states a
+conclusion about package-data that the comparison no longer tests.
+
+### Why it is not obvious which way to fix it
+
+1. **Correct the docstring only.** Cheapest and honest, but leaves a test whose
+   stated purpose no longer has a reachable failure mode.
+2. **Make the negative reachable again** — assert the outcome under a build
+   with the git finder disabled (a tree without `.git`, which is exactly the
+   build `[tool.setuptools_scm]`'s own `fallback_version` anticipates). This
+   restores a real two-sided check and would cover `A-029` properly, but adds a
+   second wheel build to the suite.
+3. **Drop the package-data declarations** as genuinely inert and rely on the
+   git finder. Rejected on sight for the schema (A-029 is a consumer-facing
+   guarantee and should not rest on git tracking), but naming it here so the
+   next reader does not have to re-derive why.
+
+Whichever is chosen applies identically to `tests/test_go_helper_is_packaged.py`,
+whose docstring already states the corrected position and asserts the OUTCOME
+rather than the mechanism — so it is unaffected either way, and is the shape
+option 1 would move the sibling toward.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row naming the three options above;
+- [ ] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
+      measurement that a re-run would refute;
+- [ ] if option 2: a build with the git file finder unavailable, asserting the
+      schema is ABSENT without the stanza and PRESENT with it — the two-sided
+      check the docstring currently claims;
+- [ ] whatever is decided, the same treatment applied to the Go helper's own
+      packaging test, so the two do not drift apart again.

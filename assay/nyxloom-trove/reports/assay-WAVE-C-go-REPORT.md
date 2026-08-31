@@ -191,6 +191,89 @@ Neither is blocking the work that remains; both need answering before item 7.
 
 ## 6. Gate
 
-`pytest tests/` green is not gate-green (A-335). Recorded here at the
-checkpoint; see the section appended below for the registered-gate transcript
-and the commit it judged.
+`pytest tests/` green is not gate-green (A-335), and the distinction was not
+academic here — see §7.
+
+### Run 1 — REFUSED (not a red suite)
+
+```text
+tester-unified-gate: assay has uncommitted changes; commit them before running the merge gate
+GATE_EXIT=1
+```
+
+The LOG/REPORT/BRIEF were still unstaged. Re-run after committing them.
+
+### Run 2 — PASS, on commit `4408622b`
+
+Command, from `/workspaces/vbpub`:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+Verdict read in a SEPARATE step (LESSONS L4), never as a pipe tail:
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt --- (PASS, all claims R0-R3 PASS)
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 11.27s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+All 11 phases, completion marker present, exit 0.
+
+**A later commit lands after this run** (the packaging declaration, its test,
+A-394..A-396 and B054), so the gate is re-run on the new tip and that verdict
+is appended below. Nothing in this report claims green on a commit the gate did
+not judge.
+
+---
+
+## 7. Two live instances of the "read the status from the job" trap
+
+Both caught only because the job's own status was read separately, and both
+would otherwise have put a false conclusion into this report — which is the
+incident AGENTS.md's rule was written from.
+
+1. **The full `pytest tests/` run was reported to me as "exit code 0"** while
+   pytest itself printed `4 failed, 3811 passed, 13 skipped in 423.53s`. The
+   reported status belonged to the wrapper. The 4 were pre-existing `go_cover`
+   assertions comparing a whole `FileCoverage` that now carries `blocks`; three
+   are now strengthened to pin the expected extents, and the fourth narrowed to
+   the line sets its docstring says it is about.
+2. **Gate run 1 was reported as "exit code 0"** while `GATE_EXIT=1` — it had
+   refused on uncommitted changes and run nothing at all. Reading only the
+   wrapper would have recorded a PASS for a gate that never executed a phase.
+
+## 8. One claim I made and then disproved (A-396)
+
+I stated — in BRIEF-1 §4 and twice to the controller — that
+`pyproject.toml`'s package-data omitting the helper's `.go`/`.mod` files was a
+**real shipping blocker**, and the controller accepted it. It is not. Building
+a wheel with the ENTIRE `[tool.setuptools.package-data]` stanza deleted still
+produces `assay/helpers/go/stmtpos/{stmtpos.go,go.mod}` and
+`assay/schemas/verdict.schema.json`: `setuptools_scm` installs a git file
+finder and `include_package_data` defaults to true under pyproject metadata.
+
+I had reasoned from the stanza's contents without ever running a build — the
+A-334 pattern, with the stanza itself as the proxy that shared my hypothesis's
+assumption. One `python -m build` and one `zipfile.namelist()`, under a minute,
+refuted it.
+
+The declaration is kept but rescoped (explicitness for the git-metadata-absent
+build `fallback_version` anticipates), the claim is retracted at every site it
+reached, and the test written alongside deliberately asserts the OUTCOME rather
+than the mechanism so it survives the correction. The stale mechanism claim
+this exposed in `test_verdict_schema_is_packaged.py`'s docstring is filed as
+**B054**, not silently patched.

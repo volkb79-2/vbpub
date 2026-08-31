@@ -70,7 +70,7 @@ evidence went to a new tree, `carve-assets/P27-recarve/`.
 
 ---
 
-## `<pending>` — feat(assay): keep Go block extents and correct them (A-239 items 1+3)
+## `fe9aaf7c` — feat(assay): keep Go block extents and correct them (A-239 items 1+3)
 
 **Files**
 
@@ -124,3 +124,62 @@ oracle output). No Go toolchain, no subprocess. Includes the anti-vacuity
 control (`test_the_naive_expansion_cannot_tell_the_collision_pair_apart`), the
 manifest cross-check, three refusal paths and an order-independence check for
 executed-wins.
+
+---
+
+## `4408622b` — docs(assay): Wave C checkpoint 1 — LOG/REPORT/BRIEF, and file B053
+
+LOG entries for the two commits above, the REPORT (every witness named with its
+derived result and the naive rule's answer beside it), BRIEF-1, and B053 (the
+`lit.go` laundering this wave does not fix and cannot at line granularity).
+
+**Gate: PASS on this commit** — all 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`. Transcript in REPORT §6.
+Gate run 1 before it had REFUSED (`GATE_EXIT=1`, uncommitted changes) while
+being reported to me as "exit code 0" — REPORT §7.
+
+**Tests added/changed:** none.
+
+---
+
+## `<pending>` — feat(assay): declare the Go helper as package data, and correct my own blocker claim
+
+**Files**
+
+| file | what |
+|---|---|
+| `pyproject.toml` | package-data gains `helpers/go/stmtpos/*.go` + `go.mod` |
+| `tests/test_go_helper_is_packaged.py` | new — 6 tests |
+| `nyxloom-trove/decisions.md` | A-394, A-395 (controller rulings, `vbpub@8fd9dd68`), A-396 (my correction) |
+| `nyxloom-trove/4-backlog.md` | B054 |
+| `reports/assay-WAVE-C-go-BRIEF-1.md` | packaging bullet retracted in place |
+| `reports/assay-WAVE-C-go-REPORT.md` | gate transcript, the two exit-code incidents, the retraction |
+| `reports/assay-WAVE-C-go-BRIEF-2.md` | new |
+
+**What and why.** The controller answered both decision asks (A-394: register
+Go at R1, but strictly last, after the guard chain; A-395: do not weaken
+`test_cli_run.py`'s helpers assertion, add a parallel Go-lane one proven
+against the real toolchain).
+
+The packaging entry is added, but **not for the reason I gave**. I had claimed
+its absence was a shipping blocker; it is not. Measured with one
+`python -m build`: with the whole `package-data` stanza deleted the wheel still
+carries the helper AND the schema, because `setuptools_scm` installs a git file
+finder and `include_package_data` defaults to true under pyproject metadata.
+The declaration is kept and rescoped as explicitness for the
+git-metadata-absent build `fallback_version` anticipates; the false claim is
+retracted at every site it reached (A-396). The new test asserts the OUTCOME —
+the helper is in the wheel and resolves from inside the scratch venv — never
+the mechanism, so it survives the correction.
+
+Side finding filed as B054: `test_verdict_schema_is_packaged.py`'s docstring
+states that same mechanism as a measurement, and a re-run refutes it, so its
+named negative is currently unreachable. Filed, not patched — three options,
+and choosing between them is a real call.
+
+**Tests added:** `tests/test_go_helper_is_packaged.py` — source-tree presence,
+no `require` directives, stdlib-only imports, the wheel's own namelist, venv
+resolution, and the `go run .` one-directory layout. Its first draft matched
+the word "requirements" inside the `go.mod`'s own comment, so the check now
+parses directives instead of substring-matching; the comment says so, because a
+test that reads comments as directives is testing the documentation.
