@@ -255,14 +255,15 @@ how they record, and no-ops on `None` so no caller branches on dry-run.
 Command: `cd run-gate-project && ./run-gate.py selftest`, exit status read in
 a **separate step** from a marker in the log file, never a pipe tail
 (AGENTS.md "Read the exit status from the job, never from the wrapper";
-LESSONS L4). Final run, at `afcdb39f`:
+LESSONS L4). Final run, at `dc3b1490` (the branch tip after the round-2
+fixes):
 
 ```
 run-gate: rev 30 | lane selftest | env built-in 'host'
 run-gate: budget 20m (advisory)
 ...
-359 passed, 2 skipped, 2 warnings in 46.14s
-diff-coverage OK: 229/229 changed executable lines covered (100.0% ≥ 100.0% floor)
+384 passed, 2 skipped, 2 warnings in 47.04s
+diff-coverage OK: 245/245 changed executable lines covered (100.0% ≥ 100.0% floor)
 run-gate: artifact: /workspaces/vbpub/.worktrees/run-gate-P03-lane-history/run-gate-project/coverage.json
 run-gate: lane 'selftest' exit 0
 GATE_EXIT=0
@@ -272,11 +273,16 @@ The 2 skips are pre-existing and unrelated (`TestWheelPackaging`, local
 `setuptools_scm` 10.2.1 ≠ pinned 10.0.5). RG-29's `cmru/run-gate.toml` assay
 pin was already fixed on `main`; `TestPointerLinkageEstate` is green.
 
-The gate was RED at `1687b60d` (194/254 = 76.4% diff coverage) for a reason
-that had nothing to do with the feature: an `_run_selected_lane()` extraction
-dedented ~60 pre-existing, never-in-process-covered lines into the diff. The
-extraction was reverted rather than papered over with `# pragma: no cover`.
-Full account in the LOG.
+The gate was RED twice on the way here, both times from the same cause and
+neither from the feature's behaviour: at `1687b60d` (194/254 = 76.4%) an
+`_run_selected_lane()` extraction dedented ~60 pre-existing,
+never-in-process-covered lines into the diff — reverted, not papered over with
+`# pragma: no cover`; and at `0e6d0ea4` (237/245 = 96.7%) the round-2 fixes'
+new `main()` branches were exercised only through subprocess invocations,
+which coverage does not measure — covered in-process by `dc3b1490`. The
+standing lesson for this project: **any new `main()` branch needs an
+in-process test the same day**, because its subprocess test will pass and the
+floor will still fail. Full account in the LOG.
 
 ## 4. Evidence the two named traps are actually caught
 
@@ -404,15 +410,16 @@ at-most-once) and the write-up correction the reviewer caught — mutant B's
 real contrast is median 10.0 vs **mean 40.0**, not "max 100.0"; §4 and the
 backlog note are corrected. Not chased, as directed: S3, S4, N2.
 
-## 5. Test inventory (96 new)
+## 5. Test inventory (104 new)
 
 `TestHistoryConfigPolicy` (11) · `TestHistoryRollingSeries` (6, trap 1) ·
 `TestHistoryEligibilityGuard` (8, trap 2) · `TestHistoryStoreSafety` (14) ·
 `TestHistoryEndToEnd` (7) · `TestHistoryQueryVerb` (9) ·
 `TestHistoryInProcess` (9) · `TestHistoryDegradedInputs` (15) ·
 **round 2:** `TestHistoryReadScope` (7, B1) ·
-`TestHistoryFlushIsAtMostOnce` (4, B2) · `TestJsonFlagScope` (6, S1).
-Suite total 334 → 376 passing.
+`TestHistoryFlushIsAtMostOnce` (4, B2) · `TestJsonFlagScope` (6, S1) ·
+`TestHistoryReadScopeInProcess` (8, in-process cover for the B1/S1 `main()`
+branches). Suite total 334 → **384** passing.
 
 ## 6. Files touched
 

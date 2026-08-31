@@ -179,11 +179,11 @@ The two questions the entry warned might have no clean answer both did:
 
 ---
 
-## `fix(run-gate): RG-27 round-2 review — B1/B2/S1/S2` — the branch tip
+## `0e6d0ea4` + `dc3b1490` — RG-27 round-2 review (B1/B2/S1/S2)
 
-Named by subject: this commit introduces its own LOG entry, so it is the one
-that cannot carry its own hash. `git log --oneline -1` on
-`feat/run-gate-P03-lane-history` resolves it.
+Two commits, described together because the second only repairs the first's
+coverage: `0e6d0ea4` carries the fixes, `dc3b1490` the in-process tests for
+the `main()` branches they added.
 
 Adversarial review returned **ACCEPT-conditional**. Independent
 re-verification confirmed the substance — all three named mutants re-run, the
@@ -244,5 +244,9 @@ same coverage trap has caught this package, and the lesson is that any new
 the log file, never a pipe tail:
 
 ```
-GATE_VERDICT_PLACEHOLDER
+384 passed, 2 skipped, 2 warnings in 47.04s
+diff-coverage OK: 245/245 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: artifact: .../run-gate-project/coverage.json
+run-gate: lane 'selftest' exit 0
+GATE_EXIT=0
 ```
