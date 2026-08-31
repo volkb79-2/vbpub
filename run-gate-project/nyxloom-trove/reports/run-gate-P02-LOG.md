@@ -173,10 +173,17 @@ Gate after: 273 passed + RG-29; diff coverage **243/243 (100%)**.
 
 ---
 
-## 6. Reports (this commit)
+## 6. Reports
 
 `nyxloom-trove/reports/` created for this project (it had none). LOG +
 REPORT written with the per-commit gate sweep pasted verbatim: each of the
 five commits was checked out detached and re-gated on a clean tree, so every
 verdict in the REPORT is a real run of that exact commit, not a
 reconstruction.
+
+## 7. (branch tip) — usage() names the checks this bundle added (docs, no behaviour)
+
+`usage()` still advertised `doctor` as "docker, slices, mountinfo, git,
+images" after RG-21 and RG-25 extended it, and still described `--check-env`
+as advisory-only after RG-25 made a toolchain FAIL exit 2. Text only. Suite
+re-run afterwards: 273 passed, diff coverage 243/243 (100%).
