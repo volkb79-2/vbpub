@@ -178,7 +178,7 @@ def lint_graph(
             # redundantly self-declare `provides = ["stack:X:..."]` (CIU-63)
             # -- every other ref kind keeps today's exact provides-union
             # check, unchanged.
-            m = _STACK_RE.match(ref)
+            m = _STACK_RE.fullmatch(ref)
             if m and _resolve_declared_stack_path(m.group(1), stacks.keys()) is not None:
                 continue
             errors.append(

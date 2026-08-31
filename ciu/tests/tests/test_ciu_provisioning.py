@@ -449,6 +449,28 @@ def test_lint_graph_ambiguous_bare_selector_stays_unresolved_no_false_cycle():
     assert cycle_errors == []
 
 
+def test_lint_graph_ambiguous_bare_selector_with_no_provides_still_errors():
+    # CIU-63 review gap: the sibling test above short-circuits through the
+    # `ref in all_provided` fast path (infra/db-init self-declares
+    # provides=["stack:db-init:healthy"]), so it never actually reaches this
+    # fix's own resolver call. Here NEITHER stack provides anything at all --
+    # the ambiguous basename must still resolve to None (ciu-P39's fix must
+    # not guess at an ambiguous match any more than the pre-existing
+    # cycle-detection pass does), so the require is still unsatisfied.
+    stacks = {
+        "infra/db-init": {"requires": [], "provides": []},
+        "apps/db-init": {"requires": [], "provides": []},
+        "apps/consumer": {
+            "requires": ["stack:db-init:healthy"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert len(errors) == 1
+    assert "stack:db-init:healthy" in errors[0]
+    assert "nobody provides it" in errors[0]
+
+
 def test_lint_graph_full_path_selector_still_works_unchanged():
     # A ref written with the full path (matches a `stacks` key EXACTLY) must
     # keep working exactly as it did before this package (regression bar).
