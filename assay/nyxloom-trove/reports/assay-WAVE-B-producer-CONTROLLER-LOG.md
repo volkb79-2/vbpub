@@ -297,3 +297,44 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   files, +23708/-433), pushed as `5692ad37`. Starting the real
   `cmru release --project assay` next; expect 4.0.0 (the range's one and
   only `!` commit is `af14021f`).
+
+- **2026-08-31 (real release published)** — `cmru release --project assay`
+  ran in isolated worktree `cmru-release-20260831_061935-assay-275b8537`.
+  Its own required registered gate (the WHOLE since-last-release diff,
+  wider surface than any wave-scoped gate run) took 793.2s end to end,
+  progressing through every phase including two long CMRU-checkout
+  qualification steps (`topos-qualified`, `cmru-b006a-qualified` — the
+  latter runs CMRU's own ~1538-test suite under assay's own coverage
+  instrumentation against a disposable pinned CMRU checkout, confirmed
+  live via `docker top` at each poll rather than assumed from a
+  phase-boundary-buffered log tail) before the final
+  `independent-self-hosting-passed` witness. Gate PASS, wheel built as
+  `assay-3.2.1.dev136+gdcb9755c`, promoted to `origin/main` (merge commit
+  `66bc8006`), tagged `assay-v4.0.0` (major bump — the wave's one `!`
+  commit, confirmed by `cmru`'s own version-bump logic independently of my
+  own prediction), wheel+zipapp+manifest+sha256 sidecars built and
+  published to a real GitHub Release (verified via `gh release view
+  assay-v4.0.0`: 6 assets uploaded). Local `main` synced with
+  `origin/main`, isolated release worktree removed automatically.
+  **Deploy**: downloaded the wheel via `gh release download -R
+  volkb79-2/vbpub`, `sha256sum -c` against the release's own `.whl.sha256`
+  sidecar (OK), `pip install --force-reinstall`, confirmed via `assay
+  --version` → `4.0.0`. **CHANGES.md housekeeping**: cleared the
+  `[Unreleased]` block in its own commit `4fd8ead4`, matching the file's
+  own documented convention (the dated `[4.0.0]` section already carries
+  this range's history; leaving the hand-written block in place
+  republishes shipped work as "unreleased" into the next cycle — the
+  established fix from the 2.0.0/2.1.0/3.2.0 precedent). **dstdns
+  notify**: wrote `/workspaces/dstdns/.assay-inbox/release.json` per its
+  `CONTRACT.md` — `sha256` taken from the release's own `.pyz.sha256`
+  sidecar (`e4cf002e...`), never hand-computed; `landed` lists B045, B043,
+  B041(b), B046/B037 (the four wave items that actually shipped);
+  `notes` covers the v9 breaking migration surface (`producer =
+  "istanbul"` requirement, `cwd`, `link_paths`, the ingested-R2 path) and
+  names B050/B051/B052 as filed-not-built so dstdns can judge for itself
+  whether any apply to its own lanes. No git commit needed for the
+  notify (the inbox dir is gitignored by dstdns's own contract).
+  **Wave B is now fully shipped**: implementer → reviewer ACCEPT → merge
+  → real release → deploy → notify, all complete. Proceeding to dispatch
+  Wave C (Go support) next, per the goal's ordering rule (gated on B's
+  real release, not merely its merge).
