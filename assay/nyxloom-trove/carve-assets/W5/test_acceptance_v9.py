@@ -50,7 +50,18 @@ V9_TEMPLATES = [
     "sql-r2-v9-template.json",
     "ca1-r3-no-base-v9-template.json",
     "ca4-all-equivalent-v9-template.json",
+    # (fix round 1) The one shape every other template in this list is the
+    # NATIVE counterpart of. Added because B046's whole new branch -- the five
+    # conditionally-emitted `judgment.r2` fields, `producer_tool`, the
+    # `stryker:` operator namespace -- had NO frozen document anywhere in the
+    # corpus, so the drift guard covered the producer fork's native half only.
+    # A guard that only guards one branch of a fork is how a fork rots.
+    "ingested-r2-v9-template.json",
 ]
+
+#: The frozen ingested document, by name, for the tests that are about it
+#: specifically rather than about "every v9 template verifies".
+INGESTED_V9_TEMPLATE = "ingested-r2-v9-template.json"
 
 P25_V9_TEMPLATES = ["p25-pass-v9-template.json", "p25-missing-v9-template.json"]
 
@@ -153,6 +164,59 @@ def test_locked_v9_template_is_accepted(verify_document, name):
 @pytest.mark.parametrize("name", P25_V9_TEMPLATES)
 def test_p25_v9_siblings_validate(verify_document, name):
     assert verify_document(load(HERE / "expected" / name)) == []
+
+
+# --- the frozen INGESTED document (fix round 1) -----------------------------
+#
+# `ingested-r2-v9-template.json` is a REAL verdict: a real run over the
+# committed StrykerJS artifact (`tests/fixtures/mutation/
+# mutation-report-json.probe-js-stryker.json`, 109 mutants over 6 files),
+# frozen with only `started`/`ended` substituted. Its outcome is
+# FAIL/MUTANTS_SURVIVED, which is the honest verdict for that artifact and is
+# what makes it worth freezing -- a judged R2 claim with a real payload behind
+# it, not a hand-built shell that happens to satisfy the schema.
+
+
+def test_the_frozen_ingested_template_carries_the_WHOLE_ingested_record(
+    verify_document,
+):
+    """The point of freezing it. `test_locked_v9_template_is_accepted` proves
+    it verifies; this proves the document being verified is actually the
+    ingested shape, so the guard cannot quietly start guarding a native
+    document that happens to sit under the same filename."""
+    document = load(HERE / "expected" / INGESTED_V9_TEMPLATE)
+    r2 = document["judgment"]["r2"]
+    assert r2["producer"] == "ingested"
+    assert set(r2["producer_tool"]) == {"name", "version", "report_schema_version"}
+    assert r2["producer_tool"]["name"] == "StrykerJS"
+    # Required-and-possibly-empty under `ingested` (A-365), and non-empty here.
+    assert r2["survived_uncovered"] and r2["lines_without_candidates"]
+    assert isinstance(r2["discarded"], int)
+    # Forbidden under `ingested` (A-360) -- assay declared no policy for a
+    # discovery it did not perform.
+    for forbidden in ("operators", "jobs", "max_mutants", "equivalence_artifact"):
+        assert forbidden not in r2, forbidden
+    # B043 rides along: this lane declared a `cwd`, so the frozen document
+    # carries `cwd_declared` too.
+    assert document["cwd_declared"] == "app"
+
+
+def test_the_frozen_ingested_templates_operators_are_all_stryker_namespaced(
+    verify_document,
+):
+    """A-362's namespace, frozen. Every operator in the payload is a
+    `stryker:` name -- assay's native catalogue names a catalogue this run
+    never used, and a template that mixed them would be recording a document
+    `verify.py`'s own two-directional fork is supposed to refuse."""
+    document = load(HERE / "expected" / INGESTED_V9_TEMPLATE)
+    r2_claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    operators = {
+        entry["operator"]
+        for bucket in ("killed", "survived", "crashed", "budget_exceeded")
+        for entry in r2_claim["mutation"].get(bucket, [])
+    }
+    assert operators, "the frozen payload records no mutants at all"
+    assert all(name.startswith("stryker:") for name in operators), sorted(operators)
 
 
 @pytest.mark.parametrize(

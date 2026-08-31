@@ -91,7 +91,7 @@ commit this wave is allowed stays uncontaminated.
 | `README.md` | the JS section states the key, its requiredness and what declaring `istanbul` buys |
 | `docs/CONSUMERS.md` | new section "Declaring the coverage producer (B045)"; the worked monorepo lane gains `producer = "istanbul"` |
 | `CHANGES.md` | `[Unreleased]` Added bullets + the "Migration notes (v8 -> v9)" block |
-| `tests/test_config_coverage_producer.py` | **new**, 20 tests |
+| `tests/test_config_coverage_producer.py` | **new**, 18 tests *(this row said "20 tests"; corrected in fix round 1 — `pytest --collect-only -q` reports 18)* |
 | `tests/test_config_coverage_format.py` | derives the minimal loadable table from the vocabulary instead of hardcoding two keys |
 | `tests/test_docs_examples_and_vocabulary.py` | two new vocabulary-coverage tests |
 | `tests/test_cli_lanes_json.py`, `tests/test_cli_run_javascript.py`, `tests/qualification/test_javascript_real_vitest.py` | migrated: `producer = "istanbul"` |

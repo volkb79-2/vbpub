@@ -250,6 +250,104 @@ _SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
+#: (B046, schema v9) ``judgment.r2.producer``'s closed vocabulary, transcribed
+#: by hand for :data:`_SNAPSHOT_SELECTIONS`' own reason -- the raw layer reads
+#: strings and never imports the model's vocabulary to compare them.
+#:
+#: **This is a closed SET rather than the two bare ``== "ingested"`` string
+#: comparisons that shipped.** Those compared for equality and treated
+#: everything else as native, so `"Ingested"`, `"INGESTED"` or `"ingsted"`
+#: routed silently to the native branch and SKIPPED every ingested check --
+#: and a skipped check is indistinguishable from a satisfied one at a green
+#: bar. The schema layer catches the misspelling end to end, so this was never
+#: exploitable; it was a layer-independence violation, which is a defect in
+#: the property the raw layer exists to have. A value outside this set is a
+#: failure named by :func:`_check_r2_producer_vocabulary`, and every other
+#: reader of the field declines to branch at all rather than guess.
+_R2_PRODUCERS: frozenset[str] = frozenset({"native", "ingested"})
+
+
+def _validated_r2_producer(r2: object) -> str | None:
+    """*r2*'s ``producer`` when it is in the closed set, else ``None``.
+
+    ``None`` means "do not branch": either there is no ``judgment.r2`` to read
+    or its producer is outside the vocabulary, and in the second case
+    :func:`_check_r2_producer_vocabulary` has already recorded the failure.
+    Callers must not fall back to the native rule on ``None`` -- silently
+    applying one producer's rule to an unrecognised producer is the exact
+    behaviour this helper exists to end.
+    """
+    if not isinstance(r2, dict):
+        return None
+    producer = r2.get("producer")
+    return producer if producer in _R2_PRODUCERS else None
+
+
+def _check_r2_producer_vocabulary(document: dict, failures: list[str]) -> None:
+    """(B046, fix round 1) ``judgment.r2.producer`` is one of a closed set.
+
+    Enforced exactly the way :func:`_check_snapshot_policy` enforces
+    ``selection``: name the offending value, name the legal set, and let every
+    other check in this module stop branching on an unvalidated string.
+    """
+    judgment = document.get("judgment")
+    if not isinstance(judgment, dict):
+        return
+    r2 = judgment.get("r2")
+    if not isinstance(r2, dict):
+        return
+    producer = r2.get("producer")
+    if producer not in _R2_PRODUCERS:
+        failures.append(
+            f"judgment.r2.producer {producer!r} is not one of "
+            f"{sorted(_R2_PRODUCERS)}; the producer selects which set of R2 "
+            f"rules applies, so an unrecognised spelling would silently skip "
+            f"one set rather than fail"
+        )
+
+
+def _positions_are_ascending(
+    values: object, what: str, failures: list[str]
+) -> None:
+    """(B046, fix round 1) One ``source_position`` array is strictly ascending
+    by ``(path, lineno)``.
+
+    Array ORDER is not expressible in draft 2020-12, so the packaged schema's
+    own descriptions of ``survived_uncovered`` and ``lines_without_candidates``
+    say it "is checked by the model and the raw verifier". The model half was
+    real (``JudgmentR2.__post_init__``); the raw half was NOT -- the only
+    ordering check this module had was ``unsafe_symlink_omissions``'. Three
+    shipped v9 field descriptions therefore promised two witnesses and had
+    one, which is the state three-place registration exists to prevent, so the
+    missing witness is built rather than the promise walked back.
+
+    Deliberately NOT shared with :func:`_check_snapshot_policy`'s own
+    byte-ascending loop: that one orders repo paths by UTF-8 bytes, this one
+    orders (path, line) pairs, and the two are different orders over different
+    things. A shared helper would let one edit silently weaken both -- the
+    reasoning A-366 already applies to these lists' grammars one layer up.
+    """
+    if not isinstance(values, list):
+        return
+    keys: list[tuple[str, int]] = []
+    for position in values:
+        if not isinstance(position, dict):
+            return
+        path = position.get("path")
+        lineno = position.get("lineno")
+        if not isinstance(path, str) or isinstance(lineno, bool):
+            return
+        if not isinstance(lineno, int):
+            return
+        keys.append((path, lineno))
+    for previous, current in zip(keys, keys[1:]):
+        if not previous < current:
+            failures.append(
+                f"{what} must be strictly ascending by (path, lineno); "
+                f"{previous} is not before {current}"
+            )
+            return
+
 
 def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
     """(B006(a)/A-269, §5.1/§5.3) ``snapshot_policy`` is present iff
@@ -287,6 +385,35 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
             f"{sorted(_SNAPSHOT_SELECTIONS)}"
         )
         return
+    # (B041(b)/A-366, order check added in fix round 1) Checked BEFORE the
+    # selection fork, for A-366's own reason: `link_paths` is independent of
+    # `selection`, and a check placed inside one branch is a check that
+    # silently applies under only one selection -- which, under `repository`,
+    # is exactly where the early `return` below would have dropped it.
+    #
+    # The shipped schema's description of this field says its order "is checked
+    # by the model and the raw verifier". The model half was real; this is the
+    # raw half, which did not exist -- see `_positions_are_ascending`.
+    link_paths = policy.get("link_paths")
+    if isinstance(link_paths, list):
+        encoded_links: list[bytes] = []
+        for index, path in enumerate(link_paths):
+            if not isinstance(path, str) or not path:
+                failures.append(
+                    f"snapshot_policy.link_paths[{index}] must be a non-empty "
+                    f"string"
+                )
+                encoded_links = []
+                break
+            encoded_links.append(path.encode("utf-8"))
+        for previous, current in zip(encoded_links, encoded_links[1:]):
+            if not previous < current:
+                failures.append(
+                    "snapshot_policy.link_paths must be strictly ascending by "
+                    "UTF-8 bytes"
+                )
+                break
+
     omissions = policy.get("unsafe_symlink_omissions")
     if selection == "repository":
         if omissions is not None:
@@ -621,7 +748,16 @@ def _check_resolved_language_owns_every_operator(
     # mirror. A native document naming an INGESTED operator is refused just as
     # firmly as an ingested one naming a native operator, so neither producer
     # can borrow the other's vocabulary.
-    ingested = isinstance(r2, dict) and r2.get("producer") == "ingested"
+    #
+    # The fork is taken on the VALIDATED producer (fix round 1). A bare
+    # `== "ingested"` treated every other spelling as native and skipped the
+    # ingested rules entirely; here an unrecognised producer takes NEITHER
+    # branch, because there is no honest rule to apply to a producer this
+    # layer does not recognise. `_check_r2_producer_vocabulary` is what says
+    # so out loud.
+    if isinstance(r2, dict) and _validated_r2_producer(r2) is None:
+        return
+    ingested = _validated_r2_producer(r2) == "ingested"
     declared = r2.get("operators") if isinstance(r2, dict) else None
     if isinstance(declared, list):
         # `operators` is FORBIDDEN on an ingested document (A-360) and the
@@ -732,8 +868,12 @@ def _check_ingested_r2_agrees_with_its_payload(
     if not isinstance(judgment, dict):
         return
     r2 = judgment.get("r2")
-    if not isinstance(r2, dict) or r2.get("producer") != "ingested":
+    # The VALIDATED producer (fix round 1): an unrecognised spelling routed
+    # here too, and skipped every re-derivation below in exactly the silence
+    # this function was written to end.
+    if _validated_r2_producer(r2) != "ingested":
         return
+    assert isinstance(r2, dict)
 
     claims = document.get("claims")
     r2_claim = (
@@ -784,6 +924,7 @@ def _check_ingested_r2_agrees_with_its_payload(
                 f"(possibly empty) and is absent or not an array"
             )
             continue
+        _positions_are_ascending(positions, f"judgment.r2.{label}", failures)
         for position in positions:
             if not isinstance(position, dict):
                 continue
@@ -803,6 +944,9 @@ def _check_ingested_r2_agrees_with_its_payload(
             "judgment (possibly empty) and is absent or not an array"
         )
     else:
+        _positions_are_ascending(
+            without, "judgment.r2.lines_without_candidates", failures
+        )
         for position in without:
             if not isinstance(position, dict):
                 continue
@@ -2009,6 +2153,7 @@ def verify_document(document: Any) -> list[str]:
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
     _check_snapshot_policy(document, failures)
+    _check_r2_producer_vocabulary(document, failures)
     _check_mutation_payload_shapes(document, failures)
     _check_ingested_r2_agrees_with_its_payload(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)

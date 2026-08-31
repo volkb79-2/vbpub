@@ -4763,3 +4763,135 @@ genuinely has no floor to record. Then:
       `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced
       by its positive counterpart;
 - [ ] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph.
+
+---
+
+## B051 — `judgment.r2.discarded` is accepted on the producer's word alone: never derived, never cross-checked, and a materially false value rides the wire uncontradicted
+
+**Filed 2026-08-31 from Wave B fix round 1, with evidence. FILE, DO NOT BUILD
+— what "derived" would even mean here is a real product question, not an
+implementation shortcut.**
+
+> **Numbering note.** The controller's fix-round brief asked for this to be
+> filed as **B052**, citing "the same file-don't-build pattern as
+> B049/B050/B051". There is no B051: `main` carries entries through B049 and
+> this wave filed B050, so B051 is the genuinely next free identifier —
+> verified against this file and against `git show main:.../4-backlog.md`
+> before choosing. Filing it as B052 would have left a permanent phantom gap
+> at B051 that a later reader would go looking for. Filed as **B051**, and
+> called out here and in the wave REPORT so the controller can see the
+> substitution rather than discover it.
+
+### The problem
+
+Every other fact an ingested `judgment.r2` carries is re-derived from the
+payload the same document holds. `survived_uncovered` must name positions the
+`survived` bucket actually records; `lines_without_candidates` must not name a
+line a recorded mutant starts on; `survived_uncovered` must be a subset of
+`survived`, never of the whole payload; the mutation SCORE is re-derived
+through `judge_mutation` (A-379). That is what makes an ingested R2 claim
+auditable from the artifact rather than believed.
+
+`discarded` is the exception. It is checked for **presence and
+non-negativity** and for nothing else:
+
+```
+src/assay/verify.py:964-974   # `_check_ingested_r2_agrees_with_its_payload`
+    discarded = r2.get("discarded")
+    if isinstance(discarded, bool) or not isinstance(discarded, int): ...
+    elif discarded < 0: ...
+```
+
+The schema's own bounds (`integer`, `0..10000`) say the same thing one layer
+up, so the raw layer adds no independent statement about this field at all.
+
+**Reproduced:** an adversarial reviewer edited a real ingested verdict's
+`judgment.r2.discarded` to `9999` — a count larger than the whole report's
+109 mutants, and ~9999 more invalid mutants than the run actually had — and
+`verify_document` accepted it with no failures. The document says "assay
+measured much less than this score implies" in the strongest possible terms
+and nothing contradicts it; equally, a run that really did discard most of its
+mutants could report `0` and be believed.
+
+This is not exploitable into a false GREEN — `discarded` is excluded from the
+pct denominator, so it cannot move a claim's status. It is a **credibility**
+defect: the field exists precisely so a consumer can see that a report which
+could not compile most of its own mutants has measured far less than its score
+suggests, and a value nothing checks cannot carry that.
+
+### Why this is not fixable in Wave B
+
+Because there is no derivation available, and inventing one would be worse
+than the gap.
+
+Assay sees the mutants the report LISTS. `discarded` counts mutants the report
+describes as `CompileError`/`RuntimeError` — and in
+`mutation-testing-report-schema` those mutants ARE listed, with those statuses,
+so a count is derivable *for reports shaped like the committed fixture*. What
+is NOT derivable is the thing the field is actually for: whether the foreign
+tool discarded mutants it never listed at all. Stryker does not reveal why a
+mutant was dropped before reporting, and a tool that dropped 900 candidates
+silently emits a document indistinguishable from one that generated 109. So a
+re-derivation would check the easy half, report agreement, and leave the half
+that matters exactly as unchecked as it is now — while LOOKING like the field
+had been audited. A green bar that says "checked" about the wrong half is
+worse than one that says nothing.
+
+The real question is a product call: does `discarded` mean "invalid mutants
+this report listed" (derivable, and then it should be derived and the field
+made redundant on the wire) or "invalid mutants the tool encountered"
+(not derivable from any artifact assay receives, and then it should be
+explicitly marked declared-not-verified, the way `producer_tool` already is
+under A-230a/A-361)? Those are different fields with the same name, and the
+v9 schema description — "how many mutants the ingested report marked
+CompileError or RuntimeError" — reads as the first while the field's stated
+PURPOSE reads as the second.
+
+### Evidence
+
+- `src/assay/verify.py:964-974` — the whole of the check.
+- `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties.discarded`
+  — `integer`, `minimum: 0`, `maximum: 10000`; the raw layer restates exactly
+  this and adds nothing.
+- `src/assay/verdict.py` `JudgmentR2.__post_init__` — `0..10_000`, same range,
+  no payload cross-check.
+- `tests/test_verify_ingested_r2.py::test_a_negative_discarded_count_is_caught`
+  — the ONLY negative test the field has, and it tests the range.
+- The committed real artifact
+  (`tests/fixtures/mutation/mutation-report-json.probe-js-stryker.json`) has
+  **zero** `CompileError`/`RuntimeError` mutants, so `discarded` is `0` in
+  every document this project has ever produced — the field has no non-trivial
+  witness anywhere.
+
+### The fix, once the meaning is ruled
+
+1. **Rule which field it is** — record the ruling as an A-row. "Listed" and
+   "encountered" are different contracts and only one of them is checkable.
+2. If **listed**: derive it in `assay.mutation.ingest_mutation_report` from the
+   report's own statuses, re-derive it in
+   `verify._check_ingested_r2_agrees_with_its_payload` against the payload the
+   way the other three facts are, and refuse a document whose `discarded`
+   disagrees.
+3. If **encountered**: it is declared-not-verified evidence and must say so —
+   the schema description gains that phrase in the words `producer_tool`'s
+   already uses, DESIGN-GUIDE §11's tier paragraph names it beside
+   `producer_tool`, and CONSUMERS says plainly that assay records this number
+   and does not check it.
+4. Either way, commit a real report carrying a non-zero `discarded` (a
+   deliberately uncompilable mutant is easy to produce with Stryker) so the
+   field finally has a witness.
+
+### Acceptance
+
+- [ ] the "listed vs encountered" ruling recorded as an A-row, naming which
+      alternative was rejected and why;
+- [ ] under **listed**: `discarded` re-derived from the payload in `verify.py`
+      beside the other three re-derivations, with a test that mutates it on a
+      REAL document and asserts a NAMED failure (the `9999` reproduction above
+      is the test to write);
+- [ ] under **encountered**: the declared-not-verified statement in the schema
+      description, DESIGN-GUIDE §11 and CONSUMERS, and a test asserting the
+      schema description says so — the same three-place discipline
+      `producer_tool` already carries;
+- [ ] a committed real report with a non-zero `discarded`, and a frozen
+      W-generation document carrying it, so the field has a witness at all.

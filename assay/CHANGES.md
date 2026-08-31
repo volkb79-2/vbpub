@@ -217,6 +217,45 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `cwd`.** It is independently optional and is deliberately NOT part of the
   lane-resolved all-present-or-all-absent group (A-363), so do not expect it
   alongside `argv_declared`.
+- **A lane may no longer declare a `cwd` that IS, or lies beneath, one of its
+  own `isolation.link_paths` entries.** Refused at load, naming both keys. No
+  such lane could ever have run correctly — a linked path is by rule untracked
+  at the resolved commit and a `cwd` by rule tracked — and before this refusal
+  the combination executed the lane's command in the invoking checkout instead
+  of the snapshot (see Fixed). A link BENEATH the `cwd` (`cwd = "app"` with
+  `link_paths = ["app/node_modules"]`) is the supported shape and is
+  unaffected.
+- **`mutation-testing-report-schema` major 2 is now refused.** This build
+  reads major 1 — the major the committed real artifact carries. A later major
+  is refused as *unproven* rather than as broken.
+
+### Fixed
+
+- **A lane declaring both `cwd` and `isolation.link_paths` over the same path
+  ran its command in the CONSUMER'S REAL WORKING TREE, and wrote there.**
+  `link_paths` plants its symlinks into the snapshot after the
+  committed-objects verification (A-370); the runner's commit-bound `cwd`
+  check was a filesystem test, which followed the planted link back into the
+  invoking checkout and accepted an untracked directory as commit-bound. That
+  question is now answered from the resolved commit's own manifest, which no
+  symlink can enter, and a symlink `cwd` is refused explicitly. The
+  declaration pair is additionally refused at load (see Migration notes).
+  Anyone who ran such a lane should check the linked directory for files the
+  lane's command left behind. **`docs/CONSUMERS.md` stated a guarantee that
+  was false** — that a directory untracked at the resolved commit is
+  "genuinely absent from the snapshot, because a snapshot holds committed
+  objects only" — and now states the guarantee assay actually makes.
+- **`judgment.r2.producer` had no closed vocabulary at the raw-verifier
+  layer.** Any spelling other than exactly `"ingested"` routed silently to the
+  native rules, skipping every ingested check. The schema layer already caught
+  this end to end, so no document could reach a consumer this way; the raw
+  layer now refuses an unrecognised producer by name and takes neither branch.
+- **`snapshot_policy.link_paths`, `judgment.r2.survived_uncovered` and
+  `judgment.r2.lines_without_candidates` promised that their array ORDER is
+  "checked by the model and the raw verifier", and the raw verifier checked no
+  such thing.** The three missing raw checks are now implemented. No schema
+  change: the descriptions were correct about the design and wrong about the
+  code, so the code moved.
 
 <!-- cmru: release history -->
 

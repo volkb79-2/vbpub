@@ -1,0 +1,1407 @@
+{
+  "schema_version": 9,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "1c35c8e1479fdad715ec0be1f4599c0812d774c8",
+  "outcome": "FAIL",
+  "exit_code": 1,
+  "started": "@STARTED@",
+  "ended": "@ENDED@",
+  "reason_code": "MUTANTS_SURVIVED",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "mkdir -p reports && sed \"s|$PLACEHOLDER|$PWD|\" \"$STAGED_REPORT\" > reports/mutation.json"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "mkdir -p reports && sed \"s|$PLACEHOLDER|$PWD|\" \"$STAGED_REPORT\" > reports/mutation.json"
+  ],
+  "argv_modified": false,
+  "env_declared": {
+    "STAGED_REPORT": "/tmp/pytest-of-vscode/pytest-5243/test_generate0/report.json",
+    "PLACEHOLDER": "__ASSAY_TEST_PROJECT_ROOT__"
+  },
+  "env_effective": {
+    "STAGED_REPORT": "/tmp/pytest-of-vscode/pytest-5243/test_generate0/report.json",
+    "PLACEHOLDER": "__ASSAY_TEST_PROJECT_ROOT__"
+  },
+  "scope": "S1",
+  "enforcement": "gate",
+  "cwd_declared": "app",
+  "judgment": {
+    "resolved": {
+      "language": "javascript",
+      "source_roots": [
+        "app/src"
+      ],
+      "base": "42ffafd562d2d61b958deab36b77a3a54027cd38",
+      "base_resolution": "merge-base"
+    },
+    "r2": {
+      "kill_attribution": "unattributed",
+      "mode": "changed_lines",
+      "producer": "ingested",
+      "producer_tool": {
+        "name": "StrykerJS",
+        "version": "10.0.0",
+        "report_schema_version": "1.0"
+      },
+      "survived_uncovered": [
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 8
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 10
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 11
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 12
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 13
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 15
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 21
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 22
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 2
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 8
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 15
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 18
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 20
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 22
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 24
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 25
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 26
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 27
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 28
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 29
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 30
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 31
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 33
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 34
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 35
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 38
+        },
+        {
+          "path": "app/src/hinted.ts",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/hinted.ts",
+          "lineno": 4
+        },
+        {
+          "path": "app/src/orphan.ts",
+          "lineno": 1
+        },
+        {
+          "path": "app/src/orphan.ts",
+          "lineno": 2
+        }
+      ],
+      "discarded": 0,
+      "lines_without_candidates": [
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 1
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 4
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 5
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 6
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 9
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 14
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 16
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 17
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 18
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 19
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 23
+        },
+        {
+          "path": "app/src/Badge.tsx",
+          "lineno": 24
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 4
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 7
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 9
+        },
+        {
+          "path": "app/src/branchy.ts",
+          "lineno": 10
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 1
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 2
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 4
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 5
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 6
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 7
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 11
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 12
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 13
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 14
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 17
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 21
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 32
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 36
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 37
+        },
+        {
+          "path": "app/src/format.ts",
+          "lineno": 39
+        },
+        {
+          "path": "app/src/hinted.ts",
+          "lineno": 2
+        },
+        {
+          "path": "app/src/hinted.ts",
+          "lineno": 5
+        },
+        {
+          "path": "app/src/hinted.ts",
+          "lineno": 7
+        },
+        {
+          "path": "app/src/orphan.ts",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 1
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 3
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 4
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 5
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 6
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 8
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 9
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 10
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 11
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 13
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 14
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 15
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 16
+        },
+        {
+          "path": "app/src/roles.ts",
+          "lineno": 20
+        }
+      ]
+    }
+  },
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "FAIL",
+      "verified_by_assay": true,
+      "reason_code": "MUTANTS_SURVIVED",
+      "mutation": {
+        "candidate_count": 109,
+        "total": 109,
+        "killed": [
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 1,
+            "start_byte": 43,
+            "end_byte": 182,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 2,
+            "start_byte": 51,
+            "end_byte": 56,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 2,
+            "start_byte": 51,
+            "end_byte": 56,
+            "replacement_sha256": "c452007488ce5f2eb770482b8f021a7a6254acb09e72face95f64055066ee1de",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n >= 0"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 2,
+            "start_byte": 51,
+            "end_byte": 56,
+            "replacement_sha256": "d99bd5fd315256d50efb33314e3d1cbbbd4e48f954e7321da18da99d733b9617",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n <= 0"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 5,
+            "start_byte": 92,
+            "end_byte": 99,
+            "replacement_sha256": "1e83b71224ff25504898d59045bf21a772733f6bbcabdf4bb6ef5701477a22bc",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n !== 0"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 5,
+            "start_byte": 92,
+            "end_byte": 99,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 5,
+            "start_byte": 101,
+            "end_byte": 124,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 6,
+            "start_byte": 114,
+            "end_byte": 120,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 8,
+            "start_byte": 368,
+            "end_byte": 1282,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 438,
+            "end_byte": 441,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 1,
+            "start_byte": 42,
+            "end_byte": 129,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 3,
+            "start_byte": 79,
+            "end_byte": 84,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 3,
+            "start_byte": 79,
+            "end_byte": 84,
+            "replacement_sha256": "c452007488ce5f2eb770482b8f021a7a6254acb09e72face95f64055066ee1de",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n >= 0"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 6,
+            "start_byte": 123,
+            "end_byte": 127,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 7,
+            "start_byte": 242,
+            "end_byte": 290,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:ObjectLiteral",
+            "description": "ObjectLiteral -> {}"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 17,
+            "start_byte": 522,
+            "end_byte": 608,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 18,
+            "start_byte": 530,
+            "end_byte": 535,
+            "replacement_sha256": "4b168d88dc872a7753c2bc35b36a2d4249487af55baf78f247f38cae2fe962da",
+            "operator": "stryker:BooleanLiteral",
+            "description": "BooleanLiteral -> role"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 18,
+            "start_byte": 530,
+            "end_byte": 535,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 18,
+            "start_byte": 544,
+            "end_byte": 549,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:BooleanLiteral",
+            "description": "BooleanLiteral -> true"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 19,
+            "start_byte": 559,
+            "end_byte": 606,
+            "replacement_sha256": "54a7d94c596e96462456bd69d43d27f6a7fe7a9f8020644e06e0dcafd3d06cfe",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> ROLE_HIERARCHY[role] < ROLE_HIERARCHY[minRole]"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 19,
+            "start_byte": 559,
+            "end_byte": 606,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          }
+        ],
+        "survived": [
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 8,
+            "start_byte": 159,
+            "end_byte": 340,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 10,
+            "start_byte": 180,
+            "end_byte": 252,
+            "replacement_sha256": "17a3dce1cb3651ddb6224126e0b0e0c79b03008b0fdab434b49654a3556f30d6",
+            "operator": "stryker:LogicalOperator",
+            "description": "LogicalOperator -> label && (role === 'admin' ? 'Administrator' : 'Member')"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 11,
+            "start_byte": 194,
+            "end_byte": 210,
+            "replacement_sha256": "409ecbb484c73dbb48d05cf2584abd72013488f709468fdc2c5b0244c5c396d9",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> role !== 'admin'"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 11,
+            "start_byte": 194,
+            "end_byte": 210,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 11,
+            "start_byte": 194,
+            "end_byte": 210,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 11,
+            "start_byte": 203,
+            "end_byte": 210,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 12,
+            "start_byte": 219,
+            "end_byte": 234,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 13,
+            "start_byte": 243,
+            "end_byte": 251,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 15,
+            "start_byte": 285,
+            "end_byte": 307,
+            "replacement_sha256": "059b850298ae33529c41f5466960be1c7436e9dced68e6ca7a5f5d6dca520d8a",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> ``"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 21,
+            "start_byte": 393,
+            "end_byte": 441,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/Badge.tsx",
+            "lineno": 22,
+            "start_byte": 413,
+            "end_byte": 422,
+            "replacement_sha256": "daee9305bb16e7ada5109d76fbb86c22d6e21cd0f910891d77d0247f5e44debf",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> value / 2"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 2,
+            "start_byte": 51,
+            "end_byte": 56,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 2,
+            "start_byte": 58,
+            "end_byte": 85,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 3,
+            "start_byte": 71,
+            "end_byte": 81,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 5,
+            "start_byte": 92,
+            "end_byte": 99,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 141,
+            "end_byte": 147,
+            "replacement_sha256": "13ff40a61509d9ded66f3e0fcd02366ead4475c84c1cf29487bd6cfaf6d865c2",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n >= 10"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 141,
+            "end_byte": 147,
+            "replacement_sha256": "5f98cf9cf47bbc526389f3a216aa3b6eab890a48aab3d52af4dbb0f5dd035292",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n <= 10"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 141,
+            "end_byte": 147,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 141,
+            "end_byte": 147,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 150,
+            "end_byte": 155,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/branchy.ts",
+            "lineno": 8,
+            "start_byte": 158,
+            "end_byte": 165,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 390,
+            "replacement_sha256": "b579cf79ff68426085ef0b10a622efd4a0ac93d0dbf73344f865cd99941d7972",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> value !== null"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 390,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 413,
+            "replacement_sha256": "281e1b5fd2ff4a342c94a01dcec0ab9bdc0e9846eb9ffcec3f04a82a7bffc22c",
+            "operator": "stryker:LogicalOperator",
+            "description": "LogicalOperator -> value === null && value === undefined"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 413,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 429,
+            "replacement_sha256": "9a8eebbc75d38ac475e853aadaf38436f25e024bb12d6bfb75544102997dcbed",
+            "operator": "stryker:LogicalOperator",
+            "description": "LogicalOperator -> (value === null || value === undefined) && value === ''"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 429,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 376,
+            "end_byte": 429,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 394,
+            "end_byte": 413,
+            "replacement_sha256": "2baeff57a64acd6dc189360fe14b592211b0561f2876ac8262314e9d52c1517a",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> value !== undefined"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 394,
+            "end_byte": 413,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 417,
+            "end_byte": 429,
+            "replacement_sha256": "48781eb954be55b95411332229d8fedc09266d3a9464cb8bcb177676110f22f8",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> value !== ''"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 417,
+            "end_byte": 429,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 9,
+            "start_byte": 427,
+            "end_byte": 429,
+            "replacement_sha256": "35a34e489e84c0beaa8bf0c3c1deffd1fc22821848c65cbb58d8c92cc00463c1",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"Stryker was here!\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 593,
+            "end_byte": 618,
+            "replacement_sha256": "91a05ea2e75b7129fcf850c37c04b5f1eea98285ed41aa35f941ab8bf14cbc8c",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> typeof value !== 'number'"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 593,
+            "end_byte": 618,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 593,
+            "end_byte": 634,
+            "replacement_sha256": "93b33b752b1d622d4d60bcf27d728c869210617c63c1f3987dd9ea7e64fa3a91",
+            "operator": "stryker:LogicalOperator",
+            "description": "LogicalOperator -> typeof value === 'number' || value < 1e12"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 593,
+            "end_byte": 634,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 593,
+            "end_byte": 634,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 610,
+            "end_byte": 618,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 622,
+            "end_byte": 634,
+            "replacement_sha256": "0a8689218c55f7d2d54a1cc017827703e64b3e58d17dcb9728f54c981c15ecb5",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> value <= 1e12"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 622,
+            "end_byte": 634,
+            "replacement_sha256": "0ac86105892d7d87b036193bcae2d4edff0cb7e95ba8e1eaed55c8a5b04dde1b",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> value >= 1e12"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 622,
+            "end_byte": 634,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 15,
+            "start_byte": 637,
+            "end_byte": 649,
+            "replacement_sha256": "795a9055b8625e20591a7113256d41b0d4db3cebf1ca5771afa14b56e212599a",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> value / 1000"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 18,
+            "start_byte": 694,
+            "end_byte": 710,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 18,
+            "start_byte": 694,
+            "end_byte": 710,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 18,
+            "start_byte": 719,
+            "end_byte": 722,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 20,
+            "start_byte": 755,
+            "end_byte": 779,
+            "replacement_sha256": "59adf9bda28d4c89e074ddd3594573b418037035482ec6512bbe2f964f1aa67f",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> (ms - Date.now()) * 1000"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 20,
+            "start_byte": 756,
+            "end_byte": 771,
+            "replacement_sha256": "748156b14be7f10217b61d0a29635fcd6462780f4ba5f7cbcda7f720cd4237a8",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> ms + Date.now()"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 22,
+            "start_byte": 866,
+            "end_byte": 901,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:ObjectLiteral",
+            "description": "ObjectLiteral -> {}"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 22,
+            "start_byte": 877,
+            "end_byte": 883,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 22,
+            "start_byte": 892,
+            "end_byte": 899,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 24,
+            "start_byte": 961,
+            "end_byte": 1115,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 25,
+            "start_byte": 967,
+            "end_byte": 985,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 25,
+            "start_byte": 968,
+            "end_byte": 974,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 26,
+            "start_byte": 991,
+            "end_byte": 1009,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 26,
+            "start_byte": 992,
+            "end_byte": 999,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 27,
+            "start_byte": 1015,
+            "end_byte": 1031,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 27,
+            "start_byte": 1016,
+            "end_byte": 1022,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 28,
+            "start_byte": 1037,
+            "end_byte": 1051,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 28,
+            "start_byte": 1038,
+            "end_byte": 1043,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 29,
+            "start_byte": 1057,
+            "end_byte": 1071,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 29,
+            "start_byte": 1058,
+            "end_byte": 1064,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 30,
+            "start_byte": 1077,
+            "end_byte": 1091,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 30,
+            "start_byte": 1078,
+            "end_byte": 1086,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 31,
+            "start_byte": 1097,
+            "end_byte": 1110,
+            "replacement_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "operator": "stryker:ArrayDeclaration",
+            "description": "ArrayDeclaration -> []"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 31,
+            "start_byte": 1098,
+            "end_byte": 1106,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 33,
+            "start_byte": 1152,
+            "end_byte": 1265,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1173,
+            "replacement_sha256": "377ba99abbd5c75741055c7299bc88664c5e10c4be531536d435f886692a08bd",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> abs > secs"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1173,
+            "replacement_sha256": "44ef89f0c3e1b0ee824b3231d25acb927e5cb0e2fe67d36a3ef76a20685dc054",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> abs < secs"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1173,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1194,
+            "replacement_sha256": "0abd1d0f4b1ca900e35564b98e68882037150d089ac39db513358f7c784af83e",
+            "operator": "stryker:LogicalOperator",
+            "description": "LogicalOperator -> abs >= secs && unit === 'second'"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1194,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1162,
+            "end_byte": 1194,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1177,
+            "end_byte": 1194,
+            "replacement_sha256": "10247bec1f91072daed9c33fb6770f119c9bb848c0357813623a223a64de2721",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> unit !== 'second'"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1177,
+            "end_byte": 1194,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1186,
+            "end_byte": 1194,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 34,
+            "start_byte": 1196,
+            "end_byte": 1261,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 35,
+            "start_byte": 1233,
+            "end_byte": 1247,
+            "replacement_sha256": "4e83733815eb3b1e3cbb8adab85f4c4bc5be53a092b602265cd78ae870075169",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> diffSec * secs"
+          },
+          {
+            "path": "app/src/format.ts",
+            "lineno": 38,
+            "start_byte": 1275,
+            "end_byte": 1278,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 3,
+            "start_byte": 79,
+            "end_byte": 84,
+            "replacement_sha256": "d99bd5fd315256d50efb33314e3d1cbbbd4e48f954e7321da18da99d733b9617",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> n <= 0"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 3,
+            "start_byte": 79,
+            "end_byte": 84,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 3,
+            "start_byte": 86,
+            "end_byte": 113,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/hinted.ts",
+            "lineno": 4,
+            "start_byte": 99,
+            "end_byte": 109,
+            "replacement_sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+            "operator": "stryker:StringLiteral",
+            "description": "StringLiteral -> \"\""
+          },
+          {
+            "path": "app/src/orphan.ts",
+            "lineno": 1,
+            "start_byte": 56,
+            "end_byte": 74,
+            "replacement_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "operator": "stryker:BlockStatement",
+            "description": "BlockStatement -> {}"
+          },
+          {
+            "path": "app/src/orphan.ts",
+            "lineno": 2,
+            "start_byte": 67,
+            "end_byte": 72,
+            "replacement_sha256": "5a079debdfff12da1d964e8d70c9517ee439bec8f4dacfbc05277931c3b8f778",
+            "operator": "stryker:ArithmeticOperator",
+            "description": "ArithmeticOperator -> a - b"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 18,
+            "start_byte": 530,
+            "end_byte": 535,
+            "replacement_sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> false"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 19,
+            "start_byte": 559,
+            "end_byte": 606,
+            "replacement_sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b",
+            "operator": "stryker:ConditionalExpression",
+            "description": "ConditionalExpression -> true"
+          },
+          {
+            "path": "app/src/roles.ts",
+            "lineno": 19,
+            "start_byte": 559,
+            "end_byte": 606,
+            "replacement_sha256": "bcbf63afc5ee5d39d7fbf781c27f13a6768e30d6aa71a7359f7d8625f482be47",
+            "operator": "stryker:EqualityOperator",
+            "description": "EqualityOperator -> ROLE_HIERARCHY[role] > ROLE_HIERARCHY[minRole]"
+          }
+        ],
+        "crashed": [],
+        "budget_exceeded": [],
+        "equivalent": []
+      }
+    }
+  ],
+  "evidence": []
+}
