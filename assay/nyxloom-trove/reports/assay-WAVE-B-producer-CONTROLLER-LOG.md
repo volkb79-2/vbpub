@@ -220,3 +220,26 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   (the next real free number) once it resumes with the gate result — not
   urgent enough to interrupt its wait, which it explicitly said not to
   poll (using its own monitor).
+
+- **2026-08-31 (fix round 1 — complete and green)** — Final tip `c1176bd0`.
+  Registered gate green with a CAPTURED exit code 0 (not just the receipt
+  marker — that gap was itself MUST-FIX 5, now closed three times over
+  across `4780c4ba`/`05947625`/`c1176bd0`), `ASSAY_REGISTERED_GATE_
+  COMPLETE=1` literal last line, 11 phase markers. Full suite 3801
+  passed/13 skipped/0 failed (+22 nodes over the wave's pre-fix baseline).
+  All 8 review items done + both backlog items filed (B051 = the
+  `discarded`-unwitnessed gap, B052 = the reviewer's original
+  ingested-source-verification recommendation — no actual displacement,
+  just my own confusion in relaying it, resolved last entry). Exactly one
+  `!` commit in the whole wave (`af14021f` only — the blocker fix was
+  deliberately kept as `fix(assay):`). Three things the fix-round
+  implementer itself flags for the reviewer to check first: the B051/B052
+  numbering; dropping the `!` from the blocker commit; and the judgment
+  that tracked+linked `cwd` is not a legitimate combination (given up by
+  the load-time refusal, backed by a passing end-to-end node proving a
+  link BENEATH the cwd still works) — this is the load-bearing design call
+  under A-384. Also: the escape-reproduction test was confirmed to
+  genuinely require BOTH parts of the fix reverted to fail (not just one),
+  a real regression-test quality signal. **Resuming the ORIGINAL reviewer
+  now for fix-verification** (round 2 — same session, `SendMessage`, per
+  the dispatch skill's fix-verification role rule), not a fresh reviewer.
