@@ -2253,6 +2253,49 @@ def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, ca
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
 
 
+def test_check_identity_survives_a_non_utf8_ciu_env(tmp_path, capsys):
+    """CIU-62 — a non-UTF-8 byte in ciu.env is `UnicodeDecodeError`, which is
+    a `ValueError` subclass and therefore caught by NEITHER `OSError` nor
+    `WorkspaceEnvError` (its sibling `ValueError` subclass). Before the fix
+    this escaped `_workspace_identity` and crashed `ciu check` with a raw
+    traceback; the documented contract is "absent or unreadable yields {}",
+    i.e. the hook context's identity fields stay None. Written with a REAL
+    undecodable file rather than a monkeypatched raiser, so it proves the
+    exception type the shipped reader actually produces."""
+    (tmp_path / "ciu.env").write_bytes(b'export INSTANCE_ID="\xff\xfe"\n')
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return [] if ctx.instance_id is None else [f"leaked {ctx.instance_id}"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+def test_check_identity_survives_a_malformed_ciu_env_entry(tmp_path, capsys):
+    """CIU-62 sibling of the above: a malformed entry raises
+    `WorkspaceEnvError`, the OTHER `ValueError` subclass — also degrades to
+    the documented {}."""
+    (tmp_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return [] if ctx.instance_id is None else [f"leaked {ctx.instance_id}"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
 def test_check_secret_file_callback_refuses_every_name(tmp_path):
     """The named design decision, pinned: KeyError for ANY name during check."""
     with pytest.raises(KeyError, match="unavailable during"):

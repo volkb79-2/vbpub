@@ -808,7 +808,15 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      `ciu.env` by exact path (S2.7 authority), never from ambient state; the
      selected stacks' compose-created networks are enumerated EXACTLY by the
      compose project label (covering `<project>_default` AND custom-named
-     compose networks) — never inferred from a naming convention.
+     compose networks) — never inferred from a naming convention. An ABSENT
+     `ciu.env` means there is no workspace identity network (a checkout where
+     `ciu env generate` was never run) and is not an error; a `ciu.env` that
+     is PRESENT but unreadable — unreadable by any of the three distinct ways
+     it can be, an OS read error, a non-UTF-8 byte, or a malformed entry
+     (CIU-62) — leaves the name INDETERMINATE, which is named in the output
+     and fails the clean. Indeterminacy is never folded into "this workspace
+     has no identity network", which would drop the network from both the
+     removal pass and the clause-5 survivor check at once.
   2. Lingering endpoints are disconnected before removal; an endpoint that
      cannot be disconnected is NAMED and fails the clean — a network is never
      silently kept.

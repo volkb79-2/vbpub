@@ -1120,7 +1120,7 @@ def _preflight_shared_infra_for_add(
     """S16.1 — resolve and validate `worktree add --shared-infra` input
     BEFORE any side effect (no git worktree, no checkout). Read-only Docker
     checks only; see the module's O1 contract."""
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import WorkspaceEnvError, parse_workspace_env
 
     managed_ref = find_instance_record(repo_root, shared_infra)
     ref = (
@@ -1142,7 +1142,10 @@ def _preflight_shared_infra_for_add(
         )
     try:
         ref_env = parse_workspace_env(ref_env_file)
-    except OSError as exc:
+    # CIU-62: see connect_shared_infra_after_up — read failure, non-UTF-8 byte
+    # and malformed entry are three unrelated exception types, all of them
+    # "could not read the reference worktree's ciu.env".
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
         raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
 
     network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
@@ -1224,7 +1227,7 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     # primary's REPO_ROOT set it would read the PRIMARY's ciu.env and we would
     # clean the wrong instance under a convincingly-correct-looking env. Name
     # the file explicitly; it is a fact, not something to search for.
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import WorkspaceEnvError, parse_workspace_env
 
     env_file = worktree / "ciu.env"
     if not env_file.is_file():
@@ -1237,7 +1240,12 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     env = dict(os.environ)
     try:
         env.update(parse_workspace_env(env_file))
-    except OSError as exc:
+    # CIU-62: cleaning the wrong instance is the failure this whole function
+    # exists to prevent, so an unreadable ciu.env must refuse — whether it is
+    # an OSError, a non-UTF-8 byte (UnicodeDecodeError) or a malformed entry
+    # (WorkspaceEnvError). The last two are sibling ValueError subclasses;
+    # neither name catches the other.
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
         raise WorktreeError(f"[S16] could not read {env_file}: {exc}") from exc
 
     argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["-y"] if yes else [])
@@ -3854,7 +3862,7 @@ def connect_shared_infra_after_up(
     Never runs ``docker compose down`` on failure: this instance's own stack
     stays up, on its own network, observably not joined.
     """
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import WorkspaceEnvError, parse_workspace_env
 
     ref = find_worktree(repo_root, str(intent.ref_path))
     if ref is None:
@@ -3873,7 +3881,11 @@ def connect_shared_infra_after_up(
         )
     try:
         ref_env = parse_workspace_env(ref_env_file)
-    except OSError as exc:
+    # CIU-62: three distinct failures, one refusal. `OSError` is the read;
+    # `UnicodeDecodeError` is a non-UTF-8 byte (a `ValueError` subclass, NOT an
+    # `OSError`); `WorkspaceEnvError` is a malformed entry (a DIFFERENT
+    # `ValueError` subclass). Neither name alone covers the other two.
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
         raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
 
     current_network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
@@ -4284,7 +4296,10 @@ def _resolve_budget_candidates(
             continue
         try:
             candidate_env = parse_workspace_env(env_file)
-        except (OSError, WorkspaceEnvError) as exc:
+        # CIU-62: `UnicodeDecodeError` (non-UTF-8 byte) is a ValueError
+        # subclass and a SIBLING of WorkspaceEnvError, not a subclass of it —
+        # naming both plus OSError is what actually covers parse failure.
+        except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
             raise WorktreeError(
                 f"[S16.3] could not read/parse {env_file}: {exc}"
             ) from exc

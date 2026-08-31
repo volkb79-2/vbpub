@@ -1925,13 +1925,20 @@ def _workspace_identity(repo_root: Path) -> dict:
     state). An absent or unreadable ``ciu.env`` yields ``{}`` — the context
     fields then stay ``None``, exactly as during a real run outside a
     provisioned workspace.
+
+    "Unreadable" here is all three ways the read can fail (CIU-62): an
+    ``OSError``, a non-UTF-8 byte (``UnicodeDecodeError``) and a malformed
+    entry (``WorkspaceEnvError``). The last two are sibling ``ValueError``
+    subclasses, so neither name covers the other; before CIU-62 a non-UTF-8
+    ``ciu.env`` escaped this handler and crashed ``ciu check`` with a raw
+    traceback instead of degrading to the documented ``{}``.
     """
     env_path = repo_root / "ciu.env"
     if not env_path.is_file():
         return {}
     try:
         return parse_workspace_env(env_path)
-    except (WorkspaceEnvError, OSError):
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError):
         return {}
 
 
@@ -2887,14 +2894,32 @@ def _workspace_identity_network(repo_root: Path) -> str:
     name — never the ambient process environment, which a shell that sourced
     a different checkout's ciu.env may carry (CIU-41). Empty when no
     ciu.env/record exists or it names no network.
+
+    CIU-62 — the semantics decision, not a token widening. Two conditions used
+    to collapse into the same ``""``: "this checkout has no generated record"
+    (legitimate: `ciu env generate` was never run here) and "the record exists
+    but CIU could not parse it". Only the first is genuinely *no network*; the
+    second is INDETERMINATE, and folding it into ``""`` is the estate's
+    absence-for-emptiness anti-pattern with a live consequence — an instance
+    clean would silently skip removing its own identity network and still
+    announce the S6.4a zero-objects invariant as satisfied, because a network
+    that was never resolved is never enumerated as a survivor either. So a
+    PRESENT but unreadable ciu.env raises: ``OSError`` (read), a non-UTF-8
+    byte (``UnicodeDecodeError``) and a malformed entry
+    (``WorkspaceEnvError``) all become one ``ValueError``, which
+    :func:`action_clean` reports and fails the clean on — the same treatment
+    its sibling volume/network/container enumerations already give
+    indeterminacy. An ABSENT ciu.env still returns ``""``, unchanged.
     """
     env_path = repo_root / "ciu.env"
     if not env_path.is_file():
         return ""
     try:
         values = parse_workspace_env(env_path)
-    except WorkspaceEnvError:
-        return ""
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        raise ValueError(
+            f"could not read the workspace identity network from {env_path}: {exc}"
+        ) from exc
     return values.get("DOCKER_NETWORK_INTERNAL", "")
 
 
@@ -3400,7 +3425,18 @@ def action_clean(
     # identity network comes from THIS workspace's own ciu.env; the per-stack
     # ``<compose-project>_default`` networks come from the S8.7 project names.
     is_instance = _is_worktree_instance(repo_root)
-    identity_network = _workspace_identity_network(repo_root)
+    try:
+        identity_network = _workspace_identity_network(repo_root)
+    except ValueError as exc:
+        # CIU-62: a PRESENT but unparseable ciu.env leaves the identity
+        # network indeterminate. Never fold that into "there is no identity
+        # network" — that would skip its removal AND skip it from the S6.4a
+        # survivor check, reporting a complete clean over a surviving network.
+        # Same treatment as the sibling volume/network/container enumerations
+        # above: say so, fail the clean, keep going so the rest still runs.
+        error(f"workspace identity network unresolvable (S6.4a): {exc}")
+        rc = 1
+        identity_network = ""
     keep_networks: dict[str, str] = {}
     if identity_network and not is_instance:
         keep_networks[identity_network] = (

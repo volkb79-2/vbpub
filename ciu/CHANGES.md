@@ -54,6 +54,10 @@ restatement of the technical detail below it.
 - **Docs only, no behavior change:** a new CONSUMERS.md migration note
   (hand-rolled `internal_host` override → `--shared-infra-ref-services`) and
   a consolidated "Optional extras" install table in README.md.
+- **Action needed if your checkout has a corrupt `ciu.env`:** CIU-62 makes
+  `ciu clean` FAIL on a present-but-unreadable `ciu.env` instead of treating
+  it as "no identity network" and under-cleaning silently. An absent
+  `ciu.env` is unchanged and still green. Repair with `ciu env generate`.
 
 ### Added
 - feat(ciu): **CIU-60 — identity facts reach TEMPLATES through a real file,
@@ -157,6 +161,37 @@ restatement of the technical detail below it.
   excluded (it is for CIU's own contributors, not consumers). Purely
   additive: the existing per-feature mentions in `docs/CONFIG.md` and
   `docs/CONSUMERS.md` are unchanged. Docs-only; no behavior changes.
+
+### Fixed
+- fix(ciu): **CIU-62 — a `ciu.env` that cannot be read is now handled the
+  same way at every site that reads one** (ciu-P41). `parse_workspace_env`
+  can fail three unrelated ways — `OSError` (the read), `UnicodeDecodeError`
+  (a non-UTF-8 byte) and `WorkspaceEnvError` (a malformed entry). The last
+  two are SIBLING `ValueError` subclasses, so naming either one alone catches
+  neither the other nor `OSError`. Six sites carried four different clause
+  shapes; the four genuinely narrow ones now name all three types:
+  `worktree.py`'s shared-infra add preflight and post-up join (S16.1), its
+  `_clean_in` target-identity read (S16), its S16.3 budget-candidate survey,
+  and `deploy.py`'s `_workspace_identity` (the `ciu check` hook context,
+  which already DOCUMENTED "absent or unreadable yields `{}`" but crashed on
+  a non-UTF-8 byte). The three bare-`except OSError` sites failed on the
+  COMMON malformed-entry case, not just the exotic byte.
+- fix(ciu)!: **CIU-62 — `ciu clean` no longer reads an unreadable `ciu.env`
+  as "this workspace has no identity network"** (S6.4a clause 1, ciu-P41).
+  The one site where widening the clause was a semantics decision rather than
+  a token fix. An ABSENT `ciu.env` still means there is genuinely no
+  workspace identity network (a checkout where `ciu env generate` was never
+  run) and stays green, unchanged. A `ciu.env` that is PRESENT but unreadable
+  now leaves the name INDETERMINATE: `clean` prints
+  `workspace identity network unresolvable (S6.4a): …` and exits non-zero,
+  the same treatment its sibling volume, network and container enumerations
+  already give indeterminacy. Previously a malformed `ciu.env` was swallowed
+  to `""`, which dropped the network from the removal pass AND from the
+  post-clean survivor check in one move — so an instance clean could announce
+  the S6.4a zero-objects invariant as satisfied over its own surviving
+  network. **Action needed only if** you run `ciu clean` in a checkout whose
+  `ciu.env` is corrupt: that clean now fails instead of quietly under-cleaning.
+  Re-run `ciu env generate` to repair the record.
 
 ## [7.4.0] - 2026-08-25
 <!-- cmru: generated -->
