@@ -96,3 +96,27 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   verify.py currently checks NOTHING about an ingested payload — this is
   B046's gap to close, not a new problem), B043, B041(b), REPORT, gate.
   Dispatching generation 4, fresh, seeded with all three briefs.
+
+- **2026-08-31 (implementation complete)** — Generation 4 finished the full
+  scope: B046 (`d0aab6fd`, R2 by evidence ingestion + javascript at R2),
+  the 601-line REPORT (`1a783f3e`), gate transcript (`a4bf1bc3` — final
+  tip). Registered gate PASS on the exact tip (`exit 0`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, wheel `assay-3.2.1.dev17+ga4bf1bc3`,
+  all 11 phase markers incl. `verdict-v9-successors-verified`). Full suite
+  3779 passed/13 skipped/0 failed. **Correction logged**: mid-checkpoint I
+  mistakenly called `Agent` with a text `to:` prefix instead of
+  `SendMessage` to resume generation 4 while it waited on its own gate run
+  — spawned a duplicate context-free agent, caught immediately (new
+  agentId in the result), killed it via `TaskStop` before it touched
+  anything, then properly resumed generation 4 via `SendMessage`. No
+  worktree impact; memory `agent-resume-via-sendmessage-not-agent-tool`
+  updated with this second occurrence. Five items generation 4 flags for
+  the reviewer (not controller decisions): A-360's two unendorsed
+  extensions; A-354 (go-cover producers); **B050 filed** (ingested
+  `fail_under` only accepted at exactly 100.0 -- a real gap, needs a v10+
+  schema field, not fixable under the frozen v9); gate run 1's exit code
+  was never captured (nohup, receipt-marker only) -- run 2's evidence
+  (which judges the actual tip) is what's being claimed on; A-335 restated
+  (gate-green != release-green, release not run). **Dispatching a FRESH
+  Opus reviewer now** (different session from every implementer
+  generation), per the wave plan's role rules.
