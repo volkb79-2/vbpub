@@ -339,7 +339,7 @@ gate-verified (A-335).
 
 ---
 
-## 7 — `<pending>` · `test(assay): W5 -- the v9 frozen drift-guard generation, and the gate wiring that demotes W4`
+## 7 — `1577fa45` · `test(assay): W5 -- the v9 frozen drift-guard generation, and the gate wiring that demotes W4`
 
 **Files:**
 
