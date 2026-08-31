@@ -173,3 +173,65 @@ deterministic.
 `d69d7c3db5398856fb677faf6fa2bb31af26057b` — `fix(ciu): apply_lease gains
 now: override, fixes clock-coincidence test (CIU-76)` —
 `src/ciu/worktree.py` + `tests/tests/test_ciu_worktree_reap.py`.
+
+---
+
+## Addendum — independent adversarial review, ACCEPT-conditional (2026-08-31)
+
+Review came back ACCEPT-conditional on the combined CIU-69+CIU-76 work,
+account found accurate and not overstated. Four blockers before merge; all
+folded into this package, as clear separate commits.
+
+### Rebase (again)
+
+Branch had fallen one commit behind `main` (`aa6cf1fd`, the CIU-78 fix).
+`git rebase main` — clean, no conflicts (that commit only touches
+`test_ciu_deploy_actions.py`, untouched by this package). New hashes for the
+CIU-69/CIU-76 sequence: `8374ea13`, `e4ad370e`, `22a87908`, `eb023f24`,
+`79be9b6c`, `4a1f23d9`.
+
+### Blocker 1 — `docs/CONFIG.md` stale two-key claim
+
+Fixed exactly as the reviewer prescribed: section heading
+`[S16.3/S16.9]` -> `[S16.3/S16.7/S16.9]`, new table row for `exec_targets`
+(verbatim text supplied by the reviewer, including the SPEC.md anchor),
+"Both keys share ONE closed table" -> "These keys share ONE closed table".
+This is the exact edit this package's own original LOG/REPORT had already
+identified and deliberately deferred as out-of-scope — the reviewer
+confirmed that escalation call was correct and authorized doing it here.
+
+### Blocker 2 — untested `now=` threading to `make_lease_perpetual`
+
+Independently reproduced the reviewer's finding before trusting it: deleted
+`now=now` from the `make_lease_perpetual(...)` call inside `apply_lease` and
+reran the full local suite — 3262 passed, 0 failed, confirming the argument
+is genuinely unexercised. Restored, added
+`test_perpetual_honours_an_injected_now` (`TestApplyLease`, right after
+`test_perpetual_sets_an_unbounded_lease`), asserting
+`apply_lease(..., perpetual=True, now=NOW).lease.renewed_at_utc ==
+worktree._utc_stamp(NOW)`. Controlled-wrong-implementation check: deleting
+`now=now` again makes this new test fail
+(`AssertionError: '<real-clock-stamp>' == '2026-08-25T12:00:00Z'`); restored,
+diff confirmed byte-identical to the committed state.
+
+Also checked, per the reviewer's own "verify, don't assume" instruction,
+whether the matching `--extend` path (the `acquire_lease(...)` call) needed
+a similar new direct oracle. Same method: deleted `now=now` from that call
+site, reran the full suite — this time 1 test FAILED
+(`test_re_expiring_after_an_extend_becomes_lease_expired_again`, this
+package's own CIU-76 test), confirming that path is ALREADY load-bearing.
+No redundant new test added for `--extend`.
+
+### Blocker 3 — backlog rows still OPEN
+
+Read `aa6cf1fd`'s (CIU-78) exact convention: a row's status field rewritten
+from `OPEN — filed ...` to `FIXED — <fixing package>: <summary>`, plus a new
+"Last updated" header entry naming both fixed issues, with the prior entries
+demoted to "Previously, ...". Applied the identical shape to CIU-69 and
+CIU-76's rows and prepended a matching header entry.
+
+### Blocker 4 — rebase onto `aa6cf1fd` + real gate
+
+Already rebased above (this was done first, before blockers 1-3, since it's
+a precondition for a meaningful gate run). Real gate run recorded in the
+REPORT addendum, verdict read in a separate step from the run itself.
