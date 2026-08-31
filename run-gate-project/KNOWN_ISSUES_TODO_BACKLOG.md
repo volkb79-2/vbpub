@@ -44,6 +44,7 @@ SPEC §9.
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | OPEN 2026-08-30 |
 | RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
+| RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
 
 ---
 
@@ -1350,3 +1351,89 @@ run-gate has no `--base` flag, so no consumer can adopt B019 until v8's
       existing one);
 - [ ] N12's row in `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11 points
       here (done 2026-08-30).
+
+---
+
+## RG-27 — persisted per-lane-per-commit invocation history (bounded window) + a query verb, machine- and human-readable
+
+**Filed by:** operator directive, 2026-08-31, retriaging ciu CIU-55 (originally
+filed `dstdns/nyxloom-trove/decisions.md` D-204, 2026-08-25). CIU-55 argued CIU
+should own this because it holds the per-instance identity and an existing
+persisted-state file (`ciu.global.toml`); the operator's re-read: in the
+CURRENT (pre-v8, pre-gate-absorption) architecture run-gate is the layer that
+actually invokes each lane and already has direct, unmediated visibility into
+start/stop timestamps and exit status — CIU would have to wrap or intercept
+run-gate's own invocation loop to get the same data first-hand. v8's §4.3.2
+absorption of run-gate into `ciu gate` eventually collapses this distinction,
+but that is not-yet-implemented; this entry fixes the gate consumers actually
+run today. CIU-55 is retained as a pointer to this entry, not deleted (its
+"why CIU owns it" reasoning is a real recorded design discussion, now
+superseded).
+
+### The gap
+
+Lane duration and outcome are informal: an operator or controller notices a
+lane "took a while" from wall-clock observation while waiting on it, and the
+observation is lost once the terminal scrolls past it. Nothing durable
+records, per lane: how long THIS run took, on THIS commit; how that compares
+to recent runs of the same lane; which lanes are cheap-to-always-run vs.
+expensive-enough-to-consider deferring. Without this, a provisional-merge /
+defer-heavy-rigor policy is a guess dressed as a decision (dstdns explicitly
+declined to adopt such a policy blind on 2026-08-25, D-204, for exactly this
+reason).
+
+### Proposed contract
+
+- **History**: keyed by (lane, commit), bounded to the last **N commits per
+  lane** (default 10, operator-configurable). A rolling window — the oldest
+  entry is evicted once the bound is exceeded, never unbounded growth. Each
+  history entry: duration, outcome (pass/fail), start timestamp, worktree/
+  instance identity.
+- **Latest**: a single always-current slot per lane holding the most recent
+  invocation's result **regardless of outcome** — pass, fail, error, or
+  aborted/interrupted — and regardless of whether that invocation ran
+  against a clean, committed HEAD (a dirty-tree or mid-rebase run still
+  updates "latest"). Always available to the caller via the query verb.
+- **Latest does not feed history**: an unsuccessful or aborted run updates
+  "latest" for immediate diagnostics but is NOT appended to the bounded
+  per-commit history log — history is a curated trend series for "what does
+  this lane typically cost", and an aborted run has no stable duration/
+  commit pairing worth keeping in that series. (Flagged as a design call for
+  the implementer to confirm: whether a *completed* fail — a real commit ran
+  the full lane and it failed — still belongs in history alongside passes,
+  since its duration is real data even though its outcome is not a pass.
+  Current reading: yes, completed fails join history; only aborted/
+  interrupted/dirty-tree runs are excluded.)
+- **Query verb**: run-gate gains a subcommand to display/query this data in
+  both human-readable (default, a table) and machine-readable (`--json`)
+  form — at minimum: latest result for a lane, and its bounded history.
+  Exact verb name/flags are an implementer design call, following this
+  project's existing `doctor`/`--dry-run`/`--list` subcommand conventions.
+- **Storage**: a run-gate-owned, gitignored, per-instance file (location is
+  a design call — sibling to how ciu treats `ciu.global.toml` as its
+  per-instance persisted-state surface, but run-gate has no existing
+  equivalent to extend, so this is greenfield). Concurrent-write safety
+  matters: two worktrees' gates can run simultaneously against lanes that
+  key into the same file if the storage location is not itself per-instance
+  scoped — needs an explicit design answer, not an assumption.
+- Explicitly OUT of scope: run-gate does not decide any rigor/defer POLICY
+  itself — it measures and persists; a controller (dstdns or otherwise)
+  reads the data and decides.
+
+### Oracles
+
+Not yet written — needs a design pass first (storage location, concurrent-
+instance write safety, exact verb/flag names, and the completed-fail-vs-
+history question flagged above).
+
+- Controlled wrong implementation to watch for: recording only the latest
+  invocation with no rolling stat (the same trap CIU-55 flagged) — a single
+  slow outlier run would look like the lane's permanent cost, defeating the
+  point of informed decision-making.
+- Controlled wrong implementation to watch for: an aborted/dirty-tree run
+  silently corrupting the bounded history's commit-keyed entries (e.g.
+  overwriting a real commit's history slot with a dirty-tree duration).
+
+**SPEC ownership:** new surface — no existing `SPEC.md` section owns
+invocation-timing telemetry. Cross-reference: ciu CIU-55 (superseded pointer,
+`ciu/KNOWN_ISSUES_TODO_BACKLOG.md`).

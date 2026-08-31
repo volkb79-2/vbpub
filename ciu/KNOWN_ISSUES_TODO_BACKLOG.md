@@ -11,7 +11,15 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-30 — **CIU-71 collision corrected, CIU-74 assigned.**
+Last updated: 2026-08-31 — **CIU-75 FILED, CIU-55 RETRIAGED.** CIU-75 backports
+v8 proposal F2 (identity source becomes the overlay TOML only, `ciu.env`
+demoted to a legacy write-only export) ahead of the full v8 cutover, to ship
+as a deliberately breaking **ciu 7.6.0**. CIU-55 (per-lane gate invocation
+timing) is retriaged to run-gate RG-27 — the operator's re-read is that
+run-gate, not ciu, is the layer with direct invocation visibility in the
+current pre-v8 architecture; CIU-55's entry stays as a pointer, not deleted.
+
+Previously, 2026-08-30 — **CIU-71 collision corrected, CIU-74 assigned.**
 The 2026-08-26 v8-design-session backfill (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md`
 rev 2.0) misfiled the "leaf-typo templates render empty" `StrictUndefined`
 finding as CIU-71, colliding with the same-day dstdns-P147b build-context
@@ -249,7 +257,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 | CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
 | CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
-| CIU-55 | No per-lane gate invocation timing is measured or persisted anywhere — a controller deciding whether to run full R1+R2 rigor before merging, or defer R2 and merge provisionally, has no data and must guess | Medium | OPEN — filed by dstdns operator directive, 2026-08-25; v8-timed (see detail) |
+| CIU-55 | No per-lane gate invocation timing is measured or persisted anywhere — a controller deciding whether to run full R1+R2 rigor before merging, or defer R2 and merge provisionally, has no data and must guess | Medium | RETRIAGED 2026-08-31 -> run-gate RG-27 (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`); this entry kept as a pointer, see detail |
 | CIU-56 | The 100% gate's coverage of `src/ciu/hook_templates/post_compose_db.py` is SCHEDULING LUCK, not measurement: a hook module loaded the way CIU actually loads hooks (`hooks_runner._load_hook_module`, `spec_from_file_location` under a synthetic non-`ciu` module name) is not measured by `--cov=ciu` at all unless the SAME file was also imported normally in that worker process. Under `-n auto --dist load`, xdist splits `test_ciu_scaffold_hooks.py` across workers, so the shipped template's `run()` body is sometimes measured and sometimes not — the gate flips to 99.85% on any change to the suite's test COUNT, with zero source changes | High | FIXED — `run-ciu-tests.py` now runs `-n auto --dist loadfile`, keeping every test file's functions on one worker; verified 100.00% coverage across 5 consecutive runs with zero flips. The module-level-import half of the proposed fix was not additionally applied — `--dist loadfile` alone closed it (see detail) |
 | CIU-57 | `tests/conftest.py`'s autouse ambient-env-scrub fixture (ciu-P13) never included `CIU_KSM`, despite CHANGES.md's own history recording multiple prior one-off `CIU_KSM=off` pins scattered across individual test fixtures to work around exactly this class of leak — local patches on individual flakes, never a fix of the shared fixture's actual coverage | Medium | FIXED — `CIU_KSM` added to `_AMBIENT_ENV_VARS`. Live-caught while investigating CIU-56: `test_absolute_governance_ksm_path_is_preserved_in_overlay` (`test_ciu_composefile_branch109.py`) intermittently failed `KeyError: 'volumes'` under `--dist loadfile` because `governance.resolve_ksm_optin` reads `CIU_KSM` fresh on every call and the test never pins it; a contaminated/leftover value silently changes which branch `composefile.generate_overlay` takes. No raw (non-monkeypatch) `os.environ["CIU_KSM"]` assignment or ambient shell value was found as the exact source — the fix closes the class regardless of the precise vector, matching the existing pattern for the other 6 scrubbed vars (see detail) |
 | CIU-58 | Multiple tests build their fixture tree via `shutil.copytree` FROM the real, checked-in `test-repo/` directory (a SHARED, on-disk, non-per-test-isolated source) rather than from a synthetic/generated source — a concurrent xdist worker rendering into (or otherwise mutating) that same shared source directory races the `copytree` read, observed as a `shutil.copytree`/`os.scandir` failure over entries that include unexpected generated artifacts (`ciu.compose.yml`, `__pycache__`) alongside the template files | Medium | OPEN — found live while stress-testing the CIU-56/CIU-57 fixes (2026-08-25), not caused by either; not investigated further — a structurally different, likely broader test-fixture-isolation problem across the suite, out of scope for this wave. A future package should enumerate every `copytree`/direct-read use of `test-repo/` (or any other shared non-tmp_path source) and either isolate a pristine copy once per session (not per test) or generate the fixture tree synthetically per test. **Review-added facts (ciu-P26 reviewer):** 9 test files read `test-repo/`, 3 via `copytree` — CIU-56's `--dist loadfile` fix removes only SAME-file races, cross-file concurrent access remains possible, so it likely makes this rarer without closing it; the directory currently holds gitignored, accumulating residue (`applications/app-config/ciu.compose.yml` + two `__pycache__` dirs) that is NOT tracked fixture content, so the race surface drifts between a fresh clone/CI and a developer machine — a cheap partial mitigation (render into `tmp_path`, or clean the residue) shrinks the surface without the full audit |
@@ -268,6 +276,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-70 | `_probe_pg` (`src/ciu/provisioning.py:345-383`) and `_probe_minio` (`:386-408`) resolve the container they `docker exec` into as `container_name(config, "postgres")` / `container_name(config, "minio")` — the LITERAL service keys `postgres` and `minio` — and `_probe_pg` additionally runs `psql -U postgres` unconditionally. Nothing in SPEC S13.2's ref-kind table (`pg:role/<name>` → "`psql` → `pg_roles`"; `minio:user/<name>` → `mc admin user info`) or CONFIG.md states that the Postgres/MinIO service must be keyed exactly `postgres`/`minio`, and no config key exists to point the probe elsewhere. Source-confirmed 2026-08-30 (`ciu 7.5.1.dev24`). A consumer whose service is keyed anything else (`postgres_primary`, `pg`, `db`) gets `pg role 'x' not found (rc=1)` — byte-identical to the message for a genuinely missing role — so a correct deployment fails provisioning preflight with a misleading reason; and a consumer running TWO Postgres services keyed `postgres` in different stacks (exactly dstdns's `db-core/postgres` + `skywalking/postgres` situation from CIU-66, which derive the SAME container name) has the probe interrogate whichever container won the name, silently. dstdns happens to key its services `postgres`/`minio` and runs one MinIO, which is why the coupling has never surfaced | Medium | OPEN — filed from the v8 design session (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` rev 2.0 §4.7/§4.11). In v8 the probe target is a declared fact (a `pg:`/`minio:` ref resolves to the RealizedService whose `provides`/`init_provides` carries it, through the same identity derivation everything else uses), so this entry is the backport-able half: (a) document the naming requirement in S13.2 + `ciu check --help`'s ref-kind list (minimal), or (b) resolve the container from the stack that `provides` the ref — the provider is already known to `lint_graph` — instead of a literal name, and make the reason string distinguish "container absent" (docker exec `No such container`) from "role/user absent". Controlled wrong implementation: a fixture with the Postgres service keyed `pg` and a `pg:role/x` ref must fail today with `not found (rc=1)` and pass after (b) with the role actually checked. Owning SPEC section: S13.2 |
 | CIU-71 | A stack's relative `build.context` (e.g. `infra/mock-targets/ciu.defaults.toml.j2`'s `build_context = "."`) resolves against the COMPOSE FILE's own directory, not the repo root, because `ciu` never invokes `docker compose` with `--project-directory <repo-root>` — grepped the installed `ciu` package's own source, no such flag exists at any `docker compose` call site. Live-reproduced (dstdns-P147b, 2026-08-30, `ciu 7.5.1`, first-ever bring-up of `infra/mock-targets` — the ONLY stack in that consumer repo with a `build:` section at all, so no prior stack ever exercised this path): `ciu up --dir infra/mock-targets` failed `resolve : lstat .../infra/mock-targets/tests: no such file or directory`, because the stack's Dockerfile `COPY`s repo-root-relative paths (`tests/fixtures/mock_data`) that only resolve if `.` means the repo root, which it does not under Compose's own default | Medium | OPEN — filed from `dstdns/nyxloom-trove/decisions.md` D-244 (worktree `/workspaces/dstdns/.worktrees/p147b-vertical-corpus-e2e`). Two independent fixes, either sufficient: (a) always invoke `docker compose` with `--project-directory <repo-root>` (`PHYSICAL_REPO_ROOT`/`REPO_ROOT` already resolved elsewhere in this codebase), so every stack's relative paths — build contexts included — resolve uniformly against the repo root, matching what a stack author reasonably expects from a tool that already centralizes bind-mount path resolution; (b) consumer-side only, no ciu change: document that `build.context` must be authored STACK-relative, not repo-root-relative (`"."` really means "the compose file's own directory"). dstdns's own disclosed workaround: an untracked, gitignored, per-instance `ciu.toml.j2` overlay setting `build_context = "../.."` (see detail) |
 | CIU-74 | `render_jinja2_text` (`src/ciu/config_model.py:386-397`) builds `jinja2.Template(text)` with the library-default `Undefined`, so a mistyped LEAF key renders as the empty string with no error. Live-reproduced 2026-08-30 (`ciu 7.5.1.dev24`): `{{ deploy.project_name }}-{{ deploy.environment_tg }}-postgres` against an ordinary `[deploy]` context renders `dstdns--postgres`; only the same typo one level deeper (`{{ deploy.health.timeout }}` with no `[deploy.health]` table) raises — which is the sole case SPEC S3.12 / S7.5b's "fails loudly (Jinja `UndefinedError`) rather than silently" promise actually covers. dstdns's 19 stack `ciu.compose.yml.j2` templates assemble container names, network names and labels by hand from `deploy.project_name` / `deploy.environment_tag` / `deploy.network_name` (70 / 68 / 59 references), so one dropped letter yields a syntactically valid compose file that joins the wrong network or names a container `dstdns--postgres`, caught only if something downstream happens to fail. The same default governs the compose renders at `composefile.py:287` and `:973` and every S3.2 TOML-template render | Medium | OPEN — filed from the v8 design session (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` rev 2.0 §4.11); renumbered CIU-71 -> CIU-74 2026-08-30, a filing-session collision with the same-day build-context CIU-71 (dstdns D-244) — CIU-71 stays that entry, this StrictUndefined finding was the one misnumbered. Proposed: `Environment(undefined=StrictUndefined, keep_trailing_newline=True)` at the one render site all three paths share. Interaction to settle first: S7.5b sanctions `'api' in ciu.instances` as the fan-out test while ALSO specifying that `ciu.instances` is ABSENT when nothing fans out — under the default `Undefined` that membership test is silently `False`, under `StrictUndefined` it raises — so the fix needs either an always-present (possibly empty) `ciu.instances` mapping (a one-line S7.5b change, and the honest shape) or `is defined` guards written into the sanctioned idiom. Oracle: the `dstdns--postgres` repro must raise naming `environment_tg`; controlled wrong implementation (library default) renders it. Owning SPEC sections: S3.2 (render pipeline), S3.12 / S7.5b (fail-loud claims) |
+| CIU-75 | Backport of v8's F2 identity decision: the per-instance overlay TOML becomes the SOLE source of instance/identity facts; `ciu.env` is demoted to a legacy, write-only export (`ciu env generate` keeps writing it for shells/tooling that still source it; `ciu env print`, already shipped by CIU-60, is the forward-looking export) and is never read back by ciu internals. Source-confirmed 2026-08-31: 12 call sites across `worktree.py` (1137, 1229, 2635, 2884, 3250, 3859, 4266), `engine.py` (948, 1182, 1484) and `deploy.py` (1882, 2838) read or existence-check `ciu.env` by exact path today — a larger surface than the v8 proposal doc's illustrative `paths.py`/`workspace_env.py` citation, and not all 12 are necessarily identity-fact reads (some may be plain existence checks); each site needs individual classification before this can be called complete | Medium | OPEN — filed by operator directive, 2026-08-31, backporting v8 proposal F2 (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.3 "Identity source", §4.3.3) ahead of the full v8 cutover; see detail |
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
 [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
@@ -1758,6 +1767,19 @@ contract, once designed.
 ## CIU-55 — No per-lane gate invocation timing is measured, so provisional-merge
 rigor tradeoffs are guesses, not decisions
 
+> **RETRIAGED 2026-08-31 -> run-gate RG-27.** The operator's re-read: in the
+> CURRENT (pre-v8, pre-gate-absorption) architecture, run-gate is the layer
+> that actually invokes each lane and has direct, unmediated visibility into
+> start/stop timestamps and exit status — CIU would have to wrap or
+> intercept run-gate's own invocation loop to get the same data first-hand,
+> which is more machinery than the "CIU already owns a per-instance
+> persisted-state file" argument below saves. The full design (bounded
+> per-commit history, a latest-result slot that accepts unsuccessful/aborted
+> runs without polluting history, a query verb in both machine- and
+> human-readable form) now lives at `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`
+> RG-27. The reasoning below is kept as the recorded design discussion that
+> produced this ID, not as an active spec.
+
 **Filed by:** dstdns operator directive, 2026-08-25, during a controller
 handoff-mandate interview (`dstdns/nyxloom-trove/decisions.md` D-204). The
 mandate under discussion proposed a lighter merge policy — merge on R0+R1 +
@@ -2350,6 +2372,97 @@ closure lives", 2026-08-30). Only the demo/spec half of this entry is v8's.
 - [ ] the demo lane validates (`validate_demo.py`) and CIU-72's stage-12
       check reports `node` fitness for it;
 - [ ] `ciu gate doctor` lists the mount.
+
+---
+
+## CIU-75 — backport v8 F2 identity: the overlay becomes the sole instance-fact source, `ciu.env` demoted to a legacy write-only export (BREAKING, ships as ciu 7.6.0)
+
+**Filed by:** operator directive, 2026-08-31. The v8 proposal's F2 fork
+(`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.3.1 table, §4.1.3 "Identity
+source") decided: identity facts move fully into the overlay TOML, `ciu.env`
+becomes legacy output — "the main repo is also a worktree — just a special
+one." CIU-60 (FIXED, current 7.5.x) already upserts
+`[ciu.instance.generated]` into the gitignored overlay
+`ciu.global.worktree.toml.j2` on every `ciu env generate`, but per the v8
+doc's own V8-2 gap note, `ciu.env` **remains the thing ciu internals
+actually read** — the overlay write was additive, not a cutover. The
+operator's instruction: backport the cutover half of F2 now, ahead of v8's
+other schema-revision-8 changes (file renames, `[testing]` absorption, etc.
+— those stay v8-only), released as **ciu 7.6.0** — an explicit override of
+the estate's usual "breaking changes wait for the next major" convention,
+because this specific change is self-contained and does not require v8's
+other, much larger schema changes to ship safely on its own.
+
+### The gap
+
+`ciu.env` is read (or existence-checked) by exact path at 12 call sites,
+source-confirmed 2026-08-31: `worktree.py:1137,1229,2635,2884,3250,3859,4266`;
+`engine.py:948,1182,1484`; `deploy.py:1882,2838`. This is a materially larger
+surface than the v8 proposal doc's own citation (`paths.py:70/78`,
+`workspace_env.py:1167ff`), which was either illustrative or written against
+a different checkout state — do not trust it as the exhaustive site list.
+Each of the 12 needs individual classification before a fix can be called
+complete:
+
+- some are plain **existence checks** (`.is_file()`) used as a worktree/
+  instance-readiness signal — these may be fine to keep, or may need to
+  check for the overlay's presence instead, depending on what "ready" means
+  post-cutover;
+- some **read identity/instance fields** out of the file's contents — these
+  are the ones that must move to reading the merged overlay/rendered config
+  instead;
+- none should be assumed identical in shape to the two the v8 doc names;
+  each is a real read of real production code and needs its own before/
+  after pair, not a blanket sed.
+
+### Proposed contract
+
+1. Every site above that reads `ciu.env` for **facts** (not merely checking
+   its existence) switches to reading the same facts from the merged
+   overlay / rendered instance config — the same source CIU-60 already
+   populates.
+2. `ciu env generate` keeps **writing** `ciu.env` — unchanged key set, so a
+   consumer's login shell or cockpit alias that still does
+   `source ciu.env` keeps working byte-for-byte. Only the READ side inside
+   ciu itself moves; this is a write-only legacy export from here on.
+3. `ciu env print` (shipped, CIU-60) is documented as the forward path;
+   `ciu.env`-sourcing consumers get one release of a WARN (not a refusal)
+   nudging them toward `eval "$(ciu env print)"`, matching this codebase's
+   existing one-release-WARN-then-refuse precedent (e.g. the
+   `ciu.global.worktree.toml.j2` rename in the v8 migration shape).
+4. A test proves the cutover, not just the intent: delete or corrupt
+   `ciu.env` after a normal `ciu env generate`, then exercise every verb
+   whose 12 call sites above read facts from it — none may change behavior
+   or fail. Only the overlay/rendered config is load-bearing afterward.
+
+### Why this is breaking, and why 7.6 anyway
+
+Any external tooling that relies on ciu **regenerating** `ciu.env` in
+response to identity changes it detects by reading `ciu.env` back (a
+plausible but unconfirmed pattern — needs a grep across dstdns and any other
+consumer before release) breaks silently unless it's re-pointed at the
+overlay or `ciu env print`. This is exactly the kind of "shipped = merge +
+release + consumer migration notes" case AGENTS.md's user-facing-docs rule
+exists for: CONSUMERS.md gets a dedicated migration section, and
+CHANGES.md's entry is marked BREAKING, before this can be called done.
+
+### Acceptance
+
+- [ ] all 12 sites individually classified (existence-check vs. fact-read)
+      and, for fact-reads, migrated to the overlay/rendered config;
+- [ ] `ciu env generate` still writes `ciu.env`, byte-identical key set, one
+      release of WARN pointing at `ciu env print`;
+- [ ] the delete-`ciu.env`-after-generate test above, green, covering every
+      verb touched;
+- [ ] CONSUMERS.md migration section + CHANGES.md BREAKING entry, released
+      as **ciu 7.6.0**;
+- [ ] a grep across `dstdns` (and any other reachable consumer) for
+      `ciu.env`-reading tooling, so this entry's "breaks silently" risk is
+      either ruled out or has a filed follow-up in the consumer's own repo.
+
+**SPEC ownership:** no current SPEC.md section owns identity-source
+precedence explicitly (S2.7 covers derivation, not source-of-truth); this
+entry is the backport of v8 proposal F2, not a current-SPEC defect.
 
 ---
 
