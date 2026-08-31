@@ -300,6 +300,48 @@ separate step, commit confirmed against `git rev-parse HEAD` =
 `exit_code: 0`, R0 `PASS`, R1 `PASS` at coverage `pct: 100.0`. Same green
 outcome as the original run, now at the actual commit this package ends on.
 
+## Addendum 2 — review repair: PUBLIC_FQDN _clean_in test made discriminating
+
+A fresh adversarial reviewer returned ACCEPT-CONDITIONAL with one concrete
+blocker: `test_clean_strips_a_stale_ambient_public_fqdn_not_carried_by_target`
+(item 4/CIU-85's test suite) didn't actually prove strip-necessity for
+`_clean_in` -- the `write_instance_facts` fixture it used backfills every
+`GENERATED_FACTS_KEYS` member (including `public_fqdn=""`), so
+`env.update(identity)` alone was always enough to overwrite the ambient
+value regardless of whether the strip ran first. Independently reproduced
+before fixing: hand-reverted `_clean_in`'s strip and confirmed the test
+still passed.
+
+Fixed (commit `7c227e79`) per the reviewer's own preferred option -- kept
+the test but made it genuinely discriminating: it now monkeypatches
+`workspace_env.read_instance_identity_env` directly to return a target
+identity dict that OMITS `PUBLIC_FQDN` entirely (rather than going through
+`write_instance_facts`, which always backfills it), so the strip is the
+only thing standing between the ambient value and the leak. Manually
+re-reverted the strip against the new test and confirmed it now correctly
+fails; restored the real fix immediately after (zero diff on the
+round-trip). The reviewer's own independent verification of CIU-85's other
+two tests, and of CIU-59/61/84 and the CIU-86 scope-out, needed no changes.
+
+Also fixed the LOG's non-blocking wording issue the same review flagged:
+it claimed CIU-86 got "a dedicated section" in the backlog; it only ever
+got a table row.
+
+Full local suite re-run: 3418 passed, 100.00% coverage (unchanged count).
+Real gate re-run at the true final HEAD:
+
+```
+ciu: PASS (exit 0)
+  commit: 7c227e798ed436d641de7dd6b7317f1410fc78a4
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+```
+
+Verdict artifact commit confirmed against `git rev-parse HEAD` =
+`7c227e798ed436d641de7dd6b7317f1410fc78a4` (exact match, read in a separate
+step): `outcome: PASS`, `exit_code: 0`, R0 `PASS`, R1 `PASS` at coverage
+`pct: 100.0`, `judge_provenance.digest` unchanged
+(`bbbed3ef35cb8ac3e62075c62fcdb801b7a668b6fc72aa0180419ac4996b84d6`).
+
 ## Follow-up filed
 
 **CIU-86** (Low, OPEN): `action_graph`'s own `info()`/`error()` calls (the
