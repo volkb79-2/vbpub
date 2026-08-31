@@ -46,7 +46,7 @@ SPEC §9.
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | FIXED 2026-08-31 (rev 28) |
 | RG-28 | `run_host_lane` raised `KeyError('argv')` for a `kind = "assay"` lane on the built-in `host` environment — a config the validator ACCEPTS, so a traceback for a legal declaration (R-04) | Minor | FIXED 2026-08-31 (rev 28) |
 | RG-29 | `cmru/run-gate.toml [lanes.assay]` pins a sidecar (`tools/assay/assay-2.2.0.pyz.sha256`) that no longer exists — cmru vendored 2.3.0 — which makes run-gate-project's OWN gate lane red via `validate-pointers` | Major | FIXED 2026-08-31 — cmru-side config (`cmru/run-gate.toml`), all four filename sites moved to 2.3.0 |
-| RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
+| RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | FIXED 2026-08-31 (rev 30, run-gate-P03) — `history [LANE] [--json]` verb; store `<project>/.run-gate/history.json`, per (judged worktree × project) |
 
 ---
 
@@ -1647,6 +1647,142 @@ history question flagged above).
 **SPEC ownership:** new surface — no existing `SPEC.md` section owns
 invocation-timing telemetry. Cross-reference: ciu CIU-55 (superseded pointer,
 `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`).
+
+### FIXED 2026-08-31 (rev 30, package `run-gate-P03`)
+
+Landed as `SPEC.md` **`R-36` (a-i)** with `R-01`/`R-06`/`R-08` amendments.
+79 new tests; `./run-gate.py selftest` green (359 passed, 2 skipped,
+diff-coverage **229/229 = 100%**, exit 0). Full record:
+`nyxloom-trove/reports/run-gate-P03-{LOG,REPORT}.md`. Several things here
+were left to implementer judgment — what was actually decided, and why:
+
+**Verb: `history [LANE] [--json]`** (`R-36i`). A positional verb, not a flag,
+because it reads the world and reports — the `doctor` shape; flags in this
+project are discovery surfaces (`--list`, `--check-env`, `--dry-run`). No
+LANE reports every declared lane; an unknown LANE refuses (exit 2) naming the
+known lanes and the config path, exactly like the run path. `--json` mirrors
+the existing machine/human split. `history` joins `doctor` and
+`validate-pointers` as a RESERVED lane name (`R-08`). Rejected: `stats` (the
+most-used answer is a single record, not a statistic) and `timings` (drops
+the outcome half of the record).
+
+**Storage: `<effective project dir>/.run-gate/history.json`, JSON**
+(`R-36f`). "Per-instance" resolves to **per (judged worktree × project)**,
+and it is DERIVED rather than invented: `R-21` already relocates the
+effective project dir into the judged tree, so `--worktree B` writes B's
+measurement into B's store, and lane-name collisions across the estate
+(`selftest` exists in several projects) cannot merge. Anchoring at `repo`
+instead — the checkout owning the shared `.git`, i.e. MAIN for every linked
+worktree — was rejected as both the contention hazard AND the same false
+attribution `R-21` exists to prevent. Format is JSON because run-gate is
+stdlib-only and the stdlib has no TOML *writer* (`tomllib` is read-only);
+hand-rolling TOML emission for a file rewritten after every run is a bug
+farm. `/tmp/run-gate/` (the evidence-dir neighbourhood) was rejected:
+evidence is a post-mortem for one failure, history is a series that must
+accumulate over days, and `/tmp` is tmpfs on many hosts — the series would
+silently reset. No env-var relocation override was added.
+
+**Concurrency: scope first, arbitration second** (`R-36f`). Cross-worktree
+contention is eliminated by construction — two worktrees address two files
+and never meet; a layout with no collision beats a lock that arbitrates one.
+The residual case is real (two lanes of ONE project in ONE tree) and is
+serialized by an exclusive `flock` on a **sibling** `.run-gate/history.lock`
+(`O_NOFOLLOW`, 0600) held across the whole read-modify-write, plus
+write-temp-then-`os.replace`. Sibling because the store is REPLACED by
+rename: a lock on the store guards an inode nobody writes next. Atomic
+rename is also what lets the query verb read with **no lock at all**. The
+wait is BOUNDED (5s), unlike `R-29`'s shared-infra lock which blocks forever
+on purpose — that one protects the correctness of the run, this one protects
+a measurement, and a gate that hangs to write telemetry has inverted the
+priority.
+
+**Gitignore obligation made executable** (`R-36g`). Writing into the judged
+tree would otherwise leave it dirty for the NEXT lane's clean-tree check, so
+run-gate asks git before every write and REFUSES to write an un-ignored
+store, naming the remedy. Two details were verified against real git rather
+than assumed, and both would have shipped as silent defects: the query names
+the FILES, never the bare directory (`git check-ignore .run-gate` answers
+"not ignored" while the directory does not exist yet, even under a
+`.run-gate/` pattern — recording would have been dead on every project's
+first run and alive on the second), and the verdict is read from the REPORTED
+PATHS, never the exit status (`git check-ignore a b` exits 0 when ANY
+argument matches — the false-certification shape AGENTS.md names, which would
+certify a store whose LOCK file still dirties the tree). Root `.gitignore`
+gained `.run-gate/`; CONSUMERS adoption step 5 names it for copied-script
+repos.
+
+**Open question 1 — does a COMPLETED fail belong in history? YES, with a
+qualification** (`R-36c`). Agreeing with this entry's own reading, but the
+plain "yes" is not safe: a failing lane can SHORT-CIRCUIT (this project's own
+`pytest && coverage_gate` never reaches the gate when pytest is red), so
+fails and passes are not samples of the same quantity and averaging them
+understates the lane's cost in exactly the direction that makes a "cheap,
+always run it" call wrong. Resolution: fails join history CARRYING their
+outcome, and the reported statistic is SPLIT (`stats.passes` vs
+`stats.completed`), both published in both output forms. run-gate hands over
+both series and picks neither — picking is policy, which is out of scope.
+This paid off immediately: the store's first two real entries are this
+package's own gate runs, and the failing one took 56.4s against the passing
+one's 47.7s (the coverage gate ran to a verdict rather than short-circuiting)
+— a pass-only series loses that point, a merged series reports 52.0s as "what
+selftest costs" when the answer for a passing run is 47.7s.
+
+**Open question 2 — what else is excluded, and how "unknown" is handled**
+(`R-36b`). Eligibility is a conjunction: completed with its own exit status,
+clean tree, no git operation in flight (`rebase-merge`, `rebase-apply`,
+`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG`), resolvable
+commit. Each failure records its reason on the entry, visible in both output
+forms. "Could not determine" EXCLUDES — a wrong trend entry is invisible, a
+missing one shows up in `count`. Dirtiness is sampled independently of the
+lane's `clean_tree` POLICY (the test is whether the tree WAS dirty, never
+whether dirt was permitted — otherwise every `clean_tree = false` lane's
+series silently halves) and BEFORE the lane runs (a lane that leaves
+artifacts must not retro-disqualify its own valid measurement).
+
+**Two further calls the entry did not ask about but which the contract
+needs.** Keyed by (lane, commit) means a re-run of the same commit REPLACES
+its entry and moves to the tail (eviction = least recently measured);
+appending would let ten re-runs of one commit evict nine other commits from a
+ten-deep window. And the headline statistic is the **MEDIAN**, never the
+mean, with min/max/count — the trap named below is one slow outlier reading
+as the lane's permanent cost, and the mean is precisely the statistic that
+permits it; `max` still publishes the outlier.
+
+**Retention bound**: `[history] keep` (integer ≥ 1, default 10), a new
+top-level config table; a project's shadows the central one entirely per
+`R-09`. Declared config, not an env var: how much trend to keep is an
+auditable decision, unlike the per-instance data it bounds.
+
+**Recording discipline** (`R-36e`/`R-36h`). An invocation begins at the
+clean-tree refusal and ends at the lane's own exit status; earlier failures
+are configuration errors naming no invocation and record nothing, and
+`--dry-run` records nothing. Refusals and aborts inside the window update
+`latest` and re-raise/return unchanged. Every recorder failure — un-ignored
+store, held lock past the bound, corrupt store, write error — degrades to ONE
+warning line on stderr (never a traceback, `R-04`) and never changes the
+lane's exit status.
+
+**Both named controlled-wrong-implementations are caught**, verified by a
+15-mutant probe campaign against the real source (all caught, zero survivors,
+source restored byte-identical). Trap 1 is caught at both levels it can
+occur: structurally (`TestHistoryRollingSeries::
+test_series_survives_across_commits_not_just_the_last` — a latest-only store
+keeps 1 entry where 3 commits ran) and statistically
+(`::test_one_slow_outlier_does_not_become_the_typical_cost` — median 10.0s
+while max 100.0s). Trap 2's literal form is
+`TestHistoryEligibilityGuard::test_dirty_run_never_overwrites_the_commits_history_entry`
+(clean 10.0s pass on commit C, then a DIRTY 999.0s run on the same C: C's
+entry still reads 10.0s, `latest` moved to 999.0s with
+`history_eligible: false` and a reason naming the dirt), with siblings for
+the aborted, errored, mid-rebase and indeterminate routes to the same
+corruption.
+
+**Out of scope, honored:** run-gate decides no rigor/defer POLICY. It
+measures and persists; a controller reads and decides. Follow-ups a consumer
+may want (age-based retention, an estate-wide roll-up, a `--worktree`-aware
+query, and the v8-absorption reopening of the scoping question) are named in
+the REPORT §7 and deliberately not filed as entries without a real consumer
+asking.
 
 ## RG-28 — `run_host_lane` raised `KeyError('argv')` for `kind = "assay"` on the built-in `host` environment
 
