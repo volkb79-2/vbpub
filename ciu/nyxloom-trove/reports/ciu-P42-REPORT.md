@@ -1,10 +1,16 @@
 # ciu-P42 — REPORT (CIU-75: the overlay becomes the sole instance-fact source)
 
 Worktree: `/workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2`
-Branch: `fix/ciu-P42-cutover-identity-f2`, based on `main` @ `332af5a1`
-Commits: `c1985542` (code + tests), `788908e2` (docs + backlog + LOG)
+Branch: `fix/ciu-P42-cutover-identity-f2`, cut from `main` @ `332af5a1`,
+**rebased onto `main` @ `815c50d6`** (the ciu-P43 merge) — §11.
+Commits: `ebcc7ad7` (code + tests), `f8f29778` (docs + backlog + LOG),
+`67a588f8` (this REPORT) — pre-rebase `c1985542` / `788908e2`.
 Ships as: **ciu 7.7.0** — BREAKING, a deliberate, recorded override of the
 estate's "breaking waits for the next major" convention.
+
+**Read §11 first if you are reviewing after ciu-P43.** That package landed
+`HookContext.identity_unreadable` in the two functions this one rewrites; §11
+is the reconciliation, and the one place a silent regression was possible.
 
 ---
 
@@ -69,8 +75,8 @@ constructions across the three named modules.
 | 7 | `_resolve_budget_candidates` | `worktree.py:4293` | existence check **+ fact-read** | each candidate's `DOCKER_NETWORK_INTERNAL`, and the candidate's whole `ciu.env` as `environ=` for its own chain render | → the table; "not a CIU instance, skip" is now "no generated facts". Render environment reshaped (see §3 delta 1) |
 | 8 | `identity_compose_project_name` | `engine.py:971` | existence check **+ fact-read** | `REPO_NAME` + `INSTANCE_ID` → the workspace-identity compose project | → `repo_name` + `instance_id`. This is the one both `up` and `clean` call, so they cannot drift |
 | 9 | `workspace_ownership_labels` | `engine.py:1221` | fact-read | `INSTANCE_ID` + `PHYSICAL_REPO_ROOT` → the S16.9 label pair | → `instance_id` + `physical_repo_root` |
-| 10 | `main_execution` S3.12 HookContext | `engine.py:1538` | existence check **+ fact-read** | `INSTANCE_ID` + `DOCKER_NETWORK_INTERNAL` for a REAL run's hook context | → the table; the `{}`-degradation-plus-WARN contract is unchanged |
-| 11 | `_workspace_identity` | `deploy.py:2220` | existence check **+ fact-read** | the `ciu check` twin of #10 | → the table. Must move as a PAIR with #10 (S3.12/CIU-44), and did |
+| 10 | `main_execution` S3.12 HookContext | `engine.py:1538` | existence check **+ fact-read** | `INSTANCE_ID` + `DOCKER_NETWORK_INTERNAL` for a REAL run's hook context | → the table; the `{}`-degradation-plus-WARN contract is unchanged. Post-rebase it also sets ciu-P43's `identity_unreadable` (§11) |
+| 11 | `_workspace_identity` | `deploy.py:2220` | existence check **+ fact-read** | the `ciu check` twin of #10 | → the table. Must move as a PAIR with #10 (S3.12/CIU-44), and did. Post-rebase it returns ciu-P43's `(facts, identity_unreadable)` tuple (§11) |
 | 12 | `_workspace_identity_network` | `deploy.py:3285` | existence check **+ fact-read** | `DOCKER_NETWORK_INTERNAL` for `clean`'s identity-network removal + survivor check | → `network`. CIU-62's absent-vs-indeterminate distinction preserved exactly |
 
 **Totals: 11 fact-reads migrated, 1 existence check re-pointed.**
@@ -180,7 +186,7 @@ of site 11 and is covered end-to-end by
 `test_ciu_render_selection_context.py`'s S3.12 arcs plus the reader suite here;
 its `{}`-degradation contract is asserted to remain identical to site 11's.
 
-Verbatim, at `788908e2`:
+Verbatim, post-rebase (the suite was updated for ciu-P43's tuple — §11):
 
 ```
 $ PYTHONPATH=src python3 -m pytest tests/tests/test_ciu_identity_cutover_ciu75.py -q
@@ -197,16 +203,18 @@ Command (from `/workspaces/vbpub/ciu`, worktree ROOT, not `<worktree>/ciu`):
 ./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2
 ```
 
-Verdict lines, pasted verbatim from the run's own output:
+Verdict lines, pasted verbatim from the **post-rebase** run's own output (the
+one line elided is `run-gate: docker argv: …`, the ~1.5 kB container
+invocation; it is in the raw capture and says nothing about the verdict):
 
 ```
 run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
 run-gate: rev 29 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
 run-gate: ephemeral env (nothing declared)
 run-gate: budget 30m (advisory)
-assay-2.3.0.pyz: OK
+assay-3.2.0.pyz: OK
 ciu: PASS (exit 0)
-  commit: 788908e2c94956abd37dd0ed8b6ef4b89cc77e62
+  commit: 67a588f854d1ee7bd9bdd18e1d997bffe92e5026
   argv: /opt/tester-venv/bin/python run-ciu-tests.py
 run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2/ciu/.assay/verdict-ciu.json
 run-gate: lane 'ciu' exit 0
@@ -216,18 +224,29 @@ GATE_EXIT=0
 `GATE_EXIT` was captured with its own marker and read in a separate step, never
 from a pipe tail.
 
+This is a **genuinely new** gate run, not a re-quote: the rebase produced code
+no previous run had ever executed (CIU-75's readers under CIU-80's tuple), and
+ciu-P43 also bumped the judge, so this verdict is the first for this package
+under **assay 3.2.0** (verdict schema 8) rather than 2.3.0. The superseded
+pre-rebase verdict at `788908e2` survives only as prose, in LOG Entry 2; the
+artifact on disk is this run's, and nothing about it is inherited.
+
 ### Commit-hash match (the ciu-P40 lesson)
 
 ```
 $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
-788908e2c94956abd37dd0ed8b6ef4b89cc77e62
+67a588f854d1ee7bd9bdd18e1d997bffe92e5026
 ```
 
 `.assay/verdict-ciu.json` (verbatim, abridged only where noted):
 
 ```json
 {
-  "assay_version": "2.3.0",
+  "argv_declared": ["/opt/tester-venv/bin/python", "run-ciu-tests.py"],
+  "argv_effective": ["/opt/tester-venv/bin/python", "run-ciu-tests.py"],
+  "argv_modified": false,
+  "argv_appended": [],
+  "assay_version": "3.2.0",
   "claims": [
     { "rigor": "R0", "source": "computed", "status": "PASS", "verified_by_assay": true },
     {
@@ -235,11 +254,11 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
         "branch_capability": "reported",
         "branches_covered": 18,
         "branches_total": 18,
-        "considered": 8,
-        "covered": 219,
+        "considered": 10,
+        "covered": 278,
         "excluded_lines": {},
         "exclusion_capability": "reported",
-        "executable": 219,
+        "executable": 278,
         "files_missing_coverage": [],
         "files_with_excluded_lines": [],
         "files_with_missing_branch_lines": [],
@@ -252,54 +271,80 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
       "rigor": "R1", "source": "computed", "status": "PASS", "verified_by_assay": true
     }
   ],
-  "commit": "788908e2c94956abd37dd0ed8b6ef4b89cc77e62",
+  "commit": "67a588f854d1ee7bd9bdd18e1d997bffe92e5026",
+  "declared_evidence": [],
   "declared_rigor": ["R0", "R1"],
   "enforcement": "gate",
+  "env_declared": { "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src" },
+  "evidence": [],
   "exit_code": 0,
+  "judge_provenance": {
+    "artifact": "zipapp", "name": "assay", "version": "3.2.0",
+    "digest_algorithm": "sha256",
+    "digest": "bbbed3ef35cb8ac3e62075c62fcdb801b7a668b6fc72aa0180419ac4996b84d6"
+  },
   "judgment": {
     "r1": { "allow_excluded": false, "coverage_artifact": "coverage.json",
             "coverage_format": "coverage-py-json", "fail_under": 100.0,
             "mode": "changed_lines", "require_branch": true },
-    "resolved": { "base": "124a5bff4f0efea71a3f11d183a4b22166ae6d2e",
+    "resolved": { "base": "a1d1dec310d4fc26e4f71fe9a7153e4885abbf9e",
+                  "base_resolution": "merge-base",
                   "language": "python", "source_roots": ["src"] }
   },
   "lane": "ciu",
   "outcome": "PASS",
-  "schema_version": 7,
+  "schema_version": 8,
   "scope": "S1",
-  "started": "2026-08-31T03:38:17.756689+00:00",
-  "ended":   "2026-08-31T03:38:56.495921+00:00"
+  "snapshot_policy": { "selection": "repository-minus-unsafe-symlinks",
+                       "unsafe_symlink_omissions": ["… 3 topos fixture links …"] },
+  "started": "2026-08-31T04:05:21.069907+00:00",
+  "ended":   "2026-08-31T04:05:55.633988+00:00"
 }
 ```
 
-`verdict-ciu.json.commit` == `HEAD` == `788908e2c94956abd37dd0ed8b6ef4b89cc77e62`. **Match confirmed.**
+(Abridgements, all marked: `env_effective` — `env_declared` plus `HOME`,
+`LANG`, `PATH`, `CGROUP_PARENT_DEV_BACKGROUND` — and the three
+`unsafe_symlink_omissions` paths, which are `topos/` fixtures unrelated to
+this lane.)
+
+`verdict-ciu.json.commit` == `HEAD` == `67a588f854d1ee7bd9bdd18e1d997bffe92e5026`. **Match confirmed.**
 
 **No baseline or comparison gate was run at any point in this package**, so
-there is nothing that could have overwritten this artifact; the run above is
-both the only gate run and the last one. (The R1 `considered: 8 / covered: 219
-/ pct 100.0` figures are the *changed-line* judgment; the 100% whole-source
-line+branch floor is enforced inside R0's own argv — `run-ciu-tests.py` carries
-`--cov-fail-under=100 --cov-branch` — and its exit 0 is that floor being met.)
+there is nothing that could have overwritten this artifact. (The R1
+`considered: 10 / covered: 278 / pct 100.0` figures are the *changed-line*
+judgment; the 100% whole-source line+branch floor is enforced inside R0's own
+argv — `run-ciu-tests.py` carries `--cov-fail-under=100 --cov-branch` — and its
+exit 0 is that floor being met.)
+
+One thing a reviewer should notice rather than take on trust: R1's resolved
+`base` is `a1d1dec3`, `main`'s tip *before* the ciu-P43 merge commit, not
+`815c50d6`. That makes the changed-line set a **superset** — P43's lines are
+judged alongside mine — which is the conservative direction for a
+`mode: changed_lines` judgment, not a gap. R0's whole-source floor is
+unaffected either way.
 
 ### Final confirmation run (against the last commit on this branch)
 
-The verdict quoted above was produced at `788908e2` — the last commit carrying
-any source, test or documentation change. This REPORT is itself a later,
-report-only commit, so the gate was **re-run against that final commit** (the
-branch tip) after it was written, and `ciu/.assay/verdict-ciu.json` on disk is
-that run's artifact. Its `"commit"` therefore equals `git rev-parse HEAD`
-exactly; a reviewer can check that in one step without needing a hash quoted
-here (which no file can carry about its own commit). That run is also the LAST
-gate invocation of this package — no baseline or comparison run followed it, so
-nothing overwrote the artifact.
+The verdict quoted above was produced at `67a588f8`, the branch tip when it
+ran. This LOG/REPORT update is a later, report-only commit, so the gate was
+**re-run against that final commit** after it was written, and
+`ciu/.assay/verdict-ciu.json` on disk is that run's artifact. Its `"commit"`
+therefore equals `git rev-parse HEAD` exactly; a reviewer can check that in one
+step without needing a hash quoted here (which no file can carry about its own
+commit). That run is also the LAST gate invocation of this package — no
+baseline or comparison run followed it, so nothing overwrote the artifact.
 
 Local confirmation of the same floor before the gate, for what it is worth:
 
 ```
 $ python3 run-ciu-tests.py -q
-3393 passed, 8 warnings in 33.06s
-TOTAL   9865   0   4016   0   100%
+3399 passed, 8 warnings in 30.72s
+TOTAL   9876   0   4016   0   100%
+Required test coverage of 100% reached. Total coverage: 100.00%
 ```
+
+(`3393`/`9865` pre-rebase; the deltas are ciu-P43's own tests and lines,
+merged in — see §11.)
 
 ---
 
@@ -409,3 +454,108 @@ Nothing outside `ciu/` was touched. No dstdns file was modified.
    than not shipping it. The four dstdns shapes are real greps, quoted with
    file:line; the `tomllib` one-liner is paste-able; the sanity check actually
    deletes `ciu.env`.
+5. **The two `HookContext(...)` sites** (§11) — post-rebase, the one place
+   where a dropped argument would have regressed ciu-P43 silently.
+
+---
+
+## 11. Rebase onto ciu-P43 (CIU-77/79/80/81) — the merged identity contract
+
+ciu-P43 merged to `main` as `815c50d6` while this package was in flight. Its
+CIU-80 added `HookContext.identity_unreadable: bool = False`, set at **both**
+S3.12 readers — the same two functions CIU-75 re-points at a different record.
+The rebase is therefore a reconciliation, not a mechanical replay.
+
+### The contract after the merge
+
+`deploy._workspace_identity(repo_root) -> tuple[dict, bool]` — CIU-80's shape,
+CIU-75's source:
+
+| state on disk | returns | announced? |
+|---|---|---|
+| overlay absent, or present with no `[ciu.instance.generated]` table | `({}, False)` | silent — a legitimately unmanaged checkout |
+| table present but unreadable (`OSError` / non-UTF-8 / malformed TOML / **a directory where the file belongs**) | `({}, True)` | `[WARN] [S3.12] …` naming the path, the cause, and `ciu env generate` |
+
+`engine.main_execution`'s STEP-12 inline reader is the real-run twin and
+answers identically; `test_identity_unreadable_agrees_between_check_preflight_
+and_real_run` is the test that fails if they diverge (S3.12/CIU-44's whole
+point).
+
+**CIU-75 does not merely survive CIU-80 — it repairs it.** P43 drew the
+absent-vs-unreadable line with `ciu.env.is_file()`, which answers *absent* for
+a DIRECTORY named `ciu.env`: the estate's absence-for-emptiness anti-pattern,
+still live inside the very field introduced to defeat it. The overlay reader
+raises `WorkspaceEnvError` for anything **present** it cannot read, directory
+included, so `identity_unreadable=True` now covers the case that motivated it.
+P43's directory-case early return in `test_ciu_deploy_actions.py` was therefore
+deleted rather than preserved: all three parametrized manglings now warn and
+set the flag.
+
+### The regression that was possible here, and how it is excluded
+
+`hooks_runner.py` auto-merges cleanly. Nothing about that file conflicts, so a
+resolution that quietly dropped the `identity_unreadable=` argument at the two
+`HookContext(...)` constructions would compile, pass most tests, and leave the
+field permanently `False` — a hook told "identity is fine" about a corrupt
+record, forever, with no failure anywhere.
+
+Both halves are present at both sites, each with a comment naming the two ways
+the pair can rot (drop the renamed key → `None` forever; drop the flag →
+`False` forever):
+
+```
+$ grep -n "HookContext(" src/ciu/*.py
+src/ciu/engine.py:1566:        ctx = hooks_runner.HookContext(
+src/ciu/deploy.py:2554:            ctx = hooks_runner.HookContext(
+```
+
+Both pass `instance_id=…("instance_id")`, `network=…("network")` (CIU-75's
+snake_case overlay keys, **not** P43's `identity.get("INSTANCE_ID")`) and
+`identity_unreadable=…`. The end-to-end oracle is the hook probe in
+`test_ciu_render_selection_context.py`, which writes
+`f'{ctx.instance_id!r}|{ctx.network!r}|{ctx.identity_unreadable!r}'` from
+inside a real hook and is asserted to equal `None|None|True` — a marker file
+written by the hook itself, so no amount of wiring elsewhere can fake it.
+
+`hooks_runner.py`'s own docstring for the field was re-pointed off `ciu.env`
+onto the overlay table by hand, since no conflict would have prompted it.
+
+### Conflicts, file by file
+
+`deploy.py`, `engine.py` (both sides kept, P43's stale `is_file()` comment
+corrected), `test_ciu_render_selection_context.py`, `test_ciu_deploy_actions.py`,
+`test_ciu_identity_cutover_ciu75.py`, `KNOWN_ISSUES_TODO_BACKLOG.md`,
+`CHANGES.md`, `docs/SPEC.md`, `docs/CONSUMERS.md`, `README.md` — the per-file
+resolutions are tabulated in `ciu-P42-LOG.md` Entry 4. Two worth naming here:
+
+- **P43's pairing test corrupted the identity record.** Post-cutover,
+  corrupting `ciu.env` is a no-op, and corrupting the overlay *file* fails
+  `render_global_chain` before STEP 12 — either way the oracle stops testing
+  what it exists to test. Resolved with a **non-string fact**
+  (`[ciu.instance.generated]\ninstance_id = 7`): valid TOML the config chain
+  renders happily, which the identity reader refuses. The test stays
+  end-to-end, with no monkeypatching on either side — which is what makes it a
+  pairing test rather than two mocked assertions.
+- **The backlog's two "Last updated" headers** were chained rather than
+  merged-into-one, and my own now-false "Previously: CIU-81 FILED" paragraph
+  was dropped: P43 FIXED CIU-81. CIU-82 (this package's dstdns follow-up) was
+  already numbered around that collision.
+
+### Docs that had to move because both ship in 7.7.0
+
+SPEC **S9.3** and CONSUMERS **§10** describe `identity_unreadable` to hook
+authors; both said `ciu.env`. Re-pointed at the overlay's generated table with
+a cross-reference to S3.1c clause 4 for where the absent/unreadable line falls
+and why CIU-75 moved it. `CHANGES.md` `[7.7.0]` gains an explicit CIU-75 ×
+CIU-80 entry — an adopter reading one release's notes should not have to infer
+the interaction of two entries in it. The consumer-facing conclusion is stated
+plainly: *a hook that was branching on `identity_unreadable` needs no change;
+it just stops being lied to.*
+
+### `main` moved again, and was deliberately not chased
+
+`main` is now `7c47a707` (run-gate-P03 / RG-27). `comm -12` over
+`git diff --name-only 815c50d6..HEAD` and `815c50d6..main` returns **empty** —
+that work is entirely `run-gate-project/`, disjoint from this branch's 39
+files — so there is nothing to reconcile and the merge is trivial. Rebasing
+again would have invalidated the gate run for no reconciliation value.

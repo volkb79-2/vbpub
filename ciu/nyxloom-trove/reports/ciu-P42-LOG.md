@@ -1,13 +1,17 @@
 # ciu-P42 — LOG (CIU-75, the v8 F2 identity cutover)
 
 Worktree: `/workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2`
-Branch: `fix/ciu-P42-cutover-identity-f2` (from `main` @ `332af5a1`)
+Branch: `fix/ciu-P42-cutover-identity-f2` — originally cut from `main` @
+`332af5a1`, **rebased onto `main` @ `815c50d6`** (the ciu-P43 merge:
+CIU-77/79/80/81) on 2026-08-31. The rebase is Entry 4, and it rewrote every
+hash below; the pre-rebase hash is named in each entry so an earlier reference
+to it still resolves.
 
 One entry per commit, each naming the commit hash it describes.
 
 ---
 
-## Entry 1 — `c1985542` — `feat(ciu)!: CIU-75 -- the overlay becomes the sole instance-fact source (BREAKING)`
+## Entry 1 — `ebcc7ad7` (pre-rebase `c1985542`) — `feat(ciu)!: CIU-75 -- the overlay becomes the sole instance-fact source (BREAKING)`
 
 **What it did.** The whole code + test cutover.
 
@@ -89,11 +93,13 @@ which "still works with `ciu.env` deleted" would also be satisfied by a site
 that reads neither record.
 
 **Gate at this commit:** not run (docs still owed). Full suite green,
-`3393 passed`, coverage `100%` line+branch via `run-ciu-tests.py`.
+`3393 passed`, coverage `100%` line+branch via `run-ciu-tests.py`. (Both
+numbers are as-written; Entry 4's rebase merged ciu-P43's tests in and the
+post-rebase count is `3399`.)
 
 ---
 
-## Entry 2 — `788908e2` — `docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; CIU-75 FIXED, CIU-82 filed`
+## Entry 2 — `f8f29778` (pre-rebase `788908e2`) — `docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; CIU-75 FIXED, CIU-82 filed`
 
 **What it did.** The docs half, which AGENTS.md makes part of the change, not
 a follow-up.
@@ -137,6 +143,89 @@ notification is not lost between repos.
 /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2` → `ciu: PASS (exit 0)`,
 `run-gate: lane 'ciu' exit 0`, `GATE_EXIT=0`, with
 `.assay/verdict-ciu.json`'s `"commit"` equal to `788908e2c94956abd37dd0ed8b6ef4b89cc77e62`
-== HEAD. No baseline/comparison gate was run at any point in this package, so
-nothing could have overwritten that artifact. Verbatim verdict and full
-artifact in `ciu-P42-REPORT.md` §6.
+== HEAD *at that run* (the pre-rebase hash — Entry 4 rewrote it and re-ran the
+gate against the rebased tip). No baseline/comparison gate was run at any point
+in this package, so nothing could have overwritten that artifact. Verbatim
+verdict and full artifact in `ciu-P42-REPORT.md` §6.
+
+---
+
+## Entry 3 — `67a588f8` (pre-rebase, same content) — `report(ciu): ciu-P42 -- CIU-75 REPORT + LOG gate/hash record`
+
+**What it did.** Added `ciu-P42-REPORT.md` (per-site classification table for
+all 12 sites, the two behaviour deltas, the delete-and-corrupt evidence, the
+verbatim gate verdict plus the full verdict artifact, the dstdns sweep with
+`file:line`, and the four acceptance criteria answered one by one) and filled
+Entry 2's own hash and gate result into this LOG.
+
+Report-only: no source, test or user-facing doc changed.
+
+**Gate at this commit:** re-run after the rebase (Entry 4) — see there.
+
+---
+
+## Entry 4 — `ebcc7ad7`/`f8f29778`/`67a588f8` — the rebase onto ciu-P43 (`815c50d6`)
+
+**Why.** ciu-P43 (CIU-77/79/80/81) merged to `main` as `815c50d6` while this
+package was in flight, and it touches the SAME identity code: CIU-80 added
+`HookContext.identity_unreadable`, set at BOTH S3.12 readers. This package
+moves where those readers read FROM. Neither change is correct without the
+other, so the reconciliation is the work, not the merge mechanics.
+
+**Conflicts, and how each was resolved.**
+
+| file | conflict | resolution |
+|---|---|---|
+| `src/ciu/deploy.py` | P43 made `_workspace_identity` return `(facts, unreadable)`; CIU-75 changed what it reads | BOTH: `-> tuple[dict, bool]`, reading `read_generated_facts(repo_root)`, `({}, False)` for absent, `({}, True)` for present-but-unreadable |
+| `src/ciu/engine.py` | same shape at the STEP-12 inline reader | BOTH, and P43's comment about the now-deleted `if _env_path.is_file()` guard was corrected rather than carried forward stale |
+| `src/ciu/hooks_runner.py` | **none — auto-merged** | the field's docstring was re-pointed off `ciu.env` onto the overlay table by hand; see the hazard note below |
+| `tests/.../test_ciu_render_selection_context.py` | P43's pairing test corrupts the identity record | re-pointed at the overlay with a **non-string fact** (`instance_id = 7`) — valid TOML the config chain renders, which the identity reader refuses, so the oracle stays end-to-end instead of failing earlier in the render |
+| `tests/.../test_ciu_deploy_actions.py` | P43's directory-case early return | dropped: post-CIU-75 a DIRECTORY is present-but-unreadable, so all three parametrized cases now warn and set the flag |
+| `tests/.../test_ciu_identity_cutover_ciu75.py` | mine, against P43's new tuple | destructured, and each site's assertion tightened to `(… , False)` |
+| `KNOWN_ISSUES_TODO_BACKLOG.md` | two "Last updated" headers | both kept, chained "Previously, …"; my stale "CIU-81 FILED" paragraph dropped because P43 FIXED CIU-81 |
+| `CHANGES.md`, `docs/SPEC.md`, `docs/CONSUMERS.md`, `README.md` | header/section adjacency | both sets of entries kept; P43's S9.3 and CONSUMERS §10 `identity_unreadable` text re-pointed at the overlay, and a CIU-75 × CIU-80 bullet added to `[7.7.0]` since both ship in the same release |
+
+**The hazard the reviewer named, checked explicitly.** `hooks_runner.py`
+auto-merges cleanly, so a conflict resolution that dropped the
+`identity_unreadable=` argument at the two `HookContext(...)` constructions
+would leave the field permanently `False` with nothing failing. Both sites
+carry it, both carry CIU-75's renamed snake_case keys, and both now have a
+comment naming the two ways the pair can silently rot:
+
+```
+deploy.py:2554  instance_id=identity.get("instance_id"),
+                network=identity.get("network"),
+                identity_unreadable=identity_unreadable,
+engine.py:1566  instance_id=_hook_identity.get("instance_id"),
+                network=_hook_identity.get("network"),
+                identity_unreadable=_hook_identity_unreadable,
+```
+
+`grep -n "HookContext(" src/ciu/*.py` returns exactly those two.
+`test_identity_unreadable_agrees_between_check_preflight_and_real_run` (P43's,
+now over the overlay) is the test that fails if either side is dropped.
+
+**The re-derived contract.** CIU-75 does not just survive CIU-80 — it makes
+CIU-80's field honest. P43 drew absent-vs-unreadable with `ciu.env.is_file()`,
+which answers "absent" for a DIRECTORY named `ciu.env`; the overlay reader
+answers `WorkspaceEnvError` for anything PRESENT it cannot read, directory
+included. The estate's absence-for-emptiness anti-pattern was still live in
+the field designed to defeat it.
+
+**Also in this rebase (test hygiene the cutover itself made stale):** an
+`import os` left unused when a chmod-based fixture became a reader injection;
+the comment still describing that chmod; and
+`test_engine_identity_read_survives_an_unparseable_ciu_env` →
+`…_an_unparseable_identity_record`, since it no longer touches `ciu.env`.
+
+**`main` moved again during this work** (`7c47a707`, run-gate-P03/RG-27). Not
+rebased onto: `comm -12` over `git diff --name-only` from `815c50d6` shows
+**zero** overlap with this branch's 39 files — it is entirely
+`run-gate-project/` — so there is nothing to reconcile and a merge is trivial.
+
+**Gate after the rebase:** `ciu: PASS (exit 0)`, `run-gate: lane 'ciu' exit 0`,
+`GATE_EXIT=0`, verdict artifact `"commit": "67a588f8…"` == HEAD at that run,
+now under assay **3.2.0** (P43 bumped the judge from 2.3.0) and verdict schema
+8. Verbatim in `ciu-P42-REPORT.md` §6. A second run followed this LOG/REPORT
+commit so that the LAST gate invocation of the package is the one against the
+branch tip.

@@ -375,17 +375,16 @@ def test_engine_identity_read_survives_unreadable_overlay(
     tmp_path, monkeypatch
 ):
     """An unreadable overlay degrades ctx identity to None — the deploy
-    proceeds; the OSError branch of the S3.12 wiring is exercised."""
-    import os
-
+    proceeds; the read-failure branch of the S3.12 wiring is exercised."""
     monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
     repo_root = _build_repo(tmp_path, monkeypatch)
     stack = _add_stack(repo_root)
 
     # Skip ONLY the step-1 bootstrap (it legitimately needs the record and
-    # already ran in _build_repo); make the file unreadable for the ENGINE's
-    # own S3.12 identity read: stat still succeeds so is_file() passes, but
-    # open() raises PermissionError(OSError).
+    # already ran in _build_repo). Pre-CIU-75 this test made the FILE
+    # unreadable (stat succeeds, open() raises PermissionError); the reader is
+    # now the seam that normalizes OSError, UnicodeDecodeError and malformed
+    # TOML into one WorkspaceEnvError, so the failure is injected there.
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
     # CIU-75: the overlay is ALSO a config-chain layer, so corrupting the FILE
     # now fails the render long before step 12 — a strictly louder outcome, and
@@ -444,7 +443,7 @@ def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
         ("malformed entry", "[S3.1c] ... has a malformed table"),
     ],
 )
-def test_engine_identity_read_survives_an_unparseable_ciu_env(
+def test_engine_identity_read_survives_an_unparseable_identity_record(
     tmp_path, monkeypatch, capsys, kind, payload
 ):
     """CIU-62 — the real-run twin of `deploy._workspace_identity`.
