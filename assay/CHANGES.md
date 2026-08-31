@@ -259,6 +259,53 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.0.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=12234a9742066ed3b622af7946c74fe53e66899d -->
+
+### Added
+- feat(assay): B046 -- R2 by evidence ingestion, and javascript at R2 (d0aab6fd)
+- feat(assay): B041(b) -- isolation.link_paths, with the teardown canary (9bb52280)
+- feat(assay): B043 -- a lane-level cwd, honoured at every execution site (143e927e)
+- feat(assay)!: verdict schema v8 -> v9 -- the producer cut (B045/B046/B043/B041(b)) (af14021f)
+- feat(assay): B045 (2/2 non-schema) -- real branch arcs under a declared istanbul producer, and the type-only lexer (B038 a+b) (cc4e955f)
+- feat(assay): B045 (1/2) -- the coverage PRODUCER as a declared, per-format, closed fact (fac1b73b)
+
+### Fixed
+- fix(assay): the raw verifier's three missing ORDER checks and its unclosed producer vocabulary; file B051 (4780c4ba)
+- fix(assay): the report-schema major pin admits an unmeasured major; B037 docstring is stale (9848d5ca)
+- fix(assay): BLOCKER -- cwd x link_paths composed into a snapshot escape (52b1f86b)
+
+### Changed
+- merge(assay): Wave B -- producer wave, verdict schema v8->v9 (B045/B046/B043/B041(b)) (5692ad37)
+- backlog(assay): file B052 -- an ingested report's `source` is never checked against the snapshot's committed bytes (c1176bd0)
+
+### Documentation
+- docs(assay): Wave B controller log -- merged to main, starting release (12234a97)
+- docs(assay): B037's ruling is made -- the second copy of the stale claim, in generate_mutation_sites' own docstring (7263716f)
+- docs(assay): Wave B controller log -- fix-verification ACCEPT (d3c194be)
+- docs(assay): Wave B controller log -- fix-verification round 2 interim (168b4445)
+- docs(assay): Wave B controller log -- fix round 1 complete and green (bcc9335b)
+- docs(assay): fix round 1 -- the rewritten gate record, and REPORT section 15 (05947625)
+- docs(assay): Wave B controller log -- fix round 1 status, B051 bookkeeping gap (b62e9ec1)
+- docs(assay): Wave B controller log -- review round 1 complete verdict (58bb314b)
+- docs(assay): Wave B controller log -- review round 1, ACCEPT-conditional (85e90140)
+- docs(assay): Wave B controller log -- implementation complete, gate green (a1d1dec3)
+- docs(assay): the Wave B gate transcript (a4bf1bc3)
+- docs(assay): the Wave B report (1a783f3e)
+- docs(assay): Wave B controller log -- checkpoint 3, schema cut landed (624673db)
+- docs(assay): Wave B checkpoint 3 -- continuation brief for the post-schema-cut half (f620c97b)
+- docs(assay): Wave B controller log -- checkpoint 2, endorse required-fields fork (25d02d94)
+- docs(assay): Wave B checkpoint 2 -- continuation brief + LOG entry for cc4e955f (b1a2f0e9)
+- docs(assay): Wave B controller log -- checkpoint 1, dispatching generation 2 (a6e6ebe6)
+- docs(assay): Wave B checkpoint 1 -- continuation brief (b85d3a6e)
+- docs(assay): Wave B controller log -- report-vs-pause operating rule (c36a06a5)
+- docs(assay): Wave A shipped status + operator ruling on B/C sequencing (76de935f)
+
+### Testing
+- test(assay): W5 -- the v9 frozen drift-guard generation, and the gate wiring that demotes W4 (1577fa45)
+- test(assay): commit a REAL StrykerJS mutation-testing-report-schema artifact (B046 evidence) (384f3c0f)
+
 ## [3.2.0] - 2026-08-30
 <!-- cmru: generated -->
 <!-- cmru: source-end=71ddc7d952720ea2cf1d0e2dcb56ddf2489f01e5 -->
