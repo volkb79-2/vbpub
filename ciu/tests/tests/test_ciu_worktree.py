@@ -781,14 +781,32 @@ class TestAdoptRefusals:
 
 
 class TestWorktreeSubprocessEnvironment:
+    # CIU-85: PUBLIC_FQDN added — one of the six `[ciu.instance.generated]`
+    # identity facts since CIU-47, previously absent from both this list AND
+    # the production `_CIU_IDENTITY_ENV_KEYS` it mirrors.
     _IDENTITY_KEYS = (
         "REPO_ROOT",
         "PHYSICAL_REPO_ROOT",
         "DOCKER_NETWORK_INTERNAL",
         "INSTANCE_ID",
         "REPO_NAME",
+        "PUBLIC_FQDN",
         "CIU_SERVICES_PROFILE",
     )
+
+    def test_identity_env_keys_match_the_canonical_fact_table_plus_profile(self):
+        """CIU-85: `_CIU_IDENTITY_ENV_KEYS` is DERIVED from
+        `GENERATED_FACT_ENV_KEYS.values()` (the canonical fact->env-name
+        table) plus the one hand-added non-fact member, `CIU_SERVICES_PROFILE`
+        — not a second, independently hand-maintained literal. Pinned here so
+        a future fact added to the canonical table joins this tuple BY
+        CONSTRUCTION, the exact property this fix exists to establish."""
+        from ciu.workspace_env import GENERATED_FACT_ENV_KEYS
+
+        assert set(worktree._CIU_IDENTITY_ENV_KEYS) == set(
+            GENERATED_FACT_ENV_KEYS.values()
+        ) | {"CIU_SERVICES_PROFILE"}
+        assert "PUBLIC_FQDN" in worktree._CIU_IDENTITY_ENV_KEYS
 
     def test_generate_env_strips_primary_instance_identity(self, tmp_path, monkeypatch):
         for key in self._IDENTITY_KEYS:
@@ -818,6 +836,58 @@ class TestWorktreeSubprocessEnvironment:
         monkeypatch.setattr(worktree.subprocess, "run", fake_run)
         assert worktree._generate_env_in(tmp_path, identity_only=True) == 0
         assert seen["argv"][-1] == "--identity-only"
+
+    def test_clean_strips_the_callers_service_profile_selection(
+        self, tmp_path, monkeypatch, write_instance_facts
+    ):
+        """CIU-85: `_clean_in` did not strip `_CIU_IDENTITY_ENV_KEYS` before
+        overlaying the target's identity facts, unlike its two siblings
+        (`_sanitized_target_env`, `_resolve_budget_candidates`). Neutralized
+        for the five overlay-fact keys (`identity` always overwrites them
+        once the empty-table refusal above has already fired), but
+        `CIU_SERVICES_PROFILE` is NOT an overlay fact — it is never in
+        `identity` — so it used to leak straight through from the CALLER's
+        ambient environment into the child `ciu clean`. This is the
+        controlled-wrong-implementation proof: reverting the strip (`env =
+        dict(os.environ); env.update(identity)`) makes this assertion fail
+        with `env["CIU_SERVICES_PROFILE"] == "primary-profile"`.
+        """
+        write_instance_facts(tmp_path, repo_root="/target", instance_id="target-id")
+        monkeypatch.setenv("CIU_SERVICES_PROFILE", "primary-profile")
+        seen: dict[str, object] = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._clean_in(tmp_path, yes=True) == 0
+        env = seen["env"]
+        assert "CIU_SERVICES_PROFILE" not in env
+
+    def test_clean_strips_a_stale_ambient_public_fqdn_not_carried_by_target(
+        self, tmp_path, monkeypatch, write_instance_facts
+    ):
+        """CIU-85's `PUBLIC_FQDN` half: it joined `_CIU_IDENTITY_ENV_KEYS` by
+        construction (derived from `GENERATED_FACT_ENV_KEYS`), so it is now
+        stripped from the ambient environment before the target's own
+        (possibly empty) `public_fqdn` overlays it — an FQDN-less target must
+        not inherit whatever the CALLING process happened to have set.
+        """
+        write_instance_facts(
+            tmp_path, repo_root="/target", instance_id="target-id", public_fqdn=""
+        )
+        monkeypatch.setenv("PUBLIC_FQDN", "primary.example.com")
+        seen: dict[str, object] = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._clean_in(tmp_path, yes=True) == 0
+        env = seen["env"]
+        assert env["PUBLIC_FQDN"] == ""
 
     def test_clean_uses_target_worktree_env_not_primary(
         self, tmp_path, monkeypatch, write_instance_facts

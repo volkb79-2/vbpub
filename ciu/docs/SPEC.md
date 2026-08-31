@@ -3829,7 +3829,9 @@ Both build the child environment from the target's OWN exact
 sourced through a shell; `ciu.env` until CIU-75): the
 ambient process environment MINUS every CIU root/identity/network/profile key
 (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`, `INSTANCE_ID`,
-`REPO_NAME`, `CIU_SERVICES_PROFILE`), then overlaid with the target's own
+`REPO_NAME`, `PUBLIC_FQDN`, `CIU_SERVICES_PROFILE` — the first six DERIVED
+from the canonical fact->env-name table, `CIU_SERVICES_PROFILE` the one
+hand-added non-fact member, CIU-85), then overlaid with the target's own
 facts under their legacy shell names (S3.1c clause 7). The target must carry
 `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
 `INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`, and `REPO_NAME`, and each must match
