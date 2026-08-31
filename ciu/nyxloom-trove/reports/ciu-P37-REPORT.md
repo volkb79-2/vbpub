@@ -2,9 +2,11 @@
 
 Worktree: `/workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu`
 Branch: `fix/ciu-P37-compose-project-directory`
-Final commit: `2329d1ba8637b293379b4584c0739055b9876786` (round 2's backlog
-closeout; round 1's `7e4e34f3` was the mechanism, since rebuilt across
-several commits below).
+Final commit: `d7830f9e0c1b720d75accec1667f7e0f43bf0ec1` (round 3, post-rebase
+onto current `main`; round 2's backlog closeout was `2329d1ba8637b293`,
+round 1's `7e4e34f3` was the mechanism — all rebuilt across several commits
+below, then rebased onto `main` tip `25d02d94` in round 3, see that
+section).
 Backlog entry: `KNOWN_ISSUES_TODO_BACKLOG.md` row `CIU-71`, marked **FIXED**
 in review round 2 (round 1's header claiming it was already "closed" was
 WRONG — caught by independent review, see round 2's blocker 4). CIU-79
@@ -470,16 +472,131 @@ Final summary line: `1 failed, 3265 passed in 32.78s` — identical failure
 count and identical single failure to round 1's run, confirming round 2's
 doc/backlog/message-string changes introduced no regressions.
 
+## Review round 3 — second independent adversarial review, ACCEPT-conditional
+
+Two more small items, both docs/rebase hygiene, no code change.
+
+**Item 1 — `.env` framing in `docs/CONSUMERS.md` §18 was itself backwards.**
+Round 2's fix said a stack-local `.env` is "now SHADOWED by a repo-root
+`.env`, if one exists" and the migration bullet said "confirm no repo-root
+`.env` now shadows it" — both wrong. `docker compose` reads `.env` ONLY
+from `--project-directory` (S8.1a); it never also checks the compose
+file's own directory. So a stack-local `.env` is dropped UNCONDITIONALLY —
+whether or not a repo-root `.env` exists — not "shadowed" only when one
+happens to exist. Live-reproduced before writing the fix, independent of
+the reviewer's own probe:
+
+```
+$ cat ciu.compose.yml   # stack dir, build.context/dockerfile as in the S18 example
+$ echo 'FOO=from_stack_env' > .env                 # stack-local .env, no repo-root .env at all
+$ docker compose -p t1 --project-directory /repo/root -f ciu.compose.yml config | grep -A2 FOO
+      FOO: (unset — not present in the rendered config at all)
+```
+Removing `--project-directory` and re-running the same `config` against
+the SAME stack-local `.env` resolves `FOO: from_stack_env` — confirming
+the drop is caused purely by `--project-directory`'s presence, not by any
+repo-root `.env` competing with it. Fixed the paragraph ("stops being read
+at all... dropped whether or not a repo-root `.env` exists") and the
+migration bullet ("move its values into CIU's own config/secret
+mechanisms or into a repo-root `.env`") in `docs/CONSUMERS.md` §18.
+Independently re-checked `docs/SPEC.md` S8.1a's own `.env` paragraph
+(1225-1240): it says relocation "changes which `.env` a stack picks up,
+the same way it changes `build.context`" and never claims the stack-local
+file is conditionally shadowed — confirmed accurate, left untouched, per
+the reviewer's own assessment.
+
+**Item 2 — rebase onto current `main`.** This branch had deliberately not
+rebased past merge-base `aa6cf1fd` in rounds 1-2 (per earlier "not needed"
+guidance), leaving CIU-76 — fixed upstream by ciu-P36's `384993b6` merge —
+still failing here as a known, unrelated, pre-existing gap (R0 FAIL,
+R1 100% PASS in both prior gate runs). `main` has since advanced to
+`25d02d94` (one further commit, `docs(assay): Wave B controller log --
+checkpoint 2, endorse required-fields fork`, no `ciu/` files touched —
+verified via `git log --name-only 384993b6..main -- ciu/` returning
+nothing before rebasing). Ran `git rebase main`; one conflict, in
+`KNOWN_ISSUES_TODO_BACKLOG.md`'s "Last updated" header paragraph (both
+branches had rewritten it). Resolved by keeping this branch's CIU-71/CIU-79
+paragraph as the (chronologically later) "Last updated" entry, moving
+ciu-P36's CIU-69/CIU-76 paragraph down to a new "Previously, 2026-08-31"
+entry ahead of the pre-existing CIU-78 and CIU-76/77-filed entries, and
+adding one clause noting the round-3 `.env`-framing correction. No table
+row conflicted; `grep -n "^<<<<<<<\|^=======\|^>>>>>>>"` across the repo
+after `--continue` found none. `git status --short` clean; `git merge-base
+HEAD main` now equals `main`'s own tip (`25d02d9446146b107e60e238506a779618d5fb30`)
+exactly.
+
+### Real gate — round 3 (post-rebase, final)
+
+Ran `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory`
+(from inside `ciu/`) against the post-rebase tip. Exit code and verdict
+both read in a separate step from the invocation.
+
+```
+run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: rev 23 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-209786-1788140377 --cgroup-parent dev-background.slice -e CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice -v /home/vb/volkb79-2/vbpub:/home/vb/volkb79-2/vbpub -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && cd /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu && (cd /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu/tools/assay && sha256sum -c assay-2.3.0.pyz.sha256) && { reported=$(/opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz --version) || { echo "run-gate: pin '"'"'assay'"'"': version probe failed: /opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz --version" >&2; exit 2; }; hit=0; for tok in $reported; do tok=${tok#"${tok%%[![:punct:]]*}"}; tok=${tok%"${tok##*[![:punct:]]}"}; case "$tok" in v[0-9]*) tok=${tok#v} ;; esac; if [ "$tok" = 2.3.0 ]; then hit=1; fi; done; if [ "$hit" != 1 ]; then echo "run-gate: pin '"'"'assay'"'"' version mismatch: declared 2.3.0, artifact reports: $reported — fix pins.assay.version or republish the artifact" >&2; exit 2; fi; } && mkdir -p .assay && /opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'
+assay-2.3.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: d7830f9e0c1b720d75accec1667f7e0f43bf0ec1
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+```
+
+`.assay/verdict-ciu.json` (read separately via `json.load`, full document):
+
+```json
+{
+    "commit": "d7830f9e0c1b720d75accec1667f7e0f43bf0ec1",
+    "outcome": "PASS",
+    "exit_code": 0,
+    "lane": "ciu",
+    "scope": "S1",
+    "declared_rigor": ["R0", "R1"],
+    "claims": [
+        {"rigor": "R0", "status": "PASS", "source": "computed", "verified_by_assay": true},
+        {"rigor": "R1", "status": "PASS", "source": "computed", "verified_by_assay": true,
+         "coverage": {"pct": 100.0, "executable": 22, "covered": 22,
+                      "branches_total": 2, "branches_covered": 2,
+                      "missing_lines": {}, "missing_branch_lines": {},
+                      "branch_capability": "reported"}}
+    ],
+    "judgment": {
+        "r1": {"mode": "changed_lines", "fail_under": 100.0, "require_branch": true,
+               "coverage_format": "coverage-py-json"},
+        "resolved": {"base": "25d02d9446146b107e60e238506a779618d5fb30",
+                     "language": "python", "source_roots": ["src"]}
+    },
+    "env_declared": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"},
+    "env_effective": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src", "...": "..."}
+}
+```
+
+- **R0: PASS.** `verified_by_assay: true` — the first fully green R0 across
+  all three rounds. CIU-76 (the sole failure in rounds 1-2) is gone now
+  that the branch's rebase carries ciu-P36's upstream fix.
+- **R1: PASS.** `pct: 100.0`, 22/22 executable lines, 2/2 branches,
+  `verified_by_assay: true`. `judgment.resolved.base` is
+  `25d02d9446146b107e60e238506a779618d5fb30` — confirming the changed-lines
+  coverage judgment recomputed its base against the NEW `main` tip
+  post-rebase, not a stale pre-rebase one.
+- **`outcome: PASS`, `exit_code: 0`** overall — a clean gate, no caveats,
+  no known-unrelated failures to explain away.
+
 ## Result
 
-Not blocked. Round 1 shipped the mechanism (independently confirmed
-correct by review's own live acceptance probe, no code defect found).
-Round 2 fixed all four documentation/backlog blockers plus both decision
-asks, every corrected claim independently re-verified against a real
-`docker compose config`/`build` before being written down — not taken on
-the review's word. Final real gate verdict (round 2, above): `FAIL`
-overall, attributable entirely to the already-known, out-of-scope CIU-76
-(unchanged from round 1, same single failure); R1's 100% line+branch
-coverage of `src/ciu` is a clean PASS. Final commit hash (real, read via
-`git log -1 --format=%H`, not predicted):
-`2329d1ba8637b293379b4584c0739055b9876786`.
+Not blocked, and now fully clean. Round 1 shipped the mechanism
+(independently confirmed correct by review's own live acceptance probe, no
+code defect found). Round 2 fixed all four documentation/backlog blockers
+plus both decision asks, every corrected claim independently re-verified
+against a real `docker compose config`/`build` before being written down —
+not taken on the review's word. Round 3 fixed a backwards `.env` framing
+inside round 2's OWN fix (also independently live-reproduced before
+writing) and rebased onto current `main`, picking up CIU-76's upstream fix.
+Final real gate verdict (round 3, above): **`outcome: PASS`, exit 0** — R0
+PASS, R1 PASS at 100% line+branch coverage of `src/ciu`, both
+`verified_by_assay: true`. No open failures, known or otherwise. Final
+commit hash (real, read via `git log -1 --format=%H`, not predicted):
+`d7830f9e0c1b720d75accec1667f7e0f43bf0ec1`.

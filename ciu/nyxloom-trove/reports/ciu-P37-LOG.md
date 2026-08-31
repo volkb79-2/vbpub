@@ -295,3 +295,67 @@ Identical failure count and identical single failure to round 1's gate run
 — round 2's doc/backlog/message-string-only changes introduced no
 regressions. See REPORT for the verbatim verdict, read in a separate step
 from its invocation.
+
+## Commit 5/6 — review round 3 (.env framing fix + rebase onto current main)
+
+A second independent adversarial review pass returned ACCEPT-conditional
+on round 2, with two more small items — both addressed here, on the same
+branch, no new review round required per the coordinator.
+
+**Item 1 — `docs/CONSUMERS.md` §18's `.env` paragraph was itself backwards.**
+Round 2's own fix said a stack-local `.env` is "SHADOWED by a repo-root
+`.env`, if one exists" and told a migrator to "confirm no repo-root `.env`
+now shadows it" — implying the stack-local file only stops mattering when
+a repo-root `.env` happens to exist. Wrong: `docker compose` looks for
+`.env` ONLY in `--project-directory` (now the repo root) — it never falls
+back to the compose file's own directory. A stack-local `.env` is dropped
+UNCONDITIONALLY, present or not, on the repo-root side. Live-reproduced
+before writing the fix (not taken on the reviewer's word): with a
+stack-local `.env` only (`FOO=from_stack_env`) and NO repo-root `.env`,
+`docker compose config` resolves `FOO` unset post-fix — not "shadowed by"
+anything, just gone. Fixed the paragraph and the migration-note bullet in
+`docs/CONSUMERS.md` §18 to say the stack-local `.env` "stops being read at
+all" and instructs moving its values into CIU's own config/secret
+mechanisms or a repo-root `.env`, never "confirm nothing shadows it".
+Independently re-checked `docs/SPEC.md` S8.1a's own `.env` paragraph (the
+reviewer's claim that it needed no change): it says relocation "changes
+which `.env` a stack picks up" without ever framing it as conditional on a
+repo-root `.env`'s existence — confirmed accurate as written, left
+untouched. Committed separately (`cbe4e6f5`, later rebased to `d7830f9e`)
+so the docs-wording fix is its own reviewable unit.
+
+**Item 2 — rebase onto current `main`.** Round 2 deliberately did NOT
+rebase (merge-base stayed `aa6cf1fd`), per the earlier "not needed"
+guidance, leaving CIU-76 (fixed upstream via ciu-P36's `384993b6` merge)
+still failing on this branch as a known, unrelated, pre-existing gap. Main
+has since advanced past `384993b6` to `25d02d94` (one further unrelated
+assay-docs commit, `git log --oneline 384993b6..main` confirms no `ciu/`
+files touched). Re-verified there was still no dangerous file overlap
+(`git log --name-only 384993b6..main -- ciu/` returned nothing) before
+rebasing. `git rebase main` hit exactly one conflict, in
+`KNOWN_ISSUES_TODO_BACKLOG.md`'s "Last updated" header paragraph (both
+this branch and ciu-P36's merge had rewritten that same top paragraph) —
+resolved by keeping this branch's CIU-71/CIU-79 paragraph as the new
+"Last updated" (it is chronologically last), demoting ciu-P36's
+CIU-69/CIU-76 paragraph to a new "Previously, 2026-08-31" entry ahead of
+the existing CIU-78 and CIU-76/77-filed entries, and adding one sentence to
+the CIU-71 paragraph noting the round-3 `.env`-framing correction. No table
+rows conflicted (CIU-71/74/76/79 rows each appear exactly once,
+pipe-counts verified). `git rebase --continue` completed clean; `git
+status --short` empty; `git merge-base HEAD main` now resolves to
+`25d02d94`, matching `main`'s own tip exactly.
+
+**Real gate, round 3 (post-rebase, final).** Ran
+`./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory`
+from inside `ciu/` against the post-rebase tip. Verdict read in a separate
+step (`.assay/verdict-ciu.json` via `json.load`, never the piped stdout
+tail): **`outcome: PASS`, `exit_code: 0`.** R0: `status: PASS`,
+`verified_by_assay: true`. R1: `status: PASS`, `pct: 100.0`, 22/22
+executable lines, 2/2 branches, `verified_by_assay: true`. R1's
+`judgment.resolved.base` is `25d02d9446146b107e60e238506a779618d5fb30` —
+confirming the coverage judgment recomputed its changed-lines base against
+the NEW main tip post-rebase, not a stale one. This is the first fully
+green gate run across all three rounds: CIU-76, the sole R0 failure in
+rounds 1 and 2, is gone now that the branch carries its upstream fix.
+Verbatim run-gate stdout and the full verdict JSON are in the REPORT's
+"Real gate — round 3" section.
