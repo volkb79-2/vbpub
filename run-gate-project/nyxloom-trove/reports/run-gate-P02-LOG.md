@@ -181,9 +181,49 @@ five commits was checked out detached and re-gated on a clean tree, so every
 verdict in the REPORT is a real run of that exact commit, not a
 reconstruction.
 
-## 7. (branch tip) — usage() names the checks this bundle added (docs, no behaviour)
+## 7. usage() names the checks this bundle added (docs, no behaviour)
 
 `usage()` still advertised `doctor` as "docker, slices, mountinfo, git,
 images" after RG-21 and RG-25 extended it, and still described `--check-env`
 as advisory-only after RG-25 made a toolchain FAIL exit 2. Text only. Suite
 re-run afterwards: 273 passed, diff coverage 243/243 (100%).
+
+---
+
+## 8. (branch tip) — review round: B1, B2, B3 + S3, S8, N1 (rev 28 → 29)
+
+Adversarial review returned ACCEPT-conditional. Controller ratified D4, D6
+and D8 as implemented; nothing re-litigated.
+
+- **B2 (code):** `assay_toolchain_findings()` split into two passes so the
+  `command -v` fitness probe is BATCHED per environment over the union of
+  every lane's tools. It was one container per lane, which made `R-30`'s own
+  cost claim quantitatively false (measured: 4 containers for 3 lanes on one
+  environment). Two new oracles: the container count itself, and that
+  batching does not smear one lane's missing tool onto another. Pass 2
+  deliberately carries no `except GateError` — unreachable after pass 1, and
+  an unreddenable branch is exactly what the coverage floor exists to keep
+  out.
+- **B1 (docs + test):** SPEC `R-28`, `usage()` and the argparse help now
+  state that an assay lane's read-only inventory probe runs even under
+  `--dry-run` (it is what resolves the base the printed plan must show); the
+  promise `--dry-run` makes is "no JUDGED lane starts". Added
+  `test_assay_lane_dry_run_runs_the_probe_and_no_judged_container`, pinning
+  the exact call set. One half of the relayed finding did not hold on
+  inspection (the test named is an assay lane, not `EXEC_LANE`); corrected in
+  the REPORT rather than silently obeyed, and the substantive half fixed.
+- **B3 (docs):** "doctor starts containers" added to CONSUMERS, README,
+  CHANGES and `usage()`; `cmd_doctor`'s docstring no longer calls itself
+  "pure recomposition".
+- **S3:** dedicated RG-28 oracle asserting the host assay lane really builds
+  the assay inner (cwd, `--file`, `--verdict-json`, `mkdir -p .assay`).
+- **S8:** oracles for the `go` row, and for the union/order/de-duplication of
+  the three toolchain sources.
+- **N1:** RG-29's fix section corrected — the vanished filename appears
+  **four** times in `cmru/run-gate.toml`, one of them inside a free-form argv
+  that `validate-pointers` deliberately never stats.
+- REPORT gains the merge-verification procedure the controller asked for
+  (deselect + direct coverage gate), with both traps named: never `|| true`
+  around the gate, never run the coverage gate on an uncommitted tree.
+
+Gate after: 279 passed + the RG-29 failure; diff coverage **258/258 (100%)**.

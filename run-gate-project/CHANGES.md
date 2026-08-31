@@ -9,6 +9,20 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Changed
+- **Adversarial-review round on the P02 bundle (rev 29).** The `command -v`
+  fitness probe is now BATCHED per environment over the union of every lane's
+  tools — it was one container per lane, so SPEC `R-30`'s "at most one probe
+  container per assay environment" was quantitatively false (measured: 4
+  containers for 3 lanes on one environment). A test now owns that count.
+  And the three places still promising that `--dry-run` starts nothing —
+  SPEC `R-28`, `usage()`, the argparse help — now say what it does start: an
+  assay lane's read-only inventory probe, which is what resolves the base the
+  printed plan must show. `--dry-run`'s real promise is that **no judged lane
+  starts**. Same correction applied to `doctor` in CONSUMERS, README and
+  `cmd_doctor`'s own docstring, which still called itself "pure
+  recomposition".
+
 ### Added
 - **RG-26 — `--base REF` passthrough to `assay run --request-base`
   (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
@@ -52,7 +66,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `[SKIP]` with its reason, so an assay older than B044 can never turn a
   healthy project red. `doctor` counts SKIPs in its summary; `--check-env`
   exits 2 on a toolchain FAIL while its env-drift half stays advisory.
-  SPEC `R-34`, `R-01`, `R-30`; CONSUMERS `kind = "assay"` section.
+  **`doctor` and `--check-env` now START CONTAINERS** for this check —
+  fitness can only be observed, not read. They are short-lived and read-only,
+  judge nothing, write nothing, and are bounded at one inventory probe per
+  (environment, `assay_command`) plus **one batched `command -v` probe per
+  environment** (not per lane); a project with no assay lane starts none.
+  SPEC `R-34`, `R-01`, `R-30`; CONSUMERS `kind = "assay"` section; README.
 - **RG-21 — `doctor` names the linked-worktree host-lane git view (rev 26).**
   A linked worktree's `.git` is a FILE pointing at an absolute gitdir under
   the main checkout. A host lane that delegates to a harness bind-mounting

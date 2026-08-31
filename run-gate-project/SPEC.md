@@ -361,17 +361,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   dispatched artifact is certified by a test, not assumed (a renamed lane
   goes RED at test time, never at daemon dispatch time).
 
-- `R-28` **Dry run (RG-8):** `--dry-run` rehearses the gate WITHOUT
-  executing: every preflight runs exactly as live (config validation,
+- `R-28` **Dry run (RG-8):** `--dry-run` rehearses the gate WITHOUT running
+  the JUDGED lane: every preflight runs exactly as live (config validation,
   required-env, worktree resolution + charset guard, override-reachability,
-  clean-tree — so `--allow-dirty` composes), then the fully assembled plan
-  is printed and exit is 0. Container lanes print the identical docker argv
+  comparison-base resolution per `R-35`, clean-tree — so `--allow-dirty`
+  composes), then the fully assembled plan is printed and exit is 0.
+  Container lanes print the identical docker argv
   a live run would (same assembly code path; only the container NAME differs
   by pid/epoch) and start nothing; exec lanes rehearse name resolution AND
   the runner-running preflight (a stopped runner reports its real refusal),
   print the identical redacted docker-exec argv a live run would, but exec
   nothing; host lanes print the argv and cwd and run nothing. No
-  evidence-path disclosure on a dry run — nothing ran, no artifact landed.
+  evidence-path disclosure on a dry run — no JUDGED lane ran, no artifact
+  landed.
+  **What a dry run DOES execute (amended for `R-35`):** an assay lane's
+  read-only `assay lanes --json` inventory probe is itself a preflight — it
+  is what resolves the comparison base that the printed plan must show — so
+  it runs, in a short container of its own, exactly as it does live. "Nothing
+  runs" was true of `R-28` before `R-35` and is not true now; the promise
+  `--dry-run` makes is that **no judged lane starts**, which is the promise
+  a caller actually relies on. `doctor`'s probes (`R-34`) are the same class
+  of read-only preflight.
 
 - `R-29` **Resource-aware admission (RG-20):** gates are admitted by RAM
   headroom and shared-infra collision, not serialized globally. Lane key
@@ -415,11 +425,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
   (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
   `[FAIL]`/`[SKIP]` line per check plus a summary counting all four; exit 2
-  iff any FAIL. Doctor judges nothing and changes nothing; since `R-34` it
-  may start at most one short-lived, read-only probe container per assay
-  environment (inventory + `command -v`), which is why the summary now
-  reports SKIPs — "could not determine" must be visible, not absorbed into
-  silence. Doctor must itself survive a broken host: a
+  iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
+  it **does start containers**: short-lived read-only probes, bounded at ONE
+  inventory probe per (environment, `assay_command`) plus ONE batched
+  `command -v` probe per environment — never one per lane, and none at all
+  for a project with no `kind = "assay"` lane. That count is a claim, so a
+  test owns it (`test_probe_cost_is_one_inventory_plus_one_tool_probe_per_
+  environment`): a cost stated in the spec and not measured is a cost that
+  drifts. The probes are also why the summary now reports SKIPs — "could not
+  determine" must be visible, not absorbed into silence. Doctor must itself
+  survive a broken host: a
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
 
@@ -438,6 +453,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     verdict. Ephemeral probes carry `--cgroup-parent` like any container this
     tool starts; where no slice is derivable the probe SKIPs rather than
     running unconfined.
+  - **Probe count.** The inventory is asked once per (environment,
+    `assay_command`) — two lanes sharing an environment AND a pinned judge
+    ask once; different judges ask separately, since caching across them
+    would answer with the wrong one. The `command -v` check is asked once per
+    ENVIRONMENT, over the UNION of every lane's tools: what is on a `PATH` is
+    a property of the environment, not of the lane asking. Each lane is still
+    judged against ITS OWN tool list, so batching never smears one lane's
+    missing tool onto another.
   - **Tools checked** = `external_tools` ∪ `argv0` (READ from the inventory)
     ∪ the `language` toolchain. The language table exists only because
     assay's own docs state that fact in prose and not in the inventory

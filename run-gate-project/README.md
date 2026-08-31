@@ -135,6 +135,14 @@ supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
 `run-gate.toml` key: a second spelling of a fact `assay.toml` already owns is
 the drift this design exists to remove.
 
+Asking has a price, stated rather than hidden: those questions are answered
+INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
+invocation (`--dry-run` included) start short read-only probe containers —
+one inventory probe per environment+judge, plus one batched `command -v`
+probe per environment for the fitness check. They judge nothing, write
+nothing, and never start your judged lane; a project with no
+`kind = "assay"` lane starts none of them.
+
 ### Environment mechanics the tool must own (the hard-won list)
 
 These are the exact behaviors whose absence caused measured failures; they are

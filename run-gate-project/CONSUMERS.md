@@ -272,6 +272,19 @@ and documents the language fact in prose instead; a language run-gate has no
 fact for is reported with an explicit caveat on the line rather than being
 treated as "nothing needed".
 
+> **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
+> cannot be read, only observed, so the inventory question and the
+> `command -v` checks execute inside the lane's own environment. They are
+> short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
+> shell builtin), they judge nothing and write nothing into your tree, and
+> ephemeral ones carry `--cgroup-parent` like every container run-gate
+> starts. The cost is bounded: **one inventory probe per (environment,
+> `assay_command`) plus one batched `command -v` probe per environment** —
+> not per lane. A project with no `kind = "assay"` lane starts nothing at
+> all, and neither verb ever starts your judged lane. If you run `doctor` in
+> a context where starting a container is unacceptable, that is the check to
+> know about.
+
 ### Lanes that take their comparison base from the gate (RG-26)
 
 assay ≥ 3.0.0 lets a changed-line lane omit `judge.base` and declare

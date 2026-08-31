@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 28  # rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 29  # rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -1249,12 +1249,17 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
     that means "I could not determine this" is SKIP with the reason, which is
     also why an assay older than B044 can never turn a healthy project red.
     """
-    findings: list[tuple[str, str, str]] = []
+    plan: list[dict] = []
     assay_lanes = {n: l for n, l in sorted(lanes.items()) if l["kind"] == "assay"}
     if not assay_lanes:
-        return findings
+        return []
     docker = shutil.which("docker")
     inventories: dict[tuple, tuple[dict | None, str | None]] = {}
+    probe_ctx: dict[str, tuple] = {}
+    # Pass 1 — ask the JUDGE. One inventory probe per (environment,
+    # assay_command): two lanes sharing an environment AND a pinned judge ask
+    # once, two lanes with different judges ask once each (they are different
+    # judges, and caching across them would answer with the wrong one).
     for name, lane in assay_lanes.items():
         topic = f"lane {name!r} toolchain"
         env_name = lane_environment_name(lane)
@@ -1262,13 +1267,15 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
             env, env_source = resolve_environment(lane, name, cfg, central,
                                                   cfg_path, central_path)
             if not env:
-                findings.append(("SKIP", topic, "environment is the built-in "
-                                 "'host' — its PATH is this machine's, and the "
-                                 "lane's own run reports what is missing"))
+                plan.append({"finding": (
+                    "SKIP", topic, "environment is the built-in 'host' — its "
+                    "PATH is this machine's, and the lane's own run reports "
+                    "what is missing")})
                 continue
             if not docker:
-                findings.append(("SKIP", topic, "docker not on PATH — the "
-                                 "environment cannot be probed"))
+                plan.append({"finding": (
+                    "SKIP", topic,
+                    "docker not on PATH — the environment cannot be probed")})
                 continue
             repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
             key = (env_name, tuple(lane["assay_command"]))
@@ -1278,39 +1285,68 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
                     project_dir)
             doc, why = inventories[key]
             if doc is None:
-                findings.append(("SKIP", topic, why))
+                plan.append({"finding": ("SKIP", topic, why)})
                 continue
             entry = next((e for e in doc.get("lanes", [])
                           if e.get("name") == lane["assay_lane"]), None)
             if entry is None:
                 declared = ", ".join(sorted(e.get("name", "?")
                                             for e in doc.get("lanes", []))) or "(none)"
-                findings.append(("FAIL", topic,
-                                 f"assay lane {lane['assay_lane']!r} is not "
-                                 f"declared in assay.toml (declared: {declared}) "
-                                 f"— this lane can only ERROR at run time"))
+                plan.append({"finding": (
+                    "FAIL", topic,
+                    f"assay lane {lane['assay_lane']!r} is not declared in "
+                    f"assay.toml (declared: {declared}) — this lane can only "
+                    f"ERROR at run time")})
                 continue
             tools, caveat = assay_lane_toolchain(entry)
             if not tools:
-                findings.append(("OK", topic, "assay declares no toolchain "
-                                 "requirement for this lane"))
+                plan.append({"finding": (
+                    "OK", topic,
+                    "assay declares no toolchain requirement for this lane")})
                 continue
-            missing, why = probe_missing_tools(docker, tools, env, env_name,
-                                               repo, worktree, env_source)
-            if missing is None:
-                findings.append(("SKIP", topic, why))
-            elif missing:
-                findings.append(("FAIL", topic,
-                                 f"needs {', '.join(missing)} in environment "
-                                 f"{env_name!r} ({env_source}) — assay would "
-                                 f"reach MISSING_EXTERNAL_TOOL/NO_MEASUREMENT "
-                                 f"mid-run instead"))
-            else:
-                detail = ", ".join(tools)
-                findings.append(("OK", topic,
-                                 f"{detail}{f' ({caveat})' if caveat else ''}"))
+            probe_ctx[env_name] = (docker, env, repo, worktree, env_source)
+            plan.append({"topic": topic, "env": env_name, "tools": tools,
+                         "caveat": caveat, "source": env_source})
         except GateError as exc:
-            findings.append(("SKIP", topic, str(exc)))
+            plan.append({"finding": ("SKIP", topic, str(exc))})
+    # Pass 2 — ONE `command -v` probe per ENVIRONMENT, over the UNION of every
+    # lane's tools. Probing per lane cost a container per lane on a shared
+    # environment (measured: 4 containers for 3 lanes on one environment) and
+    # made R-30's own cost claim false; the answer is a property of the
+    # environment's PATH, not of the lane asking.
+    absent: dict[str, tuple[set[str] | None, str | None]] = {}
+    for env_name, (docker_bin, env, repo, worktree, env_source) in probe_ctx.items():
+        union = sorted({tool for step in plan
+                        if step.get("env") == env_name for tool in step["tools"]})
+        # No GateError guard here on purpose: an environment only reaches
+        # probe_ctx after pass 1 already built a probe argv for it through the
+        # same `_probe_slice`/`dual_mount_flags` path with the same inputs, so
+        # a refusal would have been caught (and reported) there. A defensive
+        # except would be a branch no test could ever redden.
+        missing, why = probe_missing_tools(docker_bin, union, env, env_name,
+                                           repo, worktree, env_source)
+        absent[env_name] = (None if missing is None else set(missing), why)
+    findings: list[tuple[str, str, str]] = []
+    for step in plan:
+        if "finding" in step:
+            findings.append(step["finding"])
+            continue
+        gone, why = absent[step["env"]]
+        if gone is None:
+            findings.append(("SKIP", step["topic"], why))
+            continue
+        missing = [tool for tool in step["tools"] if tool in gone]
+        if missing:
+            findings.append(("FAIL", step["topic"],
+                             f"needs {', '.join(missing)} in environment "
+                             f"{step['env']!r} ({step['source']}) — assay would "
+                             f"reach MISSING_EXTERNAL_TOOL/NO_MEASUREMENT "
+                             f"mid-run instead"))
+        else:
+            caveat = step["caveat"]
+            findings.append(("OK", step["topic"],
+                             f"{', '.join(step['tools'])}"
+                             f"{f' ({caveat})' if caveat else ''}"))
     return findings
 
 
@@ -1451,8 +1487,17 @@ def linked_worktree_gitdir(worktree: Path) -> Path | None:
 def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                cfg_path: Path, central_path: Path | None) -> int:
     """RG-9: recompose the implemented preflights into one first-contact
-    command. Pure recomposition — every check here already exists on the run
-    path; doctor just runs them BEFORE a newcomer's first lane does."""
+    command, run BEFORE a newcomer's first lane does.
+
+    Mostly recomposition — checks 1-4 read the world and change nothing. The
+    exception, and it is deliberate (RG-25, `R-30`/`R-34`): check 5 STARTS
+    CONTAINERS. Toolchain fitness cannot be read, only observed, so doctor
+    asks the judge for its lane inventory and runs `command -v` inside the
+    lane's own environment — at most one inventory probe per (environment,
+    assay_command) plus one batched tool probe per environment, all read-only
+    and short-lived. Nothing is judged and nothing in the tree is written.
+    Say so out loud rather than letting "doctor runs nothing" quietly become
+    false."""
     results: list[tuple[str, str, str]] = []
 
     def record(status: str, topic: str, detail: str) -> None:
@@ -2034,7 +2079,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          trove gates, release steps — against the SSOT lanes they name)",
         "       run-gate.py doctor   (RG-9 preflight: docker, slices, mountinfo, git,",
         "          images, the linked-worktree host-lane git view (RG-21), and each",
-        "          assay lane's toolchain fitness asked of the judge itself (RG-25))",
+        "          assay lane's toolchain fitness asked of the judge itself (RG-25).",
+        "          Judges nothing and writes nothing, but DOES start short read-only",
+        "          probe containers for that last check — fitness can only be",
+        "          observed, not read: one inventory probe per environment+judge,",
+        "          plus one batched `command -v` probe per environment)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -2082,7 +2131,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    lane that does NOT delegate refuses --base by name",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
-        "                    is rehearsed, nothing runs",
+        "                    is rehearsed and NO JUDGED lane is started. An",
+        "                    assay lane's read-only `assay lanes --json`",
+        "                    inventory probe IS a preflight, so it does run,",
+        "                    in a short container of its own (RG-26)",
         "  --check-env       advisory drift sweep: env references in the project's",
         "                    Python sources covered by neither forward_env nor a",
         "                    lane's required_env (heuristic — warns, never refuses),",
@@ -2146,8 +2198,11 @@ def main(argv: list[str] | None = None) -> int:
                         "{base} token")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--dry-run", action="store_true",
-                        help="print the full execution plan and exit 0 — "
-                             "every preflight is rehearsed, nothing runs")
+                        help="print the full execution plan and exit 0 — every "
+                             "preflight is rehearsed and no JUDGED lane is "
+                             "started; an assay lane's read-only `assay lanes "
+                             "--json` inventory probe is a preflight and does "
+                             "run, in a short container of its own")
     parser.add_argument("--help", "-h", action="store_true")
     args = parser.parse_args(argv)
 

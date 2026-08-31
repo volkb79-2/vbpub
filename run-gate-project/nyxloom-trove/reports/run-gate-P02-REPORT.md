@@ -405,6 +405,192 @@ cleanly: it is one hunk in `run_host_lane` plus the `R-19` amendment.
 
 ---
 
+## Review round 2 — B1, B2, B3 + S3, S8, N1 (rev 28 → **29**)
+
+Adversarial review returned ACCEPT-conditional: three doc/text blockers, no
+code redesign, and three decision-asks the controller ratified (**D4** the
+`language`-table deviation, **D6** doctor starting probe containers, **D8**
+the probe running on every assay invocation rather than lazily). All three
+ratifications are recorded above unchanged; nothing was re-litigated.
+
+### B2 — the cost claim was quantitatively false; batched, not reworded
+
+`R-30` promised "at most one short-lived, read-only probe container per assay
+environment". The reviewer measured **4 containers for 3 lanes on one
+environment**. Root cause: the inventory probe was cached per (environment,
+`assay_command`), but `probe_missing_tools` ran once per LANE, each building
+its own `docker run --rm`.
+
+Taken the better of the two offered fixes: **batched**, not reworded.
+`assay_toolchain_findings()` is now two passes — pass 1 asks the judge and
+decides per lane; pass 2 runs ONE `command -v` probe per environment over the
+UNION of every lane's tools. What is on a `PATH` is a property of the
+environment, not of the lane asking. Each lane is still judged against its
+own tool list, so batching cannot smear one lane's missing tool onto another
+— which is its own oracle
+(`test_batched_tool_probe_still_names_only_each_lane_own_missing_tool`: three
+lanes, one needing `node`/`npm`, exactly one FAILs). The count itself is now
+a test
+(`test_probe_cost_is_one_inventory_plus_one_tool_probe_per_environment`),
+because a cost stated in a spec and not measured is a cost that drifts —
+which is exactly how this one drifted.
+
+One deliberate omission: pass 2 has **no** `except GateError` guard, with a
+comment saying why. An environment only reaches pass 2 after pass 1 already
+built a probe argv for it through the same `_probe_slice`/`dual_mount_flags`
+path with the same inputs, so a defensive except would be a branch no test
+could ever redden — and an unreddenable branch is the thing the diff-coverage
+floor exists to keep out.
+
+### B1 — `--dry-run` starts a container, and three places said otherwise
+
+Correct and now fixed in all three: SPEC `R-28`, `usage()`'s `--dry-run`
+block, and the argparse `--dry-run` help. All three now state that an assay
+lane's read-only inventory probe runs — it is *what resolves the base the
+printed plan must show*, so it cannot be skipped — and that `--dry-run`'s
+real promise is that **no judged lane starts**. `R-28` says outright that
+"nothing runs" was true before `R-35` and is not true now, rather than
+quietly softening.
+
+**One correction to the review, stated because the REPORT's value is that it
+is accurate.** The relayed finding says
+`test_assay_lane_dry_run_discloses_no_verdict` "is misnamed/wrong — its
+`EXEC_LANE` fixture is `kind="command"`, so it never actually exercised an
+assay lane's dry-run". I checked the source rather than acting on it: that
+test builds its config from `SIMPLE_LANE` with `kind = "command"` replaced by
+`kind = "assay"` and the argv swapped for `assay_lane`/`assay_command` — it
+*is* an assay lane, and its name is accurate for what it asserts (no verdict
+artifact disclosed). `EXEC_LANE` belongs to the neighbouring
+`test_exec_lane_dry_run_rehearses_runner_preflight`, which is a command lane
+by design and correctly named. **The substantive half of the finding is
+entirely right and is fixed:** its only structural assertion was
+`lane_runs(log) == []`, which filters on `-d` and therefore *cannot see the
+probe at all*, so no test pinned what a dry run actually executes. Added
+`test_assay_lane_dry_run_runs_the_probe_and_no_judged_container`, which pins
+the exact call set — exactly one `docker run`, carrying `--rm` and not `-d`,
+whose script is `lanes --json`; zero `docker exec`; zero judged containers.
+
+### B3 — "doctor starts containers" now said everywhere, not just in SPEC
+
+Added to `CONSUMERS.md` (a call-out box with the bounded cost and the "if you
+run `doctor` where starting a container is unacceptable, this is the check to
+know about" line), `README.md`, the `CHANGES.md` RG-25 entry, and `usage()`'s
+`doctor` block. `cmd_doctor`'s docstring no longer claims "pure
+recomposition — every check here already exists on the run path": it now
+names check 5 as the exception, says fitness *cannot be read, only observed*,
+and states the bounded probe count.
+
+### S3, S8, N1 — taken
+
+- **S3** — RG-28 (the host-assay `KeyError('argv')` fix) had no dedicated
+  oracle. Added `test_host_assay_lane_actually_builds_the_assay_inner`: a
+  judge shim that echoes its own cwd and argv, asserting the executed inner
+  is the real assay inner (`run ui_unit --file assay.toml`,
+  `--verdict-json .assay/verdict-ui_unit.json`, `--request-base`), that cwd
+  is the effective project dir, and that `mkdir -p .assay` actually ran.
+  Gutting the branch back to `lane["argv"]` reddens it with `KeyError`;
+  replacing the inner with `"true"` reddens every assertion.
+- **S8** — `ASSAY_LANGUAGE_TOOLCHAIN["go"]` was executed but never asserted,
+  so gutting it to `()` reddened nothing. Added `test_go_language_derives_
+  the_go_toolchain` plus `test_language_toolchain_is_unioned_not_replaced`,
+  which pins the composition order (language → `external_tools` → `argv0`)
+  and de-duplication that the OK line's text depends on.
+- **N1** — my own RG-29 filing under-prescribed its fix. Checked
+  `cmru/run-gate.toml` directly: the vanished filename appears **four**
+  times, not two — the pin `sha256`, the pin `version` (verified in-lane per
+  RG-4, so a stale value fails loudly), `[lanes.assay] assay_command` (:21),
+  and `[lanes.mutation] argv`'s `--assay-zipapp` (:55). The last is inside a
+  free-form shell string that `validate-pointers` deliberately never stats
+  (`R-22`: argv strings are shell text, not declared paths), so **nothing
+  will tell a fixer about it**. All four are named, and the acceptance now
+  includes `grep -n 'assay-2\.2\.0' cmru/run-gate.toml` returning nothing.
+
+### Logged, not chased (per instruction)
+
+S1 (probe-failure misdiagnosis in exec mode), S2 (host-assay writes a fixed
+shared `/tmp` gitconfig path), S4 (the env-forward audit test would not catch
+dstdns's actual pattern), S5 (AST helper-name resolution false-positive
+class, zero live blast radius), S6 (`rigor_reachable` note buried in a FIXED
+entry, wants its own RG-30), S7 (the probe now runs before the clean-tree
+refusal), S9 (python/sql lanes will show a caveat). None was folded in: each
+needs a judgement call I would rather have made deliberately than in the
+margin of a fix round. S2 and S7 look to me like the two worth filing next —
+S2 because a fixed shared path under `/tmp` is a real multi-tenant hazard,
+S7 because "probe ran, then the gate refused for a dirty tree" is a wasted
+container and a confusing order of output.
+
+### Verdicts after the review round
+
+```
+run-gate: rev 29 | lane selftest | env built-in 'host'
+FAILED tests/test_run_gate.py::TestPointerLinkageEstate::test_cmru_release_step_names_a_real_lane
+1 failed, 279 passed, 2 skipped, 2 warnings in 40.20s
+run-gate: lane 'selftest' exit 1
+GATE_EXIT=1
+```
+
+```
+PYTEST_EXIT=0
+diff-coverage OK: 258/258 changed executable lines covered (100.0% ≥ 100.0% floor)
+COVGATE_EXIT=0
+```
+
+273 → 279 passing: six new tests — two B2 oracles, the B1 dry-run call-set
+test, the S3 RG-28 oracle, two S8 toolchain oracles. Changed executable lines
+243 → 258 rather than 243 + n, because B2's rewrite REPLACED part of the
+earlier RG-25 diff rather than only adding to it.
+
+---
+
+## For merge verification — the exact procedure, since the gate will still be red
+
+RG-29 stays open, so `./run-gate.py selftest` will exit 1 at merge time for a
+reason unrelated to this branch, and — because the lane argv is
+`pytest … && coverage_gate` — the `&&` means **the coverage step never runs**,
+so the gate can produce no coverage verdict at all while that stands. Run
+these three steps, from `run-gate-project/`, reading each verdict in a
+separate step (never a pipe tail):
+
+```bash
+# 1. The real gate, unwrapped. Expect exit 1 with EXACTLY ONE failure,
+#    test_cmru_release_step_names_a_real_lane. Any other FAILED line is a
+#    genuine regression in this branch.
+./run-gate.py selftest > /tmp/verify-gate.log 2>&1
+echo "GATE_EXIT=$?" >> /tmp/verify-gate.log
+grep -E '^FAILED|passed|^run-gate: lane|GATE_EXIT' /tmp/verify-gate.log
+
+# 2. Confirm the one failure is RG-29 and not something new.
+python3 run-gate.py validate-pointers ../cmru/cmru.toml   # expect exit 2, assay-2.2.0.pyz.sha256
+
+# 3. The diff-coverage floor the red gate short-circuits, measured directly
+#    with EXACTLY that one test deselected — the same argv the lane would
+#    have run, nothing else changed.
+python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json \
+  --deselect tests/test_run_gate.py::TestPointerLinkageEstate::test_cmru_release_step_names_a_real_lane \
+  > /tmp/verify-cov.log 2>&1
+echo "PYTEST_EXIT=$?" >> /tmp/verify-cov.log
+python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json \
+  --source run-gate.py >> /tmp/verify-cov.log 2>&1
+echo "COVGATE_EXIT=$?" >> /tmp/verify-cov.log
+grep -E 'PYTEST_EXIT|COVGATE_EXIT|diff-coverage' /tmp/verify-cov.log
+```
+
+Expected at this branch's tip: step 1 `GATE_EXIT=1` with one FAILED line;
+step 2 exit 2 naming `tools/assay/assay-2.2.0.pyz.sha256`; step 3
+`PYTEST_EXIT=0` and `diff-coverage OK: …100.0% ≥ 100.0% floor`,
+`COVGATE_EXIT=0`.
+
+Two traps, both walked into during this package and both worth avoiding:
+**never wrap the gate in `|| true`** (the `EXIT=` you then read is the
+wrapper's, not the gate's — the raw per-commit sweep logs in the scratchpad
+have exactly that defect, which is why the authoritative status quoted above
+is the tool's own `run-gate: lane 'selftest' exit N` line); and **do not run
+the coverage gate against an uncommitted tree** — it maps `git diff main
+HEAD` line numbers onto working-tree coverage, so any uncommitted edit skews
+the mapping and reports phantom uncovered lines. Commit first, then measure.
+
+---
+
 ## Things a reviewer should look at first
 
 1. **RG-29 / the red gate.** Nothing in this package can make

@@ -1700,12 +1700,30 @@ status sees red for a reason unrelated to run-gate.
 
 ### Fix (cmru-side)
 
-Bump `cmru/run-gate.toml`'s `[lanes.assay]` pin (`sha256` path and
-`version`) to the vendored 2.3.0 artifact, or vendor 2.2.0 back. Then
-re-run `run-gate-project/run-gate.py selftest`.
+**FOUR things move together, not one.** `cmru/run-gate.toml` names the
+vanished artifact in four places, and bumping only the pin leaves the lane
+broken in a different way — it would then verify a 2.3.0 sha256 and
+immediately try to execute an `assay-2.2.0.pyz` that is not there:
+
+1. `[lanes.assay.pins.assay] sha256` → `tools/assay/assay-2.3.0.pyz.sha256`;
+2. `[lanes.assay.pins.assay] version` → `2.3.0` (it is VERIFIED in-lane
+   against `<assay_command> --version`, RG-4/`R-08`, so a stale value fails
+   the lane loudly rather than silently);
+3. `[lanes.assay] assay_command` (`cmru/run-gate.toml:21`) → the literal
+   filename `tools/assay/assay-2.3.0.pyz`;
+4. `[lanes.mutation] argv` (`cmru/run-gate.toml:55`) → its
+   `--assay-zipapp tools/assay/assay-2.2.0.pyz` carries a fourth copy of the
+   same filename, inside a free-form shell string that `validate-pointers`
+   deliberately never stats (`R-22`: argv strings are shell text, not
+   declared paths), so nothing will tell you about this one.
+
+Alternatively vendor the 2.2.0 pair back. Then re-run
+`run-gate-project/run-gate.py selftest`.
 
 ### Acceptance
 
 - [ ] `./run-gate.py validate-pointers ../cmru/cmru.toml` exits 0;
+- [ ] `grep -n 'assay-2\.2\.0' cmru/run-gate.toml` returns nothing — pin AND
+      `assay_command` both moved;
 - [ ] `run-gate-project`'s `selftest` lane is green end to end, including
       the diff-coverage step that currently never executes.

@@ -3008,9 +3008,33 @@ class TestDryRun:
         # No JUDGED container. The RG-26 base-delegation probe DOES run (it is
         # a preflight, and --dry-run rehearses every preflight; `assay lanes`
         # runs nothing), so the assertion is about the detached lane form.
+        # The EXACT call set is pinned by
+        # test_assay_lane_dry_run_runs_the_probe_and_no_judged_container.
         assert lane_runs(log) == []
         assert "verdict artifact:" not in proc.stdout  # nothing ran, none landed
         assert "--file assay.toml" in _docker_argv_line(proc.stdout)
+
+    def test_assay_lane_dry_run_runs_the_probe_and_no_judged_container(
+            self, tmp_path, monkeypatch):
+        """B1 oracle: `--dry-run` DOES start a container since RG-26 — the
+        read-only inventory probe, because it is what resolves the base the
+        printed plan must show. `lane_runs()` filters on `-d` and therefore
+        cannot see it, so the exact call set is pinned here: every `docker
+        run` is the probe, no `-d`, no `docker exec`."""
+        repo = make_repo(tmp_path)
+        cfg = SIMPLE_LANE.replace('kind = "command"', 'kind = "assay"') \
+            .replace('argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]',
+                     'assay_lane = "mock"\n            assay_command = ["assay"]')
+        proj = make_project(repo, cfg)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--dry-run")
+        assert proc.returncode == 0, proc.stderr
+        runs = docker_runs(log)
+        assert len(runs) == 1, runs                # exactly one, and it is…
+        assert "--rm" in runs[0] and "-d" not in runs[0]
+        assert "lanes --json" in runs[0][-1]       # …the inventory probe
+        assert docker_execs(log) == []
+        assert lane_runs(log) == []                # no judged container at all
 
     def test_host_lane_dry_run_does_not_execute(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -3771,6 +3795,22 @@ class TestAssayToolchainFitness:
         assert code == 0, out
         assert "[OK] lane 'ui-unit' toolchain: node, npm" in out
 
+    def test_go_language_derives_the_go_toolchain(self):
+        """S8: the `go` row was executed but never asserted — gutting it to
+        `()` reddened nothing, which makes it untested content in a table
+        whose whole job is to state facts run-gate cannot read."""
+        tools, caveat = run_gate.assay_lane_toolchain(
+            {"language": "go", "external_tools": [], "argv0": None})
+        assert tools == ["go"] and caveat is None
+
+    def test_language_toolchain_is_unioned_not_replaced(self):
+        """The three sources compose, in a stable order, without duplicates:
+        language first, then declared external_tools, then argv0."""
+        tools, caveat = run_gate.assay_lane_toolchain(
+            {"language": "javascript", "external_tools": ["npm", "jq"],
+             "argv0": "bash"})
+        assert tools == ["node", "npm", "jq", "bash"] and caveat is None
+
     def test_unknown_language_reports_a_caveat_not_a_clean_bill(self):
         tools, caveat = run_gate.assay_lane_toolchain(
             {"language": "rust", "external_tools": [], "argv0": "cargo"})
@@ -3936,6 +3976,84 @@ class TestAssayToolchainFitness:
         monkeypatch.chdir(proj)
         assert run_gate.main(["doctor"]) == 0
         assert "toolchain" not in capsys.readouterr().out
+
+    THREE_LANE_CFG = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        image = "tester-unified:local"
+
+        [lanes.a-unit]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "ui_unit"
+        assay_command = ["assay"]
+        clean_tree = false
+
+        [lanes.b-unit]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "ui_unit"
+        assay_command = ["assay"]
+        clean_tree = false
+
+        [lanes.c-unit]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "ui_unit"
+        assay_command = ["assay"]
+        clean_tree = false
+    """
+
+    def test_probe_cost_is_one_inventory_plus_one_tool_probe_per_environment(
+            self, tmp_path, monkeypatch, capsys):
+        """B2 oracle: the cost claim in SPEC R-30 is a NUMBER, so a test owns
+        it. Probing per LANE cost one container per lane on a shared
+        environment (4 for 3 lanes) while the spec promised one — a
+        quantitatively false claim is still a false claim. The union of every
+        lane's tools is a property of the environment's PATH, not of the lane
+        asking, so it is asked once."""
+        self._project(tmp_path, monkeypatch, self.THREE_LANE_CFG)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"], argv0="bash")))
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert out.count("[OK] lane ") == 3          # every lane still reported
+        probes = [call for call in docker_runs(log) if "--rm" in call]
+        assert len(probes) == 2, probes              # 1 inventory + 1 `command -v`
+        assert sum("lanes --json" in call[-1] for call in probes) == 1
+        assert sum("command -v" in call[-1] for call in probes) == 1
+
+    def test_batched_tool_probe_still_names_only_each_lane_own_missing_tool(
+            self, tmp_path, monkeypatch, capsys):
+        """Batching must not smear one lane's missing tool onto another: the
+        union is probed once, but each lane is judged against ITS OWN list."""
+        cfg = self.THREE_LANE_CFG.replace(
+            '[lanes.b-unit]\n        kind = "assay"\n        environment = "tester-unified"\n'
+            '        assay_lane = "ui_unit"',
+            '[lanes.b-unit]\n        kind = "assay"\n        environment = "tester-unified"\n'
+            '        assay_lane = "js_unit"')
+        self._project(tmp_path, monkeypatch, cfg)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch)
+        doc = {"assay_version": "3.2.0", "inventory_schema": 1, "lanes": [
+            json.loads(_inventory(external_tools=["sh"], argv0="bash"))["lanes"][0],
+            json.loads(_inventory(name="js_unit", language="javascript"))["lanes"][0],
+        ]}
+        install_fake_assay(monkeypatch, _fake_judge(json.dumps(doc)))
+        clean = tmp_path / "clean-bin"
+        clean.mkdir()
+        for tool in ("bash", "sh", "cat", "git"):
+            (clean / tool).symlink_to(shutil.which(tool))
+        monkeypatch.setenv("PATH", f"{shim}:{clean}")
+        code, out = self._doctor(capsys)
+        assert code == 2, out
+        assert "[FAIL] lane 'b-unit' toolchain: needs node, npm" in out
+        # the OTHER two lanes are green — node/npm were in the batched probe
+        # but are not THEIR requirement
+        assert "[OK] lane 'a-unit' toolchain: sh, bash" in out
+        assert "[OK] lane 'c-unit' toolchain: sh, bash" in out
 
     def test_one_in_environment_probe_builder(self):
         """RG-25 acceptance: ONE construction site for reaching an
@@ -4171,6 +4289,37 @@ class TestComparisonBasePassthrough:
         err = capsys.readouterr().err
         assert "cannot tell whether lane 'ui-unit' delegates" in err
         assert "docker is not on PATH" in err
+
+    def test_host_assay_lane_actually_builds_the_assay_inner(
+            self, tmp_path, monkeypatch, capfd):
+        """RG-28's own oracle (S3). The sibling test above proves the base
+        reached a host assay lane; this one proves the lane BODY is the real
+        assay inner and not a stub — pin/cd/verdict all present, executed
+        with the effective project dir as cwd. Gutting run_host_lane's assay
+        branch back to `lane["argv"]` reddens this with KeyError; replacing
+        `build_assay_inner(...)` with `"true"` reddens every assertion."""
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "host"', 1)
+        _repo, proj = self._project(tmp_path, monkeypatch, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        # A judge that ECHOES its own argv, so the executed inner is visible.
+        install_fake_assay(monkeypatch, """\
+            #!/bin/sh
+            case "$*" in
+              *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
+                  {"name": "ui_unit", "base_source": "request",
+                   "external_tools": [], "argv0": null, "language": null}]}' ;;
+              *) echo "JUDGE-RAN-IN: $(pwd)"; echo "JUDGE-ARGV: $*" ;;
+            esac
+            exit 0
+        """)
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        out = capfd.readouterr().out
+        assert f"JUDGE-RAN-IN: {proj}" in out          # cwd = effective project dir
+        assert "JUDGE-ARGV: run ui_unit --file assay.toml" in out
+        assert "--verdict-json .assay/verdict-ui_unit.json" in out
+        assert "--request-base deadbeef" in out
+        assert (proj / ".assay").is_dir()              # `mkdir -p .assay` ran
 
     def test_substitute_worktree_leaves_base_token_when_none_resolved(self):
         """Defence in depth: the run path never reaches here with an
