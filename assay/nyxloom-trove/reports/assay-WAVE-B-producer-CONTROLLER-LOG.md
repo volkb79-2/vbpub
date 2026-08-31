@@ -120,3 +120,32 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   (gate-green != release-green, release not run). **Dispatching a FRESH
   Opus reviewer now** (different session from every implementer
   generation), per the wave plan's role rules.
+
+- **2026-08-31 (review round 1 — ACCEPT-conditional)** — Fresh reviewer
+  completed its blind pass + its own independent gate run (green, exit 0 +
+  marker, on `a4bf1bc3`) + a reconciliation sweep via its own sub-agent.
+  Verdict: **ACCEPT-conditional**, not REJECT — 1 code blocker (`cwd` +
+  `link_paths` compose into a snapshot escape: the lane runs against and
+  writes into the consumer's working tree; full file:line detail
+  requested, not yet received) + 5 must-fix-before-merge (three false
+  raw-verifier claims baked into the byte-frozen v9 schema text, requiring
+  a W5 regeneration before merge; a misspelled `judgment.r2.producer` that
+  disarms raw ingested checks; `SUPPORTED_REPORT_SCHEMA_MAJORS` admitting
+  an unmeasured major; the REPORT recording a gate PASS it could not have
+  observed — a documentation-honesty fix, not a code bug; a stale
+  docstring in `adapters/javascript.py` still claiming B037 is open). All
+  ten push-on items and all five implementer-flagged items were
+  independently verified hands-on (not rubber-stamped): A-354's refusal of
+  go-cover confirmed correct (and undersold in its own defense), B050
+  confirmed real and correctly deferred, A-360's two extensions confirmed
+  sound. **Controller decision, resolved (not paused on)**: reviewer's own
+  recommendation to file a NEW B051 (ingested report's per-file `source`
+  never verified against the snapshot's committed bytes) rather than build
+  it this wave — endorsed, same "file, don't build" pattern as B050, no
+  operator pause needed. This is a routine ACCEPT-conditional requiring a
+  fix round, exactly the goal's report-and-continue case (not an extreme
+  blocker or a breaking product decision) — resumed the reviewer via
+  `SendMessage` (correctly this time) to get the complete merged verdict
+  with full file:line evidence before dispatching the fix-round
+  implementer, since this notification only gave one-line summaries of the
+  blocker and two of the must-fixes.
