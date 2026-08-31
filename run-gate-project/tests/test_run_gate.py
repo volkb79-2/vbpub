@@ -1240,6 +1240,174 @@ class TestExecMode:
         assert "custom-name" in exec_calls[0]
 
 
+class TestWorktreeScopedContainerName:
+    """RG-24: an exec-mode container's name is a fact about the JUDGED TREE.
+
+    `repo` is the checkout owning the shared `.git` — the MAIN checkout for
+    any linked worktree — so resolving a LIVE DEPLOYED container's name from
+    it silently targets the main landscape's runner whenever a per-worktree
+    deployment exists (dstdns "Mode-B"). The failure is partial and therefore
+    believable: the inner `cd {worktree}` still collects the right FILES, only
+    the container's own network/env are wrong. These tests pin the precedence
+    in both directions, since only the differing case exposes the defect.
+    """
+
+    def _repo_with_worktree(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        return repo, proj, wt
+
+    @staticmethod
+    def _ps_returns(monkeypatch, *names: str) -> None:
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        listing = "\\n".join(names)
+        body = body.replace('case "$1" in',
+                            f'case "$1" in\n  ps) printf \'{listing}\\n\' ;;')
+        shim.write_text(body)
+
+    def test_worktree_own_ciu_global_wins_over_repo(self, tmp_path, monkeypatch):
+        """The regression oracle: two DIFFERENT [deploy] tables, one at the
+        shared-.git-owning repo and one in the judged worktree beneath it."""
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
+        (wt / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'p147b'\nenvironment_tag = '8a6bc3'\n")
+        log = fake_docker(tmp_path, monkeypatch)
+        # BOTH containers exist and are running — the wrong one is reachable,
+        # which is exactly why the pre-fix behaviour produced a green run.
+        self._ps_returns(monkeypatch, "mainland-98535c-runner",
+                         "p147b-8a6bc3-runner")
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        call = docker_execs(log)[0]
+        assert "p147b-8a6bc3-runner" in call
+        assert "mainland-98535c-runner" not in call
+        # …and the disclosure names WHICH config decided it (R-05 mechanics).
+        assert "judged worktree" in proc.stdout
+        assert str(wt / "ciu.global.toml") in proc.stdout
+
+    def test_worktree_without_own_config_falls_back_to_repo(
+            self, tmp_path, monkeypatch):
+        """Additive precedence, not a replacement: a plain (non-adopted)
+        worktree keeps today's repo-relative resolution exactly."""
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
+        log = fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, "mainland-98535c-runner")
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert "mainland-98535c-runner" in docker_execs(log)[0]
+        assert f"repo: {repo / 'ciu.global.toml'}" in proc.stdout
+
+    def test_worktree_network_name_derivation_is_also_worktree_scoped(
+            self, tmp_path, monkeypatch):
+        """The network_name fallback derivation reads the same file."""
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nnetwork_name = 'mainland-network'\n")
+        (wt / "ciu.global.toml").write_text(
+            "[deploy]\nnetwork_name = 'p147b-8a6bc3-network'\n")
+        log = fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, "mainland-runner", "p147b-8a6bc3-runner")
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert "p147b-8a6bc3-runner" in docker_execs(log)[0]
+        assert "judged worktree" in proc.stdout
+
+    def test_missing_config_names_both_candidate_paths(self, tmp_path, monkeypatch):
+        """With worktree != repo the refusal must name BOTH files tried —
+        naming only one sends the operator to render the wrong tree."""
+        repo, proj, wt = self._repo_with_worktree(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 2
+        assert str(wt / "ciu.global.toml") in proc.stderr
+        assert str(repo / "ciu.global.toml") in proc.stderr
+        assert "judged worktree" in proc.stderr
+
+    # In-process unit oracles for the resolution itself. The end-to-end tests
+    # above prove the WIRING (run_exec_lane passes the judged worktree, the
+    # disclosure shows it); these pin the precedence function's own branches
+    # without a subprocess in between, which is also what the diff-coverage
+    # floor can actually measure.
+    @staticmethod
+    def _resolve(repo: Path, worktree: Path):
+        return run_gate.resolve_container_name(
+            "runner", {}, repo, worktree, "project /x/run-gate.toml")
+
+    def test_unit_worktree_config_preferred(self, tmp_path):
+        repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
+        wt.mkdir(parents=True)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
+        (wt / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'p147b'\nenvironment_tag = '8a6bc3'\n")
+        name, src, remedy = self._resolve(repo, wt)
+        assert name == "p147b-8a6bc3-runner"
+        assert src.startswith("ciu.global.toml deploy.project_name+environment_tag")
+        assert f"judged worktree: {wt / 'ciu.global.toml'}" in src
+        assert str(wt / "ciu.global.toml") in remedy  # `ciu render` the RIGHT tree
+
+    def test_unit_repo_config_used_when_worktree_has_none(self, tmp_path):
+        repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
+        wt.mkdir(parents=True)
+        (repo / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'mainland'\nenvironment_tag = '98535c'\n")
+        name, src, _ = self._resolve(repo, wt)
+        assert name == "mainland-98535c-runner"
+        assert f"repo: {repo / 'ciu.global.toml'}" in src
+
+    def test_unit_network_name_fallback_reports_scope(self, tmp_path):
+        repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
+        wt.mkdir(parents=True)
+        (wt / "ciu.global.toml").write_text(
+            "[deploy]\nnetwork_name = 'p147b-8a6bc3-network'\n")
+        name, src, _ = self._resolve(repo, wt)
+        assert name == "p147b-8a6bc3-runner"
+        assert "network_name stripped" in src and "judged worktree" in src
+
+    def test_unit_no_config_anywhere_names_both_paths(self, tmp_path):
+        repo, wt = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "w1"
+        wt.mkdir(parents=True)
+        with pytest.raises(run_gate.GateError) as exc:
+            self._resolve(repo, wt)
+        assert str(wt / "ciu.global.toml") in str(exc.value)
+        assert str(repo / "ciu.global.toml") in str(exc.value)
+
+    def test_unit_plain_checkout_message_names_one_path_once(self, tmp_path):
+        """worktree == repo (no override, plain checkout): the refusal must
+        not print the same path twice as if two trees were searched."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        with pytest.raises(run_gate.GateError) as exc:
+            self._resolve(repo, repo)
+        assert str(exc.value).count(str(repo / "ciu.global.toml")) == 1
+        assert "judged worktree" not in str(exc.value)
+
+    def test_declared_container_name_still_wins_over_both(
+            self, tmp_path, monkeypatch):
+        """RG-24 changes only the DERIVED path; an explicit declaration is
+        still the top of the precedence chain."""
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace('mode = "exec"',
+                                'mode = "exec"\ncontainer_name = "declared-one"')
+        proj = make_project(repo, cfg)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        (wt / "ciu.global.toml").write_text(
+            "[deploy]\nproject_name = 'p147b'\nenvironment_tag = '8a6bc3'\n")
+        log = fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, "declared-one", "p147b-8a6bc3-runner")
+        proc = run_tool(proj, "suite", "--worktree", str(wt))
+        assert proc.returncode == 0, proc.stderr
+        assert "declared-one" in docker_execs(log)[0]
+
+
 class TestExtraMounts:
     def _simple_ephemeral(self, tmp_path):
         repo = make_repo(tmp_path)

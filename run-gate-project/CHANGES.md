@@ -9,7 +9,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-_Nothing yet._
+### Fixed
+- **RG-24 — exec-mode container resolution is worktree-scoped (rev 24).**
+  `resolve_container_name()` now prefers the JUDGED worktree's own
+  `ciu.global.toml` over the shared-`.git`-owning repo's, falling back to the
+  repo's unchanged when the worktree has none. A multi-instance ("Mode-B")
+  worktree with its own rendered config, network and runner used to have its
+  lane exec'd into the MAIN checkout's container — a partial, believable
+  failure (the inner `cd` still found the right files; only the container's
+  baked network/env were wrong). The pre-execution disclosure now names the
+  resolution scope (`judged worktree:` / `repo:`) and the file used, and a
+  missing-config refusal names both candidate paths. SPEC `R-14a`;
+  CONSUMERS "Python app estate with its own runner".
 
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry

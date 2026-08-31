@@ -41,7 +41,7 @@ SPEC §9.
 | RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
-| RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | OPEN 2026-08-30 |
+| RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
 | RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
@@ -1231,6 +1231,27 @@ worktree-scoped live lane.
       for this one resolution path explicitly, since it is easy to
       conflate with the (correct, unchanged) repo-relative resolution used
       elsewhere.
+
+**FIXED 2026-08-31 (rev 24).** `resolve_container_name()` takes the judged
+`worktree` (already threaded through `run_exec_lane`) and resolves
+`<worktree>/ciu.global.toml` → `<repo>/ciu.global.toml` in that order;
+a declared `container_name` remains the top of the precedence chain
+(unchanged). Additive, exactly as the entry asks: a worktree without its own
+config keeps repo-relative resolution byte-for-byte. Two visibility changes
+came with it, because the defect's real cost was that "which config decided
+this" was never printed: the resolution source now carries a SCOPE label
+(`judged worktree:` / `repo:` + the path), and it is now part of the
+pre-execution `container …` disclosure line (R-05), not only of the
+not-running refusal. A missing-config refusal names BOTH candidate paths when
+they differ — naming one would send an operator to `ciu render` the wrong
+tree. The disclosed workaround (`docker exec` by hand into the correct
+instance) is NOT reproduced anywhere in the tool; it was evidence-gathering,
+not a design. Tests: `TestWorktreeScopedContainerName` ×5 — the regression
+oracle runs with BOTH containers present and running in `docker ps`, since a
+test where only the right one exists would pass against the buggy code by
+`not running` refusal rather than by correct resolution. SPEC `R-14a`;
+CONSUMERS "Python app estate with its own runner" (worked disclosure line +
+an explicit "do not pin `container_name` as a workaround" warning).
 
 ## RG-25 — `doctor`/`--check-env` cannot see that an assay lane's LANGUAGE needs a toolchain in its environment; consume `assay lanes --json` (assay B044) for a per-lane fitness check
 

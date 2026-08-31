@@ -359,6 +359,30 @@ authority resolved the container name — declared `container_name` → your
 project's own deployment authority; ciu-derived → the ciu lifecycle naming
 the config file (never a vbpub-specific remedy for another project's tree).
 The old `testing-exec.sh` shim is retired — run-gate execs directly.
+
+**Multi-instance worktrees (RG-24): the container name follows the JUDGED
+TREE.** If your worktrees get their own isolated stacks (`ciu worktree
+adopt` — each with its own rendered `ciu.global.toml`, its own network and
+its own `test-runner`), run-gate derives the container name from
+`<worktree>/ciu.global.toml` when that file exists, and only falls back to
+`<repo>/ciu.global.toml` when it does not. This is the ONE place run-gate
+prefers the worktree over the repo (elsewhere `repo` — the checkout owning
+the shared `.git`, i.e. your main checkout — is the right authority). Do NOT
+work around a wrong container by pinning `container_name` in the tracked
+`run-gate.toml`: that literal is correct for exactly one running instance and
+wrong for the next worktree created. Verify which config decided it — the
+pre-execution disclosure names the scope:
+
+```
+$ ./run-gate.py test-runner --worktree /repo/.worktrees/p147b
+run-gate: rev 24 | lane test-runner | env project /repo/run-gate.toml |
+  container p147b-8a6bc3-test-runner (ciu.global.toml
+  deploy.project_name+environment_tag (judged worktree:
+  /repo/.worktrees/p147b/ciu.global.toml)) | slice … (…)
+```
+
+A `repo:` scope on a worktree you *did* adopt means its `ciu.global.toml` was
+never rendered there — run `ciu render` in the worktree, don't declare a name.
 Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
 lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
 coverage work as they land (B1-style).

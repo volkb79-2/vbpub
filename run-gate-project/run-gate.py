@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 23  # rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 24  # rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import fcntl
@@ -1317,7 +1317,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
 
 
 def resolve_container_name(env_name: str, env: dict, repo: Path,
-                           env_source: str) -> tuple[str, str, str]:
+                           worktree: Path, env_source: str) -> tuple[str, str, str]:
     """Resolve the persistent container name for an exec-mode environment.
 
     Returns (name, human-readable source, START REMEDY). The remedy names the
@@ -1325,16 +1325,40 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
     points at the project's own deployment authority, a ciu-derived name at
     the ciu lifecycle (RG-6: a dstdns-shaped project must never be told to
     run a vbpub-specific ciu directory).
+
+    RG-24 — WHICH `ciu.global.toml`: a live deployed container's name is a
+    fact about the JUDGED TREE, not about the shared object store. `repo`
+    (`resolve_repo_and_worktree`) is deliberately the checkout owning the
+    shared `.git`, i.e. the MAIN checkout for any linked worktree — right for
+    source-code/object-store questions, WRONG here: a multi-instance
+    (dstdns "Mode-B") worktree gets its OWN rendered `ciu.global.toml` with
+    its own `project_name`/`environment_tag` and its OWN deployed runner on
+    its own network, and resolving from the main checkout silently execs the
+    lane into the MAIN landscape's container (network attachment and baked
+    env wrong; the inner `cd {worktree}` still finds the right FILES, which
+    is why the failure is partial and believable). So: the judged worktree's
+    own config WINS when it exists; a worktree that is not itself an adopted
+    instance falls back to the repo-relative resolution unchanged (additive
+    precedence, not a replacement). `repo`-relative resolution stays correct
+    everywhere else it is used — those questions really are about the tree
+    that owns the object store.
     """
     if env.get("container_name"):
         return env["container_name"], f"declared container_name ({env_source})", \
             "start it via YOUR project's deployment authority (whoever owns " \
             "this container); run-gate refuses to guess or auto-start " \
             "deployment-managed containers"
-    global_toml = repo / "ciu.global.toml"
-    if not global_toml.is_file():
+    worktree_toml = worktree / "ciu.global.toml"
+    repo_toml = repo / "ciu.global.toml"
+    if worktree_toml.is_file():
+        global_toml = worktree_toml
+    elif repo_toml.is_file():
+        global_toml = repo_toml
+    else:
+        tried = (f"{worktree_toml}" if worktree_toml == repo_toml
+                 else f"{worktree_toml} (judged worktree) nor {repo_toml} (repo)")
         fail(f"exec-mode environment '{env_name}' needs either a declared "
-             f"container_name or a rendered {global_toml} with [deploy] "
+             f"container_name or a rendered {tried} with [deploy] "
              f"(run 'ciu render' first)")
     try:
         with open(global_toml, "rb") as fh:
@@ -1344,17 +1368,22 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
     ciu_remedy = (f"start it via this project's ciu lifecycle ('ciu render' "
                   f"if stale, then 'ciu up'; config: {global_toml}); run-gate "
                   f"refuses to guess or auto-start deployment-managed containers")
+    # RG-24: name the SCOPE the config was read from, not only its path — the
+    # whole defect was that "which ciu.global.toml" was invisible.
+    scope = "judged worktree" if global_toml == worktree_toml else "repo"
     project = deploy.get("project_name") or ""
     tag = deploy.get("environment_tag") or ""
     if project and tag:
         return f"{project}-{tag}-{env_name}", \
-            f"ciu.global.toml deploy.project_name+environment_tag ({global_toml})", \
+            f"ciu.global.toml deploy.project_name+environment_tag " \
+            f"({scope}: {global_toml})", \
             ciu_remedy
     network = deploy.get("network_name") or ""
     if network and network.endswith("-network"):
         prefix = network[:-len("-network")]
         return f"{prefix}-{env_name}", \
-            f"ciu.global.toml deploy.network_name stripped of '-network' ({global_toml})", \
+            f"ciu.global.toml deploy.network_name stripped of '-network' " \
+            f"({scope}: {global_toml})", \
             ciu_remedy
     fail(f"cannot derive container name from {global_toml}: need "
          f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
@@ -1376,7 +1405,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if not docker:
         fail_infra("docker not found on PATH — exec-mode lanes need it")
     name, name_src, start_remedy = resolve_container_name(
-        env_name, env, repo, env_source)
+        env_name, env, repo, worktree, env_source)
     running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
                              capture_output=True, text=True)
     if running.returncode != 0:
@@ -1397,7 +1426,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             argv += ["-e", f"{key}={value}"]
     argv += [name, "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
-          f"container {name} | slice {slice_name or '(none)'} ({slice_src})",
+          f"container {name} ({name_src}) | "
+          f"slice {slice_name or '(none)'} ({slice_src})",
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
     if lane.get("budget"):

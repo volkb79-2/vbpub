@@ -168,10 +168,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   externally-managed container via `docker exec`. run-gate refuses to start
   the container itself — that belongs to the project's deployment authority
   (e.g. CIU). The container name is resolved from a declared `container_name`
-  on the environment, or derived from the repo's `ciu.global.toml` [deploy]
+  on the environment, or derived from a `ciu.global.toml` [deploy]
   table (`project_name + environment_tag`, falling back to
-  `network_name stripped of "-network"`). Missing config → hard error naming
-  what to fix. If the resolved container is not running → hard error whose
+  `network_name stripped of "-network"`). **Which `ciu.global.toml` (RG-24):
+  the JUDGED WORKTREE's own is preferred; the repo's is the fallback.** This
+  one resolution path is deliberately worktree-scoped, unlike every other
+  `repo`-relative resolution in the tool: `repo` (R-13) is the checkout
+  owning the shared `.git` — the MAIN checkout for any linked worktree —
+  which is the right authority for object-store questions and the WRONG one
+  for a LIVE DEPLOYED container. A multi-instance worktree (dstdns "Mode-B":
+  `ciu worktree adopt` gives a worktree its own stack, its own rendered
+  `ciu.global.toml`, its own network and its own runner) would otherwise have
+  its lane exec'd into the main landscape's runner — a partial, believable
+  failure, because the inner `cd <effective project dir>` still reaches the
+  right FILES and only the container's baked network/env are wrong. The
+  precedence is ADDITIVE: a worktree that is not itself an adopted instance
+  (no own `ciu.global.toml`) keeps repo-relative resolution unchanged.
+  The resolution SOURCE printed with the container name (R-05) names the
+  scope — `judged worktree:` or `repo:` — followed by the file used.
+  Missing config → hard error naming BOTH candidate paths when they differ.
+  If the resolved container is not running → hard error whose
   START REMEDY names the authority the name was resolved FROM (RG-6):
   declared `container_name` → the project's OWN deployment authority;
   ciu.global.toml-derived → the ciu lifecycle (`ciu render` if stale, then
