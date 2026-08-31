@@ -524,9 +524,15 @@ class JavaScriptAdapter:
     ) -> tuple[MutationSite, ...] | Literal["UNSUPPORTED"]:
         """Unconditionally ``"UNSUPPORTED"`` (A-183's marker, Go's own
         precedent at ``adapters/go.py``). No argument is consulted: there is
-        no partial JS/TS mutation engine to fall back to, because whether one
-        should be native or should ingest an external producer's evidence is
-        the ruling **B037** exists to force and has not made. Renders
+        no partial JS/TS mutation engine to fall back to, because **B037's
+        ruling is MADE and it went the other way** -- JavaScript R2 is
+        INGESTED, and **B046** implements it (the lane's own argv runs Stryker
+        inside the private snapshot and assay judges the report it wrote). So
+        this method is not waiting on that ruling: staying ``"UNSUPPORTED"``
+        is what MAKES this the ingested path, and
+        ``test_the_registry_does_not_open_the_NATIVE_r2_path`` holds the line.
+        For a lane that declares no ``judge.mutation.format`` -- presence of
+        that key, and nothing else, selects ingestion -- this renders
         payload-free ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED``, never a green
         mutation claim and never ``NO_MUTANTS``, which would assert that a
         supported analysis ran and observed nothing mutable."""

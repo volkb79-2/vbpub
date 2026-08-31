@@ -818,3 +818,40 @@ rather than claimed as mine.
   `nyxloom-trove/reports/assay-WAVE-B-FIXROUND-gate-transcript.txt`;
 - phase 6 reads **47 passed** where the wave's run read 44 — the new W5
   template and its two guards, from the installed wheel.
+
+---
+
+# Fix round 1, carry-over: the second half of MF6
+
+Flagged by the reviewer alongside the ACCEPT verdict on `c1176bd0`. Not a
+blocker; landed before release because it ships inside the wheel.
+
+MF6 fixed the B037 staleness at `adapters/javascript.py:148` (the module
+docstring) and **missed the same claim 380 lines later**, in
+`generate_mutation_sites`' own docstring at `:525-532`: *"the ruling **B037**
+exists to force **and has not made**"*. So the file contradicted itself —
+"the ruling is now MADE" up top, "has not made" at the method that IS the
+ruling's consequence. Worse placement than the original, because a reader
+looking up why this method returns `"UNSUPPORTED"` lands on the method, not
+on the module header.
+
+Rewritten to match `:148`'s framing: the ruling is made, it went to
+INGESTED, B046 implements it, and `"UNSUPPORTED"` here is what MAKES this the
+ingested path rather than a gap awaiting one. Added the two facts a reader at
+this seam actually needs — that
+`test_the_registry_does_not_open_the_NATIVE_r2_path` holds the line, and that
+the `INCONCLUSIVE`/`MUTATION_UNSUPPORTED` render applies to a lane declaring
+no `judge.mutation.format` (presence of that key, and nothing else, selects
+ingestion).
+
+**Swept the rest of the file and `src/` for the same staleness rather than
+fixing only the line I was handed** — the whole defect was that one of two
+copies got fixed. `grep -rn B037 src/` gives three other sites, all checked
+and all correct: `javascript.py:41` is about a scope boundary, not the ruling
+status; `cli.py:342` states the pre-B046 position but is immediately and
+explicitly labelled history by `cli.py:349` ("The paragraph above stands as
+history; what changed is which of its two options was taken"), which is a
+deliberate record, not a contradiction. No other "has not made"/"left open"
+phrasing in `src/` refers to B037.
+
+Comment-only; no behaviour change, no test change.
