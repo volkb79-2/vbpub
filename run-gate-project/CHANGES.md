@@ -10,6 +10,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Added
+- **RG-25 — assay-lane toolchain fitness in `doctor`/`--check-env`
+  (rev 27).** For every `kind = "assay"` lane, run-gate asks the JUDGE what
+  the lane needs (`<assay_command> lanes --json --file assay.toml`, assay
+  ≥ 3.2.0 / B044) INSIDE the lane's environment and checks that environment
+  for it — it still never parses `assay.toml`. `build_env_probe_argv()` is
+  the single in-environment probe builder, reusing `resolve_container_name()`
+  and `physical_path()`/`dual_mount_flags()`, so no second `docker
+  run`/`docker exec` argv shape exists. Tools checked = `external_tools` ∪
+  `argv0` (read from the inventory) ∪ the `language` toolchain (`javascript`
+  → node, npm; `go` → go — a table that exists only because assay 3.2.0
+  reports `external_tools: []` for every shipped adapter and states the
+  language fact in prose; an unmapped language is reported with a caveat,
+  never as "nothing needed"). `[FAIL]` names lane, tool and environment, or
+  an `assay_lane` the judge does not declare; every "could not determine" is
+  `[SKIP]` with its reason, so an assay older than B044 can never turn a
+  healthy project red. `doctor` counts SKIPs in its summary; `--check-env`
+  exits 2 on a toolchain FAIL while its env-drift half stays advisory.
+  SPEC `R-34`, `R-01`, `R-30`; CONSUMERS `kind = "assay"` section.
 - **RG-21 — `doctor` names the linked-worktree host-lane git view (rev 26).**
   A linked worktree's `.git` is a FILE pointing at an absolute gitdir under
   the main checkout. A host lane that delegates to a harness bind-mounting

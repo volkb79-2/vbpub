@@ -7,6 +7,7 @@ Every argv assertion compares the LIST, never a joined string.
 
 import atexit
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -113,6 +114,44 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
     return log
+
+
+def fake_docker_executing(tmp_path, monkeypatch) -> Path:
+    """A docker shim that RECORDS like fake_docker but also EXECUTES the
+    inner `bash -c <script>` on the host for `run`/`exec`.
+
+    RG-25/RG-26 probes are only meaningful if the script actually runs: the
+    fitness check's whole content is `command -v` inside the environment, and
+    the inventory's is a real `assay lanes --json`. A shim that echoed canned
+    output would pin construction, not acceptance — the exact substitute-
+    interpreter failure class this project exists to kill (README "an argv
+    proves construction, not acceptance").
+    """
+    log = fake_docker(tmp_path, monkeypatch)
+    shim = shim_dir_of(monkeypatch) / "docker"
+    shim.write_text(textwrap.dedent(f"""\
+        #!/bin/sh
+        printf '%s\\037' "$@" >> "{log}"
+        printf '\\n' >> "{log}"
+        case "$1" in
+          run|exec)
+            for last; do :; done
+            exec bash -c "$last"
+            ;;
+          ps) printf 'probe-runner\\n' ;;
+        esac
+        exit 0
+    """))
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    return log
+
+
+def install_fake_assay(monkeypatch, body: str, name: str = "assay") -> Path:
+    """A PATH-shim `assay` whose `lanes --json` output the test dictates."""
+    path = shim_dir_of(monkeypatch) / name
+    path.write_text(textwrap.dedent(body))
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
 
 
 def docker_runs(log: Path) -> list[list[str]]:
@@ -1131,7 +1170,8 @@ def test_no_stdlib_violations():
                if l.startswith("import ") or l.startswith("from ")]
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
                "time", "tomllib", "pathlib", "fcntl",  # fcntl: stdlib, Linux-only (RG-20 locks)
-               "ast"}  # ast: RG-23 helper-wrapped env reads in --check-env
+               "ast",   # ast: RG-23 helper-wrapped env reads in --check-env
+               "json"}  # json: RG-25 `assay lanes --json` inventory
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -3569,6 +3609,322 @@ class TestLinkedWorktreeHostLaneWarning:
         monkeypatch.chdir(wt / "proj")
         assert run_gate.main(["doctor"]) == 0
         assert "host-lane git view (RG-21)" not in capsys.readouterr().out
+
+
+def _inventory(**over) -> str:
+    """One assay 3.2.0 inventory entry, shell-quoted into a fake judge."""
+    entry = {"name": "ui_unit", "scope": "S1", "rigor": ["R0"],
+             "enforcement": "gate", "language": None, "rigor_reachable": [],
+             "coverage": None, "mutation": None, "canary": None,
+             "base_source": None, "external_tools": [], "argv0": None,
+             "env_required": [], "environment_command": False,
+             "infrastructure_facts": [], "budget": None, "cwd": None,
+             "link_paths": [], "snapshot_selection": None}
+    entry.update(over)
+    doc = {"assay_version": "3.2.0", "inventory_schema": 1, "lanes": [entry]}
+    return json.dumps(doc)
+
+
+def _fake_judge(payload: str, *, exit_code: int = 0) -> str:
+    return f"""\
+        #!/bin/sh
+        case "$*" in
+          *"lanes --json"*)
+            {'exit ' + str(exit_code) if exit_code else ''}
+            cat <<'JSON'
+{payload}
+JSON
+            ;;
+          *--version*) echo "assay 3.2.0" ;;
+        esac
+        exit 0
+    """
+
+
+ASSAY_LANE_CFG = """\
+    schema_version = 1
+
+    [environments.tester-unified]
+    image = "tester-unified:local"
+
+    [lanes.ui-unit]
+    kind = "assay"
+    environment = "tester-unified"
+    assay_lane = "ui_unit"
+    assay_command = ["assay"]
+    clean_tree = false
+"""
+
+
+class TestAssayToolchainFitness:
+    """RG-25: `doctor`/`--check-env` could not see that an assay lane's
+    LANGUAGE needs a toolchain in its environment. run-gate never parses
+    assay.toml — it ASKS the judge (`assay lanes --json`, assay B044) through
+    the same in-environment probe path, exactly as it already asks
+    `--version`. FAIL is reserved for a fact the inventory established;
+    everything meaning "I could not determine this" is SKIP, so an assay
+    older than B044 can never turn a healthy project red.
+    """
+
+    def _project(self, tmp_path, monkeypatch, cfg=ASSAY_LANE_CFG):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        return repo, proj
+
+    def _doctor(self, capsys) -> tuple[int, str]:
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_missing_declared_external_tool_fails_naming_all_three(
+            self, tmp_path, monkeypatch, capsys):
+        """The acceptance oracle: lane, tool AND environment are named — a
+        message naming only the tool cannot be acted on."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["definitely-not-installed-xyz"])))
+        code, out = self._doctor(capsys)
+        assert code == 2
+        assert "[FAIL] lane 'ui-unit' toolchain" in out
+        assert "definitely-not-installed-xyz" in out
+        assert "tester-unified" in out
+
+    def test_present_tool_reports_ok_with_the_tools_verified(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"], argv0="bash")))
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert "[OK] lane 'ui-unit' toolchain: sh, bash" in out
+
+    def test_javascript_language_derives_node_and_npm(
+            self, tmp_path, monkeypatch, capsys):
+        """assay's own inventory reports `external_tools: []` for EVERY
+        shipped adapter, and its CONSUMERS.md says the node/npm fact has to
+        come from `language`. A check keyed only on external_tools would
+        report a clean bill of health for a JavaScript lane in an
+        environment with no Node at all."""
+        tools, caveat = run_gate.assay_lane_toolchain(
+            {"language": "javascript", "external_tools": [], "argv0": None})
+        assert tools == ["node", "npm"] and caveat is None
+
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(language="javascript", external_tools=[])))
+        # A PATH with no Node at all — this devcontainer has real node/npm in
+        # /usr/bin beside bash, so the absent case has to be constructed.
+        clean = tmp_path / "clean-bin"
+        clean.mkdir()
+        for tool in ("bash", "sh", "cat", "git"):
+            (clean / tool).symlink_to(shutil.which(tool))
+        monkeypatch.setenv("PATH", f"{shim}:{clean}")
+
+        code, out = self._doctor(capsys)
+        assert code == 2, out
+        assert "[FAIL] lane 'ui-unit' toolchain" in out
+        assert "needs node, npm in environment 'tester-unified'" in out
+
+        install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n", name="node")
+        code, out = self._doctor(capsys)
+        assert code == 2, out
+        assert "needs npm in environment 'tester-unified'" in out
+        assert "needs node" not in out            # node IS there — precision
+
+        install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n", name="npm")
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert "[OK] lane 'ui-unit' toolchain: node, npm" in out
+
+    def test_unknown_language_reports_a_caveat_not_a_clean_bill(self):
+        tools, caveat = run_gate.assay_lane_toolchain(
+            {"language": "rust", "external_tools": [], "argv0": "cargo"})
+        assert tools == ["cargo"]
+        assert "rust" in caveat and "only argv0/external_tools" in caveat
+
+    def test_lane_absent_from_the_inventory_fails(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory(name="other")))
+        code, out = self._doctor(capsys)
+        assert code == 2
+        assert "assay lane 'ui_unit' is not declared in assay.toml" in out
+        assert "declared: other" in out
+
+    def test_judge_without_json_skips_never_fails(
+            self, tmp_path, monkeypatch, capsys):
+        """The pin declares the version this lane needs; run-gate must not
+        impose an assay floor it never declared."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, """\
+            #!/bin/sh
+            echo "assay: unrecognized arguments: --json" >&2
+            exit 2
+        """)
+        code, out = self._doctor(capsys)
+        assert code == 0, out                      # SKIP, never FAIL
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        assert "older than 3.2.0" in out
+
+    def test_non_json_output_skips_with_the_reason(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, "#!/bin/sh\necho 'not json at all'\n")
+        code, out = self._doctor(capsys)
+        assert code == 0
+        assert "no usable JSON" in out
+
+    def test_unknown_inventory_schema_skips_with_the_value(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            json.dumps({"inventory_schema": 2, "lanes": []})))
+        code, out = self._doctor(capsys)
+        assert code == 0
+        assert "inventory_schema is 2, not 1" in out
+
+    def test_probe_failure_is_a_skip_not_a_clean_bill(
+            self, tmp_path, monkeypatch, capsys):
+        """'Could not reach it' must never be folded into 'nothing is
+        missing' — the `command -v` probe's own failure is indeterminacy."""
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker(tmp_path, monkeypatch)   # records, never executes
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text("#!/bin/sh\n"
+                        f'printf "%s\\037" "$@" >> "{log}"; printf "\\n" >> "{log}"\n'
+                        'case "$1" in run|exec) for l; do :; done;\n'
+                        '  case "$l" in *"lanes --json"*) '
+                        f"cat <<'JSON'\n{_inventory(external_tools=['sh'])}\nJSON\n"
+                        '    exit 0 ;;\n'
+                        '  *) echo "probe transport broke" >&2; exit 7 ;; esac ;;\n'
+                        'esac\nexit 0\n')
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        code, out = self._doctor(capsys)
+        assert code == 0
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        assert "could not run `command -v`" in out and "exit 7" in out
+
+    def test_host_environment_lane_skips(self, tmp_path, monkeypatch, capsys):
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "host"', 1)
+        cfg = cfg.replace('[environments.tester-unified]\n    image = "tester-unified:local"\n',
+                          "")
+        self._project(tmp_path, monkeypatch, cfg)
+        fake_docker_executing(tmp_path, monkeypatch)
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        assert "built-in 'host'" in out
+
+    def test_docker_absent_skips_the_probe(self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        empty = tmp_path / "empty-path"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        code, out = self._doctor(capsys)
+        assert code == 2                            # docker itself FAILs
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        assert "docker not on PATH" in out
+
+    def test_unresolvable_slice_skips_the_probe_rather_than_tracebacking(
+            self, tmp_path, monkeypatch, capsys):
+        """An ephemeral probe is a container this tool starts, so it needs a
+        slice by the same policy a lane does (R-10). With none derivable the
+        probe is SKIPped with the refusal as its reason — never run
+        unconfined next to production, and never a traceback."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory()))
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        code, out = self._doctor(capsys)
+        assert code == 2                            # the slice FAIL, not a crash
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        assert CGROUP_VAR in out
+
+    def test_no_toolchain_requirement_reports_ok(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory()))
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert "assay declares no toolchain requirement" in out
+
+    def test_exec_environment_probes_through_docker_exec(
+            self, tmp_path, monkeypatch, capsys):
+        cfg = ASSAY_LANE_CFG.replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n    mode = "exec"\n'
+            '    container_name = "probe-runner"')
+        _repo, _proj = self._project(tmp_path, monkeypatch, cfg)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"])))
+        code, out = self._doctor(capsys)
+        assert code == 0, out
+        assert "[OK] lane 'ui-unit' toolchain: sh" in out
+        # the probe went through docker exec into the declared runner, and
+        # started NO container of its own
+        assert docker_runs(log) == []
+        assert any("probe-runner" in call for call in docker_execs(log))
+
+    def test_check_env_exits_2_on_a_toolchain_failure(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["definitely-not-installed-xyz"])))
+        assert run_gate.main(["--check-env"]) == 2
+        out = capsys.readouterr().out
+        assert "check-env: [FAIL] lane 'ui-unit' toolchain" in out
+        # the env-DRIFT half stays advisory — it did not cause the exit
+        assert "ADVISORY ONLY" not in out or "uncovered reference(s)" in out
+
+    def test_check_env_exits_0_when_the_toolchain_is_present(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory(argv0="sh")))
+        assert run_gate.main(["--check-env"]) == 0
+        assert "check-env: [OK] lane 'ui-unit' toolchain: sh" in \
+            capsys.readouterr().out
+
+    def test_command_lane_project_gets_no_toolchain_lines(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker_executing(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["doctor"]) == 0
+        assert "toolchain" not in capsys.readouterr().out
+
+    def test_one_in_environment_probe_builder(self):
+        """RG-25 acceptance: ONE construction site for reaching an
+        environment — a second `docker run`/`docker exec` argv shape is
+        exactly the untested-argv class this project exists to kill."""
+        src = _TOOL.read_text()
+        builders = set()
+        for chunk in src.split("\ndef ")[1:]:
+            name = chunk.split("(")[0]
+            if re.search(r'\[docker, "(run|exec)"', chunk):
+                builders.add(name)
+        assert builders == {"run_container_lane", "run_exec_lane",
+                            "build_env_probe_argv"}, builders
+        for consumer in ("assay_inventory", "probe_missing_tools"):
+            body = src.split(f"\ndef {consumer}(")[1].split("\ndef ")[0]
+            assert "build_env_probe_argv" in body
+            assert '[docker, "' not in body
 
 
 def _has_module(name: str) -> bool:

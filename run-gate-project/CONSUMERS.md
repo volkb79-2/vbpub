@@ -234,11 +234,43 @@ out of a package cache the ENVIRONMENT provides: for an `exec` environment,
 bake the cache into the runner image at build from the same lockfile, or add
 a volume to the runner's own stack; for an ephemeral environment,
 `RUN_GATE_EXTRA_MOUNTS=/var/cache/<project>/npm=/opt/npm-cache`. Python
-(venv) and Go (`GOMODCACHE`) closures are out-of-tree and need nothing. Once
-RG-25 lands, `doctor`/`--check-env` report a lane whose language needs a
-toolchain the environment lacks; until then the first sign is the lane's own
-`NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` — or, without `--no-install`, an
-unpinned `npx` fetch inside the gate container.
+(venv) and Go (`GOMODCACHE`) closures are out-of-tree and need nothing.
+
+**Preflight the toolchain instead of discovering it mid-run (RG-25).**
+`./run-gate.py doctor` and `./run-gate.py --check-env` now ask the JUDGE what
+each `kind = "assay"` lane needs — `<assay_command> lanes --json --file
+assay.toml` (assay ≥ 3.2.0) run INSIDE the lane's own environment — and then
+check that environment for it. run-gate still never parses `assay.toml`:
+
+```
+run-gate: doctor: [OK]   lane 'ui-unit' toolchain: node, npm
+run-gate: doctor: [FAIL] lane 'ui-unit' toolchain: needs npm in environment
+  'test-runner' (project /repo/run-gate.toml) — assay would reach
+  MISSING_EXTERNAL_TOOL/NO_MEASUREMENT mid-run instead
+run-gate: doctor: [FAIL] lane 'ui-unit' toolchain: assay lane 'ui_unit' is not
+  declared in assay.toml (declared: py_unit, sql_schema) — this lane can only
+  ERROR at run time
+run-gate: doctor: [SKIP] lane 'ui-unit' toolchain: `assay lanes --json` did not
+  run in environment 'test-runner' (exit 2: unrecognized arguments: --json) —
+  an assay older than 3.2.0 has no inventory (B044). The pin declares the
+  version this lane needs; run-gate does not impose a floor it never declared
+```
+
+Read the statuses precisely: **`[FAIL]` only ever states a fact the judge
+established** (a tool it named is absent; a lane it does not declare).
+Everything meaning *"I could not determine this"* — an older judge, an
+unreachable environment, an inventory schema this run-gate does not read, a
+`host` environment, no docker — is `[SKIP]` with the reason, and **never
+turns a healthy project red**. `doctor` exits 2 only on FAIL; `--check-env`
+exits 2 on a toolchain FAIL while its env-drift half stays advisory.
+
+Which tools get checked: `external_tools` and `argv0` as the inventory
+reports them, plus the toolchain implied by `language` (`javascript` →
+`node`, `npm`; `go` → `go`). That last mapping lives in run-gate only
+because assay 3.2.0 reports `external_tools: []` for every shipped adapter
+and documents the language fact in prose instead; a language run-gate has no
+fact for is reported with an explicit caveat on the line rather than being
+treated as "nothing needed".
 
 ### Worked example — run-gate × assay, end to end
 

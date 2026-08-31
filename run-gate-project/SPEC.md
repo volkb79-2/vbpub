@@ -62,7 +62,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`CGROUP_PARENT_DEV_BACKGROUND`, `RUN_GATE_EXTRA_MOUNTS`,
   `RUN_GATE_MOUNT_ALIAS`) plus `--check-env` (R-24 drift sweep) (RG-7);
   unknown lane exits non-zero naming the
-  known lanes and the config path.
+  known lanes and the config path. `--check-env` also runs the assay-lane
+  toolchain fitness check (`R-34`): its env-drift half stays advisory (exit
+  0), a toolchain FAIL exits 2.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking).
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
@@ -405,10 +407,50 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
   writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
   (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
-  `[FAIL]` line per check plus a summary; exit 2 iff any FAIL. Doctor runs
-  nothing, changes nothing, and must itself survive a broken host: a
+  `[FAIL]`/`[SKIP]` line per check plus a summary counting all four; exit 2
+  iff any FAIL. Doctor judges nothing and changes nothing; since `R-34` it
+  may start at most one short-lived, read-only probe container per assay
+  environment (inventory + `command -v`), which is why the summary now
+  reports SKIPs — "could not determine" must be visible, not absorbed into
+  silence. Doctor must itself survive a broken host: a
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
+
+- `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
+  lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE
+  what the lane needs — `<assay_command> lanes --json --file assay.toml`
+  (assay ≥ 3.2.0, B044) executed INSIDE that environment — and then check the
+  environment for it. run-gate never parses `assay.toml`; the `assay_lane`
+  name stays a string it passes through, exactly as before.
+  - **One probe path.** `build_env_probe_argv()` is the ONLY place that
+    knows how to reach an environment for a short read-only command; it
+    reuses `resolve_container_name()` (exec) and
+    `physical_path()`/`dual_mount_flags()` (ephemeral). A probe is attached
+    and captured rather than detached like a lane run (`R-17`), which is safe
+    here and only here because a probe's result is a preflight line, never a
+    verdict. Ephemeral probes carry `--cgroup-parent` like any container this
+    tool starts; where no slice is derivable the probe SKIPs rather than
+    running unconfined.
+  - **Tools checked** = `external_tools` ∪ `argv0` (READ from the inventory)
+    ∪ the `language` toolchain. The language table exists only because
+    assay's own docs state that fact in prose and not in the inventory
+    (`external_tools` is `()` for every shipped adapter in 3.2.0), and an
+    unmapped language attaches a CAVEAT to the line rather than being
+    silently treated as "nothing needed".
+  - **Statuses.** `[FAIL]` ONLY for a fact the inventory established: a named
+    tool absent from the environment (naming lane, tool AND environment), or
+    an `assay_lane` the judge does not declare (naming what it does declare).
+    `[OK]` lists the tools verified. Everything meaning "I could not
+    determine this" is `[SKIP]` with the reason — judge unreachable, an assay
+    with no `--json`, non-JSON output, `inventory_schema != 1` (with the
+    value), a `host` environment, docker absent, an unresolvable slice.
+    **An older judge can never turn a healthy project red:** the pin declares
+    the version the lane needs, and run-gate does not impose a floor it never
+    declared.
+  - **Exit codes.** `doctor` counts SKIPs in its summary and still exits 2
+    only on FAIL. `--check-env`'s env-drift half stays advisory (exit 0 — it
+    is a heuristic); a toolchain FAIL exits **2**, because the judge itself
+    established it.
 
 - `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
   declares at least one `environment = "host"` lane AND the judged tree is a

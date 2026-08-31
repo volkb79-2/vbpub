@@ -42,7 +42,7 @@ SPEC §9.
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | FIXED 2026-08-31 (rev 25) — run-gate half; dstdns half open in its own repo |
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
-| RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
+| RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | FIXED 2026-08-31 (rev 27) |
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
 
@@ -1399,6 +1399,57 @@ container (assay B041). The fact is knowable statically; assay B044
 - [ ] SPEC §2 `R-01` (`--check-env`/`doctor`) updated; CONSUMERS
       `kind = "assay"` section names the check beside the closure note
       added 2026-08-30.
+
+**FIXED 2026-08-31 (rev 27), SPEC `R-34` (+ `R-01`, `R-30` amendments).**
+`assay_toolchain_findings()` emits one `(status, topic, detail)` per assay
+lane; `cmd_doctor` feeds them to its existing `record()` and `cmd_check_env`
+prints them and exits 2 on a FAIL. `build_env_probe_argv()` is the single
+in-environment probe builder (reusing `resolve_container_name()` for exec and
+`physical_path()`/`dual_mount_flags()` for ephemeral); a test asserts by
+source inspection that the only functions constructing a `docker run`/`docker
+exec` argv are `run_container_lane`, `run_exec_lane` and
+`build_env_probe_argv`. Ephemeral probes carry `--cgroup-parent` like any
+container this tool starts, and SKIP rather than run unconfined where no
+slice is derivable.
+
+**Deviation from the entry's letter, and why (flagged for controller
+review).** The entry says to `command -v` "each of its `external_tools` and
+its `argv0`". Implemented as `external_tools` ∪ `argv0` ∪ a `language`
+toolchain table, because assay 3.2.0's own `docs/CONSUMERS.md` states that
+`external_tools` is `()` for EVERY shipped adapter today and that "a gate
+consumer should not build a `MISSING_EXTERNAL_TOOL` preflight around this
+field expecting it to name node/npm for a javascript lane — that check today
+has to come from `language` itself". Following the letter alone would have
+shipped a check that reports a clean bill of health for a JavaScript lane in
+an environment with no Node — precisely the gap this entry was filed for, and
+precisely the false-certification class AGENTS forbids. The entry's OWN
+example output (`[OK] lane 'ui-unit' toolchain: node, npm`) is only reachable
+via `language`, so the two readings agree on the outcome. The table is kept
+minimal (`javascript`, `go` — the two assay documents), and an unmapped
+language attaches an explicit caveat to the line rather than being silently
+read as "nothing needed".
+
+Deliberately NOT implemented (not in the entry's contract; noted for a future
+entry): `rigor` vs `rigor_reachable` — the inventory also exposes rigor levels
+a lane declares that THIS assay build cannot reach for its language, which is
+a second preflightable mid-run refusal. It belongs in its own entry rather
+than smuggled in here.
+
+Tests: `TestAssayToolchainFitness` ×18, driven through a docker shim that
+actually EXECUTES the probe script on the host (a shim echoing canned output
+would pin construction, not acceptance — the substitute-interpreter failure
+this whole project exists to kill). Covered: missing `external_tools` → FAIL
+naming lane/tool/environment; present → OK listing them; `language =
+"javascript"` against a constructed Node-less PATH → FAIL naming both, then
+node-only → FAIL naming only npm, then both → OK (the devcontainer has real
+node/npm in `/usr/bin` beside `bash`, so the absent case had to be built);
+lane absent from the inventory → FAIL naming what IS declared; judge without
+`--json` → SKIP; non-JSON → SKIP; `inventory_schema = 2` → SKIP with the
+value; `command -v` transport failure → SKIP, never a clean bill; `host`
+environment → SKIP; docker absent → SKIP; no slice derivable → SKIP; exec
+environment probes via `docker exec` and starts no container; `--check-env`
+exit 2/0; a command-lane project emits no toolchain line at all; and the
+one-probe-builder source assertion.
 
 ## RG-26 — no `--base REF` passthrough to `assay run --request-base`: B019 (assay ≥ 3.0.0) is unusable from the gate; derive the delegating lanes from `assay lanes --json`, not a new lane key
 
