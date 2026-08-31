@@ -11,14 +11,25 @@ from ciu import engine  # noqa: E402
 from ciu.engine import reset_service  # noqa: E402
 
 
+def _write_identity_facts(root):
+    """CIU-75: reset's config-less down path derives its compose project from
+    the checkout's generated `[ciu.instance.generated]` overlay table, not its
+    legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["repo_name"] = "dstdns"
+    facts["instance_id"] = "abc123"
+    upsert_generated_facts(root, facts)
+
+
+
 def _config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
 def test_compose_down_warning_does_not_abort_remaining_cleanup(tmp_path, capsys, monkeypatch):
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
-    )
+    _write_identity_facts(tmp_path)
     stack_dir = tmp_path / "stack"
     stack_dir.mkdir()
     volume = stack_dir / "vol-data"
@@ -50,9 +61,7 @@ def test_reset_with_secrets_reports_materialized_stores_and_removes_fallback(tmp
     (fallback_store / "stale").write_text("secret")
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    (repo_root / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
-    )
+    _write_identity_facts(repo_root)
     stores = [
         repo_root / ".ciu" / "secrets" / "project-token",
         stack_dir / ".ciu" / "secrets" / "stack-token",

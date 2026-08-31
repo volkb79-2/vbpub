@@ -17,6 +17,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -83,6 +84,21 @@ GENERATED_FACTS_KEYS: tuple[str, ...] = (
     "public_fqdn",
 )
 
+# S3.1c (CIU-75) — the ONE translation table between the overlay's snake_case
+# fact names (above) and the legacy SCREAMING_CASE `ciu.env` key names. It
+# exists because a CHILD ciu process and a template's `$VAR` expansion still
+# speak shell-env names; nothing inside CIU reads the `ciu.env` FILE any more.
+# Keep it exhaustive over GENERATED_FACTS_KEYS — a fact with no env name would
+# silently vanish from every child environment built from it.
+GENERATED_FACT_ENV_KEYS: dict[str, str] = {
+    "repo_name": "REPO_NAME",
+    "instance_id": "INSTANCE_ID",
+    "network": "DOCKER_NETWORK_INTERNAL",
+    "physical_repo_root": "PHYSICAL_REPO_ROOT",
+    "repo_root": "REPO_ROOT",
+    "public_fqdn": "PUBLIC_FQDN",
+}
+
 # Written once, at the top of a file this function had to create from nothing.
 # Mirrors `worktree._worktree_overlay_text`'s own header-comment style so a
 # CIU-created overlay looks the same whichever code path created it.
@@ -100,6 +116,20 @@ _GENERATED_FACTS_BANNER: tuple[str, ...] = (
     "# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.",
     "# Do NOT hand-edit keys in THIS table — edits here are silently",
     "# overwritten. Every OTHER byte of this file is yours and is preserved.",
+)
+
+
+# S3.1c (CIU-75) — the single wording of the one-release deprecation notice, so
+# the `ciu env generate` write path and the `ciu env` read path cannot drift
+# into two different stories about what changed. `{path}` is the ciu.env whose
+# consumer is being nudged.
+LEGACY_ENV_EXPORT_WARNING = (
+    "[S3.1c] {path} is a LEGACY WRITE-ONLY export as of ciu 7.7.0: CIU itself "
+    "no longer reads it — instance identity now comes only from the "
+    f"[{GENERATED_FACTS_TABLE}] table in {GLOBAL_CONFIG_WORKTREE_OVERRIDES}. "
+    "The key set is unchanged, so a shell or tool that `source`s it still "
+    "works this release; switch it to `eval \"$(ciu env print)\"` — a future "
+    "release stops writing the file."
 )
 
 
@@ -1074,6 +1104,132 @@ def _atomic_write_text(path: Path, payload: str) -> None:
         raise WorkspaceEnvError(f"[S3.1b] could not write {path}: {exc}") from exc
 
 
+def has_generated_facts(ciu_root: Path) -> bool:
+    """S3.1c (CIU-75) — does *ciu_root*'s overlay CARRY the CIU-owned table?
+
+    PRESENCE, never readability: the header line exists or it does not. A
+    present-but-corrupt table answers ``True`` here on purpose, so the caller's
+    own read (:func:`read_generated_facts`) refuses loudly instead of this
+    predicate silently downgrading indeterminacy to "not a CIU instance"
+    (AGENTS.md's absence-for-emptiness anti-pattern).
+
+    This is the post-cutover replacement for the ``ciu.env`` ``.is_file()``
+    readiness signal: what makes a checkout able to act as a CIU instance is
+    now the generated table, because that is what every internal fact read
+    consults.
+    """
+    path = Path(ciu_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # Unreadable is not "absent" — but a boolean cannot say so. The one
+        # honest answer a *presence* predicate can give for a file that exists
+        # and cannot be read is "treat it as present": the caller's real read
+        # then raises with the actual cause. `FileNotFoundError` (a genuine
+        # absence) is the only OSError that must answer False.
+        return path.exists()
+    return any(line.strip() == GENERATED_FACTS_HEADER for line in text.splitlines())
+
+
+def read_generated_facts(ciu_root: Path) -> dict[str, str]:
+    """S3.1c (CIU-75) — the ``[ciu.instance.generated]`` facts for *ciu_root*.
+
+    The READ side of S3.1b, and since CIU-75 the ONLY source CIU itself
+    consults for instance identity: ``ciu.env`` is a write-only legacy export
+    (contract item 2) and is never read back by any CIU internal.
+
+    Deliberately a text-level scan of the CIU-owned block, exactly mirroring
+    :func:`upsert_generated_facts`'s own ownership boundary — NOT a
+    :func:`config_model.render_global_chain` of the whole checkout. Three
+    reasons, each of which the chain render fails:
+
+    * the overlay is a Jinja **template**; rendering it needs the merged
+      config it is itself a layer of, and (CIU-74) an undefined name is now a
+      hard error — but the CIU-owned block is plain TOML by construction
+      (``json.dumps``'d strings), so it can be read without any context;
+    * the sites this replaces (a reap survey, a shared-infra reference, a
+      budget candidate) read a checkout that is NOT this process's own repo
+      root and whose committed config chain may be absent or broken; the
+      ``ciu.env`` read they used had no such dependency and neither may this;
+    * the block is merged LAST in the chain and written by CIU alone, so its
+      own bytes ARE the merged value — reading the chain could only agree.
+
+    Returns ``{}`` when the overlay, or the table, is absent — the exact
+    counterpart of the pre-cutover "no ``ciu.env`` here" case. Raises
+    :class:`WorkspaceEnvError` when the file is present and cannot be read
+    (``OSError``), is not UTF-8, is not parseable TOML, or carries a
+    non-string value: all four are indeterminacy, never emptiness.
+    """
+    path = Path(ciu_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError) as exc:
+        raise WorkspaceEnvError(f"[S3.1c] could not read {path}: {exc}") from exc
+
+    lines = text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.strip() == GENERATED_FACTS_HEADER),
+        None,
+    )
+    if start is None:
+        return {}
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
+        len(lines),
+    )
+    try:
+        parsed = tomllib.loads("\n".join(lines[start:end]))
+    except tomllib.TOMLDecodeError as exc:
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} has a malformed {GENERATED_FACTS_HEADER} table: {exc}"
+        ) from exc
+
+    # The slice STARTS at the table header and stops before the next line
+    # beginning a table, so the parse can only ever be this one nested table —
+    # no `.get(..., {})` defaulting is warranted, and inventing one would hide
+    # a slicing bug behind an empty result.
+    table: dict = parsed
+    for part in GENERATED_FACTS_TABLE.split("."):
+        table = table[part]
+    facts: dict[str, str] = {}
+    for key, value in table.items():
+        if not isinstance(value, str):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} {GENERATED_FACTS_HEADER}.{key} is "
+                f"{type(value).__name__}, not a string"
+            )
+        facts[key] = value
+    return facts
+
+
+def identity_env_from_facts(facts: Mapping[str, str]) -> dict[str, str]:
+    """Translate ``[ciu.instance.generated]`` facts to legacy env KEY names.
+
+    The single place :data:`GENERATED_FACT_ENV_KEYS` is applied, so a child
+    process's environment and a candidate render's ``environ`` can never
+    disagree about which facts cross that boundary. A fact with no env name
+    (an operator-added key) is dropped rather than exported under a guessed
+    name; a fact CIU never derived (an empty ``public_fqdn``) is carried
+    through as the empty string it is, exactly as ``ciu.env`` carried it.
+    """
+    return {
+        GENERATED_FACT_ENV_KEYS[key]: value
+        for key, value in facts.items()
+        if key in GENERATED_FACT_ENV_KEYS
+    }
+
+
+def read_instance_identity_env(ciu_root: Path) -> dict[str, str]:
+    """:func:`read_generated_facts` under the legacy ``ciu.env`` KEY names.
+
+    The SCREAMING_CASE shell names a CHILD ciu process (or a rendered
+    template's ``$VAR`` expansion) still speaks. Empty facts → empty dict.
+    """
+    return identity_env_from_facts(read_generated_facts(ciu_root))
+
+
 def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Path:
     """Generate ciu.env with autodetected values.
 
@@ -1221,6 +1377,14 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     ))
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # S3.1c (CIU-75) — the one-release deprecation WARN, in the shape this
+    # codebase already uses for a deprecated-but-still-working path
+    # (provisioning.py's `stack:<x>:healthy` exit-0 fallback): always-on, names
+    # the forward path, names what a future release does. It is a WARN and not
+    # a refusal on purpose — the key set below is byte-identical to 7.6.x, so
+    # every `source ciu.env` consumer keeps working THIS release.
+    _log_warn(LEGACY_ENV_EXPORT_WARNING.format(path=output_path))
 
     # S3.1b (CIU-60). Same values, same invocation, second destination: the
     # merged-config chain, which is what a Jinja TEMPLATE can actually see.

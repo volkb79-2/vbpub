@@ -61,6 +61,7 @@ from .config_constants import (
     CIU_COMPOSE_TEMPLATE,
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_RENDERED,
+    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     MACHINE_DIR,
     OVERLAY_NAME,
     RENDERED_SUBDIR,
@@ -80,7 +81,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
-    parse_workspace_env,
+    read_generated_facts,
     resolve_env_root,
     validate_required_certs,
 )
@@ -951,38 +952,33 @@ def compose_project_name(config: dict, stack_dir: Path) -> str:
 def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
     """Workspace-identity compose project for config-less deployments (CIU-46).
 
-    ``{REPO_NAME}-{INSTANCE_ID}-{stack_basename}``, derived from THIS
-    workspace's own ``ciu.env`` parsed by EXACT path (the S2.7 authority —
-    never the ambient process environment, which a shell that sourced another
-    checkout's record would contaminate). Unique per workspace AND per stack,
-    so config-less shipped stacks can neither collide across checkouts (the
-    withdrawn basename "legacy" fallback's hazard) nor escape clean's S6.4a
-    enumeration: up and clean call this same function, so they name a
-    project identically by construction.
+    ``{repo_name}-{instance_id}-{stack_basename}``, derived from THIS
+    workspace's own ``[ciu.instance.generated]`` overlay table read by EXACT
+    path (CIU-75: the sole instance-fact source — never the legacy ``ciu.env``
+    export, and never the ambient process environment, which a shell that
+    sourced another checkout's record would contaminate). Unique per workspace
+    AND per stack, so config-less shipped stacks can neither collide across
+    checkouts (the withdrawn basename "legacy" fallback's hazard) nor escape
+    clean's S6.4a enumeration: up and clean call this same function, so they
+    name a project identically by construction.
 
-    Raises ValueError naming the record when ``ciu.env`` is missing or lacks
-    the identity keys — a deployment that cannot be NAMED must not start,
-    and a teardown that cannot be named must refuse rather than skip
+    Raises ValueError naming the overlay when the generated facts are missing
+    or lack the identity keys — a deployment that cannot be NAMED must not
+    start, and a teardown that cannot be named must refuse rather than skip
     (defaults-are-hazards: no invented basename stands in for identity).
     The composed name is normalized exactly like docker compose's own
     project-name rule (lowercase, ``[a-z0-9_-]`` only) and must still start
     with an alphanumeric, else ValueError.
     """
-    env_path = Path(repo_root) / "ciu.env"
-    if not env_path.is_file():
-        raise ValueError(
-            "[S8.7] no ciu.env at {root} — run `ciu env generate` first; "
-            "the workspace-identity compose project is derived from its "
-            "REPO_NAME/INSTANCE_ID".format(root=env_path)
-        )
-    values = parse_workspace_env(env_path)
-    repo_name = values.get("REPO_NAME", "")
-    instance_id = values.get("INSTANCE_ID", "")
+    overlay_path = Path(repo_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    values = read_generated_facts(Path(repo_root))
+    repo_name = values.get("repo_name", "")
+    instance_id = values.get("instance_id", "")
     if not repo_name or not instance_id:
         raise ValueError(
-            "[S8.7] ciu.env at {root} lacks REPO_NAME/INSTANCE_ID — regenerate "
-            "it with `ciu env generate`; the workspace-identity compose "
-            "project is derived from them".format(root=env_path)
+            "[S8.7] {root} declares no repo_name/instance_id — run `ciu env "
+            "generate` first; the workspace-identity compose project is "
+            "derived from them".format(root=overlay_path)
         )
     name = re.sub(
         r"[^a-z0-9_-]",
@@ -1210,23 +1206,25 @@ def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
     the primary workspace is a decision that needs its own package, not a
     side effect of this one.
 
-    Both values are read from THIS workspace's OWN generated ``ciu.env`` by
-    EXACT PATH — never from the ambient process environment, which a shell
-    that sourced a sibling checkout's ciu.env carries (the CIU-41 species of
-    contamination). Mislabeling here would be worse than not labeling: it
-    would attribute one instance's containers to another checkout's root.
+    Both values are read from THIS workspace's OWN generated
+    ``[ciu.instance.generated]`` overlay table by EXACT PATH (CIU-75) — never
+    from the legacy ``ciu.env`` export, and never from the ambient process
+    environment, which a shell that sourced a sibling checkout's ciu.env
+    carries (the CIU-41 species of contamination). Mislabeling here would be
+    worse than not labeling: it would attribute one instance's containers to
+    another checkout's root.
     """
     if not (repo_root / worktree.WORKTREE_INSTANCE_RECORD).is_file():
         return None
-    env_path = repo_root / "ciu.env"
-    values = parse_workspace_env(env_path)
-    instance_id = values.get("INSTANCE_ID", "")
-    physical_root = values.get("PHYSICAL_REPO_ROOT", "")
+    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    values = read_generated_facts(repo_root)
+    instance_id = values.get("instance_id", "")
+    physical_root = values.get("physical_repo_root", "")
     if not instance_id or not physical_root:
         raise ValueError(
-            f"[S16.9] {env_path} lacks INSTANCE_ID/PHYSICAL_REPO_ROOT — this "
-            "managed worktree instance cannot label the resources it creates. "
-            "Run `ciu env generate` in this checkout."
+            f"[S16.9] {overlay_path} lacks instance_id/physical_repo_root — "
+            "this managed worktree instance cannot label the resources it "
+            "creates. Run `ciu env generate` in this checkout."
         )
     return {
         OWNERSHIP_LABEL_INSTANCE: instance_id,
@@ -1521,27 +1519,24 @@ def main_execution(
         #
         # CIU-62: this is the REAL-RUN twin of deploy.py's `_workspace_identity`
         # (the `ciu check` preflight builds the same two HookContext fields),
-        # and it carried the identical gap. `parse_workspace_env` fails three
-        # unrelated ways — `OSError` (the read), `UnicodeDecodeError` (a
-        # non-UTF-8 byte) and `WorkspaceEnvError` (a malformed entry) — and the
-        # last two are SIBLING `ValueError` subclasses, so naming either alone
-        # catches neither the other nor `OSError`. Before this, a non-UTF-8
-        # ciu.env escaped here and crashed `ciu up` at STEP 12 with a raw
-        # traceback. The degradation it falls back to is deliberately the same
-        # one `_workspace_identity` documents: `{}`, so `ctx.instance_id` /
-        # `ctx.network` are None exactly as during a run outside a provisioned
-        # workspace. Both preflight and real run must answer this question the
-        # same way, or a hook's `validate_config` would see an identity its own
-        # `run()` will not.
+        # and it carried the identical gap. The read fails three unrelated ways
+        # — `OSError` (the read), `UnicodeDecodeError` (a non-UTF-8 byte) and a
+        # malformed table — and before CIU-62 a non-UTF-8 record escaped here
+        # and crashed `ciu up` at STEP 12 with a raw traceback. CIU-75 moved
+        # the SOURCE to the `[ciu.instance.generated]` overlay table and the
+        # reader now normalizes all three to `WorkspaceEnvError`, so one name
+        # covers what three used to. The degradation it falls back to is
+        # deliberately unchanged: `{}`, so `ctx.instance_id` / `ctx.network`
+        # are None exactly as during a run outside a provisioned workspace.
+        # Both preflight and real run must answer this question the same way,
+        # or a hook's `validate_config` would see an identity its own `run()`
+        # will not.
+        _overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
         _hook_identity: dict = {}
         _hook_identity_unreadable = False
         try:
-            _env_path = repo_root / "ciu.env"
-            if _env_path.is_file():
-                from .workspace_env import parse_workspace_env as _parse_env
-
-                _hook_identity = _parse_env(_env_path)
-        except (OSError, UnicodeDecodeError, WorkspaceEnvError) as _identity_exc:
+            _hook_identity = read_generated_facts(repo_root)
+        except WorkspaceEnvError as _identity_exc:
             # CIU-62 review ruling — the twin of deploy._workspace_identity's
             # own warning, and it must stay a PAIR with it. The `{}`
             # degradation is deliberate (preflight and real run must answer
@@ -1549,13 +1544,18 @@ def main_execution(
             # indistinguishable from a genuinely unmanaged workspace: a hook
             # reading `ctx.instance_id is None` had no way to tell "genuinely
             # unmanaged" from "corrupt, swallowed". CIU-80: both sites now
-            # additionally set `ctx.identity_unreadable = True` here (a
-            # genuinely absent ciu.env — the `if _env_path.is_file()` guard
-            # above being False — leaves it False, its default), so a hook
+            # additionally set `ctx.identity_unreadable = True` here, so a hook
             # can branch on the distinction itself, not just read a log line.
+            # CIU-75 note: CIU-80's own version of this guard was
+            # `if _env_path.is_file()`, which called a DIRECTORY where the
+            # record belongs "absent" and so left the flag False on a path that
+            # plainly exists and cannot be read. The reader draws the line now
+            # — it returns `{}` only for a genuinely absent overlay or one with
+            # no generated table, and raises for every present-but-unreadable
+            # form — so the flag is true exactly when CIU-80 says it should be.
             print(
                 f"[WARN] [S3.12] could not read workspace identity from "
-                f"{_env_path}: {_identity_exc}. Hook context identity "
+                f"{_overlay_path}: {_identity_exc}. Hook context identity "
                 "(instance_id, network) will be None for this run — repair "
                 "with `ciu env generate`",
                 flush=True,
@@ -1573,8 +1573,11 @@ def main_execution(
                 tuple(ciu_context.get("deployed_stacks") or [])
                 if ciu_context else None
             ),
-            instance_id=_hook_identity.get("INSTANCE_ID"),
-            network=_hook_identity.get("DOCKER_NETWORK_INTERNAL"),
+            # CIU-75's renamed fact keys + CIU-80's flag. Its twin is
+            # deploy._check_hooks_for_stack's HookContext; the two must stay
+            # identical in BOTH halves (S3.12/CIU-44 pairing).
+            instance_id=_hook_identity.get("instance_id"),
+            network=_hook_identity.get("network"),
             identity_unreadable=_hook_identity_unreadable,
         )
 

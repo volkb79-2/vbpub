@@ -18,6 +18,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine  # noqa: E402
 
 
+def _write_identity_facts(root, repo_name, instance_id):
+    """CIU-75: the shipped identity project is derived from the checkout's own
+    generated `[ciu.instance.generated]` overlay table, not its `ciu.env`."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["repo_name"] = repo_name
+    facts["instance_id"] = instance_id
+    upsert_generated_facts(root, facts)
+
+
+
 def test_shipped_execution_names_identity_project_without_deploy_tags(
     tmp_path, monkeypatch, capsys
 ):
@@ -25,8 +37,9 @@ def test_shipped_execution_names_identity_project_without_deploy_tags(
     metadata, under the WORKSPACE-IDENTITY compose project.
 
     Absent ``deploy.project_name/environment_tag`` the shipped fallback
-    derives ``{REPO_NAME}-{INSTANCE_ID}-{stack}`` from THIS checkout's
-    ciu.env (parsed by exact path) and passes it explicitly as ``-p`` — the
+    derives ``{repo_name}-{instance_id}-{stack}`` from THIS checkout's
+    generated overlay facts (read by exact path) and passes it explicitly as
+    ``-p`` — the
     same function clean's S6.4a enumeration calls, so up and clean name the
     project identically by construction. The withdrawn basename fallback let
     docker derive a name identical for every checkout of the repo: it both
@@ -35,10 +48,7 @@ def test_shipped_execution_names_identity_project_without_deploy_tags(
     stack = tmp_path / "vendor-stack"  # round-trips normalization (CIU-46 guard)
     stack.mkdir()
     (stack / "vendor.yml").write_text("services: {legacy: {image: alpine:3}}\n")
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(tmp_path, "dstdns", "abc123")
     calls: list[dict] = []
     guards: list[tuple[Path, str]] = []
 
@@ -185,18 +195,12 @@ def test_shipped_prefers_checkout_own_env_root_over_ambient_repo_root(
     (stack / "docker-compose.yml").write_text("services: {}\n")
     # The linked worktree is its OWN checkout: nearest marker + own record.
     (nested / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
-    (nested / "ciu.env").write_text(
-        'export REPO_NAME="wt2repo"\nexport INSTANCE_ID="beef42"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(nested, "wt2repo", "beef42")
     # The MAIN checkout carries a different identity that must NOT be used.
     (tmp_path / "main-checkout" / "ciu.global.defaults.toml.j2").write_text(
         "[ciu]\n", encoding="utf-8"
     )
-    (tmp_path / "main-checkout" / "ciu.env").write_text(
-        'export REPO_NAME="mainrepo"\nexport INSTANCE_ID="98535c"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(tmp_path / "main-checkout", "mainrepo", "98535c")
 
     monkeypatch.delenv("REPO_ROOT", raising=False)
     monkeypatch.setenv("REPO_ROOT", str(tmp_path / "main-checkout"))  # the contamination
@@ -242,9 +246,7 @@ def test_shipped_marker_found_with_matching_ambient_is_silent(tmp_path, monkeypa
     stack.mkdir(parents=True)
     (stack / "docker-compose.yml").write_text("services: {}\n")
     (nested / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
-    (nested / "ciu.env").write_text(
-        'export REPO_NAME="wt2repo"\nexport INSTANCE_ID="beef42"\n', encoding="utf-8"
-    )
+    _write_identity_facts(nested, "wt2repo", "beef42")
     monkeypatch.setenv("REPO_ROOT", str(nested))
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "net")
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)

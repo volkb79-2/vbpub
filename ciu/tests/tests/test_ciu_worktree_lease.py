@@ -53,22 +53,27 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("ciu.env\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(
+        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+    )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
 
 
 @pytest.fixture
-def fake_generate_env(monkeypatch):
+def fake_generate_env(monkeypatch, write_instance_facts):
     def fake(path: Path, *, identity_only: bool = False) -> int:
         instance_id = hashlib.sha256(
             str(path.resolve()).encode("utf-8")
         ).hexdigest()[:6]
-        (path / "ciu.env").write_text(
-            f'export INSTANCE_ID="{instance_id}"\n'
-            f'export DOCKER_NETWORK_INTERNAL="repo-{instance_id}-network"\n',
-            encoding="utf-8",
+        write_instance_facts(
+            path,
+            instance_id=instance_id,
+            network=f"repo-{instance_id}-network",
+            repo_root=str(path),
+            physical_repo_root=str(path),
+            repo_name="repo",
         )
         return 0
 
@@ -400,20 +405,17 @@ class TestOwnRecordOperations:
         assert stored["schema_version"] == 2
         assert stored["lease"]["expires_at_utc"] == "2026-08-26T12:00:00Z"
 
-    def test_acquire_falls_back_to_the_workspaces_own_ciu_env_identity(
-        self, tmp_path, monkeypatch
+    def test_acquire_falls_back_to_the_workspaces_own_generated_identity(
+        self, tmp_path, monkeypatch, write_instance_facts
     ):
-        """An `allocating` record has no runtime identity yet; the INSTANCE_ID
-        then comes from THIS workspace's own ciu.env by exact path."""
+        """An `allocating` record has no runtime identity yet; the instance_id
+        then comes from THIS workspace's own generated overlay facts by exact
+        path (CIU-75 — no longer from its legacy `ciu.env` export)."""
         monkeypatch.setenv("DEVCONTAINER_NAME", "dev-box")
         raw = _raw_v1(tmp_path, state="allocating")
         raw["runtime"] = {"instance_id": None, "network": None}
         self._write(tmp_path, raw)
-        (tmp_path / "ciu.env").write_text(
-            'export INSTANCE_ID="fromenv"\n'
-            'export DOCKER_NETWORK_INTERNAL="n"\n',
-            encoding="utf-8",
-        )
+        write_instance_facts(tmp_path, instance_id="fromenv", network="n")
         updated = worktree.acquire_own_lease(tmp_path, ttl_hours=1, now=NOW)
         assert updated.lease.holder == "ciu@dev-box:fromenv"
 

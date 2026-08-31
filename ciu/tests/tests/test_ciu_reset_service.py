@@ -27,16 +27,25 @@ def _base_config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
+def _write_facts(root, **facts):
+    """CIU-75: instance identity lives in the checkout's generated overlay
+    table, so a fixture that wants a checkout to look provisioned writes THAT,
+    not the legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    upsert_generated_facts(root, payload)
+
+
 @pytest.fixture(autouse=True)
 def _identity_record(tmp_path):
     """CIU-46 cutover: reset's config-less down path derives its compose
-    project from THIS checkout's ciu.env (REPO_NAME/INSTANCE_ID). The shared
-    fixture omits environment_tag, so most tests here exercise that path;
-    the record lives at tmp_path (the repo_root every call below passes)."""
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    project from THIS checkout's generated overlay facts (repo_name/
+    instance_id — CIU-75 moved the source off `ciu.env`). The shared fixture
+    omits environment_tag, so most tests here exercise that path; the record
+    lives at tmp_path (the repo_root every call below passes)."""
+    _write_facts(tmp_path, repo_name="dstdns", instance_id="abc123")
 
 
 def _reset(config, stack_dir, *, repo_root=None, **kw):

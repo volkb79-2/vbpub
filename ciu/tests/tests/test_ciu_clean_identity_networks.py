@@ -125,15 +125,25 @@ class FakeDocker:
 
 @pytest.fixture(autouse=True)
 def _clean_ambient_identity(monkeypatch):
-    """This devcontainer sources a checkout's ciu.env; scrub its identity."""
+    """This devcontainer sources a checkout's legacy ciu.env export; scrub the
+    identity it leaks into this process."""
     for key in ("REPO_ROOT", "REPO_NAME", "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL"):
         monkeypatch.delenv(key, raising=False)
 
 
+def _write_facts(root, **facts):
+    """CIU-75: instance identity lives in the checkout's generated overlay
+    table, so a fixture that wants a checkout to look provisioned writes THAT,
+    not the legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    upsert_generated_facts(root, payload)
+
+
 def _instance_repo(tmp_path: Path) -> Path:
-    (tmp_path / "ciu.env").write_text(
-        'export DOCKER_NETWORK_INTERNAL="proj-abc123-network"\n', encoding="utf-8"
-    )
+    _write_facts(tmp_path, network="proj-abc123-network")
     (tmp_path / "ciu.worktree-instance.json").write_text(
         '{"schema_version": 1}\n', encoding="utf-8"
     )
@@ -142,9 +152,7 @@ def _instance_repo(tmp_path: Path) -> Path:
 
 
 def _main_repo(tmp_path: Path) -> Path:
-    (tmp_path / "ciu.env").write_text(
-        'export DOCKER_NETWORK_INTERNAL="proj-abc123-network"\n', encoding="utf-8"
-    )
+    _write_facts(tmp_path, network="proj-abc123-network")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     return tmp_path
 
@@ -522,7 +530,8 @@ def test_identity_env_parse_failure_is_indeterminate_not_no_network(
 ):
     """CIU-62 — REVERSED contract (this test previously asserted the opposite).
 
-    An UNPARSEABLE ciu.env used to read as "there is no identity network",
+    An UNPARSEABLE generated table used to read as "there is no identity
+    network",
     which is the estate's absence-for-emptiness anti-pattern with a live
     consequence: the instance's own network is then neither removed nor
     enumerated as a survivor, so `ciu clean` announces the S6.4a zero-objects
@@ -531,23 +540,28 @@ def test_identity_env_parse_failure_is_indeterminate_not_no_network(
     same treatment its sibling volume/network/container enumerations already
     give indeterminacy.
     """
-    (tmp_path / "ciu.env").write_text("this line is not an assignment\n", encoding="utf-8")
+    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+        "[ciu.instance.generated]\nnetwork = not-a-toml-value\n", encoding="utf-8"
+    )
 
     rc = _clean_with_identity_env(monkeypatch, tmp_path)
 
     assert rc == 1
     out = capsys.readouterr().out
     assert "workspace identity network unresolvable (S6.4a)" in out
-    assert "ciu.env" in out
+    assert "ciu.global.worktree.toml.j2" in out
 
 
 def test_identity_env_non_utf8_is_indeterminate_too(monkeypatch, tmp_path, capsys):
     """CIU-62 — the byte-level half. `UnicodeDecodeError` is a `ValueError`
     subclass and a SIBLING of `WorkspaceEnvError`; the pre-fix
     `except WorkspaceEnvError` caught neither it nor `OSError`, so a
-    non-UTF-8 ciu.env escaped `action_clean` as a raw traceback rather than
-    either of its two defined outcomes."""
-    (tmp_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+    non-UTF-8 record escaped `action_clean` as a raw traceback rather than
+    either of its two defined outcomes. CIU-75 moved the source to the
+    overlay and normalized all three types at the reader."""
+    (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+        b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
+    )
 
     rc = _clean_with_identity_env(monkeypatch, tmp_path)
 
@@ -560,7 +574,7 @@ def test_identity_env_absent_still_reads_as_no_network(monkeypatch, tmp_path, ca
     generate` was never run genuinely HAS no identity network. That arc must
     stay green — a refusal whose condition also matches an ordinary state is
     a superset refusal, and gets switched off."""
-    assert not (tmp_path / "ciu.env").exists()
+    assert not (tmp_path / "ciu.global.worktree.toml.j2").exists()
 
     rc = _clean_with_identity_env(monkeypatch, tmp_path)
 
@@ -589,7 +603,7 @@ def test_volume_enumeration_daemon_failure_fails_clean(monkeypatch, tmp_path, ca
 
 def test_main_workspace_kept_network_already_gone_stays_green(monkeypatch, tmp_path, capsys):
     repo_root = _main_repo(tmp_path)
-    fake = FakeDocker(networks={}, )  # identity net named in ciu.env but absent
+    fake = FakeDocker(networks={}, )  # identity net named in the overlay but absent
     rc = _run_clean(monkeypatch, repo_root, fake)
     assert rc == 0
     out = capsys.readouterr().out

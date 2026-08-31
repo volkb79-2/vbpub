@@ -13,6 +13,19 @@ from ciu import engine  # noqa: E402
 from ciu.config_constants import CIU_COMPOSE_OUTPUT, MACHINE_DIR, STACK_CONFIG_RENDERED  # noqa: E402
 
 
+def _write_identity_facts(root):
+    """CIU-75: reset's config-less down path derives its compose project from
+    the checkout's generated `[ciu.instance.generated]` overlay table, not its
+    legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["repo_name"] = "dstdns"
+    facts["instance_id"] = "abc123"
+    upsert_generated_facts(root, facts)
+
+
+
 def test_reset_stops_before_deleting_artifacts_when_docker_is_unavailable(tmp_path, monkeypatch):
     """S6.4: reset must not partially destroy state when its first daemon action fails.
 
@@ -41,10 +54,7 @@ def test_reset_stops_before_deleting_artifacts_when_docker_is_unavailable(tmp_pa
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("docker")),
     )
 
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(tmp_path)
     with pytest.raises(RuntimeError, match="docker not available for reset"):
         engine.reset_service(config, tmp_path, repo_root=tmp_path)
 

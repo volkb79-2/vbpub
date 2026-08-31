@@ -52,7 +52,9 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("ciu.env\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(
+        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+    )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
@@ -63,16 +65,20 @@ def _network_for(path: Path) -> str:
 
 
 @pytest.fixture
-def fake_generate_env(monkeypatch):
-    """Replace the real (subprocess) env generation with one that writes a
-    synthetic ciu.env carrying a deterministic INSTANCE_ID and
-    DOCKER_NETWORK_INTERNAL for the target's own physical path — no
-    docker/subprocess dependency."""
+def fake_generate_env(monkeypatch, write_instance_facts):
+    """Replace the real (subprocess) env generation with one that writes
+    synthetic `[ciu.instance.generated]` overlay facts carrying a
+    deterministic instance_id and network for the target's own physical path
+    — no docker/subprocess dependency. CIU-75: the overlay table, not
+    `ciu.env`, is what CIU reads back."""
     def fake(path: Path, **_kw) -> int:
-        (path / "ciu.env").write_text(
-            f'export INSTANCE_ID="{hashlib.sha256(str(path).encode()).hexdigest()[:6]}"\n'
-            f'export DOCKER_NETWORK_INTERNAL="{_network_for(path)}"\n',
-            encoding="utf-8",
+        write_instance_facts(
+            path,
+            instance_id=hashlib.sha256(str(path).encode()).hexdigest()[:6],
+            network=_network_for(path),
+            repo_root=str(path),
+            physical_repo_root=str(path),
+            repo_name="repo",
         )
         return 0
     monkeypatch.setattr(worktree, "_generate_env_in", fake)
@@ -207,7 +213,9 @@ class TestAddSharedInfra:
         assert f'network = "{ref_network}"' in overlay_text
         assert 'services = ["api", "worker"]' in overlay_text
         assert 'ref_projects = ["idp-dev-idp", "vault-dev-vault"]' in overlay_text
-        assert "CIU_SHARED_INFRA" not in (target / "ciu.env").read_text(encoding="utf-8")
+        # CIU-75: the intent lives in the overlay's own table, never smuggled
+        # into the legacy env export.
+        assert "CIU_SHARED_INFRA" not in overlay_text
 
     def test_success_round_trips_through_parse_shared_infra_config(
         self, tmp_repo, fake_generate_env, ref_worktree, monkeypatch
@@ -281,21 +289,24 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()  # any call would raise -- proves none happens
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         target = worktree.add(tmp_repo, "child", base="main", profile="core")
-        env_text = (target / "ciu.env").read_text(encoding="utf-8")
-        assert "CIU_SHARED_INFRA" not in env_text
+        overlay_text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        assert "shared_infra" not in overlay_text
         assert fake.calls == []
 
     def test_ref_env_missing_docker_network_internal_fails(
-        self, tmp_repo, fake_generate_env, track_git_add_calls, monkeypatch
+        self, tmp_repo, fake_generate_env, track_git_add_calls, monkeypatch,
+        write_instance_facts,
     ):
-        # A reference worktree whose ciu.env carries no network at all.
+        # A reference worktree whose generated facts carry no network at all.
         ref = worktree.add(tmp_repo, "primary-ref", base="main")
-        (ref / "ciu.env").write_text('export INSTANCE_ID="x"\n', encoding="utf-8")
+        write_instance_facts(ref, instance_id="x", network="")
         track_git_add_calls.clear()  # discard the ref's OWN legitimate add call
 
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
-        with pytest.raises(worktree.WorktreeError, match="DOCKER_NETWORK_INTERNAL"):
+        with pytest.raises(
+            worktree.WorktreeError, match="declares no generated instance network"
+        ):
             worktree.add(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
@@ -400,8 +411,8 @@ class TestAddSharedInfra:
         self, tmp_repo, track_git_add_calls, monkeypatch
     ):
         """The reference is a REAL registered worktree (e.g. `ciu env
-        generate` was never run there) with no ciu.env file at all --
-        distinct from an existing-but-unreadable or network-less one."""
+        generate` was never run there) with no generated overlay table at all
+        -- distinct from an existing-but-unreadable or network-less one."""
         res = subprocess.run(
             ["git", "worktree", "add", "-b", "primary-ref",
              str(tmp_repo / ".worktrees" / "primary-ref"), "main"],
@@ -412,7 +423,9 @@ class TestAddSharedInfra:
 
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
-        with pytest.raises(worktree.WorktreeError, match="does not exist"):
+        with pytest.raises(
+            worktree.WorktreeError, match="declares no generated instance network"
+        ):
             worktree.add(
                 tmp_repo, "child", base="main", profile="core",
                 shared_infra="primary-ref",
@@ -424,7 +437,7 @@ class TestAddSharedInfra:
 
     def test_ref_ciu_env_unreadable_fails(self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch):
         ref_path, _ref_network = ref_worktree
-        env_file = ref_path / "ciu.env"
+        env_file = ref_path / "ciu.global.worktree.toml.j2"
         env_file.chmod(0o000)
         try:
             fake = ScriptedDocker()
@@ -444,12 +457,16 @@ class TestAddSharedInfra:
     def test_ref_ciu_env_malformed_entry_fails(
         self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch
     ):
-        """CIU-62 — the reference's ciu.env EXISTS and is readable, but one
-        entry is malformed: `WorkspaceEnvError`, a `ValueError` subclass that
-        the pre-fix `except OSError` did not catch. Refusing here is the
-        whole point of this preflight (O1: no git-add, no docker call)."""
+        """CIU-62 — the reference's generated table EXISTS and is readable,
+        but one entry is malformed: `WorkspaceEnvError`, a `ValueError`
+        subclass that the pre-fix `except OSError` did not catch. Refusing
+        here is the whole point of this preflight (O1: no git-add, no docker
+        call). CIU-75 moved the source; the refusal contract is unchanged."""
         ref_path, _ref_network = ref_worktree
-        (ref_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        (ref_path / "ciu.global.worktree.toml.j2").write_text(
+            "[ciu.instance.generated]\nnetwork = not-a-toml-value\n",
+            encoding="utf-8",
+        )
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
@@ -469,7 +486,9 @@ class TestAddSharedInfra:
         of `WorkspaceEnvError` under `ValueError`. Neither name alone covers
         it, and `OSError` covers neither."""
         ref_path, _ref_network = ref_worktree
-        (ref_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+        (ref_path / "ciu.global.worktree.toml.j2").write_bytes(
+            b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
+        )
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
@@ -883,8 +902,8 @@ class TestConnectSharedInfraAfterUp:
 
     def test_ref_ciu_env_missing_at_post_up_fails(self, tmp_repo, monkeypatch):
         """The reference is registered (real `git worktree add`) but its
-        ciu.env does not exist -- distinct from an unreadable or
-        network-less one."""
+        generated overlay table does not exist -- distinct from an unreadable
+        or network-less one."""
         res = subprocess.run(
             ["git", "worktree", "add", "-b", "primary-ref",
              str(tmp_repo / ".worktrees" / "primary-ref"), "main"],
@@ -899,13 +918,13 @@ class TestConnectSharedInfraAfterUp:
         )
         fake = ScriptedDocker()
         monkeypatch.setattr(worktree.procutil, "docker", fake)
-        with pytest.raises(worktree.WorktreeError, match="does not exist"):
+        with pytest.raises(worktree.WorktreeError, match="reference network changed"):
             worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
         assert fake.calls == []
 
     def test_ref_ciu_env_unreadable_at_post_up_fails(self, tmp_repo, ref_worktree, monkeypatch):
         ref_path, ref_network = ref_worktree
-        env_file = ref_path / "ciu.env"
+        env_file = ref_path / "ciu.global.worktree.toml.j2"
         env_file.chmod(0o000)
         try:
             intent = worktree.SharedInfraIntent(
@@ -928,7 +947,10 @@ class TestConnectSharedInfraAfterUp:
         the join's own "has the reference's network changed?" guard could be
         skipped by a traceback rather than answered."""
         ref_path, ref_network = ref_worktree
-        (ref_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        (ref_path / "ciu.global.worktree.toml.j2").write_text(
+            "[ciu.instance.generated]\nnetwork = not-a-toml-value\n",
+            encoding="utf-8",
+        )
         intent = worktree.SharedInfraIntent(
             ref_path=ref_path, network=ref_network,
             services=("api",), ref_projects=("idp-dev-idp",),
@@ -942,7 +964,9 @@ class TestConnectSharedInfraAfterUp:
     def test_ref_ciu_env_non_utf8_at_post_up_fails(self, tmp_repo, ref_worktree, monkeypatch):
         """CIU-62 — and the non-UTF-8 byte (`UnicodeDecodeError`)."""
         ref_path, ref_network = ref_worktree
-        (ref_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+        (ref_path / "ciu.global.worktree.toml.j2").write_bytes(
+            b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
+        )
         intent = worktree.SharedInfraIntent(
             ref_path=ref_path, network=ref_network,
             services=("api",), ref_projects=("idp-dev-idp",),
@@ -1141,16 +1165,20 @@ def _write_ref_global(ref_path: Path, *, port: int | None = 8200) -> None:
 
 
 @pytest.fixture
-def ref_instance(tmp_repo, fake_generate_env):
-    """Reference instance A: a registered worktree whose OWN ciu.env pins
-    INSTANCE_ID=aaaaaa, so its own rendered config derives
-    `dstdns-aaaaaa-<service>`."""
+def ref_instance(tmp_repo, fake_generate_env, write_instance_facts):
+    """Reference instance A: a registered worktree whose OWN generated overlay
+    facts pin instance_id=aaaaaa, so its own rendered config derives
+    `dstdns-aaaaaa-<service>` (CIU-75: those facts, not `ciu.env`, are what
+    the reference's chain renders against)."""
     path = worktree.add(tmp_repo, "primary-ref", base="main")
     network = _network_for(path)
-    (path / "ciu.env").write_text(
-        f'export INSTANCE_ID="{REF_TAG}"\n'
-        f'export DOCKER_NETWORK_INTERNAL="{network}"\n',
-        encoding="utf-8",
+    write_instance_facts(
+        path,
+        instance_id=REF_TAG,
+        network=network,
+        repo_root=str(path),
+        physical_repo_root=str(path),
+        repo_name="repo",
     )
     _write_ref_global(path)
     return path, network
@@ -1372,11 +1400,35 @@ class TestRefServicesAddTimeResolution:
             _add_child(tmp_repo, "vault")
         assert track_git_add_calls == []
 
-    def test_reference_with_no_global_config_at_all_refuses(
+    def test_reference_with_no_deploy_identity_refuses(
         self, tmp_repo, ref_instance, track_git_add_calls, monkeypatch
     ):
+        """A reference carrying no committed global config still renders (its
+        gitignored overlay alone is a legal chain layer since CIU-60), but it
+        then names no `deploy.project_name`, so no reference container can be
+        derived — a loud refusal before any git mutation, never a guess."""
         ref_path, ref_network = ref_instance
         (ref_path / "ciu.global.defaults.toml.j2").unlink()
+        track_git_add_calls.clear()
+        monkeypatch.setattr(worktree.procutil, "docker", _add_fake(ref_network))
+
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="could not resolve reference service 'vault'",
+        ):
+            _add_child(tmp_repo, "vault")
+        assert track_git_add_calls == []
+
+    def test_reference_whose_own_chain_cannot_render_refuses(
+        self, tmp_repo, ref_instance, track_git_add_calls, monkeypatch
+    ):
+        """The render arm itself: a reference whose committed template is not
+        parseable TOML fails at `render_global_chain`, and that failure is
+        reported as the reference's own, not silently swallowed."""
+        ref_path, ref_network = ref_instance
+        (ref_path / "ciu.global.defaults.toml.j2").write_text(
+            "[deploy\nproject_name = ", encoding="utf-8"
+        )
         track_git_add_calls.clear()
         monkeypatch.setattr(worktree.procutil, "docker", _add_fake(ref_network))
 
@@ -1468,6 +1520,10 @@ class TestRefServicesBackwardCompatibility:
         )
         text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
 
+        # CIU-75: `ciu env generate` also upserts its own CIU-owned identity
+        # table into this same file (it has since CIU-60), so the byte
+        # comparison covers the four-line pre-CIU-52 shape PLUS that table —
+        # what the shipped code path actually produces end to end.
         assert text == (
             "# Worktree-local sparse global override (S3.1b / S16).\n"
             "# Durable configuration: preserved by `ciu clean` and `ciu env generate`.\n"
@@ -1479,6 +1535,17 @@ class TestRefServicesBackwardCompatibility:
             f'network = "{ref_network}"\n'
             'services = ["api"]\n'
             'ref_projects = ["idp-dev-idp"]\n'
+            "\n"
+            "[ciu.instance.generated]\n"
+            "# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.\n"
+            "# Do NOT hand-edit keys in THIS table — edits here are silently\n"
+            "# overwritten. Every OTHER byte of this file is yours and is preserved.\n"
+            'repo_name = "repo"\n'
+            f'instance_id = "{hashlib.sha256(str(target).encode()).hexdigest()[:6]}"\n'
+            f'network = "{_network_for(target)}"\n'
+            f'physical_repo_root = "{target}"\n'
+            f'repo_root = "{target}"\n'
+            'public_fqdn = ""\n'
         )
         assert without.calls == [
             ["network", "inspect", ref_network],
@@ -1902,7 +1969,7 @@ class TestRefServicesMergeOrder:
         This is the end-to-end proof that the block CIU writes is the value
         `secrets/providers.py` will actually read."""
         from ciu import config_model
-        from ciu.workspace_env import parse_workspace_env
+        from ciu.workspace_env import read_instance_identity_env
 
         ref_path, ref_network = ref_instance
         _write_ref_global(ref_path, port=None)  # the reference declares no port
@@ -1921,7 +1988,7 @@ class TestRefServicesMergeOrder:
 
         merged = config_model.render_global_chain(
             target, target, write_rendered=False,
-            environ=parse_workspace_env(target / "ciu.env"),
+            environ=read_instance_identity_env(target),
         )
         assert merged["topology"]["services"]["vault"] == {
             "internal_host": REF_VAULT,   # overlay wins

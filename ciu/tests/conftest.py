@@ -32,6 +32,8 @@ calls compose normally afterward, in fixture-then-test-body order.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 _AMBIENT_ENV_VARS = (
@@ -51,3 +53,27 @@ def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear ambient identity/policy env vars before each test body runs."""
     for name in _AMBIENT_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def write_instance_facts():
+    """Write a checkout's ``[ciu.instance.generated]`` overlay facts (CIU-75).
+
+    The post-cutover stand-in for the many fixtures that used to fabricate a
+    ``ciu.env``: since ciu 7.7.0 CIU reads instance identity ONLY from that
+    overlay table, so a test that wants a directory to look like a provisioned
+    CIU instance writes it here instead. Goes through the shipped writer
+    (``upsert_generated_facts``) rather than hand-rolled TOML, so a fixture can
+    never encode a block shape the product would not itself produce.
+
+    Unspecified facts default to ``""`` — the same shape ``ciu env generate``
+    writes for a fact it could not derive (an FQDN-less workspace).
+    """
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    def _write(ciu_root: Path | str, **facts: str) -> Path:
+        payload = {key: "" for key in GENERATED_FACTS_KEYS}
+        payload.update(facts)
+        return upsert_generated_facts(Path(ciu_root), payload)
+
+    return _write

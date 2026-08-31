@@ -131,6 +131,25 @@ def _write_ciu_env(tmp_path: Path) -> None:
         )
     ) + "\n"
     (tmp_path / "ciu.env").write_text(body)
+    # CIU-75: the identity CIU actually reads back is the overlay's generated
+    # table; `ciu.env` stays as the legacy export the same generate writes.
+    _upsert_identity_facts(tmp_path)
+
+
+def _upsert_identity_facts(tmp_path: Path) -> None:
+    from ciu.workspace_env import upsert_generated_facts
+
+    upsert_generated_facts(
+        tmp_path,
+        {
+            "repo_name": os.environ["REPO_NAME"],
+            "instance_id": os.environ["INSTANCE_ID"],
+            "network": os.environ["DOCKER_NETWORK_INTERNAL"],
+            "physical_repo_root": os.environ["PHYSICAL_REPO_ROOT"],
+            "repo_root": os.environ["REPO_ROOT"],
+            "public_fqdn": "",
+        },
+    )
 
 
 def _write_worktree_overlay(
@@ -143,6 +162,10 @@ def _write_worktree_overlay(
     else:
         return
     (tmp_path / "ciu.global.worktree.toml.j2").write_text(body)
+    # This helper writes the overlay WHOLESALE, so re-upsert the CIU-owned
+    # identity table `_write_ciu_env` put there (CIU-75) — a real checkout
+    # carries both, in exactly this order.
+    _upsert_identity_facts(tmp_path)
 
 
 def _write_native_repo(

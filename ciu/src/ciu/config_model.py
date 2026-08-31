@@ -242,8 +242,8 @@ def expand_env_vars_or_fail(
     value is correctly treated as part of the value, not as a comment delimiter.
 
     *environ* (S16.3): when given, expansion consults ONLY this mapping —
-    never ``os.environ`` — so a candidate worktree's own ``ciu.env`` can be
-    rendered without leaking the caller's ambient process environment. ``None``
+    never ``os.environ`` — so a candidate worktree's own identity can be
+    rendered without leaking the caller's ambient identity. ``None``
     (the default) preserves every existing caller's behaviour exactly.
     """
     env_source: Mapping[str, str] = os.environ if environ is None else environ
@@ -285,8 +285,8 @@ def expand_env_vars_or_fail(
         missing_list = ", ".join(sorted(missing))
         raise ValueError(
             f"[ERROR] Missing required environment values in {source}: {missing_list}.\n"
-            "[ERROR] ciu.env is authoritative. Run 'ciu env generate' "
-            "and source ciu.env before running CIU."
+            "[ERROR] Run 'ciu env generate', then export the values with "
+            "'eval \"$(ciu env print)\"' before running CIU."
         )
 
     return expanded
@@ -451,7 +451,7 @@ def _make_render_context(
     *environ* (S16.3): when given, the Jinja ``env`` context is built from this
     mapping instead of ``os.environ`` — the same override *environ* must also
     be threaded to :func:`render_toml_template` so a candidate worktree's
-    template never mixes its own ``ciu.env`` with the caller's ambient
+    template never mixes its own identity with the caller's ambient
     environment. ``None`` (the default) preserves the existing behaviour.
 
     *ciu_context* (S3.12 / CIU-44): deployment-selection facts
@@ -584,7 +584,7 @@ def render_global_chain(
     caller's behaviour — every template in the chain renders against
     ``os.environ`` for both the Jinja ``env`` context and ``$VAR`` expansion.
     A supplied mapping is used for BOTH in its place at every template in the
-    chain, so a worktree candidate's own ``ciu.env`` can be rendered without
+    chain, so a worktree candidate's own identity can be rendered without
     ever consulting the calling process's ambient environment.
     """
     working_dir = Path(working_dir).resolve()

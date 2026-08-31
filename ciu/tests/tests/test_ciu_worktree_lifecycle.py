@@ -117,8 +117,8 @@ def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SKIP_DEPENDENCY_CHECK", "1")
     monkeypatch.setenv("CIU_SKIP_DOOD_PREFLIGHT", "1")
     # The CIU-41 trap, armed on purpose: the AMBIENT identity disagrees with
-    # what this workspace's own ciu.env says. Any label that ends up carrying
-    # these values was read from the wrong place.
+    # what this workspace's own generated overlay facts say. Any label that
+    # ends up carrying these values was read from the wrong place.
     monkeypatch.setenv("INSTANCE_ID", "ambient-wrong")
 
 
@@ -127,6 +127,10 @@ def _write_repo(
 ) -> Path:
     _base_env(tmp_path, monkeypatch)
     (tmp_path / "ciu.global.defaults.toml.j2").write_text(GLOBAL_DEFAULTS)
+    # Both outputs of a real `ciu env generate`: the legacy `ciu.env` export
+    # (still what `bootstrap_workspace_env` treats as "already generated") and
+    # the overlay's generated table, which since CIU-75 is the identity CIU
+    # actually reads back.
     (tmp_path / "ciu.env").write_text(
         "\n".join(
             f'export {key}="{os.environ[key]}"'
@@ -136,6 +140,19 @@ def _write_repo(
             )
         )
         + f'\nexport INSTANCE_ID="{WORKSPACE_INSTANCE_ID}"\n'
+    )
+    from ciu.workspace_env import upsert_generated_facts
+
+    upsert_generated_facts(
+        tmp_path,
+        {
+            "repo_name": "repo",
+            "instance_id": WORKSPACE_INSTANCE_ID,
+            "network": os.environ["DOCKER_NETWORK_INTERNAL"],
+            "physical_repo_root": os.environ["PHYSICAL_REPO_ROOT"],
+            "repo_root": os.environ["REPO_ROOT"],
+            "public_fqdn": "",
+        },
     )
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
     if managed:
@@ -197,14 +214,14 @@ class TestOwnershipLabelResolution:
         assert engine.OWNERSHIP_LABEL_INSTANCE == "ciu.instance"
         assert engine.OWNERSHIP_LABEL_REPO_ROOT == "ciu.repo-root"
 
-    def test_a_managed_instance_with_an_identity_less_ciu_env_refuses(
-        self, tmp_path, monkeypatch
+    def test_a_managed_instance_with_an_identity_less_overlay_refuses(
+        self, tmp_path, monkeypatch, write_instance_facts
     ):
         """Guessing an owner is worse than not labeling: a mislabeled
         container attributes one instance's resources to another's root."""
         _write_repo(tmp_path, monkeypatch, managed=True)
-        (tmp_path / "ciu.env").write_text('export REPO_ROOT="/x"\n')
-        with pytest.raises(ValueError, match=r"\[S16.9\].*INSTANCE_ID"):
+        write_instance_facts(tmp_path, repo_root="/x")
+        with pytest.raises(ValueError, match=r"\[S16.9\].*instance_id"):
             engine.workspace_ownership_labels(tmp_path)
 
 

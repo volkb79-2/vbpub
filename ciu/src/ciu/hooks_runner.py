@@ -99,20 +99,29 @@ class HookContext:
     (declaration order, deduped); None outside a deployment render."""
 
     instance_id: str | None = None
-    """S3.12 / CIU-44: this workspace's INSTANCE_ID from its own ciu.env
-    (exact path), when present — hooks no longer need to re-parse the
-    identity record or trust ambient state."""
+    """S3.12 / CIU-44: this workspace's generated ``instance_id``, read by
+    exact path from its own ``[ciu.instance.generated]`` overlay table
+    (CIU-75), when present — hooks no longer need to re-parse the identity
+    record or trust ambient state."""
 
     network: str | None = None
-    """S3.12 / CIU-44: this workspace's DOCKER_NETWORK_INTERNAL from its own
-    ciu.env (exact path), when present."""
+    """S3.12 / CIU-44: this workspace's generated ``network``, read by exact
+    path from its own ``[ciu.instance.generated]`` overlay table (CIU-75),
+    when present."""
 
     identity_unreadable: bool = False
-    """S3.12 / CIU-80: True when this workspace's ``ciu.env`` is PRESENT but
-    could not be read/parsed (an ``OSError``, ``UnicodeDecodeError`` or
-    ``WorkspaceEnvError`` while reading it) — distinct from a genuinely
-    ABSENT ``ciu.env`` (no ``ciu env generate`` has run here yet), which
-    leaves this ``False`` with ``instance_id``/``network`` also ``None``.
+    """S3.12 / CIU-80: True when this workspace's identity record — since
+    CIU-75 the ``[ciu.instance.generated]`` table in
+    ``ciu.global.worktree.toml.j2``, no longer ``ciu.env`` — is PRESENT but
+    could not be read/parsed (an ``OSError``, a non-UTF-8 byte, malformed
+    TOML, or a non-string fact; the reader normalizes all of them to
+    ``WorkspaceEnvError``) — distinct from a genuinely ABSENT record, or an
+    overlay carrying no generated table (no ``ciu env generate`` has run here
+    yet), which leaves this ``False`` with ``instance_id``/``network`` also
+    ``None``. CIU-75 also made the boundary honest in CIU-80's favour: a
+    DIRECTORY where the record belongs used to answer "absent" through an
+    ``is_file()`` guard, leaving this ``False`` on a path that plainly exists
+    and cannot be read.
     Both identity readers — ``deploy._workspace_identity`` (the ``ciu
     check`` preflight) and ``engine.main_execution``'s STEP-12 real-run read
     — degrade an unreadable record to the same ``{}`` (so ``instance_id``/
