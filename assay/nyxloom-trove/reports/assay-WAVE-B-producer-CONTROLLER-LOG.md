@@ -149,3 +149,44 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   with full file:line evidence before dispatching the fix-round
   implementer, since this notification only gave one-line summaries of the
   blocker and two of the must-fixes.
+
+- **2026-08-31 (review round 1 — complete verdict received)** — Reviewer's
+  full text confirms round 1 is DONE (ACCEPT-conditional, not REJECT; no
+  separate "must-fix 1", the blocker IS item 1). Precise findings, all
+  independently reproduced by the reviewer through the real CLI or direct
+  probes: **BLOCKER 1** — `cwd`(B043) + `link_paths`(B041b) compose into a
+  real snapshot escape (`runner.py:1782`'s `is_dir()` follows the symlink
+  `isolation.py:730` plants, so an untracked directory reads as
+  commit-bound; the lane then runs against and writes into the consumer's
+  actual working tree — reproduced twice via `assay run`, with a clean
+  control proving it's the composition, not either key alone). **MUST-FIX
+  2** — three shipped v9 schema descriptions (`schema.json:2683/1500/1515`)
+  falsely claim a raw-verifier check that doesn't exist; W5 is byte-frozen
+  so this needs a real fix + W5 regeneration, not just prose. **MUST-FIX
+  3** — `judgment.r2.producer` has no closed raw vocabulary
+  (`verify.py:624,735`); any spelling but exact `"ingested"` silently
+  routes to the native branch (schema-layer catches it end-to-end, so not
+  exploitable, but a layer-independence violation). **MUST-FIX 4** —
+  `SUPPORTED_REPORT_SCHEMA_MAJORS` (`mutation_report_json.py:65`) admits
+  major `"2"` with zero witness, contradicting its own docstring.
+  **MUST-FIX 5** — REPORT §14 records a gate PASS typed before the run
+  existed (moot as fact, gate genuinely green — the reviewer independently
+  re-ran it — but the report must say what was observed); two more §11
+  citation errors. **MUST-FIX 6** — a stale `adapters/javascript.py`
+  docstring still calls B037 open. Reviewer verified extensively what does
+  NOT need re-litigating (full list in its transcript) — the fix round
+  should not re-touch any of it.
+  **Controller decisions, resolved (routine, not paused on):** (1) note 1
+  — `judgment.r2.discarded` unwitnessed (accepts a materially misleading
+  value) — file as **B052**, don't build, same file-don't-build pattern as
+  B049/B050/B051; (2) note 2 — the 5th `cwd` join at `runner.py:2945-2948`
+  bypassing `resolve_run_cwd` — fold into the BLOCKER 1 fix since it's the
+  same seam and A-367 already establishes "one path grammar, nothing else
+  re-roots"; (3) note 4 — no ingested-R2 fixture in W5's acceptance corpus
+  — add one while W5 is being regenerated for MUST-FIX 2 anyway; (4) note
+  6 — report citation errors — bundle into MUST-FIX 5's report rewrite;
+  (5) notes 3 and 5 (lexer `type (x)` fail-open, no `maxLength` on the
+  ingested operator pattern) — both explicitly "cosmetic"/"pathological"
+  per the reviewer, acknowledge in the REPORT, do not chase a fix. Next
+  free decisions.md row: A-384. Dispatching a fresh fix-round implementer
+  now, seeded with the complete verdict text.
