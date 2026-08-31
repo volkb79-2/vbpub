@@ -93,7 +93,7 @@ that reads neither record.
 
 ---
 
-## Entry 2 — `<see REPORT>` — `docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; mark CIU-75 FIXED, file CIU-82`
+## Entry 2 — `788908e2` — `docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; CIU-75 FIXED, CIU-82 filed`
 
 **What it did.** The docs half, which AGENTS.md makes part of the change, not
 a follow-up.
@@ -133,5 +133,10 @@ that is outside this worktree's scope, and estate convention files a
 consumer-side finding in the consumer's backlog. CIU-82 exists so the
 notification is not lost between repos.
 
-**Gate at this commit:** see the REPORT for the verbatim verdict and the
-`.assay/verdict-ciu.json` contents confirming the commit hash.
+**Gate at this commit:** `./run-gate.py ciu --worktree
+/workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2` → `ciu: PASS (exit 0)`,
+`run-gate: lane 'ciu' exit 0`, `GATE_EXIT=0`, with
+`.assay/verdict-ciu.json`'s `"commit"` equal to `788908e2c94956abd37dd0ed8b6ef4b89cc77e62`
+== HEAD. No baseline/comparison gate was run at any point in this package, so
+nothing could have overwritten that artifact. Verbatim verdict and full
+artifact in `ciu-P42-REPORT.md` §6.
