@@ -42,10 +42,33 @@ so `source ciu.env` and `eval "$(ciu env print)"` both keep working. What
 changed is that CIU itself no longer reads the file, so `ciu.env` and CIU's
 own view of your instance can now disagree — and only one of them is right.
 
+**Action needed if you EXPORT any of the six identity variables to steer a
+run** (`REPO_NAME`, `INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`,
+`PHYSICAL_REPO_ROOT`, `REPO_ROOT`, `PUBLIC_FQDN`). They no longer win: every
+verb now seeds them into its own environment from the record, overwriting what
+your shell had. That is the fix for the sibling-checkout leak (see the CIU-75
+entry below), and it means the way to change identity is `ciu env generate`
+(which still honors a consistent pre-set value) or the table itself.
+
+**Action needed if you have worktrees created before 7.7.0 and use
+`ciu worktree reap`.** A checkout with no `[ciu.instance.generated]` table is
+no longer disposed of via `ciu clean` — reap falls through to a bare
+`docker rm` (+ volume/network removal), which leaves `vol-*` hostdirs on disk.
+It is not a refusal, and it now says so in that group's notes. `ciu env
+generate` once in each such checkout restores full `clean` delegation.
+
 **Safe to ignore if:** you only ever `source ciu.env` (or `eval "$(ciu env
 print)"`) in a shell and let CIU do the rest. You will see one new `[WARN]`
 line per `ciu env generate` and per `ciu env`; that is the one-release notice,
-not an error, and it does not change any exit code.
+not an error, and it does not change any exit code. Machine facts
+(`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`, `PUBLIC_IP`, `PUBLIC_TLS_*`, …)
+are untouched by all of this — they are properties of the host, not of the
+instance, and still come from the environment/file as before.
+
+**`ciu check --json` consumers: nothing to do, and that is deliberate.** The
+deprecation notice is on **stderr** whenever a regeneration happens inside
+another verb's startup, so it can never land ahead of the JSON document. Only
+the `ciu env generate` you type announces on stdout.
 
 **One thing to check either way:** `ciu.global.worktree.toml.j2` must be in
 your `.gitignore`. It has been the durable local-config file since S3.1b and
@@ -111,6 +134,55 @@ ownership labels, and `ciu env generate` is what puts it back.
     the reader, so no call site has to re-derive that `UnicodeDecodeError` and
     `WorkspaceEnvError` are sibling `ValueError` subclasses and that neither
     covers `OSError`. Every site's refuse-or-degrade contract is unchanged.
+- feat(ciu)!: **CIU-75 — STEP 1 of every verb now seeds the process
+  environment from the record, OVERRIDING what it inherited** (SPEC S3.1c
+  clause 2a, ciu-P42 review round 1). Moving the twelve per-checkout reads was
+  not the whole cutover, and the half that was missing was the one that bit:
+  `bootstrap_workspace_env` still seeded `os.environ` from `ciu.env`, and
+  ~26 internal sites — plus every `$DOCKER_NETWORK_INTERNAL` in a rendered
+  template — read those values straight from ambient. Because the seed skipped
+  keys that were already present, **a shell that had sourced a SIBLING
+  checkout's `ciu.env` won**: `deploy.network_name` rendered as the sibling's
+  network and containers joined it. No corruption and no hand-editing were
+  needed to reproduce it — sourcing another checkout's export was enough,
+  which is the CIU-41 hazard arriving through the one door a per-site cutover
+  cannot close. Now:
+  - the six identity keys are written into `os.environ` from
+    `[ciu.instance.generated]` unconditionally, not "where absent"
+    (`adopt_file_identity`, which only did this after a generate in the same
+    run, is removed — it could not help on the common path);
+  - `ciu.env` is still read at startup for the MACHINE facts only, by EXACT
+    path (never a walk an ambient `REPO_ROOT` can redirect), and that read can
+    no longer abort a verb: an `OSError`, a non-UTF-8 byte or a malformed
+    entry is a WARN naming `ciu env generate` — previously a corrupt export
+    crashed `ciu up` with a raw `UnicodeDecodeError` from the first statement
+    of the run, the four bootstrap reads never having received CIU-62's
+    three-exception treatment;
+  - a checkout whose overlay carries no generated table is REPAIRED
+    (regenerated) rather than refused, exactly as an absent `ciu.env` has
+    always been regenerated.
+
+  **Breaking, and deliberately so:** exporting one of the six no longer
+  overrides a run. `ciu env generate` — which still honors a pre-set value
+  when it agrees with what it derives (S2.7) — is how identity changes.
+- fix(ciu): **CIU-75 — the deprecation notice no longer breaks
+  `ciu check --json`** (SPEC S3.1c clause 3, ciu-P42 review round 1).
+  `generate_ciu_env` announced the demotion on stdout, and `deploy._run` —
+  `ciu check`'s own entry point, `--json` included — calls the bootstrap as
+  its FIRST statement, which regenerates `ciu.env` when it is absent. A
+  consumer that followed this release's own migration advice therefore got a
+  `[WARN]` line ahead of the JSON document and every machine parse broke. The
+  notice is routed to stderr on any bootstrap-triggered regeneration; the
+  `ciu env generate` an operator types still announces on stdout.
+- feat(ciu)!: **CIU-75 — `ciu worktree reap` says when it could not delegate
+  to `ciu clean`** (SPEC S16.10 step 2, ciu-P42 review round 1). The
+  delegation test moved from "`ciu.env` is readable" to "the generated table
+  is present" along with the source. Answering no is NOT a refusal — the reap
+  falls through to a bare `docker rm` + volume/network removal, which leaves
+  every `vol-*` hostdir on disk. That path is unchanged but no longer silent:
+  when the checkout still exists, the group's notes name it and name the
+  `ciu env generate` + `ciu clean` repair. A teardown that quietly leaves data
+  behind is worse than one that refuses.
 - feat(ciu): **CIU-75 x CIU-80 — `ctx.identity_unreadable` is now about the
   overlay's generated table, and its absent-vs-unreadable line finally means
   what it says** (ciu-P42 rebased onto ciu-P43). CIU-80 (shipping in this same

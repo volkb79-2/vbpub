@@ -2675,6 +2675,13 @@ def _reap_uses_clean(group: Mapping[str, Any]) -> bool:
     refuse. Presence, not readability: a present-but-corrupt table still
     answers True here so `_clean_in` refuses loudly, rather than this
     predicate quietly demoting indeterminacy to a bare docker removal.
+
+    **What False actually costs, stated because it is not a refusal.** The
+    caller falls through to `docker rm -f` + volume/network removal. That
+    disposes of the docker resources and NOTHING else: no hostdir removal, no
+    root-helper path, so `vol-*` data stays on disk. `_reap_one_group` says so
+    in its notes when the checkout still exists — a reap that quietly leaves
+    data behind is worse than one that refuses, and it must not be silent.
     """
     from .workspace_env import has_generated_facts
 
@@ -2755,6 +2762,24 @@ def _reap_one_group(
                 "second-guess it with a bare docker removal"
             )
         return [f"cleaned in {group['ciu_root']}"], ""
+
+    # CIU-75, review round 1: say so when a checkout that STILL EXISTS is being
+    # disposed of the blunt way. `_reap_uses_clean` answering False sends this
+    # group down the bare-docker path — it does not refuse — so hostdir removal
+    # and the root-helper never run and `vol-*` data stays on disk. Before the
+    # cutover that happened to a checkout with no `ciu.env`; now it happens to
+    # one with no generated table, which is a state an upgrade can produce.
+    # Silence here is the estate's own "data left on disk, nobody told" defect.
+    _reap_root = group.get("ciu_root")
+    if _reap_root and Path(str(_reap_root)).is_dir():
+        from .workspace_env import GENERATED_FACTS_HEADER
+
+        notes.append(
+            f"{_reap_root} has no {GENERATED_FACTS_HEADER} table, so `ciu clean` "
+            "could not run there: docker resources were removed directly and "
+            "hostdir/root-helper cleanup did NOT run. Run `ciu env generate` in "
+            "that checkout and `ciu clean` if vol-* data remains."
+        )
 
     removed_ids = {c["id"] for c in group["containers"]}
     if group["containers"]:

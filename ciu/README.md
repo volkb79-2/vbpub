@@ -126,9 +126,15 @@ its six identity facts — `repo_name`, `instance_id`, `network`,
 `physical_repo_root`, `repo_root`, `public_fqdn` — into
 `ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, and that
 table is now the **only** record CIU itself reads them from. `ciu.env` is
-still written, with the identical key set, purely so a shell can `source` it;
-nothing inside CIU reads it back. If you have tooling that PARSES `ciu.env`
-(rather than sourcing it), see
+still written, with the identical key set, so a shell can `source` it; no
+identity fact is read back from it. Every verb also **seeds those six
+variables into its own environment from the table, overwriting whatever your
+shell exported** — that is what stops a sibling checkout's sourced `ciu.env`
+from steering this one, and it means `ciu env generate` (or the table itself),
+not an `export`, is how identity changes. The machine facts `ciu.env` also
+carries (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`, `PUBLIC_TLS_*`, …) are
+unaffected. If you have tooling that PARSES `ciu.env` (rather than sourcing
+it), see
 [docs/CONSUMERS.md §11b](docs/CONSUMERS.md) for the migration, and
 [docs/SPEC.md S3.1c](docs/SPEC.md) for why the source of truth moved.
 

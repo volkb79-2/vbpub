@@ -13,15 +13,20 @@ from ciu.workspace_env import bootstrap_workspace_env  # noqa: E402
 
 
 def test_define_root_replaces_stale_workspace_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
     """``--define-root`` loads its chosen repo, not inherited shell state.
 
     A shell can retain ``REPO_ROOT`` and related identity values from a
     previously sourced workspace.  An explicit root is the user's unambiguous
-    selection, so its committed ``ciu.env`` must replace those values; merely
-    preserving the inherited values would render/deploy against the wrong
-    repository.
+    selection, so ITS records must replace those values; merely preserving the
+    inherited values would render/deploy against the wrong repository.
+
+    CIU-75 splits which record answers for what, and the fixture says so on
+    purpose: the chosen root's OVERLAY carries the identity (and the values
+    below are deliberately different from the ones its stale `ciu.env` still
+    carries, so a regression to the file is visible here), while `ciu.env`
+    keeps carrying the machine facts.
     """
     selected = tmp_path / "selected"
     selected.mkdir()
@@ -29,15 +34,21 @@ def test_define_root_replaces_stale_workspace_identity(
     (selected / "ciu.env").write_text(
         "\n".join(
             [
-                "REPO_ROOT=/chosen/repo",
-                "PHYSICAL_REPO_ROOT=/host/chosen/repo",
-                "DOCKER_NETWORK_INTERNAL=chosen-network",
+                "REPO_ROOT=/legacy/file/repo",
+                "PHYSICAL_REPO_ROOT=/host/legacy/file/repo",
+                "DOCKER_NETWORK_INTERNAL=legacy-file-network",
                 "CONTAINER_UID=1001",
                 "DOCKER_GID=1002",
             ]
         )
         + "\n",
         encoding="utf-8",
+    )
+    write_instance_facts(
+        selected,
+        repo_root="/chosen/repo",
+        physical_repo_root="/host/chosen/repo",
+        network="chosen-network",
     )
     monkeypatch.setenv("REPO_ROOT", "/stale/repo")
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/host/stale/repo")

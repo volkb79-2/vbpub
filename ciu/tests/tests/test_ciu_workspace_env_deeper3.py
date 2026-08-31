@@ -58,20 +58,25 @@ def test_failed_docker_inspect_never_exports_tmp_source(
 
 
 def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
-    """Generated identity drives the network step, which precedes the TLS probe."""
+    """Generated identity drives the network step, which precedes the TLS probe.
+
+    CIU-75: the stub writes BOTH records because the real `generate_ciu_env`
+    does — identity into the overlay table (which is what bootstrap now seeds
+    the network step from) and the machine facts into `ciu.env`.
+    """
     env_path = tmp_path / "ciu.env"
     events: list[tuple[str, str | None]] = []
 
     def generate(root: Path) -> Path:
         assert root == tmp_path
         env_path.write_text(
-            'export DOCKER_NETWORK_INTERNAL="generated-net"\n'
             'export PUBLIC_TLS_CRT_PEM="/cert"\n'
             'export PUBLIC_TLS_KEY_PEM="/key"\n',
             encoding="utf-8",
         )
+        write_instance_facts(root, network="generated-net")
         events.append(("generate", None))
         return env_path
 
@@ -89,14 +94,22 @@ def test_bootstrap_env_init_reloads_generated_network_then_probes_tls(
 
 
 def test_bootstrap_env_init_generated_identity_beats_inconsistent_caller_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
-    """CIU-41 / S2.7: after a generate in the same run, the FILE's derived
-    identity outranks an inconsistent ambient value for the network step —
-    the pre-2026-08 behavior (ambient 'caller-net' silently winning over the
-    just-written record) is the masked default CIU-41 withdrew."""
+    """CIU-41 / S2.7: after a generate in the same run, the derived RECORD
+    outranks an inconsistent ambient value for the network step — the
+    pre-2026-08 behavior (ambient 'caller-net' silently winning over the
+    just-written record) is the masked default CIU-41 withdrew.
+
+    CIU-75 makes this a three-way oracle, because there are now three
+    candidates and only one may win: ambient says ``caller-net``, the legacy
+    export says ``legacy-file-net``, and the overlay — the only identity
+    source since 7.7.0 — says ``generated-net``. A regression toward EITHER of
+    the other two is visible here.
+    """
     env_path = tmp_path / "ciu.env"
-    env_path.write_text('DOCKER_NETWORK_INTERNAL="generated-net"\n', encoding="utf-8")
+    env_path.write_text('DOCKER_NETWORK_INTERNAL="legacy-file-net"\n', encoding="utf-8")
+    write_instance_facts(tmp_path, network="generated-net")
     events: list[str] = []
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "caller-net")
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
@@ -108,11 +121,17 @@ def test_bootstrap_env_init_generated_identity_beats_inconsistent_caller_network
 
 
 def test_bootstrap_env_init_consistent_caller_network_stays_silent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    write_instance_facts,
 ) -> None:
     """A pre-set network EQUAL to the generated one is a no-op, no warning."""
     env_path = tmp_path / "ciu.env"
     env_path.write_text('DOCKER_NETWORK_INTERNAL="same-net"\n', encoding="utf-8")
+    # CIU-75: written to the record the seed actually reads, so this test
+    # cannot pass merely because nothing overrode the ambient value.
+    write_instance_facts(tmp_path, network="same-net")
     events: list[str] = []
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "same-net")
     monkeypatch.delenv("REPO_NAME", raising=False)
@@ -127,11 +146,15 @@ def test_bootstrap_env_init_consistent_caller_network_stays_silent(
 
 
 def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    write_instance_facts,
 ) -> None:
     """Network setup is best-effort; a TLS accessibility warning remains observable."""
     env_path = tmp_path / "ciu.env"
     env_path.write_text('DOCKER_NETWORK_INTERNAL="generated-net"\n', encoding="utf-8")
+    write_instance_facts(tmp_path, network="generated-net")
     events: list[str] = []
     monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
     monkeypatch.setattr(workspace_env, "generate_ciu_env", lambda _root: env_path)
@@ -148,18 +171,25 @@ def test_bootstrap_env_init_warns_on_network_failure_but_still_probes_tls(
 
 
 def test_bootstrap_env_init_nonidentity_ambient_values_are_preserved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
-    """CIU-41 overwrite scope is the derived identity tuple PLUS PUBLIC_FQDN
-    (CIU-47 — generate derives it from this workspace's own inputs, so the
-    just-written record outranks stale ambient state). Any OTHER key already
-    present in os.environ keeps its ambient value."""
+    """The overwrite scope is exactly the SIX overlay identity facts (CIU-75,
+    which absorbed CIU-41's derived tuple and CIU-47's PUBLIC_FQDN). Any OTHER
+    key already present in os.environ — a MACHINE fact like `ENV_TYPE`, which
+    describes the host and not the instance — keeps its ambient value.
+
+    Note `ENV_TYPE` is deliberately different in the two records: it proves the
+    machine half is still skip-if-present while the identity half overrides.
+    """
     env_path = tmp_path / "ciu.env"
     env_path.write_text(
-        'export DOCKER_NETWORK_INTERNAL="fresh-net"\n'
-        'export PUBLIC_FQDN="file-value.example"\n'
+        'export DOCKER_NETWORK_INTERNAL="stale-file-net"\n'
+        'export PUBLIC_FQDN="stale-file.example"\n'
         'export ENV_TYPE="devcontainer"\n',
         encoding="utf-8",
+    )
+    write_instance_facts(
+        tmp_path, network="fresh-net", public_fqdn="file-value.example"
     )
     events: list[str] = []
     monkeypatch.delenv("REPO_NAME", raising=False)

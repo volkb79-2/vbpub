@@ -51,13 +51,19 @@ def test_malformed_docker_gid_does_not_grant_group_only_tls_readability(
 
 
 def test_generated_bootstrap_warns_on_network_workspace_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    write_instance_facts,
 ) -> None:
     env_path = tmp_path / "ciu.env"
 
-    def generate(root: Path) -> Path:
+    def generate(root: Path, **_kw) -> Path:
+        # Both records, as the real generate writes them (CIU-75): the network
+        # the bootstrap acts on comes from the overlay table now.
         assert root == tmp_path
         env_path.write_text("DOCKER_NETWORK_INTERNAL=generated-net\n", encoding="utf-8")
+        write_instance_facts(root, network="generated-net")
         return env_path
 
     monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)

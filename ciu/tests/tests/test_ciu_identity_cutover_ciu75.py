@@ -27,6 +27,8 @@ would accept. Neither may change a single answer.
 """
 from __future__ import annotations
 
+import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,10 +37,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import deploy, engine, workspace_env, worktree  # noqa: E402
+from ciu import config_model, deploy, engine, workspace_env, worktree  # noqa: E402
 from ciu.config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES  # noqa: E402
 
 OVERLAY = GLOBAL_CONFIG_WORKTREE_OVERRIDES
+TEST_REPO = Path(__file__).resolve().parents[2] / "test-repo"
 
 
 # ---------------------------------------------------------------------------
@@ -508,3 +511,293 @@ def test_cutover_leaves_the_overlay_as_the_only_load_bearing_record(
         engine.identity_compose_project_name(repo, repo / "stack")
     with pytest.raises(worktree.WorktreeError, match="lacks instance_id or network"):
         worktree._runtime_identity(repo)
+
+
+# ---------------------------------------------------------------------------
+# O4 — the PROCESS ENVIRONMENT, through a real verb
+#
+# O3 above drives the twelve migrated helpers directly, and that is exactly why
+# it could not see the hole the CIU-75 review found: the helpers were cut over,
+# but STEP 1 of every verb still seeded `os.environ` from `ciu.env`, and ~26
+# internal sites read `REPO_ROOT` / `PHYSICAL_REPO_ROOT` /
+# `DOCKER_NETWORK_INTERNAL` / `PUBLIC_FQDN` straight out of ambient — including
+# the `$DOCKER_NETWORK_INTERNAL` expansion in the shipped global config. The
+# seed skipped keys already present, so a shell that had sourced a SIBLING
+# checkout's `ciu.env` won, and containers joined that sibling's network.
+#
+# These tests therefore run a REAL user-facing verb (`ciu secrets list` — the
+# thinnest one that performs the full STEP 1 + render-global-chain sequence
+# without a Docker daemon) against a REAL generated workspace, with hostile
+# ambient values set. Nothing about identity is stubbed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def verb_repo(monkeypatch, tmp_path):
+    """A real, really-generated workspace carrying the shipped demo config.
+
+    Uses the repo's own `test-repo` global defaults — the file that actually
+    contains ``network_name = "$DOCKER_NETWORK_INTERNAL"`` and
+    ``REPO_ROOT = "$REPO_ROOT"`` — so the oracle below is about the config CIU
+    ships, not one written to make a point.
+
+    Returns ``(repo_root, stack_dir, facts)``.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copy2(TEST_REPO / "ciu.global.defaults.toml.j2", repo / "ciu.global.defaults.toml.j2")
+    stack = repo / "applications" / "app-config"
+    stack.parent.mkdir(parents=True)
+
+    def _ignore(_dir, names):
+        return {n for n in names
+                if n in (".ciu", "__pycache__", "ciu.toml", "ciu.compose.yml")
+                or n.startswith("vol-")}
+
+    shutil.copytree(TEST_REPO / "applications" / "app-config", stack, ignore=_ignore)
+    (stack / "ciu.toml.j2").unlink(missing_ok=True)
+
+    monkeypatch.setenv("SKIP_DEPENDENCY_CHECK", "1")
+    monkeypatch.setenv("CIU_SKIP_DOOD_PREFLIGHT", "1")
+    monkeypatch.setenv("CIU_KSM", "off")
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    for key in workspace_env.GENERATED_FACT_ENV_KEYS.values():
+        monkeypatch.delenv(key, raising=False)
+
+    _hermetic_generate(monkeypatch, repo)
+    return repo, stack, workspace_env.read_generated_facts(repo)
+
+
+def _run_secrets_list(stack: Path, monkeypatch) -> dict:
+    """Run `ciu secrets list` for real, capturing what its render actually saw.
+
+    The spy WRAPS `render_global_chain` rather than replacing it: the verb's
+    own render runs, and the test observes its inputs and its result. A test
+    that re-rendered afterwards would only prove what the environment looked
+    like when the verb was over, not what the verb itself used.
+    """
+    seen: dict = {}
+    real_chain = config_model.render_global_chain
+
+    def spy(working_dir, repo_root, *args, **kwargs):
+        rendered = real_chain(working_dir, repo_root, *args, **kwargs)
+        seen["repo_root"] = Path(repo_root)
+        seen["rendered"] = rendered
+        return rendered
+
+    monkeypatch.setattr(engine.config_model, "render_global_chain", spy)
+    args = argparse.Namespace(
+        dir=stack, define_root=None, action="list", name=None, yes=True
+    )
+    seen["exit"] = engine.secrets_command(args)
+    return seen
+
+
+def test_a_stale_sibling_identity_cannot_reach_a_real_verbs_render(
+    verb_repo, monkeypatch, capsys
+):
+    """The review's Repro A, as a test: an inherited sibling identity loses.
+
+    Pre-fix this asserted `sibling-checkout-network` — the shell's value,
+    rendered into `deploy.network_name`, i.e. the network the containers of
+    THIS checkout would have joined. No file needed corrupting and nothing was
+    hand-edited: sourcing another checkout's `ciu.env` was enough, which is
+    what CIU-41 already called the normal hazard.
+    """
+    repo, stack, facts = verb_repo
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "sibling-checkout-network")
+    monkeypatch.setenv("REPO_ROOT", "/somewhere/else/entirely")
+    monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/host/somewhere/else")
+    monkeypatch.setenv("INSTANCE_ID", "sibling-instance")
+
+    seen = _run_secrets_list(stack, monkeypatch)
+
+    assert seen["exit"] == 0
+    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
+    assert facts["network"] != "sibling-checkout-network"
+    # …and the verb resolved ITS repo root from the record too: `secrets_command`
+    # reads `os.environ["REPO_ROOT"]`, one of the ~26 ambient consumers.
+    assert seen["repo_root"] == repo
+    # `[deploy.env.shared]` is the demo's own "machine facts exposed to
+    # templates" table — the repo-root pair a container is handed (S1.3/S1.4).
+    shared = seen["rendered"]["deploy"]["env"]["shared"]
+    assert shared["REPO_ROOT"] == str(repo)
+    assert shared["PHYSICAL_REPO_ROOT"] == facts["physical_repo_root"]
+    # The process environment is corrected, not merely bypassed — the other 25
+    # ambient readers are downstream of exactly this.
+    import os
+
+    assert os.environ["DOCKER_NETWORK_INTERNAL"] == facts["network"]
+    assert os.environ["INSTANCE_ID"] == facts["instance_id"]
+    assert os.environ["PHYSICAL_REPO_ROOT"] == facts["physical_repo_root"]
+
+
+def test_machine_facts_still_come_from_the_ambient_environment(verb_repo, monkeypatch):
+    """The other half of the boundary, or the fix would be a bigger hammer.
+
+    S3.1c clause 7: `ciu.env` also carries MACHINE facts — properties of the
+    host, not of the instance. Those stay ambient-first, because a value read
+    live from this process is fresher than one recorded at the last generate
+    (a rebuilt devcontainer changes `DOCKER_GID`; the record does not know).
+    """
+    _repo, stack, _facts = verb_repo
+    monkeypatch.setenv("DOCKER_GID", "4242")
+
+    seen = _run_secrets_list(stack, monkeypatch)
+
+    assert seen["exit"] == 0
+    import os
+
+    assert os.environ["DOCKER_GID"] == "4242"
+
+
+def test_a_corrupt_legacy_export_no_longer_crashes_step_1(
+    verb_repo, monkeypatch, capsys
+):
+    """The review's Repro B: `ciu up` used to die with a raw traceback.
+
+    The four `ciu.env` reads in the bootstrap path never got CIU-62's
+    three-exception treatment, so a non-UTF-8 byte in a file CIU calls
+    write-only crashed the first statement of every verb. It is now a WARN on
+    stderr and the machine facts fall back to ambient; identity is unaffected,
+    because identity does not come from this file any more.
+    """
+    repo, stack, facts = verb_repo
+    (repo / "ciu.env").write_bytes(b'\xff\xfe not = shell "at all\n')
+
+    seen = _run_secrets_list(stack, monkeypatch)
+
+    assert seen["exit"] == 0
+    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
+    captured = capsys.readouterr()
+    assert "could not read" in captured.err
+    assert "ciu env generate" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_the_regenerated_legacy_export_cannot_change_identity(
+    verb_repo, monkeypatch, capsys
+):
+    """The review's Repro C, answered honestly rather than defended.
+
+    Deleting `ciu.env` and finding CIU still works proves little on its own,
+    because STEP 1 REGENERATES the file it calls write-only. What matters is
+    that the regeneration cannot move identity: the facts before and after are
+    identical, and the render still names the recorded network. (The absent
+    case is genuinely covered by
+    `test_cutover_leaves_the_overlay_as_the_only_load_bearing_record`, which
+    removes the record CIU actually reads.)
+    """
+    repo, stack, facts = verb_repo
+    (repo / "ciu.env").unlink()
+
+    seen = _run_secrets_list(stack, monkeypatch)
+
+    assert seen["exit"] == 0
+    assert (repo / "ciu.env").is_file(), "STEP 1 regenerates the legacy export"
+    assert workspace_env.read_generated_facts(repo) == facts
+    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
+
+
+def test_step_1_regeneration_keeps_stdout_clean_for_json_consumers(
+    verb_repo, monkeypatch, capsys
+):
+    """S3.1c clause 3, and the review's second blocker.
+
+    `deploy._run` — `ciu check`'s entry point, `--json` included — calls this
+    bootstrap as its FIRST statement. A consumer that followed the migration
+    advice (stop maintaining `ciu.env`, let it regenerate) therefore got the
+    deprecation notice printed ahead of the JSON document, and every machine
+    parse of `ciu check --json` broke. The notice is a stderr line on this
+    path; the verb an operator TYPES (`ciu env generate`) still says it on
+    stdout, which is what
+    `test_generate_warns_once_that_ciu_env_is_now_write_only` pins.
+    """
+    repo, stack, _facts = verb_repo
+    (repo / "ciu.env").unlink()
+
+    _run_secrets_list(stack, monkeypatch)
+
+    captured = capsys.readouterr()
+    assert "LEGACY WRITE-ONLY export" in captured.err
+    assert "LEGACY WRITE-ONLY export" not in captured.out
+    assert "[S3.1c]" not in captured.out
+
+
+def test_a_checkout_with_no_generated_table_is_repaired_not_refused(
+    verb_repo, monkeypatch, capsys
+):
+    """The upgrade path: the record CIU reads is the record CIU repairs.
+
+    The overlay is gitignored, so "no generated table" is an ordinary state —
+    a fresh clone, a CI runner, a pre-CIU-60 checkout. Since 7.7.0 it is also
+    the state in which CIU knows nothing about the instance, so bootstrap
+    regenerates it rather than refusing a verb the operator just ran. The
+    notice says so, on stderr.
+    """
+    repo, stack, facts = verb_repo
+    (repo / OVERLAY).write_text("# operator's own file, no CIU table\n", encoding="utf-8")
+    assert workspace_env.read_generated_facts(repo) == {}
+
+    seen = _run_secrets_list(stack, monkeypatch)
+
+    assert seen["exit"] == 0
+    repaired = workspace_env.read_generated_facts(repo)
+    assert repaired == facts, "a repair re-derives the SAME identity, not a new one"
+    assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
+    err = capsys.readouterr().err
+    assert "carries no [ciu.instance.generated] table" in err
+    # The operator's own bytes are still theirs (upsert_generated_facts owns
+    # only its own block).
+    assert "operator's own file" in (repo / OVERLAY).read_text(encoding="utf-8")
+
+
+def test_a_reap_that_cannot_delegate_to_clean_says_what_it_skipped(
+    tmp_path, monkeypatch
+):
+    """The one behaviour this cutover made WORSE, made loud instead of silent.
+
+    `_reap_uses_clean` answering False does not refuse — the caller falls
+    through to `docker rm -f` + volume/network removal, which disposes of the
+    docker resources and leaves every `vol-*` hostdir on disk (no root-helper,
+    no hostdir pass). Post-cutover a checkout with only a legacy `ciu.env`
+    lands there, which an in-place upgrade can produce. The reap must therefore
+    SAY that it took the blunt path and that data may remain.
+    """
+    checkout = tmp_path / "stale-checkout"
+    checkout.mkdir()
+    (checkout / "ciu.env").write_text("DOCKER_NETWORK_INTERNAL=old\n", encoding="utf-8")
+    group = {
+        "ciu_root": str(checkout),
+        "containers": [{"id": "abc123"}],
+        "volumes": [],
+        "networks": [],
+    }
+    monkeypatch.setattr(worktree, "_docker_reap", lambda *_a, **_k: "")
+
+    assert worktree._reap_uses_clean(group) is False
+    notes, failure = worktree._reap_one_group(group, {})
+
+    assert failure == ""
+    skipped = next(n for n in notes if "did NOT run" in n)
+    assert str(checkout) in skipped
+    assert "[ciu.instance.generated]" in skipped
+    assert "ciu env generate" in skipped and "ciu clean" in skipped
+
+
+def test_a_reap_with_no_checkout_left_stays_quiet(tmp_path, monkeypatch):
+    """…and the genuinely orphaned group does NOT get that note: there is no
+    checkout to repair, so the bare removal is the only possible path and
+    saying "run ciu clean there" would name a directory that is gone."""
+    group = {
+        "ciu_root": str(tmp_path / "deleted-checkout"),
+        "containers": [{"id": "abc123"}],
+        "volumes": [],
+        "networks": [],
+    }
+    monkeypatch.setattr(worktree, "_docker_reap", lambda *_a, **_k: "")
+
+    notes, failure = worktree._reap_one_group(group, {})
+
+    assert failure == ""
+    assert not any("did NOT run" in n for n in notes)
