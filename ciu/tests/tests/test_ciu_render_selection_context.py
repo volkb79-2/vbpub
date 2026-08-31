@@ -317,6 +317,9 @@ def test_hookcontext_identity_fields_default_none():
     assert ctx.deployed_stacks is None
     assert ctx.instance_id is None
     assert ctx.network is None
+    # CIU-80: additive field, defaults False in bare/unit construction too —
+    # a hook author who never sets it sees the same "no signal" it always had.
+    assert ctx.identity_unreadable is False
 
 # ---------------------------------------------------------------------------
 # Review repairs — B1: the config's own [ciu] table survives in template scope
@@ -399,12 +402,15 @@ def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
     The strong oracle for the arcs below: it proves not only that no traceback
     escaped, but WHAT the hook was told — the documented `{}` degradation, the
     same answer `deploy._workspace_identity` gives the `ciu check` preflight.
+    The marker also carries `ctx.identity_unreadable` (CIU-80) — the field
+    that lets a hook tell "genuinely unmanaged" from "record exists, CIU
+    could not parse it" apart, which `instance_id`/`network` alone cannot.
     """
     stack = _add_stack(repo_root)
     (stack / "identity_probe.py").write_text(
         "def run(config, ctx):\n"
         f"    open({str(marker)!r}, 'w').write(\n"
-        "        f'{ctx.instance_id!r}|{ctx.network!r}'\n"
+        "        f'{ctx.instance_id!r}|{ctx.network!r}|{ctx.identity_unreadable!r}'\n"
         "    )\n"
         "    return {}\n",
         encoding="utf-8",
@@ -460,9 +466,11 @@ def test_engine_identity_read_survives_an_unparseable_ciu_env(
     )
 
     assert result["status"] == "success", f"a {kind} must not abort the run"
-    assert marker.read_text(encoding="utf-8") == "None|None", (
+    assert marker.read_text(encoding="utf-8") == "None|None|True", (
         "the hook must be told the documented 'no identity', never a "
-        "half-parsed or fabricated one"
+        "half-parsed or fabricated one — and (CIU-80) that this is the "
+        "PRESENT-but-unreadable state (identity_unreadable=True), not the "
+        "legitimate-absent one"
     )
     # CIU-62 review ruling: the degradation stays, the SILENCE does not.
     # Without this the estate's own default test — "if this default is wrong,
@@ -472,6 +480,49 @@ def test_engine_identity_read_survives_an_unparseable_ciu_env(
     assert "[WARN] [S3.12] could not read workspace identity" in out
     assert "ciu.env" in out
     assert "ciu env generate" in out, "the warning must name the repair"
+
+
+def test_identity_unreadable_agrees_between_check_preflight_and_real_run(
+    tmp_path, monkeypatch, capsys
+):
+    """CIU-80's MANDATORY pairing requirement: `deploy._workspace_identity`
+    (the `ciu check` preflight's HookContext) and `engine.main_execution`'s
+    STEP-12 real-run read must set `identity_unreadable` IDENTICALLY on the
+    SAME unreadable `ciu.env` — a hook's `validate_config` must never see an
+    identity state its own `run()` would not (the exact divergence S3.12 /
+    CIU-44 / CIU-62 exist to prevent).
+    """
+    from ciu import deploy
+
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    repo_root = _build_repo(tmp_path, monkeypatch)
+    marker = tmp_path / "identity-pairing.txt"
+    stack = _identity_probe_stack(repo_root, marker)
+
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
+    (repo_root / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+
+    # ---- real-run side: engine.main_execution's STEP-12 identity read ----
+    result = engine.main_execution(stack, dry_run=True, yes=True, ciu_context=dict(_CTX))
+    assert result["status"] == "success"
+    real_run_probe = marker.read_text(encoding="utf-8")
+    capsys.readouterr()  # drain the real-run's own [WARN], not under test here
+
+    # ---- preflight side: deploy._workspace_identity, the ciu check twin ----
+    identity, identity_unreadable = deploy._workspace_identity(repo_root)
+    capsys.readouterr()  # drain deploy's own stderr [WARN]
+
+    assert identity == {}
+    assert real_run_probe == f"None|None|{identity_unreadable!r}", (
+        "the real run's ctx.identity_unreadable must equal the preflight's "
+        "own read on the identical ciu.env — a divergence here means a "
+        "validate_config preflight would certify a config against an "
+        "identity state its own run() would not agree with"
+    )
+    assert identity_unreadable is True, (
+        "both sides must land on PRESENT-but-unreadable, not the legitimate-"
+        "absent state, for this malformed-entry fixture"
+    )
 
 
 from ciu.hooks_runner import HookContext  # noqa: E402

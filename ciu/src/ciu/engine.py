@@ -1534,6 +1534,7 @@ def main_execution(
         # same way, or a hook's `validate_config` would see an identity its own
         # `run()` will not.
         _hook_identity: dict = {}
+        _hook_identity_unreadable = False
         try:
             _env_path = repo_root / "ciu.env"
             if _env_path.is_file():
@@ -1546,8 +1547,12 @@ def main_execution(
             # degradation is deliberate (preflight and real run must answer
             # the identity question identically), but silence made it
             # indistinguishable from a genuinely unmanaged workspace: a hook
-            # reading `ctx.instance_id is None` had no way to tell. CIU-80
-            # tracks making both sites raise instead.
+            # reading `ctx.instance_id is None` had no way to tell "genuinely
+            # unmanaged" from "corrupt, swallowed". CIU-80: both sites now
+            # additionally set `ctx.identity_unreadable = True` here (a
+            # genuinely absent ciu.env — the `if _env_path.is_file()` guard
+            # above being False — leaves it False, its default), so a hook
+            # can branch on the distinction itself, not just read a log line.
             print(
                 f"[WARN] [S3.12] could not read workspace identity from "
                 f"{_env_path}: {_identity_exc}. Hook context identity "
@@ -1556,6 +1561,7 @@ def main_execution(
                 flush=True,
             )
             _hook_identity = {}
+            _hook_identity_unreadable = True
 
         ctx = hooks_runner.HookContext(
             point="", stack_dir=working_dir, repo_root=repo_root, secret_file=_secret_file,
@@ -1569,6 +1575,7 @@ def main_execution(
             ),
             instance_id=_hook_identity.get("INSTANCE_ID"),
             network=_hook_identity.get("DOCKER_NETWORK_INTERNAL"),
+            identity_unreadable=_hook_identity_unreadable,
         )
 
         # S9.3 / CIU-4: readiness helpers on the hook context so service-touching

@@ -130,8 +130,11 @@ host = "{{ vault.internal_host }}"
 Outside deployment renders the `ciu` key is absent, so a stray `ciu.*`
 reference fails immediately (Jinja UndefinedError) — never silently empty.
 Hooks receive the same facts as `ctx.selected_profiles` /
-`ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3). Nothing
-is written to `ciu.env` and nothing is exported to the compose env.
+`ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3) and
+`ctx.identity_unreadable` (S9.3, CIU-80 — `True` only when `ciu.env` is
+present but unreadable, distinct from the genuinely-absent workspace, which
+leaves it `False`). Nothing is written to `ciu.env` and nothing is exported
+to the compose env.
 
 ---
 

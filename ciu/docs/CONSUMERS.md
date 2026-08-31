@@ -423,6 +423,13 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
   workspace's own `ciu.env` — read identity from ctx, never from ambient env
   (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
+- `ctx.instance_id` / `ctx.network` both `None` is ambiguous by itself —
+  "genuinely unmanaged, no `ciu env generate` here" and "the record exists
+  but CIU could not parse it" look identical. `ctx.identity_unreadable`
+  (CIU-80) tells them apart: `False` in the genuinely-absent case, `True`
+  only when `ciu.env` is present but unreadable. A hook that needs to branch
+  differently on "unknown" versus "absent" reads this field; one that
+  doesn't care can ignore it (it defaults `False`).
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
@@ -736,8 +743,8 @@ Rules worth knowing before you write one:
 - **`ctx.wait_healthy` / `ctx.wait_tcp` are `None`** at check time. Nothing is
   running, and a preflight must not perform I/O anyway.
 - `ctx.stack_dir`, `ctx.repo_root`, `ctx.instance_id`, `ctx.network`,
-  `ctx.selected_profiles` and `ctx.deployed_stacks` are all populated exactly
-  as during a real run.
+  `ctx.identity_unreadable` (CIU-80 — see §10 above), `ctx.selected_profiles`
+  and `ctx.deployed_stacks` are all populated exactly as during a real run.
 - **No side effects.** No Docker, no network, no writes. Like S9.4's
   env-mutation rule, this is a contract CIU does not sandbox.
 - **An exception is your hook's finding, not everyone's.** If your

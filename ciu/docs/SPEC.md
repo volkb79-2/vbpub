@@ -1505,6 +1505,21 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `None`). Hooks read identity/selection from these fields — never from
   ambient environment state (S9.4 forbids env mutation; ambient reads are the
   CIU-41 contamination vector).
+
+  **`ctx.identity_unreadable: bool` (CIU-80).** `instance_id`/`network` both
+  `None` is ambiguous on its own — it means either "this workspace is
+  genuinely unmanaged, no `ciu env generate` has run here" or "the record
+  exists and CIU could not parse it" (an `OSError`, a non-UTF-8 byte, or a
+  malformed entry — CIU-62). `ctx.identity_unreadable` disambiguates: `False`
+  in the genuinely-absent case (the default, and also the value in bare/unit
+  construction), `True` only when `ciu.env` is PRESENT but unreadable. **Both
+  identity readers set it identically, as a pair** — `deploy._workspace_identity`
+  (the `ciu check` preflight's HookContext, S13.4a) and
+  `engine.main_execution`'s STEP-12 real-run read — so a `validate_config`
+  preflight never sees an identity state its own `run()` would not (the
+  divergence S3.12/CIU-44 exists to prevent). Both keep the pre-CIU-80 `{}`
+  degradation (`instance_id`/`network` stay `None` either way) rather than
+  raising — additive, not a break.
 - **S9.4** Return contract — structured form **only**:
   `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later

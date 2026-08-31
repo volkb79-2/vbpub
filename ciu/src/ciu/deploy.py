@@ -2199,7 +2199,7 @@ def _check_secret_file(name: str) -> Path:
     )
 
 
-def _workspace_identity(repo_root: Path) -> dict:
+def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
     """This workspace's ``ciu.env`` facts, by exact path — read-only (S3.12).
 
     The same lookup :func:`engine.main_execution` performs before building a
@@ -2216,12 +2216,20 @@ def _workspace_identity(repo_root: Path) -> dict:
     subclasses, so neither name covers the other; before CIU-62 a non-UTF-8
     ``ciu.env`` escaped this handler and crashed ``ciu check`` with a raw
     traceback instead of degrading to the documented ``{}``.
+
+    Returns ``(facts, identity_unreadable)`` (CIU-80): ``identity_unreadable``
+    is ``True`` only when ``ciu.env`` is PRESENT but could not be
+    read/parsed — a genuinely ABSENT ``ciu.env`` returns ``({}, False)``,
+    the same ``{}`` but a different, unambiguous state. The caller threads
+    the flag onto :class:`~ciu.hooks_runner.HookContext.identity_unreadable`
+    so a hook can tell the two states apart without either one becoming a
+    refusal.
     """
     env_path = repo_root / "ciu.env"
     if not env_path.is_file():
-        return {}
+        return {}, False
     try:
-        return parse_workspace_env(env_path)
+        return parse_workspace_env(env_path), False
     except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
         # CIU-62 review ruling: the `{}` degradation stays (symmetry with
         # engine.py's real-run twin is the point), but it must not be
@@ -2229,8 +2237,9 @@ def _workspace_identity(repo_root: Path) -> dict:
         # default is wrong, does anything fail loudly?" — answered no: a hook
         # seeing `ctx.instance_id is None` could not tell "genuinely
         # unmanaged workspace" from "corrupt ciu.env, swallowed". The warning
-        # names the file so the operator can repair it; the contract itself
-        # is unchanged. CIU-80 tracks the stricter variant.
+        # names the file so the operator can repair it. CIU-80 additionally
+        # threads the distinction itself onto HookContext.identity_unreadable
+        # (below), rather than only leaving it discoverable in a log line.
         #
         # STDERR, not `warn()` — deliberate, and the reason is a contract, not
         # a style preference. `warn()` prints to STDOUT, and under
@@ -2248,7 +2257,7 @@ def _workspace_identity(repo_root: Path) -> dict:
             file=sys.stderr,
             flush=True,
         )
-        return {}
+        return {}, True
 
 
 def _resolve_hostdirs_for_render(config: dict, stack_dir: Path, repo_root: Path) -> None:
@@ -2470,6 +2479,7 @@ def _check_hooks_for_stack(
     guarded: dict,
     ciu_context: dict,
     identity: dict,
+    identity_unreadable: bool,
     report: _CheckReport,
     cache: dict[Path, tuple[Any, str | None]],
 ) -> None:
@@ -2539,6 +2549,7 @@ def _check_hooks_for_stack(
                 deployed_stacks=tuple(ciu_context.get("deployed_stacks") or []),
                 instance_id=identity.get("INSTANCE_ID"),
                 network=identity.get("DOCKER_NETWORK_INTERNAL"),
+                identity_unreadable=identity_unreadable,
             )
             try:
                 result = validate_config(guarded, ctx)
@@ -2592,6 +2603,7 @@ def _check_stack_config(
     root_key: str,
     ciu_context: dict,
     identity: dict,
+    identity_unreadable: bool,
     report: _CheckReport,
     cache: dict[Path, tuple[Any, str | None]],
 ) -> None:
@@ -2751,6 +2763,7 @@ def _check_stack_config(
         guarded=guarded,
         ciu_context=ciu_context,
         identity=identity,
+        identity_unreadable=identity_unreadable,
         report=report,
         cache=cache,
     )
@@ -2992,7 +3005,7 @@ def action_check(
                 )
 
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
-    identity = _workspace_identity(repo_root)
+    identity, identity_unreadable = _workspace_identity(repo_root)
     hook_cache: dict[Path, tuple[Any, str | None]] = {}
 
     stacks: dict[str, dict] = {}
@@ -3030,6 +3043,7 @@ def action_check(
             root_key=root_key,
             ciu_context=ciu_context,
             identity=identity,
+            identity_unreadable=identity_unreadable,
             report=report,
             cache=hook_cache,
         )
