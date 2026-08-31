@@ -4,11 +4,20 @@ Worktree: `/workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2`
 Branch: `fix/ciu-P42-cutover-identity-f2`, cut from `main` @ `332af5a1`,
 **rebased onto `main` @ `815c50d6`** (the ciu-P43 merge) — §11.
 Commits: `ebcc7ad7` (code + tests), `f8f29778` (docs + backlog + LOG),
-`67a588f8` (this REPORT) — pre-rebase `c1985542` / `788908e2`.
+`67a588f8` (this REPORT), `8cc79745` (rebase record), `95ec5803` (CIU-83),
+`c979de02` (**review round 1 fixes — §12**) — pre-rebase `c1985542` /
+`788908e2`.
 Ships as: **ciu 7.7.0** — BREAKING, a deliberate, recorded override of the
 estate's "breaking waits for the next major" convention.
 
-**Read §11 first if you are reviewing after ciu-P43.** That package landed
+**Read §12 first.** Review round 1 returned REJECT on five blockers, the first
+of which was that this package's headline claim was **false as shipped**: the
+twelve migrated call sites were not the whole surface, and a sibling
+checkout's exported identity still won a real render. §12 is what changed, and
+what now proves it. §§1–11 below describe the package as it stood at that
+review, corrected in place where they were wrong.
+
+**Read §11 if you are reviewing after ciu-P43.** That package landed
 `HookContext.identity_unreadable` in the two functions this one rewrites; §11
 is the reconciliation, and the one place a silent regression was possible.
 
@@ -18,9 +27,14 @@ is the reconciliation, and the one place a silent regression was possible.
 
 `[ciu.instance.generated]` in `<ciu-root>/ciu.global.worktree.toml.j2` —
 written by every `ciu env generate` since CIU-60 — is now the **only** record
-CIU itself reads instance identity from. `ciu.env` is demoted to a legacy,
-**write-only** export: still written, unchanged key set and format, from the
-same in-memory values, and never read back by any CIU internal.
+CIU itself reads instance identity from, at the twelve per-checkout call sites
+below **and** in the process environment every verb runs with (§12; that
+second half was missing at review round 1, and without it the first half did
+not hold end-to-end). `ciu.env` is demoted to a legacy export that is never a
+source of identity: still written, unchanged key set and format, from the same
+in-memory values, and — corrected from this report's first version — still
+read at startup for the MACHINE facts it also carries, by exact path, best
+effort. No identity fact is read from it, by any path.
 
 New in `workspace_env.py` (SPEC **S3.1c**, a new normative section):
 
@@ -30,6 +44,9 @@ New in `workspace_env.py` (SPEC **S3.1c**, a new normative section):
 | `has_generated_facts(ciu_root)` | presence, never readability — the post-cutover readiness signal |
 | `identity_env_from_facts(facts)` | the one snake_case → SCREAMING_CASE translation |
 | `read_instance_identity_env(ciu_root)` | the two composed |
+| `seed_identity_env(ciu_root)` | (§12) puts those into `os.environ`, OVERRIDING — the half this report's first version was missing |
+| `_load_legacy_machine_env(env_path, override=)` | (§12) `ciu.env`'s NON-identity keys, exact path, WARN-not-crash on any read failure |
+| `_seed_identity_or_repair(ciu_root, generated=)` | (§12) seed, or regenerate a checkout that has no table yet |
 
 ### Why a text-level scan, not `render_global_chain`
 
@@ -151,6 +168,18 @@ refuses loudly (and `reap` reports that refusal as a partial) instead of the
 predicate quietly demoting indeterminacy into a bare `docker rm` of a MANAGED
 instance — which is exactly what the ciu-P28 hotfix lesson forbids.
 
+**Correction (review round 1).** This section, and my in-code docstring,
+described the False branch as leading to a refusal. It does not. The caller
+falls through to `docker rm -f` + volume/network removal, which disposes of
+the Docker resources and **leaves every `vol-*` hostdir on disk** (no hostdir
+pass, no root-helper). That is a worse failure mode than a refusal and it was
+silent, so: the docstring, SPEC S16.10 step 2, CHANGES' Adoption Notes and
+CONSUMERS §5b-2 now all say what actually happens, and `_reap_one_group` adds
+a note — when the checkout still EXISTS — naming it and naming the
+`ciu env generate` + `ciu clean` repair. Two tests pin both halves (fires when
+a checkout survives; silent when the group is genuinely orphaned, where
+"run `ciu clean` there" would name a directory that is gone).
+
 ---
 
 ## 5. Evidence: the delete-`ciu.env`-after-generate test
@@ -214,7 +243,7 @@ run-gate: ephemeral env (nothing declared)
 run-gate: budget 30m (advisory)
 assay-3.2.0.pyz: OK
 ciu: PASS (exit 0)
-  commit: 8cc79745f281087fe5dceba2422df33ace300e34
+  commit: c979de0288cc96f1c6ca760ef30c221f2e3bc92a
   argv: /opt/tester-venv/bin/python run-ciu-tests.py
 run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2/ciu/.assay/verdict-ciu.json
 run-gate: lane 'ciu' exit 0
@@ -253,7 +282,7 @@ artifact on disk is this run's, and nothing about it is inherited.
 
 ```
 $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
-8cc79745f281087fe5dceba2422df33ace300e34
+c979de0288cc96f1c6ca760ef30c221f2e3bc92a
 ```
 
 `.assay/verdict-ciu.json` (verbatim, abridged only where noted):
@@ -270,13 +299,13 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
     {
       "coverage": {
         "branch_capability": "reported",
-        "branches_covered": 18,
-        "branches_total": 18,
+        "branches_covered": 30,
+        "branches_total": 30,
         "considered": 8,
-        "covered": 236,
+        "covered": 305,
         "excluded_lines": {},
         "exclusion_capability": "reported",
-        "executable": 236,
+        "executable": 305,
         "files_missing_coverage": [],
         "files_with_excluded_lines": [],
         "files_with_missing_branch_lines": [],
@@ -289,7 +318,7 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
       "rigor": "R1", "source": "computed", "status": "PASS", "verified_by_assay": true
     }
   ],
-  "commit": "8cc79745f281087fe5dceba2422df33ace300e34",
+  "commit": "c979de0288cc96f1c6ca760ef30c221f2e3bc92a",
   "declared_evidence": [],
   "declared_rigor": ["R0", "R1"],
   "enforcement": "gate",
@@ -315,8 +344,8 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
   "scope": "S1",
   "snapshot_policy": { "selection": "repository-minus-unsafe-symlinks",
                        "unsafe_symlink_omissions": ["… 3 topos fixture links …"] },
-  "started": "2026-08-31T04:12:51.377665+00:00",
-  "ended":   "2026-08-31T04:13:27.999704+00:00"
+  "started": "2026-08-31T05:09:58.960434+00:00",
+  "ended":   "2026-08-31T05:10:32.377446+00:00"
 }
 ```
 
@@ -325,11 +354,11 @@ $ git -C /workspaces/vbpub/.worktrees/ciu-P42-cutover-identity-f2 rev-parse HEAD
 `unsafe_symlink_omissions` paths, which are `topos/` fixtures unrelated to
 this lane.)
 
-`verdict-ciu.json.commit` == `HEAD` at that run == `8cc79745f281087fe5dceba2422df33ace300e34`. **Match confirmed.**
+`verdict-ciu.json.commit` == `HEAD` at that run == `c979de0288cc96f1c6ca760ef30c221f2e3bc92a`. **Match confirmed.**
 
 **No baseline or comparison gate was run at any point in this package**, so
 there is nothing that could have overwritten this artifact. (The R1
-`considered: 8 / covered: 236 / pct 100.0` figures are the *changed-line*
+`considered: 8 / covered: 305 / pct 100.0` figures are the *changed-line*
 judgment; the 100% whole-source line+branch floor is enforced inside R0's own
 argv — `run-ciu-tests.py` carries `--cov-fail-under=100 --cov-branch` — and its
 exit 0 is that floor being met.)
@@ -344,7 +373,7 @@ direction. Both runs pass; this one is the one on disk.)
 
 ### Final confirmation run (against the last commit on this branch)
 
-The verdict quoted above was produced at `8cc79745`, the branch tip when it
+The verdict quoted above was produced at `c979de02`, the branch tip when it
 ran. This LOG/REPORT update is a later, report-only commit, so the gate was
 **re-run against that final commit** after it was written, and
 `ciu/.assay/verdict-ciu.json` on disk is that run's artifact. Its `"commit"`
@@ -357,13 +386,13 @@ Local confirmation of the same floor before the gate, for what it is worth:
 
 ```
 $ python3 run-ciu-tests.py -q
-3399 passed, 8 warnings in 30.72s
-TOTAL   9876   0   4016   0   100%
+3405 passed, 8 warnings in 23.58s
+TOTAL   9896   0   4016   0   100%
 Required test coverage of 100% reached. Total coverage: 100.00%
 ```
 
-(`3393`/`9865` pre-rebase; the deltas are ciu-P43's own tests and lines,
-merged in — see §11.)
+(`3393`/`9865` before the ciu-P43 rebase, `3399`/`9876` after it; the last
+delta is review round 1's own tests and lines — §11, §12.)
 
 ---
 
@@ -412,7 +441,10 @@ release may stop WRITING `ciu.env` until these consumers are re-pointed.
 
 - [x] **all 12 sites individually classified and, for fact-reads, migrated** —
       §2. 11 fact-reads migrated; the 1 existence check was re-pointed, with
-      the reason in §4 (it did not simply "stay as-is").
+      the reason in §4 (it did not simply "stay as-is"). **Plus the 13th site
+      the entry never named and review round 1 found: the STEP-1 process
+      environment seed (§12), without which the other twelve did not hold
+      end-to-end.**
 - [x] **`ciu env generate` still writes `ciu.env`, byte-identical key set, one
       release of WARN pointing at `ciu env print`** —
       `test_generate_still_writes_ciu_env_with_the_same_key_set` asserts the
@@ -425,15 +457,21 @@ release may stop WRITING `ciu.env` until these consumers are re-pointed.
       fallback: always-on, names the forward path, names what a future release
       does).
 - [x] **the delete-`ciu.env`-after-generate test, green, covering every verb
-      touched** — §5, run twice (deleted AND corrupt), with a converse case.
+      touched** — §5, run twice (deleted AND corrupt), with a converse case,
+      **plus the O4 real-verb suite added in round 1 (§12): the site sweep
+      alone could not see the seeding hole, and the conftest scrubber meant no
+      other test could either.**
 - [x] **CONSUMERS.md migration section + CHANGES.md BREAKING entry** —
       `docs/CONSUMERS.md` §11b (dedicated, with the four real dstdns shapes and
       a paste-able replacement per pattern); `CHANGES.md` `[7.7.0]` with
       `feat(ciu)!:` markers and an Adoption / Migration Notes block, not folded
       into an ordinary bullet. **Release as 7.7.0 is still pending** — the tag
       and release belong to the merge step, not to this package.
-- [x] **grep across dstdns** — §7. Confirmed rather than ruled out; CIU-82
-      filed; the dstdns-side filing is owed by the merger.
+- [x] **grep across dstdns** — §7, **re-audited exhaustively in round 1 at
+      `dstdns@96fcf762` (§12): three stub importers rather than one, a sibling
+      `config_constants.py` stub, and no key-extraction shell site at all.**
+      Confirmed rather than ruled out; CIU-82 filed and corrected; the
+      dstdns-side filing is owed by the merger.
 
 `docs/SPEC.md` **S3.1c** now owns identity-source precedence, resolving the
 entry's "no current SPEC section owns this" note.
@@ -443,7 +481,9 @@ entry's "no current SPEC section owns this" note.
 ## 9. Files touched
 
 Source: `workspace_env.py`, `worktree.py`, `engine.py`, `deploy.py`, `cli.py`,
-`config_model.py`, `composefile.py`, `hooks_runner.py`.
+`config_model.py`, `composefile.py`, `hooks_runner.py`. (Round 1 touched
+`workspace_env.py` — the seed, the machine-fact loader, the notice stream, and
+the removal of `adopt_file_identity` — and `worktree.py` for the reap note.)
 (The last three are message/docstring corrections only — the two prescriptive
 `"source ciu.env"` remedies now name `eval "$(ciu env print)"`, and
 `HookContext`'s field docs name the new source. AGENTS.md: an error message
@@ -475,6 +515,16 @@ Nothing outside `ciu/` was touched. No dstdns file was modified.
    deletes `ciu.env`.
 5. **The two `HookContext(...)` sites** (§11) — post-rebase, the one place
    where a dropped argument would have regressed ciu-P43 silently.
+6. **`seed_identity_env`'s override, and the repair branch beside it** (§12) —
+   the round-1 fix. Overriding ambient is a deliberate behaviour break (an
+   exported `INSTANCE_ID` no longer steers a run), and auto-regenerating a
+   checkout that has no table is the one place this package does something
+   implicit. Both are argued in S3.1c clause 2a; disagree with either and the
+   argument is there to attack.
+7. **`tests/conftest.py:38-48`** — the autouse ambient-identity scrubber. It is
+   correct hygiene AND the reason a whole failure mode had zero coverage for
+   two rounds. Worth knowing before trusting any future "the tests would have
+   caught it" claim about ambient state in this repo.
 
 ---
 
@@ -596,3 +646,138 @@ checkpoint's merge list, not one package's report).
 that work is entirely `run-gate-project/`, disjoint from this branch's 39
 files — so there is nothing to reconcile and the merge is trivial. Rebasing
 again would have invalidated the gate run for no reconciliation value.
+
+---
+
+## 12. Review round 1 — REJECT, and what the fix round changed
+
+The adversarial review returned **REJECT on five blockers**. Blocker 3
+(CIU-83) was mine to file and the controller took the fix. The rest are below.
+Blocker 1 is not a detail: **the package's headline claim was false as
+shipped**, and this report asserted it in §1.
+
+### Blocker 1 — the cutover stopped one layer short
+
+Migrating the twelve per-checkout reads (§2) was correct and insufficient.
+`bootstrap_workspace_env` — STEP 1 of `ciu up` / `check` / `render` / `graph` —
+still seeded `os.environ` from `ciu.env`, **skip-if-present**, so an inherited
+value was never displaced. Around 26 internal sites read `REPO_ROOT` /
+`PHYSICAL_REPO_ROOT` / `DOCKER_NETWORK_INTERNAL` / `PUBLIC_FQDN` straight from
+ambient, and every `$VAR` in a rendered config does too — including the
+shipped demo's `network_name = "$DOCKER_NETWORK_INTERNAL"`. A shell that had
+sourced a **sibling checkout's** `ciu.env` therefore still won a real render,
+with nothing corrupted and nothing hand-edited. Containers would have joined
+the sibling's network: the CIU-41 hazard, arriving through the one door a
+per-site cutover cannot close.
+
+Only `INSTANCE_ID` and `REPO_NAME` have no ambient consumers, which is exactly
+why the acceptance oracle missed it — those two are the facts a
+helper-level test can fully exercise.
+
+The fix completes the cutover rather than restating the boundary (SPEC S3.1c
+clause 2a):
+
+| | before | after |
+|---|---|---|
+| identity in `os.environ` | from `ciu.env`, skip-if-present | from the table, **unconditional override** |
+| that file's role at STEP 1 | everything, identity included | machine facts only, exact path, best-effort |
+| a corrupt `ciu.env` | raw `UnicodeDecodeError`, run dies at statement 1 | WARN naming `ciu env generate`; identity unaffected |
+| no generated table | (could not arise — identity came from the file) | regenerate it, then seed |
+| `adopt_file_identity` | applied CIU-41 only after a same-run generate | deleted; the rule now applies always |
+
+`load_workspace_env` is left in place for the legacy file's own consumers, with
+a docstring saying why CIU must not use it: it walks via `find_workspace_env`,
+which honors an ambient `REPO_ROOT` and can hand back **another checkout's
+file entirely** — the same leak one level down.
+
+### Blocker 2 — the migration advice broke `ciu check --json`
+
+`generate_ciu_env` announced the demotion on stdout; `deploy._run` (that
+verb's own entry point) calls the bootstrap as its FIRST statement and
+regenerates `ciu.env` when it is absent. A consumer who followed §11b's advice
+therefore got a `[WARN]` ahead of the JSON document. Fixed by routing:
+`_log_warn(..., stream=)` and `generate_ciu_env(notice_stream=)`; stderr for
+bootstrap-triggered regeneration, stdout for the verb an operator types. The
+codebase already knew this contract — this report cited it at
+`deploy.py:2244-2252` for a different warning — which is what makes it a
+defect rather than an oversight.
+
+### Blocker 4 — a normative contradiction, and a behaviour I mislabelled
+
+SPEC S16.10 step 1 still said reap delegates to `ciu clean` "if `ciu.env` is
+readable", contradicting this package's own S3.1c **in the same document**.
+Swept, along with S8.7, S6.4a, S2.1, the S16 authority table, the shared-infra
+add/join, the budget survey, the `worktree up`/`exec` child environment, S16.9
+and the identity-completeness interlock, plus five CONSUMERS paragraphs — one
+of which (`:487`) actively told consumers `ciu.env` "must exist".
+
+And the behaviour itself: `_reap_uses_clean` returning False is **not a
+refusal**, as §4 of this report implied. The caller falls through to
+`docker rm -f` + volume/network removal, which disposes of the Docker
+resources and leaves every `vol-*` hostdir on disk. That is a worse failure
+mode than a refusal, so it is now (a) described correctly in the docstring,
+S16.10 step 2, CHANGES' Adoption Notes and CONSUMERS §5b-2, and (b) no longer
+silent: when the checkout still exists, the group's notes name it and name the
+`ciu env generate` + `ciu clean` repair.
+
+### Blocker 5 — the published migration snippet was broken
+
+CONSUMERS §11b's `tomllib.loads` one-liner parsed the WHOLE overlay, while
+§11a explicitly sanctions operator content elsewhere in that Jinja template —
+so any real-world overlay raised `TOMLDecodeError` on the snippet this
+package told consumers to use, while CIU's own reader (which slices the block
+first, S3.1c clause 5) handled it. Replaced with a `read_ciu_identity` helper
+mirroring the shipped reader, with both failure modes handled and the
+absent-vs-indeterminate distinction preserved. §11b also gained the six-fact
+shell-name↔snake_case mapping table (three of the six appeared nowhere in it)
+and the ambient-override consequence.
+
+### The test gap, and why it needed a different KIND of test
+
+`tests/conftest.py`'s autouse scrubber removes the six identity variables from
+ambient before every test — correct hygiene, and it meant **no existing test
+could observe an ambient value surviving into a render**. Combined with an
+oracle that drove the twelve helpers directly, the whole failure mode had zero
+coverage. The new **O4** section in
+`tests/tests/test_ciu_identity_cutover_ciu75.py` runs a real user-facing verb
+(`ciu secrets list` — full STEP 1 + `render_global_chain`, no daemon) against a
+really-generated workspace carrying the SHIPPED `test-repo` global config, and
+spies on the render rather than replacing it:
+
+| test | what it pins |
+|---|---|
+| `…stale_sibling_identity_cannot_reach_a_real_verbs_render` | Repro A: hostile ambient network/root/instance all lose; the record reaches `deploy.network_name` and `[deploy.env.shared]`; `os.environ` is corrected |
+| `…machine_facts_still_come_from_the_ambient_environment` | the other half of the boundary — or the fix is a bigger hammer than the bug |
+| `…corrupt_legacy_export_no_longer_crashes_step_1` | Repro B, with the WARN and no traceback |
+| `…regenerated_legacy_export_cannot_change_identity` | Repro C, answered rather than defended: STEP 1 rewrites the file, so the honest claim is that the rewrite cannot move identity |
+| `…step_1_regeneration_keeps_stdout_clean_for_json_consumers` | blocker 2 |
+| `…checkout_with_no_generated_table_is_repaired_not_refused` | the upgrade path, including that the operator's own bytes in that file survive |
+| the two `…reap…` tests | blocker 4's note fires when a checkout survives, stays quiet when none does |
+
+**Ten existing tests were migrated and three claims made stronger.** Every
+migration was a pre-cutover FIXTURE, not a weakened assertion. `deeper3`'s
+CIU-41 test is now a three-way oracle (ambient / legacy file / overlay all
+disagree; only the overlay may win), `deeper9`'s `--define-root` test likewise.
+And `test_spec_contracts.build_repo` now pins `_physical_root_from_mountinfo`,
+which makes its documented `REPO_ROOT == PHYSICAL_REPO_ROOT == repo_root` true
+for the first time: inside a devcontainer, mountinfo overrides a pre-set
+physical root (S2.7), so the generated record had always said "host path"
+while the PROCESS kept the ambient tmp path. Those three tests were passing
+*because of* the leak this round closes — the most direct evidence available
+that it was real.
+
+### dstdns, re-audited
+
+CIU-82 tells another repo to migrate on the strength of my inventory, so it
+was re-swept exhaustively at `dstdns@96fcf762`. Corrections: **three**
+importers of the vendored stub, not one — `scripts/config_helper.py:30`,
+`scripts/url_builder.py:18` (missed entirely first time), and
+`tests/smoke/test-deployment-validation.py:144-148`, whose `sys.path` hack
+adds `scripts` but imports bare `workspace_env` one directory too shallow, so
+it has never worked and its failure is swallowed. Plus the sibling
+`scripts/ciu/config_constants.py` stub both live importers depend on. Six
+whole-file `source` sites (`scripts/ciu-env.sh:66` and five others), and **no
+key-extraction shell site at all** — the single grep recipe is in a handoff
+doc and greps `CIU_INSTANCE_ID`, a key `ciu.env` has never had. Also recorded,
+so nobody migrates it needlessly: dstdns's `$VAR` templates are *more* correct
+after this change, because a stale sibling value can no longer reach them.

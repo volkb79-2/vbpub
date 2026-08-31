@@ -275,3 +275,123 @@ the gate artifact on disk names it too: the LAST gate run of this package is
 the one against this commit, so `.assay/verdict-ciu.json`'s `"commit"` equals
 `git rev-parse HEAD` — one command for a reviewer to check, no quoted hash to
 trust.
+
+---
+
+## Entry 7 — `c979de02` — `fix(ciu)!: CIU-75 review round 1 -- complete the cutover at STEP 1, and stop the notice breaking ciu check --json`
+
+**The review verdict was REJECT, on five blockers.** Blocker 3 (CIU-83) was
+already filed and the controller took it. This entry covers the other four,
+and the first of them is the one that matters.
+
+**Blocker 1 — the cutover was incomplete, and I completed it rather than
+narrowing the claim.** The twelve migrated call sites were real, but they were
+never the whole surface: `bootstrap_workspace_env` — STEP 1 of `ciu up` /
+`check` / `render` / `graph` — still seeded `os.environ` from `ciu.env`, and
+seeded it **skip-if-present**, so an inherited value was never displaced. Some
+26 internal sites read `REPO_ROOT` / `PHYSICAL_REPO_ROOT` /
+`DOCKER_NETWORK_INTERNAL` / `PUBLIC_FQDN` straight from ambient, and so does
+every `$VAR` in a rendered config — the shipped demo's
+`network_name = "$DOCKER_NETWORK_INTERNAL"` included. A shell that had sourced
+a SIBLING checkout's `ciu.env` therefore still won, with nothing corrupted and
+nothing hand-edited: `deploy.network_name` rendered as the sibling's network,
+and containers would have joined it. **S3.1c clause 1 was true of twelve
+functions and false of the product**, and my own REPORT line "never read back
+by any CIU internal" was false as shipped.
+
+What landed (SPEC S3.1c clause 2a, new):
+
+- `seed_identity_env` writes the six facts from the table into `os.environ`
+  **unconditionally**. Override, never skip-if-present — the latter helps only
+  in the case that does not bite. `adopt_file_identity` is deleted: it applied
+  the CIU-41 rule only after a generate in the same run, i.e. never on the
+  common path, which is precisely why the hazard survived.
+- `_load_legacy_machine_env` reads `ciu.env` for MACHINE facts only, **by
+  exact path** (`load_workspace_env` walks via `find_workspace_env`, which
+  honors an ambient `REPO_ROOT` and can therefore hand back another checkout's
+  file entirely — the same leak, one level down), and it can no longer abort a
+  verb: the three CIU-62 exception types become a WARN naming
+  `ciu env generate`. Those four bootstrap reads had never been given that
+  treatment, so a corrupt export crashed `ciu up` with a raw
+  `UnicodeDecodeError` at the first statement of the run.
+- A checkout whose overlay carries no generated table is **repaired**, not
+  refused. The overlay is gitignored, so "no table" is an ordinary state (a
+  fresh clone, CI, a pre-CIU-60 record), and the record CIU reads is the
+  record CIU regenerates — the same self-healing `ciu.env` has always had when
+  absent. A PRESENT but unreadable table is not repaired; clause 4 wants that
+  loud.
+
+**Blocker 2 — the migration advice broke `ciu check --json`.** The deprecation
+notice went to stdout, and `deploy._run` (that verb's own entry point) calls
+the bootstrap as its FIRST statement, regenerating `ciu.env` when absent. A
+consumer who followed this release's own advice got a `[WARN]` line ahead of
+the JSON document. `_log_warn` gained a stream and `generate_ciu_env` a
+`notice_stream=`; bootstrap-triggered regeneration announces on stderr, the
+typed `ciu env generate` still on stdout. S3.1c clause 3 now states which and
+why, rather than leaving it to whoever reads the code.
+
+**Blocker 4's behaviour half — I had described my own change wrongly.**
+`_reap_uses_clean` answering False is **not** a refusal: the caller falls
+through to bare `docker rm` + volume/network removal, which leaves every
+`vol-*` hostdir on disk. The docstring said the opposite. Corrected — and the
+silence fixed: when the checkout still EXISTS, `_reap_one_group` now notes
+that it took the blunt path and names the `ciu env generate` + `ciu clean`
+repair. A teardown that quietly leaves data behind is worse than one that
+refuses.
+
+**The test gap, and why more of the same would not have closed it.** O3 drives
+the twelve helpers directly — which is exactly why it could not see a seeding
+hole — and `tests/conftest.py`'s autouse ambient-identity scrubber meant no
+other test could observe an ambient value surviving either. The new **O4**
+section therefore changes KIND: it runs a real user-facing verb
+(`ciu secrets list` — full STEP 1 plus `render_global_chain`, no daemon)
+against a really-generated workspace carrying the SHIPPED `test-repo` global
+config, and spies on the render rather than replacing it. Seven tests: the
+hostile-ambient loss (the reviewer's Repro A), machine facts staying
+ambient-first (the boundary, or the fix is a hammer), the corrupt export not
+crashing STEP 1 (Repro B), the regenerated export being unable to move
+identity (Repro C, answered rather than defended), stdout purity for `--json`,
+the no-table repair, and the reap note firing only when a checkout survives.
+
+**Ten existing tests migrated, three claims made STRONGER.** Every migration
+was a pre-cutover FIXTURE (writing only `ciu.env`), not a weakened claim.
+`deeper3`'s CIU-41 test became a three-way oracle — ambient, legacy file and
+overlay all disagree and only the overlay may win — and `deeper9`'s
+`--define-root` test likewise. `test_spec_contracts.build_repo` now pins
+`_physical_root_from_mountinfo`, making its documented
+"REPO_ROOT == PHYSICAL_REPO_ROOT == repo_root" true for the first time: inside
+a devcontainer mountinfo overrode the pre-set value, and those three tests
+passed only because the ambient leak this commit closes kept the stale value
+in `os.environ`. That is the clearest evidence I have that the leak was real.
+
+**Blocker 5 — the published migration snippet was broken.** CONSUMERS §11b's
+`tomllib.loads` one-liner parses the WHOLE overlay, but §11a explicitly
+sanctions operator content anywhere else in that Jinja template, so any real
+overlay raises `TOMLDecodeError` on it — while CIU's own reader slices the
+block first. Replaced with a `read_ciu_identity` helper that mirrors the
+shipped reader and distinguishes absent from indeterminate, plus the six-fact
+shell-name↔snake_case mapping table (three facts were missing from §11b
+entirely) and the ambient-override consequence.
+
+**Blocker 4's doc half.** SPEC S16.10 step 1 directly contradicted S3.1c in
+the same document; S8.7, S6.4a, S2.1, the S16 authority table, the shared-infra
+add/join, the budget survey, the `worktree up`/`exec` child environment, S16.9's
+labels and the identity-completeness interlock were all still describing
+`ciu.env` as a read source. Swept, each with the "until CIU-75" marker so the
+history stays legible. CONSUMERS' five stale paragraphs likewise, including
+`:487` which told a consumer `ciu.env` "must exist" when the table is what must.
+
+**dstdns re-audited exhaustively** (`dstdns@96fcf762`), because CIU-82 tells
+that repo to migrate on the strength of my inventory. Three importers of the
+vendored stub, not one — `config_helper.py:30`, `url_builder.py:18` (missed
+first time), and a `tests/smoke` probe whose `sys.path` hack has never worked —
+plus the sibling `config_constants.py` stub, six whole-file `source` sites, and
+**no key-extraction shell site at all**: the one grep recipe lives in a handoff
+doc and greps `CIU_INSTANCE_ID`, a key that has never existed. CIU-82 and §11b
+both corrected. Also recorded: dstdns's `$VAR` templates are *more* correct
+after this change, not less, so nobody migrates them needlessly.
+
+Suite: `3405 passed`, coverage `100%` line+branch, exit 0.
+
+**Gate at this commit:** run against `c979de02`; verdict, artifact and hash
+match in `ciu-P42-REPORT.md` §6.
