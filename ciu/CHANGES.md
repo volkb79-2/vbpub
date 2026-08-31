@@ -21,6 +21,90 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.6.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=71cc266385585e3e963a657f62e7dc922d8e756b -->
+
+### Added
+- feat(ciu): CIU-65 -- validate_config findings carry a severity; CIU-64 -- `ciu up` runs `ciu check` itself, by default (efa74cb2)
+
+### Fixed
+- fix(ciu): CIU-63 review follow-up -- fullmatch consistency + ambiguous-selector coverage gap (b5e0ff06)
+- fix(ciu): CIU-63 -- lint_graph's requires-satisfied pass recognizes stack:* refs (ba64e32e)
+- fix(ciu): CIU-74 review blocker 4 -- scaffold.py's Jinja render docstring was false (50637306)
+- fix(ciu): CIU-74 -- render_jinja2_text uses StrictUndefined; ciu.instances always present (ddf271d5)
+- fix(ciu): CIU-62 -- warn on the HookContext identity degradation (stderr on the --json path); file CIU-80 for the stricter variant (27ab3574)
+- fix(ciu): CIU-62 -- engine.py's S3.12 identity read was a missed site; correct the earlier commit's "every ciu.env reader" claim (bedd12c7)
+- fix(ciu): CIU-67 -- a distinct gate_timeout key, derived per container; CIU-68 -- the health gate self-selects and a `starting` dependency is waited for (c06b100f)
+- fix(ciu): CIU-62 -- every ciu.env reader now catches all three read failures; clean stops folding indeterminacy into "no network" (edfea16f)
+- fix(ciu): CIU-70 -- pg:/minio: probes resolve their container from the providing stack (ba69a40a)
+- fix(ciu): CIU-71 -- docker compose invocations pass --project-directory <repo_root> (3401a8e1)
+- fix(ciu): apply_lease gains now: override, fixes clock-coincidence test (CIU-76) (eb023f24)
+- fix(ciu): WORKTREE_TABLE_KEYS gains exec_targets (CIU-69) (8374ea13)
+- fix(ciu): CIU-78 -- bytecode-restore tests hardcoded ambient False, real gate env sets PYTHONDONTWRITEBYTECODE=1 (aa6cf1fd)
+- fix(ciu): correct stale assay pin version 2.2.0 -> 2.3.0, matching the vendored artifact (b8102bc2)
+
+### Changed
+- merge(ciu): ciu-P38 -- CIU-74 Jinja render StrictUndefined at the shared render site (71cc2663)
+- backlog(ciu): rename CIU-79 -> CIU-80 -- collision with ciu-P37's filing (a7388015)
+- backlog(ciu): mark CIU-63 FIXED -- ciu-P39, shape (b) implemented (40ffe1e8)
+- backlog(ciu): file CIU-79 -- scaffold.py's two Jinja render paths still lenient (5b00cc9b)
+- backlog(ciu): mark CIU-74 FIXED -- ciu-P38 (8416ce93) (4071a6aa)
+- backlog(ciu): mark CIU-62/64/65/67/68 FIXED, CIU-66 OPEN -- BLOCKED -- ciu-P41 (29a42754)
+- backlog(ciu): mark CIU-71 FIXED -- ciu-P37; file CIU-79 -- ciu dev has the same context/dockerfile defect (a2cb55fd)
+- backlog(ciu): mark CIU-69, CIU-76 FIXED -- ciu-P36 (review closeout) (4b471e63)
+- backlog(ciu): file CIU-76 -- apply_lease has no now: override (test-determinism gap); CIU-77 -- vendored self-test assay is 3 majors behind current (3.2.0), needs a compatibility pass not a pin bump (858766d1)
+- backlog(ciu,run-gate): file CIU-75 -- backport v8 F2 identity source (breaking, ciu 7.6); retriage CIU-55 -> RG-27 -- gate invocation history + query verb (a78a0046)
+- backlog(ciu): fix CIU-71 ID collision -- renumber StrictUndefined finding to CIU-74 (2347191f)
+- backlog(run-gate,ciu,assay): RG-25/RG-26 -- backport ciu CIU-72 (b)/(c) to the current gate; CIU-73 needs no code (b2884e76)
+- backlog(assay,ciu): 3.1.0 design review -- file B041-B048, resolve B037, rule the v9 producer wave; CIU-72/73 (8b196f0b)
+- backlog(ciu,run-gate): file CIU-71 -- build-context project-directory gap; RG-24 -- exec-mode container resolution is repo-scoped not worktree-scoped (92ae1917)
+- docs(ciu) v8 update before review (bc321102)
+- backlog(ciu): file CIU-67/CIU-68 -- health-gate timeout conflation and default-off gate (98174cc4)
+- backlog(ciu): file CIU-66 -- container_name() ignores which stack declared the service (8c6b235a)
+- backlog(ciu): CIU-48/49 -- dstdns's own follow-up is done, stop calling it owed (7d311542)
+- backlog(ciu): file CIU-63/64/65 -- stack:* lint gap, ciu-up auto-check, validate_config severity (a5b87282)
+
+### Documentation
+- docs(ciu): ciu-P38 LOG + REPORT -- rebase onto main (35 commits), final green gate (0cc3683c)
+- docs(ciu): ciu-P39 LOG + REPORT rewrite -- review round, rebase, final gate PASS (7f3fb7c5)
+- docs(ciu): ciu-P38 LOG + REPORT -- review round 1 closeout, final green gate (c5b13854)
+- docs(ciu): ciu-P38 LOG -- add entry for the CIU-74-FIXED backlog commit (bd5b17dc)
+- docs(ciu): ciu-P38 LOG + REPORT -- CIU-74 StrictUndefined, real gate verdict (3dfd584b)
+- docs(ciu): ciu-P41 round-2 gate verdict -- PASS at 75e54875 on current main (2d1623e3)
+- docs(ciu): ciu-P41 LOG + REPORT -- round-2 rebase onto CIU-70 and the warn ruling (75e54875)
+- docs(ciu): ciu-P41 closeout -- real post-rebase gate verdict (PASS), corrected hashes (8c33738d)
+- docs(ciu): ciu-P41 LOG + REPORT -- all four items, every design decision, real gate verdicts (eb6a73bf)
+- docs(ciu): ciu-P41 LOG -- CIU-62 landed; CIU-66 BLOCKED with its blast-radius analysis (c0bb2a80)
+- docs(ciu): ciu-P40 LOG + REPORT -- review round 1 closeout, clean gate (bb8a42ca)
+- docs(ciu): ciu-P37 LOG + REPORT -- review round 3 closeout, clean gate (7e31ae3e)
+- docs(ciu): CIU-71 -- fix backwards .env framing in CONSUMERS.md S18 (d7830f9e)
+- docs(ciu): ciu-P37 LOG + REPORT -- review round 2 closeout, final gate verdict (cea415a8)
+- docs(ciu): CIU-71 review fixes -- dockerfile/.env relocation, correct the inverted stack-dir-relative claim (dc37dd8e)
+- docs(ciu): ciu-P37 LOG + REPORT -- CIU-71 gate evidence and CIU-76/77/78 rebase trace (1e228738)
+- docs(ciu): ciu-P36 REPORT addendum -- review blockers fixed, real gate PASS (f05f40e8)
+- docs(ciu): ciu-P36 LOG addendum -- review blockers 1-3 fold-in record (6f0ea96c)
+- docs(ciu): fix docs/CONFIG.md's stale two-key [ciu.worktree] claim (CIU-69 review) (7ae8e865)
+- docs(ciu): ciu-P36 REPORT addendum -- CIU-76 re-run gate verdict (4a1f23d9)
+- docs(ciu): ciu-P36 LOG addendum -- CIU-76 fold-in + rebase record (79be9b6c)
+- docs(ciu): ciu-P36 REPORT -- CIU-69 verbatim gate verdict + evidence (22a87908)
+- docs(ciu): ciu-P36 LOG -- CIU-69 WORKTREE_TABLE_KEYS fix record (e4ad370e)
+- docs(ciu): ciu v8 proposal 2.1, add run-gate backlog reference N12 (8c3a7b68)
+- docs(ciu): ciu v8 proposal 2.1, spec 8.0.0-draft.2, includes feed back from assay 3.1 review (52e033a3)
+- docs(ciu): config vault - hook interaction (1763b35c)
+- docs(ciu): note local secret persistence in the wave swimlane (56db76e8)
+- docs(ciu): mermaid swimlane for the wave trace, fold in D-212's health-gate race (da1ce52e)
+- docs(ciu): revise the v8 integration prompt -- grant full design freedom, expand validation to the whole schema (c922f833)
+- docs(ciu): author the v8 wholistic integration dispatch prompt (a167104d)
+- docs(ciu): close the loop on the v8 design session -- reverse the "two gaps" framing (9735d434)
+- docs(ciu): correct realization-graph ownership — db-init, not db-core, owns app-facing DB facts (a679420c)
+- docs(ciu): correct realization-graph wave count — 5 real waves, not 3 (213f262b)
+- docs(ciu): add V8 realization-graph design note, cross-ref from the main proposal (25846e4a)
+
+### Testing
+- test(ciu): CIU-74 review blocker 3 -- cover render_configfiles' own instances setdefault (06f264a6)
+- test(ciu): oracle proving apply_lease's now= reaches make_lease_perpetual (CIU-76 review) (83f3dcdb)
+
 ## [7.5.0] - 2026-08-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=4084c260131b0401f85c0d7430c9c48bf58c2378 -->
