@@ -208,7 +208,7 @@ restored (`git checkout HEAD -- src/ciu/engine.py`), the non-UTF-8 case FAILS
 and the malformed-entry case PASSES — precisely the gap profile CIU-62
 attributes to that clause shape.
 
-## Commit 7 — backlog — blocker 3
+## Commit 7 — `64cfbe61` — backlog — blocker 3
 
 `backlog(ciu): mark CIU-62/64/65/67/68 FIXED, CIU-66 OPEN — BLOCKED -- ciu-P41`
 
@@ -230,4 +230,9 @@ CIU-65's row records the `should_exit_on` decoupling as an explicit
 **DECISION, do not "fix" this back in**, with the reasoning, since the
 entry's own original proposal says the opposite.
 
-Gate after this commit: see the REPORT's "Post-review gate" section.
+Gate after this commit: **`ciu: PASS (exit 0)` at `64cfbe61`**, R0 PASS +
+R1 PASS at 100.0% (changed-lines mode, branch required, `allow_excluded`
+false, zero files missing coverage). Verbatim, plus the verdict-artifact
+detail, in the REPORT's "Post-review gate" section. `64cfbe61` is the last
+commit touching code or the backlog; only a docs-only LOG/REPORT commit
+follows it.

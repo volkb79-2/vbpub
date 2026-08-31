@@ -559,7 +559,7 @@ LOG and here.
 clause fails the non-UTF-8 case and passes the malformed-entry case — exactly
 the gap profile CIU-62 attributes to `(OSError, WorkspaceEnvError)`.
 
-## Blocker 3 — the backlog (commit `1cfea1a3`)
+## Blocker 3 — the backlog (commit `64cfbe61`)
 
 All six rows marked, following `aa6cf1fd`/`4b471e63`'s convention (the
 RESOLUTION column changes; the description column is left intact), plus the
@@ -585,6 +585,65 @@ top-of-file "Last updated" narrative.
   `render_ciu_context` as its own small additive package** — prerequisite for
   both CIU-66 and CIU-51's `qname()`. Not built here, per the coordinator.
 
-## Post-review gate — commit `<FINAL_HASH>`
+## Post-review gate — commit `64cfbe61` — **PASS**
 
-<!-- FINAL_GATE -->
+`64cfbe61` is the last commit that touches code or the backlog; the only
+commit after it is this docs-only REPORT/LOG update, so
+`git diff 64cfbe61 HEAD --stat` lists nothing but this file and the LOG.
+That is the gated tree.
+
+`./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P41-checkpoint1-remainder`,
+verdict read in a SEPARATE step from the run (LESSONS L4), never off a pipe
+tail:
+
+```
+run-gate: rev 23 | lane ciu | env [environments.tester-unified] | slice dev-background.slice
+assay-2.3.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 64cfbe61c461ca863edb81a8a287593aa85e7e31
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: .../ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+EXIT=0
+```
+
+From the verdict artifact itself:
+
+```
+outcome: PASS | exit_code: 0 | commit: 64cfbe61c461ca863edb81a8a287593aa85e7e31
+  R0 PASS
+  R1 PASS  pct=100.0  branch=reported
+R1 coverage: pct=100.0 considered=5 covered=241 executable=241 branches=42/42
+files_missing_coverage: []
+judgment.r1: fail_under=100.0, mode=changed_lines, require_branch=true,
+             allow_excluded=false, base=a6e6ebe6
+```
+
+**Green, with zero failures — the first plain PASS this package has had**, and
+the three arrival-state failures are gone because the rebase carries their
+fixes (CIU-78, CIU-76), not because anything was suppressed. Whole-project
+run in the devcontainer venv on the same tree for cross-check: **3326 passed,
+0 failed**, `TOTAL 9778 statements / 0 missing / 3990 branches / 0 partial =
+100%`, with `src/ciu/engine.py` at 100% including the newly widened clause.
+
+## Final state
+
+| | |
+|---|---|
+| branch | `fix/ciu-P41-checkpoint1-remainder` |
+| based on | `384993b6` (current main) |
+| last code/backlog commit | **`64cfbe61`** — gated PASS |
+| commits | 7 (5 replayed by the rebase + the `engine.py` fix + the backlog/report closeout) |
+| items | CIU-62, CIU-64, CIU-65, CIU-67, CIU-68 FIXED · CIU-66 BLOCKED with its analysis in the backlog |
+
+Still open for the controller, none of them blocking this merge:
+
+- **CIU-66's next step** is named in its backlog row (expose a per-stack
+  identity fact in `render_ciu_context`, its own small additive package).
+  Not built here, per the coordinator.
+- **`ciu up --dir <stack>`** does not get CIU-64's preflight — different code
+  path.
+- **Whether `deploy._workspace_identity` / `engine.py`'s S3.12 read should
+  RAISE rather than degrade to `{}`** on an unreadable `ciu.env` — a coherent
+  stricter posture, deliberately not taken unilaterally (reasoning under
+  blocker 2 above).
