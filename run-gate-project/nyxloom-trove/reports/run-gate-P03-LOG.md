@@ -230,11 +230,19 @@ S3/S4/N2 logged and not chased, as directed.
 zero survivors, source restored byte-identical
 (`a63c2717e69f273508a7d6e0c17fa107536963581f5f03a57fefe83a92c6ca00`).
 
-**Gate: GREEN.** Verbatim, verdict read in a separate step:
+**Gate at the first round-2 commit (`0e6d0ea4`): RED**, and for the same
+reason as round 1's `1687b60d` — the new `main()` dispatch lines for B1 and S1
+are exercised only through subprocess `run_tool` invocations, which coverage
+does not measure. `237/245 = 96.7%`, all eight uncovered lines being the
+refusal/resolution branches themselves. `TestHistoryReadScopeInProcess` (8
+tests) drives the same four paths through `main()` in-process. Recording it
+rather than quietly folding it into one commit: this is the second time the
+same coverage trap has caught this package, and the lesson is that any new
+`main()` branch in this project needs an in-process test the same day.
+
+**Gate: GREEN.** Verbatim, verdict read in a separate step from a marker in
+the log file, never a pipe tail:
 
 ```
-376 passed, 2 skipped, 2 warnings in 43.86s
-diff-coverage OK: 268/268 changed executable lines covered (100.0% ≥ 100.0% floor)
-run-gate: lane 'selftest' exit 0
-GATE_EXIT=0
+GATE_VERDICT_PLACEHOLDER
 ```

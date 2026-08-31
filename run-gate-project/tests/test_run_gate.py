@@ -5649,3 +5649,72 @@ class TestJsonFlagScope:
         assert "REFUSES it by name" in out.stdout
         assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
+
+
+class TestHistoryReadScopeInProcess:
+    """The B1 and S1 paths driven through `main()` in-process — the
+    subprocess tests above prove the shipped entrypoint, these reach the
+    dispatch wiring where coverage can see it."""
+
+    def _two_trees(self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        other = tmp_path / "wt"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q",
+                        str(other), "-b", "side"], check=True,
+                       capture_output=True, text=True)
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=11.0)
+        rec = run_gate.start_run_record("suite", other, repo)
+        rec["_started_monotonic"] = time.monotonic() - 77.0
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(other / "proj", other, rec, 10)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        return repo, proj, other
+
+    def test_worktree_read_names_and_reads_that_tree(self, tmp_path,
+                                                     monkeypatch, capsys):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "suite", "--worktree",
+                              str(other)]) == 0
+        out = capsys.readouterr().out
+        assert f"tree:  {other}" in out
+        assert "THAT tree, not the invoking checkout" in out
+        assert str(other / "proj/.run-gate/history.json") in out
+        assert "77.0s" in out and "11.0s" not in out
+
+    def test_worktree_read_json_carries_the_scope(self, tmp_path, monkeypatch,
+                                                  capsys):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "suite", "--worktree", str(other),
+                              "--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["worktree_scope"] == str(other)
+        assert payload["lanes"]["suite"]["latest"]["duration_seconds"] == 77.0
+
+    def test_nonexistent_worktree_refuses_instead_of_answering(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "--worktree",
+                              str(tmp_path / "nope")]) == 2
+        captured = capsys.readouterr()
+        assert "not a directory" in captured.err
+        assert "not written yet" not in captured.out
+
+    def test_non_git_worktree_refuses_with_gits_own_status(self, tmp_path,
+                                                           monkeypatch,
+                                                           capsys):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert run_gate.main(["history", "--worktree", str(plain)]) == 3
+        assert "not written yet" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("args", [["--list", "--json"], ["--json"],
+                                      ["suite", "--json"], ["doctor", "--json"]])
+    def test_json_outside_history_refuses_by_name(self, tmp_path, monkeypatch,
+                                                  capsys, args):
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(args) == 2
+        assert "--json is honored by the `history` verb only" \
+            in capsys.readouterr().err
