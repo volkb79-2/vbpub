@@ -54,6 +54,16 @@ restatement of the technical detail below it.
 - **Docs only, no behavior change:** a new CONSUMERS.md migration note
   (hand-rolled `internal_host` override → `--shared-infra-ref-services`) and
   a consolidated "Optional extras" install table in README.md.
+- **Action needed if you set `[deploy.health].timeout` as a GATE budget:**
+  CIU-67 stops reading that key as the S7.7 gate's overall wait budget — it
+  is the per-probe Docker HEALTHCHECK duration and only that. Declare
+  `[deploy.health].gate_timeout` for the gate, or (better) let it derive per
+  container from each service's own healthcheck. If you added
+  `health_timeout` overrides to work around the old behavior, they still win
+  and can now be removed.
+- **Read this if your stacks use `stack:*:healthy|completed` requirements:**
+  CIU-68 makes the health gate turn itself on for those runs, and makes a
+  dependency reported `starting` be waited for rather than failed.
 - **New default-on behavior — read this if you run `ciu up`:** CIU-64 makes
   `ciu up` run `ciu check`'s static pipeline itself, before STEP 1, and
   REFUSE (exit 2) on any ERROR-severity finding — including one from a
@@ -172,6 +182,24 @@ restatement of the technical detail below it.
   additive: the existing per-feature mentions in `docs/CONFIG.md` and
   `docs/CONSUMERS.md` are unchanged. Docs-only; no behavior changes.
 
+- feat(ciu): **CIU-67 — `[deploy.health].gate_timeout`, a distinct key for
+  the S7.7 gate's overall wait budget** (SPEC S7.7, ciu-P41).
+  `[deploy.health].timeout` was read for two semantically incompatible jobs:
+  the Docker `HEALTHCHECK` field (how long ONE probe attempt may run —
+  correctly a few seconds) and the inter-phase gate's overall budget for a
+  container to reach `healthy` at all (which needs to be on the order of that
+  container's grace period). The field's own
+  interval/timeout/retries/start_period shape IS Docker's HEALTHCHECK syntax,
+  so nothing hinted it was dual-purposed. A container's gate budget now
+  resolves: the phase entry's `health_timeout` (unchanged escape hatch), then
+  `gate_timeout`, then a value DERIVED from that container's own rendered
+  healthcheck as `start_period + retries × interval`, with Docker's
+  documented defaults for omitted fields.
+
+  Live-reproduced: `timeout = "5s"` — a correct, deliberate per-probe value —
+  gave a container whose own healthcheck declared `start_period = 240s` a
+  five-second gate budget, failing it on every single fresh deploy while it
+  was converging normally.
 - feat(ciu): **CIU-65 — a `validate_config` finding can now carry a
   severity** (SPEC S9.5, ciu-P41). `validate_config(config, ctx)` returned a
   bare `list[str]` in which every finding was implicitly the same weight, so
@@ -200,6 +228,40 @@ restatement of the technical detail below it.
   according to ambient shell state.
 
 ### Changed
+- fix(ciu)!: **CIU-68 — the S7.7 health gate now runs when it is needed, and
+  a dependency reported `starting` is waited for, not failed** (SPEC S7.7,
+  ciu-P41). Two compounding halves of one live failure: a genuinely fresh
+  `ciu clean && ciu up` failed at phase_2 because `stack:infra/vault:healthy`
+  reported `starting`; vault reported healthy moments later, unobserved.
+
+  (a) The inter-phase gate — the ONLY mechanism that makes a
+  `stack:*:healthy|completed` requirement reliable across a phase boundary —
+  was not part of `ciu up`'s default action sequence: `health_after_phase`
+  required BOTH `--deploy` and `--healthcheck`, and neither flag appeared in
+  `ciu up --help`, so an operator could not discover it from the tool. The
+  gate is now SELF-SELECTING: it turns itself on whenever any stack in the
+  selection declares such a requirement, announcing the ref responsible. A
+  run with no such ref is unchanged and pays nothing. Both flags are also now
+  listed in `ciu up --help`, discoverability being independently broken.
+
+  (b) The per-phase live provisioning probe called `probe_ref` exactly once
+  per requirement with zero retry, so a dependency reported `starting` (not
+  yet converged, but on track) was treated identically to one that will never
+  satisfy. `ProbeResult` gained a `retryable` flag, set ONLY where the
+  condition genuinely resolves on its own — `stack:*:healthy` reporting
+  `starting`, and `stack:*:completed` whose container is still running — and
+  those are now polled to `gate_timeout` (or the 90s default) at the gate's
+  own 5s cadence. Everything else still fails PROMPTLY: an absent container,
+  an `unhealthy` one, a non-zero exit, an unavailable daemon and an
+  unparseable state will not resolve on their own, and polling them would
+  only make real misconfigurations slow.
+
+  **Action needed if** you deploy stacks with `stack:*:healthy|completed`
+  requirements: those runs now gate on health after each phase where they
+  previously did not, so a phase that starts an unhealthy container fails
+  there instead of at the next phase's preflight. That is the intended fix.
+  If a run gates where you do not want it to, remove the requirement or set
+  `health = false` on the phase entry.
 - feat(ciu)!: **CIU-64 — `ciu up` now runs `ciu check` itself, by default**
   (SPEC S13.4c, ciu-P41). Before this, both the provisioning-graph lint and
   every hook's `validate_config` ran ONLY on the explicit `ciu check` verb.

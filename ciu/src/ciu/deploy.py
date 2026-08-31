@@ -44,6 +44,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
@@ -638,6 +639,83 @@ def provisioning_graph(rendered: dict[str, dict]) -> dict[str, dict]:
     return graph
 
 
+#: Seconds between polls of a retryable provisioning requirement (CIU-68).
+#: Matches :func:`run_container_health_gate`'s own poll cadence, so the two
+#: mechanisms that wait on the same convergence do not disagree about how
+#: often to look.
+_REQUIREMENT_POLL_INTERVAL_S = 5.0
+
+
+def resolve_requirement_poll_budget_s(config: dict) -> float:
+    """The bounded-poll budget for a retryable requirement (CIU-68(b)).
+
+    ``[deploy.health].gate_timeout`` when the operator declared one (CIU-67's
+    key: it is the same question — how long may a container legitimately take
+    to converge), else :data:`DEFAULT_GATE_BUDGET_S`.
+
+    Why this one does NOT derive per container the way S7.7's gate does: the
+    gate reads each target's own rendered compose model, which it has in
+    hand. This preflight probes a container belonging to a stack in an
+    EARLIER phase, whose compose model this phase's render does not carry —
+    so the per-container derivation genuinely is not available here, and
+    `gate_timeout` is the operator's lever. Both fall back to the same
+    Docker-derived default, so one number governs both waits.
+
+    ``[deploy.health].timeout`` is deliberately not consulted: it is one
+    probe attempt's duration (CIU-67).
+    """
+    declared = resolve_gate_timeout_s(config)
+    return DEFAULT_GATE_BUDGET_S if declared is None else declared
+
+
+#: A `stack:<selector>:healthy` / `:completed` requirement — the ONLY ref kind
+#: whose truth depends on a container having converged across a phase
+#: boundary, and therefore the one the S7.7 inter-phase gate exists to make
+#: reliable (CIU-68).
+_STACK_HEALTH_REF_RE = re.compile(r"^stack:.+:(healthy|completed)$")
+
+
+def selection_stack_health_requirement(
+    selection: list[dict], rendered: Optional[dict[str, dict]]
+) -> Optional[str]:
+    """The first `stack:*:healthy|completed` requirement in *selection*, or None.
+
+    CIU-68(a). The S7.7 inter-phase health gate is the ONLY mechanism that
+    makes such a requirement reliable across a phase boundary, yet it was not
+    part of `ciu up`'s default action sequence: `health_after_phase` was
+    ``"deploy" in actions and "healthcheck" in actions``, so a bare `ciu up`
+    — the invocation this project's own docs prescribe — never gated, and
+    neither flag appeared in `ciu up --help` for an operator to discover.
+
+    Declaring one of these refs is therefore read as declaring the need for
+    the gate: SELF-SELECTING, so a run with no such refs pays nothing. This
+    is a derivation from what the selection already says, not a new default
+    imposed on everybody.
+
+    Shape errors are not this function's to report: a stack whose root table
+    cannot be resolved is skipped here and refused moments later, loudly, by
+    :func:`provisioning_preflight`'s own ``validate_stack_shape`` call on the
+    same config.
+    """
+    if not rendered:
+        return None
+    for entry in selection:
+        stack_cfg = rendered.get(entry.get("path", ""))
+        if not isinstance(stack_cfg, dict):
+            continue
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        requires = (stack_cfg.get(root_key) or {}).get("requires") or []
+        if not isinstance(requires, list):
+            continue
+        for ref in requires:
+            if isinstance(ref, str) and _STACK_HEALTH_REF_RE.match(ref):
+                return ref
+    return None
+
+
 def provisioning_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -706,15 +784,52 @@ def provisioning_preflight(
         # `selection` — see `provisioning_graph`.
         probe_graph = provisioning_graph(rendered)
         all_failed: list[str] = []
+        # CIU-68(b): one bounded poll budget for the whole probe pass, taken
+        # once so every retryable requirement in this phase shares one wall
+        # clock rather than each getting a fresh full budget in sequence.
+        budget_s = resolve_requirement_poll_budget_s(config)
+        deadline = time.monotonic() + budget_s
         for entry in selection:
             rel = entry["path"]
             if rel not in stacks:
                 continue
             requires = stacks[rel].get("requires", [])
             for ref in requires:
+                # CIU-70 + CIU-68(b), merged deliberately: the `stacks=`
+                # resolution graph and the bounded retry are orthogonal and
+                # BOTH are required. Taking either side of this conflict
+                # wholesale silently reverts the other — CIU-70's absence
+                # fails every `pg:`/`minio:` ref closed with "no
+                # requires/provides graph given"; CIU-68(b)'s absence brings
+                # back the one-shot probe that failed a fresh `ciu up` on a
+                # dependency reported `starting`. So the graph is threaded
+                # through BOTH probe calls below, the initial one and the
+                # in-loop re-probe.
                 result = provisioning_pkg.probe_ref(
                     ref, config, repo_root, stacks=probe_graph
                 )
+                # A one-shot probe treated "reported `starting`, on track"
+                # exactly like "will never satisfy" — the live failure mode
+                # CIU-68 was filed for. Only a RETRYABLE non-satisfaction
+                # polls; everything else still fails immediately.
+                announced = False
+                while (
+                    not result.satisfied
+                    and result.retryable
+                    and time.monotonic() < deadline
+                ):
+                    if not announced:
+                        info(
+                            f"[S7.7] waiting up to {budget_s:g}s for '{ref}' "
+                            f"(stack '{rel}'): {result.reason}"
+                        )
+                        announced = True
+                    time.sleep(_REQUIREMENT_POLL_INTERVAL_S)
+                    result = provisioning_pkg.probe_ref(
+                        ref, config, repo_root, stacks=probe_graph
+                    )
+                if announced and result.satisfied:
+                    info(f"[S7.7] '{ref}' satisfied while waiting")
                 if not result.satisfied:
                     all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
 
@@ -1300,12 +1415,100 @@ def run_container_health_gate(
     )
 
 
+#: Docker's own documented HEALTHCHECK defaults, used when a compose service
+#: declares a healthcheck but omits these fields. They are READ facts about
+#: what the daemon will do, not invented numbers (CIU-67).
+DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S = 30.0
+DOCKER_HEALTHCHECK_DEFAULT_RETRIES = 3
+DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S = 0.0
+
+#: The S7.7 gate budget for a container whose healthcheck declares no timings
+#: at all — Docker's own defaults, folded through the same derivation below
+#: (0s grace + 3 retries × 30s = 90s). Also the fallback budget for CIU-68's
+#: provisioning-requirement poll, which probes a container in ANOTHER stack
+#: whose compose model this phase's render does not carry.
+DEFAULT_GATE_BUDGET_S = (
+    DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S
+    + DOCKER_HEALTHCHECK_DEFAULT_RETRIES * DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S
+)
+
+
+def derive_gate_budget_s(definition: dict) -> float:
+    """One compose service definition → its own S7.7 gate budget, in seconds.
+
+    CIU-67. ``[deploy.health].timeout`` was being read for two semantically
+    incompatible jobs with no distinct key: (1) the Docker ``HEALTHCHECK``
+    field — how long ONE probe attempt may run, correctly a few seconds; and
+    (2) the S7.7 inter-phase gate's OVERALL budget for a container to reach
+    ``healthy`` at all, which needs to be on the order of that container's
+    grace period. A consumer authoring ``timeout = "5s"`` with only meaning
+    (1) in mind — and the field's own interval/timeout/retries/start_period
+    shape IS Docker's HEALTHCHECK syntax, so nothing hints otherwise —
+    silently set meaning (2) to five seconds.
+
+    The budget is DERIVED, not defaulted: ``start_period + retries ×
+    interval`` off the container's own declared healthcheck. That is Docker's
+    own worst case for a container still legitimately converging — the full
+    grace period during which failures do not count, plus the consecutive
+    retries it takes for a post-grace probe sequence to become conclusive.
+    Fields the healthcheck omits fall back to Docker's documented defaults
+    (the daemon's behaviour, a read fact).
+
+    A service declaring NO healthcheck at all gets
+    :data:`DEFAULT_GATE_BUDGET_S`, which it never actually waits on: such a
+    container classifies as ``no-healthcheck``, a READY status that resolves
+    on the gate's very first poll.
+    """
+    healthcheck = definition.get("healthcheck")
+    if not isinstance(healthcheck, dict):
+        return DEFAULT_GATE_BUDGET_S
+    raw_start_period = healthcheck.get("start_period")
+    start_period = (
+        DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S if raw_start_period is None
+        else _seconds(raw_start_period, default=DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S)
+    )
+    raw_interval = healthcheck.get("interval")
+    interval = (
+        DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S if raw_interval is None
+        else _seconds(raw_interval, default=DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S)
+    )
+    raw_retries = healthcheck.get("retries")
+    try:
+        retries = int(raw_retries) if raw_retries is not None else DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    except (TypeError, ValueError):
+        warn(
+            f"could not parse healthcheck retries {raw_retries!r}; using "
+            f"{DOCKER_HEALTHCHECK_DEFAULT_RETRIES}"
+        )
+        retries = DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    if retries < 1:
+        retries = DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    return start_period + retries * interval
+
+
+def resolve_gate_timeout_s(config: dict) -> Optional[float]:
+    """``[deploy.health].gate_timeout`` in seconds, or ``None`` when undeclared.
+
+    CIU-67's distinct key for the S7.7 gate's overall wait budget. ``None``
+    means "derive per container" (:func:`derive_gate_budget_s`) rather than
+    "use zero" — an absent key is not a value.
+
+    ``[deploy.health].timeout`` is deliberately NOT consulted here: that key
+    is the per-probe Docker HEALTHCHECK duration and reusing it as a gate
+    budget is the defect CIU-67 exists to close.
+    """
+    raw = config.get("deploy", {}).get("health", {}).get("gate_timeout")
+    if raw is None:
+        return None
+    return _seconds(raw, default=DEFAULT_GATE_BUDGET_S)
+
+
 def resolve_selection_health_containers(
     repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
     *,
-    default_timeout_s: float,
+    default_timeout_s: Optional[float],
 ) -> dict[str, float]:
     """Resolve exact health-gate targets from selected stacks' Compose models.
 
@@ -1319,12 +1522,21 @@ def resolve_selection_health_containers(
     missing identities fail closed with an authoring error instead of polling
     a fabricated container name until timeout.
 
-    Returns a ``{container_name: timeout_s}`` mapping (CIU-QOL-8): each phase
-    entry's containers get its own resolved timeout — either its declared
-    ``health_timeout`` override (parsed via the existing ``_seconds()``
-    duration parser) or *default_timeout_s* when no override is declared. A
-    selection where no entry declares an override yields the same
-    *default_timeout_s* for every container, matching pre-package behavior.
+    Returns a ``{container_name: timeout_s}`` mapping (CIU-QOL-8). Each
+    container's budget resolves most-specific-first (CIU-67):
+
+    1. the phase entry's own ``health_timeout`` override (the per-service
+       escape hatch, unchanged — parsed via the existing ``_seconds()``);
+    2. *default_timeout_s* — ``[deploy.health].gate_timeout`` when the
+       operator declared one, applying to every container in the selection;
+    3. otherwise DERIVED per container from its own compose healthcheck by
+       :func:`derive_gate_budget_s`.
+
+    *default_timeout_s* of ``None`` selects step 3. Before CIU-67 this
+    parameter was ``[deploy.health].timeout`` — the per-PROBE Docker
+    HEALTHCHECK duration — which meant a correct 5s probe timeout silently
+    became a 5s overall gate budget for a container whose own declared grace
+    period was four minutes.
     """
     import yaml
 
@@ -1339,8 +1551,8 @@ def resolve_selection_health_containers(
         if not phases_pkg.service_health_enabled(service_cfg):
             continue
         raw_override = phases_pkg.service_health_timeout(service_cfg)
-        entry_timeout_s = (
-            _seconds(raw_override, default=default_timeout_s)
+        entry_timeout_s: Optional[float] = (
+            _seconds(raw_override, default=default_timeout_s or DEFAULT_GATE_BUDGET_S)
             if raw_override is not None
             else default_timeout_s
         )
@@ -1405,7 +1617,13 @@ def resolve_selection_health_containers(
             cname = cname.strip()
             if cname not in seen:
                 seen.add(cname)
-                resolved[cname] = entry_timeout_s
+                # CIU-67: with no explicit override at either level, the
+                # budget comes from THIS container's own declared healthcheck
+                # — a derivation, never `[deploy.health].timeout`.
+                resolved[cname] = (
+                    entry_timeout_s if entry_timeout_s is not None
+                    else derive_gate_budget_s(definition)
+                )
 
         if active_count == 0:
             raise ValueError(
@@ -1496,8 +1714,9 @@ def action_deploy(
     # S3.12 / CIU-44: one selection-facts snapshot for every render/hook of
     # this deploy — the FULL selected set, not per-stack slices.
     ciu_ctx = profiles_pkg.render_ciu_context(profile, selection)
-    health_cfg = profile.config.get("deploy", {}).get("health", {})
-    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
+    # CIU-67: the GATE's budget, not `[deploy.health].timeout` (that key is
+    # one probe attempt's duration). None here means "derive per container".
+    default_timeout_s = resolve_gate_timeout_s(profile.config)
 
     deployed: list[str] = []
     failed: list[str] = []
@@ -1703,11 +1922,9 @@ def action_healthcheck(
     if not selection:
         warn("No services selected to check")
         return 0
-    health_cfg = profile.config.get("deploy", {}).get("health", {})
-    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
     container_timeouts = resolve_selection_health_containers(
         repo_root, profile, selection,
-        default_timeout_s=default_timeout_s,
+        default_timeout_s=resolve_gate_timeout_s(profile.config),  # CIU-67
     )
     if not container_timeouts:
         info("No health-enabled containers selected; health gate passes")
@@ -4082,10 +4299,6 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     if not actions:
         actions = ["deploy"]
         info("No action specified; defaulting to --deploy")
-    # Health gate after a successful deploy phase when --healthcheck is also
-    # requested alongside --deploy.
-    health_after_phase = "deploy" in actions and "healthcheck" in actions
-
     rc = 0
     deploy_needs_preflight = any(a in ("deploy",) for a in actions)
 
@@ -4155,6 +4368,24 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
         )
+
+    # S7.7 inter-phase health gate. Explicitly requested by `--deploy
+    # --healthcheck`, and — CIU-68(a) — turned on by the selection itself
+    # whenever any stack declares a `stack:*:healthy|completed` requirement,
+    # because that gate is the only thing that makes such a requirement
+    # reliable across a phase boundary. Self-selecting: a run with no such
+    # ref pays nothing. Computed HERE, after `rendered` exists, since the
+    # answer is derived from the rendered selection.
+    health_after_phase = "deploy" in actions and "healthcheck" in actions
+    if "deploy" in actions and not health_after_phase:
+        gate_ref = selection_stack_health_requirement(selection, rendered)
+        if gate_ref is not None:
+            health_after_phase = True
+            info(
+                f"[S7.7] health gate enabled for this run: a selected stack "
+                f"requires '{gate_ref}', which only the inter-phase health "
+                "gate can make reliable (CIU-68)"
+            )
 
     for action in actions:
         info(f">>> action: {action}")

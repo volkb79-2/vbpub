@@ -1100,8 +1100,57 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   genuinely slow container with a longer override is polled all the way to
   its own deadline and is not spuriously failed by a shorter timeout meant
   for other containers. A selection where no entry declares `health_timeout`
-  is unaffected: every container shares `[deploy.health].timeout`, byte-for-
-  byte the same behavior as before this key existed.
+  resolves each container's budget from the two sources below.
+
+  **The gate's budget is a different question from a probe's timeout
+  (CIU-67, normative).** `[deploy.health].timeout` is the Docker
+  `HEALTHCHECK` field — how long ONE probe attempt may run, correctly a few
+  seconds. It is NOT the gate's overall budget for a container to reach
+  `healthy` at all, and CIU no longer reads it as one. Each container's gate
+  budget resolves most-specific-first:
+
+  1. the phase entry's own `health_timeout` (above);
+  2. `[deploy.health].gate_timeout`, the global lever for this question,
+     when declared;
+  3. otherwise DERIVED from that container's own rendered healthcheck as
+     `start_period + retries × interval` — Docker's own worst case for a
+     container still legitimately converging: the full grace period during
+     which failures do not count, plus the consecutive retries a post-grace
+     probe sequence needs to become conclusive. Fields the healthcheck omits
+     use Docker's documented defaults (`interval` 30s, `retries` 3,
+     `start_period` 0s); a service declaring no healthcheck at all gets the
+     same 90s, which it never waits on (it classifies `no-healthcheck`, a
+     READY status that resolves on the gate's first poll).
+
+  Live-reproduced before this rule existed: a deliberate `timeout = "5s"`
+  gave a container whose own healthcheck declared `start_period = 240s` a
+  five-second gate budget, failing it on every fresh deploy while it was
+  converging normally.
+
+  **The gate is self-selecting (CIU-68(a), normative).** It runs when
+  `--deploy --healthcheck` are both requested, AND whenever any stack in the
+  selection declares a `stack:<name>:healthy|completed` requirement — the
+  gate is the only mechanism that makes such a requirement reliable across a
+  phase boundary, so declaring one is read as declaring the need for it. A
+  selection with no such ref is unchanged and pays nothing. CIU announces
+  the auto-enable, naming the ref responsible. Before this, a bare `ciu up`
+  — the invocation this project's own docs prescribe — never gated, and
+  neither `--deploy` nor `--healthcheck` appeared in `ciu up --help` for an
+  operator to discover; both are now listed there.
+
+  **A requirement reported `starting` is polled, not failed (CIU-68(b),
+  normative).** The per-phase live provisioning probe polls a requirement
+  whose probe reports a RETRYABLE non-satisfaction — `stack:*:healthy`
+  reporting `starting` (inside its own `start_period`), and
+  `stack:*:completed` whose container is still running — up to
+  `[deploy.health].gate_timeout` (or the same 90s default), at the gate's
+  own 5s cadence. Every other non-satisfaction still fails PROMPTLY: an
+  absent container, an `unhealthy` one, a non-zero exit, an unavailable
+  daemon and an unparseable state will not resolve on their own, and polling
+  them would only make real misconfigurations slow. Live-reproduced: a fresh
+  `ciu up` failed at phase_2 because `stack:infra/vault:healthy` reported
+  `starting` on its one and only probe; vault reported healthy moments
+  later, unobserved.
 
   `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
   probes only external executables in the declared image. Shell builtins,

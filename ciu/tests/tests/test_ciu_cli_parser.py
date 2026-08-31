@@ -161,7 +161,14 @@ class TestPerVerbHelp:
 
     def test_short_flag_also_works(self, capsys, monkeypatch):
         out = self._help_out(capsys, monkeypatch, ["up", "-h"])
-        assert "ciu up" in out and "--dir" in out and "--deploy" not in out
+        assert "ciu up" in out and "--dir" in out
+        # `--stop` replaces `--deploy` as this assertion's leak sentinel:
+        # CIU-68 found that `--deploy`/`--healthcheck` being undiscoverable
+        # from `ciu up --help` was itself a defect, so the curated text now
+        # lists them ON PURPOSE. `--stop` remains a legacy ciu-deploy action
+        # flag that must not leak through.
+        assert "--stop" not in out
+        assert "--deploy" in out and "--healthcheck" in out
 
     def test_every_verb_has_a_help_entry(self):
         # Every dispatchable verb (except the bare top-level) is covered.

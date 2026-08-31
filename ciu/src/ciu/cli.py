@@ -245,6 +245,16 @@ ciu up --host NAME [selection...]                              # render-on-targe
 ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
   Render + materialise secrets + start the Docker Compose stack(s).
 
+  Actions (S10.2) — with none of these, `ciu up` runs --deploy:
+  --deploy           run each phase in order (the default action)
+  --healthcheck      run the S7.7 health gate. Combined as
+                     `--deploy --healthcheck` it gates AFTER each phase, so a
+                     later phase's `stack:<name>:healthy|completed`
+                     requirement is met before that phase starts. Since
+                     CIU-68 you rarely need to type it: the gate turns itself
+                     on whenever a selected stack declares such a requirement
+  --check            run the static config-validation pipeline (S13.4a)
+
   Profile/multi-stack mode:
   --profile NAME     deploy the named host profile (repeatable; default: active profile)
   --phases N,M       restrict to the given phase numbers

@@ -252,7 +252,7 @@ Subsections:
 | Section | Purpose | Spec |
 |---|---|---|
 | `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
-| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`); `timeout` is the default, overridable per phase-service via `health_timeout` (see below) | S7.7 |
+| `[deploy.health]` | Docker `HEALTHCHECK` timings (`interval`, `timeout`, `retries`, `start_period`) — `timeout` is ONE probe attempt's duration — plus `gate_timeout`, the S7.7 gate's OVERALL wait budget for a container to reach `healthy` (CIU-67). Two different questions, two keys; `gate_timeout` is overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |
 | `[deploy.control]` | Named boolean flags for phase `enabled` fields | S7.2 |
@@ -278,8 +278,12 @@ within one shared poll loop, so a slow-but-legitimate service's override does
 not force every other container in the same call to wait behind it, and a
 short override on a genuinely broken service is not masked behind a slower
 service's ceiling — the broken one fails at its own, shorter deadline. A
-selection where no entry sets `health_timeout` is unaffected: every container
-shares `[deploy.health].timeout`, exactly as before this key existed. Worked
+selection where no entry sets `health_timeout` falls back to
+`[deploy.health].gate_timeout` if declared, and otherwise to a budget DERIVED
+from each container's own healthcheck (`start_period + retries × interval`).
+It does NOT fall back to `[deploy.health].timeout`: that key is one probe
+attempt's duration, and reading it as a gate budget gave a container with a
+240s `start_period` a 5s budget (CIU-67). Worked
 example — a slow identity provider next to fast worker stacks:
 
 ```toml
@@ -293,6 +297,25 @@ health_timeout = "5s"     # workers should be healthy almost immediately;
                           # a broken worker should fail fast, not hide
                           # behind Authentik's 240s ceiling
 ```
+
+`[deploy.health].gate_timeout` (CIU-67, [S7.7]) is the same budget one level
+up: it applies to every container in the selection that declares no
+`health_timeout` of its own. Declare it when you want one explicit ceiling
+instead of the per-container derivation — never by copying `timeout`, which
+answers a different question:
+
+```toml
+[deploy.health]
+interval     = "10s"
+timeout      = "5s"      # ONE probe attempt (the Docker HEALTHCHECK field)
+retries      = 3
+start_period = "30s"
+gate_timeout = "600s"    # how long the S7.7 gate waits for `healthy` overall
+```
+
+Omit `gate_timeout` entirely and each container's budget is derived from its
+own rendered healthcheck (`start_period + retries × interval`), which is
+usually the better answer — it is already tuned per service.
 
 Optional `one_shot = true` (ciu-P23, V8-PREP-5, [S7.2]) DECLARES that a
 service is a run-to-completion stack (e.g. a migration/db-init container)
