@@ -1024,11 +1024,23 @@ own directory, which is `docker compose`'s default when no
 
 **`dockerfile:` moves with `context:`.** Compose resolves a `build.dockerfile`
 path relative to `build.context`, not relative to `--project-directory`
-directly (the same rule `ciu dev`'s own `_build_dev_image` already applies —
+directly (the same rule `ciu dev`'s own `_build_dev_image` applies —
 `src/ciu/dev.py`'s `Path(context) / dockerfile`). Once `context` becomes
 repo-root-relative, an UNSET or bare `dockerfile: Dockerfile` now looks for
 `<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never what a
 stack author wants. **Both keys need to move together.**
+
+**`ciu dev`'s `[<root>.dev].build.context`/`dockerfile` share this exact
+convention (CIU-79).** `ciu dev` runs a plain `docker build`, not `docker
+compose`, so there is no `--project-directory` flag to reach for — CIU
+resolves `context` to an absolute repo-root-relative path itself before
+building the `docker build` argv, then joins `dockerfile` onto that same
+resolved context, matching this section's rule exactly. A `[<root>.dev]`
+profile's `build.context = "."` therefore means the same thing a stack's
+`ciu.compose.yml.j2` `build.context = "."` does — the repo root, not the
+stack dir — so a stack that dual-ships both a production `build` block and
+a `[<root>.dev].build` block can write `context`/`dockerfile` identically in
+both places.
 
 Concretely, if a stack directory `infra/mock-targets/` declares:
 

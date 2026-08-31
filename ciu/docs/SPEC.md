@@ -738,7 +738,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `mount` (list of `docker -v` specs — source bind + anonymous volumes);
   `depends_on` (list of service names gated on health before prebuild, reusing
   the S9.3 readiness probe); `workdir` (default `/app`); `env` (table);
-  `network` (defaults to the stack's `deploy.network_name`).
+  `network` (defaults to the stack's `deploy.network_name`). **`build.context`
+  (and `dockerfile`, which moves WITH `context` — see S8.1a's rule, which
+  `ciu dev` shares) resolves against the REPO ROOT, not the stack dir**
+  (CIU-79) — `ciu dev` runs a plain `docker build` with no
+  `--project-directory` equivalent, so `_build_dev_image` resolves `context`
+  to an absolute repo-root-relative path itself before building the argv,
+  matching the convention S8.1a established for `ciu up`'s `docker compose`
+  invocations.
 - **S5a.2** `ciu dev <stack>` renders the stack config (S3), validates the
   profile (shape errors abort with `[S5a]`, exit 2), waits for each `depends_on`
   service to become healthy (exit 1 on timeout), resolves the image (uses
@@ -1291,8 +1298,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   **`dockerfile:` moves with `context:`, not independently.** Compose
   resolves `build.dockerfile` relative to `build.context`, never relative to
   `--project-directory` directly (the same rule `ciu dev`'s own
-  `_build_dev_image`, `src/ciu/dev.py`, already applies:
-  `Path(context) / dockerfile`). Once `context` becomes repo-root-relative,
+  `_build_dev_image`, `src/ciu/dev.py`, applies: `Path(context) / dockerfile`
+  — and, since CIU-79, resolves that `context` against the repo root too,
+  the same as this section — see S5a.1). Once `context` becomes repo-root-relative,
   an unset or bare `dockerfile: Dockerfile` now resolves against the repo
   root, not the stack dir — a stack author who moves `build_context` back to
   a plain repo-root-relative form after this change MUST move `dockerfile`
