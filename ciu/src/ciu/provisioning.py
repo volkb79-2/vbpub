@@ -218,6 +218,22 @@ def lint_graph(
     return errors
 
 
+def provider_index(stacks: dict[str, dict]) -> dict[str, list[str]]:
+    """``ref -> [stack_paths that declare it in ``provides``]``, paths sorted.
+
+    *stacks* is the same ``{path: {"requires": [...], "provides": [...]}}``
+    shape :func:`lint_graph` consumes. Shared by :func:`render_graph` (which
+    draws the consumer --ref--> provider edge) and CIU-70's probe container
+    resolution (which needs the provider of the ref being probed) so the two
+    can never disagree about who provides what.
+    """
+    providers: dict[str, list[str]] = {}
+    for sp in sorted(stacks):
+        for ref in stacks[sp].get("provides", []):
+            providers.setdefault(ref, []).append(sp)
+    return providers
+
+
 def render_graph(stacks: dict[str, dict], fmt: str = "mermaid") -> str:
     """Render the requires/provides dependency graph for visualisation.
 
@@ -230,10 +246,7 @@ def render_graph(stacks: dict[str, dict], fmt: str = "mermaid") -> str:
     ``json`` (raw nodes+edges for external tooling).
     """
     # provider index: ref -> [stack_paths that provide it]
-    providers: dict[str, list[str]] = {}
-    for sp in sorted(stacks):
-        for ref in stacks[sp].get("provides", []):
-            providers.setdefault(ref, []).append(sp)
+    providers = provider_index(stacks)
 
     # group edges by (consumer, provider|None) -> [refs]; provider None = unprovided
     grouped: dict[tuple[str, Optional[str]], list[str]] = {}
@@ -299,10 +312,23 @@ def probe_ref(
     *,
     docker_exec_fn=None,   # injectable for testing: fn(container, cmd) -> (rc, stdout)
     vault_client=None,     # injectable VaultKV2 instance for testing
+    stacks: Optional[dict[str, dict]] = None,
 ) -> ProbeResult:
     """Probe live state for a single provisioning ref.
 
     Injectable dependencies allow full unit testing without Docker/Vault.
+
+    *stacks* is the requires/provides graph — the same
+    ``{stack_path: {"requires": [...], "provides": [...]}}`` shape
+    :func:`lint_graph` consumes. ``pg:`` and ``minio:`` probes resolve the
+    container they ``docker exec`` into from the stack whose ``provides``
+    carries *ref* (CIU-70); it MUST therefore cover every stack in the run,
+    not just the ones whose ``requires`` are being probed right now — the
+    provider of a cross-phase ref lives in an earlier phase by construction.
+    ``None`` means "no graph was supplied": those two probe kinds then report
+    genuine indeterminacy rather than falling back to a literal service-name
+    guess (which is what CIU-70 exists to remove). Every other ref kind
+    ignores it.
     """
     try:
         parsed = parse_ref(ref)
@@ -312,9 +338,9 @@ def probe_ref(
     if parsed.kind == 'vault':
         return _probe_vault(ref, parsed, config, repo_root, vault_client=vault_client)
     elif parsed.kind == 'pg':
-        return _probe_pg(ref, parsed, config, docker_exec_fn=docker_exec_fn)
+        return _probe_pg(ref, parsed, config, docker_exec_fn=docker_exec_fn, stacks=stacks)
     elif parsed.kind == 'minio':
-        return _probe_minio(ref, parsed, config, docker_exec_fn=docker_exec_fn)
+        return _probe_minio(ref, parsed, config, docker_exec_fn=docker_exec_fn, stacks=stacks)
     elif parsed.kind == 'consul':
         return _probe_consul(ref, parsed, config, repo_root, vault_client=vault_client)
     return _probe_stack(ref, parsed, config, docker_exec_fn=docker_exec_fn)
@@ -342,16 +368,113 @@ def _probe_vault(ref, parsed, config, repo_root, *, vault_client=None) -> ProbeR
         return ProbeResult(ref=ref, satisfied=False, reason=f"Vault read error: {exc}")
 
 
-def _probe_pg(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
-    """Probe a pg:role/<name> or pg:db/<name> ref via docker exec psql."""
-    from ciu import procutil
+def _resolve_probe_container(
+    ref: str, config: dict, stacks: Optional[dict[str, dict]]
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the container a ``pg:``/``minio:`` probe must exec into (CIU-70).
 
-    # Derive container name (try 'postgres' as the service name)
-    try:
-        from ciu.deploy import container_name as _container_name
-        cname = _container_name(config, 'postgres')
-    except (ValueError, KeyError):
-        cname = 'postgres'
+    Returns ``(container_name, None)`` on success or ``(None, reason)`` when it
+    cannot be determined; exactly one element is ever non-``None``.
+
+    The target is DERIVED, never guessed: the stack whose ``provides`` declares
+    *ref* is the stack that owns it, and that stack's declared path resolves to
+    a container through :func:`_stack_container_name` — the same
+    declared-path → basename → ``container_name`` path a ``stack:<sel>:healthy``
+    ref already uses. Before CIU-70 both probes hardcoded the LITERAL service
+    keys ``postgres``/``minio``, which nothing in S13.2 or CONFIG.md ever
+    required a consumer to use, so a service keyed ``pg``/``db``/
+    ``postgres_primary`` was probed in a container that does not exist and the
+    result was worded exactly like "the role is missing".
+
+    Failure is loud in both directions (AGENTS.md "defaults are hazards"):
+    nothing declaring *ref* is reported as such rather than silently falling
+    back to a literal, and providers that resolve to genuinely DIFFERENT
+    containers are refused rather than one being picked arbitrarily. Providers
+    that all resolve to the SAME container name are not ambiguous *for this
+    probe* and are accepted — two declared stack paths sharing a final segment
+    collapse onto one container name, which is CIU-66's separate defect and
+    is unchanged (neither made better nor worse) by this resolution.
+    """
+    if stacks is None:
+        return None, (
+            f"cannot resolve a container for '{ref}': the probe was given no "
+            "requires/provides graph"
+        )
+    providers = provider_index(stacks).get(ref, [])
+    if not providers:
+        return None, f"no stack provides '{ref}' — cannot resolve a container to probe"
+    names: list[str] = []
+    for stack_path in providers:
+        cname = _stack_container_name(config, stack_path)
+        if cname not in names:
+            names.append(cname)
+    if len(names) > 1:
+        return None, (
+            f"'{ref}' is provided by {len(providers)} stacks "
+            f"({', '.join(providers)}) resolving to different containers "
+            f"({', '.join(names)}) — cannot choose one"
+        )
+    return names[0], None
+
+
+def _docker_exec_probe(cname, cmd, docker_exec_fn) -> tuple[int, str, str]:
+    """Run *cmd* inside *cname*, returning ``(rc, stdout, stderr)``.
+
+    The injectable ``docker_exec_fn`` seam keeps its published 2-tuple
+    ``(rc, stdout)`` contract unchanged — it reports an empty *stderr*, so a
+    fake that wants to exercise :func:`_docker_level_failure` puts the docker
+    error text in *stdout*, which is where a fake docker naturally has it.
+    ``FileNotFoundError`` (no docker binary) propagates to the caller, which
+    turns it into the pre-existing "docker not available" ProbeResult.
+    """
+    if docker_exec_fn is not None:
+        rc, stdout = docker_exec_fn(cname, cmd)
+        return rc, stdout or '', ''
+    from ciu import procutil
+    result = procutil.docker(['exec', cname] + cmd, check=False)
+    return result.returncode, result.stdout or '', result.stderr or ''
+
+
+def _docker_level_failure(stdout: str, stderr: str) -> Optional[str]:
+    """Classify a non-zero ``docker exec`` as a DOCKER-level failure.
+
+    Returns a short phrase when the command never ran because the target
+    container is absent or stopped, or ``None`` when docker did run it and the
+    non-zero status is the in-container command's OWN answer.
+
+    This is the distinction CIU-70 calls out: "the container is not there" and
+    "the role/user is not there" are different facts about the world, and
+    collapsing them into one "not found" message is AGENTS.md's
+    *absence-for-emptiness* anti-pattern — it makes a correct deployment with a
+    differently-keyed service read as a missing role.
+
+    KNOWN WEAKNESS, and why it is acceptable here: this matches the CLI's
+    ENGLISH error text, so a future Docker wording change or a localized
+    client stops it recognizing either phrase. That is a *fail-safe*
+    degradation by construction, not a silent one — the only thing lost is the
+    more specific phrasing, and the caller falls through to "could not be
+    checked (rc=N)", which is still honest about not knowing. It can never
+    invert into the dangerous direction (claiming "does not exist" for a
+    container that was never reached), because that verdict is reachable only
+    from ``rc == 0``, which a failed ``docker exec`` never returns. A stronger
+    check would need a machine-readable signal ``docker exec`` does not
+    expose, or a second round-trip (``docker inspect``) per probe.
+    """
+    blob = f"{stdout}\n{stderr}".lower()
+    if "no such container" in blob:
+        return "no such container"
+    if "is not running" in blob:
+        return "container is not running"
+    return None
+
+
+def _probe_pg(ref, parsed, config, *, docker_exec_fn=None, stacks=None) -> ProbeResult:
+    """Probe a pg:role/<name>, pg:db/<name> or pg:schema/<name> ref via
+    ``docker exec`` + ``psql`` in the container of the stack that PROVIDES the
+    ref (CIU-70; see :func:`_resolve_probe_container`)."""
+    cname, unresolved = _resolve_probe_container(ref, config, stacks)
+    if unresolved is not None:
+        return ProbeResult(ref=ref, satisfied=False, reason=unresolved)
 
     cmd = ['psql', '-U', 'postgres', '-tAc']
     if parsed.subkind == 'role':
@@ -368,45 +491,60 @@ def _probe_pg(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
         sql = f"SELECT 1 FROM pg_database WHERE datname='{parsed.selector}'"
     cmd = cmd + [sql]
 
-    if docker_exec_fn is not None:
-        rc, stdout = docker_exec_fn(cname, cmd)
-    else:
-        try:
-            result = procutil.docker(['exec', cname] + cmd, check=False)
-            rc = result.returncode
-            stdout = result.stdout or ''
-        except FileNotFoundError as exc:
-            return ProbeResult(ref=ref, satisfied=False, reason=f"docker not available: {exc}")
-
-    if rc == 0 and '1' in stdout:
-        return ProbeResult(ref=ref, satisfied=True, reason=f"pg {parsed.subkind} '{parsed.selector}' exists")
-    return ProbeResult(ref=ref, satisfied=False, reason=f"pg {parsed.subkind} '{parsed.selector}' not found (rc={rc})")
-
-
-def _probe_minio(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
-    """Probe a minio:user/<name> ref via docker exec mc."""
-    from ciu import procutil
-
     try:
-        from ciu.deploy import container_name as _container_name
-        cname = _container_name(config, 'minio')
-    except (ValueError, KeyError):
-        cname = 'minio'
+        rc, stdout, stderr = _docker_exec_probe(cname, cmd, docker_exec_fn)
+    except FileNotFoundError as exc:
+        return ProbeResult(ref=ref, satisfied=False, reason=f"docker not available: {exc}")
+
+    if rc == 0:
+        # `psql -tAc` exits 0 for a query that ran and matched NOTHING, so
+        # rc == 0 is the only status from which "it genuinely does not exist"
+        # can honestly be concluded (CIU-70 point 4).
+        if '1' in stdout:
+            return ProbeResult(ref=ref, satisfied=True, reason=f"pg {parsed.subkind} '{parsed.selector}' exists")
+        return ProbeResult(
+            ref=ref, satisfied=False,
+            reason=f"pg {parsed.subkind} '{parsed.selector}' does not exist "
+                   f"(query ran in '{cname}', no matching row)",
+        )
+    docker_failure = _docker_level_failure(stdout, stderr)
+    if docker_failure is not None:
+        return ProbeResult(
+            ref=ref, satisfied=False,
+            reason=f"container '{cname}' unavailable ({docker_failure}) — "
+                   f"pg {parsed.subkind} '{parsed.selector}' was NOT checked",
+        )
+    return ProbeResult(
+        ref=ref, satisfied=False,
+        reason=f"pg {parsed.subkind} '{parsed.selector}' could not be checked: "
+               f"psql in '{cname}' exited rc={rc}",
+    )
+
+
+def _probe_minio(ref, parsed, config, *, docker_exec_fn=None, stacks=None) -> ProbeResult:
+    """Probe a minio:user/<name> ref via ``docker exec`` + ``mc`` in the
+    container of the stack that PROVIDES the ref (CIU-70; see
+    :func:`_resolve_probe_container`)."""
+    cname, unresolved = _resolve_probe_container(ref, config, stacks)
+    if unresolved is not None:
+        return ProbeResult(ref=ref, satisfied=False, reason=unresolved)
 
     cmd = ['mc', 'admin', 'user', 'info', 'local', parsed.selector]
 
-    if docker_exec_fn is not None:
-        rc, stdout = docker_exec_fn(cname, cmd)
-    else:
-        try:
-            result = procutil.docker(['exec', cname] + cmd, check=False)
-            rc = result.returncode
-            stdout = result.stdout or ''
-        except FileNotFoundError as exc:
-            return ProbeResult(ref=ref, satisfied=False, reason=f"docker not available: {exc}")
+    try:
+        rc, stdout, stderr = _docker_exec_probe(cname, cmd, docker_exec_fn)
+    except FileNotFoundError as exc:
+        return ProbeResult(ref=ref, satisfied=False, reason=f"docker not available: {exc}")
 
     if rc == 0:
         return ProbeResult(ref=ref, satisfied=True, reason=f"MinIO user '{parsed.selector}' exists")
+    docker_failure = _docker_level_failure(stdout, stderr)
+    if docker_failure is not None:
+        return ProbeResult(
+            ref=ref, satisfied=False,
+            reason=f"container '{cname}' unavailable ({docker_failure}) — "
+                   f"MinIO user '{parsed.selector}' was NOT checked",
+        )
     return ProbeResult(ref=ref, satisfied=False, reason=f"MinIO user '{parsed.selector}' not found (rc={rc})")
 
 

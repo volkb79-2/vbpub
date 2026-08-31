@@ -39,7 +39,7 @@ def test_check_live_probes_only_rendered_stack_requirements(monkeypatch, tmp_pat
     monkeypatch.setattr(
         provisioning,
         "probe_ref",
-        lambda ref, *_args: (probed.append(ref) or ProbeResult(ref, True, "ready")),
+        lambda ref, *_args, **_kw: (probed.append(ref) or ProbeResult(ref, True, "ready")),
     )
     rendered = {"apps/api": {"api": {"requires": ["pg:db/main"], "provides": []}}}
 

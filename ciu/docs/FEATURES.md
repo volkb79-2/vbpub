@@ -258,6 +258,13 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
   asserts zero project containers and volumes remain.
 - **Secret declared but unused (S4.20).** Warns (does not fail) — unless it is
   consumed via a configfile `secret()` or a `consumed_by = "hook"` marker.
+- **Your Postgres/MinIO service can be keyed anything (S13.2, CIU-70).** A `pg:`
+  or `minio:` probe execs into the container of the stack that **provides** the ref,
+  not into a hardcoded `postgres`/`minio` service key — so `pg`, `db`,
+  `postgres_primary`, and two Postgres services in one deployment all probe
+  correctly. Nothing declares the ref → the probe says exactly that instead of
+  reporting a missing role; a container that is absent or stopped is reported as
+  `NOT checked`, never as "the role does not exist".
 - **`pg:schema` probes the application database (S13.2).** `information_schema.schemata`
   is per-database; `pg:schema/<name>` connects with `psql -d <registry.postgresql.database>`,
   not the default `postgres` db. Set `registry.postgresql.database` in your global config.

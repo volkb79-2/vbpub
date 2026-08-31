@@ -1659,13 +1659,51 @@ and `provisioning.parse_ref`):
 | Ref | Means | Live probe |
 |---|---|---|
 | `vault:secret/<path>` | KV-v2 secret exists at that path | Vault `read` |
-| `pg:role/<name>` | Postgres login role exists | `psql` → `pg_roles` (default `postgres` db) |
-| `pg:db/<name>` | Postgres database exists | `psql` → `pg_database` |
-| `pg:schema/<name>` | Schema exists in the **application** database | `psql -d <registry.postgresql.database>` → `information_schema.schemata` |
-| `minio:user/<name>` | MinIO service account exists | `mc admin user info local <name>` |
+| `pg:role/<name>` | Postgres login role exists | `psql` → `pg_roles` (default `postgres` db), in the container of the stack that **provides** the ref |
+| `pg:db/<name>` | Postgres database exists | `psql` → `pg_database`, in the container of the stack that **provides** the ref |
+| `pg:schema/<name>` | Schema exists in the **application** database | `psql -d <registry.postgresql.database>` → `information_schema.schemata`, in the container of the stack that **provides** the ref |
+| `minio:user/<name>` | MinIO service account exists | `mc admin user info local <name>`, in the container of the stack that **provides** the ref |
 | `consul:token/<svc>` | Consul ACL token exists in Vault | Vault read at `registry.consul.token_vault_path` (default `consul/acl/tokens/{svc}`; override via `[registry.consul] token_vault_path = "…"`) |
 | `stack:<name>:healthy` | Another container is up+healthy | `docker inspect .State` |
 | `stack:<name>:completed` | Another container **ran to completion** (exit 0) | `docker inspect .State` — `Running == false` and `ExitCode == 0`; NEVER reads `.State.Health` (V8-PREP-5, ciu-P23) |
+
+**`pg:`/`minio:` probe target: the PROVIDER's container (CIU-70, ciu-P40).**
+A `pg:` or `minio:` probe execs into the container of the stack whose
+`provides` list carries the exact ref being probed. **Your Postgres/MinIO
+service may be keyed anything** — `pg`, `db`, `postgres_primary`,
+`skywalking-oap-db` — and two Postgres services in one deployment are each
+probed in their own container. Until ciu-P40 both probes hardcoded the
+LITERAL service keys `postgres` and `minio`, a requirement no released
+version of this spec or CONFIG.md ever stated, so any other key produced a
+probe against a container that does not exist. Resolution rules:
+
+- The provider's declared stack path resolves to a container name the same
+  way a `stack:<selector>:healthy` ref's selector does (declared path →
+  final segment → `{project}-{env_tag}-<segment>`; see the slash-bearing
+  selector note below). Two declared paths sharing a final segment therefore
+  still collapse onto one container name — that is CIU-66, unchanged here.
+- **No stack provides the ref** → not satisfied, with that as the reason
+  (`no stack provides '<ref>' — cannot resolve a container to probe`). It is
+  never a literal-service-key guess. The static lint (S13.3) normally
+  catches this first, since every `requires` must be provided.
+- **Providers resolving to genuinely different containers** → not satisfied,
+  naming both; CIU refuses rather than picking one.
+- The requires/provides graph a probe resolves against spans **every**
+  rendered stack in the run, not just the phase currently being probed —
+  the provider of a cross-phase ref is in an earlier phase by construction.
+
+**`pg:`/`minio:` failure reasons distinguish absence from unreachability
+(CIU-70, ciu-P40).** `psql -tAc` exits **0** for a query that ran and matched
+nothing, so exit 0 is the only status from which "the role/db/schema
+genuinely does not exist" follows, and that is the only case worded that way
+(`pg role 'api' does not exist (query ran in '<container>', no matching
+row)`). A `docker exec` that never ran the command — `No such container`, or
+a stopped container — reports `container '<name>' unavailable (<why>) — pg
+role 'api' was NOT checked`, and any other non-zero `psql` status (server
+starting, connection refused, auth) reports `could not be checked`. The same
+container-unavailable split applies to `minio:user/<name>`; `mc`'s own
+non-zero verdict keeps its existing `MinIO user '<name>' not found (rc=N)`
+wording, because for `mc` the non-zero status *is* the answer.
 
 **`pg:schema` note.** `information_schema.schemata` is per-database, not
 cluster-global. CIU therefore connects with `psql -d <db>` where `<db>` comes

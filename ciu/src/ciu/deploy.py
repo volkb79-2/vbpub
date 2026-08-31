@@ -597,6 +597,47 @@ def producer_preflight(
 # ===========================================================================
 
 
+def provisioning_graph(rendered: dict[str, dict]) -> dict[str, dict]:
+    """``{stack_path: {"requires": [...], "provides": [...]}}`` for EVERY
+    rendered stack (CIU-70).
+
+    Distinct from the per-call ``stacks`` map :func:`provisioning_preflight`
+    builds out of its ``selection``: a live probe resolves the container it
+    execs into from the stack that ``provides`` the ref (S13.2), and when
+    probing runs PER-PHASE that provider is, by construction, in an EARLIER
+    phase — i.e. not in this call's ``selection``. Scoping the resolution graph
+    to ``selection`` would report every cross-phase ref as "no stack provides
+    it", so the graph handed to the probe is built from the full ``rendered``
+    map instead.
+
+    Why the WIDER graph is nonetheless SAFE — the property that makes this
+    design sound, not merely convenient: ``rendered`` is not a repo-wide scan.
+    It is itself selection-scoped and built per invocation
+    (``render_selected_stacks(repo_root, profile, selection, ...)``), so it
+    structurally cannot contain a stack this run did not select. Widening from
+    ``selection`` to ``rendered`` therefore widens from "this phase" to "this
+    run" and no further — a probe can never resolve its container from a stack
+    outside the run's own profile/selection.
+
+    A stack whose shape is invalid is SKIPPED rather than raising: it cannot
+    contribute a provider anyway, the up-front ``lint=True`` pass has already
+    failed the run over it (S13.3), and raising here would turn an unrelated
+    stack's defect into a new per-phase failure mode.
+    """
+    graph: dict[str, dict] = {}
+    for rel, stack_cfg in rendered.items():
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        root_section = stack_cfg.get(root_key, {})
+        requires = root_section.get("requires", [])
+        provides = root_section.get("provides", [])
+        if requires or provides:
+            graph[rel] = {"requires": requires, "provides": provides}
+    return graph
+
+
 def provisioning_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -660,6 +701,10 @@ def provisioning_preflight(
     # deploy loop with that phase's entries as `selection`).
     if probe:
         config = profile.config
+        # CIU-70: the graph a probe resolves its target container against must
+        # span every rendered stack, not just this (possibly per-phase)
+        # `selection` — see `provisioning_graph`.
+        probe_graph = provisioning_graph(rendered)
         all_failed: list[str] = []
         for entry in selection:
             rel = entry["path"]
@@ -667,7 +712,9 @@ def provisioning_preflight(
                 continue
             requires = stacks[rel].get("requires", [])
             for ref in requires:
-                result = provisioning_pkg.probe_ref(ref, config, repo_root)
+                result = provisioning_pkg.probe_ref(
+                    ref, config, repo_root, stacks=probe_graph
+                )
                 if not result.satisfied:
                     all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
 
@@ -2687,7 +2734,13 @@ def action_check(
             if rel not in stacks:
                 continue
             for ref in stacks[rel].get("requires", []):
-                result = provisioning_pkg.probe_ref(ref, config, repo_root)
+                # CIU-70: `selection` here is the FULL selection, so `stacks`
+                # is already the whole run's graph — the provider of every ref
+                # is in it, and it is what the probe resolves its container
+                # from instead of a literal `postgres`/`minio` service key.
+                result = provisioning_pkg.probe_ref(
+                    ref, config, repo_root, stacks=stacks
+                )
                 if result.satisfied:
                     say(f"  OK  {ref}")
                 else:

@@ -413,6 +413,7 @@ def test_probe_ref_pg_role_found():
         config={},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"pgstack": {"provides": ["pg:role/myuser"]}},
     )
     assert result.satisfied is True
     assert "myuser" in result.reason
@@ -427,9 +428,12 @@ def test_probe_ref_pg_role_not_found():
         config={},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"pgstack": {"provides": ["pg:role/myuser"]}},
     )
     assert result.satisfied is False
-    assert "not found" in result.reason
+    # CIU-70: rc==0 is the ONLY status from which "genuinely absent" follows,
+    # so this reason says so instead of the old ambiguous "not found (rc=…)".
+    assert "does not exist" in result.reason
 
 
 def test_probe_ref_pg_db_found():
@@ -441,6 +445,7 @@ def test_probe_ref_pg_db_found():
         config={},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"pgstack": {"provides": ["pg:db/mydb"]}},
     )
     assert result.satisfied is True
     assert "mydb" in result.reason
@@ -455,6 +460,7 @@ def test_probe_ref_minio_user_found():
         config={},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"objstore": {"provides": ["minio:user/worker"]}},
     )
     assert result.satisfied is True
     assert "worker" in result.reason
@@ -469,8 +475,10 @@ def test_probe_ref_minio_user_not_found():
         config={},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"objstore": {"provides": ["minio:user/worker"]}},
     )
     assert result.satisfied is False
+    assert "MinIO user 'worker' not found (rc=1)" == result.reason
 
 
 def test_probe_ref_stack_healthy_via_exec():
@@ -1004,6 +1012,7 @@ def test_probe_ref_pg_schema_found_targets_app_db():
         config={"registry": {"postgresql": {"database": "dstdns"}}},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"pgstack": {"provides": ["pg:schema/authentik"]}},
     )
     assert result.satisfied is True
     assert "authentik" in result.reason
@@ -1020,8 +1029,10 @@ def test_probe_ref_pg_schema_not_found():
         config={"registry": {"postgresql": {"database": "dstdns"}}},
         repo_root=Path("/tmp"),
         docker_exec_fn=docker_exec_fn,
+        stacks={"pgstack": {"provides": ["pg:schema/missing"]}},
     )
     assert result.satisfied is False
+    assert "does not exist" in result.reason
 
 
 # ---------------------------------------------------------------------------
