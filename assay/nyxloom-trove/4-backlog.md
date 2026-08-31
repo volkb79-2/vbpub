@@ -5016,3 +5016,77 @@ is the actual question.
       "what assay checks about your report" paragraph as `projectRoot`;
 - [ ] if the ruling is "record, do not refuse": the wire field in schema,
       dataclass and `verify.py` (three places), at the next schema cut.
+
+---
+
+## B053 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
+
+**Filed 2026-08-31, Wave C (the P27 re-carve), with a frozen witness and a
+test that asserts the unfixed behaviour.** Recorded as decision **A-393**.
+
+### What happens
+
+`carve-assets/P27/witness/lit.go` line 4 is `f := func() int { return 7 }`.
+The real profile (`coverage-lit.out`) carries two records over it:
+
+```text
+example.invalid/lit/lit.go:3.14,4.18 1 1    <- the assignment, executed
+example.invalid/lit/lit.go:4.18,4.30 1 0    <- the func literal's body, NOT executed
+```
+
+Both counted statements genuinely begin on line 4. Executed-wins promotes the
+line, so the uncovered statement is invisible: `executed` contains 4 and
+`missing` is empty.
+
+A-217's source-side oracle (B047 item 1) does **not** change this, and this
+entry exists so that is on the record rather than discovered later as a
+surprise. What the oracle *does* fix on this file is the fabrication — line 3,
+the `func H() int {` signature, was reported executable by the shipped
+`range(start, end + 1)` expansion and is not code at all.
+
+### Why it is not simply a defect to fix
+
+`carve-assets/P27/BLOCKED-grammar.md` §3 already names this precisely: it is
+"line granularity's own limit — `coverage.py` shares it", unlike the comment
+and closing-brace cases, which are specific to block extent and ARE fixed. A
+verdict's wire schema speaks in line numbers; distinguishing two statements on
+one line needs a column-granular claim, which is a schema cut. So this is a
+**known and documented boundary of the R1 claim**, not an open bug — filed so
+that a future reader who notices it does not re-derive the analysis, and so
+that any future proposal to fix it is costed honestly as a schema cut.
+
+### Exposure, stated plainly
+
+The direction is toward false PASS: a genuinely untested func literal, or any
+second statement sharing a line with a covered one, is counted as covered.
+In real gofmt-clean Go the shape is uncommon (a func literal inline in an
+assignment, a `switch` case body on the `case` line, `x := 1; y := 2`), and
+`coverage.py` lanes have carried the identical limit since P06 without
+incident — but "uncommon" is not "absent", and the honest statement is that a
+Go R1 line claim is statement-granular **to the line**, not to the statement.
+
+### The fix, if it is ever ruled worth it
+
+1. Rule, as an A-row, whether a Go R1 claim should be able to express
+   "this line contains an uncovered statement" at all — the alternatives are
+   leaving it as documented (today's answer), a per-line partial marker, or
+   full column granularity.
+2. If ruled yes: a wire field, in schema + dataclass + `verify.py` (the three
+   places), at the next schema cut — never a producer-side upgrade (A-138/A-170).
+3. `assay.statement_attribution.attribute_statements` already has the data it
+   would need: it holds each block's own `count` and `stmt_lines` before the
+   executed-wins union collapses them, so the fix is a representation
+   question, not a measurement one.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row, naming the three alternatives above;
+- [ ] if ruled to fix: the wire field in all three places, plus a test over
+      the REAL committed `coverage-lit.out` asserting line 4 reports the
+      uncovered statement — and a companion test proving an ordinary
+      single-statement line does NOT, so the marker is not vacuous;
+- [ ] CONSUMERS' Go section states the limit either way, in the same
+      paragraph that describes what a Go R1 line claim means;
+- [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+      updated (it asserts today's behaviour deliberately, so it MUST go red
+      when this is fixed).
