@@ -143,3 +143,14 @@ and `61fa0bf9` respectively. Both: **FAIL/COMMAND_FAILED, exit 1**, R0 (raw
 pytest exit code) FAIL, **R1 (assay's changed-lines 100% coverage judgment)
 PASS at 100.0%**, identical 3 failing tests both times (2 newly-found and now
 filed as CIU-78, 1 already filed as CIU-76). Verbatim verdict in REPORT.
+
+---
+
+## Commit `4884b960` -- backlog(ciu): mark CIU-74 FIXED -- ciu-P38 (8416ce93)
+
+Closed out the CIU-74 backlog row itself (`Medium | OPEN -> Medium | FIXED`),
+following the file's own documented convention ("A FIXED issue means code,
+behavioral tests, SPEC, and user documentation landed together" -- all four
+landed in `8416ce93`). Points at this REPORT for the real gate verdict rather
+than re-summarizing it in the backlog row. Added a matching "Last updated"
+header paragraph.
