@@ -5237,7 +5237,9 @@ class TestHistoryQueryVerb:
     def test_usage_documents_the_verb_and_the_store_contract(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "run-gate.py history [LANE] [--json]" in out.stdout
+        assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
+            in out.stdout
+        assert "read scope" in out.stdout
         assert ".run-gate/history.json" in out.stdout
         assert "[history] keep" in out.stdout
         assert "MUST be git-ignored" in out.stdout
@@ -5444,3 +5446,206 @@ class TestHistoryDegradedInputs:
         run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
                              proj / "run-gate.toml", {}, None, "suite", False)
         assert "(no commit)" in capsys.readouterr().out
+
+
+class TestHistoryReadScope:
+    """Review blocker B1: `--worktree` redirects the READ exactly as R-36f
+    redirects the WRITE. Answering with the invoking checkout's medians under
+    another tree's name is the single failure this feature exists to prevent
+    — and it would be silent, which is worse than wrong."""
+
+    def _two_trees(self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        other = tmp_path / "wt"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q",
+                        str(other), "-b", "side"], check=True,
+                       capture_output=True, text=True)
+        # Two distinct measurements, one per tree.
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=11.0)
+        rec = run_gate.start_run_record("suite", other, repo)
+        rec["_started_monotonic"] = time.monotonic() - 77.0
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(other / "proj", other, rec, 10)
+        return repo, proj, other
+
+    def test_worktree_flag_reads_that_trees_store(self, tmp_path, monkeypatch):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        out = run_tool(proj, "history", "suite", "--worktree", str(other),
+                       "--json")
+        assert out.returncode == 0, out.stderr
+        payload = json.loads(out.stdout)
+        assert payload["lanes"]["suite"]["latest"]["duration_seconds"] == 77.0
+        assert payload["store"] == str(other / "proj/.run-gate/history.json")
+        assert payload["worktree_scope"] == str(other)
+
+    def test_without_the_flag_the_invoking_checkout_answers(self, tmp_path,
+                                                            monkeypatch):
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        payload = json.loads(run_tool(proj, "history", "suite", "--json").stdout)
+        assert payload["lanes"]["suite"]["latest"]["duration_seconds"] == 11.0
+        assert payload["worktree_scope"] is None
+
+    def test_the_answer_names_the_tree_it_describes(self, tmp_path,
+                                                    monkeypatch):
+        """R-05: mechanics are disclosed, never left to be inferred."""
+        repo, proj, other = self._two_trees(tmp_path, monkeypatch)
+        out = run_tool(proj, "history", "suite", "--worktree", str(other))
+        assert out.returncode == 0, out.stderr
+        assert f"tree:  {other}" in out.stdout
+        assert str(other / "proj/.run-gate/history.json") in out.stdout
+        assert "77.0s" in out.stdout
+
+    def test_read_and_write_scopes_agree(self, tmp_path, monkeypatch):
+        """The end-to-end statement of B1: run a lane against tree B, then
+        ask about tree B, and get the run you just did."""
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        other = tmp_path / "wt"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q",
+                        str(other), "-b", "side"], check=True,
+                       capture_output=True, text=True)
+        assert run_tool(proj, "suite", "--worktree", str(other)).returncode == 0
+        assert not (proj / ".run-gate").exists()
+        payload = json.loads(run_tool(proj, "history", "suite", "--worktree",
+                                      str(other), "--json").stdout)
+        assert payload["lanes"]["suite"]["latest"]["worktree"] == str(other)
+        assert payload["lanes"]["suite"]["latest"]["outcome"] == "pass"
+
+    def test_a_nonexistent_worktree_refuses_rather_than_reporting_no_data(
+            self, tmp_path):
+        """Falling back to the invoking checkout here would reintroduce B1
+        through the ERROR path: an unvalidated override computes a store path
+        under a tree that is not there and answers "(not written yet)" —
+        silence presented as tree B's answer."""
+        repo, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "history", "--worktree", str(tmp_path / "nope"))
+        assert out.returncode == 2, out.stdout + out.stderr
+        assert "not a directory" in out.stderr and "--worktree" in out.stderr
+        assert "not written yet" not in out.stdout
+        assert "Traceback" not in out.stderr
+
+    def test_a_non_git_worktree_refuses_with_gits_own_message(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        outside = tmp_path / "plain-dir"
+        outside.mkdir()
+        out = run_tool(proj, "history", "--worktree", str(outside))
+        assert out.returncode == 3, out.stdout + out.stderr
+        assert "not written yet" not in out.stdout
+        assert "Traceback" not in out.stderr
+
+    def test_unflagged_history_needs_no_git(self, tmp_path, monkeypatch,
+                                            capsys):
+        """Resolution is opt-in so a read stays answerable where git is not:
+        an unflagged query must not acquire a git dependency it never had."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=3.0)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        calls = []
+        real = run_gate.resolve_repo_and_worktree
+        monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
+                            lambda *a, **k: calls.append(a) or real(*a, **k))
+        assert run_gate.main(["history", "suite"]) == 0
+        assert calls == []
+        assert "3.0s" in capsys.readouterr().out
+
+
+class TestHistoryFlushIsAtMostOnce:
+    """Review blocker B2: the normal-path flush runs INSIDE main()'s try and
+    is not instantaneous (it spawns `git check-ignore` and may wait up to
+    HISTORY_LOCK_TIMEOUT on the lock). A Ctrl-C landing there is caught by
+    the BaseException handler, which flushes again — and a second flush of an
+    already-consumed record used to raise KeyError, replacing the real signal
+    with a traceback R-36h/R-04 both forbid."""
+
+    def test_a_second_flush_is_a_clean_no_op(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_project_dir"] = proj
+        rec["_keep"] = 10
+        rec["_started_monotonic"] = time.monotonic() - 5.0
+        run_gate.flush_run_record(rec, exit_code=0)
+        first = lane_slot(proj)["latest"]["duration_seconds"]
+        run_gate.flush_run_record(rec, error=KeyboardInterrupt())  # no raise
+        assert lane_slot(proj)["latest"]["duration_seconds"] == first
+        assert lane_slot(proj)["latest"]["outcome"] == "pass"
+
+    def test_ctrl_c_during_the_write_surfaces_as_keyboardinterrupt(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        new_commit(repo, "a")
+        seen = []
+
+        def interrupted_write(*_a, **_k):
+            seen.append(1)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(run_gate, "record_invocation", interrupted_write)
+        # The real signal, not KeyError('_started_monotonic').
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.main(["suite"])
+        assert seen == [1], "the second flush must not re-enter the record"
+
+    def test_a_record_with_no_start_stamp_never_raises(self, tmp_path):
+        """Defence in depth behind the sentinel: finish_run_record must not
+        be the thing that turns a recording problem into a traceback."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec.pop("_started_monotonic")
+        run_gate.finish_run_record(rec, exit_code=0)
+        assert rec["duration_seconds"] is None
+        assert rec["history_eligible"] is False
+        assert "no duration was measured" in rec["excluded_reason"]
+
+    def test_an_unmeasured_run_never_reaches_history(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=10.0)
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec.pop("_started_monotonic")
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["history"][0]["duration_seconds"] == 10.0
+        assert slot["latest"]["duration_seconds"] is None
+
+
+class TestJsonFlagScope:
+    """Review S1: `--json` was accepted and ignored everywhere but `history`,
+    so a consumer piping `--list --json` into a parser got a TSV. Same rule
+    as RG-1's --worktree and RG-26's --base: refuse by name, never no-op."""
+
+    @pytest.mark.parametrize("args", [["--list", "--json"],
+                                      ["--json"],
+                                      ["suite", "--json"],
+                                      ["doctor", "--json"]])
+    def test_other_verbs_refuse_json_by_name(self, tmp_path, args):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, *args)
+        assert out.returncode == 2, out.stdout + out.stderr
+        assert "--json is honored by the `history` verb only" in out.stderr
+        assert "Traceback" not in out.stderr
+
+    def test_list_without_json_is_unchanged(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "--list")
+        assert out.returncode == 0
+        assert out.stdout == "suite\tcommand\ttester-unified\n"
+
+    def test_usage_says_where_json_is_accepted(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "--help")
+        assert "`history` ONLY" in out.stdout
+        assert "REFUSES it by name" in out.stdout
+        assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
+            in out.stdout

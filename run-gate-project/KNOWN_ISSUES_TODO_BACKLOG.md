@@ -1763,19 +1763,52 @@ warning line on stderr (never a traceback, `R-04`) and never changes the
 lane's exit status.
 
 **Both named controlled-wrong-implementations are caught**, verified by a
-15-mutant probe campaign against the real source (all caught, zero survivors,
+20-mutant probe campaign against the real source (all caught, zero survivors,
 source restored byte-identical). Trap 1 is caught at both levels it can
 occur: structurally (`TestHistoryRollingSeries::
 test_series_survives_across_commits_not_just_the_last` — a latest-only store
 keeps 1 entry where 3 commits ran) and statistically
-(`::test_one_slow_outlier_does_not_become_the_typical_cost` — median 10.0s
-while max 100.0s). Trap 2's literal form is
+(`::test_one_slow_outlier_does_not_become_the_typical_cost` — the reported
+median is 10.0s where the mean would be 40.0s, i.e. (10+10+100)/3; `max`
+still publishes the 100.0s outlier, which is the separate point that an
+outlier stays visible rather than being discarded). Trap 2's literal form is
 `TestHistoryEligibilityGuard::test_dirty_run_never_overwrites_the_commits_history_entry`
 (clean 10.0s pass on commit C, then a DIRTY 999.0s run on the same C: C's
 entry still reads 10.0s, `latest` moved to 999.0s with
 `history_eligible: false` and a reason naming the dirt), with siblings for
 the aborted, errored, mid-rebase and indeterminate routes to the same
 corruption.
+
+**Round-2 review fixes** (adversarial review returned ACCEPT-conditional; two
+blockers, both fixed here, each with its own mutant):
+
+- **B1 — `history` ignored `--worktree` and answered with the WRONG tree's
+  data**, silently: `cmd_history` ran before `resolve_repo_and_worktree` and
+  got the raw project dir, so the write side honored the flag (`R-36f`) and
+  the read side did not. Fixed by HONORING it — the verb reads the selected
+  tree's store and DISCLOSES which tree it describes (`tree:` line;
+  `worktree_scope` in JSON). Resolution is opt-in so an unflagged query stays
+  git-free. Writing the error-path test found a second hole in the same fix:
+  a READ has no downstream to fail in, so an unresolvable override used to
+  compute a store path under a nonexistent tree and answer "(not written
+  yet)" — B1 through the error path. A non-directory now refuses (exit 2) and
+  a non-work-tree refuses (exit 3, carrying git's own line).
+- **B2 — Ctrl-C during the telemetry write became an uncaught `KeyError`.**
+  The normal-path flush sits inside the tool's own exception scope and is not
+  instantaneous (it spawns `git check-ignore` and can wait up to the 5s lock
+  bound), so an interrupt landing there reached the abort handler, which
+  flushed the same already-consumed record and raised — replacing the real
+  signal with a traceback `R-36h`/`R-04` both forbid. Flushing is now
+  at-most-once with the claim staked BEFORE the work, plus a None-safe start
+  stamp; a record with no measured duration is refused by the eligibility
+  conjunction (clause 1) rather than stored.
+- **S1** — `--json` was accepted and ignored outside `history` (`--list
+  --json` handed a TSV to a caller asking for JSON). It is now refused by
+  name, the same rule as RG-1's `--worktree` and RG-26's `--base`.
+- **S2** — the reserved-lane-name change is a LOAD-TIME breaking change for
+  any consumer with a `[lanes.history]`; zero estate projects have one, but
+  it is now flagged as a BREAKING CHANGE block in CHANGES.md and CONSUMERS.md
+  the way RG-23's was.
 
 **Out of scope, honored:** run-gate decides no rigor/defer POLICY. It
 measures and persists; a controller reads and decides. Follow-ups a consumer

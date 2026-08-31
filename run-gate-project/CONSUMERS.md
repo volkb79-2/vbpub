@@ -577,6 +577,14 @@ before every write, refuses to write an un-ignored store, and tells you why:
 .run-gate/
 ```
 
+> **BREAKING CHANGE (load-time) — a lane named `history` (RG-27).** `history`
+> is now a CLI verb, so it joined `doctor` and `validate-pointers` as a
+> RESERVED lane name and `[lanes.history]` is refused when the config loads,
+> naming the file. No project in this estate declares one, so nothing here
+> moved; a **copied-script repo** that happens to have a lane by that name
+> must rename it (the lane was already unreachable — the verb would have won)
+> before adopting rev 30.
+
 ```
 run-gate: WARNING: lane history not recorded: /repo/proj/.run-gate is not
 fully git-ignored, and writing there would leave the judged tree dirty for the
@@ -622,6 +630,27 @@ lane selftest
 `./run-gate.py history` with no lane reports every declared lane. The verb
 runs no lane, starts no container, and exits 0 whenever the query itself
 worked — an empty store is an answer, not a failure.
+
+**`--worktree` redirects the READ, exactly as it redirects a run.** The store
+is per (judged worktree x project), so a query about another tree must name
+it — and the answer says which tree it describes:
+
+```console
+$ ./run-gate.py history selftest --worktree /workspaces/vbpub/.worktrees/feat-x
+run-gate rev 30 — lane invocation history
+tree:  /workspaces/vbpub/.worktrees/feat-x  (--worktree; this answer describes THAT tree, not the invoking checkout)
+store: /workspaces/vbpub/.worktrees/feat-x/run-gate-project/.run-gate/history.json
+```
+
+In `--json` that tree appears as `worktree_scope` (`null` when the flag is
+absent). A `--worktree` that is not a directory refuses (exit 2), and one
+that is not a git work tree refuses (exit 3) — never a quiet fallback to the
+invoking checkout's store, which would hand you tree A's medians under tree
+B's name.
+
+**`--json` is honored by `history` alone.** Every other verb refuses it by
+name rather than printing its human form anyway (`--list` is already a
+machine table).
 
 ### Consume it
 

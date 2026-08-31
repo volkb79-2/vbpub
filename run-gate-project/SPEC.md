@@ -129,7 +129,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   substituted, relative entries resolve against the effective project dir).
   Lane names `doctor`, `validate-pointers` and `history` are RESERVED (they
   collide with CLI verbs) and refused at load; a lane named like a verb
-  could never be invoked anyway.
+  could never be invoked anyway. `history` joined the set in rev 30 -- a
+  LOAD-TIME breaking change for any consumer that had declared
+  `[lanes.history]` (no estate project had; flagged in CHANGES and CONSUMERS
+  for copied-script repos).
   advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names
@@ -636,7 +639,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-36b` History eligibility is a CONJUNCTION**, evaluated once, with
     the failing reason recorded on the entry (`excluded_reason`, visible in
     both output forms). A run joins history only when ALL hold: (1) the lane
-    completed and reported its own status; (2) the judged tree was clean at
+    completed and reported its own status AND a duration was actually
+    measured -- an entry without one is not a measurement; (2) the judged
+    tree was clean at
     the moment the run STARTED; (3) no git operation was in flight
     (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`,
     `REVERT_HEAD`, `BISECT_LOG`); (4) HEAD resolved to a full commit sha.
@@ -699,10 +704,33 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     failure — unignored store, held lock past the bound, corrupt or
     unreadable store, write error — degrades to ONE warning line on stderr
     (never a traceback, R-04) and leaves the lane's exit status untouched.
-    A corrupt store is replaced, not fatal.
-  - **`R-36i` The query verb.** `history [LANE] [--json]`. No LANE reports
-    every declared lane; an unknown LANE refuses (exit 2) naming the known
-    lanes and the config path, exactly like an unknown lane on the run path.
+    A corrupt store is replaced, not fatal. Flushing a record is **at most
+    once**, and the claim is staked before the work: the normal-path flush
+    runs inside the tool's own exception scope and is not instantaneous (it
+    spawns `git check-ignore` and may wait up to the lock bound), so an
+    interrupt landing there reaches the abort handler, which flushes again --
+    that second flush must be a clean no-op, or the interrupt is replaced by
+    a traceback from the telemetry, inverting exactly the priority this
+    requirement sets.
+  - **`R-36i` The query verb.** `history [LANE] [--worktree PATH] [--json]`.
+    No LANE reports every declared lane; an unknown LANE refuses (exit 2)
+    naming the known lanes and the config path, exactly like an unknown lane
+    on the run path.
+    **Read scope follows `--worktree` exactly as the write scope does**
+    (`R-36f`): the store is per (judged worktree x project), so a query given
+    `--worktree B` reads B's store and never the invoking checkout's --
+    answering with A's medians under B's name would be the silent
+    substitution this whole requirement exists to prevent, and it is the
+    hazard class `R-25`/`R-35` already legislate against for `--worktree` and
+    `--base`. The resolved tree is DISCLOSED in both output forms (a `tree:`
+    line; a `worktree_scope` key, `null` when unflagged). Resolution is
+    opt-in: an unflagged query stays git-free and keeps answering where git
+    cannot. An override that is not a directory refuses (exit 2) and one that
+    is not a git work tree refuses (exit 3, carrying git's own line) -- a read
+    has no downstream to fail in, so falling back to the invoking checkout
+    here would reintroduce the same substitution through the error path.
+    `--json` is honored by this verb ALONE; every other invocation refuses it
+    by name (exit 2) rather than silently printing its human form.
     Default output is a human table (store path, `keep` + its source, and
     per lane: `latest` with its exclusion reason when it has one, the
     bounded series oldest-first, and the split stats); `--json` emits the

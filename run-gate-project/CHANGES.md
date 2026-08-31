@@ -56,6 +56,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   measures; it decides no rigor/defer policy. SPEC `R-36` (+`R-01`/`R-06`/
   `R-08` amendments); README "Environment mechanics"; CONSUMERS "What each
   lane costs". Retriage of ciu **CIU-55** (superseded pointer there).
+
+  Round-2 review fixes folded in before merge: `history` honors `--worktree`
+  on the READ side too (it previously reported the invoking checkout's store
+  no matter which tree was asked about — silently), and refuses an override
+  that names no git work tree rather than answering "no data"; flushing a
+  record is now at-most-once, so a Ctrl-C landing inside the telemetry write
+  surfaces as the KeyboardInterrupt instead of a `KeyError` traceback from
+  the second flush; and `--json`, which was accepted and ignored everywhere
+  but `history`, is now refused by name elsewhere (`--list --json` used to
+  hand a TSV to a caller asking for JSON).
+
+  > **BREAKING (load-time): a lane named `history`.** `history` is a CLI verb
+  > now, so it joins `doctor`/`validate-pointers` as a RESERVED lane name and
+  > `[lanes.history]` is refused when the config loads. No project in this
+  > estate declares one (all ten `run-gate.toml` files checked); a
+  > copied-script consumer repo that does must rename the lane — it was
+  > already unreachable, since the verb would have won — before taking rev 30.
+  > Migration is one line, and it fails loudly at load, never silently.
 - **RG-26 — `--base REF` passthrough to `assay run --request-base`
   (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
   unusable from every consumer: such a lane refuses without

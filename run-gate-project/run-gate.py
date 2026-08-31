@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 30  # rev 30: RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 30  # rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -824,8 +824,13 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     "Could not determine" resolves toward EXCLUSION for 2-4: a possibly-wrong
     trend entry is worse than a missing one, because the missing one is
     visible in `count` and the wrong one is not visible at all."""
-    record["duration_seconds"] = round(
-        time.monotonic() - record.pop("_started_monotonic"), 3)
+    # Tolerant of a missing start stamp rather than raising on it: this
+    # function must not be the thing that turns a recording problem into a
+    # traceback (R-36h). No stamp => no duration => not a measurement, which
+    # the eligibility conjunction below then refuses on its own terms.
+    started = record.pop("_started_monotonic", None)
+    record["duration_seconds"] = None if started is None \
+        else round(time.monotonic() - started, 3)
     if error is not None:
         record["outcome"] = "aborted" if not isinstance(error, Exception) \
             else "error"
@@ -836,6 +841,9 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         record["exit_code"] = exit_code
         record["outcome"] = "pass" if exit_code == 0 else "fail"
     reasons = []
+    if record["duration_seconds"] is None:
+        reasons.append("no duration was measured — clause 1 of R-36b: an "
+                       "entry without a duration is not a measurement")
     if record["outcome"] in ("aborted", "error"):
         pass  # already explained above; keep the specific message
     elif record["dirty"] is None:
@@ -969,9 +977,21 @@ def flush_run_record(record: dict | None, *, exit_code: int | None = None,
     """Close and persist in ONE step, so main()'s three exits — normal
     return, refusal, abort — cannot drift in how they record. `None` means
     there was nothing to record (a dry run, or a failure before the lane
-    resolved); the caller does not branch on it."""
-    if record is None:
+    resolved); the caller does not branch on it.
+
+    AT MOST ONCE per record, and the sentinel is set BEFORE the work. The
+    normal-path flush in main() sits inside main()'s own try, and it is not
+    instantaneous — it spawns `git check-ignore` and may wait up to
+    HISTORY_LOCK_TIMEOUT on the lock. A Ctrl-C landing in that window is
+    caught by main()'s BaseException handler, which flushes again; without
+    the sentinel that second flush re-entered an already-consumed record and
+    raised, replacing the real signal with a traceback — the exact opposite
+    of what R-36h and R-04 promise. Claiming the record first means the
+    second call is a clean no-op and the KeyboardInterrupt continues on its
+    way, which is the whole point of catching it."""
+    if record is None or record.get("_flushed"):
         return
+    record["_flushed"] = True
     record_invocation(record["_project_dir"], Path(record["worktree"]),
                       finish_run_record(record, exit_code=exit_code,
                                         error=error),
@@ -1056,10 +1076,17 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
 
 def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
                 central: dict, central_path: Path | None,
-                lane_name: str | None, as_json: bool) -> int:
+                lane_name: str | None, as_json: bool,
+                worktree_scope: str | None = None) -> int:
     """RG-27 query verb. Reports; judges nothing, decides nothing, and — like
     `--list` — exits 0 whenever the QUERY succeeded, including when there is
-    no data yet. An empty store is an answer, not a failure."""
+    no data yet. An empty store is an answer, not a failure.
+
+    `project_dir` is the EFFECTIVE project dir — already relocated into the
+    tree the caller asked about — so the read scope always matches the write
+    scope. `worktree_scope` is that tree's path when `--worktree` selected
+    it, and it is DISCLOSED (R-05): the answer names the tree it describes,
+    it is never left to be inferred."""
     if lane_name is not None and lane_name not in lanes:
         fail(f"unknown lane {lane_name!r} — known lanes: "
              f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
@@ -1074,6 +1101,7 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
             "schema": HISTORY_SCHEMA,
             "revision": __revision__,
             "store": str(store_path),
+            "worktree_scope": worktree_scope,
             "keep": keep,
             "keep_source": keep_source,
             "lanes": {name: lane_history_report(store, name)
@@ -1081,6 +1109,9 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
         }, indent=2, sort_keys=True))
         return 0
     print(f"{PROG} rev {__revision__} — lane invocation history")
+    if worktree_scope:
+        print(f"tree:  {worktree_scope}  (--worktree; this answer describes "
+              f"THAT tree, not the invoking checkout)")
     print(f"store: {store_path}"
           f"{'' if store_path.is_file() else '  (not written yet)'}")
     print(f"keep:  {keep}  ({keep_source})")
@@ -2562,10 +2593,12 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          probe containers for that last check — fitness can only be",
         "          observed, not read: one inventory probe per environment+judge,",
         "          plus one batched `command -v` probe per environment)",
-        "       run-gate.py history [LANE] [--json]",
+        "       run-gate.py history [LANE] [--worktree PATH] [--json]",
         "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
         "          aborted runs included — and its bounded per-commit duration",
-        "          series. Reads the store, runs no lane, decides no policy)",
+        "          series. Reads the store, runs no lane, decides no policy.",
+        "          --worktree redirects the READ exactly as it redirects a run:",
+        "          the answer describes THAT tree\'s store, and says so)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -2623,15 +2656,19 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    PLUS the assay-lane toolchain fitness check, whose",
         "                    FAIL exits 2 (that half is the judge's own finding,",
         "                    not a heuristic)",
-        "  --json            `history` only: the same data as one JSON document",
+        "  --json            `history` ONLY: the same data as one JSON document",
         "                    (latest + bounded history + median/min/max, split",
-        "                    passes vs all completed runs)",
+        "                    passes vs all completed runs). Every other verb",
+        "                    REFUSES it by name rather than silently printing",
+        "                    its human form (--list is already a machine table)",
         "",
         "lane history (RG-27) — measured and persisted, never acted on here:",
         f"  store       <project>/{HISTORY_DIR_NAME}/{HISTORY_FILE_NAME} in the JUDGED",
         "              worktree — per (worktree x project), so two worktrees' gates",
         "              never contend; MUST be git-ignored (the tool refuses to write",
         "              and says so rather than dirtying the tree for the next lane)",
+        "  read scope  the same one: `history --worktree B` reads B's store, never",
+        "              the invoking checkout's, and names the tree in its output",
         f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} commits per lane;",
         "              project [history] shadows the central one (R-09's rule)",
         "  eligibility  history keeps COMPLETED runs (passes AND fails) on a clean,",
@@ -2707,6 +2744,17 @@ def main(argv: list[str] | None = None) -> int:
 
     record = None  # RG-27: set once the lane resolves; see flush_run_record
     try:
+        # Review fix (S1): `--json` is honored by `history` alone, so every
+        # other invocation REFUSES it by name instead of accepting it and
+        # emitting the plain table anyway. Same rule as RG-1's --worktree and
+        # RG-26's --base: a flag the command cannot honor is a refusal, never
+        # a silent no-op — a consumer piping `--list --json` into a parser
+        # would otherwise get a TSV where it asked for JSON.
+        if args.json and args.lane != "history":
+            fail("--json is honored by the `history` verb only (run-gate.py "
+                 "history [LANE] --json); `--list` is already a machine "
+                 "table (name<TAB>kind<TAB>environment) and every other verb "
+                 "prints human text")
         project_dir = find_project_dir()
         if args.help or (args.lane is None and not args.list
                          and not args.check_env):
@@ -2741,8 +2789,39 @@ def main(argv: list[str] | None = None) -> int:
             # RG-27 query verb — reads the store, runs nothing, decides
             # nothing. Rigor/defer POLICY belongs to the controller reading
             # this, never to the tool producing it.
-            return cmd_history(lanes, project_dir, cfg, cfg_path, central,
-                               central_path, args.target, args.json)
+            #
+            # Review fix (B1): the READ scope follows `--worktree` exactly as
+            # the WRITE scope does (R-36f). The store is per (judged worktree
+            # × project), so reading the invoking checkout's store while the
+            # caller asked about tree B would answer with A's medians under
+            # B's name — silently, which is the one thing this feature exists
+            # to make impossible. Resolution happens ONLY when the flag is
+            # given: an unflagged `history` stays git-free and keeps
+            # answering in a checkout where git cannot.
+            hist_dir, hist_scope = project_dir, None
+            if args.worktree:
+                # …and B1's ERROR path closes the same way. On the run path
+                # an unresolvable --worktree dies downstream (git status in a
+                # tree that is not there); a READ has no downstream, so an
+                # unvalidated override would compute a store path under a
+                # nonexistent tree and answer "(not written yet)" — the
+                # invoking checkout's silence presented as tree B's answer.
+                # resolve_repo_and_worktree() takes the override verbatim by
+                # design (R-02), so the check belongs here.
+                if not Path(args.worktree).is_dir():
+                    fail(f"--worktree {args.worktree!r}: not a directory — "
+                         f"`history` reports THAT tree's store, so it must "
+                         f"name a real worktree")
+                git_out("rev-parse", "--show-toplevel",
+                        cwd=Path(args.worktree))  # refuses with git's own line
+                _, hist_wt, hist_top = resolve_repo_and_worktree(
+                    project_dir, args.worktree)
+                hist_dir = effective_project_dir(project_dir, hist_top,
+                                                 hist_wt)
+                hist_scope = str(hist_wt)
+            return cmd_history(lanes, hist_dir, cfg, cfg_path, central,
+                               central_path, args.target, args.json,
+                               hist_scope)
         if args.list:
             return cmd_list(lanes)
         if args.check_env:
@@ -2880,7 +2959,11 @@ def main(argv: list[str] | None = None) -> int:
         return exc.exit_code
     except BaseException as exc:
         # Ctrl-C and friends (RG-27): `latest` records the abort, and the
-        # exception continues on its way completely untouched.
+        # exception continues on its way completely untouched. This also
+        # catches SystemExit, deliberately harmless: flush_run_record is
+        # at-most-once and re-raises nothing, so a `sys.exit()` raised from
+        # anywhere under here still exits with its own code, having recorded
+        # that the invocation ended.
         flush_run_record(record, error=exc)
         raise
 

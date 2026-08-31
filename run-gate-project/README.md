@@ -78,7 +78,8 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 ./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
 ./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
 ./run-gate.py history [LANE]  # what each lane last did + what it typically costs
-./run-gate.py history --json  #   … the same, machine-readable
+./run-gate.py history --json  #   … the same, machine-readable (this verb only)
+./run-gate.py history --worktree B   # … for tree B's store, not this checkout's
 ./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
 ./run-gate.py --help          # usage(), incl. the tool revision
 ```
@@ -199,7 +200,9 @@ the tool's reason to exist and MUST be implemented + tested:
   `latest` slot holding the most recent invocation whatever happened to it,
   and a bounded per-commit trend series that only trustworthy measurements
   join (completed, clean tree, no rebase in flight, real commit). Read it
-  with `./run-gate.py history [LANE] [--json]`. run-gate MEASURES; the
+  with `./run-gate.py history [LANE] [--worktree PATH] [--json]` — the read
+  scope follows `--worktree` exactly as the write scope does, and the answer
+  names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
   (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
 

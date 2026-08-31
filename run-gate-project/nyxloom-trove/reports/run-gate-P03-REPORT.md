@@ -281,9 +281,10 @@ Full account in the LOG.
 ## 4. Evidence the two named traps are actually caught
 
 Both traps have dedicated test classes, and both classes were verified by
-**controlled wrong implementation** — 15 mutants applied one at a time to the
+**controlled wrong implementation** — 20 mutants applied one at a time to the
 real `run-gate.py`, suite run, source restored and sha256-verified byte
-identical. **All 15 caught, zero survivors.**
+identical (`a63c2717…`). **All 20 caught, zero survivors.** (15 in round 1;
+P-T added in round 2 for the two blockers and S1.)
 
 | mutant | first test to go red |
 |---|---|
@@ -302,12 +303,22 @@ identical. **All 15 caught, zero survivors.**
 | **M** recording writes into the invoking checkout | `…::test_worktree_override_records_into_the_judged_tree` |
 | **N** an abort is not recorded before it re-raises | `TestHistoryInProcess::test_main_records_an_abort_and_re_raises_untouched` |
 | **O** a refusal is not recorded (`latest` goes stale on the interesting run) | `TestHistoryEndToEnd::test_a_clean_tree_refusal_lands_in_latest_only` |
+| **P** B1 — `history` reads the invoking checkout, ignoring `--worktree` | `TestHistoryReadScope::test_worktree_flag_reads_that_trees_store` |
+| **Q** B1 error path — an unresolvable `--worktree` falls back silently | `…::test_a_nonexistent_worktree_refuses_rather_than_reporting_no_data` |
+| **R** B2 — flush is not at-most-once (the second flush re-enters) | `TestHistoryFlushIsAtMostOnce::test_a_second_flush_is_a_clean_no_op` |
+| **S** B2 defence — `finish_run_record` pops the start stamp unconditionally | `…::test_a_record_with_no_start_stamp_never_raises` |
+| **T** S1 — `--json` silently ignored outside `history` | `TestJsonFlagScope::test_other_verbs_refuse_json_by_name` |
 
 **Trap 1 (latest-only / no rolling stat)** is caught twice over, at both
 levels it can occur: structurally (mutant A — the store keeps one entry where
 three commits ran) and statistically (mutant B — the series exists but a
-single 100s outlier among 10s runs is reported as the typical cost; the test
-asserts `median == 10.0` while `max == 100.0`).
+single 100s outlier among 10s runs is reported as the typical cost).
+**Corrected after review:** the number mutant B actually moves is the MEDIAN
+— `10.0` correct versus **`40.0`** under the mean, i.e. (10+10+100)/3. The
+first write-up of this line said "median 10.0 while max 100.0", which named
+the wrong contrast: the test does assert `max == 100.0`, but as the separate
+point that the outlier stays VISIBLE rather than being discarded, and the
+mutant does not move it. The test was right; the sentence was not.
 
 **Trap 2 (an aborted/dirty run corrupting a commit-keyed entry)** is caught
 in its literal form and in three siblings that would produce the same
@@ -322,13 +333,86 @@ two real gate runs (a completed fail at `1687b60d` and a pass at `afcdb39f`),
 and `git status --porcelain` is empty afterwards — the ignore guard works on
 the real repo, not just on fixtures.
 
-## 5. Test inventory (79 new)
+## 4a. Round-2 review fixes (blockers B1/B2 + S1/S2)
+
+The reviewer's ACCEPT-conditional named two blockers and two cheap
+recommendations. All four are fixed here, each with its own mutant.
+
+**B1 — `history` silently ignored `--worktree` and answered with the wrong
+tree's data.** Confirmed: `cmd_history` was dispatched before
+`resolve_repo_and_worktree` and received the raw `project_dir`. The write side
+honored `--worktree` (`R-36f`); the read side did not, so
+`history <lane> --worktree B` handed back tree A's medians under B's name —
+the exact substitution this feature exists to make impossible, and the hazard
+class `R-25`/`R-35` already legislate against for `--worktree` and `--base`.
+
+Fixed by **honoring** it rather than refusing it: when `--worktree` is given,
+the verb resolves the judged tree and reads THAT tree's store, and the
+resolved tree is disclosed in both forms (a `tree:` line; a `worktree_scope`
+JSON key, `null` when unflagged). Resolution is deliberately opt-in — an
+unflagged query stays git-free and keeps answering in a checkout where git
+cannot, which it could before and should not lose
+(`test_unflagged_history_needs_no_git`).
+
+Writing the test for the error path surfaced a **second, unreported hole in
+the same fix**: `resolve_repo_and_worktree` takes the override verbatim by
+design (`R-02`), and on the run path an unresolvable tree dies downstream
+(`git status` in a tree that is not there). A READ has no downstream — so
+`history --worktree /nonexistent` computed a store path under a tree that does
+not exist and answered `(not written yet)`: silence presented as tree B's
+answer, i.e. B1 arriving through the error path. The verb now refuses a
+non-directory (exit 2) and a non-work-tree (exit 3, carrying git's own line).
+Mutants P and Q.
+
+**B2 — Ctrl-C during the telemetry write became an uncaught `KeyError`.**
+Confirmed: `flush_run_record` evaluated `finish_run_record(...)` as an
+argument, outside `record_invocation`'s try, and `finish_run_record` popped
+`_started_monotonic` unconditionally. The normal-path flush sits inside
+`main()`'s own try and is *not* instantaneous — it spawns `git check-ignore`
+and can wait up to `HISTORY_LOCK_TIMEOUT` (5s) on the lock — so an interrupt
+landing there reached the `BaseException` handler, which flushed the same
+already-consumed record and raised `KeyError: '_started_monotonic'`. That
+replaces the real signal with a traceback, contradicting both `R-36h` and
+`R-04`, and the comment two lines above promising the exception "continues on
+its way completely untouched".
+
+Fixed with **both** offered remedies, because they guard different failures:
+a `_flushed` sentinel set BEFORE the work (so the second flush is a clean
+no-op — the first flush already owns the record, and if it was interrupted
+mid-way the record is partly consumed and must not be retried), and a
+None-safe `record.pop("_started_monotonic", None)` with a None duration. The
+eligibility conjunction gained the matching clause: **no duration measured =
+not a measurement**, so such a record can reach `latest` but never history.
+Mutants R and S.
+
+**S1 — `--json` accepted and ignored outside `history`.** Now refused by name
+(exit 2), the same rule as RG-1's `--worktree` and RG-26's `--base`: a flag
+the command cannot honor is a refusal, never a silent no-op. `--list --json`
+used to hand a TSV to a caller that asked for JSON. `usage()` says where it
+is accepted. Mutant T.
+
+**S2 — the reserved-name breaking change is now flagged.** Adding `history`
+to the reserved set makes `[lanes.history]` a load-time failure. Zero estate
+projects are affected, but a copied-script consumer repo could be, so it is
+called out as a BREAKING CHANGE block in both CHANGES.md and CONSUMERS.md,
+the way RG-23's was, with the one-line migration and the note that such a
+lane was already unreachable (the verb would have won).
+
+**Also taken:** N1 (a comment explaining that the `BaseException` catch also
+takes `SystemExit`, and why that is harmless now that flushing is
+at-most-once) and the write-up correction the reviewer caught — mutant B's
+real contrast is median 10.0 vs **mean 40.0**, not "max 100.0"; §4 and the
+backlog note are corrected. Not chased, as directed: S3, S4, N2.
+
+## 5. Test inventory (96 new)
 
 `TestHistoryConfigPolicy` (11) · `TestHistoryRollingSeries` (6, trap 1) ·
 `TestHistoryEligibilityGuard` (8, trap 2) · `TestHistoryStoreSafety` (14) ·
 `TestHistoryEndToEnd` (7) · `TestHistoryQueryVerb` (9) ·
-`TestHistoryInProcess` (9) · `TestHistoryDegradedInputs` (15).
-Suite total 334 → 359 passing.
+`TestHistoryInProcess` (9) · `TestHistoryDegradedInputs` (15) ·
+**round 2:** `TestHistoryReadScope` (7, B1) ·
+`TestHistoryFlushIsAtMostOnce` (4, B2) · `TestJsonFlagScope` (6, S1).
+Suite total 334 → 376 passing.
 
 ## 6. Files touched
 

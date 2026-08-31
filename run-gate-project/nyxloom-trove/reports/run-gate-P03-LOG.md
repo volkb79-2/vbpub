@@ -142,11 +142,9 @@ survivors, source restored byte-identical (sha256
 
 ---
 
-## `docs(run-gate): RG-27 FIXED + run-gate-P03 LOG/REPORT` — the branch tip
+## `docs(run-gate): RG-27 FIXED + run-gate-P03 LOG/REPORT` — `dbaccfe1`
 
-Named by subject, not by hash: this is the commit that introduces this file,
-so it is the one entry that cannot carry its own hash. `git log --oneline -3`
-on `feat/run-gate-P03-lane-history` resolves it.
+(Hash filled in by the round-2 commit below; a commit cannot carry its own.)
 
 Backlog `RG-27` marked FIXED in both the status table and the entry body,
 with the actual design decisions (verb name, storage location and format, the
@@ -178,3 +176,65 @@ The two questions the entry warned might have no clean answer both did:
   two files and never meet) and arbitration only for the residual case,
   which keeps the lock small enough to be bounded — and a bounded lock is
   what lets telemetry stay best-effort.
+
+---
+
+## `fix(run-gate): RG-27 round-2 review — B1/B2/S1/S2` — the branch tip
+
+Named by subject: this commit introduces its own LOG entry, so it is the one
+that cannot carry its own hash. `git log --oneline -1` on
+`feat/run-gate-P03-lane-history` resolves it.
+
+Adversarial review returned **ACCEPT-conditional**. Independent
+re-verification confirmed the substance — all three named mutants re-run, the
+two `git check-ignore` behaviors re-checked against real git, concurrency
+re-tested with 16 real separate processes racing one store (16/16 recorded,
+zero lost), and coverage confirmed not gamed (`_run_selected_lane` genuinely
+absent at HEAD, zero new `# pragma: no cover` in the diff). Two blockers and
+two cheap recommendations came back.
+
+**B1 — `history` silently ignored `--worktree`.** `cmd_history` was dispatched
+before `resolve_repo_and_worktree` and got the raw `project_dir`, so the write
+side honored the flag and the read side did not: tree A's medians reported
+under tree B's name. Fixed by HONORING it (read the selected tree's store) and
+DISCLOSING the tree in both output forms. Resolution stays opt-in so an
+unflagged query keeps working where git cannot.
+
+While writing the error-path test I found a **second hole in my own fix**:
+`resolve_repo_and_worktree` takes the override verbatim by design (`R-02`),
+and a READ has no downstream to fail in — so `history --worktree /nonexistent`
+computed a store path under a tree that is not there and answered
+`(not written yet)`. Silence presented as tree B's answer: B1 again, through
+the error path. Non-directory now refuses (exit 2), non-work-tree refuses
+(exit 3 with git's own line). This is worth recording as a pattern: the fix
+for a silent-substitution bug has its own silent-substitution path, and only
+the negative test finds it.
+
+**B2 — Ctrl-C during the telemetry write became an uncaught `KeyError`.**
+Reproduced. `flush_run_record` evaluated `finish_run_record(...)` as an
+argument (outside `record_invocation`'s try) and the pop was unconditional;
+the normal-path flush runs inside `main()`'s try and can take seconds (a
+`git check-ignore` subprocess plus up to the 5s lock bound), so an interrupt
+there hit the `BaseException` handler, which flushed the same consumed record
+and raised. Fixed with both offered remedies — a `_flushed` sentinel staked
+before the work, and a None-safe start stamp — plus the matching eligibility
+clause (no duration = not a measurement).
+
+**S1** `--json` refused by name outside `history`. **S2** the reserved-name
+change flagged as a load-time BREAKING CHANGE in CHANGES + CONSUMERS. **N1**
+comment added. **Write-up correction**: mutant B's real contrast is median
+10.0 vs **mean 40.0**, not "max 100.0" — the test was right, my prose was not.
+S3/S4/N2 logged and not chased, as directed.
+
+**Mutation probe extended to 20** (P-T for B1 ×2, B2 ×2, S1). All 20 caught,
+zero survivors, source restored byte-identical
+(`a63c2717e69f273508a7d6e0c17fa107536963581f5f03a57fefe83a92c6ca00`).
+
+**Gate: GREEN.** Verbatim, verdict read in a separate step:
+
+```
+376 passed, 2 skipped, 2 warnings in 43.86s
+diff-coverage OK: 268/268 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: lane 'selftest' exit 0
+GATE_EXIT=0
+```
