@@ -83,3 +83,59 @@ qualifier CIU-66 wants does not exist as a renderable value, so step one of
 any real fix is a new public template fact, not a signature change.
 
 Left uncommitted-as-code on purpose. Needs controller review before merge.
+
+---
+
+## Commit 3 — `e2e18f92` — item 2, CIU-65 + CIU-64
+
+`feat(ciu): CIU-65 -- validate_config findings carry a severity; CIU-64 --
+`ciu up` runs `ciu check` itself, by default`
+
+CIU-65 first because CIU-64 consumes its severity vocabulary. `_CheckReport`
+already had `.fail`/`.note`; the hook-result loop simply never reached for
+`.note`. `note()` gained a `hook=` kwarg so a WARN names its hook exactly as
+an ERROR does. `classify_hook_finding` is the new one-finding classifier.
+
+CIU-64 inserts `check_preflight` into BOTH `ciu up` preflight blocks (the
+real one and the `--dry-run` one), first among the preflights, reusing the
+`rendered` selection they already computed. `--skip-check` added beside
+`--no-preflight`.
+
+Two existing tests encoded contracts this changes and were updated with the
+reason in-place: `test_check_reuses_rendered_selection_from_prior_deploy`
+(exact action trace, now carries the preflight check).
+
+Files: `src/ciu/deploy.py`, `src/ciu/cli.py`, `docs/SPEC.md` (S9.5 rewritten,
+new S13.4c, S13.4a's `--json` note, S19.1), `README.md`, `docs/CONSUMERS.md`
+§14, `CHANGES.md`, 3 test files (18 new tests, 1 new file).
+
+Gate after this commit: `e2e18f92`, **3 failed / 3286 passed**, coverage
+100.00% — the same three baseline failures. Verbatim in REPORT.
+
+---
+
+## Commit 4 — `ebe45c39` — item 1, CIU-67 + CIU-68
+
+`fix(ciu): CIU-67 -- a distinct gate_timeout key, derived per container;
+CIU-68 -- the health gate self-selects and a `starting` dependency is waited
+for`
+
+CIU-67: new `[deploy.health].gate_timeout`; `derive_gate_budget_s` reads each
+container's own compose healthcheck. `resolve_selection_health_containers`'s
+`default_timeout_s` became `float | None`, where None means "derive".
+
+CIU-68(a): `health_after_phase` moved after `rendered` exists and now also
+turns on from `selection_stack_health_requirement`. (b): `ProbeResult` gained
+`retryable`; `provisioning_preflight` polls only retryable results, one
+shared deadline per phase.
+
+`test_ciu_cli_parser.py`'s per-verb-help leak sentinel changed from
+`--deploy` to `--stop` — it asserted `--deploy` was ABSENT from
+`ciu up --help`, the exact absence CIU-68 calls a defect.
+
+Files: `src/ciu/deploy.py`, `src/ciu/provisioning.py`, `src/ciu/cli.py`,
+`docs/SPEC.md` (S7.7), `docs/CONFIG.md`, `CHANGES.md`, 2 test files (33 new
+tests in one new file).
+
+Gate after this commit: `ebe45c39`, **3 failed / 3319 passed**, coverage
+100.00% — the same three baseline failures. Verbatim in REPORT.
