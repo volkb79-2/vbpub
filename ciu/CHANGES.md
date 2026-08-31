@@ -21,37 +21,77 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.7.1] - UNRELEASED
+
+### Adoption / Migration Notes
+
+**Safe to ignore for almost everyone.** All four items below are internal
+fixes and one internal refactor; none change any CLI surface, config schema,
+or documented behavior. The one visible effect: `ciu check --json`'s stdout
+is now guaranteed to be exactly one parseable JSON document — anyone who was
+already working around the old `[WARN]`/`[INFO]` leak (CIU-84) can drop the
+workaround, but nothing breaks if they don't.
+
+### Fixed
+
+- fix(ciu): **CIU-84 — full sweep of stdout writes reachable on the `ciu
+  check --json` path** (ciu-P44). `ciu check --json` wrote `[INFO]` to
+  stdout ahead of the JSON document (S13.4a's own contract violated) via
+  four unconditional `deploy._run` prose lines and, in a second independent
+  leak class, two unconditional `[WARN]` deprecation notices in
+  `provisioning.probe_ref`/`_probe_stack` reachable through `--live`. Both
+  routed to stderr — the first via a new `_run_info` closure gated on any
+  json-shaped flag, the second unconditionally (matching the CIU-75/CIU-62
+  stderr idiom). `ciu graph --format json` shared the identical `_run`-level
+  defect and is fixed the same way; a narrower, `action_graph`-internal
+  remainder is a separate surface, filed as **CIU-86**.
+  `test_check_json_stdout_is_exactly_one_json_document` drives the real
+  `action_check` (not mocked) and asserts `json.loads()` on the entire
+  captured stdout succeeds.
+- fix(ciu): **CIU-85 — `_clean_in`'s child environment now strips CIU
+  identity keys before overlaying the target's own facts**, matching its two
+  siblings (`_sanitized_target_env`, `_resolve_budget_candidates`) (ciu-P44).
+  Previously `_clean_in` built its environment as `dict(os.environ)` +
+  target identity, so a caller's `CIU_SERVICES_PROFILE` could leak into the
+  child `ciu clean`. `_CIU_IDENTITY_ENV_KEYS` is now derived from
+  `workspace_env.GENERATED_FACT_ENV_KEYS.values()` (closing a separate gap:
+  `PUBLIC_FQDN`, one of the six identity facts since CIU-47, was missing
+  from the old hand-written tuple) plus the one non-fact addition
+  (`CIU_SERVICES_PROFILE`). A third sibling, `_generate_env_in`, carried the
+  identical stale 6-key literal and is fixed the same way — found during
+  this package, not in the original filing.
+- fix(ciu): **CIU-61 — `ciu init`'s scaffolded `.gitignore` additions now
+  match ciu's own published `.gitignored.ciu` sample** (ciu-P44). The
+  4-entry `_GITIGNORE_ENTRIES` was missing `ciu.global.worktree.toml.j2`
+  (carries `[ciu.instance.generated]` since CIU-60/7.5.0, and is now the
+  SOLE instance-identity source since CIU-75/7.7.0 — a freshly scaffolded
+  consumer repo risked committing host-specific instance identity),
+  `ciu.worktree-instance.json`, and `**/ciu.toml`/`**/ciu.toml.j2`. The
+  reference file itself was also wrong — it mislabeled two committed
+  override templates as gitignored — corrected first, then reconciled to 7
+  entries with a bidirectional set-equality test preventing future drift.
+- fix(ciu): **CIU-59 — the four duplicated `DEVCONTAINER_NAME`-or-`HOSTNAME`
+  lookups are now one helper**, `workspace_env.detect_devcontainer_name()`
+  (ciu-P44). One of the four sites used a nested-`.get()` form that treated
+  an explicitly-empty `DEVCONTAINER_NAME` differently from the other three
+  sites' `or`-fallback form — a real, previously-undetected divergence,
+  fixed by standardizing on the `or`-fallback semantics everywhere.
+
 ## [7.7.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=9e4bdae68e9b419bd3c44850cc7500c9bfeefedf -->
 
-### Added
-- feat(ciu)!: CIU-75 -- the overlay becomes the sole instance-fact source (BREAKING) (ebcc7ad7)
-
-### Fixed
-- fix(ciu)!: CIU-75 review round 1 -- complete the cutover at STEP 1, and stop the notice breaking `ciu check --json` (c979de02)
-- fix(ciu): CIU-77 -- bump vendored gate judge assay-2.3.0.pyz -> assay-3.2.0.pyz (b81d6c3b)
-- fix(ciu): CIU-81 -- scaffold.py's two Jinja render paths adopt StrictUndefined (597ce58d)
-- fix(ciu): CIU-80 -- HookContext.identity_unreadable disambiguates unmanaged from unparseable ciu.env (cd5fadea)
-- fix(ciu): CIU-79 -- ciu dev's _build_dev_image resolves build.context against repo_root (7b2d288b)
-
-### Changed
-- report(ciu): ciu-P42 -- record review round 1 (REJECT -> completed cutover) in LOG/REPORT (55d4d017)
-- backlog+docs(ciu): CIU-83 -- ciu-P43 landed no CHANGES entries; REPORT/LOG carry the final gate verdict (95ec5803)
-- docs+test(ciu): ciu-P42 -- record the ciu-P43 rebase, the merged identity contract, and the post-rebase gate (8cc79745)
-- report(ciu): ciu-P42 -- CIU-75 REPORT + LOG gate/hash record (67a588f8)
-- docs+test(ciu): ciu-P43 review round 1 fixes -- CIU-79 is breaking, test fixture was wrong (274230af)
-
-### Documentation
-- docs(ciu): CIU-83 -- add [7.7.0] CHANGES.md entries for ciu-P43's CIU-77/79/80/81 (9e4bdae6)
-- docs(ciu): CIU-75 review round 2 -- finish the documentation sweep, correct CIU-82 again, file CIU-84/85 (54425f98)
-- docs(ciu): CIU-75 -- SPEC S3.1c, CONSUMERS migration, BREAKING changelog; CIU-75 FIXED, CIU-82 filed (f8f29778)
-- docs(ciu): CIU-79's backlog row names the breaking change (review polish) (8a1b7d53)
-- docs(ciu): ciu-P43 -- record the post-review-fix gate re-run verdict (8431f966)
-- docs(ciu): ciu-P43 LOG + REPORT -- four-item bundle, real gate green (28e29b90)
-- docs(ciu): CIU-75 -- retarget its release version from 7.6.0 to 7.7.0 (332af5a1)
-
-## [7.7.0] - UNRELEASED
+**Process note (2026-08-31):** this release's `cmru release` run inserted its
+auto-generated commit-subject digest as a separate section above the
+hand-authored detail below, rather than into it — exactly the drift the
+process note at the top of this file exists to prevent. Folded in at
+checkpoint-3 release time: every auto-generated bullet was either a product
+change (already covered, in more depth, by the hand-authored `### Changed` /
+`### Added` / `### Fixed` sections below — CIU-75/77/79/80/81 all appear in
+both) or a process/housekeeping commit (LOG/REPORT records, backlog-only
+edits) with no independent consumer-facing content, so the terse digest was
+removed rather than duplicated. The two `cmru:` markers above are preserved
+for CMRU's own release tooling.
 
 > **This release is BREAKING, and ships as a MINOR on purpose.** The estate's
 > normal convention is that a breaking change waits for the next major; CIU-75
