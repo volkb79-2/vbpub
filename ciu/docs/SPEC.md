@@ -4508,15 +4508,24 @@ by imported Assay source and never by a nyxloom evidence-judgment command.
 generates a minimal CIU-enabled repository layout: a validated
 `ciu.global.defaults.toml.j2` (project identity, network from
 `$DOCKER_NETWORK_INTERNAL`, health timings), gitignore entries (`ciu.env`,
-`ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`), and optional stack
-skeletons under `applications/<name>/` (defaults + compose template with one
-GEN_LOCAL secret). Templates ship INSIDE the wheel (`ciu/templates/`) so a
-plain `pip install ciu` carries them. Validation-first: the global template
-AND every stack's own `ciu.defaults.toml.j2` are rendered through the real
-Jinja step and TOML-parsed BEFORE anything is written; an existing target
-file is never overwritten — the run refuses naming every existing target. It
-does NOT run `ciu env generate` (side effects stay with the operator); the
-printed next steps say to.
+`ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`, `ciu.worktree-instance.json`,
+`ciu.global.worktree.toml.j2`, `**/ciu.toml` — CIU-61 reconciled this list
+against the repo root's own `.gitignored.ciu` sample-rules file, which had
+drifted from it; a test now keeps the two from drifting again), and optional
+stack skeletons under `applications/<name>/` (defaults + compose template
+with one GEN_LOCAL secret). Templates ship INSIDE the wheel
+(`ciu/templates/`) so a plain `pip install ciu` carries them. Validation-first:
+the global template AND every stack's own `ciu.defaults.toml.j2` are rendered
+through the real Jinja step and TOML-parsed BEFORE anything is written; an
+existing target file is never overwritten — the run refuses naming every
+existing target. It does NOT run `ciu env generate` (side effects stay with
+the operator); the printed next steps say to.
+
+  **Deliberately NOT gitignored** (S3.1a/CIU-8): `ciu.global.toml.j2` and a
+  scaffolded stack's own `ciu.toml.j2`, once an operator adds either, are
+  committed, hand-authored sparse override templates — `ciu init` never
+  writes gitignore rules that would silently drop them from a consumer's
+  own repo.
 
   **The preflight render uses `StrictUndefined` (CIU-81), matching the real
   S3.2 render path exactly** (`config_model.render_jinja2_text`, since
