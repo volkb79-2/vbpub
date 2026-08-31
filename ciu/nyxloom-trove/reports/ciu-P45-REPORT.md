@@ -239,3 +239,25 @@ step (never a pipe tail), commit confirmed against `git rev-parse HEAD` =
 Full scope landed — all 8 sites, one mechanism, no subset deferral. No new
 follow-up filed; the one design wrinkle found (`allow_abbrev=False`) was
 fixed within this same package before landing, not deferred.
+
+## Addendum — real gate re-run after the LOG/REPORT commit (commit `068b29c2`)
+
+Writing this REPORT/the LOG added a third commit (`068b29c2`, docs-only —
+two new files under `nyxloom-trove/reports/`, zero source or test changes)
+AFTER the gate run quoted above, which moved `HEAD` past the commit that
+run actually judged. Re-ran `./run-gate.py ciu --worktree
+/workspaces/vbpub/.worktrees/ciu-P45-CIU54-repo-root` once more against the
+true final HEAD rather than leave a stale verdict standing:
+
+```
+ciu: PASS (exit 0)
+  commit: 068b29c248b7f6ccd53a44343803c1da8db2ccfc
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: lane 'ciu' exit 0
+```
+
+Verdict artifact, read directly in a separate step, commit confirmed
+against `git rev-parse HEAD` = `068b29c248b7f6ccd53a44343803c1da8db2ccfc`
+(exact match): `outcome: PASS`, `exit_code: 0`, R0 `PASS`, R1 `PASS` at
+coverage `pct: 100.0`. Same green outcome as the original run, now at the
+actual commit this package ends on.
