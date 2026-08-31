@@ -15,7 +15,8 @@ of which was that this package's headline claim was **false as shipped**: the
 twelve migrated call sites were not the whole surface, and a sibling
 checkout's exported identity still won a real render. §12 is what changed, and
 what now proves it. §§1–11 below describe the package as it stood at that
-review, corrected in place where they were wrong.
+review, corrected in place where they were wrong. **§13** is round 2, which
+accepted the code and rejected the documentation sweep as incomplete.
 
 **Read §11 if you are reviewing after ciu-P43.** That package landed
 `HookContext.identity_unreadable` in the two functions this one rewrites; §11
@@ -781,3 +782,83 @@ key-extraction shell site at all** — the single grep recipe is in a handoff
 doc and greps `CIU_INSTANCE_ID`, a key `ciu.env` has never had. Also recorded,
 so nobody migrates it needlessly: dstdns's `$VAR` templates are *more* correct
 after this change, because a stale sibling value can no longer reach them.
+(Round 2 corrected this inventory again — §13.)
+
+---
+
+## 13. Review round 2 — ACCEPT-conditional, and the sweep that was not one
+
+Round 2 confirmed every round-1 code change (Repro A/B/C closed, the
+`find_workspace_env` side door closed at three levels, four controlled-wrong
+mutants caught, gate PASS at `55d4d017`) and rejected the **documentation**
+half: round 1 had corrected the passages I happened to look at.
+`git diff --name-only 815c50d6 HEAD -- ciu/docs/` settled the argument —
+`CONFIG.md` and `FEATURES.md` had never been opened. This round therefore
+re-grepped **every** `.md` under `docs/` plus the root `README.md`, judging
+each hit rather than sampling, and finished with a pattern grep for
+read-source phrasing (`read|parses|resolves from|its own …ciu.env`) that now
+returns only correct hits — the migration text itself, the legacy verbs, the
+machine facts, and clauses carrying an explicit "before CIU-75" marker.
+
+Seven stale claims the reviewer named, all fixed; the ones worth calling out:
+
+- **SPEC S16.10 step 1 and S11's validation catalog each contradicted my own
+  rewritten clauses in the same document** — S3.1c and S8.7 respectively.
+- **SPEC S16 `worktree rm`** said it cleans "under that worktree's own
+  `ciu.env`"; the corrected sentence also states what the old one never did,
+  that `_clean_in` REFUSES a checkout whose table carries no identity.
+- **`CONFIG.md`'s `ctx.identity_unreadable` paragraph** was the materially
+  misleading one: SPEC S9.3 and CONSUMERS §10 had both been re-pointed while
+  the document hook authors actually read still said the flag is about
+  `ciu.env`. It now names the record, enumerates the four unreadable forms,
+  and keeps the "a hook needs no change" conclusion.
+
+**The missing WHY.** `DESIGN-GUIDE.md` carried no section for this decision,
+though AGENTS.md makes it the home of the reasoning. Added as the sequel to
+CIU-60's own section — the reader's design, the unconditional override, and
+the lesson that generalizes past this feature: *a cutover is complete when the
+old source cannot influence the answer, not when every direct read has been
+rewritten.*
+
+**The published helper was itself incomplete — and is now executed, not
+eyeballed.** Blocker 5's replacement returned the facts dict raw, missing the
+`isinstance(value, str)` check the shipped reader has, so it implemented three
+of S3.1c clause 4's four indeterminacy cases while claiming all four. Added,
+then the snippet was extracted from the Markdown and RUN: absent → `{}`,
+operator content with no table → `{}`, a real record written by the shipped
+writer → byte-equal to `read_generated_facts`, and each of the four unreadable
+forms → `ValueError`. That run also corrected §11b's own framing: whole-file
+`tomllib` fails on operator content only when that content is not itself valid
+TOML — Jinja inside a quoted string parses fine, while a `{% if %}` line, an
+unquoted `{{ … }}` value or a bare `$VAR` do not. Overclaiming in a migration
+note is the same defect as understating; §11b now says exactly when it breaks.
+
+**CIU-82, corrected a second time.** `scripts/devcontainer-exec.sh:83-104`
+(`get_network_name`, called at `:148` and `:183`) sources `ciu.env`
+*specifically to fetch* `DOCKER_NETWORK_INTERNAL` and hard-fails when the file
+is absent — live code consuming one identity fact, the most migration-relevant
+shell site in the repo, missed by both earlier audits because the source target
+is the variable `"$env_file"` rather than the literal filename. The entry now
+records that as the lesson for the next sweep. The count is corrected from
+"six places" to **nine `source` statements across eight files**, re-verified
+line by line at `dstdns@e1712adc`, in both the backlog and §11b.
+
+**Two findings filed, not fixed — deliberately.** Both were verified at source
+and both would have meant a `src/` change in a docs-only round:
+
+- **CIU-84** — `ciu check --json` still writes `[INFO]` to stdout before the
+  document (`deploy.py:4322`, `info("Active service profile(s): …")`, ahead of
+  dispatch). Pre-existing: the same hazard CIU-75 fixed one layer down at
+  STEP 1, and `action_check` already guards its own prose, which is what makes
+  the remaining emitter easy to miss.
+- **CIU-85** — `_clean_in` builds its child environment without the
+  `_CIU_IDENTITY_ENV_KEYS` strip its two siblings perform, so the caller's
+  `CIU_SERVICES_PROFILE` — in that tuple, but not an overlay fact and so not
+  covered by the identity overwrite — leaks into the child `ciu clean`; and
+  `PUBLIC_FQDN` is missing from that tuple despite being an identity fact
+  since CIU-47. Both neutralized in practice today, incidentally rather than
+  by design, which is the reason they earn an entry rather than a shrug.
+
+No `src/` file changed in round 2. The gate was re-run anyway, because docs are
+inside the judged tree and this REPORT's §6 claims the artifact matches HEAD —
+a claim that has to keep being true after a docs-only commit.

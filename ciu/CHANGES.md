@@ -246,6 +246,22 @@ ownership labels, and `ciu env generate` is what puts it back.
 - docs(ciu): `docs/SPEC.md` gains **S3.1c — identity-source precedence**, the
   section no existing SPEC clause owned (S2.7 covered derivation, not
   source-of-truth).
+- docs(ciu): `docs/DESIGN-GUIDE.md` gains **"Why the SECOND record then had to
+  become the ONLY one read (CIU-75)"** — the WHY half of this change, as the
+  sequel to CIU-60's section: why the reader scans CIU's own block instead of
+  rendering the config chain, why the override had to be unconditional, and
+  the generalizable lesson (a cutover is complete when the old source cannot
+  influence the answer, not when every direct read has been rewritten).
+- docs(ciu): **every `ciu.env`-as-a-read-source claim across the docs was
+  swept**, not sampled — `SPEC.md` (S2.1, S6.4a, S8.2, S8.7, S11's validation
+  catalog, S16's authority table, `worktree rm`, shared-infra add/join, the
+  budget survey, the `worktree up`/`exec` child environment, S16.9's lease
+  holder and labels, S16.10's both steps, the identity-completeness interlock),
+  `CONFIG.md` (the layer model, the file table, the hook-context paragraph on
+  `identity_unreadable`, the reference render, the worktree control verbs),
+  `CONSUMERS.md`, `FEATURES.md`, `ARCHITECTURE.md`, `CIU.md`, `CIU-DEPLOY.md`
+  and `README.md`. Each correction keeps a "before CIU-75" marker so the
+  history stays legible.
 
 ### Testing
 

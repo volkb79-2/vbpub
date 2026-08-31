@@ -124,7 +124,8 @@ usage be reconsidered for every `ciu` verb?*
 
 The gap was real and asymmetric. Hooks stopped trusting ambient environment in
 S9.3: a hook receives `ctx.instance_id`/`ctx.network` read from THIS
-workspace's own `ciu.env` by exact path. Jinja template rendering never got
+workspace's own record by exact path — `ciu.env` at the time, the overlay's
+`[ciu.instance.generated]` table since CIU-75 (see the section below). Jinja template rendering never got
 that treatment — S3.2's `env` context is still raw `os.environ`. So the exact
 scenario CIU-41 and CIU-53 were filed over (a login shell that once sourced a
 sibling checkout's `ciu.env`, which is a *documented* convenience) renders a
@@ -177,6 +178,71 @@ the next table (minus the trailing comment run that belongs to that next
 table) is what lets CIU rewrite its facts on every single `env generate`
 without ever touching a line a human wrote.
 
+## Why the SECOND record then had to become the ONLY one read (CIU-75)
+
+CIU-60 above left two records of the same six facts: `ciu.env`, which CIU
+itself read, and the overlay table, which templates read. Written together
+from one in-memory tuple, so they agree at birth — and nothing anywhere
+noticed when they later disagreed. That is the shape this codebase keeps
+finding: not a wrong value, but two places a value can come from and no rule
+about which wins.
+
+The v8 proposal's F2 fork settled it in the direction the estate already
+argues for — a real file, in this repo root, that you can `cat` — and CIU-75
+backported it: **the table is the only record CIU reads instance identity
+from**, and `ciu.env` becomes an export nobody inside CIU consults for
+identity. `ciu env generate` keeps writing it, unchanged, because a shell
+`source`ing it is a legitimate consumer and breaking every one of those on the
+same day would be gratuitous.
+
+Two design choices in that cutover are worth the ink, because both look
+arbitrary until you try the alternative.
+
+**The reader is a text-level scan of CIU's own block, not a config render.**
+The obvious implementation is "render the merged chain and read
+`ciu.instance.generated`". It fails on its own terms: the overlay is a Jinja
+template whose render needs the merged config it is a layer of; six of the
+twelve call sites read a checkout that is NOT this process's repo root (a
+shared-infra reference, a budget candidate, a reap group) whose committed
+chain may legitimately be absent or broken; and the block is merged last, so
+its own bytes ARE the merged value — a render could only agree with it. The
+block is plain TOML by construction (the writer emits quoted strings), so it
+is readable with no context at all. The reader slices to it before parsing,
+which is also why the migration helper published for consumers does the same:
+an operator's own Jinja or TOML elsewhere in that file must not break the
+identity read.
+
+**Moving the twelve reads was not the cutover — the process environment was.**
+The first implementation migrated all twelve call sites, documented the
+boundary, and was still wrong end-to-end: STEP 1 of every verb seeded
+`os.environ` from `ciu.env` and seeded it *skip-if-present*, so an inherited
+value was never displaced. Around 26 internal sites read those keys straight
+from ambient, and so does every `$VAR` in a rendered config — the shipped
+`network_name = "$DOCKER_NETWORK_INTERNAL"` among them. The documented
+convenience of a login shell sourcing a sibling checkout's `ciu.env`
+therefore still won a real render, and containers would have joined the
+sibling's network: CIU-41's hazard, surviving in the one place a per-site
+migration cannot reach. The fix seeds the six facts from the table
+**unconditionally** — override, never skip-if-present, because skip-if-present
+only helps in the case that does not bite.
+
+That override is a deliberate behaviour break: exporting `INSTANCE_ID` no
+longer steers a run. It has to be. "The record is authoritative *unless* your
+shell disagrees" is not an authority; it is the two-records problem again with
+extra steps. The way to change identity is to change the record —
+`ciu env generate`, which still honors a pre-set value when it *agrees* with
+what it derives (S2.7's refined precedence), or the table itself.
+
+The lesson generalizes past this feature: **a cutover is complete when the
+old source cannot influence the answer, not when every direct read has been
+rewritten.** The direct reads were the visible half. The process environment
+was the half that carried the bug, and it was invisible to an oracle that
+drove the migrated functions directly — and to every other test in the suite,
+because `tests/conftest.py` scrubs ambient identity before each one. Proving a
+cutover therefore needs an oracle of a different kind from the one that proves
+each site: a real verb, a hostile ambient value, and an assertion about what
+the render actually saw.
+
 ## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
 
 A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is
@@ -223,7 +289,8 @@ survived a printed `clean complete`. Three shapes were considered:
 2. **Keep the basename fallback, computed and passed as `-p`** — up/clean
    agree by construction, but the cross-checkout collision class survives.
 3. **Derive the name from workspace identity** (`REPO_NAME-INSTANCE_ID-stack`
-   from THIS checkout's `ciu.env`, exact-path parsed) — adopted. Unique per
+   from THIS checkout's own record, exact-path read — `ciu.env` then, the
+   generated table since CIU-75) — adopted. Unique per
    checkout AND per stack; up and clean call the same function; a checkout
    that cannot produce the name refuses loudly instead of inventing one.
 
@@ -359,8 +426,9 @@ PRIMARY checkout, so a naive `cd <worktree> && ciu up` would argue about which
 instance is real, and could act on the wrong one.
 
 Both `worktree up` and `worktree exec` therefore build the child environment
-from the SELECTED instance's own `ciu.env`, by exact path, after stripping
-every CIU identity key from the ambient environment. The selected value must
+from the SELECTED instance's own facts, read by exact path (`ciu.env` before
+CIU-75, `[ciu.instance.generated]` since), after stripping every CIU identity
+key from the ambient environment. The selected value must
 agree with the durable record (`REPO_ROOT` = the record's CIU root, and the
 record's `INSTANCE_ID`/network) — a mismatch refuses rather than running with
 a mixed identity. This is the same "derive or read, never invent" rule as

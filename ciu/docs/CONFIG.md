@@ -13,6 +13,8 @@ conflict, SPEC wins.
 │  Autodetected facts about THIS machine. Never project config.   │
 │  Keys: REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_GID,              │
 │        CONTAINER_UID, DOCKER_NETWORK_INTERNAL, ENV_TYPE, …     │
+│  7.7.0: the six INSTANCE-identity keys here are seeded from     │
+│  [ciu.instance.generated] (S3.1c), not read from this file.     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2 — Project config      (*.toml.j2 templates)           │
 │  Committed, human-authored TOML templates; rendered each run.   │
@@ -71,7 +73,7 @@ generated."
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `ciu.global.worktree.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override, merged last; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). `ciu env generate` upserts one CIU-owned table into it, `[ciu.instance.generated]` (CIU-60) — every other byte is yours and survives byte for byte. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
-| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate` |
+| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no INSTANCE identity from it** — that comes from `[ciu.instance.generated]` above (S3.1c); this file still carries the machine facts and is what a shell `source`s |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
 | `<stack>/ciu.toml.j2` | **Committed, OPTIONAL** | Stack sparse override; **not auto-created** (S3.1a, CIU-8) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `<stack>/ciu.toml` | Gitignored, rendered | Runtime stack config; `[state]` preserved across re-renders |
@@ -131,10 +133,18 @@ Outside deployment renders the `ciu` key is absent, so a stray `ciu.*`
 reference fails immediately (Jinja UndefinedError) — never silently empty.
 Hooks receive the same facts as `ctx.selected_profiles` /
 `ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3) and
-`ctx.identity_unreadable` (S9.3, CIU-80 — `True` only when `ciu.env` is
-present but unreadable, distinct from the genuinely-absent workspace, which
-leaves it `False`). Nothing is written to `ciu.env` and nothing is exported
-to the compose env.
+`ctx.identity_unreadable` (S9.3, CIU-80 — `True` only when this checkout's
+identity RECORD is present but unreadable, distinct from the genuinely-absent
+workspace, which leaves it `False`). **Since ciu 7.7.0 that record is
+`ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, not
+`ciu.env`** (CIU-75 / S3.1c): `ctx.instance_id` and `ctx.network` are read
+from it, and `identity_unreadable` is about it. A hook that branches on the
+flag needs no change — but if you were reasoning about *which file* CIU had
+failed to read, it is that one. The four ways it can be unreadable are an OS
+read error (a directory where the file belongs included), a non-UTF-8 byte,
+malformed TOML, and a non-string fact; a missing file, or a file with no such
+table, is the ABSENT case and leaves the flag `False`. Nothing is written to
+either record from a hook, and nothing is exported to the compose env.
 
 ---
 
@@ -1053,8 +1063,11 @@ rule.
 ### CIU-owned identity facts: `[ciu.instance.generated]` [S3.1b / CIU-60]
 
 `ciu env generate` derives this workspace's identity tuple, writes it to
-`ciu.env` for shells and hooks, and — from the same in-memory values, in the
-same invocation — upserts it into `ciu.global.worktree.toml.j2` as a table:
+`ciu.env` for shells, and — from the same in-memory values, in the same
+invocation — upserts it into `ciu.global.worktree.toml.j2` as a table. Since
+7.7.0 that table is the record CIU itself reads (S3.1c): templates read it
+through the merged config chain, hooks get it on their context, and every
+verb seeds its own process environment from it:
 
 ```toml
 [ciu.instance.generated]
@@ -1161,7 +1174,9 @@ supplies that name. It is optional, but not standalone — supplying it without
 the rest of the shared-infra group is a refusal.
 
 For each item CIU renders the REFERENCE's own global config (read-only, under
-the reference's own `ciu.env` — never this process's ambient environment),
+the reference's own environment — this process's ambient environment minus
+every CIU identity key, plus the reference's own facts from its
+`[ciu.instance.generated]` table, S3.1c clause 7; its `ciu.env` before 7.7.0),
 derives the reference's qualified container name with the same
 `container_name()` derivation used everywhere else, **proves that container is
 actually running on the reference's network right now**, and only then records
@@ -1195,7 +1210,9 @@ facts under `git`, and a closed `operation`/`status` vocabulary
 --json` reads it but the JSON documents themselves are never written into
 `ciu.env` or the overlay. Control verbs `ciu worktree up LOGICAL` and `ciu
 worktree exec LOGICAL -- ARGV...` act on one exact selected instance under
-its own `ciu.env` ([SPEC S16.6](SPEC.md#s166--exact-selected-worktree-control-worktree-up--worktree-exec)).
+its own identity — its `[ciu.instance.generated]` facts overlaid on an ambient
+environment stripped of every CIU identity key (S3.1c clause 7; its `ciu.env`
+before 7.7.0) ([SPEC S16.6](SPEC.md#s166--exact-selected-worktree-control-worktree-up--worktree-exec)).
 
 ---
 

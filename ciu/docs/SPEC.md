@@ -981,9 +981,11 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   committed override — are never in scope). Semantics:
   1. It runs LAST, after every pass S6.4/S6.4a describes.
   2. It runs ONLY when those passes all succeeded. A clean that failed keeps
-     all three and says so: `ciu.env` is the workspace identity a retry and
-     any manual cleanup resolve from, and removing it over a half-torn-down
-     workspace would take away the record naming what is still standing.
+     all three and says so: `ciu.global.worktree.toml.j2`'s
+     `[ciu.instance.generated]` table is the workspace identity a retry and any
+     manual cleanup resolve from (`ciu.env` before CIU-75, which is why all
+     three are kept together), and removing it over a half-torn-down workspace
+     would take away the record naming what is still standing.
   3. An already-absent file is a silent no-op for that file — `--vanilla` over
      an already-vanilla workspace succeeds. A file that is present and cannot
      be removed is an ERROR and fails the clean: a `--vanilla` that left one
@@ -1425,7 +1427,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   relative paths and `.env` resolution inside/around the compose file
   resolve.
 - **S8.2** The compose process environment is exactly: `os.environ`
-  (which includes the sourced `ciu.env`) + `PWD` + `COMPOSE_PROFILES`
+  (the machine facts loaded from `ciu.env` plus the six identity facts CIU
+  seeds from `[ciu.instance.generated]`, S3.1c clause 2a) + `PWD` +
+  `COMPOSE_PROFILES`
   (when set by profile/service) + `expose_env` secrets (S4.19).
   **TOML config flattening into env is withdrawn** — `flatten_dict` /
   `ENV_<KEY>` / `UPPER_SNAKE` placeholders no longer exist. All non-secret
@@ -1820,8 +1824,9 @@ S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
 `ciu.global.toml.j2`) · S15.2 governance shape (`enabled` bool,
 `exempt_services` list-of-strings) · S13.6 `produced_by` grammar
 (ASK_VAULT-only inline key, non-empty string) and its producer preflight ·
-S8.7 compose-naming refusals (missing/key-less `ciu.env`, non-round-tripping
-stack dirname for config-less naming). Each failure reports the spec ID it
+S8.7 compose-naming refusals (a missing or key-less `[ciu.instance.generated]`
+table — `ciu.env` before CIU-75 — and a non-round-tripping stack dirname for
+config-less naming). Each failure reports the spec ID it
 enforces.
 S7.5c layout shape (`environment` closed vocabulary, non-empty hosts table,
 every host in inventory, every bundle resolves, no empty bundles) ·
@@ -3423,7 +3428,10 @@ already knows into one operation.
   joins the new instance's declared diverging services onto an existing
   reference instance's shared network (S16.1).
 - **`worktree rm NAME [-y] [--force]`** — runs `ciu clean` INSIDE the worktree
-  under that worktree's own `ciu.env`, and only then `git worktree remove`.
+  under that worktree's own identity — its `[ciu.instance.generated]` facts
+  overlaid on an ambient environment (S3.1c clauses 1/7; its `ciu.env` before
+  CIU-75), and a checkout whose table carries no identity is REFUSED rather
+  than cleaned blind — and only then `git worktree remove`.
   **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
@@ -3446,7 +3454,8 @@ fact has one authority.
 Create/adopt admission rejects an occupied logical identity, path, or active
 branch before allocation. CIU first writes an `allocating` record into a
 `--no-checkout` linked worktree, so interruption remains attributable; it then
-checks out the base and generates identity-only `ciu.env`. Before any network
+checks out the base and generates identity-only records (the overlay table
+CIU reads, and `ciu.env` beside it). Before any network
 bootstrap it rejects duplicate family `INSTANCE_ID`/network values and an
 already-existing exact Docker network (independent-clone collision). Docker
 absence is valid for local-only projects; a present but failing Docker endpoint
@@ -3993,8 +4002,10 @@ ISO-8601 with an **explicit UTC offset**, written in the same `...Z` form
 lease is refused rather than parsed as local time, because a lease whose
 expiry is ambiguous by up to a day is worse than no lease at all once a
 destructive verb reads it. `holder` reuses the identity CIU already has: the
-`INSTANCE_ID` from the workspace's own `ciu.env` (S2) and the host name
-`ciu.env`'s `DEVCONTAINER_NAME` records — no new identity mechanism.
+`instance_id` from the workspace's own `[ciu.instance.generated]` table
+(S3.1c; `ciu.env`'s `INSTANCE_ID` before CIU-75) and the host name
+`ciu.env`'s `DEVCONTAINER_NAME` records — that second half is a MACHINE fact
+and still comes from the legacy export — no new identity mechanism.
 
 **v1 and v2 coexist permanently, and a READ never upgrades a record.** A
 schema-v1 record (no `lease` key at all) is read successfully and is

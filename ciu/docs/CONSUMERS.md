@@ -630,9 +630,12 @@ consult, so nothing detects it going stale. Concretely:
 `[ciu.instance.generated]` block is plain TOML by construction — CIU writes it
 as quoted strings and owns exactly those bytes — but **the surrounding file is
 a Jinja template and is yours to add to** (§11a: your own tables and comments
-may live anywhere else in it). So do not hand the WHOLE file to `tomllib`: a
-`{% ... %}` or a `$VAR` in your own section raises `TOMLDecodeError`. Scan to
-CIU's block first, exactly as CIU's own reader does:
+may live anywhere else in it). So do not hand the WHOLE file to `tomllib`. It
+happens to work while everything you added is *also* valid TOML (Jinja inside
+a quoted string is fine), and it stops working the moment you use the file as
+the template it is — a `{% if %}` line, an unquoted `{{ … }}` value or a bare
+`$VAR` each raise `TOMLDecodeError`, on a file CIU reads without complaint.
+Scan to CIU's block first, exactly as CIU's own reader does:
 
 ```python
 # ciu_identity.py — the same slice CIU itself reads (ciu >= 7.7.0)
@@ -645,9 +648,11 @@ HEADER = "[ciu.instance.generated]"
 def read_ciu_identity(ciu_root) -> dict[str, str]:
     """The six facts, or {} when this checkout has never been generated.
 
-    Raises ValueError when the record is PRESENT but unreadable — do not
-    collapse that into {}: "not a CIU instance" and "this instance's identity
-    cannot be determined" call for different behaviour on your side too.
+    Raises ValueError on all FOUR of the present-but-unreadable cases CIU
+    itself refuses (OS read error, non-UTF-8 byte, malformed TOML, non-string
+    fact). Do not collapse those into {}: "not a CIU instance" and "this
+    instance's identity cannot be determined" call for different behaviour on
+    your side too.
     """
     path = Path(ciu_root) / "ciu.global.worktree.toml.j2"
     try:
@@ -666,7 +671,20 @@ def read_ciu_identity(ciu_root) -> dict[str, str]:
         block = tomllib.loads("\n".join(lines[start:end]))
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"malformed {HEADER} in {path}: {exc}") from exc
-    return block["ciu"]["instance"]["generated"]
+
+    facts = block["ciu"]["instance"]["generated"]
+    for key, value in facts.items():
+        # The fourth indeterminacy case, and the easiest to skip: every
+        # generated fact is a string by construction, so a bare number here
+        # (a hand-edit, a bad writer) would otherwise flow into a compose
+        # project name or a docker label as str(int) — silently wrong instead
+        # of loudly refused. CIU's own reader refuses it; so must yours.
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{HEADER}.{key} in {path} is {type(value).__name__}, "
+                "not a string"
+            )
+    return facts
 ```
 
 ```console
@@ -704,19 +722,30 @@ re-pointed before `ciu.env` stops being written:
    real ciu — that module is already unimportable, and four `infra/*/start.sh`
    scripts invoke it. Independent of CIU-75, but it is found by the same
    sweep.
-3. **Shell: `source ciu.env`, in six places, and no key extraction anywhere.**
-   `scripts/ciu-env.sh:58,66,68` is the canonical loader (asserts `REPO_ROOT`
-   and `PHYSICAL_REPO_ROOT`; sourced by `scripts/devcontainer-exec.sh:28` and
-   `scripts/admin-debug-exec.sh:26`), plus `.vscode/run-ciu-render.sh:12`,
-   `.vscode/run-ciu-render-all.sh:13`, `.vscode/run-deploy.sh:16`,
-   `.vscode/copilot-cmd.sh:53`, `env-workspace-setup-generate.sh:256`, and
-   `.devcontainer/finalize.post.d/10-dstdns-ciu.sh:29` — the last of which
-   also writes the `~/.bashrc` block (`:68`) that sources `ciu.env` into every
-   interactive shell. All are whole-file `source`, which keeps working;
-   `eval "$(ciu env print)"` is the forward form. Note `ciu-env.sh:48-50`
-   documents "ciu.env wins over anything already in the environment" — that
-   precedence now AGREES with CIU's own (§11b consequence 2), where before
-   7.7.0 the two could disagree.
+3. **Shell: nine `source` statements across eight files, and no key
+   extraction anywhere.** `scripts/ciu-env.sh:66` is the canonical loader
+   (asserting `REPO_ROOT`/`PHYSICAL_REPO_ROOT` at `:68`; sourced in turn by
+   `scripts/devcontainer-exec.sh:28` and `scripts/admin-debug-exec.sh:26`),
+   plus `.vscode/run-ciu-render.sh:12`, `.vscode/run-ciu-render-all.sh:13`,
+   `.vscode/run-deploy.sh:16`, `.vscode/copilot-cmd.sh:53`,
+   `env-workspace-setup-generate.sh:256`, and
+   `.devcontainer/finalize.post.d/10-dstdns-ciu.sh` **twice** (`:29`, and
+   `:68` inside the `~/.bashrc` block it writes, which sources `ciu.env` into
+   every interactive shell).
+
+   **The ninth is the one to migrate first:**
+   `scripts/devcontainer-exec.sh:83-104` (`get_network_name`, called at `:148`
+   and `:183`) sources `ciu.env` *specifically to fetch*
+   `DOCKER_NETWORK_INTERNAL`, and hard-fails when the file is absent. It is
+   live code that consumes one identity fact, i.e. exactly the shape this
+   section is about — a whole-file `source` only incidentally. It is also why
+   a naive sweep misses sites: the source target is the variable `"$env_file"`,
+   not the literal `ciu.env`.
+
+   All nine keep working; `eval "$(ciu env print)"` is the forward form. Note
+   `ciu-env.sh:48-50` documents "ciu.env wins over anything already in the
+   environment" — that precedence now AGREES with CIU's own (§11b consequence
+   2), where before 7.7.0 the two could disagree.
 4. **`nyxloom-trove/handoffs/dstdns-P147-vertical-corpus-e2e.md:473`** — the
    one grep-the-file recipe in the repo (`grep -oP
    '(?<=^CIU_INSTANCE_ID=).*' ciu.env`), in a handoff doc rather than in

@@ -395,3 +395,79 @@ Suite: `3405 passed`, coverage `100%` line+branch, exit 0.
 
 **Gate at this commit:** run against `c979de02`; verdict, artifact and hash
 match in `ciu-P42-REPORT.md` §6.
+
+---
+
+## Entry 8 — round 2 — `docs(ciu): CIU-75 review round 2 -- finish the documentation sweep`
+
+**Verdict was ACCEPT-conditional: the code stands, the doc sweep did not.**
+Round 1 corrected the SPEC and CONSUMERS passages I happened to look at.
+`git diff --name-only 815c50d6 HEAD -- ciu/docs/` proved the point — `CONFIG.md`
+and `FEATURES.md` had never been opened at all. Sampling a sweep is not a
+sweep, so this round re-grepped **every** `.md` under `docs/` plus the root
+`README.md` and judged each hit individually.
+
+**Corrected, each verified at source first:**
+
+| where | was | now |
+|---|---|---|
+| SPEC S16 `worktree rm` | runs clean "under that worktree's own `ciu.env`" | its own generated facts; and it REFUSES a checkout whose table carries no identity, which the old sentence did not mention at all |
+| SPEC S16.9 lease `holder` | "the `INSTANCE_ID` from the workspace's own `ciu.env`" | `instance_id` from the table; the `DEVCONTAINER_NAME` half is a MACHINE fact and correctly stays on `ciu.env` |
+| SPEC S11 catalog | "S8.7 compose-naming refusals (missing/key-less `ciu.env`…)" | the table — it contradicted my own rewritten S8.7 in the same document |
+| SPEC S6.4b `--vanilla` | "`ciu.env` is the workspace identity a retry … resolve from" | the table (CONSUMERS' twin sentence was fixed in round 1; this one was missed) |
+| SPEC S8.2, S16 create/adopt | compose env "includes the sourced `ciu.env`"; "generates identity-only `ciu.env`" | both records named, with the seed |
+| CONFIG.md hook context | `identity_unreadable` "`True` only when `ciu.env` is present but unreadable" | the overlay table, with the four unreadable forms enumerated and the "a hook needs no change" line |
+| CONFIG.md ×4 more | layer model, file table, reference render, `worktree up`/`exec` | corrected |
+| FEATURES.md, ARCHITECTURE.md, CIU.md, CIU-DEPLOY.md, DESIGN-GUIDE.md ×3 | "under its own `ciu.env`" and friends | corrected |
+
+CONFIG.md's was the one worth care: it is what hook authors actually read, and
+SPEC S9.3 and CONSUMERS §10 had both been fixed while it was left saying the
+flag is about a file it is no longer about.
+
+**Not just corrections — the missing WHY.** `DESIGN-GUIDE.md` had no section
+for this decision, though AGENTS.md makes that document the home of the
+reasoning (README=WHAT, DESIGN-GUIDE=WHY, CONSUMERS=HOW). Added as the sequel
+to CIU-60's own section: why the reader scans CIU's block instead of rendering
+the chain, why the seed had to override unconditionally ("the record is
+authoritative *unless* your shell disagrees" is not an authority), and the
+generalizable lesson — **a cutover is complete when the old source cannot
+influence the answer, not when every direct read has been rewritten.**
+
+**The published helper (blocker 5's fix) was itself incomplete and is now
+executed, not eyeballed.** It returned the facts dict raw, missing the
+`isinstance(value, str)` check the shipped reader has — so it implemented
+three of S3.1c clause 4's four indeterminacy cases while its own docstring
+claimed all four. Added. Then I extracted the snippet from the Markdown and
+RAN it: absent → `{}`, operator content with no table → `{}`, a real record
+written by the shipped writer → byte-equal to `read_generated_facts`, and all
+four unreadable forms → `ValueError`. That run also corrected the framing:
+whole-file `tomllib` fails on operator content only when that content is not
+*itself* valid TOML (Jinja inside a quoted string parses fine; a `{% if %}`
+line, an unquoted `{{ … }}` value or a bare `$VAR` do not). §11b now says that
+precisely instead of overclaiming.
+
+**CIU-82 corrected again.** `scripts/devcontainer-exec.sh:83-104`
+(`get_network_name`, called at `:148`/`:183`) sources `ciu.env` specifically to
+fetch `DOCKER_NETWORK_INTERNAL` and hard-fails when absent — live code
+consuming one identity fact, the most migration-relevant shell site there is,
+and missing from both earlier audits. It escaped because the source target is
+the variable `"$env_file"`, not the literal — recorded in the entry as the
+lesson for the next sweep. Count corrected from "six places" to **nine
+`source` statements across eight files**, re-verified line by line at
+`dstdns@e1712adc`, in the backlog and in CONSUMERS §11b.
+
+**Two findings filed rather than fixed** (both verified at source; neither is
+this package's to carry, and both would have meant a source change in a
+docs-only round): **CIU-84** — `ciu check --json` still writes `[INFO]` to
+stdout before the document, via `deploy.py:4322`'s unconditional
+`info("Active service profile(s): …")`; pre-existing, the same hazard CIU-75
+fixed one layer down. **CIU-85** — `_clean_in` skips the
+`_CIU_IDENTITY_ENV_KEYS` strip its two siblings perform, so the caller's
+`CIU_SERVICES_PROFILE` (in that tuple, but not an overlay fact and so not
+covered by the identity overwrite) leaks into the child `ciu clean`; plus
+`PUBLIC_FQDN`'s absence from that tuple. Both are neutralized in practice
+today — incidentally, not by design, which is exactly why they are worth an
+entry.
+
+`CHANGES.md` records the DESIGN-GUIDE addition and the sweep. No `src/` file
+was touched in this round; the suite is `3405 passed`, 100% line+branch.
