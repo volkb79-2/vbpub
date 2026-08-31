@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from assay.coverage import FileCoverage, derive_branch_capability, load_coverage_profile
+from assay.coverage_parsers.model import CoverageBlock
 from assay.coverage_parsers import go_cover
 from assay.errors import AssayError, Outcome, ReasonCode
 
@@ -56,13 +57,40 @@ def test_windows_drive_letter_path_and_overlapping_blocks_normalize_correctly():
     # line 5 is claimed by block 1 (executed, count=1) AND block 2
     # (never-taken, count=0) -- executed wins, so it must NOT appear missing.
     assert profile.files["github.com/example/pkg/foo.go"] == FileCoverage(
-        executed=frozenset({3, 4, 5}), missing=frozenset({6, 7}), excluded=None
+        executed=frozenset({3, 4, 5}),
+        missing=frozenset({6, 7}),
+        excluded=None,
+        # A-239/A-390: the records are KEPT whole alongside their expansion,
+        # columns included -- these two share the boundary position `5.2`,
+        # which is exactly the pair a line-only key would fuse.
+        blocks=(
+            CoverageBlock(
+                start_line=3, start_col=10, end_line=5, end_col=2,
+                num_stmts=2, count=1,
+            ),
+            CoverageBlock(
+                start_line=5, start_col=2, end_line=7, end_col=3,
+                num_stmts=1, count=0,
+            ),
+        ),
     )
     # the Windows path itself proves the LAST-colon split: if the FIRST colon
     # (after "C") were used instead, the path would be parsed as just "C" and
     # this key would not exist at all.
     assert profile.files["C:\\Users\\dev\\project\\pkg\\bar.go"] == FileCoverage(
-        executed=frozenset({10, 11, 12}), missing=frozenset({13, 14}), excluded=None
+        executed=frozenset({10, 11, 12}),
+        missing=frozenset({13, 14}),
+        excluded=None,
+        blocks=(
+            CoverageBlock(
+                start_line=10, start_col=5, end_line=12, end_col=9,
+                num_stmts=1, count=1,
+            ),
+            CoverageBlock(
+                start_line=12, start_col=9, end_line=14, end_col=2,
+                num_stmts=1, count=0,
+            ),
+        ),
     )
 
 
@@ -76,7 +104,21 @@ def test_executed_still_wins_when_the_never_taken_block_is_parsed_first():
     )
     profile = load_coverage_profile(artifact, declared_format="go-cover")
     assert profile.files["pkg/f.go"] == FileCoverage(
-        executed=frozenset({2}), missing=frozenset({1, 3}), excluded=None
+        executed=frozenset({2}),
+        missing=frozenset({1, 3}),
+        excluded=None,
+        # Blocks are kept in ARTIFACT order, never sorted: the merge rule
+        # above is what makes the result order-independent, not the storage.
+        blocks=(
+            CoverageBlock(
+                start_line=1, start_col=1, end_line=3, end_col=1,
+                num_stmts=1, count=0,
+            ),
+            CoverageBlock(
+                start_line=2, start_col=1, end_line=2, end_col=1,
+                num_stmts=1, count=1,
+            ),
+        ),
     )
 
 
@@ -107,7 +149,15 @@ def test_a_non_go_extension_parses_identically_proving_no_language_binding():
     artifact = "mode: set\npkg/generated_from_proto.rs:1.1,1.1 1 1\n"
     profile = load_coverage_profile(artifact, declared_format="go-cover")
     assert profile.files["pkg/generated_from_proto.rs"] == FileCoverage(
-        executed=frozenset({1}), missing=frozenset(), excluded=None
+        executed=frozenset({1}),
+        missing=frozenset(),
+        excluded=None,
+        blocks=(
+            CoverageBlock(
+                start_line=1, start_col=1, end_line=1, end_col=1,
+                num_stmts=1, count=1,
+            ),
+        ),
     )
 
 
@@ -198,8 +248,11 @@ def test_an_ordinary_real_shaped_profile_still_parses_under_the_shared_bound():
     profile = load_coverage_profile(
         DRIVE_LETTER_AND_OVERLAP_ARTIFACT, declared_format="go-cover"
     )
-    assert profile.files["github.com/example/pkg/foo.go"] == FileCoverage(
-        executed=frozenset({3, 4, 5}), missing=frozenset({6, 7}), excluded=None
+    assert profile.files["github.com/example/pkg/foo.go"].executed == frozenset(
+        {3, 4, 5}
+    )
+    assert profile.files["github.com/example/pkg/foo.go"].missing == frozenset(
+        {6, 7}
     )
 
 

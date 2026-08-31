@@ -47,6 +47,7 @@ __all__ = [
     "MAX_CLASSIFIED_LINES",
     "BranchCoverage",
     "ClassifiedLineBudget",
+    "CoverageBlock",
     "CoverageProfile",
     "FileCoverage",
 ]
@@ -175,6 +176,76 @@ class BranchCoverage:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CoverageBlock:
+    """One coverage record's positional EXTENT, kept unmerged (A-239).
+
+    A Go cover record is ``<path>:<startLine>.<startCol>,<endLine>.<endCol>
+    <numStmts> <count>``: an extent plus a statement CARDINALITY, never the
+    statements' own positions. :mod:`.go_cover` used to expand that extent
+    straight into line sets with ``range(start, end + 1)``, which attributes
+    function signatures, closing braces, ``case`` labels and
+    statement-continuation lines as executable code.
+
+    **Why the extent is stored instead of only its expansion.** A-239 rejected
+    correcting that expansion afterwards, at the adapter/evaluate boundary, as
+    *information-theoretically insufficient* rather than merely untidy: two
+    blocks may share a boundary position, the parser's own executed-wins
+    overlap merge collapses them DURING parsing, and no later pass can recover
+    the per-block column data the correction would need, because the merge has
+    already discarded it. Keeping the record whole is what makes the
+    correction possible at all — see
+    :func:`assay.statement_attribution.attribute_statements`, which joins these
+    extents against a source-side oracle's.
+
+    Columns are carried even though a verdict speaks only in LINES. They are
+    load-bearing here for exactly the reason above: ``28.22,29.2`` and
+    ``29.2,31.3`` are two different blocks that a line-only key would fuse.
+
+    ``count`` is the record's own execution count, kept per block rather than
+    folded into a line classification, for the same reason.
+    """
+
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+    num_stmts: int
+    count: int
+
+    def __post_init__(self) -> None:
+        for name in ("start_line", "start_col", "end_line", "end_col"):
+            value = getattr(self, name)
+            if value < 1:
+                raise ValueError(
+                    f"CoverageBlock.{name} is {value}; a 1-based source "
+                    f"position is never below 1"
+                )
+        if self.num_stmts < 0:
+            raise ValueError(
+                f"CoverageBlock.num_stmts is {self.num_stmts}, must be >= 0"
+            )
+        if self.count < 0:
+            raise ValueError(
+                f"CoverageBlock.count is {self.count}, must be >= 0"
+            )
+        if (self.end_line, self.end_col) < (self.start_line, self.start_col):
+            raise ValueError(
+                f"CoverageBlock ends at {self.end_line}.{self.end_col}, "
+                f"before it starts at {self.start_line}.{self.start_col}"
+            )
+
+    @property
+    def extent(self) -> tuple[int, int, int, int]:
+        """The join key: the whole four-part position, never a line alone.
+
+        :func:`assay.statement_attribution.attribute_statements` matches a
+        parsed record to an oracle-derived one on exactly this tuple, so a
+        shared boundary position cannot fuse two records.
+        """
+        return (self.start_line, self.start_col, self.end_line, self.end_col)
+
+
+@dataclass(frozen=True, kw_only=True)
 class FileCoverage:
     """One file's line classification, format-normalized.
 
@@ -209,12 +280,24 @@ class FileCoverage:
     anti-tamper invariant available here, which all three branch-bearing
     formats agree on — a line in ``missing`` can never carry a covered arc,
     because a line that never ran cannot have taken one.
+
+    ``blocks`` (A-239) keeps the SAME ``None``/populated split ``excluded`` and
+    ``branches`` already establish (A-008): ``None`` means the format has no
+    block-extent concept to report (every line-based format — ``coverage.py``
+    JSON, lcov, Cobertura, istanbul), a different fact from "block-based, and
+    there are zero blocks". Only :mod:`.go_cover` populates it today. A
+    populated tuple means the line sets above are still the format's own
+    over-approximation and are corrected by
+    :func:`assay.statement_attribution.attribute_statements`; see
+    :class:`CoverageProfile.statement_attributed` for why that correction
+    cannot be silently skipped.
     """
 
     executed: frozenset[int]
     missing: frozenset[int]
     excluded: frozenset[int] | None
     branches: "BranchCoverage | None" = None
+    blocks: "tuple[CoverageBlock, ...] | None" = None
 
     def __post_init__(self) -> None:
         for name in ("executed", "missing", "excluded"):
@@ -304,6 +387,24 @@ class CoverageProfile:
     resolution, no path normalization against a project layout — that stays
     the caller's job, the same separation :mod:`assay.diff` keeps from
     :mod:`assay.measurability`).
+
+    ``statement_attributed`` records whether this profile's line sets have been
+    corrected against a source-side statement-position oracle
+    (:func:`assay.statement_attribution.attribute_statements`, which is the
+    ONLY producer of a ``True`` — no parser sets it, and no consumer should).
+
+    **Why a flag rather than a convention.** For a block-based format the
+    parser's line sets are a strict over-approximation, and a consumer that
+    reads them un-corrected gets a wrong answer that looks exactly like a right
+    one. That is AGENTS.md's *masked default*, anti-pattern 3: wrong, harmless
+    in every context that happens to run the correction, and invisible to
+    testing for precisely that reason. So the omission is made to FAIL rather
+    than to pass quietly — :func:`assay.evaluate.evaluate_coverage` and
+    :func:`assay.evaluate.evaluate_targets` refuse when an adapter declares
+    ``requires_statement_attribution`` and the profile they were handed
+    reports ``False``. The flag is not a promise anybody keeps by remembering;
+    it is a check that can go red.
     """
 
     files: Mapping[str, FileCoverage]
+    statement_attributed: bool = False

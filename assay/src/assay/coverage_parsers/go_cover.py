@@ -74,7 +74,12 @@ from __future__ import annotations
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
-from .model import ClassifiedLineBudget, CoverageProfile, FileCoverage
+from .model import (
+    ClassifiedLineBudget,
+    CoverageBlock,
+    CoverageProfile,
+    FileCoverage,
+)
 from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
 
 _MODE_PREFIX = "mode:"
@@ -105,12 +110,21 @@ def parse(text: str, *, producer: str | None) -> CoverageProfile:
     # that line in the whole profile (a path can also recur across multiple
     # block lines, not only within one block's own range).
     hits_by_file: dict[str, dict[int, int]] = {}
+    blocks_by_file: dict[str, list[CoverageBlock]] = {}
     budget = ClassifiedLineBudget(
         format_name="go coverprofile", remaining=MAX_CLASSIFIED_LINES
     )
     for raw_line in lines[1:]:
-        path, start, end, count = _parse_block(raw_line)
+        path, block = _parse_block(raw_line)
+        start, end, count = block.start_line, block.end_line, block.count
         budget.spend(end - start + 1, path)
+        # A-239: the record is KEPT, whole, in addition to being expanded.
+        # The expansion below is the format's own over-approximation and is
+        # corrected by `assay.statement_attribution.attribute_statements`;
+        # keeping the extent (columns included) is what makes that correction
+        # possible, because the merge two lines down is exactly what discards
+        # the data it needs.
+        blocks_by_file.setdefault(path, []).append(block)
         hits = hits_by_file.setdefault(path, {})
         for file_line in range(start, end + 1):
             already_executed = hits.get(file_line) == 1
@@ -125,13 +139,24 @@ def parse(text: str, *, producer: str | None) -> CoverageProfile:
             missing=frozenset(n for n, c in h.items() if c == 0),
             excluded=None,
             branches=None,
+            blocks=tuple(blocks_by_file[path]),
         )
         for path, h in hits_by_file.items()
     }
+    # `statement_attributed` stays False: a parser never sets it. Only the
+    # oracle-fed correction can, and a Go adapter declares
+    # `requires_statement_attribution`, so an un-corrected profile refuses in
+    # `evaluate` rather than being judged.
     return CoverageProfile(files=MappingProxyType(files))
 
 
-def _parse_block(line: str) -> tuple[str, int, int, int]:
+def _parse_block(line: str) -> tuple[str, CoverageBlock]:
+    """One record's path and its whole :class:`CoverageBlock`.
+
+    Columns are now RETAINED rather than discarded by :func:`_parse_pos`: two
+    records can share a boundary position (``28.22,29.2`` then ``29.2,31.3``),
+    and a line-only key would fuse them into one — see :class:`CoverageBlock`.
+    """
     fields = line.split()
     if len(fields) != 3:
         raise _malformed(f"want 3 fields, got {len(fields)}: {line!r}")
@@ -150,10 +175,12 @@ def _parse_block(line: str) -> tuple[str, int, int, int]:
     if "," not in spec:
         raise _malformed(f"no range in {spec!r}")
     start_spec, end_spec = spec.split(",", 1)
-    start = _parse_pos(start_spec)
-    end = _parse_pos(end_spec)
-    if end < start:
-        raise _malformed(f"block ends ({end}) before it starts ({start})")
+    start_line, start_col = _parse_pos(start_spec)
+    end_line, end_col = _parse_pos(end_spec)
+    if end_line < start_line:
+        raise _malformed(
+            f"block ends ({end_line}) before it starts ({start_line})"
+        )
 
     if not num_stmts_field.isdigit():
         raise _malformed(f"bad numStmts {num_stmts_field!r}")
@@ -164,20 +191,35 @@ def _parse_block(line: str) -> tuple[str, int, int, int]:
         raise _malformed(f"bad count {count_field!r}") from exc
     if count < 0:
         raise _malformed(f"negative count {count}")
-    return path, start, end, count
+    return path, CoverageBlock(
+        start_line=start_line,
+        start_col=start_col,
+        end_line=end_line,
+        end_col=end_col,
+        num_stmts=int(num_stmts_field),
+        count=count,
+    )
 
 
-def _parse_pos(spec: str) -> int:
+def _parse_pos(spec: str) -> tuple[int, int]:
+    """``<line>.<col>`` as a pair. The column used to be parsed and thrown
+    away; A-239 needs it, so it is now validated the same way the line is."""
     if "." not in spec:
         raise _malformed(f"bad position {spec!r}")
-    line_str, _, _ = spec.partition(".")
+    line_str, _, col_str = spec.partition(".")
     try:
-        value = int(line_str)
+        line = int(line_str)
     except ValueError as exc:
         raise _malformed(f"bad line number in {spec!r}") from exc
-    if value <= 0:
-        raise _malformed(f"line number {value} in {spec!r} is not positive")
-    return value
+    if line <= 0:
+        raise _malformed(f"line number {line} in {spec!r} is not positive")
+    try:
+        col = int(col_str)
+    except ValueError as exc:
+        raise _malformed(f"bad column number in {spec!r}") from exc
+    if col <= 0:
+        raise _malformed(f"column number {col} in {spec!r} is not positive")
+    return line, col
 
 
 def _malformed(message: str) -> AssayError:

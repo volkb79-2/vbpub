@@ -5,6 +5,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Added
+- feat(assay): ship `assay/helpers/go/stmtpos/`, a stdlib-only Go statement-position oracle adapted from `cmd/cover`'s own instrumenter, invoked with `go run` (B047 item 1, A-217)
+- feat(assay): `go-cover` now keeps each record's whole block extent — columns included — as `FileCoverage.blocks`, instead of expanding it straight into line sets (A-239, A-390)
+- feat(assay): `assay.statement_attribution.attribute_statements` — the pure, language-free join that turns block extents plus source-derived statement positions into statement-granular line sets, refusing loudly when the profile and the source are not the same revision (A-391)
+
+### Fixed
+- fix(assay): a Go R1 line claim is statement-granular. The shipped parser expanded a cover block's positional extent with `range(start, end + 1)`, attributing function signatures, closing braces, `case` labels and statement-continuation lines as executable code; it now reports only lines that begin a counted statement (F008-A3)
+
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
      range, but it does NOT clear the hand-written block that fed it -- so
