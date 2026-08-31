@@ -292,6 +292,12 @@ cmru/build/
 # assay / manual test
 .assay/
 
+# run-gate lane invocation history (RG-27): per-instance measured state, one
+# store per (judged worktree x project), written after every lane run. It
+# MUST be ignored — the tool refuses to write an unignored store rather than
+# leave the tree dirty for the next lane's clean-tree check.
+.run-gate/
+
 # cleanup hardening (2026-06-18)
 core
 *.core

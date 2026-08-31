@@ -4554,3 +4554,680 @@ class TestEstateBudgetTimeoutPairing:
             f"estate-wide pairing collapsed to {self.PAIRINGS_SEEN} — the "
             f"sweep's grammar and the estate's gate tables have drifted "
             f"apart; fix one or the other, never widen this guard to pass")
+
+
+# ---------------------------------------------------------------------------
+# RG-27 / R-36 — lane invocation history + the `history` query verb
+# ---------------------------------------------------------------------------
+
+HISTORY_LANE = """\
+    schema_version = 1
+
+    [environments.tester-unified]
+    image = "tester-unified:local"
+
+    [lanes.suite]
+    kind = "command"
+    environment = "tester-unified"
+    argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+    # clean_tree = false DELIBERATELY: history eligibility must key on whether
+    # the tree WAS dirty, never on whether dirt was permitted, so this lane
+    # proves a clean run of a dirt-tolerating lane still reaches history.
+    clean_tree = false
+"""
+
+
+def make_history_repo(tmp_path: Path, config: str = HISTORY_LANE,
+                      ignore: str = ".run-gate/\n") -> tuple[Path, Path]:
+    """A repo whose .gitignore covers the store, plus a project inside it."""
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text(ignore)
+    proj = repo / "proj"
+    proj.mkdir()
+    (proj / "run-gate.toml").write_text(textwrap.dedent(config))
+    commit_all(repo, "history fixture")
+    return repo, proj
+
+
+def new_commit(repo: Path, tag: str) -> str:
+    (repo / f"f-{tag}.txt").write_text(tag)
+    commit_all(repo, f"commit {tag}")
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def record_run(proj: Path, repo: Path, *, lane: str = "suite",
+               exit_code: int | None = 0, error: BaseException | None = None,
+               seconds: float = 1.0, keep: int = 10) -> dict:
+    """Drive the REAL recorder — real git repo, real ignore check, real lock,
+    real atomic write. Only the clock is substituted."""
+    rec = run_gate.start_run_record(lane, repo, repo)
+    rec["_started_monotonic"] = time.monotonic() - seconds
+    if error is not None:
+        run_gate.finish_run_record(rec, error=error)
+    else:
+        run_gate.finish_run_record(rec, exit_code=exit_code)
+    run_gate.record_invocation(proj, repo, rec, keep)
+    return rec
+
+
+def read_store(proj: Path) -> dict:
+    return json.loads((proj / ".run-gate" / "history.json").read_text())
+
+
+def lane_slot(proj: Path, lane: str = "suite") -> dict:
+    return read_store(proj)["lanes"][lane]
+
+
+class TestHistoryConfigPolicy:
+    """The retention BOUND is declared config (auditable, shadowable); the
+    data it bounds is per-instance state. Two different questions."""
+
+    def test_keep_defaults_to_ten_and_says_so(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        keep, source = run_gate.resolve_history_keep(cfg, cfg_path, central,
+                                                     central_path)
+        assert keep == 10
+        assert "default" in source
+
+    def test_project_history_table_declares_the_bound(self, tmp_path):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + "\n[history]\nkeep = 3\n")
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        keep, source = run_gate.resolve_history_keep(cfg, cfg_path, central,
+                                                     central_path)
+        assert keep == 3
+        assert str(cfg_path) in source
+
+    def test_project_history_shadows_central(self, tmp_path):
+        repo, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + "\n[history]\nkeep = 3\n")
+        (repo / "run-gate.toml").write_text(
+            "schema_version = 1\n[history]\nkeep = 99\n")
+        commit_all(repo, "central history policy")
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        assert run_gate.resolve_history_keep(
+            cfg, cfg_path, central, central_path)[0] == 3
+
+    def test_central_history_is_inherited_when_project_is_silent(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(
+            "schema_version = 1\n[history]\nkeep = 4\n")
+        commit_all(repo, "central history policy")
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        keep, source = run_gate.resolve_history_keep(cfg, cfg_path, central,
+                                                     central_path)
+        assert keep == 4
+        assert "central" in source
+
+    @pytest.mark.parametrize("value", ["0", "-1", "true", '"5"', "1.5"])
+    def test_bad_keep_values_refuse_at_load(self, tmp_path, value):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + f"\n[history]\nkeep = {value}\n")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "'keep' must be an integer >= 1" in str(exc.value)
+
+    def test_unknown_history_key_refuses_naming_key_and_file(self, tmp_path):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + "\n[history]\nkeepp = 3\n")
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "keepp" in str(exc.value)
+        assert "run-gate.toml" in str(exc.value)
+
+    def test_lane_named_history_is_reserved(self, tmp_path):
+        _, proj = make_history_repo(tmp_path, HISTORY_LANE.replace(
+            "[lanes.suite]", "[lanes.history]"))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "reserved" in str(exc.value)
+
+
+class TestHistoryRollingSeries:
+    """TRAP 1 (RG-27's own words): 'recording only the latest invocation with
+    no rolling stat — a single slow outlier run would look like the lane's
+    permanent cost'. Every test here fails on a latest-only implementation."""
+
+    def test_series_survives_across_commits_not_just_the_last(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        for tag, secs in (("a", 10.0), ("b", 10.0), ("c", 100.0)):
+            new_commit(repo, tag)
+            record_run(proj, repo, seconds=secs)
+        slot = lane_slot(proj)
+        # A latest-only store would hold ONE entry here. Three commits ran.
+        assert len(slot["history"]) == 3
+        assert [e["duration_seconds"] for e in slot["history"]] == [10.0, 10.0,
+                                                                   100.0]
+
+    def test_one_slow_outlier_does_not_become_the_typical_cost(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        for tag, secs in (("a", 10.0), ("b", 10.0), ("c", 100.0)):
+            new_commit(repo, tag)
+            record_run(proj, repo, seconds=secs)
+        store = run_gate.load_history_store(proj / ".run-gate/history.json")
+        stats = run_gate.lane_history_report(store, "suite")["stats"]
+        # The whole point: 'what does this lane cost' answers 10, not 100 —
+        # while the outlier stays VISIBLE as max rather than being discarded.
+        assert stats["completed"]["median_seconds"] == 10.0
+        assert stats["completed"]["max_seconds"] == 100.0
+        assert stats["completed"]["min_seconds"] == 10.0
+        assert stats["completed"]["count"] == 3
+
+    def test_latest_reflects_the_outlier_while_the_series_does_not(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        for tag, secs in (("a", 10.0), ("b", 100.0)):
+            new_commit(repo, tag)
+            record_run(proj, repo, seconds=secs)
+        slot = lane_slot(proj)
+        assert slot["latest"]["duration_seconds"] == 100.0
+        assert len(slot["history"]) == 2
+
+    def test_window_evicts_the_oldest_beyond_keep(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        shas = []
+        for tag in ("a", "b", "c", "d"):
+            shas.append(new_commit(repo, tag))
+            record_run(proj, repo, seconds=1.0, keep=2)
+        slot = lane_slot(proj)
+        assert [e["commit"] for e in slot["history"]] == shas[-2:]
+
+    def test_rerun_of_one_commit_replaces_its_entry_not_the_window(self, tmp_path):
+        """Keyed by (lane, commit): ten re-runs of one commit must not evict
+        nine other commits' measurements from a ten-deep window."""
+        repo, proj = make_history_repo(tmp_path)
+        first = new_commit(repo, "a")
+        record_run(proj, repo, seconds=5.0)
+        second = new_commit(repo, "b")
+        for secs in (7.0, 8.0, 9.0):
+            record_run(proj, repo, seconds=secs)
+        slot = lane_slot(proj)
+        assert [e["commit"] for e in slot["history"]] == [first, second]
+        assert slot["history"][-1]["duration_seconds"] == 9.0
+
+    def test_completed_fail_joins_history_carrying_its_outcome(self, tmp_path):
+        """The design call RG-27 flagged, resolved YES — and resolved SAFELY:
+        the fail is kept WITH its outcome and the stats are split, so a
+        consumer that must not mix them never has to."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, exit_code=0, seconds=30.0)
+        new_commit(repo, "b")
+        record_run(proj, repo, exit_code=1, seconds=3.0)
+        slot = lane_slot(proj)
+        assert [e["outcome"] for e in slot["history"]] == ["pass", "fail"]
+        store = run_gate.load_history_store(proj / ".run-gate/history.json")
+        stats = run_gate.lane_history_report(store, "suite")["stats"]
+        # Split series: the short-circuiting fail never dilutes the pass cost.
+        assert stats["passes"] == {"count": 1, "min_seconds": 30.0,
+                                   "median_seconds": 30.0, "max_seconds": 30.0}
+        assert stats["completed"]["count"] == 2
+        assert stats["completed"]["median_seconds"] == 16.5
+
+
+class TestHistoryEligibilityGuard:
+    """TRAP 2 (RG-27's own words): 'an aborted/dirty-tree run silently
+    corrupting the bounded history's commit-keyed entries (e.g. overwriting a
+    real commit's history slot with a dirty-tree duration)'."""
+
+    def _clean_baseline(self, tmp_path) -> tuple[Path, Path, str]:
+        repo, proj = make_history_repo(tmp_path)
+        sha = new_commit(repo, "a")
+        record_run(proj, repo, exit_code=0, seconds=10.0)
+        assert lane_slot(proj)["history"] == [lane_slot(proj)["latest"]]
+        return repo, proj, sha
+
+    def test_dirty_run_never_overwrites_the_commits_history_entry(self, tmp_path):
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        (repo / "scratch.txt").write_text("uncommitted")   # SAME commit, dirty
+        record_run(proj, repo, exit_code=0, seconds=999.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["history"][0]["commit"] == sha
+        assert slot["history"][0]["duration_seconds"] == 10.0, (
+            "the dirty run's duration was written into a real commit's slot")
+        # …while `latest` DID move, which is the other half of the contract.
+        assert slot["latest"]["duration_seconds"] == 999.0
+        assert slot["latest"]["dirty"] is True
+        assert slot["latest"]["history_eligible"] is False
+        assert "dirty" in slot["latest"]["excluded_reason"]
+
+    def test_aborted_run_updates_latest_only(self, tmp_path):
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        record_run(proj, repo, error=KeyboardInterrupt(), seconds=2.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["history"][0]["duration_seconds"] == 10.0
+        assert slot["latest"]["outcome"] == "aborted"
+        assert slot["latest"]["history_eligible"] is False
+        assert "KeyboardInterrupt" in slot["latest"]["excluded_reason"]
+
+    def test_infrastructure_error_updates_latest_only(self, tmp_path):
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        record_run(proj, repo,
+                   error=run_gate.GateInfraError("docker died"), seconds=2.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["latest"]["outcome"] == "error"
+        assert slot["latest"]["history_eligible"] is False
+
+    def test_mid_rebase_run_updates_latest_only(self, tmp_path):
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        gitdir = Path(subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"],
+            capture_output=True, text=True).stdout.strip())
+        (gitdir / "rebase-merge").mkdir()
+        record_run(proj, repo, exit_code=0, seconds=999.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["history"][0]["duration_seconds"] == 10.0
+        assert slot["latest"]["git_operation"] == "rebase-merge"
+        assert slot["latest"]["history_eligible"] is False
+        assert "transient" in slot["latest"]["excluded_reason"]
+
+    def test_undeterminable_cleanliness_excludes_rather_than_assumes(self,
+                                                                    tmp_path,
+                                                                    monkeypatch):
+        """'Could not determine' must not collapse into 'clean'. A possibly-
+        wrong trend entry is invisible; a missing one shows up in `count`."""
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        monkeypatch.setattr(run_gate, "worktree_is_dirty", lambda _wt: None)
+        record_run(proj, repo, exit_code=0, seconds=999.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert slot["history"][0]["duration_seconds"] == 10.0
+        assert slot["latest"]["history_eligible"] is False
+        assert "could not determine" in slot["latest"]["excluded_reason"]
+
+    def test_detached_head_without_a_commit_is_excluded(self, tmp_path,
+                                                        monkeypatch):
+        repo, proj, sha = self._clean_baseline(tmp_path)
+        monkeypatch.setattr(run_gate, "head_commit", lambda _wt: None)
+        record_run(proj, repo, exit_code=0, seconds=999.0)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1
+        assert "HEAD did not resolve" in slot["latest"]["excluded_reason"]
+
+    def test_dirt_tolerance_is_not_the_discriminator(self, tmp_path):
+        """`clean_tree = false` (HISTORY_LANE declares it) on a CLEAN tree is
+        a perfectly good measurement — excluding it would confuse policy with
+        fact and quietly halve the series of every dirt-tolerant lane."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = record_run(proj, repo, exit_code=0, seconds=10.0)
+        assert rec["dirty"] is False
+        assert lane_slot(proj)["history"][0]["duration_seconds"] == 10.0
+
+    def test_tree_state_is_sampled_before_the_lane_not_after(self, tmp_path):
+        """A lane that leaves artifacts behind must not retro-disqualify its
+        own (clean at start) measurement."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        (repo / "lane-artifact.txt").write_text("written BY the lane")
+        rec["_started_monotonic"] = time.monotonic() - 4.0
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        assert lane_slot(proj)["history"][0]["duration_seconds"] == 4.0
+
+
+class TestHistoryStoreSafety:
+    """Storage location + concurrent-write safety — the two questions RG-27
+    demanded an explicit answer to rather than an assumption."""
+
+    def test_store_is_scoped_per_worktree_and_per_project(self, tmp_path):
+        """The PRIMARY concurrency answer is scope, not arbitration: two
+        worktrees' gates address two different files and never meet."""
+        repo, proj = make_history_repo(tmp_path)
+        other = tmp_path / "wt"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q",
+                        str(other), "-b", "side"], check=True,
+                       capture_output=True, text=True)
+        a = run_gate.history_store_path(proj)
+        b = run_gate.history_store_path(other / "proj")
+        assert a != b
+        assert a.parent.parent == proj and b.parent.parent == other / "proj"
+
+    def test_the_lock_is_a_sibling_file_not_the_store_itself(self, tmp_path):
+        """The store is REPLACED by rename, so its inode changes on every
+        write — a lock taken on it would guard a file nobody writes next."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        before = (proj / ".run-gate/history.json").stat().st_ino
+        lock_ino = (proj / ".run-gate/history.lock").stat().st_ino
+        new_commit(repo, "b")
+        record_run(proj, repo)
+        assert (proj / ".run-gate/history.json").stat().st_ino != before
+        assert (proj / ".run-gate/history.lock").stat().st_ino == lock_ino
+
+    def test_lock_file_is_owner_only(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        mode = (proj / ".run-gate/history.lock").stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_concurrent_recorders_lose_no_entries(self, tmp_path):
+        """Read-modify-write without mutual exclusion is last-writer-wins:
+        N concurrent recorders would leave 1 entry, not N."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "base")
+        records = []
+        for i in range(8):
+            rec = run_gate.start_run_record("suite", repo, repo)
+            rec["commit"] = f"{i:040x}"     # 8 distinct synthetic commits
+            rec["_started_monotonic"] = time.monotonic() - (i + 1)
+            run_gate.finish_run_record(rec, exit_code=0)
+            records.append(rec)
+        barrier = threading.Barrier(len(records))
+
+        def writer(rec):
+            barrier.wait()
+            run_gate.record_invocation(proj, repo, rec, 20)
+
+        threads = [threading.Thread(target=writer, args=(r,))
+                   for r in records]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        commits = {e["commit"] for e in lane_slot(proj)["history"]}
+        assert commits == {r["commit"] for r in records}
+
+    def test_readers_take_no_lock(self, tmp_path):
+        """Atomic rename is what makes lock-free reads correct — the query
+        verb must answer even while a gate holds the writer lock."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, seconds=3.0)
+        lock = proj / ".run-gate/history.lock"
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            out = run_tool(proj, "history", "suite", "--json")
+        finally:
+            os.close(fd)
+        assert out.returncode == 0, out.stderr
+        payload = json.loads(out.stdout)
+        assert payload["lanes"]["suite"]["latest"]["duration_seconds"] == 3.0
+
+    def test_a_held_lock_never_blocks_a_gate_forever(self, tmp_path,
+                                                     monkeypatch):
+        """Unlike RG-20's shared-infra lock (blocks on purpose, it protects
+        the RUN), this one is bounded: a stuck writer degrades telemetry, it
+        does not hang the gate."""
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        monkeypatch.setattr(run_gate, "HISTORY_LOCK_TIMEOUT", 0.2)
+        fd = os.open(proj / ".run-gate/history.lock", os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            rec = run_gate.start_run_record("suite", repo, repo)
+            run_gate.finish_run_record(rec, exit_code=0)
+            started = time.monotonic()
+            assert run_gate.record_invocation(proj, repo, rec, 10) is False
+            assert time.monotonic() - started < 10
+        finally:
+            os.close(fd)
+
+    def test_corrupt_store_is_replaced_not_fatal(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        (proj / ".run-gate/history.json").write_text("{ not json")
+        new_commit(repo, "b")
+        assert record_run(proj, repo) is not None
+        assert lane_slot(proj)["latest"] is not None
+
+    def test_write_failure_is_one_warning_never_a_traceback(self, tmp_path,
+                                                            monkeypatch,
+                                                            capsys):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(run_gate, "_write_history_store", boom)
+        rec = run_gate.start_run_record("suite", repo, repo)
+        run_gate.finish_run_record(rec, exit_code=0)
+        assert run_gate.record_invocation(proj, repo, rec, 10) is False
+        err = capsys.readouterr().err
+        assert err.count("\n") == 1 and "OSError: disk full" in err
+
+    def test_unignored_store_is_refused_with_the_remedy(self, tmp_path,
+                                                        capsys):
+        """Refuses to WRITE rather than leaving the tree dirty for the next
+        lane's clean-tree check — the adoption obligation made executable."""
+        repo, proj = make_history_repo(tmp_path, ignore="unrelated\n")
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        run_gate.finish_run_record(rec, exit_code=0)
+        assert run_gate.record_invocation(proj, repo, rec, 10) is False
+        err = capsys.readouterr().err
+        assert ".gitignore" in err and ".run-gate/" in err
+        assert not (proj / ".run-gate").exists()
+
+    def test_partially_ignored_store_is_still_refused(self, tmp_path, capsys):
+        """`git check-ignore a b` exits 0 when ANY argument matches. Reading
+        that exit status as 'both are ignored' would certify a store whose
+        LOCK file still dirties the tree."""
+        repo, proj = make_history_repo(
+            tmp_path, ignore="proj/.run-gate/history.json\n")
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        run_gate.finish_run_record(rec, exit_code=0)
+        assert run_gate.record_invocation(proj, repo, rec, 10) is False
+        assert "not fully git-ignored" in capsys.readouterr().err
+
+    def test_directory_ignore_pattern_works_on_the_very_first_run(self,
+                                                                  tmp_path):
+        """`git check-ignore` on the bare DIRECTORY answers 'not ignored'
+        while it does not exist yet — asking about the files is what makes a
+        correctly-configured project record on run one, not run two."""
+        repo, proj = make_history_repo(tmp_path)
+        assert not (proj / ".run-gate").exists()
+        assert run_gate.paths_are_git_ignored(
+            repo, run_gate.history_written_paths(proj)) is True
+
+    def test_tracked_store_counts_as_not_ignored(self, tmp_path):
+        """Index-aware on purpose: a TRACKED path dirties the tree whatever
+        .gitignore says, so that is the question actually asked."""
+        repo, proj = make_history_repo(tmp_path)
+        (proj / ".run-gate").mkdir()
+        (proj / ".run-gate/history.json").write_text("{}")
+        git(repo, "add", "-f", "proj/.run-gate/history.json")
+        commit_all(repo, "someone committed the store")
+        assert run_gate.paths_are_git_ignored(
+            repo, run_gate.history_written_paths(proj)) is False
+
+    def test_git_failure_is_indeterminate_not_a_green_light(self, tmp_path,
+                                                            monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                OSError("no git")))
+        assert run_gate.paths_are_git_ignored(
+            repo, run_gate.history_written_paths(proj)) is None
+
+
+class TestHistoryEndToEnd:
+    """The recorder wired into a REAL `run-gate.py <lane>` invocation — the
+    unit tests above drive the recorder, these prove the gate calls it."""
+
+    def test_a_real_lane_run_records_pass_in_both_slots(self, tmp_path,
+                                                        monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        sha = new_commit(repo, "a")
+        out = run_tool(proj, "suite")
+        assert out.returncode == 0, out.stderr
+        slot = lane_slot(proj)
+        assert slot["latest"]["outcome"] == "pass"
+        assert slot["latest"]["exit_code"] == 0
+        assert slot["latest"]["commit"] == sha
+        assert slot["latest"]["worktree"] == str(repo)
+        assert slot["latest"]["revision"] == run_gate.__revision__
+        assert isinstance(slot["latest"]["duration_seconds"], float)
+        assert [e["commit"] for e in slot["history"]] == [sha]
+
+    def test_a_completed_fail_is_recorded_and_the_exit_status_is_untouched(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch, wait_code=7)
+        sha = new_commit(repo, "a")
+        out = run_tool(proj, "suite")
+        assert out.returncode == 7, out.stderr   # passthrough, R-04
+        slot = lane_slot(proj)
+        assert slot["latest"]["outcome"] == "fail"
+        assert slot["latest"]["exit_code"] == 7
+        assert [e["outcome"] for e in slot["history"]] == ["fail"]
+
+    def test_dry_run_records_nothing(self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        out = run_tool(proj, "suite", "--dry-run")
+        assert out.returncode == 0, out.stderr
+        assert not (proj / ".run-gate/history.json").exists()
+
+    def test_a_clean_tree_refusal_lands_in_latest_only(self, tmp_path,
+                                                       monkeypatch):
+        """A refusal IS an invocation result the caller wants to see — and it
+        is never a measurement of the commit it refused on."""
+        repo, proj = make_history_repo(
+            tmp_path, HISTORY_LANE.replace("clean_tree = false",
+                                           "clean_tree = true"))
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        (repo / "dirt.txt").write_text("x")
+        out = run_tool(proj, "suite")
+        assert out.returncode == 2, out.stdout + out.stderr
+        slot = lane_slot(proj)
+        assert slot["latest"]["outcome"] == "error"
+        assert slot["history"] == []
+
+    def test_configuration_errors_record_no_invocation_at_all(self, tmp_path,
+                                                              monkeypatch):
+        """Unknown lane names no invocation to be `latest` of."""
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        out = run_tool(proj, "nope")
+        assert out.returncode == 2
+        assert not (proj / ".run-gate").exists()
+
+    def test_worktree_override_records_into_the_judged_tree(self, tmp_path,
+                                                            monkeypatch):
+        """R-21's rule applied to telemetry: judging tree B must not write B's
+        measurement into A's store."""
+        repo, proj = make_history_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        other = tmp_path / "wt"
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q",
+                        str(other), "-b", "side"], check=True,
+                       capture_output=True, text=True)
+        out = run_tool(proj, "suite", "--worktree", str(other))
+        assert out.returncode == 0, out.stderr
+        assert not (proj / ".run-gate").exists()
+        assert lane_slot(other / "proj")["latest"]["worktree"] == str(other)
+
+    def test_an_unignored_store_warns_without_changing_the_verdict(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path, ignore="unrelated\n")
+        fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        out = run_tool(proj, "suite")
+        assert out.returncode == 0, out.stderr
+        assert "lane history not recorded" in out.stderr
+        assert "Traceback" not in out.stderr
+        assert not (proj / ".run-gate").exists()
+
+
+class TestHistoryQueryVerb:
+    """R-36 query surface: human table by default, `--json` for machines."""
+
+    def test_human_table_shows_latest_series_and_the_typical_cost(self,
+                                                                  tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        for tag, secs in (("a", 10.0), ("b", 100.0)):
+            new_commit(repo, tag)
+            record_run(proj, repo, seconds=secs)
+        out = run_tool(proj, "history", "suite")
+        assert out.returncode == 0, out.stderr
+        assert "lane suite" in out.stdout
+        assert "latest:  pass exit 0  100.0s" in out.stdout
+        assert "history: 2 of at most 10 commit(s)" in out.stdout
+        assert "median 55.0s" in out.stdout      # the SERIES, not the outlier
+        assert "max 100.0s" in out.stdout
+
+    def test_human_table_names_the_exclusion_reason(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, error=KeyboardInterrupt(), seconds=1.0)
+        out = run_tool(proj, "history", "suite")
+        assert "NOT in history:" in out.stdout
+        assert "history: (empty; keep=10)" in out.stdout
+
+    def test_json_carries_latest_history_and_split_stats(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo, exit_code=0, seconds=10.0)
+        new_commit(repo, "b")
+        record_run(proj, repo, exit_code=1, seconds=2.0)
+        out = run_tool(proj, "history", "suite", "--json")
+        assert out.returncode == 0, out.stderr
+        payload = json.loads(out.stdout)
+        assert payload["schema"] == 1
+        assert payload["keep"] == 10 and "default" in payload["keep_source"]
+        assert payload["store"] == str(proj / ".run-gate/history.json")
+        lane = payload["lanes"]["suite"]
+        assert lane["latest"]["outcome"] == "fail"
+        assert [e["outcome"] for e in lane["history"]] == ["pass", "fail"]
+        assert lane["stats"]["passes"]["count"] == 1
+        assert lane["stats"]["completed"]["count"] == 2
+
+    def test_no_lane_argument_reports_every_declared_lane(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "history", "--json")
+        assert out.returncode == 0, out.stderr
+        assert set(json.loads(out.stdout)["lanes"]) == {"suite"}
+
+    def test_empty_store_is_an_answer_not_a_failure(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "history")
+        assert out.returncode == 0
+        assert "(not written yet)" in out.stdout
+        assert "(no recorded invocation)" in out.stdout
+
+    def test_unknown_lane_refuses_naming_the_known_ones(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "history", "nope")
+        assert out.returncode == 2
+        assert "unknown lane 'nope'" in out.stderr and "suite" in out.stderr
+
+    def test_the_verb_runs_no_lane(self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        log = fake_docker(tmp_path, monkeypatch)
+        new_commit(repo, "a")
+        run_tool(proj, "history")
+        assert log.read_text() == ""
+
+    def test_declared_keep_is_disclosed_by_the_query(self, tmp_path):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + "\n[history]\nkeep = 3\n")
+        payload = json.loads(run_tool(proj, "history", "--json").stdout)
+        assert payload["keep"] == 3
+        assert payload["keep_source"].endswith("run-gate.toml")
+
+    def test_usage_documents_the_verb_and_the_store_contract(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "--help")
+        assert "run-gate.py history [LANE] [--json]" in out.stdout
+        assert ".run-gate/history.json" in out.stdout
+        assert "[history] keep" in out.stdout
+        assert "MUST be git-ignored" in out.stdout

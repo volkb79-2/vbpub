@@ -77,6 +77,8 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 ./run-gate.py <lane>          # run one gate lane
 ./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
 ./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
+./run-gate.py history [LANE]  # what each lane last did + what it typically costs
+./run-gate.py history --json  #   … the same, machine-readable
 ./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
 ./run-gate.py --help          # usage(), incl. the tool revision
 ```
@@ -192,6 +194,14 @@ the tool's reason to exist and MUST be implemented + tested:
   word-splitting or executing downstream.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury
   it in a stream a consumer might truncate.
+- **Lane cost is measured, not remembered (RG-27):** every run leaves a
+  record in a per-(judged worktree × project) `.run-gate/history.json` — a
+  `latest` slot holding the most recent invocation whatever happened to it,
+  and a bounded per-commit trend series that only trustworthy measurements
+  join (completed, clean tree, no rebase in flight, real commit). Read it
+  with `./run-gate.py history [LANE] [--json]`. run-gate MEASURES; the
+  rigor/defer policy built on the numbers belongs to whoever reads them
+  (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
 
 ### Distribution — symlink inside vbpub, copy outside
 

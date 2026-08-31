@@ -24,6 +24,10 @@ Rev 7: release-adoption program — `R-31` amended (wheel version now DERIVED
 from the git tag by setuptools-scm, not `__revision__`; the two-tier split is
 now stated explicitly), new `R-33` (estate release orchestration + a
 diff-coverage floor pending a total-100% campaign).
+Rev 8: RG-27 lane invocation history — new `R-36` (the two-slot store, its
+per-instance scoping, the history-eligibility conjunction and the `history`
+query verb), with `R-01` (verb), `R-06` (`[history]` top-level table) and
+`R-08` (reserved lane name) amended to match.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -64,7 +68,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   unknown lane exits non-zero naming the
   known lanes and the config path. `--check-env` also runs the assay-lane
   toolchain fitness check (`R-34`): its env-drift half stays advisory (exit
-  0), a toolchain FAIL exits 2.
+  0), a toolchain FAIL exits 2. `history [LANE] [--json]` (RG-27) is the
+  lane-timing query verb (`R-36`); the usage text also documents the store
+  location, the `[history] keep` bound and the history-eligibility rule.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking).
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
@@ -92,8 +98,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
 - `R-06` Top-level keys: `schema_version` (required), `environments`,
-  `lanes`. Unknown top-level key → error naming key + file. A central
-  config's `[lanes.*]` are legal (R-22).
+  `lanes`, `history`. Unknown top-level key → error naming key + file. A
+  central config's `[lanes.*]` are legal (R-22). `[history]` (RG-27) takes
+  one optional key, `keep` (integer ≥ 1, default 10 — a bool is refused,
+  not silently read as 1); a project `[history]` shadows the central one
+  entirely, per R-09's rule.
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
   `cgroup_slice` (optional non-empty string), `forward_env` (optional,
   unique list of valid environment-variable names; values are forwarded to
@@ -118,9 +127,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   NON-EMPTY list of non-empty path strings the lane is expected to leave
   behind — disclosed after every run per R-18; `{worktree}` tokens are
   substituted, relative entries resolve against the effective project dir).
-  Lane names `doctor` and `validate-pointers` are RESERVED (they collide
-  with CLI verbs) and refused at load; a lane named like a verb could never
-  be invoked anyway.
+  Lane names `doctor`, `validate-pointers` and `history` are RESERVED (they
+  collide with CLI verbs) and refused at load; a lane named like a verb
+  could never be invoked anyway.
   advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names
@@ -610,6 +619,98 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `--cov-fail-under=100`; a later campaign to reach a total 100% floor is
   its own backlog item, and only then does the
   lane flip to a total floor like cmru's own.
+
+- `R-36` **Lane invocation history (RG-27).** run-gate is the layer that
+  actually starts each lane, so it is the only one holding start/stop and
+  exit status first-hand. It RECORDS them and stops there — no rigor/defer
+  POLICY lives in this tool; a controller reads the data and decides.
+
+  - **`R-36a` Two slots per lane, two different contracts.** `latest` holds
+    the MOST RECENT invocation whatever happened to it — pass, fail, tool
+    error, Ctrl-C, dirty tree, mid-rebase — for immediate diagnostics.
+    `history` is a curated trend series keyed by **(lane, commit)** and
+    bounded to the last `keep` commits (`[history] keep`, default 10, R-06).
+    Letting the second inherit the first's permissiveness is the defect this
+    requirement exists to prevent: a dirty-tree duration attributed to a
+    commit that never ran it, silently overwriting the real measurement.
+  - **`R-36b` History eligibility is a CONJUNCTION**, evaluated once, with
+    the failing reason recorded on the entry (`excluded_reason`, visible in
+    both output forms). A run joins history only when ALL hold: (1) the lane
+    completed and reported its own status; (2) the judged tree was clean at
+    the moment the run STARTED; (3) no git operation was in flight
+    (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`,
+    `REVERT_HEAD`, `BISECT_LOG`); (4) HEAD resolved to a full commit sha.
+    Each of (2)-(4) is INDETERMINABLE-EXCLUDES: "could not determine" never
+    collapses into "clean" — a wrong trend entry is invisible, a missing one
+    shows up in `count`. Cleanliness is sampled independently of the lane's
+    `clean_tree` POLICY: the discriminator is whether the tree WAS dirty,
+    never whether dirt was permitted, so a `clean_tree = false` lane run on
+    a clean tree is a perfectly good measurement.
+  - **`R-36c` Completed fails DO join history** (the design call RG-27
+    flagged, resolved yes) — their duration is real measured cost — but they
+    are stored WITH their outcome and reported as a SPLIT statistic
+    (`passes` vs `completed`), because a failing lane can short-circuit
+    (this project's own `pytest && coverage_gate` never reaches the gate
+    when pytest is red) and merging the two understates the lane's cost in
+    exactly the direction that makes a "cheap, always run it" call wrong.
+    run-gate hands over both series; picking one is the consumer's policy.
+  - **`R-36d` The reported statistic is the MEDIAN** (with min/max/count),
+    never the mean: the named trap is one slow outlier reading as the lane's
+    permanent cost, and the mean is precisely the statistic that lets it.
+    `max` still reports the outlier — it is information, just not the
+    typical cost.
+  - **`R-36e` Recording window.** An invocation begins at the clean-tree
+    refusal and ends at the lane's own exit status; everything before it is
+    a configuration error naming no invocation, and is not recorded at all.
+    `--dry-run` records NOTHING (no lane started, so nothing was measured).
+    Aborts and infrastructure failures inside the window still update
+    `latest` and re-raise unchanged.
+  - **`R-36f` Storage — per (judged worktree × project).** The store is
+    `<effective project dir>/.run-gate/history.json`; because R-21 already
+    relocates the effective project dir into the judged tree, `--worktree B`
+    writes B's measurement into B's store, never the invoking checkout's.
+    This is the PRIMARY concurrent-write answer and it is a scoping answer,
+    not an arbitration one: two worktrees' gates address two different files
+    and never meet. The residual case — two lanes of ONE project in ONE tree
+    — is arbitrated by an exclusive `flock` on a **sibling** lock file
+    (`.run-gate/history.lock`, `O_NOFOLLOW`, 0600) held across the whole
+    read-modify-write, plus write-temp-then-`os.replace`. The lock is a
+    sibling BECAUSE the store is replaced by rename: a lock taken on the
+    store itself would guard an inode nobody writes next. Atomic rename is
+    also what lets the query verb read with no lock at all. Unlike R-29's
+    shared-infra lock (which blocks forever on purpose — it protects the
+    correctness of the run), this one is BOUNDED: a gate that hangs waiting
+    to write telemetry has inverted the priority.
+  - **`R-36g` The store must be git-ignored, and that is CHECKED, not
+    documented.** Before writing, run-gate asks git whether every path the
+    recorder can leave behind (store, lock, temp) is ignored; if any is not,
+    it refuses to write and prints one warning naming the remedy, rather
+    than leaving the tree dirty for the NEXT lane's clean-tree check. Two
+    details are load-bearing and were verified against real git: the query
+    names the FILES, never the bare directory (`git check-ignore .run-gate`
+    answers "not ignored" while the directory does not exist yet, even under
+    a `.run-gate/` pattern — which would silence recording on every
+    project's first run), and the verdict is read from the REPORTED PATHS,
+    never the exit status (`git check-ignore a b` exits 0 when ANY argument
+    matches, so the exit status would certify a store whose lock file still
+    dirties the tree). Index-aware on purpose: a TRACKED store dirties the
+    tree whatever `.gitignore` says.
+  - **`R-36h` Recording is best-effort and never changes a verdict.** Every
+    failure — unignored store, held lock past the bound, corrupt or
+    unreadable store, write error — degrades to ONE warning line on stderr
+    (never a traceback, R-04) and leaves the lane's exit status untouched.
+    A corrupt store is replaced, not fatal.
+  - **`R-36i` The query verb.** `history [LANE] [--json]`. No LANE reports
+    every declared lane; an unknown LANE refuses (exit 2) naming the known
+    lanes and the config path, exactly like an unknown lane on the run path.
+    Default output is a human table (store path, `keep` + its source, and
+    per lane: `latest` with its exclusion reason when it has one, the
+    bounded series oldest-first, and the split stats); `--json` emits the
+    same data machine-readably (`schema`, `revision`, `store`, `keep`,
+    `keep_source`, per-lane `latest`/`history`/`stats`). The verb runs no
+    lane, starts no container, and exits 0 whenever the QUERY succeeded —
+    an empty store is an answer, not a failure. `history` joins `doctor` and
+    `validate-pointers` as a reserved lane name (R-08).
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

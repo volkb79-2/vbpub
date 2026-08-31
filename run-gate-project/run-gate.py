@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 29  # rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 30  # rev 30: RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -40,6 +40,21 @@ EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
 CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
 SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
+
+# RG-27 lane invocation history. The store is PER (judged worktree × project):
+# it lives under the EFFECTIVE project dir, which R-21 already relocates into
+# the judged tree — so two worktrees' gates address two different files by
+# construction and never contend. The remaining contention is real but small
+# (two lanes of ONE project, in ONE tree, in parallel), and it is arbitrated by
+# a sibling lock file + atomic rename, never by a lock on the store itself
+# (the rename changes the inode; a lock held on the old one guards nothing).
+HISTORY_DIR_NAME = ".run-gate"
+HISTORY_FILE_NAME = "history.json"
+HISTORY_LOCK_NAME = "history.lock"
+HISTORY_SCHEMA = 1
+HISTORY_KEEP_DEFAULT = 10
+HISTORY_LOCK_TIMEOUT = 5.0   # seconds — telemetry NEVER blocks a gate
+HISTORY_OUTCOMES = ("pass", "fail", "error", "aborted")
 
 
 class GateError(Exception):
@@ -238,9 +253,39 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         fail(f"{where} [lanes.{name}]: 'clean_tree' must be a boolean")
 
 
+def _validate_history_policy(table: object, where: str) -> None:
+    """RG-27 `[history]`: the retention BOUND is declared policy, not ambient
+    state. It belongs in the config (auditable, reviewable, shadowable by the
+    R-09 rule) even though the data it bounds is per-instance — how much trend
+    a project keeps is a decision, not a fact about this machine."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'history' must be a table")
+    _check_keys(table, {"keep"}, f"{where} [history]")
+    if "keep" in table:
+        keep = table["keep"]
+        # bool is an int subclass — `keep = true` is a config mistake, not 1.
+        if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
+            fail(f"{where} [history]: 'keep' must be an integer >= 1 "
+                 f"(got {keep!r})")
+
+
+def resolve_history_keep(cfg: dict, cfg_path: Path, central: dict,
+                         central_path: Path | None) -> tuple[int, str]:
+    """Project `[history]` shadows the central one entirely (R-09's rule,
+    applied to the same-shaped question), then the documented default."""
+    if "keep" in cfg.get("history", {}):
+        return cfg["history"]["keep"], f"[history] in {cfg_path}"
+    if central_path is not None and "keep" in central.get("history", {}):
+        return central["history"]["keep"], f"[history] in central {central_path}"
+    return HISTORY_KEEP_DEFAULT, f"default ({HISTORY_KEEP_DEFAULT})"
+
+
 def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     where = str(path)
-    _check_keys(cfg, {"schema_version", "environments", "lanes"}, where)
+    _check_keys(cfg, {"schema_version", "environments", "lanes", "history"},
+                where)
+    if "history" in cfg:
+        _validate_history_policy(cfg["history"], where)
     if cfg.get("schema_version") != SCHEMA_VERSION:
         fail(f"{where}: 'schema_version' must be {SCHEMA_VERSION} (got "
              f"{cfg.get('schema_version')!r})")
@@ -616,6 +661,425 @@ def check_clean_tree(worktree: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# lane invocation history (RG-27) — measure and persist; decide NOTHING
+# ---------------------------------------------------------------------------
+#
+# run-gate is the layer that actually starts each lane, so it is the only one
+# that sees start/stop and exit status first-hand. It records them and stops
+# there: no rigor/defer POLICY lives here (RG-27 scope), only the series a
+# controller needs to have such a policy at all.
+#
+# Two slots per lane, with DIFFERENT contracts, and the difference is the
+# whole design:
+#
+#   latest  — the most recent invocation, WHATEVER happened to it (pass, fail,
+#             tool error, Ctrl-C, dirty tree, mid-rebase). Diagnostics.
+#   history — a curated trend series keyed by (lane, commit), bounded to the
+#             last `keep` commits. ONLY runs whose (commit, duration) pairing
+#             is actually meaningful get in.
+#
+# Letting the second inherit the first's permissiveness is the named trap: a
+# dirty-tree run's duration attributed to a commit that never ran it, silently
+# overwriting the real measurement.
+
+def history_dir(project_dir: Path) -> Path:
+    return project_dir / HISTORY_DIR_NAME
+
+
+def history_store_path(project_dir: Path) -> Path:
+    return history_dir(project_dir) / HISTORY_FILE_NAME
+
+
+def history_written_paths(project_dir: Path) -> list[Path]:
+    """EVERY path the recorder can leave in the tree — the store, the lock,
+    and the temp file a crash between write and rename would strand. The
+    ignore question has to be asked about all three, not just the one we
+    think of first."""
+    hdir = history_dir(project_dir)
+    return [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
+            hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+
+
+def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
+    """True only when EVERY target is ignored. True / False / None ("git
+    could not tell us").
+
+    Two things here are load-bearing and were both verified against real git
+    rather than assumed:
+
+    1. The paths asked about are the FILES, never the bare directory. `git
+       check-ignore .run-gate` on a directory that does not exist yet answers
+       *not ignored* even when `.gitignore` says `.run-gate/` — the
+       trailing-slash pattern needs a directory to match, and the first run
+       of a correctly-configured project has none. Asking about
+       `.run-gate/history.json` answers correctly in every case.
+    2. The verdict is read from the REPORTED PATHS, not the exit status.
+       `git check-ignore a b` exits 0 when ANY argument matches — reading
+       that as "both are ignored" is the false-certification shape AGENTS.md
+       names: the message says "safe to write" while the comparison only
+       established "at least one of these is safe".
+
+    Run deliberately WITHOUT `--no-index`: the question is not "do the ignore
+    rules match" but "would writing here dirty the tree", and a TRACKED path
+    dirties it whatever .gitignore says — which is what the index-aware
+    default reports."""
+    wanted = [str(t) for t in targets]
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "check-ignore",
+                               "--", *wanted], capture_output=True, text=True)
+    except OSError:
+        return None
+    if proc.returncode not in (0, 1):
+        return None  # 128 and friends: not an answer, do not pretend it is
+    reported = {line.strip() for line in proc.stdout.splitlines()
+                if line.strip()}
+    return all(path in reported for path in wanted)
+
+
+def git_operation_in_progress(worktree: Path) -> str | None:
+    """Names an in-flight git operation (rebase/merge/cherry-pick/revert/
+    bisect) whose HEAD is a transient the trend series must not be keyed to,
+    else None. `None` is also returned when the git dir is unreadable — the
+    caller pairs this with a separate 'could we even determine it' flag."""
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--git-dir"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    gitdir = Path(proc.stdout.strip())
+    if not gitdir.is_absolute():
+        gitdir = worktree / gitdir
+    for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD",
+                   "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"):
+        if (gitdir / marker).exists():
+            return marker
+    return None
+
+
+def head_commit(worktree: Path) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--verify", "HEAD"], capture_output=True,
+                              text=True)
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) \
+        else None
+
+
+def worktree_is_dirty(worktree: Path) -> bool | None:
+    """None = could not determine. Sampled INDEPENDENTLY of clean_tree policy:
+    the discriminator for the trend series is whether the tree WAS dirty, not
+    whether dirt was permitted — a `clean_tree = false` lane run on a clean
+    tree produces a perfectly good measurement and must not be excluded."""
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "status",
+                               "--porcelain"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return any(line.strip() for line in proc.stdout.splitlines())
+
+
+def start_run_record(lane_name: str, worktree: Path, repo: Path) -> dict:
+    """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
+
+    Sampling afterwards would be a different tree: a lane may commit, stash,
+    or leave artifacts behind, and a history entry keyed to a commit must
+    describe the state that commit actually had when it was measured."""
+    dirty = worktree_is_dirty(worktree)
+    return {
+        "lane": lane_name,
+        "commit": head_commit(worktree),
+        "outcome": None,
+        "exit_code": None,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_seconds": None,
+        "worktree": str(worktree),
+        "repo": str(repo),
+        "dirty": dirty,
+        "git_operation": git_operation_in_progress(worktree),
+        "history_eligible": False,
+        "excluded_reason": None,
+        "revision": __revision__,
+        "_started_monotonic": time.monotonic(),
+    }
+
+
+def finish_run_record(record: dict, *, exit_code: int | None = None,
+                      error: BaseException | None = None) -> dict:
+    """Close a record and decide — once, here — whether it may join history.
+
+    Eligibility is a CONJUNCTION of four facts, each of which independently
+    makes a (commit, duration) pair a lie:
+      1. the lane completed and reported its own status (an abort measured a
+         partial run; an infrastructure error measured no run at all);
+      2. the tree was clean (a dirty tree is not the commit it claims to be);
+      3. no git operation was in flight (a rebase's HEAD is a transient);
+      4. HEAD resolved to a real commit sha (nothing to key on otherwise).
+    "Could not determine" resolves toward EXCLUSION for 2-4: a possibly-wrong
+    trend entry is worse than a missing one, because the missing one is
+    visible in `count` and the wrong one is not visible at all."""
+    record["duration_seconds"] = round(
+        time.monotonic() - record.pop("_started_monotonic"), 3)
+    if error is not None:
+        record["outcome"] = "aborted" if not isinstance(error, Exception) \
+            else "error"
+        record["excluded_reason"] = (
+            f"{record['outcome']}: {type(error).__name__} — the lane did not "
+            f"report its own status, so its duration measures a partial run")
+    else:
+        record["exit_code"] = exit_code
+        record["outcome"] = "pass" if exit_code == 0 else "fail"
+    reasons = []
+    if record["outcome"] in ("aborted", "error"):
+        pass  # already explained above; keep the specific message
+    elif record["dirty"] is None:
+        reasons.append("could not determine whether the tree was clean")
+    elif record["dirty"]:
+        reasons.append("the judged tree was dirty — the duration does not "
+                       "belong to this commit")
+    if record["git_operation"]:
+        reasons.append(f"git operation in progress ({record['git_operation']})"
+                       " — HEAD is a transient")
+    if not record["commit"]:
+        reasons.append("HEAD did not resolve to a commit")
+    if reasons:
+        record["excluded_reason"] = (record["excluded_reason"] or
+                                     "; ".join(reasons))
+    if record["excluded_reason"] is None:
+        # RG-27 design call, recorded: a COMPLETED fail joins history. Its
+        # duration is real measured cost of the same work — but it is stored
+        # WITH its outcome, and the reported stats are split pass/completed,
+        # because a failing lane can short-circuit (this project's own
+        # `pytest && coverage_gate` never reaches the gate when pytest is
+        # red), so averaging the two understates the lane's true cost in
+        # exactly the direction that makes a "cheap, always run it" call
+        # wrong. run-gate hands over both series; it does not pick one.
+        record["history_eligible"] = True
+    return record
+
+
+def _empty_history_store() -> dict:
+    return {"schema": HISTORY_SCHEMA, "lanes": {}}
+
+
+def load_history_store(path: Path) -> dict:
+    """Never raises: a missing, unreadable, or corrupt store yields an empty
+    one. Telemetry that could take a gate down would be a net loss."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return _empty_history_store()
+    if not isinstance(data, dict) or not isinstance(data.get("lanes"), dict):
+        return _empty_history_store()
+    data.setdefault("schema", HISTORY_SCHEMA)
+    return data
+
+
+def _apply_record(store: dict, record: dict, keep: int) -> dict:
+    slot = store["lanes"].setdefault(record["lane"],
+                                     {"latest": None, "history": []})
+    entry = {k: v for k, v in record.items() if not k.startswith("_")}
+    slot["latest"] = entry
+    if not entry["history_eligible"]:
+        return store
+    hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+    # Keyed by (lane, commit): a re-run of the same commit REPLACES its entry
+    # rather than adding a second — otherwise ten re-runs of one commit fill
+    # the whole window and "the last N commits" stops being true. It moves to
+    # the tail, so eviction means "least recently measured".
+    hist = [e for e in hist if e.get("commit") != entry["commit"]]
+    hist.append(entry)
+    slot["history"] = hist[-keep:]
+    return store
+
+
+def _write_history_store(store: dict, path: Path) -> None:
+    """Atomic replace. This is what lets READERS take no lock at all: a
+    reader either sees the whole old file or the whole new one, never a
+    half-written middle."""
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(store, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def _record_invocation(project_dir: Path, worktree: Path, record: dict,
+                       keep: int) -> None:
+    hdir = history_dir(project_dir)
+    ignored = paths_are_git_ignored(worktree, history_written_paths(project_dir))
+    if ignored is not True:
+        why = ("is not fully git-ignored" if ignored is False
+               else "could not be confirmed git-ignored")
+        raise GateError(
+            f"lane history not recorded: {hdir} {why}, and writing there "
+            f"would leave the judged tree dirty for the NEXT lane's "
+            f"clean-tree check — add '{HISTORY_DIR_NAME}/' to the .gitignore "
+            f"covering {worktree}")
+    hdir.mkdir(parents=True, exist_ok=True)
+    lock_path = hdir / HISTORY_LOCK_NAME
+    # 0600 + O_NOFOLLOW, matching acquire_shared_locks: content-free
+    # coordination state at a predictable path.
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        deadline = time.monotonic() + HISTORY_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                # Bounded, unlike RG-20's shared-infra lock which blocks
+                # forever ON PURPOSE. That one protects the CORRECTNESS of
+                # the run; this one protects a measurement, and a gate that
+                # hangs waiting to write telemetry has inverted the priority.
+                if time.monotonic() >= deadline:
+                    raise GateError(
+                        f"lane history not recorded: {lock_path} held by "
+                        f"another gate for >{HISTORY_LOCK_TIMEOUT:g}s")
+                time.sleep(0.05)
+        store_path = history_store_path(project_dir)
+        _write_history_store(
+            _apply_record(load_history_store(store_path), record, keep),
+            store_path)
+    finally:
+        os.close(fd)  # releases the flock
+
+
+def record_invocation(project_dir: Path, worktree: Path, record: dict,
+                      keep: int) -> bool:
+    """Best-effort by contract: the lane's verdict is the product, this is a
+    note in the margin. Every failure degrades to ONE visible warning line —
+    never a traceback (R-04), never a changed exit status."""
+    try:
+        _record_invocation(project_dir, worktree, record, keep)
+        return True
+    except Exception as exc:  # noqa: BLE001 — deliberate, see docstring
+        detail = str(exc) if isinstance(exc, GateError) \
+            else f"lane history not recorded: {type(exc).__name__}: {exc}"
+        print(f"{PROG}: WARNING: {detail}", file=sys.stderr, flush=True)
+        return False
+
+
+def duration_stats(entries: list[dict]) -> dict:
+    """min / median / max over a set of history entries.
+
+    MEDIAN, not mean, and that is the point: the trap this whole entry exists
+    to avoid is one slow outlier being read as the lane's permanent cost, and
+    the mean is precisely the statistic that lets it. `max` is still reported
+    — an outlier is information, it just is not the typical cost."""
+    values = sorted(e["duration_seconds"] for e in entries
+                    if isinstance(e.get("duration_seconds"), (int, float)))
+    if not values:
+        return {"count": 0, "min_seconds": None, "median_seconds": None,
+                "max_seconds": None}
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else \
+        round((values[mid - 1] + values[mid]) / 2, 3)
+    return {"count": len(values), "min_seconds": values[0],
+            "median_seconds": median, "max_seconds": values[-1]}
+
+
+def lane_history_report(store: dict, lane_name: str) -> dict:
+    slot = store.get("lanes", {}).get(lane_name) or {}
+    hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+    passes = [e for e in hist if e.get("outcome") == "pass"]
+    return {
+        "latest": slot.get("latest"),
+        "history": hist,
+        "stats": {"passes": duration_stats(passes),
+                  "completed": duration_stats(hist)},
+    }
+
+
+def _fmt_seconds(value: object) -> str:
+    return f"{value:.1f}s" if isinstance(value, (int, float)) else "-"
+
+
+def _fmt_stats(label: str, stats: dict) -> str:
+    if not stats["count"]:
+        return f"{label}: none recorded"
+    return (f"{label}: n={stats['count']} "
+            f"median {_fmt_seconds(stats['median_seconds'])} "
+            f"(min {_fmt_seconds(stats['min_seconds'])}, "
+            f"max {_fmt_seconds(stats['max_seconds'])})")
+
+
+def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
+    latest = report["latest"]
+    print(f"lane {lane_name}")
+    if latest is None:
+        print("  latest:  (no recorded invocation)")
+    else:
+        exit_bit = "" if latest.get("exit_code") is None \
+            else f" exit {latest['exit_code']}"
+        print(f"  latest:  {latest.get('outcome')}{exit_bit}  "
+              f"{_fmt_seconds(latest.get('duration_seconds'))}  "
+              f"{(latest.get('commit') or '(no commit)')[:12]}  "
+              f"{latest.get('started_at')}")
+        print(f"           worktree {latest.get('worktree')}")
+        if not latest.get("history_eligible"):
+            print(f"           NOT in history: {latest.get('excluded_reason')}")
+    hist = report["history"]
+    if not hist:
+        print(f"  history: (empty; keep={keep})")
+    else:
+        print(f"  history: {len(hist)} of at most {keep} commit(s), "
+              f"oldest first")
+        print(f"    {'COMMIT':<14}{'OUTCOME':<9}{'DURATION':>9}  STARTED")
+        for entry in hist:
+            print(f"    {(entry.get('commit') or '')[:12]:<14}"
+                  f"{str(entry.get('outcome')):<9}"
+                  f"{_fmt_seconds(entry.get('duration_seconds')):>9}  "
+                  f"{entry.get('started_at')}")
+        print("    " + _fmt_stats("passes", report["stats"]["passes"]))
+        print("    " + _fmt_stats("completed (passes + fails)",
+                                  report["stats"]["completed"]))
+
+
+def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
+                central: dict, central_path: Path | None,
+                lane_name: str | None, as_json: bool) -> int:
+    """RG-27 query verb. Reports; judges nothing, decides nothing, and — like
+    `--list` — exits 0 whenever the QUERY succeeded, including when there is
+    no data yet. An empty store is an answer, not a failure."""
+    if lane_name is not None and lane_name not in lanes:
+        fail(f"unknown lane {lane_name!r} — known lanes: "
+             f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+             f"{f'; shared: {central_path}' if central_path else ''})")
+    keep, keep_source = resolve_history_keep(cfg, cfg_path, central,
+                                             central_path)
+    store_path = history_store_path(project_dir)
+    store = load_history_store(store_path)
+    selected = [lane_name] if lane_name else sorted(lanes)
+    if as_json:
+        print(json.dumps({
+            "schema": HISTORY_SCHEMA,
+            "revision": __revision__,
+            "store": str(store_path),
+            "keep": keep,
+            "keep_source": keep_source,
+            "lanes": {name: lane_history_report(store, name)
+                      for name in selected},
+        }, indent=2, sort_keys=True))
+        return 0
+    print(f"{PROG} rev {__revision__} — lane invocation history")
+    print(f"store: {store_path}"
+          f"{'' if store_path.is_file() else '  (not written yet)'}")
+    print(f"keep:  {keep}  ({keep_source})")
+    if not selected:
+        print("(no lanes defined)")
+        return 0
+    for name in selected:
+        print("")
+        _print_lane_history(name, lane_history_report(store, name), keep)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # command assembly + run
 # ---------------------------------------------------------------------------
 
@@ -941,7 +1405,7 @@ _CD_TARGET_RE = re.compile(r"\bcd\s+(\S+)")
 _INVOCATION_RE = re.compile(
     r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
 _BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
-_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers"}
+_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history"}
 _DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
 # Fields that are prose BY NAME: a label describes an invocation, it doesn't
 # run one ("label = \"proj: run-gate gate conjunction\"" — found live in
@@ -2084,6 +2548,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          probe containers for that last check — fitness can only be",
         "          observed, not read: one inventory probe per environment+judge,",
         "          plus one batched `command -v` probe per environment)",
+        "       run-gate.py history [LANE] [--json]",
+        "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
+        "          aborted runs included — and its bounded per-commit duration",
+        "          series. Reads the store, runs no lane, decides no policy)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -2141,6 +2609,20 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    PLUS the assay-lane toolchain fitness check, whose",
         "                    FAIL exits 2 (that half is the judge's own finding,",
         "                    not a heuristic)",
+        "  --json            `history` only: the same data as one JSON document",
+        "                    (latest + bounded history + median/min/max, split",
+        "                    passes vs all completed runs)",
+        "",
+        "lane history (RG-27) — measured and persisted, never acted on here:",
+        f"  store       <project>/{HISTORY_DIR_NAME}/{HISTORY_FILE_NAME} in the JUDGED",
+        "              worktree — per (worktree x project), so two worktrees' gates",
+        "              never contend; MUST be git-ignored (the tool refuses to write",
+        "              and says so rather than dirtying the tree for the next lane)",
+        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} commits per lane;",
+        "              project [history] shadows the central one (R-09's rule)",
+        "  eligibility  history keeps COMPLETED runs (passes AND fails) on a clean,",
+        "              committed tree; aborted, errored, dirty-tree and mid-rebase",
+        "              runs update `latest` only, with the exclusion reason recorded",
         "",
         "environment contract (DERIVE / READ / FAIL — no silent defaults):",
         "  CGROUP_PARENT_DEV_BACKGROUND  container lanes take their cgroup slice",
@@ -2196,6 +2678,9 @@ def main(argv: list[str] | None = None) -> int:
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
                         "{base} token")
+    parser.add_argument("--json", action="store_true",
+                        help="RG-27: `history` emits one machine-readable "
+                             "JSON document instead of the human table")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full execution plan and exit 0 — every "
@@ -2237,6 +2722,12 @@ def main(argv: list[str] | None = None) -> int:
             # RG-9 preflight — reads the world, runs nothing.
             return cmd_doctor(lanes, project_dir, cfg, central,
                               cfg_path, central_path)
+        if args.lane == "history":
+            # RG-27 query verb — reads the store, runs nothing, decides
+            # nothing. Rigor/defer POLICY belongs to the controller reading
+            # this, never to the tool producing it.
+            return cmd_history(lanes, project_dir, cfg, cfg_path, central,
+                               central_path, args.target, args.json)
         if args.list:
             return cmd_list(lanes)
         if args.check_env:
@@ -2292,71 +2783,100 @@ def main(argv: list[str] | None = None) -> int:
                       else f"{BASE_TOKEN} in the lane argv")
             print(f"run-gate: comparison base {request_base} (from {base_src}) "
                   f"→ {target}", flush=True)
-        if lane.get("clean_tree", True) and not args.allow_dirty:
-            check_clean_tree(worktree)
-        # RG-20 resource-aware admission: slice-memory accounting FIRST
-        # (fast-fail — review fix: a gate blocked on a held lock used to
-        # wait before receiving an admission refusal it could have been
-        # given instantly), THEN shared-infra serialization — the only
-        # potentially-blocking step, in sorted-name order, released in
-        # finally.
-        slice_name = slice_src = None
-        if env and env.get("mode") == "exec":
-            # Review fix (R-05): exec lanes DISCLOSE their slice but never
-            # memory-admit or cap: the persistent runner predates this
-            # invocation (its placement was decided when CIU started it) and
-            # `docker exec` can neither place nor cap work in a slice.
-            if env.get("cgroup_slice"):
-                print(f"run-gate: WARNING: cgroup_slice on exec environment "
-                      f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
-                      f"— docker exec cannot enforce slice placement or caps; "
-                      f"the runner is governed by how it was started",
-                      flush=True)
-                slice_name = env["cgroup_slice"]
-                slice_src = f"declared {env_source}, naming-only"
-            else:
-                ambient = os.environ.get(CGROUP_ENV_VAR)
-                if ambient:
-                    slice_name = ambient
-                    slice_src = f"${CGROUP_ENV_VAR}, naming-only"
-                else:
-                    slice_src = (f"no cgroup_slice declared and no "
-                                 f"${CGROUP_ENV_VAR}")
-            if lane.get("resources") or lane.get("memory"):
-                print(f"run-gate: WARNING: lane {args.lane!r} declares "
-                      f"resources/memory but its environment is exec-mode — "
-                      f"resource admission and --memory caps apply to "
-                      f"ephemeral container lanes only", flush=True)
-        elif env:
-            slice_name, slice_src = resolve_slice(env, env_source)
-            check_slice_memory_admission(lane, args.lane, slice_name,
-                                         slice_src)
-        locks = acquire_shared_locks(lane, args.lane, args.dry_run)
+        # RG-27: from HERE on this is an INVOCATION with a result — a
+        # clean-tree refusal, an admission refusal, a docker failure and a
+        # Ctrl-C all count, and all land in `latest`. Everything BEFORE this
+        # line is a configuration error that names no invocation to record
+        # against. `--dry-run` records nothing at all: no lane started, so
+        # nothing was measured and there is no result to be `latest`.
+        keep, _keep_src = resolve_history_keep(cfg, cfg_path, central,
+                                               central_path)
+        record = None if args.dry_run \
+            else start_run_record(args.lane, worktree, repo)
         try:
-            if not env:  # built-in 'host'
-                code = run_host_lane(lane, args.lane, eff_proj, worktree,
-                                     dry_run=args.dry_run,
-                                     request_base=request_base)
-            elif env.get("mode") == "exec":
-                code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                     env, env_source, lane_environment_name(lane),
-                                     slice_name, slice_src,
-                                     dry_run=args.dry_run,
-                                     request_base=request_base)
-            else:
-                code = run_container_lane(lane, args.lane, eff_proj, repo,
-                                          worktree, env, env_source,
-                                          slice_name, slice_src,
-                                          dry_run=args.dry_run,
-                                          request_base=request_base)
-            print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
-            return code
-        finally:
-            for fd in locks:
-                os.close(fd)  # releases the flock
+            code = _run_selected_lane(args, lane, env, env_source, eff_proj,
+                                      repo, worktree, request_base)
+        except BaseException as exc:
+            if record is not None:
+                record_invocation(eff_proj, worktree,
+                                  finish_run_record(record, error=exc), keep)
+            raise
+        if record is not None:
+            record_invocation(eff_proj, worktree,
+                              finish_run_record(record, exit_code=code), keep)
+        return code
     except GateError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return exc.exit_code
+
+
+def _run_selected_lane(args, lane: dict, env: dict, env_source: str,
+                       eff_proj: Path, repo: Path, worktree: Path,
+                       request_base: str | None) -> int:
+    """Everything from the clean-tree refusal to the lane's own exit status —
+    i.e. exactly the span RG-27 treats as ONE invocation. Split out of main()
+    so that span has a single entry and a single exit to wrap."""
+    if lane.get("clean_tree", True) and not args.allow_dirty:
+        check_clean_tree(worktree)
+    # RG-20 resource-aware admission: slice-memory accounting FIRST
+    # (fast-fail — review fix: a gate blocked on a held lock used to
+    # wait before receiving an admission refusal it could have been
+    # given instantly), THEN shared-infra serialization — the only
+    # potentially-blocking step, in sorted-name order, released in
+    # finally.
+    slice_name = slice_src = None
+    if env and env.get("mode") == "exec":
+        # Review fix (R-05): exec lanes DISCLOSE their slice but never
+        # memory-admit or cap: the persistent runner predates this
+        # invocation (its placement was decided when CIU started it) and
+        # `docker exec` can neither place nor cap work in a slice.
+        if env.get("cgroup_slice"):
+            print(f"run-gate: WARNING: cgroup_slice on exec environment "
+                  f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
+                  f"— docker exec cannot enforce slice placement or caps; "
+                  f"the runner is governed by how it was started",
+                  flush=True)
+            slice_name = env["cgroup_slice"]
+            slice_src = f"declared {env_source}, naming-only"
+        else:
+            ambient = os.environ.get(CGROUP_ENV_VAR)
+            if ambient:
+                slice_name = ambient
+                slice_src = f"${CGROUP_ENV_VAR}, naming-only"
+            else:
+                slice_src = (f"no cgroup_slice declared and no "
+                             f"${CGROUP_ENV_VAR}")
+        if lane.get("resources") or lane.get("memory"):
+            print(f"run-gate: WARNING: lane {args.lane!r} declares "
+                  f"resources/memory but its environment is exec-mode — "
+                  f"resource admission and --memory caps apply to "
+                  f"ephemeral container lanes only", flush=True)
+    elif env:
+        slice_name, slice_src = resolve_slice(env, env_source)
+        check_slice_memory_admission(lane, args.lane, slice_name, slice_src)
+    locks = acquire_shared_locks(lane, args.lane, args.dry_run)
+    try:
+        if not env:  # built-in 'host'
+            code = run_host_lane(lane, args.lane, eff_proj, worktree,
+                                 dry_run=args.dry_run,
+                                 request_base=request_base)
+        elif env.get("mode") == "exec":
+            code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
+                                 env, env_source, lane_environment_name(lane),
+                                 slice_name, slice_src,
+                                 dry_run=args.dry_run,
+                                 request_base=request_base)
+        else:
+            code = run_container_lane(lane, args.lane, eff_proj, repo,
+                                      worktree, env, env_source,
+                                      slice_name, slice_src,
+                                      dry_run=args.dry_run,
+                                      request_base=request_base)
+        print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
+        return code
+    finally:
+        for fd in locks:
+            os.close(fd)  # releases the flock
 
 
 if __name__ == "__main__":

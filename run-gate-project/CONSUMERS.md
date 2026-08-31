@@ -38,12 +38,15 @@ lane declarations look like per project type. Companion to `README.md`
 4. **AGENTS.md/README**: add one line naming `./run-gate.py` as the canonical test
    entrypoint (do this IN the adoption commit — docs never lead the tool).
 5. **Gitignore the artifacts.** Lanes write evidence into the tree —
-   `.assay/`, `coverage.json`, and anything else a lane's `artifacts` list
-   names. The vbpub root `.gitignore` already covers internal projects; a
-   copied-script repo MUST replicate the entries for every path its lanes
-   write, or the NEXT lane's `clean_tree` check refuses mysteriously on
-   yesterday's evidence. Treat the union of declared `artifacts` lists as
-   the checklist.
+   `.assay/`, `coverage.json`, `.run-gate/` (RG-27 lane history), and
+   anything else a lane's `artifacts` list names. The vbpub root
+   `.gitignore` already covers internal projects; a copied-script repo MUST
+   replicate the entries for every path its lanes write, or the NEXT lane's
+   `clean_tree` check refuses mysteriously on yesterday's evidence. Treat
+   the union of declared `artifacts` lists plus `.run-gate/` as the
+   checklist. Only the last of these is self-enforcing — run-gate refuses
+   to write an un-ignored history store and names the remedy ("What each
+   lane costs" below).
 
 ## Central defaults (vbpub monorepo)
 
@@ -556,6 +559,162 @@ dual-mounts the REPO root, so the gitdir is inside the mount by construction.
 Related: an auto-derived host path for a worktree (e.g. `SRDM_HOST_REPO_ROOT`)
 cannot be inferred from `docker inspect`, which maps only the devcontainer's
 own `/workspaces/<repo>` — export it explicitly.
+
+## What each lane costs — the `history` verb (RG-27)
+
+Every lane run now leaves a record behind, so "how long does this lane take,
+and how does that compare to recent runs" stops being something an operator
+remembers until the terminal scrolls. run-gate **measures and persists**; it
+decides no rigor/defer policy — that is yours to build on top of this data.
+
+### Adopt it (one line, and it is enforced)
+
+Add the store to your `.gitignore`. This is not a reminder — run-gate asks git
+before every write, refuses to write an un-ignored store, and tells you why:
+
+```gitignore
+# run-gate lane invocation history (RG-27)
+.run-gate/
+```
+
+```
+run-gate: WARNING: lane history not recorded: /repo/proj/.run-gate is not
+fully git-ignored, and writing there would leave the judged tree dirty for the
+NEXT lane's clean-tree check — add '.run-gate/' to the .gitignore covering /repo
+```
+
+The lane's own verdict and exit status are untouched either way: telemetry is
+a note in the margin, never the product. The vbpub root `.gitignore` already
+carries the entry for internal projects; a **copied-script repo must add it**.
+
+Optionally declare how much trend to keep (default 10 commits per lane; a
+central `run-gate.toml` may declare it once and a project shadows it whole,
+the R-09 rule):
+
+```toml
+# run-gate.toml
+schema_version = 1
+
+[history]
+keep = 20
+```
+
+### Read it
+
+```console
+$ ./run-gate.py history selftest
+run-gate rev 30 — lane invocation history
+store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
+keep:  10  (default (10))
+
+lane selftest
+  latest:  pass exit 0  61.4s  4c6eb2b6a1f0  2026-08-31T11:02:17Z
+           worktree /workspaces/vbpub
+  history: 3 of at most 10 commit(s), oldest first
+    COMMIT        OUTCOME   DURATION  STARTED
+    9f1c0aa41b3d  pass         58.9s  2026-08-30T18:44:02Z
+    b2884e76c0d1  fail          7.2s  2026-08-31T09:15:30Z
+    4c6eb2b6a1f0  pass         61.4s  2026-08-31T11:02:17Z
+    passes: n=2 median 60.2s (min 58.9s, max 61.4s)
+    completed (passes + fails): n=3 median 58.9s (min 7.2s, max 61.4s)
+```
+
+`./run-gate.py history` with no lane reports every declared lane. The verb
+runs no lane, starts no container, and exits 0 whenever the query itself
+worked — an empty store is an answer, not a failure.
+
+### Consume it
+
+`--json` is the machine form. Same data, same slots:
+
+```console
+$ ./run-gate.py history selftest --json
+{
+  "keep": 10,
+  "keep_source": "default (10)",
+  "lanes": {
+    "selftest": {
+      "history": [
+        {
+          "commit": "9f1c0aa41b3d…",
+          "dirty": false,
+          "duration_seconds": 58.9,
+          "excluded_reason": null,
+          "exit_code": 0,
+          "git_operation": null,
+          "history_eligible": true,
+          "lane": "selftest",
+          "outcome": "pass",
+          "repo": "/workspaces/vbpub",
+          "revision": 30,
+          "started_at": "2026-08-30T18:44:02Z",
+          "worktree": "/workspaces/vbpub"
+        }
+      ],
+      "latest": { "…": "same shape, ANY outcome" },
+      "stats": {
+        "completed": {"count": 3, "min_seconds": 7.2,
+                      "median_seconds": 58.9, "max_seconds": 61.4},
+        "passes":    {"count": 2, "min_seconds": 58.9,
+                      "median_seconds": 60.2, "max_seconds": 61.4}
+      }
+    }
+  },
+  "revision": 30,
+  "schema": 1,
+  "store": "/workspaces/vbpub/run-gate-project/.run-gate/history.json"
+}
+```
+
+```bash
+# "is this lane cheap enough to always run?" — ask the PASS series, not the
+# mixed one: a red lane short-circuits, so its duration is not the cost of
+# running the lane, only the cost of failing it.
+./run-gate.py history selftest --json \
+  | python3 -c 'import json,sys; s=json.load(sys.stdin)["lanes"]["selftest"]["stats"]["passes"]; print(s["median_seconds"])'
+```
+
+### The two slots, and why they differ
+
+| slot | what it holds | when it updates |
+|---|---|---|
+| `latest` | the most recent invocation, **whatever happened to it** — pass, fail, tool error, Ctrl-C, dirty tree, mid-rebase | every invocation, always |
+| `history` | a curated trend series keyed by **(lane, commit)**, bounded to the last `keep` commits | only when the measurement is trustworthy (below) |
+
+A run reaches `history` only if it **completed with its own exit status**, on
+a **clean** tree, with **no git operation in flight**, at a **resolvable
+commit**. Otherwise `latest` still moves and the entry records why it was held
+back:
+
+```
+  latest:  error  0.1s  4c6eb2b6a1f0  2026-08-31T11:40:03Z
+           worktree /workspaces/vbpub
+           NOT in history: the judged tree was dirty — the duration does not
+           belong to this commit
+```
+
+Three things follow that are easy to get wrong, so they are stated:
+
+- **A completed FAIL is kept**, with `"outcome": "fail"`. Its duration is real
+  data. That is why the stats are split — merge `passes` and `completed`
+  yourself only if your policy wants them merged.
+- **`clean_tree = false` does not exclude you.** The test is whether the tree
+  *was* dirty, not whether dirt was permitted.
+- **`--dry-run` records nothing**, and neither does a configuration error
+  (unknown lane, bad key) — no lane started, so there is no result.
+
+### Two worktrees, two stores
+
+The store lives at `<project>/.run-gate/history.json` **inside the judged
+tree**, so `--worktree B` writes B's measurement into B's store and never into
+the invoking checkout's. That is the concurrency answer: parallel worktree
+gates address different files and never contend. Two lanes of one project in
+one tree do contend, and are serialized on `.run-gate/history.lock` with an
+atomic replace of the store — bounded, unlike the `resources.shared` lock: a
+gate never hangs waiting to write telemetry.
+
+Because the replace is atomic, readers take no lock. `history` answers
+correctly while a gate is mid-write.
 
 ## Per-project-type recipes
 
