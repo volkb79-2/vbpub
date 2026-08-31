@@ -4072,6 +4072,179 @@ class TestAssayToolchainFitness:
             assert "build_env_probe_argv" in body
             assert '[docker, "' not in body
 
+    def test_worktree_flag_relocates_the_probes_cd_target(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-30: `doctor --worktree B` must relocate the inventory probe's
+        `cd` target into B's project dir — mounting B's repo but `cd`ing into
+        the INVOKING checkout's absolute path would not probe B, it would run
+        against a directory the probe container never mounted (or,
+        coincidentally, the wrong one)."""
+        repo, proj = self._project(tmp_path, monkeypatch)
+        commit_all(repo, "add assay.toml")
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"])))
+        code = run_gate.main(["doctor", "--worktree", str(wt)])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "[OK] lane 'ui-unit' toolchain: sh" in out
+        probes = [call for call in docker_runs(log) if "--rm" in call]
+        inventory_call = next(c for c in probes if "lanes --json" in c[-1])
+        assert str(wt / "proj") in inventory_call[-1]
+        assert str(proj) not in inventory_call[-1]
+
+
+class TestDoctorAndCheckEnvWorktreeReadScope:
+    """RG-30: `doctor` and `--check-env` both passed `None` to
+    `resolve_repo_and_worktree` instead of the caller's `--worktree` value,
+    so `doctor --worktree B` silently reported the INVOKING tree's answers,
+    not B's — including RG-21's worktree-specific host-lane git-view WARN,
+    exactly the kind of per-tree answer that legitimately differs between
+    trees. RG-27 (`history`, B1) closed the identical read-scope hazard for
+    that verb; this closes the last remaining instance estate-wide, with the
+    same disclosure discipline (the report NAMES the tree it describes)."""
+
+    HOST_LANE = TestLinkedWorktreeHostLaneWarning.HOST_LANE
+
+    def _two_trees(self, tmp_path, monkeypatch, cfg):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        fake_docker(tmp_path, monkeypatch)
+        return repo, proj, wt
+
+    # -- doctor: RG-21 flips with --worktree, proving the read scope follows
+    #    the flag instead of the invoking checkout -----------------------
+
+    def test_doctor_worktree_flag_reports_the_named_trees_state(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.chdir(proj)                 # invoking tree: plain checkout (OK)
+        assert run_gate.main(["doctor", "--worktree", str(wt)]) == 0
+        out = capsys.readouterr().out
+        assert "[WARN] host-lane git view (RG-21)" in out
+        assert str(repo / ".git" / "worktrees" / "w1") in out
+        assert f"--worktree {wt}" in out
+        assert "THAT tree, not the invoking checkout" in out
+
+    def test_doctor_worktree_flag_does_not_leak_the_invoking_trees_answer(
+            self, tmp_path, monkeypatch, capsys):
+        """The other direction: invoked FROM the linked worktree (which
+        would itself WARN unflagged) but pointed at the plain checkout via
+        --worktree — the answer must be the checkout's OK, never the
+        invoking tree's WARN presented under the wrong name."""
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.chdir(wt / "proj")          # invoking tree: linked worktree (WARN)
+        assert run_gate.main(["doctor", "--worktree", str(repo)]) == 0
+        out = capsys.readouterr().out
+        assert "[OK] host-lane git view (RG-21)" in out
+        assert "[WARN] host-lane git view (RG-21)" not in out
+
+    def test_doctor_without_the_flag_still_answers_for_the_invoking_checkout(
+            self, tmp_path, monkeypatch, capsys):
+        """No regression: unflagged doctor keeps answering about the
+        invoking checkout, with no disclosure banner — nothing substituted,
+        nothing to name."""
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.chdir(wt / "proj")
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "[WARN] host-lane git view (RG-21)" in out
+        assert "--worktree" not in out
+
+    def test_doctor_bad_worktree_fails_the_git_check_not_a_false_ok(
+            self, tmp_path, monkeypatch, capsys):
+        """A garbage --worktree must not let the RG-21 check read "no
+        gitdir file here" as "plain checkout, nothing to warn about" — it
+        FAILs the git check instead (never reaching RG-21), and every other
+        check still runs."""
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.chdir(proj)
+        code = run_gate.main(["doctor", "--worktree", str(tmp_path / "nope")])
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "[FAIL] git" in out and "not a directory" in out
+        assert "host-lane git view" not in out    # never reached -> no false OK
+        assert "[OK] docker" in out                # other checks still ran
+
+    def test_doctor_non_git_worktree_fails_with_gits_own_message(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.chdir(proj)
+        outside = tmp_path / "plain-dir"
+        outside.mkdir()
+        code = run_gate.main(["doctor", "--worktree", str(outside)])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "[FAIL] git" in captured.out
+        assert "host-lane git view" not in captured.out
+        assert "Traceback" not in captured.err
+
+    # -- --check-env: the drift scan and the toolchain probe both follow
+    #    --worktree ------------------------------------------------------
+
+    def test_check_env_worktree_flag_scans_the_named_trees_sources(
+            self, tmp_path, monkeypatch, capsys):
+        """The env-drift scan must read the SELECTED tree's Python sources,
+        not the invoking checkout's — proven with a helper module that
+        exists ONLY on the worktree's branch, committed after the worktree
+        was created so the main checkout never sees it."""
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        (wt / "proj" / "extra.py").write_text(
+            "import os\nos.environ['DRIFTY']\n")
+        git(wt, "add", "proj/extra.py")
+        git(wt, "commit", "-q", "-m", "drift only in w1")
+        monkeypatch.chdir(proj)
+        assert not (proj / "extra.py").exists()
+        run_gate.main(["--check-env", "--worktree", str(wt)])
+        out = capsys.readouterr().out
+        assert "$DRIFTY" in out
+        assert f"--worktree {wt}" in out
+        assert "THAT tree, not the invoking checkout" in out
+
+    def test_check_env_without_the_flag_never_sees_the_other_trees_drift(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        (wt / "proj" / "extra.py").write_text(
+            "import os\nos.environ['DRIFTY']\n")
+        git(wt, "add", "proj/extra.py")
+        git(wt, "commit", "-q", "-m", "drift only in w1")
+        monkeypatch.chdir(proj)
+        run_gate.main(["--check-env"])
+        out = capsys.readouterr().out
+        assert "$DRIFTY" not in out
+        assert "--worktree" not in out
+
+    def test_check_env_bad_worktree_refuses_rather_than_scanning_nothing(
+            self, tmp_path, monkeypatch, capsys):
+        """Unlike `doctor`, `--check-env` has no per-check ledger for a bad
+        override to land in gracefully — it refuses outright rather than let
+        a nonexistent tree yield an empty (misleadingly clean) scan under
+        that tree's name."""
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        monkeypatch.chdir(proj)
+        code = run_gate.main(["--check-env", "--worktree",
+                              str(tmp_path / "nope")])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "not a directory" in captured.err
+        assert "--check-env" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_check_env_non_git_worktree_refuses_with_gits_own_message(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        monkeypatch.chdir(proj)
+        outside = tmp_path / "plain-dir"
+        outside.mkdir()
+        code = run_gate.main(["--check-env", "--worktree", str(outside)])
+        captured = capsys.readouterr()
+        assert code == 3
+        assert "Traceback" not in captured.err
+
 
 class TestComparisonBasePassthrough:
     """RG-26: assay 3.0.0 shipped `judge.base_source = "request"` (B019) — a

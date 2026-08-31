@@ -77,6 +77,8 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 ./run-gate.py <lane>          # run one gate lane
 ./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
 ./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
+./run-gate.py doctor --worktree B   # … for tree B's state, not this checkout's
+./run-gate.py --check-env --worktree B   # … same redirect for the drift/toolchain report
 ./run-gate.py history [LANE]  # what each lane last did + what it typically costs
 ./run-gate.py history --json  #   … the same, machine-readable (this verb only)
 ./run-gate.py history --worktree B   # … for tree B's store, not this checkout's
@@ -184,7 +186,11 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Effective tree:** `--worktree` doesn't just redirect checks — the lane
   EXECUTES in the selected tree (assay cd, pin verification, artifacts,
   host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
-  worktree B is the silent false-PASS class this kills.
+  worktree B is the silent false-PASS class this kills. The READ-ONLY verbs
+  follow the same rule: `doctor`/`--check-env --worktree B` report B's git
+  identity, host-lane view, and toolchain fitness, never the invoking
+  checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
+  of the read-scope hazard RG-27 closed for `history`).
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
   Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
