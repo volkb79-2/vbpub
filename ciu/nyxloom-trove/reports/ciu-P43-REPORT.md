@@ -268,3 +268,47 @@ it round-trips through `run-gate.py`'s harness without incident).
 `./run-gate.py ciu` command a merge reviewer would run — judged by the
 NEW 3.2.0 pin against this package's actual four-commit HEAD, and it is
 green.**
+
+---
+
+## Addendum — real gate re-run after review round 1 fixes (commit `274230af`)
+
+`./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P43-loose-ends`,
+run again after the blocker-1/blocker-2 fix commit above (`274230af`,
+doc+test-only, no source change — confirmed the coverage floor and gate
+outcome stayed green rather than assumed).
+
+Verbatim terminal output:
+
+```
+run-gate: rev 29 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.worktrees/ciu-P43-loose-ends/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-998656-1788148071 --cgroup-parent dev-background.slice -e CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice -v /home/vb/volkb79-2/vbpub:/home/vb/volkb79-2/vbpub -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && cd /workspaces/vbpub/.worktrees/ciu-P43-loose-ends/ciu && (cd /workspaces/vbpub/.worktrees/ciu-P43-loose-ends/ciu/tools/assay && sha256sum -c assay-3.2.0.pyz.sha256) && { reported=$(/opt/tester-venv/bin/python tools/assay/assay-3.2.0.pyz --version) || { echo "run-gate: pin '"'"'assay'"'"': version probe failed: /opt/tester-venv/bin/python tools/assay/assay-3.2.0.pyz --version" >&2; exit 2; }; hit=0; for tok in $reported; do tok=${tok#"${tok%%[![:punct:]]*}"}; tok=${tok%"${tok##*[![:punct:]]}"}; case "$tok" in v[0-9]*) tok=${tok#v} ;; esac; if [ "$tok" = 3.2.0 ]; then hit=1; fi; done; if [ "$hit" != 1 ]; then echo "run-gate: pin '"'"'assay'"'"' version mismatch: declared 3.2.0, artifact reports: $reported — fix pins.assay.version or republish the artifact" >&2; exit 2; fi; } && mkdir -p .assay && /opt/tester-venv/bin/python tools/assay/assay-3.2.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'
+assay-3.2.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 274230af839a6797a7a29d00e2437de7805659c2
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P43-loose-ends/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+```
+
+Verdict artifact (`ciu/.assay/verdict-ciu.json`), read directly in a
+separate step, commit confirmed against `git rev-parse HEAD` =
+`274230af839a6797a7a29d00e2437de7805659c2` (exact match):
+
+```
+commit:          274230af839a6797a7a29d00e2437de7805659c2
+outcome:         PASS
+exit_code:       0
+schema_version:  8
+R0:              PASS
+R1:              PASS  (coverage pct: 100.0)
+judge_provenance: {artifact: zipapp, name: assay, version: 3.2.0,
+                    digest_algorithm: sha256,
+                    digest: bbbed3ef35cb8ac3e62075c62fcdb801b7a668b6fc72aa0180419ac4996b84d6}
+```
+
+Same green outcome as the original gate run, at the true post-review-fix
+HEAD. `judge_provenance.digest` still matches the vendored
+`tools/assay/assay-3.2.0.pyz.sha256` exactly.
