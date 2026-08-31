@@ -49,10 +49,21 @@ verified empirically while authoring this package -- so there is no
 committed-coverprofile shape that could represent import-break's own
 R0-level rejection; that half of the claim is Python's alone, A-107).
 
-**No Go toolchain, anywhere (A-087).** This module never shells out, never
-imports ``subprocess``, and is proven entirely from committed text
-(``tests/fixtures/go/**``) -- this devcontainer has no Go toolchain to shell
-out to even if it wanted to (DESIGN-GUIDE §10). ``external_tools = ()``: the
+**No Go toolchain for the LEXER (A-087) -- but ``external_tools = ("go",)``
+since the P27 re-carve.** This paragraph originally said the adapter needed
+no toolchain at all, and that is still true of everything A-087 covers:
+``has_executable_code``, ``is_test_path``, ``normalize_coverage_key`` and
+the two canary injections are pure text processing over committed fixtures.
+It is NOT true of :meth:`GoAdapter.statement_blocks`, added by the P27
+re-carve: A-217 ruled that Go statement positions must come from a
+source-side oracle running the real ``cmd/cover`` segmentation
+(:mod:`assay.adapters.go_stmtpos`), because a hand-guessed rule is provably
+wrong on the ``collision-col{A,B}`` witness pair and a wrong statement
+position has no fail-closed direction. So ``external_tools`` now declares
+``("go",)``, and A-253's PATH preflight refuses a Go lane
+``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` in an environment without a
+toolchain -- which is this devcontainer, permanently and by policy
+(A-042/A-043, DESIGN-GUIDE §10). A-087 is not weakened, it is scoped: the
 narrow semantic question ``has_executable_code`` answers ("does this file
 declare a function with a real body") is answered by a small, deterministic,
 conservative lexer ported from the REASONING (not the code -- there is
@@ -166,10 +177,12 @@ has is precisely the hazard §5 exists to forbid.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Sequence
 
 from ..mutation import MutationSite
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
+from .go_stmtpos import derive_statement_blocks
 
 __all__ = ["GoAdapter"]
 
@@ -498,7 +511,30 @@ class GoAdapter:
     #: Python's multi-line-statement gap (A-102) -- see this module's own
     #: docstring for the confirmation against the real parser.
     requires_span_attribution: bool = False
-    external_tools: tuple[str, ...] = ()
+    #: ``True`` -- the Go coverprofile records a positional EXTENT plus a
+    #: statement CARDINALITY, never the statements' own positions, so its
+    #: records are an OVER-APPROXIMATION that must be demoted to statement
+    #: truth before any verdict is computed (A-217/A-239/A-392). The
+    #: correction is not optional and is not this adapter's to remember:
+    #: :func:`assay.evaluate.evaluate_coverage` refuses outright on a profile
+    #: whose ``statement_attributed`` is ``False`` while this is ``True``.
+    #:
+    #: Note this is the OPPOSITE axis from ``requires_span_attribution``
+    #: above, which stays ``False``: Go's format leaves no unattributed line
+    #: to rescue (every block line lands in executed-or-missing), and the
+    #: problem is precisely that it claims lines it should not.
+    requires_statement_attribution: bool = True
+    #: (B047 item 2) The statement-position oracle
+    #: (:mod:`assay.adapters.go_stmtpos`) is a real Go program run with the
+    #: real toolchain -- A-217 ruled that a hand-guessed Python
+    #: re-implementation is not an acceptable substitute, because a wrong
+    #: statement position has no fail-closed direction. Declaring `go` here
+    #: is all this adapter owes: A-253 assigns the effective-PATH preflight
+    #: itself to P34, already built and tested, so a Go lane in an
+    #: environment with no Go toolchain (this devcontainer, by policy --
+    #: A-042/A-043) refuses ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``
+    #: before anything runs, rather than crashing or guessing.
+    external_tools: tuple[str, ...] = ("go",)
     #: A declared, known module-path segment a coverage artifact's own keys
     #: carry that the diff's spelling does not (Go's own analogue of
     #: :attr:`~assay.adapters.python.PythonAdapter.coverage_key_prefix`,
@@ -520,6 +556,36 @@ class GoAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        """Where every cover block over *rel_paths* begins its own
+        statements, derived from the SOURCE by the shipped oracle (A-397).
+
+        This is the ONE adapter method in the project that shells out, and
+        the reason is A-217's ruling: the two witnesses
+        ``carve-assets/P27/witness/collision-col{A,B}.go`` emit a
+        byte-identical coverage profile while their statements begin on
+        different lines, so no rule reading only the profile can be right on
+        both. The missing information is in the source, and the only correct
+        way to read it back out is ``cmd/cover``'s own segmentation --
+        shipped verbatim at ``assay/helpers/go/stmtpos/`` and run here with
+        the real toolchain, never re-implemented in Python.
+
+        Never returns ``None``: this adapter declares
+        :attr:`requires_statement_attribution` ``True``, so ``None`` would
+        mean "no attribution is available" for an adapter that cannot be
+        judged without it. Every failure raises instead
+        (:mod:`assay.adapters.go_stmtpos` documents each one).
+        """
+        return derive_statement_blocks(
+            repo_top, rel_paths, remaining=remaining
+        )
 
     def inject_import_break(self, text: str) -> tuple[str, str]:
         return _inject_import_break(text)

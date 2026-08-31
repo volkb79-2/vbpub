@@ -298,3 +298,94 @@ reached, and the test written alongside deliberately asserts the OUTCOME rather
 than the mechanism so it survives the correction. The stale mechanism claim
 this exposed in `test_verdict_schema_is_packaged.py`'s docstring is filed as
 **B054**, not silently patched.
+
+---
+
+# Generation 2 (fresh session, seeded from BRIEF-1 + BRIEF-2)
+
+## 9. Scope items — state after generation 2
+
+| # | item | state |
+|---|---|---|
+| 1 | A-239's shape carved concretely (`blocks` + new hook + core join) | **DONE** — the adapter/runner wiring generation 1 left open is landed and green |
+| 2 | the oracle itself (B047 item 1) | **DONE** (gen 1), and now actually INVOKED — `adapters/go_stmtpos.py` is its Python half |
+| 3 | fixture regeneration (F008-A4) | **not started** — and generation 2 added a reason to do it: B055 |
+| 4 | `external_tools = ("go",)` (B047 item 2) | **DONE** |
+| 5 | `judge.coverage.producer` for `go-cover` (B047 item 3) | **not started** |
+| 6 | gate envelope `helpers[]` (B047 item 5) | **PARTIAL** — the producer side exists (`HelperInvocation` + `on_helper_invoked`, reported exactly once per lane, asserted); the `run_lane` → `Verdict.helpers` plumbing and A-395's parallel CLI test are NOT done |
+| 7 | srdm covergate qualification (F008-A5) | **not started** — blocked behind registration |
+
+**Registration (A-394) is deliberately NOT done.** The chain it was sequenced
+behind is now complete, so the next generation may do it; this one stopped at
+its checkpoint boundary rather than landing a registry change it could not
+also gate-verify and qualify. `judge.language = "go"` therefore remains
+refused, and README says so in those words.
+
+**No acceptance box is ticked.** F008-A3/A4/A5 stay `absent` in
+`2-product-definition.md`. The instruction was to tick only once a real Go
+verdict is statement-granular end to end, provable by a real run — which
+requires registration (step 7) and a toolchain. Neither exists yet. The chain
+is proven at every seam by tests; the end-to-end claim is not, and claiming it
+would be the A-067-class defect this report already records once.
+
+## 10. What generation 2 built, and what proves each piece
+
+| piece | where | what proves it |
+|---|---|---|
+| the protocol surface | `adapters/base.py` — `requires_statement_attribution`, `statement_blocks`, `StatementBlockReport`, `HelperInvocation` | `test_adapters_go_registration.py` (the Go pair asserted together); A-397 records the signature |
+| the A-392 refusal | `evaluate.py` `_check_statement_attribution`, called from both entry points | `test_evaluate_statement_attribution_guard.py` — 4 tests, **both directions** |
+| the ONE key join, exposed | `evaluate.resolve_coverage_keys` over `_repo_path_by_raw_key`; `_normalized_profile_files` now inverts it | `test_runner_statement_attribution_wiring.py::test_the_oracle_receives_the_key_the_evaluator_will_judge_not_the_raw_one` — a module-prefixed artifact key, stripped by the adapter, reaching the oracle as the repo path |
+| the runner seam | `runner._attribute_statements_for_lane` | 8 tests: 5 naive lines become 2 judged; paths + anchor; identity once; A-391 mismatch → payload-free ERROR; contradiction → refusal; 2 controls |
+| the oracle invoker | `adapters/go_stmtpos.py` | 13 tests over the document reader and every refusal, including a two-sided schema pin |
+
+**The headline assertion is the one worth re-reading.** In
+`test_the_runner_corrects_a_block_profile_before_the_verdict_is_computed`, a
+profile whose artifact claims five executed lines `{3,4,5,6,7}` produces a
+claim with `executable == 2`. Skip the correction and it is 5, and the verdict
+is about function signatures and closing braces. That gap is the whole wave.
+
+## 11. Thirteen pre-existing tests went red, and what was done about it
+
+A-392's guard refused thirteen Go tests that judge committed coverprofiles
+with no toolchain. **None was deleted and none was weakened to green.** Seven
+were routed through `conftest.as_pre_oracle_attributed`, which sets the flag
+and leaves the line sets untouched; six (`test_canary_go_pipeline.py`) through
+a named `_PreOracleGoAdapter` subclass with the declaration downgraded to
+`False`.
+
+The distinction between those seven matters and is stated at the site: for
+`test_adapters_go_python_equivalence.py` and `test_adapters_go_registration.py`
+the profiles are HAND-BUILT line sets that are already statement-granular, so
+the flag merely says what is true. For `test_adapters_go_union_fidelity.py`
+they are parsed from the committed `hello.out`, and those sets are the naive
+expansion A-234 already records as stale — the flag there is a placeholder for
+F008-A4, not a claim.
+
+Filed as **B055**, with acceptance criteria that include a test which goes RED
+if the shipped adapter's declaration is ever flipped, so the double cannot
+quietly become the product.
+
+## 12. Decision asks (open)
+
+**DA-3. Item 6's remaining half.** `HelperInvocation` is produced and reported
+exactly once per lane through `on_helper_invoked`, but nothing yet carries it
+into `Verdict.helpers`. A-395 rules the shape (do not weaken
+`test_cli_run.py`'s `"helpers" not in document`; add a parallel Go-lane test
+proven against `tester-unified-go:local`, never a mock). That parallel test
+**cannot run in the registered gate**: `tester-unified:local` has no Go
+toolchain, and the gate is the only thing that certifies green. So the proof
+has to be a recorded probe in `carve-assets/P27-recarve/` (generation 1's
+pattern) rather than a gate-run test — or the gate lane needs a Go image,
+which is a bigger change than this wave. **Question: is a recorded probe the
+accepted evidence shape for A-395's parallel test, or does item 6 wait for a
+gate that can run Go?** Not blocking items 3/5/7; blocking item 6's closure.
+
+## 13. Third live instance of the "read the status from the job" trap
+
+The full `pytest tests/` run was reported to me as **"exit code 0"** while the
+log's own appended marker said `PYTEST_EXIT=1` and pytest printed `13 failed,
+3808 passed, 13 skipped in 344.74s`. Identical in shape to the two incidents
+in §7, and caught the same way — the marker was appended by the job and read
+in a separate step. Had the wrapper been believed, this report would have
+recorded a green suite on a commit with thirteen red tests, and the thirteen
+would have been the ones proving the wave's own guard works.

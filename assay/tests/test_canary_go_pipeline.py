@@ -17,6 +17,7 @@ coverprofile instead).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,38 @@ from assay.errors import Outcome, ReasonCode
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "canary" / "go" / "greet"
 TARGET_PATH = "greet/greet.go"
 
-ADAPTER = GoAdapter()
+@dataclass(frozen=True, kw_only=True)
+class _PreOracleGoAdapter(GoAdapter):
+    """The real :class:`~assay.adapters.go.GoAdapter` with ONE declaration
+    downgraded: ``requires_statement_attribution=False``.
+
+    **This is a deliberate, named test double, and it is smaller than it
+    looks.** Every behaviour this file actually exercises -- the canary's
+    cause-sensitivity, its four INCONCLUSIVE causes, the real
+    ``inject_uncovered_line``, the real ``evaluate_coverage`` union -- is
+    untouched by the downgrade. What the downgrade removes is the P27
+    re-carve's statement-attribution step, and it has to be removed here for
+    a reason this file's own docstring already states: these tests run with
+    NO Go toolchain anywhere (A-042/A-087/A-107), against two COMMITTED,
+    pre-generated coverprofiles. The statement-position oracle is a real Go
+    program (A-217 ruled that a Python re-implementation is not an acceptable
+    substitute), so with the real declaration these tests would report
+    ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` in this devcontainer and in
+    ``tester-unified:local`` -- proving only that no Go exists, which is
+    already proven elsewhere and is not what this file is about.
+
+    **What it therefore does NOT prove, stated rather than left implied:**
+    that a real Go canary produces statement-granular line sets. It cannot,
+    here. The committed profiles' line sets are the pre-oracle expansion
+    A-234 records as stale, and F008-A4 replaces them. The gap between this
+    double and the shipped adapter is filed as **B055**, so the shortcut is a
+    tracked debt rather than a silent one.
+    """
+
+    requires_statement_attribution: bool = False
+
+
+ADAPTER = _PreOracleGoAdapter()
 
 
 @pytest.fixture
@@ -145,7 +177,7 @@ def test_a_transform_that_produces_no_change_is_inconclusive(control_profile):
     SAME text unchanged, proving the no-op path is genuinely reached (never
     naturally true of the real GoAdapter, which always appends something)."""
 
-    class NoOpAdapter(GoAdapter):
+    class NoOpAdapter(_PreOracleGoAdapter):
         def inject_uncovered_line(self, text: str) -> tuple[str, str]:
             return text, "no-op: nothing changed"
 

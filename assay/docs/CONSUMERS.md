@@ -1836,3 +1836,67 @@ R2/R3 execution is local and isolates each unit in Git-based scratch snapshots. 
 would need an explicit artifact bundle, pinned toolchain/image digest, queue/auth contract,
 result attestation, cancellation/timeout semantics, and a way to prove the returned verdict was
 for the submitted commit. None of that is implemented or implied by the wheel/zipapp today.
+
+## Go lanes: what exists today, and what a Go lane will require
+
+**Today `judge.language = "go"` is still refused** `ERROR`/`BAD_LANE_CONFIG`.
+The Go adapter is not in the built-in registry yet, deliberately: registration
+is sequenced *after* the statement-attribution chain (below) so a Go lane can
+never be runnable while the parser would still report block extents as
+statement truth. There is nothing to paste here yet that would run.
+
+What is worth knowing before you plan a Go lane, because two of these will
+surprise an adopter who assumes Go behaves like Python:
+
+**1. A Go lane needs a real Go toolchain on the machine that runs `assay`,
+not only on the machine that ran the tests.** Assay normally consumes an
+artifact and never re-runs your tools. Go is the exception: `go test
+-coverprofile` records a block's byte extent plus a statement *count*, never
+the statements' own positions, so assay re-derives those positions from your
+source with a Go program it ships (`assay/helpers/go/stmtpos/`, stdlib-only,
+run with `GOPROXY=off` and no network). The adapter declares
+`external_tools = ("go",)`, so the effective-PATH preflight refuses before
+anything runs:
+
+```text
+status: NO_MEASUREMENT
+reason_code: MISSING_EXTERNAL_TOOL
+```
+
+If your gate container builds Go elsewhere and judges in a slim image, that
+slim image needs `go` too. Why assay cannot just parse the profile harder:
+[DESIGN-GUIDE §11, "Go statement positions"](DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
+
+**2. The coverage artifact and the working tree must be the same revision.**
+Assay re-runs the segmentation over your source and joins it to your profile
+on the exact block extents. If they disagree — a profile carried over from an
+earlier commit, a file edited between the test run and the judgment, a
+different toolchain — the lane refuses rather than attributing lines:
+
+```text
+status: ERROR
+reason_code: UNREADABLE_ARTIFACT
+go statement attribution: 'internal/x.go': the coverage profile and the
+source-side oracle disagree about which blocks exist, so they were not
+produced from the same revision of this file. 1 record(s) only in the
+profile (28.22,29.2); 0 only from the source (none)
+```
+
+The extents in that message are spelled the way your `.out` file spells them,
+so you can grep the artifact for them directly. The fix is to regenerate the
+profile from the tree you are judging — never to relax the check, which
+exists because attributing anyway would publish a verdict about lines that are
+not the lines that ran.
+
+**3. A verdict from a Go lane will carry `helpers[]`.** It records which
+toolchain actually derived those positions (`role: "statement-positions"`,
+`identity: "go version go1.25.14"`), because "which Go compiled this" is part
+of what the verdict means. Lanes for every other language keep an absent
+`helpers[]` — no helper ran, so nothing is claimed.
+
+**4. One known limit, stated so you do not discover it in a review.** An
+uncovered statement sharing a physical LINE with a covered one is still
+reported as executed — `f := func() int { return 7 }` is two counted
+statements that both genuinely begin on that line, and the line did run. This
+is line granularity's own limit, which coverage.py shares; it is not fixed by
+the oracle and is not claimed to be.

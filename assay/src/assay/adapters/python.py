@@ -160,7 +160,8 @@ import hashlib
 import heapq
 import re
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from pathlib import Path
+from typing import Literal, NamedTuple, Sequence
 
 from ..mutation import (
     MutationDiscoveryError,
@@ -168,7 +169,7 @@ from ..mutation import (
     byte_offset,
     line_for_offset,
 )
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
 
 __all__ = ["PythonAdapter"]
 
@@ -804,6 +805,12 @@ class PythonAdapter:
     excluded_dir_names: frozenset[str] = frozenset()
     requires_span_attribution: bool = True
     external_tools: tuple[str, ...] = ()
+    #: coverage.py's JSON already reports STATEMENT truth -- its
+    #: ``executed_lines``/``missing_lines`` are the statement lines its own
+    #: tracer recorded, never a positional extent that has to be resolved
+    #: back to statements (A-397). Nothing to correct, so
+    #: :meth:`statement_blocks` returns ``None`` and is never called.
+    requires_statement_attribution: bool = False
     #: A declared, known directory-segment prefix a coverage artifact's own
     #: keys carry that the diff's spelling does not (or vice versa is never
     #: this method's job — only THIS direction, stripping, matches
@@ -838,6 +845,19 @@ class PythonAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return _statement_spans(text)
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        """``None`` -- A-101's convention, paired with
+        :attr:`requires_statement_attribution` being ``False``. No argument
+        is read: coverage.py's format is already statement-granular, so
+        there is no over-approximation for an oracle to correct."""
+        return None
 
     def inject_import_break(self, text: str) -> tuple[str, str]:
         return _inject_import_break(text)

@@ -85,7 +85,60 @@ from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["CoverageEvaluation", "evaluate_coverage", "evaluate_targets"]
+__all__ = [
+    "CoverageEvaluation",
+    "evaluate_coverage",
+    "evaluate_targets",
+    "resolve_coverage_keys",
+]
+
+
+def _check_statement_attribution(
+    profile: CoverageProfile, adapter: LanguageAdapter
+) -> None:
+    """Refuse a profile *adapter* says needs statement attribution and that
+    reports it never received any (A-392).
+
+    The guard exists because the failure it catches is INVISIBLE otherwise.
+    An uncorrected Go coverprofile parses cleanly, produces well-formed line
+    sets, and yields a plausible percentage -- it is simply about the wrong
+    lines, attributing function signatures, closing braces and ``case``
+    labels as executable code. That is AGENTS.md's **masked default** in its
+    purest form: rendered harmless by every context that happens to run the
+    correction, and therefore reachable only on the one path that skips it.
+    "The runner remembers to call the oracle" is precisely the check that
+    cannot fail, so it is made into one here.
+
+    ``ERROR``/``UNREADABLE_ARTIFACT``, the same pair
+    :func:`assay.statement_attribution.attribute_statements` refuses with,
+    and for the same reason: what cannot be done is READING this artifact as
+    statement truth. It is deliberately not ``NO_MEASUREMENT``/
+    ``EMPTY_COVERAGE`` -- a complete artifact reported as empty would be
+    AGENTS.md's "absence for emptiness", a false certification rather than a
+    missing one (A-392's own rejected alternative). No new reason code is
+    minted: :class:`~assay.errors.ReasonCode` is a closed vocabulary on the
+    wire, and this wave cuts no schema.
+    """
+    # Direct attribute access, never `getattr(..., False)`: a default here
+    # would let an adapter that forgot to declare the attribute skip the
+    # guard silently, which is the exact masked default this guard exists to
+    # remove. A missing attribute is a broken adapter and says so loudly.
+    if not adapter.requires_statement_attribution:
+        return
+    if profile.statement_attributed:
+        return
+    raise AssayError(
+        f"the {adapter.name!r} adapter requires statement attribution, but "
+        f"the coverage profile it was handed reports "
+        f"statement_attributed=False -- its records carry block EXTENTS, "
+        f"which are not statement positions, so judging them directly would "
+        f"attribute function signatures, closing braces and `case` labels as "
+        f"executable code. The source-side oracle "
+        f"(LanguageAdapter.statement_blocks) never ran, or its result was "
+        f"never joined onto this profile.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
 
 
 class _Attribution(Enum):
@@ -332,6 +385,7 @@ def evaluate_coverage(
     :func:`evaluate_targets`'s own identical, separately-raised guard) —
     the only two ways this function raises at all.
     """
+    _check_statement_attribution(profile, adapter)
     project_prefix = _project_prefix(repo_top, project_root)
     cov_by_repo_path = _normalized_profile_files(
         profile, adapter, repo_top=repo_top, project_prefix=project_prefix
@@ -652,9 +706,41 @@ def _normalized_profile_files(
     (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
     function raises.
     """
-    cov_by_repo_path: dict[str, FileCoverage] = {}
+    repo_path_by_raw_key = _repo_path_by_raw_key(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
+    return {
+        repo_path: profile.files[raw_key]
+        for raw_key, repo_path in repo_path_by_raw_key.items()
+    }
+
+
+def _repo_path_by_raw_key(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_prefix: PurePosixPath,
+) -> dict[str, str]:
+    """The JOIN ITSELF, in one place: every raw artifact key mapped to its
+    repo-top-relative path, in *profile.files*' own iteration order.
+
+    :func:`_normalized_profile_files` inverts this to key by repository path;
+    :func:`resolve_coverage_keys` exposes it as-is for a caller that needs to
+    go the OTHER way (raw key -> a real file on disk). Both directions are the
+    same mapping, computed once here, which is the whole point: A-385/A-367
+    rule that there is exactly ONE key resolution, and a second caller
+    re-deriving ``normalize_coverage_key`` + ``project_prefix`` for itself is
+    precisely the drift this function's own docstring one level up says it
+    exists to prevent.
+
+    Raises :class:`~assay.errors.AssayError`
+    (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
+    function raises.
+    """
+    repo_path_by_raw_key: dict[str, str] = {}
     raw_key_by_repo_path: dict[str, str] = {}
-    for raw_key, file_cov in profile.files.items():
+    for raw_key in profile.files:
         adapter_key = adapter.normalize_coverage_key(raw_key)
         repo_path = _to_repo_relative_key(
             adapter_key, repo_top=repo_top, project_prefix=project_prefix
@@ -671,8 +757,42 @@ def _normalized_profile_files(
                 reason_code=ReasonCode.UNREADABLE_ARTIFACT,
             )
         raw_key_by_repo_path[repo_path] = raw_key
-        cov_by_repo_path[repo_path] = file_cov
-    return cov_by_repo_path
+        repo_path_by_raw_key[raw_key] = repo_path
+    return repo_path_by_raw_key
+
+
+def resolve_coverage_keys(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_root: Path,
+) -> dict[str, str]:
+    """Every key in *profile.files*, spelled as the artifact spells it,
+    mapped to its repo-top-relative path -- the SAME resolution
+    :func:`evaluate_coverage` and :func:`evaluate_targets` judge by.
+
+    Public because :mod:`assay.runner` needs it (the P27 re-carve): the Go
+    statement-position oracle must be handed real files on disk, and
+    :func:`assay.statement_attribution.attribute_statements` is keyed by the
+    ARTIFACT's own spelling, so the runner needs both ends of exactly this
+    mapping. Exposing it is the alternative to the runner calling
+    ``adapter.normalize_coverage_key`` and re-deriving ``project_prefix``
+    itself, which would put a second, independently-maintained copy of the
+    join beside the one that decides the verdict (A-385/A-367: there is ONE
+    join). If they ever disagreed, the oracle would correct lines for one
+    file while the evaluator judged another, and nothing would say so.
+
+    Raises the identical two errors :func:`evaluate_coverage` raises:
+    ``ERROR``/``BAD_LANE_CONFIG`` when *project_root* is not contained by
+    *repo_top*, and ``ERROR``/``UNREADABLE_ARTIFACT`` on a normalized-key
+    collision. A caller reaching this before evaluation therefore meets the
+    same refusals in the same order, one step earlier.
+    """
+    project_prefix = _project_prefix(repo_top, project_root)
+    return _repo_path_by_raw_key(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
 
 
 def _tally_branches(
@@ -856,6 +976,7 @@ def evaluate_targets(
     identical normalized-key collision :func:`evaluate_coverage` refuses
     (module docstring, P15).
     """
+    _check_statement_attribution(profile, adapter)
     project_prefix = _project_prefix(repo_top, project_root)
     cov_by_repo_path = _normalized_profile_files(
         profile, adapter, repo_top=repo_top, project_prefix=project_prefix

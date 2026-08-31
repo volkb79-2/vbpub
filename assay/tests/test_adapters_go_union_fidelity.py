@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, as_pre_oracle_attributed
 
 from assay.adapters.go import GoAdapter
 from assay.coverage import load_coverage_profile
@@ -66,7 +66,11 @@ def test_the_hello_world_fixture_produces_the_exact_expected_mapping():
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        # (A-392/A-397) The union arithmetic under test is unchanged; what
+        # changed is that GoAdapter now REFUSES an uncorrected block profile.
+        # These line sets are the pre-oracle expansion A-234 records as stale
+        # -- see the helper's docstring; F008-A4 replaces them.
+        profile=as_pre_oracle_attributed(profile),
         adapter=adapter,
         repo_top=REPO_TOP,
         project_root=REPO_TOP,
@@ -109,7 +113,11 @@ def test_the_hello_world_fixture_passes_once_farewell_is_also_exercised():
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        # (A-392/A-397) The union arithmetic under test is unchanged; what
+        # changed is that GoAdapter now REFUSES an uncorrected block profile.
+        # These line sets are the pre-oracle expansion A-234 records as stale
+        # -- see the helper's docstring; F008-A4 replaces them.
+        profile=as_pre_oracle_attributed(profile),
         adapter=adapter,
         repo_top=REPO_TOP,
         project_root=REPO_TOP,
@@ -146,7 +154,11 @@ def test_a_go_test_file_is_skipped_entirely_through_the_real_pipeline():
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        # (A-392/A-397) The union arithmetic under test is unchanged; what
+        # changed is that GoAdapter now REFUSES an uncorrected block profile.
+        # These line sets are the pre-oracle expansion A-234 records as stale
+        # -- see the helper's docstring; F008-A4 replaces them.
+        profile=as_pre_oracle_attributed(profile),
         adapter=adapter,
         repo_top=Path("/repo"),
         project_root=Path("/repo"),
@@ -184,7 +196,11 @@ def test_normalize_coverage_key_reconciles_the_real_pipeline_end_to_end():
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        # (A-392/A-397) The union arithmetic under test is unchanged; what
+        # changed is that GoAdapter now REFUSES an uncorrected block profile.
+        # These line sets are the pre-oracle expansion A-234 records as stale
+        # -- see the helper's docstring; F008-A4 replaces them.
+        profile=as_pre_oracle_attributed(profile),
         adapter=adapter,
         repo_top=Path("/repo"),
         project_root=Path("/repo"),

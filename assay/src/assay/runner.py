@@ -114,7 +114,9 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .evaluate import evaluate_coverage, evaluate_targets
+from .adapters.base import HelperInvocation
+from .evaluate import evaluate_coverage, evaluate_targets, resolve_coverage_keys
+from .statement_attribution import attribute_statements
 from .output import VerdictOutput
 from .verdict import (
     CanaryResult,
@@ -862,6 +864,100 @@ def _read_bounded_source_text(repo_top: Path, path: str, *, why: str) -> str:
         ) from exc
 
 
+def _attribute_statements_for_lane(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_root: Path,
+    remaining: git.Remaining | None,
+    on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
+) -> CoverageProfile:
+    """*profile* with its block-based records resolved to statement-granular
+    line sets by *adapter*'s own source-side oracle (A-217/A-239).
+
+    **The key resolution is borrowed, never re-derived.**
+    :func:`assay.evaluate.resolve_coverage_keys` is the same
+    ``normalize_coverage_key`` -> ``_to_repo_relative_key`` join
+    :func:`~assay.evaluate.evaluate_coverage` judges by, and calling it here
+    is what guarantees the file the oracle READS is the file the evaluator
+    JUDGES. A private copy of that mapping in this module would be a second
+    implementation of a join A-385/A-367 say there is exactly one of; if the
+    two ever disagreed, assay would correct one file's lines and judge
+    another's, and nothing would report it.
+
+    Only files whose records actually carry block extents are sent to the
+    oracle. A profile mixing block-based and line-based files cannot occur
+    from one parser today, but the filter is a property of the DATA rather
+    than of which parser produced it, which is what keeps this function
+    language-free.
+
+    Raises :class:`~assay.errors.AssayError` on every failure -- the missing
+    file, the helper's own refusals, and
+    :func:`~assay.statement_attribution.attribute_statements`' extent
+    mismatch. :func:`evaluate_r1`'s own ``except AssayError`` turns each into
+    a complete, payload-free R1 claim carrying that cause, so a Go lane whose
+    profile is stale reports it rather than publishing a verdict about the
+    wrong lines.
+    """
+    repo_path_by_raw_key = resolve_coverage_keys(
+        profile, adapter, repo_top=repo_top, project_root=project_root
+    )
+    block_bearing = [
+        raw_key
+        for raw_key, file_cov in profile.files.items()
+        if file_cov.blocks is not None
+    ]
+    if not block_bearing:
+        # Nothing carries extents, so there is nothing to correct -- but the
+        # adapter still REQUIRES attribution, and `evaluate` would refuse a
+        # profile flagged False. Marking it attributed here is the honest
+        # answer: every record in it is already statement truth, vacuously.
+        return CoverageProfile(
+            files=profile.files, statement_attributed=True
+        )
+
+    rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in block_bearing]
+    report = adapter.statement_blocks(repo_top, rel_paths, remaining=remaining)
+    if report is None:
+        raise AssayError(
+            f"the {adapter.name!r} adapter declares "
+            f"requires_statement_attribution=True but its statement_blocks "
+            f"hook returned None, which means 'this adapter performs no "
+            f"statement attribution'. The two declarations contradict each "
+            f"other, and judging the profile anyway would attribute block "
+            f"extents as statement truth",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    if on_helper_invoked is not None:
+        on_helper_invoked(report.helper)
+
+    # `attribute_statements` is keyed by the artifact's OWN spelling (its
+    # docstring: that is what keeps it language-free), while the adapter was
+    # asked in repo-relative paths -- so the mapping is walked back here, on
+    # the one dict that produced both.
+    blocks_by_key: dict[str, tuple] = {}
+    for raw_key in block_bearing:
+        repo_path = repo_path_by_raw_key[raw_key]
+        blocks = report.blocks_by_path.get(repo_path)
+        if blocks is None:
+            # StatementBlockReport's contract is one entry per requested
+            # path. A violating adapter would otherwise raise KeyError past
+            # `evaluate_r1`'s `except AssayError` and crash the lane; this
+            # names the contract instead. Not a fallback -- there is no
+            # value to fall back TO, and the profile is still refused.
+            raise AssayError(
+                f"the {adapter.name!r} adapter's statement_blocks returned no "
+                f"entry for {repo_path!r}, which it was asked for; a report "
+                f"must carry one entry per requested path",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        blocks_by_key[raw_key] = blocks
+    return attribute_statements(profile, blocks_by_key)
+
+
 def evaluate_r1(
     lane: Lane,
     *,
@@ -873,6 +969,7 @@ def evaluate_r1(
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
+    on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -986,6 +1083,33 @@ def evaluate_r1(
             )
 
         repo_top = git.repo_top(repo, remaining=remaining)
+
+        # (P27 re-carve, A-217/A-239/A-392) The statement-attribution
+        # correction, for an adapter whose coverage format reports something
+        # coarser than statement truth -- today, Go alone. It sits HERE, and
+        # the position is load-bearing in both directions: after
+        # `check_empty_coverage` (an empty artifact is a measurability
+        # verdict, not a thing to correct, and running a subprocess over
+        # nothing would be work with no subject) and after `repo_top` is
+        # resolved (the oracle reads real source files), but BEFORE the mode
+        # fork, because BOTH modes judge the same profile and a correction
+        # applied on one path only would be exactly the drift A-385 rules
+        # against one layer down.
+        #
+        # Note what is NOT here: any test of the adapter's name, or of the
+        # coverage format. `evaluate.py` never branches on a language and
+        # neither does this; the adapter's own declared
+        # `requires_statement_attribution` is the whole condition
+        # (DESIGN-GUIDE §11).
+        if adapter.requires_statement_attribution:
+            profile = _attribute_statements_for_lane(
+                profile,
+                adapter,
+                repo_top=repo_top,
+                project_root=project_root,
+                remaining=remaining,
+                on_helper_invoked=on_helper_invoked,
+            )
 
         if effective_mode == "whole_target":
             result = evaluate_targets(

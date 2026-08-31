@@ -147,10 +147,30 @@ documented before any Go code shipped. See decisions A-172, A-217, A-218 in
 finding and the ruling (build a real statement-position oracle, not a
 line-range heuristic).
 
+**What has landed against that ruling** (still not a usable Go lane — read
+the next paragraph before planning around it): the oracle itself ships in the
+wheel (`assay/helpers/go/stmtpos/`, adapted from `cmd/cover`'s own
+instrumenter and proven against every frozen witness, including the
+byte-identical-profile pair); the Go parser keeps each record's whole block
+extent instead of expanding it into lines; a new `statement_blocks` adapter
+hook supplies source-derived statement positions; and the evaluator now
+**refuses** a Go profile that has not been through that correction, rather
+than judging block extents as statement truth. The Go adapter accordingly
+declares `external_tools = ("go",)`.
+
 If you see `go:` anywhere in the schema or vocabulary and are wondering
-whether you can use it today: no. Declaring a rigor level a lane can't
-actually back up is exactly the failure this project exists to prevent, so
-don't be the first exception. **`sql:*` is different — see below.**
+whether you can use it today: **still no.** `judge.language = "go"` remains
+refused, because the Go adapter is not in the built-in registry yet — the
+last step, deliberately sequenced after the guard chain above, so that a Go
+lane can never be runnable while the parser would still report block extents
+as statement truth. Declaring a rigor level a lane can't actually back up is
+exactly the failure this project exists to prevent, so don't be the first
+exception. Note that when it does land, a Go lane will need a real Go
+toolchain on PATH: the statement-position oracle is a Go program, and an
+environment without one gets `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` rather
+than a guess. Why the oracle is a subprocess rather than a Python rule:
+[DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
+**`sql:*` is different — see below.**
 
 ### JavaScript/TypeScript changed-line coverage (R1 only)
 

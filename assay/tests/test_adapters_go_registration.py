@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
+from conftest import as_pre_oracle_attributed
+
 from assay.adapters.go import GoAdapter
 from assay.adapters.python import PythonAdapter
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
@@ -29,17 +31,31 @@ def test_the_go_adapter_registers_under_its_own_declared_name():
 
 
 def test_the_go_adapter_declares_the_expected_protocol_surface():
-    """Transparency for the union decisions this package made: A-102's own
-    declaration (``requires_span_attribution=False``, confirmed against
-    the real block-based coverprofile parser, not assumed) and A-087's own
-    declaration (no external tool prerequisite -- the lexer is pure
-    Python text processing with no subprocess boundary)."""
+    """Transparency for the union decisions this adapter carries, including
+    the two the P27 re-carve changed.
+
+    ``requires_span_attribution`` is still ``False`` (A-102, confirmed
+    against the real block-based coverprofile parser, not assumed): Go's
+    format leaves no unattributed line, so there is no gap to rescue.
+
+    ``requires_statement_attribution`` is ``True`` and ``external_tools`` is
+    ``("go",)`` -- both changed here, and they change together. A-217 ruled
+    that Go statement positions must come from a source-side oracle running
+    the real ``cmd/cover`` segmentation, because the
+    ``collision-col{A,B}.go`` witness pair proves no profile-only rule can be
+    right on both; running that oracle is a subprocess, and A-013 says a
+    subprocess boundary is declared up front. The pair is asserted TOGETHER
+    on purpose: declaring one without the other is the broken state (an
+    undeclared toolchain crashes mid-lane; a declared toolchain with no
+    consumer refuses lanes for nothing), and this test goes red on either
+    half alone."""
     adapter = GoAdapter()
 
     assert adapter.source_globs == ("*.go",)
     assert adapter.excluded_dir_names == frozenset()
     assert adapter.requires_span_attribution is False
-    assert adapter.external_tools == ()
+    assert adapter.requires_statement_attribution is True
+    assert adapter.external_tools == ("go",)
 
 
 def test_the_go_adapters_statement_spans_returns_none_unconditionally():
@@ -77,7 +93,9 @@ def test_a_registry_built_go_adapter_evaluates_coverage_identically_to_a_direct_
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        # (A-392) Hand-built, already statement-granular line sets; the flag
+        # is what lets a `requires_statement_attribution` adapter judge them.
+        profile=as_pre_oracle_attributed(profile),
         adapter=adapter,
         repo_top=Path("/repo"),
         project_root=Path("/repo"),

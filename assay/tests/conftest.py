@@ -797,6 +797,10 @@ class FakeAdapter:
     source_globs: tuple[str, ...] = ("*.zzz",)
     excluded_dir_names: frozenset[str] = frozenset({"vendor"})
     requires_span_attribution: bool = False
+    # (A-397) Every adapter declares this; `evaluate` reads it directly with
+    # no getattr default, precisely so a fake that forgets it fails loudly
+    # rather than silently skipping A-392's guard.
+    requires_statement_attribution: bool = False
     external_tools: tuple[str, ...] = ()
     key_prefix: str = ""
     test_marker: str = "_test.zzz"
@@ -810,6 +814,41 @@ class FakeAdapter:
 
     def normalize_coverage_key(self, key: str) -> str:
         return key.removeprefix(self.key_prefix) if self.key_prefix else key
+
+
+def as_pre_oracle_attributed(profile):
+    """*profile* with ``statement_attributed=True`` and its line sets
+    **UNCHANGED** -- i.e. still the naive block expansion, explicitly NOT
+    corrected by any oracle.
+
+    This exists for the Go tests written before the P27 re-carve, and it is
+    deliberately blunt so nobody mistakes it for the real thing. Those tests
+    assert the union ARITHMETIC and the adapter's own hooks
+    (``normalize_coverage_key``, ``has_executable_code``, the NoCode path)
+    against committed, pre-generated coverprofiles with no toolchain
+    (A-042/A-087). None of that changed. What changed is that
+    :class:`~assay.adapters.go.GoAdapter` now declares
+    ``requires_statement_attribution=True``, so ``evaluate_coverage`` refuses
+    an uncorrected profile (A-392) -- correctly, and those tests would
+    otherwise be asserting nothing.
+
+    **The line sets these tests assert are the pre-oracle expansion, and
+    A-234 already records that they are wrong as statement truth.** They are
+    not fixed here: F008-A4 (fixture regeneration) is the work item that
+    replaces both the committed profiles and the expectations they carry, and
+    A-234's own warning is that swapping in a real profile before the
+    expectations are re-derived just replaces a wrong profile with a real one
+    still read as statement truth. Tracked as B055.
+
+    A test that needs the REAL correction drives it through
+    :func:`assay.statement_attribution.attribute_statements` with real
+    oracle blocks -- see ``tests/test_statement_attribution_go_witnesses.py``
+    (against the frozen witnesses) and
+    ``tests/test_runner_statement_attribution_wiring.py`` (the runner seam).
+    """
+    from assay.coverage_parsers.model import CoverageProfile
+
+    return CoverageProfile(files=profile.files, statement_attributed=True)
 
 
 def write_coverage_json(path: Path, files: Mapping[str, Mapping[str, list]]) -> None:

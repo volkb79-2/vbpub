@@ -97,10 +97,11 @@ import hashlib
 import heapq
 import re
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from pathlib import Path
+from typing import Literal, NamedTuple, Sequence
 
 from ..mutation import MutationSite, line_for_offset
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
 from .sql_lex import lex_sql
 
 __all__ = ["SqlAdapter"]
@@ -669,6 +670,13 @@ class SqlAdapter:
     excluded_dir_names: frozenset[str] = frozenset({"node_modules", "vendor", ".venv"})
     requires_span_attribution: bool = False
     external_tools: tuple[str, ...] = ()
+    #: ``False``, and for SQL it is not even the "already statement-granular"
+    #: reason the other adapters give: there is no SQL coverage tool at all
+    #: (this module's own §4.1 measurement), so no SQL profile exists to
+    #: correct. Declared explicitly rather than omitted, because
+    #: :func:`assay.evaluate._check_statement_attribution` reads this
+    #: attribute directly and a missing one is a broken adapter (A-397).
+    requires_statement_attribution: bool = False
 
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
@@ -681,6 +689,15 @@ class SqlAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         raise NotImplementedError(_UNREACHABLE.format(name="statement_spans"))
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        raise NotImplementedError(_UNREACHABLE.format(name="statement_blocks"))
 
     def inject_import_break(self, text: str) -> tuple[str, str]:
         raise NotImplementedError(_UNREACHABLE.format(name="inject_import_break"))

@@ -9,9 +9,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(assay): ship `assay/helpers/go/stmtpos/`, a stdlib-only Go statement-position oracle adapted from `cmd/cover`'s own instrumenter, invoked with `go run` (B047 item 1, A-217)
 - feat(assay): `go-cover` now keeps each record's whole block extent — columns included — as `FileCoverage.blocks`, instead of expanding it straight into line sets (A-239, A-390)
 - feat(assay): `assay.statement_attribution.attribute_statements` — the pure, language-free join that turns block extents plus source-derived statement positions into statement-granular line sets, refusing loudly when the profile and the source are not the same revision (A-391)
+- feat(assay): `LanguageAdapter.statement_blocks` — a new protocol hook (never an overload of `statement_spans`) through which an adapter supplies source-derived statement positions, plus the `requires_statement_attribution` declaration that gates it and the `HelperInvocation`/`StatementBlockReport` types it returns (A-397)
+- feat(assay): the Go adapter declares `external_tools = ("go",)`. A Go lane in an environment with no Go toolchain now refuses `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` through the existing effective-PATH preflight, before anything runs, instead of judging a profile it cannot correct (B047 item 2, A-253)
+- feat(assay): `assay.evaluate.resolve_coverage_keys` — the artifact-key-to-repository-path resolution, exposed rather than duplicated, so the file the statement-position oracle reads is the same file the evaluator judges (A-385/A-367)
 
 ### Fixed
 - fix(assay): a Go R1 line claim is statement-granular. The shipped parser expanded a cover block's positional extent with `range(start, end + 1)`, attributing function signatures, closing braces, `case` labels and statement-continuation lines as executable code; it now reports only lines that begin a counted statement (F008-A3)
+- fix(assay): an adapter whose coverage format is not statement-granular can no longer be handed an uncorrected profile by accident. `evaluate_coverage` and `evaluate_targets` refuse `ERROR`/`UNREADABLE_ARTIFACT` when the adapter declares `requires_statement_attribution` and the profile reports it never received any — a guard, because an uncorrected block profile is a wrong answer that looks exactly like a right one (A-392)
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

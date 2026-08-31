@@ -195,3 +195,89 @@ test ran against a genuine install, not the source tree.
 
 Docs only: REPORT §6 run 3, BRIEF-2's gate line, this entry. No source, test or
 packaging file changes, so the gate-green claim for `428f69e2` stands.
+
+---
+
+## `<pending>` — feat(assay): the statement-attribution chain, end to end (generation 2)
+
+**Generation 2, fresh session, seeded from BRIEF-1 + BRIEF-2.** BRIEF-2 §5's
+task list items 1–6; item 7 (registration, A-394) and item 8 (srdm covergate
+qualification, F008-A5) are NOT done and are handed on in BRIEF-3.
+
+**What landed, in the order BRIEF-2 §5 gave.**
+
+1. **`adapters/base.py`** — `requires_statement_attribution: bool` as the sixth
+   protocol attribute, plus `statement_blocks`, a NEW hook, never an overload
+   of `statement_spans`. Signature recorded as **A-397**, with its four
+   sub-rulings (new method; `repo_top` as a named parameter and the one narrow
+   amendment to the path contract; `StatementBlockReport`/`HelperInvocation`
+   defined here rather than importing `verdict.Helper`; the refusal reads the
+   attribute directly, never `getattr(..., False)`).
+2. **The A-392 refusal** — `evaluate._check_statement_attribution`, called at
+   the head of BOTH `evaluate_coverage` and `evaluate_targets`.
+   `ERROR`/`UNREADABLE_ARTIFACT`, the same pair `attribute_statements` uses,
+   because what cannot be done is READING the artifact as statement truth. No
+   new reason code: that vocabulary is closed on the wire and this wave cuts no
+   schema.
+3. **The two new members on every other adapter** — `python.py`,
+   `javascript.py`, `sql.py` (SQL raises its own `_UNREACHABLE`, matching how
+   it treats every other R1 method), plus the four `FakeAdapter` copies.
+   `tests/test_adapters_go_registration.py` now asserts
+   `requires_statement_attribution is True` and `external_tools == ("go",)`
+   **together**, since either half alone is the broken state.
+4. **The key join, exposed rather than duplicated** —
+   `evaluate.resolve_coverage_keys`, built on a new private
+   `_repo_path_by_raw_key` that `_normalized_profile_files` now inverts. One
+   loop, one collision refusal, both directions. The runner borrows it instead
+   of re-deriving `normalize_coverage_key` + `project_prefix`, so the file the
+   oracle READS is provably the file the evaluator JUDGES (A-385/A-367).
+5. **The runner seam** — `runner._attribute_statements_for_lane`, called
+   between `check_empty_coverage` and the mode fork, after `repo_top` resolves.
+   Before the fork on purpose: both modes judge the same profile. It branches
+   on the adapter's own declaration and never on a language name.
+   `on_helper_invoked` is an additive, default-`None` callback, the same
+   frozen-signature channel `on_base_resolved`/`on_added_resolved` already use.
+6. **`adapters/go_stmtpos.py`** (new) — the Python half of the oracle: locates
+   the shipped helper, forces `GOPROXY=off GOWORK=off GOTOOLCHAIN=local
+   GOFLAGS=-mod=mod`, runs `go run .` with cwd = the helper directory, pins the
+   output schema, and refuses every partial shape. Inputs are validated BEFORE
+   the toolchain is probed, so a stale artifact is reported as a stale artifact
+   rather than as a missing toolchain.
+7. **`GoAdapter`** — `requires_statement_attribution = True`,
+   `external_tools = ("go",)` (B047 item 2; A-253 already owns the mechanism),
+   and a real `statement_blocks`. The module docstring's "never shells out,
+   never imports `subprocess`, `external_tools = ()`" paragraph was true and is
+   now false; it is rewritten to scope A-087 rather than quietly contradict it.
+
+**Tests added (27):** `test_evaluate_statement_attribution_guard.py` (4 — both
+directions, including the control that would go red if the guard read the flag
+alone), `test_adapters_go_stmtpos_invoker.py` (13 — the document reader and
+every refusal, plus a two-sided schema pin that reads the shipped `.go`
+source's own constant), `test_runner_statement_attribution_wiring.py` (8 — the
+seam: five naive lines become two judged; repo-relative paths anchored at
+`repo_top`; the prefix-stripping key round-trip; identity reported exactly
+once; the A-391 mismatch as a payload-free ERROR claim; and two controls).
+
+**Thirteen pre-existing Go tests went red, correctly, and were repaired rather
+than weakened.** All thirteen judge committed, pre-generated coverprofiles with
+no toolchain (A-042/A-087/A-107), which A-392 now refuses. Seven go through
+`conftest.as_pre_oracle_attributed` (flag set, line sets untouched); six —
+`test_canary_go_pipeline.py` — go through a named `_PreOracleGoAdapter`
+subclass with the declaration downgraded. Both shortcuts are documented at the
+site and filed together as **B055**, because the honest fix for the first is
+F008-A4 (fixture regeneration) and the second needs a decision this generation
+did not have the budget to make well.
+
+**Docs, landing with the work rather than after it (AGENTS.md):** README's
+"What assay is not (yet)" now states what landed AND that `judge.language =
+"go"` is still refused, with the toolchain requirement flagged; DESIGN-GUIDE
+§11 gains "Go statement positions come from the SOURCE, never from the
+profile" (the impossibility proof, the three options, why a subprocess, why a
+new hook, why extents not containment, why refusal, why a guard, and what is
+NOT fixed); CONSUMERS.md gains a Go section with the two refusals an adopter
+will actually meet, spelled as real output.
+
+**The wrapper-vs-job exit-code trap fired a THIRD time.** The full-suite run
+was reported to me as "exit code 0" while the log's own `PYTEST_EXIT=1` and
+pytest printed `13 failed, 3808 passed`. Caught only because the marker was
+appended and read in a separate step. Recorded in REPORT §7.

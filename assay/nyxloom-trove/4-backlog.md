@@ -5156,3 +5156,64 @@ option 1 would move the sibling toward.
       check the docstring currently claims;
 - [ ] whatever is decided, the same treatment applied to the Go helper's own
       packaging test, so the two do not drift apart again.
+
+---
+
+## B055 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
+
+**Filed 2026-08-31, Wave C, while wiring A-392's guard.** Not a defect in the
+shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
+gap between what those tests exercise and what a consumer runs.
+
+### What happened
+
+`GoAdapter.requires_statement_attribution = True` makes
+`evaluate_coverage`/`evaluate_targets` refuse an uncorrected block profile
+(A-392), and the correction is a real Go subprocess (A-217: a Python
+re-implementation of `cmd/cover`'s segmentation is not an acceptable
+substitute). Thirteen pre-existing tests then went red, all of them Go tests
+that judge committed, pre-generated coverprofiles with **no toolchain**
+(A-042/A-087/A-107 — this devcontainer has none, and `tester-unified:local`,
+which runs the registered gate, has none either).
+
+Two different shortcuts were taken, and they are not equally cheap:
+
+1. **`tests/conftest.py::as_pre_oracle_attributed`** — used by
+   `test_adapters_go_union_fidelity.py`, `test_adapters_go_python_equivalence.py`
+   and `test_adapters_go_registration.py`. It sets the flag and leaves the line
+   sets untouched. For the two files whose profiles are HAND-BUILT line sets
+   this is exact: those sets are already statement-granular, and the flag
+   merely says so. For `test_adapters_go_union_fidelity.py`, whose profiles are
+   parsed from the committed `hello.out`, the sets are the naive expansion
+   A-234 already records as stale.
+2. **`tests/test_canary_go_pipeline.py::_PreOracleGoAdapter`** — a subclass of
+   the real adapter with the declaration flipped to `False`. Everything the
+   file tests (cause-sensitivity, the four INCONCLUSIVE causes, the real
+   `inject_uncovered_line`, the real union) is unaffected; what is lost is that
+   no Go canary is proven statement-granular anywhere.
+
+### Why it is filed rather than fixed here
+
+Fixing (1) properly IS F008-A4 (fixture regeneration, wave item 3): the correct
+new expectations depend on running the oracle over `hello.go`/`greet.go`
+through `tester-unified-go:local` and re-deriving every asserted set. A-234's
+own warning applies exactly — swapping in a real profile before the
+expectations are re-derived replaces a wrong profile with a real one still read
+as statement truth, which is the conflation A-O19 exists to remove.
+
+Fixing (2) needs a decision this entry does not pre-empt: either the canary Go
+tests grow a canned oracle (the profile-derived blocks would have to be threaded
+through `canary.run_go_canary`, which reads its artifacts itself), or the file
+splits into a logic half on the double and a real half that runs only where a
+Go toolchain exists — which the registered gate image does not provide.
+
+### Acceptance
+
+- [ ] `test_adapters_go_union_fidelity.py`'s expectations re-derived from the
+      real oracle, and `as_pre_oracle_attributed` dropped from that file
+      (F008-A4);
+- [ ] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
+      either removed or reduced to the half that genuinely needs it;
+- [ ] whichever survives, a test that goes RED if the shipped adapter's
+      `requires_statement_attribution` is ever flipped to `False` — so the
+      double can never quietly become the product.

@@ -1373,6 +1373,94 @@ is handled where an undeclarable fact has to be handled: in the documentation
 that tells a consumer which producer to run, with committed witness artifacts
 and a test that fails if the defect is ever fixed. B040.
 
+### Go statement positions come from the SOURCE, never from the profile (A-217/A-239/A-397)
+
+Every other adapter in this project is pure text processing. The Go one shells
+out, and that asymmetry is worth the paragraph it costs, because it is the one
+place where "confine language-specificity to a leaf" stopped being enough.
+
+**The problem is an impossibility proof, not a rough edge.** A `go test
+-coverprofile` record is `<path>:<startLine>.<startCol>,<endLine>.<endCol>
+<numStmts> <count>` — a positional EXTENT plus a statement CARDINALITY, and
+never the statements' own positions. The shipped parser expanded that extent
+with `range(start, end + 1)`, which reports function signatures, closing
+braces, `case` labels and continuation lines as executable code. That is not
+merely imprecise: two gofmt-clean files (`carve-assets/P27/witness/collision-colA.go`
+and `collision-colB.go`) compile under the pinned toolchain and emit a
+byte-identical profile while their statements begin on different lines —
+`{4,6}` versus `{4,5}`. A rule reading only the profile is a function of the
+profile; identical input forces identical output; the two correct answers
+differ; so **every profile-only rule is wrong on at least one of them.**
+
+**Three options were considered; the operator ruled option 2.** (1) A better
+line-range heuristic — excluded by the proof above, and its cost is not
+confined to the permissive direction: a brace-only diff inside an untested
+function reports 0/1 and FAILs at `fail_under = 100.0` where statement truth
+is 0/0. (2) A source-side oracle. (3) A column-granular verdict field — a
+schema migration owned elsewhere, and forbidden here. Full reasoning: A-217.
+
+**Why the oracle is a Go subprocess and not a Python parser.** The algorithm
+that PRODUCES those blocks is `cmd/cover`'s own instrumenter, and A-217's
+implementation note is "adapt, do not invent". Assay ships that segmentation
+verbatim (`assay/helpers/go/stmtpos/`, stdlib-only, no `require` lines, run
+under `GOPROXY=off`) and runs it with the real toolchain. The rejected
+alternative — a hand-written Python approximation of Go's grammar — is not
+comparable to P08's hand-written Go lexer, and the difference is the direction
+of failure: `has_executable_code` may be conservative, so a wrong answer there
+is a false FAIL that fails closed, whereas a wrong statement position is a
+wrong published verdict with no fail-closed direction at all.
+
+**Why a NEW protocol hook, not `statement_spans`.** `statement_spans` is
+called ONLY for lines that fell into no coverage bucket (A-097/A-101, frozen).
+It gates in the wrong direction — it RESCUES lines nothing claimed, whereas Go
+needs to DEMOTE lines a block claimed wrongly — and its type is line-only,
+while the entire reason this hook exists is that `28.22,29.2` and `29.2,31.3`
+are two different blocks a line-only key would fuse. So `statement_blocks` is
+a fourth deliberate extension, added by the package that proved the need
+(A-084), with `requires_statement_attribution` as its gate (A-397).
+
+**Why the join is on the whole extent, never positional containment.**
+`cmd/cover` ends a block at the START position of its own last statement, so
+consecutive blocks genuinely SHARE a position. A statement beginning at a
+shared position belongs to the first block only: a closed interval matches
+both, a half-open one matches neither. The structure is not recoverable from
+positions, so the oracle reports each block's own statement list and the join
+is on the block (A-391).
+
+**Why a disagreement refuses instead of guessing.** The instrumenter is
+deterministic, so re-running it over the same source must reproduce the same
+extents. Every disagreement therefore means something real — a profile from a
+different revision than the source, a file edited between the run and the
+judgment, a different toolchain — and attributing anyway would publish a
+verdict about lines that are not the lines that ran. DERIVE / READ / **FAIL**,
+at its third branch. (It also turned the toolchain delta between the frozen
+witnesses and this wave's probe from an assumption into a measurement: all
+eight profiles joined exactly, which they could not have done had the
+instrumenter changed.)
+
+**Why the correction is a GUARD, not a step someone remembers.** An
+uncorrected block profile parses cleanly, produces well-formed line sets and
+yields a plausible percentage — it is simply about the wrong lines. That is
+the **masked default** in its purest form: rendered harmless by every context
+that runs the correction, and therefore invisible to testing, surfacing only
+on the path that skips it. So `CoverageProfile.statement_attributed` has
+exactly one producer (the join itself), and `evaluate_coverage`/
+`evaluate_targets` refuse when an adapter requires attribution and the profile
+reports it never happened (A-392). Two alternatives were rejected: emitting
+EMPTY line sets until corrected fails loudly but with the wrong sentence,
+reporting `NO_MEASUREMENT` over a complete artifact — "absence for emptiness",
+a false certification rather than a missing one; and relying on the runner's
+call order is not a check at all.
+
+**What it does NOT fix, recorded rather than glossed.** An uncovered statement
+sharing a physical LINE with a covered one is still promoted to `executed` —
+`lit.go`'s `f := func() int { return 7 }` carries two counted statements that
+both genuinely begin on line 4, and the line did run. That is line
+granularity's own limit, which coverage.py shares; removing it needs a
+column-granular wire field. Asserted as unfixed by a test, so a future change
+that does fix it goes red rather than quietly contradicting this paragraph
+(A-393, backlog B053).
+
 ### Mutation is source-oriented
 
 An Assay mutation adapter describes a change to **tracked source bytes**; it

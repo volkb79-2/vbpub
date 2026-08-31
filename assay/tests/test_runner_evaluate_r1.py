@@ -106,6 +106,7 @@ class _UnparsableSpanAdapter:
     source_globs: tuple[str, ...] = ("*.zzz",)
     excluded_dir_names: frozenset[str] = frozenset()
     requires_span_attribution: bool = True
+    requires_statement_attribution: bool = False
     external_tools: tuple[str, ...] = ()
 
     def is_test_path(self, rel_path: str) -> bool:
@@ -572,6 +573,7 @@ def test_evaluate_r1_still_propagates_a_genuine_programmer_error(git_repo: GitRe
         source_globs: tuple[str, ...] = ("*.zzz",)
         excluded_dir_names: frozenset[str] = frozenset()
         requires_span_attribution: bool = False
+        requires_statement_attribution: bool = False
         external_tools: tuple[str, ...] = ()
 
         def is_test_path(self, rel_path: str) -> bool:
