@@ -989,12 +989,14 @@ fails `failed to read dockerfile: open Dockerfile: no such file or
 directory`.
 
 **`.env` also relocates.** Compose loads a bare `.env` file from the
-**project directory** (S8.1a), not the compose file's directory — so
-`--project-directory` silently changes which `.env` a stack picks up too. A
-stack-local `.env` beside `ciu.compose.yml` is now SHADOWED by a repo-root
-`.env`, if one exists, the same way `context`/`dockerfile` shadow their
-pre-fix stack-relative meaning. CIU itself never depends on this (it always
-passes the compose process environment explicitly, S8.2, and never relies on
+**project directory** (S8.1a) ONLY — it does not also check the compose
+file's own directory as a fallback. So a stack-local `.env` beside
+`ciu.compose.yml` stops being read at all once `--project-directory` points
+at the repo root: it is dropped unconditionally, whether or not a
+repo-root `.env` exists (live-verified: with a stack-local `.env` only and
+no repo-root `.env`, the variable it set came back unset post-fix, not
+"shadowed" by anything). CIU itself never depends on this (it always passes
+the compose process environment explicitly, S8.2, and never relies on
 compose's own bare-`.env` loading), so this only matters for a stack with
 its OWN stack-local `.env` a maintainer authored outside CIU's secret/config
 mechanisms — check for one before upgrading.
@@ -1008,7 +1010,9 @@ mechanisms — check for one before upgrading.
 > `build_context` back and left `dockerfile` stack-relative (or unset,
 > defaulting to `Dockerfile`) breaks the same way the live repro did, just
 > one field over. Also check for a stack-local `.env`: if one exists beside
-> the compose file, confirm no repo-root `.env` now shadows it.
+> the compose file, move its values into CIU's own config/secret mechanisms
+> or into a repo-root `.env` — it will no longer be read from its old
+> location at all.
 
 This applies to BOTH the native `up` path and the `--shipped` passthrough
 (S8.6) — a maintainer's own pre-shipped `docker-compose.yml` gets the same
