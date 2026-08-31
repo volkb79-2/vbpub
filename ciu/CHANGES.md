@@ -21,6 +21,20 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.8.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=618926cbd6691b446f8afe6b2cf25c97f0bfe125 -->
+
+### Fixed
+- fix(ciu)!: CIU-54 -- 8 cli.py remote/listing sites resolve repo_root via deploy.resolve_repo_root (e37b3447)
+
+### Changed
+- backlog(ciu): CIU-54 FIXED (ciu-P45) (7bd91430)
+
+### Documentation
+- docs(ciu): ciu-P45 -- REPORT addendum, real gate re-run at true final HEAD (5b21d030)
+- docs(ciu): ciu-P45 -- LOG/REPORT for CIU-54's design-and-implement package (56d5dba9)
+
 ## [7.8.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — same
