@@ -4895,3 +4895,124 @@ PURPOSE reads as the second.
       `producer_tool` already carries;
 - [ ] a committed real report with a non-zero `discarded`, and a frozen
       W-generation document carrying it, so the field has a witness at all.
+
+---
+
+## B052 — an ingested report's embedded `source` is never compared against the snapshot's own committed bytes: assay derives every mutant position from text it takes entirely on the tool's word
+
+**Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
+FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
+
+> **Numbering note.** B051 is the `discarded` finding. This entry was filed
+> second and takes the next free identifier. See B051's own numbering note for
+> why the fix-round brief's "B052" ended up applied to neither item in the
+> order it expected.
+
+### The problem
+
+`mutation-testing-report-schema` embeds, for every measured file, the full
+`source` text the tool read. Assay **requires** it and leans on it hard:
+
+- `mutation_parsers/mutation_report_json.py:170-186` refuses a file record
+  with no `source` string, then builds `_line_byte_offsets(source)` and
+  `len(source.encode("utf-8"))` from it — so **every mutant's byte span is
+  derived from this text**;
+- `mutation.py:2150-2160` (`lines_without_candidates`) walks the same text
+  line by line, and its docstring says so plainly: *"Lines come from the
+  report's OWN `source` text, not from the snapshot: that is the text the tool
+  actually read, so a line number here means the same thing the tool's own
+  line numbers mean."*
+
+That reasoning is correct as far as it goes — and it is exactly why nothing
+checks the text. Assay already holds the snapshot's own committed blobs for
+those same paths (`isolation.SnapshotRepository.read_regular_file`), and never
+compares the two. A report whose `source` differs from the commit's bytes —
+in whitespace, in whole functions, in file identity — is ingested and judged
+without a word.
+
+B046's non-repudiation items already ask for `projectRoot` to match the
+directory the command ran in, and for every `files` key to resolve under a
+declared `source_root`. Those establish that the report is **about this
+checkout**. They do not establish that it is about **this commit's content**,
+which is the stronger property assay's own committed-object snapshot exists to
+make checkable, and the only one that closes "an artifact from an earlier
+state of the same tree".
+
+### Why this is not implementable without a ruling first
+
+The comparison is trivial. Its VERDICT is not, and shipping the check with the
+wrong terminal would be worse than the gap.
+
+A mismatch has at least four causes with genuinely different correct
+responses:
+
+1. **a stale report** — the tool ran before the last edit. `ERROR`, and the
+   consumer should re-run. Almost certainly what a mismatch usually is;
+2. **a tool that rewrites sources in flight** — transpilation, a formatter in
+   the test command, Stryker's own instrumentation writing back. Here the
+   report is *honest about what was mutated* and the snapshot is *honest about
+   what was committed*, and refusing would break lanes that are working
+   correctly. This is not hypothetical for a JS/TS toolchain;
+3. **a genuinely foreign report** — the non-repudiation case, which should
+   refuse loudly;
+4. **line-ending or trailing-newline normalisation** — a mismatch in bytes
+   that is not a mismatch in meaning, and a byte-equality check would refuse a
+   correct lane on a `.gitattributes` setting.
+
+(2) and (4) are why "compare and refuse" cannot simply be written. A check
+that cannot distinguish them either refuses honest lanes or is downgraded to a
+warning nobody reads — and `judgment` has no field for "the evidence text
+differed from the commit", so today there is nowhere to *record* the fact
+short of refusing.
+
+This is the same shape as B051: the code is a morning's work and the contract
+is the actual question.
+
+### Evidence
+
+- `src/assay/mutation_parsers/mutation_report_json.py:170-186` — `source`
+  required; byte offsets and file length derived from it; no snapshot read.
+- `src/assay/mutation.py:2150-2160` — `lines_without_candidates` walks the
+  report's own text, with the docstring stating the choice explicitly.
+- `src/assay/isolation.py` `SnapshotRepository.read_regular_file` — the
+  committed bytes ARE available at ingestion time, from the same snapshot the
+  lane's command ran in. Nothing calls it from the ingest path.
+- `src/assay/runner.py` `_ingest_r2_report` — the whole ingest path; the only
+  snapshot facts it uses are `project_root` (via `resolve_run_cwd`) and the
+  commit identity.
+- Wave B REPORT §13 ("What I did NOT do, and why") — the implementer flagged
+  this at the end of the wave and deliberately did not file it, wanting a
+  reviewer's opinion on whether it was worth filing. The reviewer's answer,
+  relayed by the controller, is that it is.
+
+### The fix, once the meaning is ruled
+
+1. **Rule what a mismatch MEANS**, as an A-row, naming which of the four
+   causes above the terminal is claiming. The likely shape is a third
+   non-repudiation tier: identity (does the report describe this project),
+   anchoring (do the paths resolve), and *content* (is the text the commit's).
+2. Read the committed blob for each measured path through
+   `read_regular_file`, inside the baseline snapshot's own `with` block where
+   `_ingest_r2_report` already runs.
+3. Compare under a **stated** normalisation — decide explicitly whether line
+   endings and a trailing newline are in or out, and test both ways round.
+4. Give the mismatch a terminal and a message naming the file, or a wire field
+   if the ruling is "record, do not refuse" — in which case it is a schema
+   field and belongs to the next cut, exactly as B050 does.
+
+### Acceptance
+
+- [ ] the mismatch ruling recorded as an A-row, naming the rejected
+      alternatives (refuse-always / warn / record-on-the-wire) and why;
+- [ ] the committed bytes read from the snapshot at ingest time and compared
+      under a documented normalisation, with a test that mutates ONE file's
+      `source` in the REAL committed Stryker fixture and asserts a NAMED
+      failure — and a companion test proving a byte-identical report still
+      passes, so the check is not vacuous;
+- [ ] a test for the transpiled/rewritten-source case (2), asserting whatever
+      the ruling says should happen to it — this is the case that decides
+      whether the feature is safe to ship at all;
+- [ ] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
+      "what assay checks about your report" paragraph as `projectRoot`;
+- [ ] if the ruling is "record, do not refuse": the wire field in schema,
+      dataclass and `verify.py` (three places), at the next schema cut.

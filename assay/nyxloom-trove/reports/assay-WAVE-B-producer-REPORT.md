@@ -857,6 +857,33 @@ report LISTED" is derivable and "invalid mutants the tool ENCOUNTERED" is not,
 they are different fields with the same name, and a re-derivation that checked
 the easy half while looking like an audit would be worse than the honest gap.
 
+### B052 filed — the ingested-source non-repudiation gap
+
+Filed **after** the round's gate run, on the controller's request, once they
+read §15 and asked about it. It is **not** a displaced item from the brief:
+the fix-round brief contained exactly one filing instruction (the `discarded`
+finding), and this recommendation reached me only in the controller's
+follow-up. §13 of this report is where the implementer raised it and
+deliberately did not file it, wanting a reviewer's opinion; the reviewer's
+answer was that it is worth filing.
+
+An ingested report embeds each measured file's `source`, and assay derives
+**every mutant's byte span** from that text
+(`mutation_report_json.py:170-186`) and walks it line by line for
+`lines_without_candidates` (`mutation.py:2150-2160`). The snapshot's own
+committed blobs for the same paths are available at ingest time
+(`isolation.SnapshotRepository.read_regular_file`) and are never compared.
+B046's existing checks establish the report is about this *checkout*; nothing
+establishes it is about this *commit's content*.
+
+Same file-don't-build reason as B051, and a sharper one: the comparison is
+trivial, the terminal is not. A mismatch can be a stale report, a toolchain
+that legitimately rewrites sources in flight (real for JS/TS), a genuinely
+foreign report, or line-ending normalisation — and those want different
+answers. `judgment` has no field for "the evidence text differed from the
+commit", so short of refusing there is nowhere to record it, which makes
+"record, do not refuse" a schema-cut item like B050.
+
 ### Explicitly NOT fixed, per the review
 
 - **The type-only lexer reads `type (x)` as type-only.** A call to a top-level
