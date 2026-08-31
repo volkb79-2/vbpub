@@ -1474,8 +1474,15 @@ class TestLeaseLifecycleChangesTheNextSurvey:
     def test_re_expiring_after_an_extend_becomes_lease_expired_again(
         self, leased, repo
     ):
+        """CIU-76: `apply_lease` must accept the same frozen `now` its
+        lower-level `acquire_lease`/`make_lease_perpetual` already do —
+        without it, the 1h extend anchors to the REAL wall clock while the
+        survey check below anchors to the fixture's frozen `NOW`, so the
+        assertion's truth silently depends on how far the real clock has
+        drifted from `NOW` since this fixture was written (reproduced
+        2026-08-31: failed on a clean checkout for exactly this reason)."""
         _root, project = leased
-        worktree.apply_lease(repo, "lifecycle", extend="1h")
+        worktree.apply_lease(repo, "lifecycle", extend="1h", now=NOW)
         assert categories(
             survey(repo, now=NOW + timedelta(days=2))
         )[project] == "lease-expired"

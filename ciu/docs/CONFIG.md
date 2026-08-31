@@ -204,12 +204,13 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
   undeclared top-level table becomes an error even without an explicit
   opt-in.
 
-### `[ciu.worktree]` — repository-wide instance capacity and lease policy [S16.3/S16.9]
+### `[ciu.worktree]` — repository-wide instance capacity and lease policy [S16.3/S16.7/S16.9]
 
 | Key | Default | Spec | Example |
 |---|---|---|---|
 | `max_concurrent_instances` | absent (no cap) | S16.3 | `3` — refuse a 4th simultaneous `ciu worktree` deployment |
 | `lease_ttl_hours` | absent (**no lease at all**) | S16.9 | `24` — `ciu up` claims a 24-hour `held` lease on this instance |
+| `exec_targets` | absent (no declared targets) | S16.7 | see [S16.7](SPEC.md#s167--declared-worktree-container-targets-exec---target) — per-alias sub-tables, own four-key grammar |
 
 `lease_ttl_hours` is a positive number of hours. **Absent means no lease is
 ever acquired — not "some default TTL".** A consumer who configures nothing
@@ -226,7 +227,7 @@ for the record schema (v2), the `held`/`perpetual` expiry rule, and the
 `ciu.instance`/`ciu.repo-root` ownership labels `ciu up` stamps on the
 resources it creates.
 
-Both keys share ONE closed table: an unknown key in `[ciu.worktree]` is a hard
+These keys share ONE closed table: an unknown key in `[ciu.worktree]` is a hard
 refusal, never a silent ignore. Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
 [S16.3](SPEC.md#s163--worktree-instance-concurrency-budget-ciu-24) for the
 full precedence, the git-root-to-CIU-root offset, and why this is

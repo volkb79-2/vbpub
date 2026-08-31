@@ -440,9 +440,9 @@ class TestOwnRecordOperations:
 
 
 class TestLeaseTtlConfig:
-    def test_the_table_key_set_is_closed_and_now_holds_two_keys(self):
+    def test_the_table_key_set_is_closed_and_now_holds_three_keys(self):
         assert worktree.WORKTREE_TABLE_KEYS == {
-            "max_concurrent_instances", "lease_ttl_hours",
+            "max_concurrent_instances", "lease_ttl_hours", "exec_targets",
         }
 
     def test_absent_table_means_no_lease_behavior_at_all(self):
@@ -478,6 +478,34 @@ class TestLeaseTtlConfig:
         assert worktree.resolve_max_concurrent_instances(
             {"max_concurrent_instances": 2, "lease_ttl_hours": 24}
         ) == 2
+
+    def test_all_three_families_coexist_in_one_table(self):
+        """CIU-69: `[ciu.worktree]` is documented as carrying THREE key
+        families (S16.3 `max_concurrent_instances`, S16.9 `lease_ttl_hours`,
+        S16.7 `exec_targets.<alias>`), but `WORKTREE_TABLE_KEYS` used to omit
+        `exec_targets` — so a consumer who declared a budget or a lease TTL
+        in the SAME table as an exec target got a spurious
+        `[S16.3] unknown key(s)` refusal, even though `exec_targets`'s own
+        per-alias grammar is validated separately by
+        `resolve_exec_targets_config`. Declare all three together and prove
+        budget resolution, lease resolution, AND exec-target resolution all
+        accept the table without refusing."""
+        worktree_table = {
+            "max_concurrent_instances": 2,
+            "lease_ttl_hours": 24,
+            "exec_targets": {
+                "tester": {"stack": "test", "service": "tester", "workdir": "/workspace"},
+            },
+        }
+        global_config = {"ciu": {"worktree": worktree_table}}
+
+        assert worktree.resolve_max_concurrent_instances(worktree_table) == 2
+        assert worktree.resolve_lease_ttl_hours(worktree_table) == 24.0
+        targets = worktree.resolve_exec_targets_config(global_config)
+        assert set(targets) == {"tester"}
+        assert (targets["tester"].stack, targets["tester"].service, targets["tester"].workdir) == (
+            "test", "tester", "/workspace",
+        )
 
     def test_resolve_from_a_repo_reads_the_primary_ciu_roots_table(
         self, tmp_repo, monkeypatch
@@ -549,6 +577,15 @@ class TestApplyLease:
         record = worktree.apply_lease(tmp_repo, "one", perpetual=True)
         assert record.lease.mode == "perpetual"
         assert record.lease.expires_at_utc is None
+
+    def test_perpetual_honours_an_injected_now(self, tmp_repo, fake_generate_env):
+        """CIU-76 review: `apply_lease`'s `now=` must actually reach
+        `make_lease_perpetual` -- deleting that threading left the whole
+        suite green (nothing exercised it), so assert the injected instant
+        directly rather than only a mode/None check."""
+        worktree.create(tmp_repo, "one", base="main")
+        record = worktree.apply_lease(tmp_repo, "one", perpetual=True, now=NOW)
+        assert record.lease.renewed_at_utc == worktree._utc_stamp(NOW)
 
     def test_release_drops_the_claim(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "one", base="main")
