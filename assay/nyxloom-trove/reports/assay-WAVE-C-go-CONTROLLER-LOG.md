@@ -241,3 +241,14 @@ principles don't already resolve.
   with BRIEF-1+BRIEF-2, not resuming this one — the implementer already
   ended its own turn at the designed handoff boundary, this is not a
   mid-task continuation.
+
+  Dispatched: fresh Opus session, same worktree/branch
+  (`.worktrees/assay-wave-c-go`, `feature/assay-wave-c-go`, tip
+  `335636b4`), given BRIEF-2 §5's 8-step ordered task list verbatim (the
+  hook signature as `A-397`, the `evaluate` refusal, the other three
+  adapters + their FakeAdapter copies, the exposed key-resolution join,
+  runner wiring, `external_tools`, registration LAST, then item 7's srdm
+  covergate qualification), explicitly told not to resurrect the
+  retracted packaging claim and to hold acceptance boxes until a real Go
+  verdict is provably statement-granular end to end. Next free ids
+  restated: A-397, B055.
