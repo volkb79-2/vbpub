@@ -1189,6 +1189,23 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   stack otherwise. The `-f base -f overlay` merge is compose's native
   mechanism; the overlay is also the single file a security review reads to
   see every secret exposure of a stack.
+- **S8.1a** *`--project-directory` (CIU-71).* Every compose lifecycle
+  invocation this section and S8.6/S8.7 describe (native `up`, `--shipped`
+  `up`, and the reset/down path) MUST additionally pass
+  `--project-directory <repo_root>` — the same `REPO_ROOT`/`--define-root`
+  value already resolved for that invocation (S1). Without it, `docker
+  compose` resolves every relative path IN the compose file — a service's
+  `build.context` chief among them — against the **compose file's own
+  directory**, not the repo root; every other path CIU resolves (bind
+  mounts, hostdirs, secret/configfile paths) is already repo-root-relative,
+  so an author who writes `build_context = "."` reasonably expects the same
+  convention, and a Dockerfile that `COPY`s a repo-root-relative path (the
+  only shape consistent with how CIU resolves every other path) fails at
+  build time with a path-not-found error that gives no hint the fix is a
+  missing CIU flag, not a Dockerfile bug. `--project-directory` does not
+  change where docker compose derives the *project name* from — that stays
+  `-p` (S8.7) — it only changes how relative paths inside the compose file
+  resolve.
 - **S8.2** The compose process environment is exactly: `os.environ`
   (which includes the sourced `ciu.env`) + `PWD` + `COMPOSE_PROFILES`
   (when set by profile/service) + `expose_env` secrets (S4.19).
@@ -1290,8 +1307,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   and without the secret / overlay / configfile steps. It MUST still:
   load `ciu.env` (S2), render the global chain for the `auto_connect_network`
   setting, ensure/attach the workspace network (S2.8), run the DooD preflight
-  (S1.5), then `docker compose -f <file> up -d` with the same cwd/project
-  convention as the native path. The compose process env is S8.2 minus
+  (S1.5), then `docker compose -f <file> up -d` with the same cwd/project/
+  `--project-directory` (S8.1a) convention as the native path. The compose
+  process env is S8.2 minus
   `expose_env` secrets (none are resolved). `--dry-run` stops before the
   compose up. Profile-based `ciu up` exposes the same path per service via a boolean
   `shipped` key in `[deploy.phases.*].services` (default `false`; non-bool =
@@ -1299,7 +1317,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   gate exactly like a native stack.
 - **S8.7** *Instance-scoped compose project.* Every compose lifecycle
   invocation (`up` — native and shipped — and the reset/down path) MUST pass
-  `-p {deploy.project_name}-{deploy.environment_tag}-{stack_dirname}`. Without
+  `-p {deploy.project_name}-{deploy.environment_tag}-{stack_dirname}` —
+  alongside `--project-directory` (S8.1a), a separate flag governing path
+  resolution rather than project naming. Without
   it, docker compose derives the project from the stack directory BASENAME,
   which is identical for every checkout/worktree of a repo — so a second
   instance's `up` ADOPTS the first instance's containers (same project +

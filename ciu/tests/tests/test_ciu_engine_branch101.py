@@ -131,7 +131,9 @@ def test_compose_keyboard_interrupt_without_process_returns_interrupted(
 
     monkeypatch.setattr(engine.subprocess, "Popen", start_process)
 
-    result = engine.execute_docker_compose_with_logs([], cwd=Path("/unused"), project="test-project")
+    result = engine.execute_docker_compose_with_logs(
+        [], cwd=Path("/unused"), project="test-project", repo_root=Path("/unused")
+    )
 
     assert result["status"] == "interrupted"
     assert result["message"] == "User interrupted execution"

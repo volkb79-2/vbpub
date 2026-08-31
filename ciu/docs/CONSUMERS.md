@@ -940,3 +940,44 @@ This is specifically the case of naming a REFERENCE instance's service
 after joining its network (S16.1a). Qualifying a stack's OWN
 `internal_host`/`hostname:` default — no shared-infra join involved — is
 the separate case covered in §5e above.
+
+## 18. Write a stack's `build.context` as repo-root-relative (S8.1a, CIU-71)
+
+Every compose invocation CIU makes passes `--project-directory <repo root>`
+(S8.1a), so a relative `build.context` in a stack's compose template
+resolves against the **repo root** — the same convention every other CIU
+path already follows (bind mounts, hostdirs, secret/configfile paths). It
+does NOT resolve against the compose file's own directory, which is
+`docker compose`'s default when no `--project-directory` is given.
+
+Concretely, if a stack directory `infra/mock-targets/` declares:
+
+```toml
+# infra/mock-targets/ciu.defaults.toml.j2
+[mock_targets.image]
+build_context = "."
+```
+
+and its Dockerfile `COPY`s a path relative to the **repo root**:
+
+```dockerfile
+# infra/mock-targets/Dockerfile
+COPY tests/fixtures/mock_data /data/mock_data
+```
+
+then `tests/fixtures/mock_data` MUST live at the repo root
+(`<repo>/tests/fixtures/mock_data`), not inside `infra/mock-targets/`. This
+is the natural, repo-root-relative way to write it — matching how a stack
+already writes every other path CIU resolves — and it is what `ciu up`
+actually runs against.
+
+> **If you are migrating a stack that carried a workaround for the pre-CIU-71
+> bug** (a stack-relative `build_context`, e.g. `"../.."`, in an untracked
+> `ciu.toml.j2` override, to compensate for compose resolving `.` against the
+> compose file's own directory): remove the override and go back to the
+> plain repo-root-relative form (`"."` or a repo-root-relative subpath) — the
+> workaround now double-resolves and breaks the build.
+
+This applies to BOTH the native `up` path and the `--shipped` passthrough
+(S8.6) — a maintainer's own pre-shipped `docker-compose.yml` gets the same
+`--project-directory` treatment as a CIU-rendered `ciu.compose.yml`.

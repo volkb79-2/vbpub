@@ -335,7 +335,7 @@ class TestUpStampsOwnershipLabels:
                 "project_name": "p", "environment_tag": "e",
                 "labels": {"prefix": "p"},
             }},
-            stack, assume_yes=True,
+            stack, assume_yes=True, repo_root=tmp_path,
         )
 
         assert f"{MACHINE_DIR}/{engine.OWNERSHIP_OVERLAY_NAME}" in seen[0]
