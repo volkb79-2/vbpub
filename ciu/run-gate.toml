@@ -16,5 +16,5 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.3.0.pyz"]
 budget = "30m"
 
 [lanes.ciu.pins.assay]
-version = "2.2.0"
+version = "2.3.0"
 sha256 = "tools/assay/assay-2.3.0.pyz.sha256"
