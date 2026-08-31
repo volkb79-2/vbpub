@@ -246,18 +246,183 @@ def _strip_comments(text: str) -> str | None:
     return "".join(chars)
 
 
+#: The two source spellings that can carry TypeScript type syntax without
+#: being a declaration file. ``.js``/``.jsx`` are deliberately absent: neither
+#: `interface` nor `type X = ...` is JavaScript, so a `.js` file containing
+#: them is not a type-only module -- it is a file that will not run, and
+#: calling it code-free would hide that.
+_TYPE_ONLY_SUFFIXES = (".ts", ".tsx")
+
+#: The exact statement openings B038(b) enumerates, and nothing else. Each is
+#: matched as a literal PREFIX of a top-level statement, and each carries a
+#: TRAILING SPACE for a reason found by probing rather than by reading: without
+#: it, `export type` is a prefix of `export typeGuard = 1`, and a runtime
+#: assignment would have been classified as a type declaration -- a fail-OPEN
+#: answer, the one direction this lexer must never give. The trailing space is
+#: the whole of the word-boundary rule; `type ` likewise cannot match `typeof`
+#: or an identifier named `types`.
+#:
+#: A declaration separating its keywords by anything other than one space
+#: (`export  type X`, or a newline between them) is not recognised and answers
+#: "has code", per the fail-closed rule.
+_TYPE_ONLY_STATEMENT_PREFIXES = (
+    "import type ",
+    "export type ",
+    "export interface ",
+    "type ",
+    "interface ",
+    "declare ",
+)
+
+_QUOTES = "'\"`"
+_OPENERS = {"{": "}", "(": ")", "[": "]"}
+_CLOSERS = {"}", ")", "]"}
+
+
 def _has_executable_code(rel_path: str, text: str) -> bool:
     """The whole narrow question :meth:`JavaScriptAdapter.has_executable_code`
-    answers (this module's own docstring): ``False`` only for a TypeScript
-    declaration file, or for text that is empty once comments and whitespace
-    are removed. ``True`` for everything else, including anything this scan
-    cannot finish reading."""
+    answers (this module's own docstring): ``False`` for a TypeScript
+    declaration file, for text that is empty once comments and whitespace are
+    removed, and — B038(b)/B045 — for a ``.ts``/``.tsx`` module whose every
+    top-level statement is a TYPE declaration. ``True`` for everything else,
+    including anything this scan cannot finish reading."""
     if rel_path.endswith(_DECLARATION_SUFFIXES):
         return False
     masked = _strip_comments(text)
     if masked is None:
         return True
-    return bool(masked.strip())
+    if not masked.strip():
+        return False
+    if rel_path.endswith(_TYPE_ONLY_SUFFIXES) and _is_type_only(masked):
+        return False
+    return True
+
+
+def _is_type_only(masked: str) -> bool:
+    """Whether comment-masked *masked* is a TypeScript module that declares
+    only types (B038(b)).
+
+    **The problem this exists to close, measured.** A ``.ts`` module holding
+    nothing but ``import type``/``interface``/``type`` declarations is erased
+    entirely by the TypeScript compiler, so no instrumenter emits a record
+    for it and it is absent from every coverage artifact. Under
+    ``evaluate.py``'s rule 4 an absent CHANGED file whose adapter says it has
+    executable code is a measurement FAILURE -- correct for a file the tests
+    forgot, and a false failure for a file that cannot be executed at all.
+    ``tests/fixtures/coverage/probe-js/src/typesonly.ts`` is the witness;
+    ``orphan.ts``, one runtime ``export function`` and otherwise identical in
+    shape, is the control that must keep answering ``True``.
+
+    **This is a lexer, not a TypeScript parser (A-104, Go's own
+    ``has_executable_code`` discipline).** It splits *masked* into top-level
+    statements -- at ``;`` and at newlines, both only where brace/paren/
+    bracket depth is zero and no string literal is open -- and answers
+    ``True`` (has code) unless EVERY non-empty statement begins with one of
+    :data:`_TYPE_ONLY_STATEMENT_PREFIXES`. Every construct it does not
+    recognise therefore answers "has code", which is the fail-closed
+    direction: a type-only module wrongly called executable becomes a VISIBLE
+    unmeasured-file failure a consumer can read and act on, while a runtime
+    module wrongly called code-free would silently vanish from both the
+    numerator and the denominator -- srdm's silent-excuse direction, the one
+    this project refuses.
+
+    **Its known limitation, stated rather than hidden.** A single declaration
+    spread over several top-level lines::
+
+        export type Mode =
+          | 'read'
+          | 'write'
+
+    splits into three statements, of which the last two begin with ``|``, so
+    the file answers ``True``. Recovering it needs to know where a type
+    expression ENDS, which is the TypeScript grammar B038(b) explicitly
+    declines to implement. The cost is one visible false failure that a
+    consumer fixes by joining the lines or excluding the file; the benefit is
+    that this function has no grammar to be wrong about.
+    """
+    statements = _top_level_statements(masked)
+    if statements is None:
+        return False
+    for statement in statements:
+        if not statement.startswith(_TYPE_ONLY_STATEMENT_PREFIXES):
+            return False
+    return True
+
+
+def _top_level_statements(masked: str) -> list[str] | None:
+    """Comment-masked *masked* split into stripped, non-empty statements at
+    depth-zero ``;`` and newlines, or ``None`` when the scan cannot lex it.
+
+    String and template literals are skipped so that a bracket inside one
+    (``type Brace = '{'``) cannot unbalance the depth count.
+
+    ``None`` -- which the caller turns into "has code" -- is returned for
+    every input this scan cannot follow to the end: an unterminated literal, a
+    template literal carrying a ``${`` substitution, more closing brackets
+    than opening ones, or a file that ends with a bracket still open.
+    Returning a best-effort split for those was the FIRST version of this
+    function and it was fail-OPEN, found by probing rather than by reading:
+    ``export type A = `x${'y'}z` `` followed by a real ``console.log(1)``
+    swallowed the runtime statement into the type declaration's own segment,
+    and the file came back code-free. There is no partial credit here -- if
+    the scan loses the structure anywhere, it has no basis for a claim about
+    any statement.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = 0
+    length = len(masked)
+    while index < length:
+        char = masked[index]
+        if char in _QUOTES:
+            end = _skip_literal(masked, index)
+            if end is None:
+                return None
+            current.append(masked[index:end])
+            index = end
+            continue
+        if char in _OPENERS:
+            depth += 1
+        elif char in _CLOSERS:
+            depth -= 1
+            if depth < 0:
+                return None
+        if depth == 0 and (char == ";" or char == "\n"):
+            statements.append("".join(current).strip())
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    if depth != 0:
+        return None
+    statements.append("".join(current).strip())
+    return [statement for statement in statements if statement]
+
+
+def _skip_literal(masked: str, start: int) -> int | None:
+    """The index just past the string/template literal opening at *start*, or
+    ``None`` if it is unterminated or is a template carrying a ``${``
+    substitution."""
+    quote = masked[start]
+    index = start + 1
+    length = len(masked)
+    while index < length:
+        char = masked[index]
+        if char == "\\":
+            index += 2
+            continue
+        if quote == "`" and masked[index : index + 2] == "${":
+            return None
+        if char == quote:
+            return index + 1
+        if char == "\n" and quote != "`":
+            # An ordinary JS string cannot span a newline; this is not the
+            # literal it looked like.
+            return None
+        index += 1
+    return None
 
 
 def _append_snippet(text: str, snippet: str) -> str:

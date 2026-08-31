@@ -158,10 +158,16 @@ def test_a_javascript_r1_lane_passes_end_to_end(git_repo: GitRepo):
     assert coverage["pct"] == 100.0
     assert coverage["covered"] == 3
     assert coverage["executable"] == 3
-    # A-343/A-344 on the wire: both capabilities are honestly unavailable for
-    # this format, never "reported" with a fabricated zero.
+    # A-343 on the wire: exclusions are honestly unavailable for this format,
+    # never "reported" with a fabricated zero -- no producer of it writes a
+    # per-line exclusion field at all.
     assert coverage["exclusion_capability"] == "unavailable"
-    assert coverage["branch_capability"] == "unavailable"
+    # A-344 as B045 RESOLVED it: this lane declares `producer = "istanbul"`,
+    # so `branchMap` has a known meaning and the arcs are real. Through
+    # schema v8 this read `unavailable` for every istanbul artifact, because
+    # nothing said who wrote it. Same format, same bytes, different answer --
+    # entirely because of the declaration.
+    assert coverage["branch_capability"] == "reported"
     assert verdict["judgment"]["r1"]["coverage_format"] == "coverage-istanbul-json"
 
 

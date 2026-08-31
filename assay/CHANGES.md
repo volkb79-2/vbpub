@@ -30,6 +30,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   greens), `jest-v8` (unproven — refused as unmeasured, deliberately not
   blurred with the two measured ones).
 
+- **B038(a) — real branch ARCS under `producer = "istanbul"`.** Every coverage
+  parser's `parse(text, *, producer)` now takes the declared producer
+  (keyword-only, no default, so a caller that forgets it fails loudly rather
+  than losing arcs silently), and `coverage-istanbul-json` reads `branchMap`
+  as per-line `(covered, total)` arcs for the istanbul instrumenter family.
+  `branch_capability` becomes `"reported"` and `require_branch = true` is
+  legal on such a lane; every other producer, and an undeclared one, still
+  reads `"unavailable"`. An artifact whose `branchMap` entries are v8 RANGES
+  (typed `"branch"`) declared as `istanbul` is refused
+  `ERROR`/`UNREADABLE_ARTIFACT` naming the disagreement — a second,
+  independent layer from the by-name refusal, and the only one that can catch
+  a lane whose declaration and whose command have drifted apart.
+- **B038(b) — a type-only `.ts`/`.tsx` module is no longer a false coverage
+  failure.** A module whose every top-level statement is a type declaration is
+  erased by TypeScript, so no instrumenter records it; a narrow, fail-closed
+  lexer (not a TypeScript parser) now classifies it as code-free. Anything the
+  lexer does not recognise still answers "has code".
+
 ### Migration notes (v8 -> v9)
 
 - **Every `coverage-istanbul-json` lane must add `producer = "istanbul"`.**

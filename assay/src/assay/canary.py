@@ -439,6 +439,13 @@ def run_isolated_canary(
     wants_coverage = "R1" in lane.rigor
     coverage_artifact = lane.judge.coverage.artifact if wants_coverage else None
     coverage_format = lane.judge.coverage.format if wants_coverage else None
+    # B045: the canary's two runs read the same artifact through the same
+    # parser as the baseline unit, so they must be told the same producer.
+    # Withholding it here would have made the R3 control's profile
+    # arc-less while the baseline's carried arcs -- two readings of one
+    # lane's own format, which is exactly the disagreement A-271's
+    # one-grammar rule exists to prevent.
+    coverage_producer = lane.judge.coverage.producer if wants_coverage else None
 
     # B006(b): `control_snapshot` is always an ephemeral, assay-owned P22
     # checkout (never the consumer's real worktree), so this is one of the
@@ -451,6 +458,7 @@ def run_isolated_canary(
             wants_coverage=wants_coverage,
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
+            coverage_producer=coverage_producer,
             process_runner=process_runner,
             clock=clock,
             create_missing_parents=True,
@@ -529,6 +537,7 @@ def run_isolated_canary(
             wants_coverage=wants_coverage,
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
+            coverage_producer=coverage_producer,
             process_runner=process_runner,
             clock=clock,
             create_missing_parents=True,

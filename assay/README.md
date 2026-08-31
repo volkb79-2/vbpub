@@ -255,12 +255,14 @@ until it is, `judge.language = "javascript"` declaring R2 is refused
 cause-sensitive canary) is unwired for the same "a method existing is not a
 producer path" reason, though both canary injection mechanisms are real.
 
-**Branch coverage is reported as unavailable for this format**, and that is a
-measured refusal rather than a gap: istanbul's `branchMap` means different
-things under the two Vitest providers (real per-arm arcs under `istanbul`,
-v8's own executed/unexecuted ranges under `v8`), and a lane declares the
-format, not the producer. `require_branch = true` on a JavaScript lane will
-therefore refuse. See **B038**.
+**Branch coverage depends on the declared producer.** istanbul's `branchMap`
+means different things under different producers (real per-arm arcs under the
+`istanbul` instrumenter family, v8's own executed/unexecuted ranges under
+`@vitest/coverage-v8` and `c8`), so the format name alone cannot answer it.
+Declare `producer = "istanbul"` and the arcs are real, `branch_capability` is
+`"reported"`, and `require_branch = true` is legal; without that declaration
+`branch_capability` stays `"unavailable"` — a measured refusal rather than a
+gap. See [Declaring the coverage producer](docs/CONSUMERS.md#declaring-the-coverage-producer-b045).
 
 ### SQL/DDL mutation testing (R2 only)
 

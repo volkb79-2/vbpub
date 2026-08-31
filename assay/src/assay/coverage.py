@@ -95,7 +95,7 @@ class FormatSpec:
     to check the declared one against it.
     """
 
-    parse: Callable[[str], CoverageProfile]
+    parse: Callable[..., CoverageProfile]
     sniff: Callable[[str], bool]
 
 
@@ -122,10 +122,21 @@ FORMAT_REGISTRY: Mapping[str, FormatSpec] = MappingProxyType(
 )
 
 
-def load_coverage_profile(text: str, *, declared_format: str) -> CoverageProfile:
+def load_coverage_profile(
+    text: str, *, declared_format: str, producer: str | None = None
+) -> CoverageProfile:
     """Parse *text* as *declared_format*, cross-checked against the
     artifact's own sniffed signature before a single record is parsed
     (A-007).
+
+    *producer* is the lane's declared ``judge.coverage.producer`` (B045) —
+    the toolchain that WROTE the artifact, as distinct from the shape it
+    wrote. It reaches the matched parser unchanged and unvalidated: it is
+    :mod:`assay.config`'s loader that refuses a producer outside the
+    declared format's own closed vocabulary, at config-load time, and
+    re-checking it here would put the same rule in two places to disagree.
+    ``None`` means the lane declared none — legal for every format outside
+    :data:`assay.vocabulary.COVERAGE_PRODUCER_REQUIRED_FORMATS`.
 
     *declared_format* is expected to already be a :data:`FORMAT_REGISTRY` key
     — :mod:`assay.config`'s loader (A-068) refuses an unknown one at
@@ -155,10 +166,12 @@ def load_coverage_profile(text: str, *, declared_format: str) -> CoverageProfile
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.FORMAT_MISMATCH,
         )
-    return spec.parse(text)
+    return spec.parse(text, producer=producer)
 
 
-def parse_coverage_artifact(raw: bytes | None, *, declared_format: str) -> CoverageProfile:
+def parse_coverage_artifact(
+    raw: bytes | None, *, declared_format: str, producer: str | None = None
+) -> CoverageProfile:
     """Parse *raw* coverage-artifact bytes as *declared_format* (see
     :func:`load_coverage_profile`), or render the artifact's ABSENCE.
 
@@ -193,11 +206,13 @@ def parse_coverage_artifact(raw: bytes | None, *, declared_format: str) -> Cover
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         ) from exc
-    return load_coverage_profile(text, declared_format=declared_format)
+    return load_coverage_profile(
+        text, declared_format=declared_format, producer=producer
+    )
 
 
 def read_coverage_artifact(
-    project_root: Path, artifact: str, *, declared_format: str
+    project_root: Path, artifact: str, *, declared_format: str, producer: str | None = None
 ) -> CoverageProfile:
     """Read the project-relative *artifact* and parse it as *declared_format*
     (see :func:`parse_coverage_artifact`).
@@ -214,7 +229,9 @@ def read_coverage_artifact(
     reservation (:func:`assay.runner.evaluate_r1`'s ``profile=None`` default).
     """
     raw = safeio.read_bounded_file(project_root, artifact, limit=MAX_COVERAGE_ARTIFACT_BYTES)
-    return parse_coverage_artifact(raw, declared_format=declared_format)
+    return parse_coverage_artifact(
+        raw, declared_format=declared_format, producer=producer
+    )
 
 
 def derive_exclusion_capability(profile: CoverageProfile) -> str:

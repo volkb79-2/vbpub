@@ -918,7 +918,10 @@ def evaluate_r1(
 
         if profile is None:
             profile = coverage.read_coverage_artifact(
-                project_root, judge.coverage.artifact, declared_format=judge.coverage.format
+                project_root,
+                judge.coverage.artifact,
+                declared_format=judge.coverage.format,
+                producer=judge.coverage.producer,
             )
         coverage.check_empty_coverage(profile)
 
@@ -1636,6 +1639,7 @@ def _execute_snapshot_unit(
     wants_coverage: bool,
     coverage_artifact: str | None,
     coverage_format: str | None,
+    coverage_producer: str | None,
     process_runner: ProcessRunner,
     clock: Clock,
     create_missing_parents: bool = False,
@@ -1769,7 +1773,11 @@ def _execute_snapshot_unit(
         assert reservation is not None
         try:
             raw = reservation.consume()
-            profile = coverage.parse_coverage_artifact(raw, declared_format=coverage_format)
+            profile = coverage.parse_coverage_artifact(
+                raw,
+                declared_format=coverage_format,
+                producer=coverage_producer,
+            )
         except AssayError as exc:
             profile_error = exc
     if reservation is not None:
@@ -2128,6 +2136,11 @@ def _run_prepared_lane(
     """
     coverage_artifact = lane.judge.coverage.artifact if r1_declared else None
     coverage_format = lane.judge.coverage.format if r1_declared else None
+    # B045: the DECLARED producer travels with the format all the way to the
+    # parser, because for `coverage-istanbul-json` the two together decide
+    # what `branchMap` means (A-344). Same `r1_declared` disposition as the
+    # format itself -- a lane with no R1 declares no coverage at all.
+    coverage_producer = lane.judge.coverage.producer if r1_declared else None
     # P34/§3.6: `None` for every lane that does not declare R2 or whose
     # `judge.mutation` does not name them (every Python/Go lane through this
     # build, A-227) -- identical disposition to `coverage_artifact` above,
@@ -2163,6 +2176,7 @@ def _run_prepared_lane(
             wants_coverage=r1_declared,
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
+            coverage_producer=coverage_producer,
             process_runner=process_runner,
             clock=clock,
             create_missing_parents=True,

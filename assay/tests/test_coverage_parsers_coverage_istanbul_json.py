@@ -278,7 +278,7 @@ def test_a_non_object_top_level_is_refused_by_the_parser_itself():
     reached: a caller that skips the registry still gets a typed refusal
     rather than an ``AttributeError`` from inside a record loop."""
     with pytest.raises(AssayError) as excinfo:
-        coverage_istanbul_json.parse('["statementMap"]')
+        coverage_istanbul_json.parse('["statementMap"]', producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert "top level is list" in str(excinfo.value)
 

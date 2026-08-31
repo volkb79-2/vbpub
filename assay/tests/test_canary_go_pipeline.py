@@ -39,13 +39,16 @@ def control_source() -> str:
 
 @pytest.fixture
 def control_profile():
-    return go_cover.parse((FIXTURE_DIR / "greet_control.out").read_text(encoding="utf-8"))
+    return go_cover.parse(
+        (FIXTURE_DIR / "greet_control.out").read_text(encoding="utf-8"), producer=None
+    )
 
 
 @pytest.fixture
 def transformed_profile():
     return go_cover.parse(
-        (FIXTURE_DIR / "greet_transformed.out").read_text(encoding="utf-8")
+        (FIXTURE_DIR / "greet_transformed.out").read_text(encoding="utf-8"),
+        producer=None,
     )
 
 

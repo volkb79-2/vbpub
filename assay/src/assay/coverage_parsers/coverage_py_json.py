@@ -89,7 +89,11 @@ def sniff(text: str) -> bool:
     return stripped.startswith("{") and _SIGNATURE_KEY in text
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
+    # `producer` is part of the uniform parser protocol (package docstring,
+    # B045) and is deliberately unread here: this format has exactly one
+    # producer, `coverage.py` itself, so there is nothing to branch on.
+    del producer
     try:
         document = json.loads(text)
     except json.JSONDecodeError as exc:

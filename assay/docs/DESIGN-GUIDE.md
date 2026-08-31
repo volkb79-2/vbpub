@@ -1272,15 +1272,29 @@ to `(covered_arcs, total_arcs)` — is `None` when the format cannot express
 branch arcs at all (a Go cover profile: statement counts, no arcs, ever;
 `go-cover`'s parser sets it unconditionally and a test asserts that as a
 *measured* property of the format, not an omission that later looks like an
-oversight, A-O16). `coverage-istanbul-json` sets it unconditionally
-too, for a different measured reason (A-344): the format HAS a `branchMap`,
-but its two real producers disagree about what that map means — on one source
-file `@vitest/coverage-istanbul` reports 6 arcs across 3 typed branch nodes
-while `@vitest/coverage-v8` reports 4 single-location "branches" that are
-really v8's own executed/unexecuted ranges — and a lane declares the format,
-never the producer. A number whose meaning depends on an undeclared fact is
-the `declared_unverified`-class lie, so this format reports `None` until a
-producer can be declared (B038). It is a `BranchCoverage` with an EMPTY `by_line` for a real
+oversight, A-O16). `coverage-istanbul-json` is the case that made this a THREE-way distinction
+rather than a two-way one (A-344): the format HAS a `branchMap`, but its real
+producers disagree about what that map means — on one source file
+`@vitest/coverage-istanbul` reports 6 arcs across 3 typed branch nodes while
+`@vitest/coverage-v8` reports 4 single-location "branches" that are really
+v8's own executed/unexecuted ranges. Through schema v8 a lane declared the
+format and never the producer, so this format reported `None`
+unconditionally: a number whose meaning depends on an undeclared fact is the
+`declared_unverified`-class lie.
+
+**Since v9 the producer IS declared (B045), and the parser takes it.** For a
+producer in `vocabulary.ARC_BEARING_COVERAGE_PRODUCERS` — today exactly
+`istanbul` — the arcs are read; for every other producer, and for an
+undeclared one, `branches` stays `None`. The parameter is on all five
+parsers' `parse(text, *, producer)` signature, keyword-only with no default,
+so a caller that forgets it gets a `TypeError` rather than a silently
+arc-less profile. This does NOT make the capability sniffable: the producer
+is a *declaration*, checked against the artifact only in the fail-closed
+direction — a v8-range document declared as `istanbul` is REFUSED
+(`ERROR`/`UNREADABLE_ARTIFACT`) on its first `"branch"`-typed entry rather
+than being read as something it is not.
+
+Alongside the arcs, `branches` is a `BranchCoverage` with an EMPTY `by_line` for a real
 branch-tracking artifact's file that happens to have no branches — the exact
 trap `lcov` proves is real: `coverage.py` emits `BRF`/`BRH` for one file and
 nothing at all for a branch-free sibling in the SAME artifact, so capability

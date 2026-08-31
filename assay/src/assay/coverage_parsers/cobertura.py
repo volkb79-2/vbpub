@@ -70,7 +70,12 @@ def sniff(text: str) -> bool:
     return "<coverage" in text
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
+    # `producer` is part of the uniform parser protocol (package docstring,
+    # B045) and is deliberately unread here: `cobertura`'s producer
+    # vocabulary is still CLOSED AND EMPTY (no speculative names,
+    # DESIGN-GUIDE §5), so no lane can declare one to branch on.
+    del producer
     try:
         root = ET.fromstring(text)
     except ET.ParseError as exc:

@@ -727,14 +727,25 @@ invents a status for a line the instrumenter did not record. If that matters
 for your gate, `judge.mode = "whole_target"` judges whole files instead of a
 diff.
 
-**`require_branch = true` will refuse this format.** `branch_capability` is
-`"unavailable"`, deliberately: istanbul's `branchMap` means one thing under
-`@vitest/coverage-istanbul` (real per-arm arcs) and a different thing under
-`@vitest/coverage-v8` (v8's own executed/unexecuted ranges), and a lane
-declares the format, not the producer — so no honest single translation
-exists yet, and a fabricated branch percentage is worse than an absent one.
-Leave `require_branch` unset (or `false`) on a JavaScript lane; B038 tracks
-adding real arc support once a producer can be declared.
+**`require_branch = true` is legal on this format when — and only when — you
+declare `producer = "istanbul"`.** Istanbul's `branchMap` means one thing
+under the istanbul instrumenter family (real per-arm arcs) and a different
+thing under `@vitest/coverage-v8`/`c8` (v8's own executed/unexecuted ranges),
+so the answer depends on a fact the format name does not carry. Declare the
+producer and `branch_capability` is `"reported"` with real arcs; declare no
+producer and it stays `"unavailable"`, which is a measured refusal rather
+than a gap. See **Declaring the coverage producer** below.
+
+**A type-only module is not a coverage failure.** A `.ts`/`.tsx` file whose
+top-level statements are all `import type` / `export type` /
+`export interface` / `type` / `interface` / `declare` is erased by the
+TypeScript compiler, so no instrumenter records it and it is absent from the
+artifact. assay classifies such a file as code-free rather than failing the
+lane over it. The recogniser is a narrow lexer, not a TypeScript parser:
+anything it does not recognise — a declaration split over several top-level
+lines, a `.js` file, a runtime statement sharing a line with a type — answers
+"has code", which shows up as a visible unmeasured-file failure you can act
+on rather than a file silently dropped from the judgement.
 
 ### Declaring the coverage producer (B045)
 

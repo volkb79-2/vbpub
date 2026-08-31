@@ -91,7 +91,12 @@ def sniff(text: str) -> bool:
     return False
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
+    # `producer` is part of the uniform parser protocol (package docstring,
+    # B045) and is deliberately unread here: `go-cover` is one shape with one
+    # meaning, and the Go wave's `go-test`/`covdata` names (B047) differ in
+    # HOW the profile was collected, not in what any field means.
+    del producer
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines or not lines[0].startswith(_MODE_PREFIX):
         raise _malformed("profile has no 'mode:' header line")
