@@ -5,9 +5,17 @@
 | Package | `ciu-P38-strict-undefined` |
 | Branch | `fix/ciu-P38-strict-undefined` |
 | Worktree | `/workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/ciu` |
-| Backlog | CIU-74 (fixed), CIU-78 (new, filed, NOT fixed -- out of scope) |
-| Commits | `8416ce93` (the fix), `616637c1` (sync merge from main), `61fa0bf9` (CIU-78 backlog filing) |
-| Gate | `./run-gate.py ciu --worktree <worktree-root>` -- **FAIL/COMMAND_FAILED, exit 1** -- see §3 for why this is not a regression from this package |
+| Backlog | CIU-74 fixed and closed; CIU-78 found, then superseded by main's own fix (`aa6cf1fd`) once rebased; CIU-79 filed (scaffold.py StrictUndefined adoption decision, NOT fixed -- out of scope by design) |
+| Base | rebased onto `main` @ `384993b6` (`git rebase main`, one commit skipped, one conflict resolved -- see §8) |
+| Final commit | `00f57308` |
+| Gate (final, post-rebase) | `./run-gate.py ciu --worktree <worktree-root>` -- **PASS, exit 0** (R0 PASS, R1 PASS at 100.0%) -- see §4 |
+
+This REPORT was updated after a coordinator review (round 1, 4 blockers, all
+addressed -- §8). §§1-3 and §5-7 describe the original implementation and are
+still accurate; §4 now carries the FINAL post-rebase gate verdict (the
+original pre-rebase FAIL verdict, and why it was never this package's fault,
+is kept in §4a for the record since the review independently verified that
+reasoning before prescribing the rebase).
 
 ## 1. What was done
 
@@ -35,7 +43,8 @@ existing merge -- a one-line addition per site, matching the existing
 helper. `ciu.selected_profiles`/`ciu.deployed_stacks` keep their existing,
 deliberately opposite, fail-loud-when-absent contract (S3.12) -- unchanged.
 
-Full list of touched files:
+Full list of touched files (original implementation; §8 lists the review-round
+additions):
 
 ```
 ciu/README.md
@@ -46,7 +55,7 @@ ciu/src/ciu/config_model.py
 ciu/tests/tests/test_ciu_config_model.py
 ciu/tests/tests/test_ciu_configfile_schema.py
 ciu/tests/tests/test_ciu_render_selection_context.py
-ciu/KNOWN_ISSUES_TODO_BACKLOG.md   (CIU-78 filing, separate commit, see §4)
+ciu/KNOWN_ISSUES_TODO_BACKLOG.md
 ```
 
 Every file is inside the scope the task named: the render function, the
@@ -79,7 +88,7 @@ fix (`PYTHONPATH=src python3 -m pytest tests -q`, no xdist, devcontainer venv)
 and diffing the failure sets:
 
 - Before any change: `3260 passed, 1 failed` (the pre-existing lease-clock
-  flake, see §3).
+  flake, see §4a).
 - After the render fix, before touching any test: `3258 passed, 3 failed` --
   the 1 pre-existing flake plus exactly these two.
 - After updating both: `3265 passed, 1 failed` (only the pre-existing flake
@@ -119,121 +128,89 @@ directly (not `render_jinja2_text`) and asserts it still reproduces the silent
 `"dstdns--postgres"` output -- proving the strict-raise test next to it is
 actually exercising the fix, not a tautology.
 
-## 4. The real gate verdict (verbatim, not summarized)
+## 4. The FINAL real gate verdict (post-rebase, post-review-fixes; verbatim)
 
 Ran `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P38-strict-undefined`
-from inside `ciu/`, twice (at commits `616637c1` and `61fa0bf9`; identical
-result both times). Console output of the second (final) run:
+from inside `ciu/`, at the final commit `00f57308` (after the rebase onto
+`main`@`384993b6` and all three review-fix commits, §8). Console output:
 
 ```
 run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
 run-gate: rev 23 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
 run-gate: ephemeral env (nothing declared)
 run-gate: budget 30m (advisory)
-run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-3704649-1788136624 ...
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-180305-1788140080 --cgroup-parent dev-background.slice -e CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice -v /home/vb/volkb79-2/vbpub:/home/vb/volkb79-2/vbpub -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c '...'
 assay-2.3.0.pyz: OK
-ciu: FAIL/COMMAND_FAILED (exit 1)
-  commit: 61fa0bf9f5b2c20cab6de8f522c8867ac85daeb4
+ciu: PASS (exit 0)
+  commit: 00f5730830d9097ba9d33629dad2fb2aa17c6f9d
   argv: /opt/tester-venv/bin/python run-ciu-tests.py
-run-gate: lane 'ciu' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-ciu-3704649-1788136624.log
 run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/ciu/.assay/verdict-ciu.json
-run-gate: lane 'ciu' exit 1
-GATE_EXIT=1
+run-gate: lane 'ciu' exit 0
+GATE_EXIT=0
 ```
 
-The gate's own exit status is **1 (FAIL)**. This is read from the gate command
-itself, in its own step -- not piped, not inferred from wrapper output (per
-AGENTS.md "Read the exit status from the job, never from the wrapper").
+The gate's own exit status is **0 (PASS)**, read in its own step, not piped
+(per AGENTS.md "Read the exit status from the job, never from the wrapper").
 
 Verdict artifact (`.assay/verdict-ciu.json`), the two claims:
 
 ```json
 {
-  "outcome": "FAIL",
-  "reason_code": "COMMAND_FAILED",
-  "exit_code": 1,
-  "commit": "61fa0bf9f5b2c20cab6de8f522c8867ac85daeb4",
+  "outcome": "PASS",
+  "exit_code": 0,
+  "commit": "00f5730830d9097ba9d33629dad2fb2aa17c6f9d",
   "claims": [
-    { "rigor": "R0", "status": "FAIL", "reason_code": "COMMAND_FAILED", "verified_by_assay": true },
-    { "rigor": "R1", "status": "PASS", "coverage": { "pct": 100.0, "considered": 2, "covered": 6, "executable": 6 }, "verified_by_assay": true }
+    { "rigor": "R0", "status": "PASS", "verified_by_assay": true },
+    { "rigor": "R1", "status": "PASS", "coverage": { "pct": 100.0, "considered": 3, "covered": 6, "executable": 6 }, "verified_by_assay": true }
   ],
   "judgment": {
     "r1": { "mode": "changed_lines", "require_branch": true, "fail_under": 100.0 },
-    "resolved": { "base": "c36a06a5bb5cf87b06529de158971d605250dc2c", "language": "python", "source_roots": ["src"] }
+    "resolved": { "base": "384993b6be0342f685743dded83deadf3728a7b6", "language": "python", "source_roots": ["src"] }
   }
 }
 ```
 
-**R0** (the raw `run-ciu-tests.py` / pytest exit code across the WHOLE 3266-test
-suite) is FAIL. **R1** (assay's own changed-lines coverage judgment against
-this package's actual diff, base `c36a06a5`) is **PASS at 100.0%** -- every
-line and branch this package's own commits touch is covered.
+**R0** (the raw `run-ciu-tests.py` / whole-suite pytest exit code) is **PASS**.
+**R1** (assay's own changed-lines coverage judgment against this package's
+actual diff, base `384993b6` = current `main`) is **PASS at 100.0%**. Local
+run at the same commit (`PYTHONPATH=src python3 -m pytest tests -q
+--cov=ciu --cov-branch`, no xdist): **3269 passed**, `TOTAL` coverage 100%
+line+branch across all 40 modules in `src/ciu/`.
 
-Full pytest tail from the verdict artifact's `result_stdout_tail` (only the
-failure summary and coverage total; the per-file coverage table showed 100%
-for every one of the 40 modules in `src/ciu/`, `composefile.py` and
-`config_model.py` included):
+Both previously-failing pre-existing tests (the two `dont_write_bytecode`
+tests, CIU-78; the lease-clock flake, CIU-76) are green now that the branch
+is rebased past main's own independent fixes for both (`aa6cf1fd`, and
+`eb023f24`/`384993b6` respectively) -- exactly what the review predicted
+("Reviewer's local full-suite run on your branch shows exactly one real
+remaining failure (CIU-76, fixed by the P36 merge) -- should go green after
+rebase").
+
+## 4a. The ORIGINAL (pre-rebase, pre-review) gate verdict -- superseded, kept for the record
+
+Before the coordinator review, the branch was based on a stale `main` snapshot
+(`a78a0046`, itself synced forward once by a plain merge to `858766d1` --
+commit `616637c1`, since superseded by the proper rebase in §8). At that base,
+`./run-gate.py ciu` returned **FAIL/COMMAND_FAILED, exit 1** with R0 FAIL /
+R1 PASS at 100.0%, on exactly 3 failures:
 
 ```
-Required test coverage of 100% reached. Total coverage: 100.00%
-=========================== short test summary info ============================
 FAILED tests/tests/test_ciu_deploy_actions.py::test_check_suppresses_bytecode_writes_while_importing_hooks
 FAILED tests/tests/test_ciu_deploy_actions.py::test_check_restores_the_bytecode_flag_after_a_failed_import
 FAILED tests/tests/test_ciu_worktree_reap.py::TestLeaseLifecycleChangesTheNextSurvey::test_re_expiring_after_an_extend_becomes_lease_expired_again
 ================== 3 failed, 3263 passed in 138.64s (0:02:18) ==================
 ```
 
-### Why the 3 failures are not this package's fault
-
-1. **`test_re_expiring_after_an_extend_becomes_lease_expired_again`** --
-   already known and already filed as **CIU-76** on `main` (`858766d1`,
-   pulled into this branch by the sync merge, §5): `apply_lease` has no `now:`
-   override, so its 1h extend is computed against the REAL wall clock, not the
-   test's frozen `NOW = datetime(2026, 8, 25, ...)` fixture. The real date
-   (2026-08-31) has advanced far enough past the fixture's frozen `NOW` that
-   the math no longer lines up. Confirmed pre-existing and untouched by this
-   package (`src/ciu/worktree.py`, `tests/tests/test_ciu_worktree_reap.py` --
-   neither file appears in this package's diff).
-
-2. **`test_check_suppresses_bytecode_writes_while_importing_hooks`** and
-   **`test_check_restores_the_bytecode_flag_after_a_failed_import`** -- NEW
-   findings from this gate run, not previously filed. Both assert
-   `sys.dont_write_bytecode is False` after `deploy.action_check`'s
-   save/restore of that flag. The save/restore logic itself is correct (it
-   restores to whatever the ambient value was), but `assay.toml` (line 25)
-   declares the gate's own subprocess environment as
-   `env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }` -- so
-   `sys.dont_write_bytecode` starts `True` in the real gate, and the
-   hardcoded `is False` assertion fails. Reproduced with **zero code
-   changes**, purely by setting the env var, on this exact worktree state:
-
-   ```
-   $ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest \
-       tests/tests/test_ciu_deploy_actions.py::test_check_suppresses_bytecode_writes_while_importing_hooks \
-       tests/tests/test_ciu_deploy_actions.py::test_check_restores_the_bytecode_flag_after_a_failed_import -q
-   ...
-   E       assert True is False
-   E        +  where True = sys.dont_write_bytecode
-   2 failed, 1 warning in 0.73s
-   ```
-
-   `deploy.py`, `provisioning.py` (which has the identical save/restore
-   pattern, untested either way), and `test_ciu_deploy_actions.py` are all
-   untouched by this package's diff. Filed as **CIU-78**
-   (`61fa0bf9`, see §4) rather than fixed here -- out of this package's
-   named scope (`src/ciu/config_model.py`, the `ciu.instances`
-   context-assembly sites, and test files supporting THIS fix). This also
-   means the real `./run-gate.py ciu` gate is currently red for every ciu
-   package in flight, not just this one -- worth flagging to whoever is
-   coordinating the concurrent implementer batch (ciu-P36..P40 per CIU-77's
-   own note).
-
-Net: this package's own change is proven correct and fully covered
-(R1 100% PASS, and the local isolated run before touching any pre-existing
-test showed the fix introduces exactly 0 new failures beyond the two tests
-already discussed and fixed in §2); the gate's overall RED is entirely
-attributable to two separate, pre-existing, already-triaged-or-now-filed
-defects this package's scope explicitly does not cover.
+All three were confirmed pre-existing and unrelated to this package at the
+time (reproduced with zero code changes; none of the implicated files
+-- `deploy.py`, `provisioning.py`, `worktree.py`,
+`test_ciu_deploy_actions.py`, `test_ciu_worktree_reap.py` -- appear anywhere
+in this package's diff). The lease-clock one was already filed as CIU-76 on
+`main`; the two `dont_write_bytecode` ones were newly found here and filed as
+CIU-78 (commit `61fa0bf9`, since dropped during the rebase -- §8 -- because
+`main` had independently fixed the same defect in the meantime, in
+`aa6cf1fd`). The review's independent verification of this same reasoning
+(rather than disputing it) is why the prescribed remedy was "rebase past the
+fixes," not "diagnose the failures."
 
 ## 5. The `--worktree` path gotcha (recording for whoever reads this next)
 
@@ -246,27 +223,87 @@ relative part is already `ciu`. Passing `--worktree .../ciu-P38-strict-undefined
 (ending in `/ciu`, matching the brief literally) makes it resolve to a
 DOUBLED, nonexistent `.../ciu/ciu` inside the container (`cd` would fail).
 Confirmed via `--dry-run` before running for real. The correct value is the
-WORKTREE ROOT, `.../ciu-P38-strict-undefined` (no trailing `/ciu`) -- verified
-by `--dry-run` showing the correct `cd .../ciu-P38-strict-undefined/ciu`
-afterwards, and by the real run above completing without a `cd` failure.
+WORKTREE ROOT, `.../ciu-P38-strict-undefined` (no trailing `/ciu`).
 
-## 6. Sync merge (`616637c1`)
+## 6. Base history: sync merge, then proper rebase (superseding it)
 
-The worktree's base (`a78a0046`) was 3 commits behind `main` by the time the
-fix was ready to gate. One of those 3, `b8102bc2` (`fix(ciu): correct stale
-assay pin version 2.2.0 -> 2.3.0`), is required for `./run-gate.py ciu` to run
-at all -- without it every invocation refuses with a pin-version mismatch
-(confirmed live via `--dry-run` before the merge). Merged `main` into this
-branch; clean, no conflicts (`KNOWN_ISSUES_TODO_BACKLOG.md` was the only
-overlapping file, touched by main's own `858766d1` CIU-76/CIU-77 filing, not
-by this package). This is a sync, not new work, and is why the fix commit
-(`8416ce93`) predates the merge in the log.
+Originally the worktree's stale base (`a78a0046`) was brought forward with a
+plain `git merge main` (commit `616637c1`) so the gate's assay-pin fix
+(`b8102bc2`) would be present -- adequate to run the gate, but left the branch
+still behind `main`'s later commits and, per the review, an awkward base for
+judging the diff. The review's blocker 1 prescribed a proper `git rebase
+main` instead; §8 covers that rebase, which replaced `616637c1`'s lineage
+entirely (the merge commit itself carried no unique content, so the rebase
+simply dropped it and replayed this package's own commits directly onto
+current `main`).
 
 ## 7. Scope discipline
 
-Nothing outside the task's named scope was touched except the CIU-78 backlog
-filing (`ciu/KNOWN_ISSUES_TODO_BACKLOG.md`), which is the sanctioned
-"find something out of scope -> record it, don't fix it" path (task's own "If
-blocked" clause + the estate's `backlog` skill), and the sync merge from
-`main` (§6), which was necessary to run the gate at all and introduced no
-content conflicts with this package's own diff.
+Nothing outside the task's named scope was touched: the CIU-78 backlog filing
+(later superseded by the rebase, §8) and CIU-79 backlog filing (§8) are both
+the sanctioned "find something out of scope -> record it, don't fix it" path
+(task's own "If blocked" clause + the estate's `backlog` skill); the base
+history changes (sync merge, then rebase) were necessary to run the gate
+against current `main` at all and introduced no unresolved content conflicts
+with this package's own diff (§8 details the two conflicts the rebase itself
+hit and how each was resolved).
+
+## 8. Review round 1 -- four blockers, all addressed
+
+Coordinator review verdict: ACCEPT-conditional, 4 blockers.
+
+**Blocker 1 (stale base).** Rebased onto current `main` (`384993b6`) via
+`git rebase main` from a backup ref (`backup/ciu-P38-before-rebase`, created
+first). The branch's own merge commit (`616637c1`) carried no unique
+content and was dropped automatically; the 5 real commits were replayed.
+Two conflicts, both in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`:
+  - At the old CIU-78-filing commit: `git rebase --skip`, per the review's
+    explicit prescription -- confirmed first (`git show --stat`) that commit
+    touched nothing but that one file, so skipping it discarded nothing else.
+  - At the mark-CIU-74-FIXED commit: resolved by hand, dropping the
+    now-redundant "CIU-78 FILED" paragraph (main's own `aa6cf1fd` already
+    carried a FIXED version) and rewording the CIU-74 header paragraph and
+    row status text to stop claiming CIU-76/CIU-78 were still-open
+    pre-existing failures -- this IS blocker 2's fix, done in the same
+    conflict-resolution step since both blockers touched the identical
+    lines. Final commit for this step: `924dc844`.
+
+**Blocker 2 (CIU-78 backlog conflict).** Resolved as part of blocker 1's
+conflict resolution above: my `61fa0bf9` was skipped entirely (main's
+`aa6cf1fd` already carries CIU-78 marked FIXED, with a fuller and more
+accurate fix description than my FILED-only row would have downgraded it
+to), and the CIU-74 paragraph/row's stale "pre-existing... unrelated"
+phrasing was corrected to point at `main`'s independent fixes instead.
+
+**Blocker 3 (untested `render_configfiles` setdefault, `composefile.py:979`).**
+Reproduced the reviewer's deletion probe first (commenting out that one
+`setdefault` line, full suite stayed at 3268 passed -- no failure). Added
+`test_render_configfiles_ciu_instances_membership_check_with_no_fanout` to
+`tests/tests/test_ciu_configfile_schema.py`, built on its `_setup()` harness
+exactly as instructed: a configfile template `"fans_out = {{ 'api' in
+ciu.instances }}\n"` rendered through `render_configfiles` (not
+`render_compose`) with a `ciu_context` carrying no `instances` key must
+render `"fans_out = False\n"`. Verified both directions: passes at HEAD;
+raises `jinja2.exceptions.TemplateError: ... 'dict object' has no attribute
+'instances'` when the setdefault line is deleted. Commit: `dbd8b13c`.
+
+**Blocker 4 (scaffold.py's two untouched, now-misdocumented Jinja paths).**
+Minimum required fix only, as instructed: corrected `_render_jinja`'s
+docstring (`scaffold.py:91-107`), which falsely claimed "the SAME engine
+production uses (S3.2 step 1)" post-CIU-74, and added a comment at the `ciu
+init` validation preflight's own inline `Environment` construction inside
+`build_files` (`scaffold.py:275-310`) flagging the false-certification risk
+in place, at the point a future reader would otherwise trust a green `ciu
+init` too far. Zero behavior change (confirmed: scaffold/init-tagged test
+subset 43 passed, full suite 3269 passed / 100% coverage, both unchanged).
+Commit: `4aa47250`. Filed the decision ask as its own new entry, **CIU-79**
+(next free ID, verified against the post-rebase `main` state which already
+carries CIU-74 through CIU-78) -- citing both line ranges, the
+false-certification risk, and the explicit need to render-and-check ciu's
+own shipped scaffold templates before `StrictUndefined` can be adopted
+there safely; not attempted blind, per the review's own instruction.
+Commit: `00f57308`.
+
+**Final state after all four:** `./run-gate.py ciu` **PASS, exit 0** (§4);
+`git merge-base --is-ancestor main HEAD` confirms `main` is a true ancestor
+of the final commit.

@@ -154,3 +154,79 @@ behavioral tests, SPEC, and user documentation landed together" -- all four
 landed in `8416ce93`). Points at this REPORT for the real gate verdict rather
 than re-summarizing it in the backlog row. Added a matching "Last updated"
 header paragraph.
+
+---
+
+## Review round 1 fixes (coordinator review, 4 blockers) -- rebase + 3 new commits
+
+The branch was rebased onto current `main` (`git rebase main`) rather than
+merged again: `git log --oneline main..HEAD` before the rebase showed the
+6-commit branch (including the earlier sync-merge `616637c1` and the
+now-superseded `61fa0bf9` CIU-78 filing); a backup ref
+`backup/ciu-P38-before-rebase` was created first. Default (non-`--rebase-merges`)
+rebase correctly dropped the merge commit and replayed only the 4 unique
+commits. One real conflict, at the old `61fa0bf9` commit: resolved per the
+review's explicit prescription by `git rebase --skip` (that commit's entire
+content -- a CIU-78 backlog filing -- was already superseded by main's own
+`aa6cf1fd`, confirmed by diff-stat showing it touched nothing else). A second
+conflict at `924dc844` (formerly `4884b960`, marking CIU-74 FIXED) was content,
+not structural: resolved by keeping only the CIU-74 paragraph, dropping the
+now-redundant CIU-78-FILED paragraph it used to sit next to, and rewording both
+the header paragraph and the CIU-74 row's own status text to stop claiming
+CIU-76/CIU-78 were "pre-existing... unrelated" failures (main had already fixed
+both by the new base) -- exactly the review's blocker 2 instruction. Rebase
+completed clean; `git merge-base --is-ancestor main HEAD` confirmed `main` is
+now an ancestor.
+
+## Commit `dbd8b13c` -- test(ciu): CIU-74 review blocker 3 -- cover render_configfiles' own instances setdefault
+
+Reproduced the reviewer's deletion probe locally first: commenting out
+`composefile.py`'s third `merged_ciu.setdefault("instances", {})` (inside
+`render_configfiles`'s per-instance loop) left the full local suite at
+**3268 passed**, identical to baseline -- confirmed genuinely untested, not a
+false positive. Added
+`test_render_configfiles_ciu_instances_membership_check_with_no_fanout` to
+`test_ciu_configfile_schema.py`, reusing its `_setup()` harness per the
+review's instruction: a configfile template `"fans_out = {{ 'api' in
+ciu.instances }}\n"`, rendered through `render_configfiles` with a
+`ciu_context` carrying no `instances` key, must produce `"fans_out =
+False\n"`. Verified both directions again after writing the test: passes
+against current code (11/11 in that file); raises
+`jinja2.exceptions.TemplateError: ... 'dict object' has no attribute
+'instances'` when the setdefault line is deleted. Full local suite:
+**3269 passed** (one more than the 3268-passed probe run, since this commit
+adds exactly one new test), 100% line+branch on `--cov=ciu --cov-branch`.
+
+## Commit `4aa47250` -- fix(ciu): CIU-74 review blocker 4 -- scaffold.py's Jinja render docstring was false
+
+Minimum required fix only, per the review's own framing (decision on
+adopting `StrictUndefined` there is deferred to CIU-79, not attempted
+blind here). Corrected `_render_jinja`'s docstring (`scaffold.py:91-107`),
+which claimed "the SAME engine production uses (S3.2 step 1)" -- true before
+CIU-74, false after. Added a matching comment at the OTHER site, the `ciu
+init` validation preflight's own inline `Environment` construction inside
+`build_files` (`scaffold.py:275-310`), flagging the false-certification risk
+directly at the point a future reader would otherwise assume a green `ciu
+init` proves no undefined-reference bug. Docstring/comment only, zero
+behavior change -- confirmed by running the scaffold/init-tagged subset
+(`-k "scaffold or init"`, 43 passed) and the full suite (3269 passed, 100%
+coverage) unchanged.
+
+## Commit `00f57308` -- backlog(ciu): file CIU-79 -- scaffold.py's two Jinja render paths still lenient
+
+Filed per the review's explicit instruction (own new entry, not attempted
+in-package): next free ID verified against the post-rebase `main` state
+(`CIU-74`..`CIU-78` all already present; `CIU-79` free). Cites both line
+ranges (`scaffold.py:91-107`, `scaffold.py:275-310`), the false-certification
+risk, and the explicit need to render-and-check ciu's own shipped scaffold
+templates before adopting `StrictUndefined` there -- verbatim per the
+review's own three required contents.
+
+## Final real gate run (post-rebase, post-all-4-blocker-fixes)
+
+`./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P38-strict-undefined`
+at commit `00f57308`: **PASS, exit 0**. R0 (raw pytest, whole suite) PASS;
+R1 (assay's changed-lines coverage judgment) PASS at 100.0%. See REPORT §4
+for the verbatim verdict. All three previously-failing pre-existing tests
+(the two `dont_write_bytecode` tests, CIU-78; the lease-clock flake, CIU-76)
+are green now that the branch is rebased past main's own fixes for both.
