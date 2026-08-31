@@ -4377,10 +4377,24 @@ generates a minimal CIU-enabled repository layout: a validated
 skeletons under `applications/<name>/` (defaults + compose template with one
 GEN_LOCAL secret). Templates ship INSIDE the wheel (`ciu/templates/`) so a
 plain `pip install ciu` carries them. Validation-first: the global template
-is rendered through the real Jinja step and TOML-parsed BEFORE anything is
-written; an existing target file is never overwritten — the run refuses
-naming every existing target. It does NOT run `ciu env generate` (side
-effects stay with the operator); the printed next steps say to.
+AND every stack's own `ciu.defaults.toml.j2` are rendered through the real
+Jinja step and TOML-parsed BEFORE anything is written; an existing target
+file is never overwritten — the run refuses naming every existing target. It
+does NOT run `ciu env generate` (side effects stay with the operator); the
+printed next steps say to.
+
+  **The preflight render uses `StrictUndefined` (CIU-81), matching the real
+  S3.2 render path exactly** (`config_model.render_jinja2_text`, since
+  CIU-74): a scaffold template referencing a name that would be undefined at
+  scaffold-render time raises, naming the template and the underlying Jinja
+  error, instead of silently rendering empty and only surfacing at a real
+  `ciu up`. This is the same `Environment(undefined=StrictUndefined,
+  keep_trailing_newline=True)` construction the production render uses;
+  every shipped scaffold template (`src/ciu/templates/*.j2`) was verified
+  clean under it before adoption — none legitimately need the lenient
+  default. `_render_jinja`, `scaffold.py`'s other Jinja helper (exercised
+  directly by its own unit tests; not itself on the `ciu init` write path
+  today), was switched identically for consistency.
 
 - **S19.1** Hook template library (`ciu init --hooks NAME1,NAME2`,
   ciu-P20/CIU-QOL-13). CIU ships a small library of copyable hook
