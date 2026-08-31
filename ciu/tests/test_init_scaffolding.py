@@ -135,6 +135,65 @@ def test_render_jinja_substitutes():
     assert scaffold._render_jinja("no vars\n", {}) == "no vars\n"
 
 
+def test_render_jinja_strict_undefined_raises_on_typo():
+    """CIU-81: _render_jinja matches config_model.render_jinja2_text's
+    StrictUndefined construction -- a mistyped/missing reference raises
+    instead of silently rendering as the empty string (the library-default
+    lenient Undefined's pre-CIU-81 behavior)."""
+    from jinja2 import UndefinedError
+
+    with pytest.raises(UndefinedError):
+        scaffold._render_jinja("hi {{ whom }}!", {"who": "x"})
+
+
+def test_build_files_global_preflight_catches_undefined_reference(
+        workdir, monkeypatch):
+    """CIU-81: the ciu.global.defaults.toml.j2 preflight render now uses
+    StrictUndefined too -- a scaffold-template defect referencing an
+    undefined name is caught HERE, as a clean SystemExit naming the
+    template and the underlying Jinja error, not left to silently render
+    empty and only surface at a real `ciu up` (the whole point of a
+    validation-first preflight)."""
+    real_template = scaffold._template
+    injected = (
+        real_template("global.defaults.toml.j2")
+        + '\nbroken = "{{ deploy.nonexistent_leaf }}"\n'
+    )
+    monkeypatch.setattr(
+        scaffold, "_template",
+        lambda n: injected if n == "global.defaults.toml.j2" else real_template(n),
+    )
+    plan = scaffold.collect_plan(
+        ["--project-name", "demo", "--stacks", "api"], workdir)
+    with pytest.raises(
+        SystemExit, match=r"ciu\.global\.defaults\.toml\.j2 failed to render"
+    ):
+        scaffold.build_files(plan, workdir)
+
+
+def test_build_files_stack_preflight_catches_undefined_reference(
+        workdir, monkeypatch):
+    """CIU-81 sibling: same StrictUndefined fidelity for a stack's own
+    ciu.defaults.toml.j2 preflight render, the second of the two sites this
+    entry names."""
+    real_template = scaffold._template
+    injected = (
+        real_template("stack.defaults.toml.j2")
+        + '\nbroken = "{{ nonexistent_top_level }}"\n'
+    )
+    monkeypatch.setattr(
+        scaffold, "_template",
+        lambda n: injected if n == "stack.defaults.toml.j2" else real_template(n),
+    )
+    plan = scaffold.collect_plan(
+        ["--project-name", "demo", "--stacks", "api"], workdir)
+    with pytest.raises(
+        SystemExit,
+        match=r"applications/api/ciu\.defaults\.toml\.j2 failed to render",
+    ):
+        scaffold.build_files(plan, workdir)
+
+
 def test_equals_form_flags_parse(workdir):
     plan = scaffold.collect_plan(
         ["--project-name=eqdemo", "--stacks=api,db",

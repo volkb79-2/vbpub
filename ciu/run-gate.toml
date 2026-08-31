@@ -12,9 +12,9 @@ schema_version = 1
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.3.0.pyz"]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
 budget = "30m"
 
 [lanes.ciu.pins.assay]
-version = "2.3.0"
-sha256 = "tools/assay/assay-2.3.0.pyz.sha256"
+version = "3.2.0"
+sha256 = "tools/assay/assay-3.2.0.pyz.sha256"

@@ -92,18 +92,18 @@ def _render_jinja(text: str, variables: dict) -> str:
     """Render a template with Jinja2, ``keep_trailing_newline=True`` matching
     S3.2 step 1's newline handling.
 
-    CIU-74 CAVEAT (do not restore the old docstring's parity claim): this is
-    NOT the same engine production uses. ``config_model.render_jinja2_text``
-    -- the real S3.2 step 1 -- renders with ``StrictUndefined`` (an undefined
-    reference raises); this helper and the validation preflight in
-    ``build_files`` below both still use the library-default lenient
-    ``Undefined`` (an undefined reference renders empty), unchanged since
-    before CIU-74. See CIU-81 for the tracked follow-up on whether/how to
-    close that gap.
+    CIU-81: uses ``StrictUndefined``, the same construction
+    ``config_model.render_jinja2_text`` (the real S3.2 step 1, since CIU-74)
+    uses — a mistyped or missing leaf key raises ``jinja2.UndefinedError``
+    instead of silently rendering as the empty string. Verified 2026-08-31
+    against every shipped scaffold template (``src/ciu/templates/*.j2``):
+    none legitimately reference a name that would be undefined at
+    scaffold-render time, so this closes the gap CIU-74 left open rather
+    than papering over a real lenient-default need.
     """
-    from jinja2 import Environment
+    from jinja2 import Environment, StrictUndefined
 
-    env = Environment(keep_trailing_newline=True)
+    env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
     return env.from_string(text).render(**variables)
 
 
@@ -273,19 +273,26 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 stamp + _hook_template_source(filename),
             ))
     # ---- validation-first: render + parse everything before writing -------
-    # CIU-74 CAVEAT (see CIU-81, not fixed here): this preflight renders with
-    # the library-default lenient Undefined, not the StrictUndefined the real
-    # S3.2 render path (config_model.render_jinja2_text) uses since CIU-74 --
-    # a scaffold template's leaf typo can pass this validation and only fail
-    # at the first real `ciu up`. Do not read a green `ciu init` here as proof
-    # a template has no undefined references.
-    from jinja2 import Environment
+    # CIU-81: renders with StrictUndefined now, matching the real S3.2 render
+    # path (config_model.render_jinja2_text, since CIU-74) exactly, so this
+    # preflight has genuine fidelity to production instead of certifying a
+    # scaffold template under weaker semantics than what actually consumes
+    # it — a scaffold template's leaf typo is now caught HERE, not at the
+    # first real `ciu up`. Verified against every shipped scaffold template
+    # (src/ciu/templates/*.j2) before adopting: none legitimately reference
+    # a name that would be undefined at scaffold-render time.
+    from jinja2 import Environment, StrictUndefined, TemplateError
 
-    jenv = Environment(keep_trailing_newline=True)
+    jenv = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
     import tomllib
 
     global_text = next(c for pth, c in files if pth.name == "ciu.global.defaults.toml.j2")
-    rendered_global = jenv.from_string(global_text).render(**base_vars)
+    try:
+        rendered_global = jenv.from_string(global_text).render(**base_vars)
+    except TemplateError as exc:
+        raise SystemExit(
+            f"init: ciu.global.defaults.toml.j2 failed to render: {exc} — template bug."
+        ) from exc
     parsed_global = tomllib.loads(rendered_global)  # S3.2 step 3 equivalent
 
     # Review-blocker guard: the pipeline needs [deploy.env.shared] with the
@@ -304,7 +311,13 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
     for stack in plan["stacks"]:
         entry = next((c for pth, c in files if pth.name == "ciu.defaults.toml.j2"
                       and stack["dir"] in str(pth)))
-        rendered = jenv.from_string(entry).render(**vars_stack)
+        try:
+            rendered = jenv.from_string(entry).render(**vars_stack)
+        except TemplateError as exc:
+            raise SystemExit(
+                f"init: {stack['dir']}/ciu.defaults.toml.j2 failed to render: "
+                f"{exc} — template bug."
+            ) from exc
         tomllib.loads(rendered)
         # Real shape validator (S3.5/S3.7) on the RENDERED defaults:
         config_model.validate_stack_shape(tomllib.loads(rendered))

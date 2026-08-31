@@ -738,7 +738,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `mount` (list of `docker -v` specs — source bind + anonymous volumes);
   `depends_on` (list of service names gated on health before prebuild, reusing
   the S9.3 readiness probe); `workdir` (default `/app`); `env` (table);
-  `network` (defaults to the stack's `deploy.network_name`).
+  `network` (defaults to the stack's `deploy.network_name`). **`build.context`
+  (and `dockerfile`, which moves WITH `context` — see S8.1a's rule, which
+  `ciu dev` shares) resolves against the REPO ROOT, not the stack dir**
+  (CIU-79) — `ciu dev` runs a plain `docker build` with no
+  `--project-directory` equivalent, so `_build_dev_image` resolves `context`
+  to an absolute repo-root-relative path itself before building the argv,
+  matching the convention S8.1a established for `ciu up`'s `docker compose`
+  invocations.
 - **S5a.2** `ciu dev <stack>` renders the stack config (S3), validates the
   profile (shape errors abort with `[S5a]`, exit 2), waits for each `depends_on`
   service to become healthy (exit 1 on timeout), resolves the image (uses
@@ -1291,8 +1298,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   **`dockerfile:` moves with `context:`, not independently.** Compose
   resolves `build.dockerfile` relative to `build.context`, never relative to
   `--project-directory` directly (the same rule `ciu dev`'s own
-  `_build_dev_image`, `src/ciu/dev.py`, already applies:
-  `Path(context) / dockerfile`). Once `context` becomes repo-root-relative,
+  `_build_dev_image`, `src/ciu/dev.py`, applies: `Path(context) / dockerfile`
+  — and, since CIU-79, resolves that `context` against the repo root too,
+  the same as this section — see S5a.1). Once `context` becomes repo-root-relative,
   an unset or bare `dockerfile: Dockerfile` now resolves against the repo
   root, not the stack dir — a stack author who moves `build_context` back to
   a plain repo-root-relative form after this change MUST move `dockerfile`
@@ -1497,6 +1505,21 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `None`). Hooks read identity/selection from these fields — never from
   ambient environment state (S9.4 forbids env mutation; ambient reads are the
   CIU-41 contamination vector).
+
+  **`ctx.identity_unreadable: bool` (CIU-80).** `instance_id`/`network` both
+  `None` is ambiguous on its own — it means either "this workspace is
+  genuinely unmanaged, no `ciu env generate` has run here" or "the record
+  exists and CIU could not parse it" (an `OSError`, a non-UTF-8 byte, or a
+  malformed entry — CIU-62). `ctx.identity_unreadable` disambiguates: `False`
+  in the genuinely-absent case (the default, and also the value in bare/unit
+  construction), `True` only when `ciu.env` is PRESENT but unreadable. **Both
+  identity readers set it identically, as a pair** — `deploy._workspace_identity`
+  (the `ciu check` preflight's HookContext, S13.4a) and
+  `engine.main_execution`'s STEP-12 real-run read — so a `validate_config`
+  preflight never sees an identity state its own `run()` would not (the
+  divergence S3.12/CIU-44 exists to prevent). Both keep the pre-CIU-80 `{}`
+  degradation (`instance_id`/`network` stay `None` either way) rather than
+  raising — additive, not a break.
 - **S9.4** Return contract — structured form **only**:
   `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later
@@ -4354,10 +4377,24 @@ generates a minimal CIU-enabled repository layout: a validated
 skeletons under `applications/<name>/` (defaults + compose template with one
 GEN_LOCAL secret). Templates ship INSIDE the wheel (`ciu/templates/`) so a
 plain `pip install ciu` carries them. Validation-first: the global template
-is rendered through the real Jinja step and TOML-parsed BEFORE anything is
-written; an existing target file is never overwritten — the run refuses
-naming every existing target. It does NOT run `ciu env generate` (side
-effects stay with the operator); the printed next steps say to.
+AND every stack's own `ciu.defaults.toml.j2` are rendered through the real
+Jinja step and TOML-parsed BEFORE anything is written; an existing target
+file is never overwritten — the run refuses naming every existing target. It
+does NOT run `ciu env generate` (side effects stay with the operator); the
+printed next steps say to.
+
+  **The preflight render uses `StrictUndefined` (CIU-81), matching the real
+  S3.2 render path exactly** (`config_model.render_jinja2_text`, since
+  CIU-74): a scaffold template referencing a name that would be undefined at
+  scaffold-render time raises, naming the template and the underlying Jinja
+  error, instead of silently rendering empty and only surfacing at a real
+  `ciu up`. This is the same `Environment(undefined=StrictUndefined,
+  keep_trailing_newline=True)` construction the production render uses;
+  every shipped scaffold template (`src/ciu/templates/*.j2`) was verified
+  clean under it before adoption — none legitimately need the lenient
+  default. `_render_jinja`, `scaffold.py`'s other Jinja helper (exercised
+  directly by its own unit tests; not itself on the `ciu init` write path
+  today), was switched identically for consistency.
 
 - **S19.1** Hook template library (`ciu init --hooks NAME1,NAME2`,
   ciu-P20/CIU-QOL-13). CIU ships a small library of copyable hook

@@ -314,17 +314,26 @@ def _container_status_fn(project: str | None, env_tag: str | None) -> Callable[[
     return status
 
 
-def _build_dev_image(profile: DevProfile, stack_dir: Path, *, run_fn) -> str:
-    """Build the dev image from ``profile.build`` and return its tag."""
+def _build_dev_image(profile: DevProfile, stack_dir: Path, *, run_fn, repo_root: Path) -> str:
+    """Build the dev image from ``profile.build`` and return its tag.
+
+    CIU-79: ``build.context`` (and ``dockerfile``, which moves WITH context —
+    S8.1a's rule) resolves against ``repo_root``, not ``stack_dir`` -- the
+    same repo-root-relative convention CIU-71 established for `ciu up`'s
+    `docker compose --project-directory`. `ciu dev` runs a plain `docker
+    build`, which has no `--project-directory` equivalent, so CIU resolves
+    the context to an absolute path itself before building the argv.
+    """
     build = profile.build or {}
     context = build.get("context", ".")
     dockerfile = build.get("dockerfile", "Dockerfile")
     target = build.get("target")
     tag = build.get("tag", f"ciu-dev-{stack_dir.name}")
-    argv = ["docker", "build", "-t", tag, "-f", str(Path(context) / dockerfile)]
+    context_dir = (Path(repo_root) / context).resolve()
+    argv = ["docker", "build", "-t", tag, "-f", str(context_dir / dockerfile)]
     if target:
         argv += ["--target", target]
-    argv.append(str(context))
+    argv.append(str(context_dir))
     rc = run_fn(argv, cwd=str(stack_dir))
     if rc != 0:
         raise RuntimeError(f"[S5a] dev image build failed (exit {rc}) for {stack_dir}")
@@ -423,7 +432,9 @@ def run_dev(
 
     # Resolve the image (prebuilt or built from profile.build).
     try:
-        image = profile.image or _build_dev_image(profile, stack_dir, run_fn=build_run_fn)
+        image = profile.image or _build_dev_image(
+            profile, stack_dir, run_fn=build_run_fn, repo_root=repo_root
+        )
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", flush=True)
         return 1

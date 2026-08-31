@@ -2499,15 +2499,18 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
     else:
         env_path.write_bytes(payload)
 
-    identity = deploy._workspace_identity(tmp_path)
+    identity, identity_unreadable = deploy._workspace_identity(tmp_path)
 
     assert identity == {}
     captured = capsys.readouterr()
     if payload is None:
         # A directory is not a file: this is the ABSENT path, which is a
         # legitimate state and must stay silent — a warning on every
-        # unprovisioned workspace is a warning nobody reads.
+        # unprovisioned workspace is a warning nobody reads. CIU-80: also
+        # NOT `identity_unreadable` — absent and unreadable are the two
+        # states this flag exists to keep apart.
         assert captured.err == "" and captured.out == ""
+        assert identity_unreadable is False
         return
     assert "[WARN] [S3.12] could not read workspace identity" in captured.err
     assert "ciu env generate" in captured.err, "the warning must name the repair"
@@ -2515,6 +2518,9 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
         "nothing may reach stdout here — `ciu check --json` puts only the "
         "JSON document there (S13.4a)"
     )
+    # CIU-80: PRESENT-but-unreadable sets the flag True, distinguishing this
+    # state from the legitimate-absent one asserted above.
+    assert identity_unreadable is True
 
 
 def test_check_secret_file_callback_refuses_every_name(tmp_path):

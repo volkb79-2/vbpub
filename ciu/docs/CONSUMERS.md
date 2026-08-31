@@ -423,6 +423,13 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
   workspace's own `ciu.env` — read identity from ctx, never from ambient env
   (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
+- `ctx.instance_id` / `ctx.network` both `None` is ambiguous by itself —
+  "genuinely unmanaged, no `ciu env generate` here" and "the record exists
+  but CIU could not parse it" look identical. `ctx.identity_unreadable`
+  (CIU-80) tells them apart: `False` in the genuinely-absent case, `True`
+  only when `ciu.env` is present but unreadable. A hook that needs to branch
+  differently on "unknown" versus "absent" reads this field; one that
+  doesn't care can ignore it (it defaults `False`).
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
@@ -533,16 +540,16 @@ locally (the container part still needs the operator's four-traps recipe):
 
 ```bash
 # 1. Verify the pinned Assay artifact (fails the gate if it ever drifts)
-sha256sum -c ciu/tools/assay/assay-2.3.0.pyz.sha256
+sha256sum -c ciu/tools/assay/assay-3.2.0.pyz.sha256
 
 # 2. Inspect the declared lane (validates config, runs nothing)
-cd ciu && .venv/bin/python tools/assay/assay-2.3.0.pyz lanes --file assay.toml
+cd ciu && .venv/bin/python tools/assay/assay-3.2.0.pyz lanes --file assay.toml
 
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
 #    line+branch, and judges the changed-line floor on base..HEAD (R1).
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
-  .venv/bin/python tools/assay/assay-2.3.0.pyz run ciu \
+  .venv/bin/python tools/assay/assay-3.2.0.pyz run ciu \
     --file assay.toml --verdict-json .assay/verdict-ciu.json
 ```
 
@@ -736,8 +743,8 @@ Rules worth knowing before you write one:
 - **`ctx.wait_healthy` / `ctx.wait_tcp` are `None`** at check time. Nothing is
   running, and a preflight must not perform I/O anyway.
 - `ctx.stack_dir`, `ctx.repo_root`, `ctx.instance_id`, `ctx.network`,
-  `ctx.selected_profiles` and `ctx.deployed_stacks` are all populated exactly
-  as during a real run.
+  `ctx.identity_unreadable` (CIU-80 — see §10 above), `ctx.selected_profiles`
+  and `ctx.deployed_stacks` are all populated exactly as during a real run.
 - **No side effects.** No Docker, no network, no writes. Like S9.4's
   env-mutation rule, this is a contract CIU does not sandbox.
 - **An exception is your hook's finding, not everyone's.** If your
@@ -1024,11 +1031,41 @@ own directory, which is `docker compose`'s default when no
 
 **`dockerfile:` moves with `context:`.** Compose resolves a `build.dockerfile`
 path relative to `build.context`, not relative to `--project-directory`
-directly (the same rule `ciu dev`'s own `_build_dev_image` already applies —
+directly (the same rule `ciu dev`'s own `_build_dev_image` applies —
 `src/ciu/dev.py`'s `Path(context) / dockerfile`). Once `context` becomes
 repo-root-relative, an UNSET or bare `dockerfile: Dockerfile` now looks for
 `<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never what a
 stack author wants. **Both keys need to move together.**
+
+**`ciu dev`'s `[<root>.dev].build.context`/`dockerfile` share this exact
+convention (CIU-79).** `ciu dev` runs a plain `docker build`, not `docker
+compose`, so there is no `--project-directory` flag to reach for — CIU
+resolves `context` to an absolute repo-root-relative path itself before
+building the `docker build` argv, then joins `dockerfile` onto that same
+resolved context, matching this section's rule exactly. A `[<root>.dev]`
+profile's `build.context = "."` therefore means the same thing a stack's
+`ciu.compose.yml.j2` `build.context = "."` does — the repo root, not the
+stack dir — so a stack that dual-ships both a production `build` block and
+a `[<root>.dev].build` block can write `context`/`dockerfile` identically in
+both places.
+
+> **This is a BREAKING change for `ciu dev`, not purely additive** (unlike
+> the rest of this bundle): every `[<root>.dev].build` written before
+> CIU-79 assumed `context`/`dockerfile` resolved against the STACK DIR (the
+> bug this fix closes), so a profile whose Dockerfile lives in the stack
+> directory — the common shape, since that was the only one that ever
+> worked — now fails to find it. An UNSET or bare `dockerfile: Dockerfile`
+> (or an explicit `context = "."` with no `dockerfile` override) now looks
+> for `<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never
+> what a stack author wants, same as the compose-side migration note below.
+> **If you have an existing `[<root>.dev].build` block**, either move the
+> Dockerfile to the repo root, or point `dockerfile` at its real,
+> repo-root-relative location: `dockerfile = "<stack-path>/Dockerfile"`
+> (e.g. `dockerfile = "apps/api/Dockerfile"` for a stack at `apps/api/`) —
+> both keys move together, exactly as the compose-side rule above states.
+> There is no dstdns/vbpub consumer stack affected today (no shipped
+> `.j2`/fixture declares `[<root>.dev].build`), but a downstream consumer's
+> own repo may have one.
 
 Concretely, if a stack directory `infra/mock-targets/` declares:
 

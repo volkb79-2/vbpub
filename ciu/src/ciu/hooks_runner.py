@@ -107,6 +107,22 @@ class HookContext:
     """S3.12 / CIU-44: this workspace's DOCKER_NETWORK_INTERNAL from its own
     ciu.env (exact path), when present."""
 
+    identity_unreadable: bool = False
+    """S3.12 / CIU-80: True when this workspace's ``ciu.env`` is PRESENT but
+    could not be read/parsed (an ``OSError``, ``UnicodeDecodeError`` or
+    ``WorkspaceEnvError`` while reading it) — distinct from a genuinely
+    ABSENT ``ciu.env`` (no ``ciu env generate`` has run here yet), which
+    leaves this ``False`` with ``instance_id``/``network`` also ``None``.
+    Both identity readers — ``deploy._workspace_identity`` (the ``ciu
+    check`` preflight) and ``engine.main_execution``'s STEP-12 real-run read
+    — degrade an unreadable record to the same ``{}`` (so ``instance_id``/
+    ``network`` are ``None`` either way, keeping preflight and real run
+    answering identically per S3.12/CIU-44) and set this field identically,
+    so a hook that legitimately branches on identity can tell "genuinely
+    unmanaged" from "record exists, CIU could not parse it" without either
+    site turning the degradation into a refusal. Additive: a hook author who
+    does not care about the distinction can ignore it."""
+
 
 # ---------------------------------------------------------------------------
 # S9.1 — load_hook
