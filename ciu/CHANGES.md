@@ -21,6 +21,23 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.7.1] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=01f09c18a531218b0a52f5cda3dcad6008b9d4ae -->
+
+### Fixed
+- fix(ciu): CIU-85 review fix -- make the PUBLIC_FQDN _clean_in test actually discriminate (688b4b05)
+- fix(ciu): CIU-85 -- _clean_in gains the identity strip its two siblings perform (0afb49ac)
+- fix(ciu): CIU-84 -- full sweep of stdout writes reachable on the ciu check --json path (926e747c)
+- fix(ciu): CIU-61 -- reconcile ciu init's _GITIGNORE_ENTRIES against .gitignored.ciu (1587b9da)
+- fix(ciu): CIU-59 -- factor detect_devcontainer_name() out of four duplicates (ae60efa5)
+
+### Documentation
+- docs(ciu): ciu-P44 -- REPORT addendum 2, review repair verified at true final HEAD (87d50499)
+- docs(ciu): ciu-P44 -- REPORT addendum, real gate re-run at true final HEAD (1a763a26)
+- docs(ciu): ciu-P44 -- LOG/REPORT for the CIU-59/61/84/85 bundle (18f2a952)
+- docs(ciu): backlog -- CIU-59/61/84/85 FIXED (ciu-P44), CIU-86 filed (a4415311)
+
 ## [7.7.1] - UNRELEASED
 
 ### Adoption / Migration Notes
