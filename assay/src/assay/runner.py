@@ -2306,6 +2306,17 @@ def _run_prepared_lane(
                     )
                     judgment_r1 = JudgmentR1(
                         coverage_format=lane.judge.coverage.format,
+                        # B045 (schema v9): the DECLARED producer, straight
+                        # from the loaded lane -- `None` when the lane
+                        # declared none, which `config` permits for every
+                        # format outside
+                        # `COVERAGE_PRODUCER_REQUIRED_FORMATS`. Wired in the
+                        # same commit the field is added so it is never
+                        # declared-but-never-populated: the parser has
+                        # consumed this value since Wave B commit 4, and
+                        # until now the verdict could not say which producer
+                        # that was.
+                        coverage_producer=lane.judge.coverage.producer,
                         coverage_artifact=lane.judge.coverage.artifact,
                         fail_under=lane.judge.fail_under,
                         allow_excluded=lane.judge.allow_excluded,
@@ -2668,6 +2679,13 @@ def _build_judgment_r2(
     # the artifact records what judged rather than what a human typed.
     effective_mode = lane.judge.mode if lane.judge.mode is not None else "changed_lines"
     return JudgmentR2(
+        # B046 (schema v9): stated explicitly rather than left to the
+        # dataclass default. This function builds the policy for a run
+        # ASSAY'S OWN engine performed, and that is exactly what `"native"`
+        # asserts; a reader of this call should not have to open `JudgmentR2`
+        # to learn which side of the fork it is on, and a future ingested
+        # builder is then a sibling function that says the other word.
+        producer="native",
         jobs=mutation_config.jobs,
         max_mutants=mutation_config.max_mutants,
         operators=mutation_config.operators,

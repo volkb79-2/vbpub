@@ -1,5 +1,5 @@
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -36,6 +36,7 @@
       "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     "r2": {
+      "producer": "native",
       "jobs": 1,
       "max_mutants": 50,
       "operators": [

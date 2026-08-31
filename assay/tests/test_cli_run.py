@@ -372,6 +372,11 @@ operators = ["python:compare-swap"]
     assert killed["start_byte"] < killed["end_byte"]
     assert len(killed["replacement_sha256"]) == 64
     assert document["judgment"]["r2"] == {
+        # B046/schema v9: the REAL producer's own value through the CLI --
+        # this lane runs assay's own mutation engine, so `native` is what a
+        # genuine end-to-end run puts on the wire, beside the jobs/
+        # max_mutants/operators policy that only a native run has.
+        "producer": "native",
         "jobs": 1,
         "max_mutants": 50,
         "operators": ["python:compare-swap"],

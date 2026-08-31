@@ -88,7 +88,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
         claim["reason_code"] = reason
     outcome = Outcome(status)
     document = {
-        "schema_version": 8,
+        "schema_version": 9,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -118,6 +118,9 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
                 "base": "a" * 40,
             },
             "r2": {
+                # B046/schema v9: required, and `native` is what every
+                # hand-built policy in this module has always described.
+                "producer": "native",
                 "jobs": 1,
                 "max_mutants": 50,
                 "operators": ["python:compare-swap"],
@@ -472,7 +475,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
         "description": "drop the CHECK constraint",
     }
     document = {
-        "schema_version": 8,
+        "schema_version": 9,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "4" * 40,
@@ -498,6 +501,9 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 "base": "a" * 40,
             },
             "r2": {
+                # B046/schema v9: required, and `native` is what every
+                # hand-built policy in this module has always described.
+                "producer": "native",
                 "jobs": 1,
                 "max_mutants": 50,
                 "operators": ["sql:drop-check"],
@@ -709,6 +715,8 @@ def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
             "require_branch": False,
         },
         "r2": {
+            # B046/schema v9: required; native is this policy's own meaning.
+            "producer": "native",
             "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap"],
@@ -773,6 +781,8 @@ def test_raw_layer_clause_refuses_two_tiers_that_disagree_about_the_mode():
             "require_branch": False,
         },
         "r2": {
+            # B046/schema v9: required; native is this policy's own meaning.
+            "producer": "native",
             "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap"],
@@ -879,6 +889,7 @@ def test_raw_layer_clause_declared_attribution_requires_every_kill_explained():
     can satisfy clause 1 and still let a kill go unexplained."""
     check = verify._check_kill_attribution
     declared_policy = {
+        "producer": "native",
         "jobs": 1, "max_mutants": 50, "operators": ["sql:drop-check"],
         "kill_attribution": "declared",
         "kill_signal_artifact": ".assay/kill-signal.txt",

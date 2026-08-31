@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:8",
+  "$id": "urn:assay:schema:verdict:9",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R3 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.target against judgment.r3.target), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks.",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 8
+      "const": 9
     },
     "assay_version": {
       "type": "string",
@@ -90,6 +90,10 @@
       "description": "(B025) True exactly when env_effective is NOT the real resolved environment -- a refusal whose own infrastructure declaration was itself unresolvable falls back to the lane's fixed env alone rather than leaving the whole refusal an uncaught exception with no artifact. Omitted (never false) in every other case, matching how every other optional field in this document is represented.",
       "type": "boolean",
       "const": true
+    },
+    "cwd_declared": {
+      "description": "B043 (schema v9): the lane's declared working directory, repository-top-relative, as the lane file spelled it -- the directory every command of this lane ran in, resolved against the snapshot's project root. DELIBERATELY NOT a member of the lane-resolved all-present-or-all-absent group below (declared_rigor .. enforcement): a lane that declares no cwd records NO cwd_declared, never '.', so this field is independently optional and carries no dependentRequired edge in either direction. Its absence means 'this lane ran at the snapshot's project root', which is the only behaviour that existed before v9. NOTHING ELSE RE-ROOTS (A-271, one path grammar): judge.coverage.artifact, equivalence_artifact, source_roots, targets and every infrastructure fact stay project-root-relative whatever this says.",
+      "$ref": "#/$defs/repo_tree_path"
     },
     "scope": {
       "$ref": "#/$defs/scope"
@@ -1112,8 +1116,50 @@
       "minLength": 1,
       "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$"
     },
+    "source_position": {
+      "description": "B046 (schema v9): one position in the judged source -- a project-root-relative path and a one-based line. Two fields, not one 'path:line' string: a path may contain a colon, and mutant_outcome one $def over already models the same pair as path + lineno. Used by judgment.r2.survived_uncovered and judgment.r2.lines_without_candidates, both of which exist so a consumer sees WHICH line the count is about rather than only how many.",
+      "type": "object",
+      "required": [
+        "path",
+        "lineno"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/wire_path"
+        },
+        "lineno": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "mutation_producer_tool": {
+      "description": "B046 (schema v9): the identity of the foreign mutation tool whose report assay ingested, copied VERBATIM from that report (framework.name/framework.version and schemaVersion of mutation-testing-report-schema). DECLARED-BY-ARTIFACT, NOT VERIFIED: assay read these strings out of a file the lane's own command wrote and has no independent evidence for any of them. This is deliberately NOT helpers[] -- helpers records tools ASSAY ITSELF INVOKED and resolved on PATH (A-230a), and assay did not invoke Stryker; putting an ingested tool there would launder a declared fact into a verified one.",
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "report_schema_version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "report_schema_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "mutation_operator": {
-      "description": "A language-qualified operator name. The prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump. REMOVING one is not additive, which is why python:uuid-equality-swap and python:enum-comparison-swap -- withdrawn in behaviour at 2.4.2 (B034/A-326) but still spellable under v7 -- lose their spellings HERE, at the v7->v8 cut, and not before (A-331).",
+      "description": "A language-qualified operator name, OR (schema v9, B046) an INGESTED operator in a namespace assay owns. The language-qualified prefix MUST equal judgment.resolved.language; that equality is cross-object and therefore lives in the model and the raw verifier, not here. Each language's vocabulary is closed, so a Python lane cannot declare a SQL operator. Adding a language, or an operator to a language, is an additive oneOf change and needs no further version bump. REMOVING one is not additive, which is why python:uuid-equality-swap and python:enum-comparison-swap -- withdrawn in behaviour at 2.4.2 (B034/A-326) but still spellable under v7 -- lose their spellings HERE, at the v7->v8 cut, and not before (A-331). The 'stryker:' branch is NOT a language: it is a NAMESPACE naming the foreign tool whose report assay ingested, and its member set is deliberately OPEN (a pattern, not an enum) because a foreign tool's mutator names are DATA assay records, never a catalogue assay closes. The language-equality rule above therefore does not and must not apply to it -- see assay.vocabulary.is_ingested_operator, which every prefix-equals-language check consults first.",
       "oneOf": [
         {
           "enum": [
@@ -1140,6 +1186,11 @@
             "sql:drop-trigger",
             "sql:widen-check-in"
           ]
+        },
+        {
+          "description": "B046 (schema v9): an operator name copied verbatim from an ingested mutation-testing-report-schema report, namespaced under the tool assay read it from. Open by construction; the three enum branches above stay closed. The pattern is the SAME SOURCE STRING assay.vocabulary.INGESTED_OPERATOR_RE compiles, character for character, and test_verdict_schema_is_packaged asserts that equality -- which is why the single-alternative group is spelled out rather than simplified away: adding a second ingested namespace must be one edit that fails loudly here until it is made in both places, not a simplification that quietly lets the two drift.",
+          "type": "string",
+          "pattern": "^(?:stryker):[A-Za-z0-9]+$"
         }
       ]
     },
@@ -1362,6 +1413,11 @@
           "type": "string",
           "minLength": 1
         },
+        "coverage_producer": {
+          "description": "B045 (schema v9): the DECLARED producer of the coverage artifact -- which tool wrote it, where one format has several producers that disagree about what its own fields mean. Optional here because it is optional in the lane file for every format but coverage-istanbul-json; absent means the lane declared none, never a default. Left a bare non-empty string on purpose, exactly as coverage_format beside it is: the legal producer set is keyed BY FORMAT (assay.vocabulary.COVERAGE_PRODUCERS_BY_FORMAT) and the format vocabulary is registry-driven and deliberately open in this document, so closing producers here would make adding a producer to an existing format a schema version bump while adding the format itself is not. The closure lives in the model and the loader; a producer that is spellable but refused (assay.vocabulary.REFUSED_COVERAGE_PRODUCERS) is refused at lane LOAD and can therefore never reach this field.",
+          "type": "string",
+          "minLength": 1
+        },
         "coverage_artifact": {
           "type": "string",
           "minLength": 1
@@ -1425,25 +1481,59 @@
       "description": "The effective R2 policy populated by the R2 CLI pipeline (P18) and correspondence-checked against the R2 claim (A-148). B035/A-329 added mode and targets at schema v8, mirroring judgment_r1: until then an R0,R2 document put nothing on the wire distinguishing a diff-based R2 (which must carry judgment.resolved.base) from a whole-target one (which must not), so the base rule was unenforceable for every SQL lane. mode is REQUIRED here for judgment_r1's reason -- the lane file records what a human declared, this records what actually judged.",
       "type": "object",
       "required": [
-        "jobs",
-        "max_mutants",
-        "operators",
         "kill_attribution",
-        "mode"
+        "mode",
+        "producer"
       ],
       "properties": {
+        "producer": {
+          "description": "B046 (schema v9): WHO computed the mutants this judgment is about. 'native' -- assay's own mutation engine chose the operators, generated the sites and executed them, which is every R2 verdict up to v8. 'ingested' -- the lane's own argv ran a foreign mutation tool inside the private snapshot and assay judged the report it wrote (the same sentence R1 has always been true of for coverage). REQUIRED and always emitted, for judgment_r2.mode's own reason (B035/A-329): an optional discriminator leaves every producer that simply omitted it indistinguishable, which is the state this field exists to end. The north-star's 'never conflate tiers' is what makes this a WIRE field rather than an implementation detail -- a consumer must be able to tell a natively-computed R2 from one computed over ingested evidence.",
+          "enum": [
+            "native",
+            "ingested"
+          ]
+        },
+        "producer_tool": {
+          "description": "B046: required when producer = 'ingested', forbidden when it is 'native' (assay's own identity is judge_provenance's, not a foreign tool's).",
+          "$ref": "#/$defs/mutation_producer_tool"
+        },
+        "survived_uncovered": {
+          "description": "B046: the mutants the ingested report marked NoCoverage -- mutants no test even EXERCISED, which map to the survived bucket but are the worst kind of survivor and are never hidden inside its count. Listed by position, not counted, so a consumer sees the untested line. Required (possibly empty) when producer = 'ingested'; forbidden when 'native', because assay's own engine has no NoCoverage concept and a native document carrying this would claim a computation that did not happen. Ascending by (path, lineno) and unique; array ORDER is not expressible here and is checked by the model and the raw verifier.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/source_position"
+          }
+        },
+        "discarded": {
+          "description": "B046: how many mutants the ingested report marked CompileError or RuntimeError -- invalid mutants assay's native engine never emits at all. EXCLUDED from the pct denominator and COUNTED, rather than silently dropped: a report that could not compile most of its own mutants has measured much less than its score implies. Required (possibly 0) when producer = 'ingested'; forbidden when 'native'.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "lines_without_candidates": {
+          "description": "B046: in-scope executable lines for which the ingested report produced NO mutant at all. With zero candidates in scope overall the R2 claim renders INCONCLUSIVE/NO_MUTANTS exactly as native R2 does; short of that, this is the honest record of where the foreign tool declined to mutate, which a bare pct cannot show. Required (possibly empty) when producer = 'ingested'; forbidden when 'native'. Ascending by (path, lineno) and unique; array ORDER lives in the model and the raw verifier.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/source_position"
+          }
+        },
         "jobs": {
-          "description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122).",
+          "description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122). Required when producer = 'native'; FORBIDDEN when producer = 'ingested' -- assay chose no concurrency for a run it did not orchestrate, and copying the foreign tool's own setting here would put that tool's configuration on the wire under assay's name.",
           "type": "integer",
           "minimum": 1
         },
         "max_mutants": {
-          "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory.",
+          "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory. Required when producer = 'native'; FORBIDDEN when producer = 'ingested' for jobs' own reason -- assay declared no ceiling on a discovery it did not perform.",
           "type": "integer",
           "minimum": 1,
           "maximum": 10000
         },
         "operators": {
+          "description": "Required when producer = 'native'; FORBIDDEN when producer = 'ingested'. An ingested lane's operators were chosen by the foreign tool's own configuration, not by assay's policy, so this field -- documented as 'the effective R2 POLICY ... what decided the claim' -- is genuinely EMPTY for that lane and is left absent rather than backfilled from the observed stryker:* set. Same declared-vs-verified line A-230a draws for helpers[]. The observed operators are still fully on the wire, one per mutant, in mutation.*[].operator.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -1571,6 +1661,46 @@
                 "targets"
               ]
             }
+          }
+        },
+        {
+          "description": "B046 (schema v9): the producer fork. A NATIVE R2 judgment carries assay's own mutation policy -- jobs, max_mutants, operators -- and none of the ingested-report bookkeeping. An INGESTED one is the exact mirror: assay chose none of that policy, so those three are FORBIDDEN rather than backfilled from what the foreign tool decided (the declared-vs-verified line A-230a already draws for helpers[]), and the report's own identity plus the three counts assay derived FROM the report are required instead. equivalence_artifact is forbidden too: it names an artifact the lane's declared command writes after ASSAY applies a mutant, and assay applied none. Written as a two-branch if/then/else pairing on the judgment_r1/judgment_r2 targets matrix's own model.",
+          "if": {
+            "required": [
+              "producer"
+            ],
+            "properties": {
+              "producer": {
+                "const": "native"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "jobs",
+              "max_mutants",
+              "operators"
+            ],
+            "allOf": [
+              {"not": {"required": ["producer_tool"]}},
+              {"not": {"required": ["survived_uncovered"]}},
+              {"not": {"required": ["discarded"]}},
+              {"not": {"required": ["lines_without_candidates"]}}
+            ]
+          },
+          "else": {
+            "required": [
+              "producer_tool",
+              "survived_uncovered",
+              "discarded",
+              "lines_without_candidates"
+            ],
+            "allOf": [
+              {"not": {"required": ["jobs"]}},
+              {"not": {"required": ["max_mutants"]}},
+              {"not": {"required": ["operators"]}},
+              {"not": {"required": ["equivalence_artifact"]}}
+            ]
           }
         }
       ]
@@ -2542,6 +2672,16 @@
           ]
         },
         "unsafe_symlink_omissions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/repo_tree_path"
+          }
+        },
+        "link_paths": {
+          "description": "B041(b) (schema v9): the declared [lanes.<n>.isolation] link_paths this lane materialised as symlinks from the INVOKING CHECKOUT into the snapshot, immediately after read-tree and before any command ran. Present exactly when the lane declared any -- omitted, never empty (A-051). Its whole purpose is that a verdict states plainly that its snapshot was NOT purely committed objects: every entry is a path whose content came from the working checkout at run time and is therefore NOT bound to the recorded commit, unlike everything else the snapshot holds. A consumer reading a verdict with a non-empty link_paths knows the judgment's dependency closure is only as reproducible as that checkout was. Sorted ascending by UTF-8 bytes and unique; array ORDER is not expressible here and is checked by the model and the raw verifier. Independent of selection -- linking is orthogonal to the unsafe-symlink omission policy, so there is no conditional pairing between the two.",
           "type": "array",
           "minItems": 1,
           "maxItems": 64,

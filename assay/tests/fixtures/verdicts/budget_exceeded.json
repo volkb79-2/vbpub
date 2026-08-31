@@ -1,5 +1,5 @@
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "assay_version": "0.1.0",
   "lane": "integration",
   "commit": "5555555555555555555555555555555555555555",

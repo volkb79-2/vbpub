@@ -107,9 +107,11 @@ from .verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    MutationProducerTool,
     Outcome,
     ReasonCode,
     SnapshotPolicy,
+    SourcePosition,
     Verdict,
     operator_language,
     rollup,
@@ -1117,6 +1119,12 @@ def _reconstruct_judgment_resolved(raw: dict) -> JudgmentResolved:
 def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
     r1 = JudgmentR1(
         coverage_format=raw["coverage_format"],
+        # B045/A-323's lesson: REGISTERED in the same commit the dataclass and
+        # the schema gain it. A field this function does not read is a field
+        # `_reject_unknown_keys` below refuses, on a document the packaged
+        # schema accepted cleanly -- which is exactly how `candidate_ids` and
+        # `shard_index`/`shard_count` each shipped broken for a release.
+        coverage_producer=raw.get("coverage_producer"),
         coverage_artifact=raw["coverage_artifact"],
         fail_under=raw["fail_under"],
         allow_excluded=raw["allow_excluded"],
@@ -1128,6 +1136,42 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
     return r1
 
 
+def _reconstruct_producer_tool(raw: dict) -> MutationProducerTool:
+    """(B046) The ingested tool's identity, reconstructed from the raw
+    document rather than trusted (A-182/A-317) -- including its own unknown-key
+    refusal, because ``additionalProperties: false`` on the schema's
+    ``mutation_producer_tool`` and ``_reject_unknown_keys`` here are two
+    independent gates and a nested object needs both exactly as the top level
+    does.
+    """
+    tool = MutationProducerTool(
+        name=raw["name"],
+        version=raw["version"],
+        report_schema_version=raw["report_schema_version"],
+    )
+    _reject_unknown_keys(raw, tool.to_dict(), "judgment.r2.producer_tool")
+    return tool
+
+
+def _reconstruct_source_positions(
+    raw: dict, key: str
+) -> tuple[SourcePosition, ...] | None:
+    """(B046) One of ``judgment.r2``'s two position lists, or ``None`` when the
+    key is absent. An EMPTY list is preserved as an empty tuple, never folded
+    into ``None``: absent means "this producer does not compute that at all"
+    (a native judgment), empty means "the ingested path looked and found none",
+    and collapsing the two would delete the distinction the fields exist for.
+    """
+    if key not in raw:
+        return None
+    positions = []
+    for item in raw[key]:
+        position = SourcePosition(path=item["path"], lineno=item["lineno"])
+        _reject_unknown_keys(item, position.to_dict(), f"judgment.r2.{key} entry")
+        positions.append(position)
+    return tuple(positions)
+
+
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
     # not, from `7a4f6333` (which added them to the dataclass and the schema)
@@ -1137,10 +1181,29 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # cleanly. Found by driving a real sharded run through the installed CLI
     # while verifying B031's own `mutation.candidate_ids` fix, not by reading
     # the diff -- the identical near-miss shape, one block over.
+    # B046 (schema v9): `jobs`/`max_mutants`/`operators` are no longer
+    # unconditionally present -- they are assay's OWN policy and exist only
+    # under `producer = "native"`. Read with `.get` and let `JudgmentR2`'s own
+    # producer fork decide whether their absence is legal, rather than
+    # deciding it twice in two layers that could drift apart.
+    operators = raw.get("operators")
     r2 = JudgmentR2(
-        jobs=raw["jobs"],
-        max_mutants=raw["max_mutants"],
-        operators=tuple(raw["operators"]),
+        producer=raw["producer"],
+        producer_tool=(
+            _reconstruct_producer_tool(raw["producer_tool"])
+            if "producer_tool" in raw
+            else None
+        ),
+        survived_uncovered=_reconstruct_source_positions(
+            raw, "survived_uncovered"
+        ),
+        discarded=raw.get("discarded"),
+        lines_without_candidates=_reconstruct_source_positions(
+            raw, "lines_without_candidates"
+        ),
+        jobs=raw.get("jobs"),
+        max_mutants=raw.get("max_mutants"),
+        operators=None if operators is None else tuple(operators),
         kill_attribution=raw["kill_attribution"],
         kill_signal_artifact=raw.get("kill_signal_artifact"),
         equivalence_artifact=raw.get("equivalence_artifact"),
@@ -1254,6 +1317,9 @@ def _reconstruct_snapshot_policy(raw: dict) -> SnapshotPolicy:
             if "unsafe_symlink_omissions" in raw
             else None
         ),
+        # B041(b)/A-323's lesson again: registered in the same commit the
+        # dataclass and the schema gain it.
+        link_paths=tuple(raw["link_paths"]) if "link_paths" in raw else None,
     )
     _reject_unknown_keys(raw, policy.to_dict(), "snapshot_policy")
     return policy
@@ -1317,6 +1383,15 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             lane_kwargs["env_effective_incomplete"] = True
 
     judgment_kwargs: dict[str, Any] = {}
+    # B043 (schema v9): `cwd_declared` is registered OUTSIDE the
+    # `lane_resolved` block above, because it is independently optional and
+    # not a member of `LANE_RESOLVED_FIELDS` -- reading it inside that block
+    # would silently drop it from any document the block does not run for,
+    # and `_reject_unknown_keys` at the end of this function would then refuse
+    # a document the packaged schema accepted. `Verdict._check_cwd_declared`
+    # owns the rule that it still requires a resolved lane.
+    if "cwd_declared" in document:
+        judgment_kwargs["cwd_declared"] = document["cwd_declared"]
     # B018/A-327. REGISTERED here in the same commit that adds it to the
     # dataclass, the schema and the producer -- B031/A-323's lesson exactly:
     # `shard_index`/`shard_count` sat in the model and the schema for a whole

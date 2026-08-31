@@ -1,5 +1,5 @@
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "111111111111111111111111111111111111111a",
@@ -35,6 +35,7 @@
       "base": "0000000000000000000000000000000000000a"
     },
     "r2": {
+      "producer": "native",
       "jobs": 1,
       "max_mutants": 50,
       "operators": ["python:compare-swap", "python:boolop-swap"],

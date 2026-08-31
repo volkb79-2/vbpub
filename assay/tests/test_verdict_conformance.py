@@ -964,6 +964,10 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "base": "0000000000000000000000000000000000000a",
         },
         "r2": {
+            # B046/schema v9: REQUIRED, and `native` is what this synthesised
+            # policy has always meant -- assay's own engine, with assay's own
+            # jobs/max_mutants/operators beside it.
+            "producer": "native",
             "jobs": 4,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
@@ -1010,6 +1014,10 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "base": "0000000000000000000000000000000000000a",
         },
         "r2": {
+            # B046/schema v9: the shape a REAL `assay run` now emits -- the
+            # producer is stated, not implied, and this fixture is the native
+            # side of that fork.
+            "producer": "native",
             "jobs": 2,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
@@ -1141,7 +1149,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 8,
+            "schema_version": 9,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1253,9 +1261,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 8: a verdict "
+        "schema_version 2 is not this verifier's version 9: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 8"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 9"
     ]
 
 
@@ -1274,7 +1282,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 8" in failures[0]
+    assert "schema_version 3 is not this verifier's version 9" in failures[0]
 
 
 # ============================================================================

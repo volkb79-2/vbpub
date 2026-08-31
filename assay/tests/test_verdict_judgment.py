@@ -451,6 +451,12 @@ def test_judgment_r2_untouched_form_builds():
         # `judgment.r1.mode` is, and defaults to the only scope that existed
         # before whole-target judging.
         "mode": "changed_lines",
+        # B046/schema v9: `producer` is on the wire for `mode`'s reason and
+        # defaults to `"native"` for the same one -- it is the only producer
+        # that existed before the field did, so it is the faithful historical
+        # value for a record built without one, exactly as this construction
+        # (which names no producer) is.
+        "producer": "native",
     }
     # The two P34-reserved paths are OMITTED, never nulled (A-051/A-230b) --
     # and so is `targets`, which describes nothing outside whole-target mode.
