@@ -311,3 +311,29 @@ principles don't already resolve.
   also discharges half of B055) → item 5 go-cover producer vocabulary →
   item 6's remainder using the DA-3-resolved qualification pattern. Next
   free ids: A-398, B056.
+
+- **2026-08-31 (operator cleared the standing `/goal`)** — The autonomous
+  `/goal` Stop-hook condition that has governed this whole session
+  (Wave B ship → Wave C dispatch → work the sequence through) was
+  explicitly cleared by the operator, with a direct instruction instead:
+  "finish the work in flight and reach a good checkpoint, write a
+  detailed summary and next steps." This changes the controller's
+  standing instruction from here on: **no further generation dispatch,
+  no review dispatch, no merge/release** — those are now deferred to a
+  future session/operator decision, not automatic. Only closing out
+  generation 3's already-in-flight gate check remains in scope for this
+  session.
+
+  Generation 3 (registration + producer vocabulary, `367bbdf5`) had
+  committed its BRIEF-4 handoff (`91b05186`) but the FIRST gate run on
+  that state hit a real but trivial snag: `NO_MEASUREMENT/DIRTY_TREE`
+  (exit 3) — `BRIEF-4.md` was still untracked at the moment the gate's
+  self-hosted lane ran (a process-ordering slip, not a code defect;
+  assay correctly refused to self-judge a dirty tree rather than produce
+  a false verdict). By the time this was checked, `BRIEF-4.md` was
+  already committed and the tree was clean — the controller re-ran the
+  gate directly on the clean tip (`91b05186`) rather than dispatching a
+  new generation for what is a one-line "run it again" fix. This is
+  exactly the "routine BLOCKED item on one scope sub-step" class the
+  goal's REPORT-AND-CONTINUE clause always covered — resolving it
+  directly, no pause.
