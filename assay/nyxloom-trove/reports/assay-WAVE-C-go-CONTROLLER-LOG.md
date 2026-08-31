@@ -160,3 +160,53 @@ principles don't already resolve.
   Gate on the checkpoint's own tip (`4408622b`) confirmed still genuinely
   running (docker container live, log advancing through the normal phase
   sequence) — not yet complete; will be read on the next contact.
+
+- **2026-08-31 (gate PASS on `4408622b`)** — Confirmed directly from
+  `gate2.log` as a separate step (not a pipe tail):
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, full B006(a) WI-5
+  receipt PASS on all four claims. Relayed the verdict to the implementer
+  via `SendMessage` (resume) and confirmed via `ListAgents` it resumed
+  (not a duplicate spawn) rather than trusting the send call alone.
+
+- **2026-08-31 (self-correction — CORRECTING MY OWN PRIOR ENTRY ABOVE)** —
+  The checkpoint-1 entry above states the packaging gap as "a real
+  shipping blocker" with "no controller disagreement." **That was wrong,
+  and the implementer caught it, not me.** Before writing the fix, it
+  built the wheel with `[tool.setuptools.package-data]` deleted entirely
+  and read the zip's own namelist: `assay/helpers/go/stmtpos/*.go` and
+  `go.mod` shipped anyway — `setuptools_scm` installs a git file finder
+  and `include_package_data` defaults true under pyproject metadata, so
+  every git-tracked file under the package dir already ships regardless
+  of that stanza. The stanza naming the schema, and the schema shipping,
+  was a correlation both the implementer and I read as the mechanism —
+  exactly A-334's pattern, one layer up: not a test double this time, but
+  an untested causal claim about packaging, stated confidently by both
+  of us before either ran a build. One `python -m build` +
+  `zipfile.namelist()` refuted it in under a minute. Recorded as `A-396`.
+  The implementer retracted the claim at every site it had already
+  reached (`pyproject.toml`'s comment, the new test's docstring,
+  `BRIEF-1.md` in place, the REPORT) and rescoped the declaration
+  honestly — kept, but justified as explicitness for the
+  git-metadata-absent build `[tool.setuptools_scm]`'s own
+  `fallback_version` exists to serve, not as "the fix that makes the
+  helper ship." The new test asserts the OUTCOME (in the wheel, resolves
+  from a scratch venv) rather than the retracted mechanism, so it still
+  goes red if the helper ever stops shipping for a real reason.
+  **Filed as B054, not decided**: this same unverified-mechanism pattern
+  already exists in `test_verdict_schema_is_packaged.py`'s own docstring
+  (states it as "measured"; a re-run refutes it) — the test still passes
+  and what it asserts is still worth asserting, but its stated negative
+  is currently unreachable. Three options recorded, none chosen — a real
+  call, correctly left for later rather than patched in passing.
+  **Controller note for the record**: no action needed on B054 now (same
+  file-don't-build disposition as B050-B053); logging the correction here
+  precisely because auto-memory and future readers of this log should see
+  the checkpoint-1 entry's "no controller disagreement" line was itself
+  wrong, not silently let it stand. The implementer also correctly held
+  off on the `evaluate.py:625-676` refactor I endorsed last entry —
+  exposing that join with no caller yet would be speculative; it now
+  belongs in the wiring cluster (BRIEF-2 §5 step 4) where the new hook
+  actually consumes it. Two more live wrapper-vs-job exit-code traps
+  self-caught, documented in REPORT §7. Gate now running on the new tip
+  `428f69e2`; implementer holding all writes until it returns, same
+  discipline as checkpoint 1.
