@@ -2,8 +2,13 @@
 
 Worktree: `/workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu`
 Branch: `fix/ciu-P37-compose-project-directory`
-Final commit: `7e4e34f3dc86b39ce501a67494812ef3b0531a1d`
-Backlog entry closed: `KNOWN_ISSUES_TODO_BACKLOG.md` `## CIU-71`.
+Final commit: `2329d1ba8637b293379b4584c0739055b9876786` (round 2's backlog
+closeout; round 1's `7e4e34f3` was the mechanism, since rebuilt across
+several commits below).
+Backlog entry: `KNOWN_ISSUES_TODO_BACKLOG.md` row `CIU-71`, marked **FIXED**
+in review round 2 (round 1's header claiming it was already "closed" was
+WRONG — caught by independent review, see round 2's blocker 4). CIU-79
+filed (not fixed) in the same round.
 
 ## What was done
 
@@ -228,7 +233,7 @@ implementers during this package's own gating window — documented in full
 in the LOG, including the CIU-78 filing collision (my own independent
 finding, discarded in favor of the already-landed fix once discovered).
 
-## Scope discipline
+## Scope discipline (round 1)
 
 Touched: `src/ciu/engine.py` (the two real invocation sites); test files
 under `tests/` (one new file, six existing files updated for the new
@@ -237,14 +242,244 @@ under `tests/` (one new file, six existing files updated for the new
 `src/ciu/dev.py` and `src/ciu/cli.py`'s adjacent, out-of-scope findings were
 investigated (to confirm they are NOT the same call-site family and
 genuinely out of scope) but not edited. No backlog entry was filed or
-edited by this package in the end — CIU-76/77/78 were all already filed (or
+edited by round 1 in the end — CIU-76/77/78 were all already filed (or
 independently filed-and-fixed) by sibling implementers before this
 package's final gate run; my own drafted CIU-78 entry was discarded,
-uncommitted, once the collision was discovered.
+uncommitted, once the collision was discovered. **This left CIU-71 itself
+OPEN in the backlog while round 1's own header claimed it "closed" — a real
+contradiction, caught in review (blocker 4 below), fixed in round 2.**
+
+## Review round 2 — independent adversarial review, ACCEPT-conditional
+
+Independent adversarial review ran a live `docker compose` acceptance probe
+and confirmed the CORE MECHANISM (the `--project-directory` insertion
+itself) is correct — no `engine.py` behavior change was required. Four
+blockers, all docs/backlog, plus two decision asks:
+
+### Blocker 1 — `docs/CONSUMERS.md` §18's worked example doesn't actually work
+
+Live-proven by the reviewer: moving `build.context` moves the `dockerfile:`
+lookup with it (Compose resolves `dockerfile` relative to `context`, not
+`--project-directory`). §18's original example had the Dockerfile at
+`infra/mock-targets/Dockerfile` with `build_context = "."` but never set
+`dockerfile:`. I independently re-reproduced this live before writing the
+fix:
+
+```
+$ docker compose -f ciu.compose.yml -p ciu-p37-probe --project-directory <repo_root> build
+...
+failed to solve: failed to read dockerfile: open Dockerfile: no such file or directory
+```
+
+Fixed by adding `dockerfile: infra/mock-targets/Dockerfile` (repo-root-
+relative, since it now resolves against the repo-root context) — confirmed
+green with a real build:
+
+```
+$ docker compose -f ciu.compose.yml -p ciu-p37-probe --project-directory <repo_root> build
+...
+ ciu-p37-probe-mock_targets  Built
+```
+
+Fix landed: `docs/CONSUMERS.md` §18 and `docs/SPEC.md` S8.1a both now state
+that `context` and `dockerfile` move together, with a repo-root-relative
+`dockerfile` in the worked example; the migration note now covers both
+keys, since a stack that only reverted `build_context` and left
+`dockerfile` stack-relative (or unset) breaks the same way one field over.
+`src/ciu/dev.py:317-330`'s `_build_dev_image` was cited as ciu's own
+existing precedent for the context/dockerfile coupling (`Path(context) /
+dockerfile`) — see CIU-79 below, filed from the SAME investigation.
+
+### Blocker 2 — S8.1a's load-bearing justification was factually inverted
+
+`docs/SPEC.md` claimed "every other path CIU resolves ... is already
+repo-root-relative." The code says the opposite. Confirmed by reading the
+actual source (not taken on the reviewer's word):
+
+- `src/ciu/engine.py` (`create_hostdirs`'s `_resolve_entry`/`_seed`):
+  `path = stack_dir / path` (hostdir path), `path = stack_dir /
+  f"vol-{service_name}-{purpose}"` (auto path), `src = (stack_dir /
+  seed_rel).resolve()` (seed dir) — all STACK-DIR-relative.
+- `src/ciu/secrets/materialize.py` (`ASK_FILE`): `file_path = stack_dir /
+  file_path`, in both the resolve path and `list_secrets`' description path
+  — STACK-DIR-relative.
+- `src/ciu/composefile.py` (configfile `schema`/`template`):
+  `schema_path = stack_dir / schema_rel`, `template_path = stack_dir /
+  template_rel`, and the schema key's own validation error text literally
+  says "must be a file path relative to the stack dir" — STACK-DIR-relative.
+
+Fixed in all FOUR locations the reviewer named — `docs/SPEC.md` S8.1a,
+`README.md`'s DooD bullet, `docs/CONSUMERS.md` §18, and
+`src/ciu/engine.py`'s `execute_docker_compose_with_logs` docstring — with
+the true claim: CIU's other relative paths are stack-dir-relative;
+`build.context`/`dockerfile` are the deliberate exception, because a
+Dockerfile `COPY` of a repo-shared asset needs the repo root. Still a
+defensible design — it just wasn't the one written down. The backlog's
+CIU-71 row (marked FIXED in this round) also had its own rationale text
+corrected for the same reason (see the decision-ask note below).
+
+### Blocker 3 — `--project-directory` silently relocates `.env` lookup
+
+Live-proven by the reviewer, independently re-confirmed by me before
+writing the fix:
+
+```
+# .env beside the compose file: FOO=from_stack_env
+# .env at the repo root:        FOO=from_repo_env
+$ docker compose -f ciu.compose.yml config | grep -A1 environment
+    environment:
+      FOO: from_stack_env          # WITHOUT --project-directory
+$ docker compose -f ciu.compose.yml --project-directory <repo_root> config | grep -A1 environment
+    environment:
+      FOO: from_repo_env           # WITH --project-directory -- silently shadowed
+```
+
+Also confirmed the mitigating fact I documented: a value already present in
+the subprocess's own environment (what CIU passes as `env=compose_env`,
+S8.2) outranks EITHER `.env` file for compose's variable substitution:
+
+```
+$ FOO=from_shell_env docker compose -f ciu.compose.yml --project-directory <repo_root> config | grep -A1 environment
+    environment:
+      FOO: from_shell_env
+```
+
+**Decision (asked by the reviewer, not left open):** accept the relocation;
+do NOT add a second `--env-file <stack_dir>/.env` flag to pin the old
+lookup. Reasoning: CIU never relies on bare `.env` itself (S8.2's
+`env=compose_env` is always explicit and already outranks any `.env` file
+for interpolation, confirmed above); a stack-local `.env` is a consumer
+pattern CIU does not itself support or encourage (it has its own secrets/
+configfile mechanisms for exactly this); and a second existence-conditional
+flag would reintroduce the implicit-behavior-by-file-presence shape CIU's
+own secrets/configfile design otherwise avoids. Documented (not silently
+dropped) in `docs/SPEC.md` S8.1a and `docs/CONSUMERS.md` §18's migration
+note, including the "check for a stack-local `.env`" instruction for
+migrating consumers.
+
+### Blocker 4 — backlog untouched, REPORT self-contradiction
+
+Confirmed and fixed: `KNOWN_ISSUES_TODO_BACKLOG.md`'s CIU-71 row is now
+marked `FIXED — ciu-P37: ...`, matching ciu-P36's `4b471e63`/`aa6cf1fd`
+convention (row rewritten with the fix summary + review-round corrections;
+the "Last updated" header block gained a new top paragraph, demoting the
+prior one to "Previously, ..."). This REPORT's own header (above) no longer
+claims a premature "closed" — it now points here.
+
+### Decision ask 1 — `src/ciu/dev.py`'s identical defect
+
+Filed as **CIU-79** (confirmed free: `grep CIU-79
+KNOWN_ISSUES_TODO_BACKLOG.md` before writing, on top of a re-verified
+merge-base with `main` — see "Rebase check" below) — table row + this
+REPORT's own round-1 analysis as the body. Not fixed: different command
+(`docker build`, no `--project-directory` equivalent), different fix shape
+(resolve `context` to an absolute repo-root-relative path before building
+the argv), genuinely a separate package.
+
+### Decision ask 2 — CIU-71's own recorded rationale for choosing fix (a)
+
+Confirmed in the LOG: fix (a) — the `--project-directory` flag — was
+prescribed by the carve/task itself, not a unilateral choice between (a)
+and (b) on my part, so blocker 2's correction (CIU's other paths are
+stack-dir-relative, not repo-root-relative as the original rationale
+claimed) does not change WHICH fix was right, only WHY. (a) remains
+correct on independent grounds: a Dockerfile `COPY` of a repo-shared asset
+genuinely needs the repo root, regardless of what convention CIU's other
+paths follow. Confirmed with eyes open, not left as a dangling
+inconsistency.
+
+### Non-blocking items addressed
+
+- `test_ciu_compose_project_directory.py`'s docstring pointed at this
+  REPORT for `docker compose config` probe output that didn't exist yet —
+  now it does (blockers 1 and 3's probe transcripts above are the actual
+  evidence the docstring's pointer resolves to).
+- `engine.py`'s `--shipped` dry-run message now includes
+  `--project-directory` (the pre-existing `-p` omission there is
+  unrelated/out of scope, per the review's own note — left alone).
+
+### Rebase check (verified myself, not trusted from the review summary)
+
+```
+$ git merge-base HEAD main
+aa6cf1fd6217ba2035cb2c7cf5adea488823e3b8         # unchanged from round 1
+$ git diff --name-only aa6cf1fd 384993b6 --      # ciu-P36's merge, on top of the same merge-base
+ciu/docs/CONFIG.md
+ciu/KNOWN_ISSUES_TODO_BACKLOG.md                 # the ONE overlapping file
+ciu/nyxloom-trove/reports/ciu-P36-LOG.md
+ciu/nyxloom-trove/reports/ciu-P36-REPORT.md
+ciu/src/ciu/worktree.py
+ciu/tests/tests/test_ciu_worktree_lease.py
+ciu/tests/tests/test_ciu_worktree_reap.py
+```
+
+No overlap with anything round 1 or round 2 touched except
+`KNOWN_ISSUES_TODO_BACKLOG.md` (ciu-P36 edited CIU-69/76's rows and the
+header; this package edits CIU-71/79's rows and the header) — different
+table rows, low collision risk, and the coordinator's own guidance said a
+rebase was not needed. Did not rebase; a downstream merge reconciles the
+backlog file's independent row edits.
+
+## Real gate — round 2 (post-review-fix, final)
+
+Ran `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/
+ciu-P37-compose-project-directory` (from inside `ciu/`) against round 2's
+tip, `2329d1ba8637b293379b4584c0739055b9876786`. Exit code and verdict both
+read in a separate step from the invocation (never piped).
+
+### Round-2 gate verdict — run-gate.py stdout (verbatim)
+
+```
+run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: rev 23 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-21947-1788139027 --cgroup-parent dev-background.slice -e CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice -v /home/vb/volkb79-2/vbpub:/home/vb/volkb79-2/vbpub -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && cd /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu && (cd /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu/tools/assay && sha256sum -c assay-2.3.0.pyz.sha256) && { reported=$(/opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz --version) || { echo "run-gate: pin '"'"'assay'"'"': version probe failed: /opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz --version" >&2; exit 2; }; hit=0; for tok in $reported; do tok=${tok#"${tok%%[![:punct:]]*}"}; tok=${tok%"${tok##*[![:punct:]]}"}; case "$tok" in v[0-9]*) tok=${tok#v} ;; esac; if [ "$tok" = 2.3.0 ]; then hit=1; fi; done; if [ "$hit" != 1 ]; then echo "run-gate: pin '"'"'assay'"'"' version mismatch: declared 2.3.0, artifact reports: $reported — fix pins.assay.version or republish the artifact" >&2; exit 2; fi; } && mkdir -p .assay && /opt/tester-venv/bin/python tools/assay/assay-2.3.0.pyz run ciu --file assay.toml --verdict-json .assay/verdict-ciu.json'
+assay-2.3.0.pyz: OK
+ciu: FAIL/COMMAND_FAILED (exit 1)
+  commit: 2329d1ba8637b293379b4584c0739055b9876786
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: lane 'ciu' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-ciu-21947-1788139027.log
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P37-compose-project-directory/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 1
+```
+
+`.assay/verdict-ciu.json` (read separately via `json.load`):
+
+```
+"commit": "2329d1ba8637b293379b4584c0739055b9876786"
+"outcome": "FAIL"
+"reason_code": "COMMAND_FAILED"
+"exit_code": 1
+```
+- **R0: FAIL / COMMAND_FAILED.** ONE test failed:
+  `test_re_expiring_after_an_extend_becomes_lease_expired_again` — CIU-76,
+  same as round 1. This branch's merge-base with `main` is still `aa6cf1fd`
+  (unchanged — the coordinator's rebase-not-needed guidance was correct,
+  verified above), and CIU-76's actual fix landed on `main` only via
+  ciu-P36's LATER merge (`384993b6`), which this branch does not include
+  (deliberately, per the "no rebase needed" guidance — the two branches'
+  only overlapping file, `KNOWN_ISSUES_TODO_BACKLOG.md`, reconciles at
+  merge time, not before). Still unrelated to CIU-71/CIU-79 or anything
+  round 2 touched.
+- **R1: PASS.** `pct: 100.0`, full `src/ciu` line+branch coverage,
+  unchanged from round 1 (round 2 touched no `src/ciu` files with logic —
+  only `engine.py`'s dry-run print string, and docs/backlog).
+
+Final summary line: `1 failed, 3265 passed in 32.78s` — identical failure
+count and identical single failure to round 1's run, confirming round 2's
+doc/backlog/message-string changes introduced no regressions.
 
 ## Result
 
-Not blocked. Implementation shipped, gated for real, and independently
-re-verified via a controlled-wrong-implementation revert on both fix sites.
-Commit hash (real, read via `git log -1 --format=%H`, not predicted):
-`7e4e34f3dc86b39ce501a67494812ef3b0531a1d`.
+Not blocked. Round 1 shipped the mechanism (independently confirmed
+correct by review's own live acceptance probe, no code defect found).
+Round 2 fixed all four documentation/backlog blockers plus both decision
+asks, every corrected claim independently re-verified against a real
+`docker compose config`/`build` before being written down — not taken on
+the review's word. Final real gate verdict (round 2, above): `FAIL`
+overall, attributable entirely to the already-known, out-of-scope CIU-76
+(unchanged from round 1, same single failure); R1's 100% line+branch
+coverage of `src/ciu` is a clean PASS. Final commit hash (real, read via
+`git log -1 --format=%H`, not predicted):
+`2329d1ba8637b293379b4584c0739055b9876786`.

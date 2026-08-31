@@ -193,3 +193,105 @@ Three real `./run-gate.py ciu --worktree ...` attempts, in order:
    (CIU-76, open, unrelated). See REPORT for the verbatim verdict (read in
    a separate step from its invocation, per AGENTS.md's "read the exit
    status from the job, never the wrapper").
+
+## Commit 3 — `19f5aebee4d2f9243b310c5b100ff36eff661354`
+
+`docs(ciu): CIU-71 review fixes -- dockerfile/.env relocation, correct the
+inverted stack-dir-relative claim`
+
+Independent adversarial review (ACCEPT-conditional; mechanism confirmed
+correct via a live `docker compose` acceptance probe, no `engine.py`
+behavior change required) found 4 blockers, all documentation/backlog, plus
+2 decision asks. Fixed blockers 1-3 in this commit (docs-only, plus one
+already-safe print-string change); see REPORT's "Review round 2" section
+for the full write-up, including every claim independently re-verified
+against a real `docker compose config`/`build`/`.env` probe before being
+written down (transcripts pasted in the REPORT, not taken on the reviewer's
+word):
+
+- **Blocker 1** (`docs/CONSUMERS.md` §18's worked example didn't actually
+  build — live-proven by the reviewer, re-confirmed by me): added
+  `dockerfile: infra/mock-targets/Dockerfile` to the worked example and
+  stated explicitly (in §18 and SPEC S8.1a) that Compose resolves
+  `dockerfile` relative to `context`, not `--project-directory` directly —
+  the same rule `src/ciu/dev.py`'s `_build_dev_image` already applies.
+- **Blocker 2** (S8.1a's own justification was factually inverted — it
+  claimed CIU's other paths are already repo-root-relative; the code says
+  stack-dir-relative): re-read the cited source myself (`engine.py`'s
+  `create_hostdirs`, `secrets/materialize.py`'s `ASK_FILE` handling,
+  `composefile.py`'s configfile schema/template resolution — all confirmed
+  `stack_dir /`-relative, never `repo_root /`) and replaced the inverted
+  claim in all 4 locations: `docs/SPEC.md` S8.1a, `README.md`, `docs/
+  CONSUMERS.md` §18, `engine.py`'s `execute_docker_compose_with_logs`
+  docstring.
+- **Blocker 3** (`--project-directory` also relocates `docker compose`'s
+  bare `.env` lookup — undocumented, live-proven): documented in S8.1a and
+  §18's migration note. **Decision (asked explicitly by the reviewer, not
+  left undecided): accept the relocation, do NOT add a second `--env-file
+  <stack_dir>/.env` flag.** CIU itself never relies on bare `.env` (always
+  passes `env=compose_env` explicitly, S8.2 — confirmed live that this
+  already outranks either `.env` file for compose's own interpolation); a
+  stack-local `.env` is a pattern CIU doesn't itself support; and a second
+  existence-conditional flag would add exactly the kind of implicit,
+  file-presence-dependent behavior CIU's own secrets/configfile design
+  otherwise avoids.
+
+Also (non-blocking, addressed while in the area): `engine.py`'s `--shipped`
+dry-run message now includes `--project-directory` (the pre-existing `-p`
+omission there is out of scope, left alone per the review's own note).
+
+## Commit 4 — backlog/report closeout (hash recorded once committed below)
+
+Blocker 4 (backlog untouched + REPORT self-contradiction): marked
+`KNOWN_ISSUES_TODO_BACKLOG.md`'s CIU-71 row `FIXED — ciu-P37: ...`,
+matching ciu-P36's `4b471e63` convention (row rewritten in place — the OLD
+"OPEN" status/rationale text is fully replaced, not appended-to, after an
+initial mechanical mistake was caught and corrected during editing: a
+first pass inserted the new FIXED text but left the old OPEN detail text
+trailing after it on the same row; re-did the edit from the row's original
+(pre-round-1) text via `git show HEAD:` to get a clean base, split ONLY at
+the Severity/Status column boundary, and confirmed the row's pipe count
+matches its neighbors before committing). Updated the "Last updated" header
+block the same way (new top paragraph, demoting the prior one to
+"Previously, ..."). Fixed `nyxloom-trove/reports/ciu-P37-REPORT.md`'s own
+header, which had prematurely claimed CIU-71 was "closed" while the
+"Scope discipline" section said the opposite — corrected to describe round
+1 accurately and point at round 2's actual closeout.
+
+**Decision ask 1** (`src/ciu/dev.py`'s identical `build.context`/`dockerfile`
+defect in `ciu dev`'s plain `docker build` invocation): filed as **CIU-79**
+(re-verified free immediately before writing:
+`git log --oneline HEAD..main` showed only ciu-P36's already-known,
+non-overlapping merge plus one unrelated assay-docs commit — see REPORT's
+"Rebase check" for the full file-overlap verification) — table row, using
+this package's own round-1 REPORT analysis as the body, per the review's
+instruction. Not fixed: different command (`docker build`, no
+`--project-directory` equivalent exists), different fix shape (resolve
+`context` to an absolute repo-root-relative path before building the argv,
+not add a flag) — genuinely a separate package.
+
+**Decision ask 2** (does blocker 2's inverted-claim correction change which
+fix — (a) the flag, vs (b) document stack-relative — CIU-71 should have
+chosen?): No. Fix (a) was prescribed by the carve/task itself, not a
+unilateral choice I made between (a) and (b) — so there was no "wrong call"
+to revisit. The corrected rationale (CIU's other paths are stack-dir-
+relative, not repo-root-relative) doesn't change WHICH fix is right, only
+WHY: (a) remains correct on independent grounds — a Dockerfile `COPY` of a
+repo-shared asset genuinely needs the repo root regardless of what
+convention CIU's OTHER paths happen to follow. Recorded here, with eyes
+open, per the review's request not to leave this dangling.
+
+## Gate, round 2
+
+Re-ran the real gate against the round-2 tip
+(`2329d1ba8637b293379b4584c0739055b9876786`): FAIL/COMMAND_FAILED overall
+(exit 1), R1 (100% line+branch coverage of `src/ciu`) PASS, exactly ONE
+test failure — `test_re_expiring_after_an_extend_becomes_lease_expired_again`
+(CIU-76, still open on this branch: its actual fix landed on `main` via
+ciu-P36's later merge `384993b6`, which this branch deliberately does not
+include per the "no rebase needed" guidance, re-verified via `git
+merge-base HEAD main` still resolving to the unchanged `aa6cf1fd`).
+Identical failure count and identical single failure to round 1's gate run
+— round 2's doc/backlog/message-string-only changes introduced no
+regressions. See REPORT for the verbatim verdict, read in a separate step
+from its invocation.
