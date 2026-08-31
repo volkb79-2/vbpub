@@ -446,3 +446,108 @@ below therefore excludes this closing section itself)
 4. `d69d7c3d` — `fix(ciu): apply_lease gains now: override, fixes clock-coincidence test (CIU-76)`
 5. `5d0902d8` — `docs(ciu): ciu-P36 LOG addendum -- CIU-76 fold-in + rebase record`
 6. (this REPORT addendum) — committed separately, final hash in the branch log.
+
+---
+
+## Addendum — review blockers fixed, real gate PASS (2026-08-31)
+
+Independent adversarial review returned ACCEPT-conditional on the combined
+CIU-69+CIU-76 diff (account found accurate, not overstated). Four blockers,
+addressed as four separate commits on this same branch:
+
+1. **`docs/CONFIG.md`'s stale two-key claim** — this package's own original
+   REPORT/LOG had already flagged `docs/CONFIG.md:229`'s "Both keys share
+   ONE closed table" as a real drift and deliberately deferred it as
+   out-of-scope. The reviewer confirmed that escalation was the right call
+   and authorized the fix here. Applied exactly as prescribed: section
+   heading `[S16.3/S16.9]` -> `[S16.3/S16.7/S16.9]`; new table row
+   `| \`exec_targets\` | absent (no declared targets) | S16.7 | see
+   [S16.7](SPEC.md#s167--declared-worktree-container-targets-exec---target)
+   — per-alias sub-tables, own four-key grammar |`; "Both keys" -> "These
+   keys".
+
+2. **Untested `now=` threading to `make_lease_perpetual`** — independently
+   reproduced before trusting it: deleted `now=now` from that call site,
+   reran the full local suite (`PYTHONPATH=src python3 -m pytest tests -q
+   --dist loadfile -n auto`) — **3262 passed, 0 failed**, confirming the
+   argument was genuinely unexercised. Restored; added
+   `test_perpetual_honours_an_injected_now` (`TestApplyLease`,
+   `test_ciu_worktree_lease.py`), asserting
+   `apply_lease(..., perpetual=True, now=NOW).lease.renewed_at_utc ==
+   worktree._utc_stamp(NOW)`. Controlled-wrong-implementation check: deleting
+   `now=now` again fails the new test with
+   `AssertionError: '<real-clock-stamp>' == '2026-08-25T12:00:00Z'`; restored,
+   `diff` confirmed byte-identical to the committed state.
+
+   Also checked the matching `--extend` path per the reviewer's own
+   "verify, don't assume" instruction: deleted `now=now` from the
+   `acquire_lease(...)` call inside `apply_lease` instead, reran the full
+   suite — **1 failed** this time
+   (`test_re_expiring_after_an_extend_becomes_lease_expired_again`, this
+   package's own CIU-76 test), proving that path is ALREADY load-bearing.
+   No redundant new `--extend` oracle added.
+
+3. **Backlog rows still OPEN** — read `aa6cf1fd`'s (CIU-78) exact convention
+   on `main`: a row's status rewritten `OPEN — filed ...` -> `FIXED —
+   <package>: <summary>`, plus a new "Last updated" header entry (prior
+   entries demoted to "Previously, ..."). Applied identically to CIU-69 and
+   CIU-76's rows in `KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+4. **Rebase + real gate verdict** — branch had fallen one commit behind
+   `main` (`aa6cf1fd`, the CIU-78 fix, landed after this package's prior
+   gate run). `git rebase main`: clean, no conflicts (that commit touches
+   only `test_ciu_deploy_actions.py`, a file this package never touches).
+   Full local suite green post-rebase (3262 passed) before starting on the
+   four blockers above.
+
+### The real gate verdict (verbatim), post-rebase + all four blockers
+
+```
+$ python3 run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P36-worktree-table-keys
+run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: rev 23 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.worktrees/ciu-P36-worktree-table-keys/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-ciu-3997570-1788137966 --cgroup-parent dev-background.slice ...
+assay-2.3.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 6f0ea96c7fde71ac263ae3a00c80fbb328e07e5c
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P36-worktree-table-keys/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+GATE_WRAPPER_EXIT=0
+```
+
+(`GATE_WRAPPER_EXIT=0` read from the wrapper's own `echo "...$?"` marker in a
+separate step, not summarized from the run's own stdout — this repo's own
+LESSONS record real incidents from reading a gate verdict off a pipe tail.)
+
+**Verdict artifact (`.assay/verdict-ciu.json`), both claims:**
+
+```json
+{"rigor": "R0", "status": "PASS", "verified_by_assay": true}
+{"rigor": "R1", "status": "PASS", "verified_by_assay": true, "coverage": {"pct": 100.0, "executable": 7, "covered": 7}}
+```
+
+`outcome: "PASS"`, `exit_code: 0`, `commit: "6f0ea96c..."` (the LOG-addendum
+commit that was HEAD at the moment this gate ran — one commit before the
+final REPORT-addendum commit below), `judgment.resolved.base:
+"aa6cf1fd..."` (current `main` tip, confirming the changed-line floor was
+judged against the CORRECT, current base after the rebase). This is a
+genuinely clean gate: no workaround, no pre-existing unrelated failures, no
+temporary patch-and-revert needed this time — R0 (the full suite) and R1
+(both the 100% whole-source floor and the changed-line floor) both PASS.
+
+## Final commit sequence (this addendum's own commit is last)
+
+1. `8374ea13` — `fix(ciu): WORKTREE_TABLE_KEYS gains exec_targets (CIU-69)`
+2. `e4ad370e` — `docs(ciu): ciu-P36 LOG -- CIU-69 WORKTREE_TABLE_KEYS fix record`
+3. `22a87908` — `docs(ciu): ciu-P36 REPORT -- CIU-69 verbatim gate verdict + evidence`
+4. `eb023f24` — `fix(ciu): apply_lease gains now: override, fixes clock-coincidence test (CIU-76)`
+5. `79be9b6c` — `docs(ciu): ciu-P36 LOG addendum -- CIU-76 fold-in + rebase record`
+6. `4a1f23d9` — `docs(ciu): ciu-P36 REPORT addendum -- CIU-76 re-run gate verdict`
+7. `7ae8e865` — `docs(ciu): fix docs/CONFIG.md's stale two-key [ciu.worktree] claim (CIU-69 review)`
+8. `83f3dcdb` — `test(ciu): oracle proving apply_lease's now= reaches make_lease_perpetual (CIU-76 review)`
+9. `4b471e63` — `backlog(ciu): mark CIU-69, CIU-76 FIXED -- ciu-P36 (review closeout)`
+10. `6f0ea96c` — `docs(ciu): ciu-P36 LOG addendum -- review blockers 1-3 fold-in record` (the gate above ran against this HEAD)
+11. (this REPORT addendum) — committed separately, final hash in the branch log.
