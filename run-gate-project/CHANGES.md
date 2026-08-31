@@ -125,31 +125,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
-## [23.1.0] - 2026-08-31
-<!-- cmru: generated -->
-<!-- cmru: source-end=0ad5372d8768f5d48db6391313723a97cb979cb5 -->
-
-### Added
-- feat(run-gate): RG-26 -- --base REF reaches a delegating assay lane as --request-base (7b30bc49)
-- feat(run-gate): RG-25 -- doctor/--check-env preflight assay-lane toolchain fitness (9a403da3)
-- feat(run-gate): RG-21 -- doctor names the linked-worktree host-lane git view (9adf11fc)
-
-### Fixed
-- fix(cmru,run-gate): RG-29 -- cmru/run-gate.toml's assay pin still named the vanished 2.2.0 sidecar (0ad5372d)
-- fix(run-gate): P02 review round -- batch the fitness probe (B2), tell the truth about what dry-run and doctor start (B1/B3) (2f266885)
-- fix(run-gate): RG-23 -- declare the env-forward breaking change and widen the drift sweep (c55f5748)
-- fix(run-gate): RG-24 -- exec-mode container names resolve from the judged worktree (bd1a3f85)
-
-### Changed
-- backlog(ciu,run-gate): file CIU-75 -- backport v8 F2 identity source (breaking, ciu 7.6); retriage CIU-55 -> RG-27 -- gate invocation history + query verb (a78a0046)
-- backlog(run-gate,ciu,assay): RG-25/RG-26 -- backport ciu CIU-72 (b)/(c) to the current gate; CIU-73 needs no code (b2884e76)
-- backlog(ciu,run-gate): file CIU-71 -- build-context project-directory gap; RG-24 -- exec-mode container resolution is repo-scoped not worktree-scoped (92ae1917)
-
-### Documentation
-- docs(run-gate): usage() names the doctor/--check-env checks this bundle added (08783d09)
-- docs(run-gate): P02 bundle LOG + REPORT (RG-21/23/24/25/26) (e8a6a34b)
-- docs(assay): file the 2.1.0->2.3.0 review-gap audit and its backlog (B030-B034, RG-23) (142143a4)
-
 ## [23.0.0] - 2026-08-24
 <!-- cmru: generated -->
 <!-- cmru: source-end=f8178d9b0b821405f4f0fb8831d710056352193f -->
