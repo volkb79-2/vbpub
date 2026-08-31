@@ -252,3 +252,62 @@ principles don't already resolve.
   retracted packaging claim and to hold acceptance boxes until a real Go
   verdict is provably statement-granular end to end. Next free ids
   restated: A-397, B055.
+
+- **2026-08-31 (checkpoint 3 — gate PASS on `c85c703a`, big milestone)** —
+  Confirmed independently: `GATE_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+  11/11 phases, tree clean, sole later commit (`4a326ddc`) docs-only.
+  This is the wiring commit: `requires_statement_attribution` +
+  the new `statement_blocks` hook (signature recorded as `A-397`, three
+  rejected alternatives documented), the `A-392` refusal in both
+  `evaluate_coverage`/`evaluate_targets` (reading the attribute directly,
+  no silent `getattr` default — a default there would quietly reinstate
+  the masked-default bug the guard exists to remove), the key-resolution
+  join exposed rather than duplicated
+  (`evaluate.resolve_coverage_keys`/`_repo_path_by_raw_key`, with a new
+  test that would catch a future re-derivation), the runner seam
+  (`_attribute_statements_for_lane`), `external_tools = ("go",)`, and the
+  Python-side oracle invoker (`adapters/go_stmtpos.py` — validates inputs
+  before probing the toolchain so a stale artifact reports as staleness,
+  not as a missing tool; identity comes from the helper's own
+  `runtime.Version()`, a stronger fact than a second `go version`
+  subprocess). Self-hosted lane, topos-qualification and CMRU b006a
+  qualification all passed on this newly-wired chain — the phases most
+  likely to catch a bad seam did not. Thirteen pre-existing Go tests
+  correctly went red under the new guard (no toolchain available for
+  them); none deleted or weakened, both repair shortcuts documented at
+  the site and filed as `B055` (its own honest fix for one shortcut IS
+  item 3/F008-A4). The wrapper-vs-job exit-code trap fired a THIRD
+  time this wave, self-caught every time — this is the discipline
+  earning its keep, not a recurring problem being tolerated.
+  No acceptance box ticked — correct, registration isn't done yet so no
+  Go verdict is end-to-end statement-granular.
+
+  **Decision ask DA-3, resolved**: A-395 (the prior generation's own
+  ruling) requires the parallel `helpers[]`-present test to be proven
+  against a real toolchain, never a mock — but the registered gate's own
+  image (`tester-unified:local`) has no Go, so that test cannot run
+  inside the gate itself. **Controller ruling: this is not a novel fork —
+  Wave A already established the exact pattern for this exact problem**
+  (`tests/qualification/test_javascript_real_vitest.py`: skipped in the
+  registered gate with a named reason citing DESIGN-GUIDE §10, enabled by
+  an env var when the real toolchain is on PATH, run manually with the
+  transcript pasted into the REPORT — the A-335 proof pattern for a tool
+  the gate's own image cannot carry). Build the Go analogue the same way
+  (a `tests/qualification/test_go_*_real.py`, gated on an env var, e.g.
+  `ASSAY_GO_QUALIFICATION=1`, requiring `tester-unified-go:local` —
+  already built by generation 1 and present in this devcontainer, so
+  runnable now) rather than either extending the registered gate's own
+  image (unnecessary infrastructure cost for one test) or settling for
+  only a frozen `carve-assets/P27-recarve/` probe artifact (weaker:
+  doesn't re-run against a live CLI end to end the way the qualification
+  pattern does). This resolves DA-3 without inventing anything — it is
+  citing an existing, already-committed precedent from this same wave
+  sequence.
+
+  Dispatching a fresh Opus successor (generation 3), same worktree/
+  branch, tip `4a326ddc`, given BRIEF-1+2+3 plus this DA-3 ruling. Task
+  order: register `GoAdapter` at `{"R1"}` (A-394, now unblocked) → item 7
+  srdm covergate qualification (F008-A5) → item 3 fixture regen (F008-A4,
+  also discharges half of B055) → item 5 go-cover producer vocabulary →
+  item 6's remainder using the DA-3-resolved qualification pattern. Next
+  free ids: A-398, B056.
