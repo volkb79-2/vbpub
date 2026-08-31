@@ -2,7 +2,8 @@
 
 A shipped stack deployed without ``deploy.project_name``/``environment_tag``
 runs under the WORKSPACE-IDENTITY compose project (``REPO_NAME``-
-``INSTANCE_ID``-``<stack>``, derived from THIS checkout's ciu.env). The
+``instance_id``-``<stack>``, derived from THIS checkout's generated overlay
+facts). The
 withdrawn basename "legacy" fallback ran under docker's directory-derived
 name: identical for every checkout of the repo (cross-instance collisions)
 and unenumerable by clean, whose S6.4a passes then skipped the stack while
@@ -13,7 +14,7 @@ Oracles:
   network, and label-prefixed volumes under the identity project; the
   enumeration filters carry that name (the controlled wrong implementation —
   returning [] — never issues these filters).
-- A missing or key-less ciu.env REFUSES the enumeration — a teardown that
+- A missing or key-less generated table REFUSES the enumeration — a teardown that
   cannot be named never silently skips.
 - Tagged selections keep today's exact behavior (S8.7 scoped names).
 - Container enumeration failure is indeterminate → fails the clean (B3).
@@ -148,10 +149,15 @@ def _identity_repo(tmp_path: Path, *, with_env: bool = True, with_keys: bool = T
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     (tmp_path / "apps" / "ghost").mkdir(parents=True)
     if with_env:
-        keys = (
-            f'export REPO_NAME="{REPO_NAME}"\n' if with_keys else ""
-        ) + f'export INSTANCE_ID="{INSTANCE_ID}"\n'
-        (tmp_path / "ciu.env").write_text(keys, encoding="utf-8")
+        # CIU-75: `identity_compose_project_name` reads the generated overlay
+        # table, not the legacy `ciu.env` export.
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+        facts = {key: "" for key in GENERATED_FACTS_KEYS}
+        facts["instance_id"] = INSTANCE_ID
+        if with_keys:
+            facts["repo_name"] = REPO_NAME
+        upsert_generated_facts(tmp_path, facts)
     return tmp_path
 
 
@@ -191,15 +197,15 @@ def test_identity_project_name_refuses_non_round_tripping_basename(tmp_path):
         engine.identity_compose_project_name(repo, weird)
 
 
-def test_identity_project_name_refuses_without_ciu_env(tmp_path):
+def test_identity_project_name_refuses_without_generated_facts(tmp_path):
     repo = _identity_repo(tmp_path, with_env=False)
-    with pytest.raises(ValueError, match="no ciu.env"):
+    with pytest.raises(ValueError, match="declares no repo_name/instance_id"):
         engine.identity_compose_project_name(repo, repo / "apps" / "vault")
 
 
 def test_identity_project_name_refuses_without_identity_keys(tmp_path):
     repo = _identity_repo(tmp_path, with_keys=False)
-    with pytest.raises(ValueError, match="lacks REPO_NAME/INSTANCE_ID"):
+    with pytest.raises(ValueError, match="declares no repo_name/instance_id"):
         engine.identity_compose_project_name(repo, repo / "apps" / "vault")
 
 
@@ -208,10 +214,13 @@ def test_identity_project_name_refuses_invalid_result(tmp_path):
     starting fine but... a basename that is ONLY invalid characters would
     still start with the identity prefix — so force the pathological case
     where the identity itself is hostile."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
     repo = tmp_path
-    (repo / "ciu.env").write_text(
-        'export REPO_NAME="!!!"\nexport INSTANCE_ID="!!!"\n', encoding="utf-8"
-    )
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["repo_name"] = "!!!"
+    facts["instance_id"] = "!!!"
+    upsert_generated_facts(repo, facts)
     (repo / "apps" / "vault").mkdir(parents=True)
     with pytest.raises(ValueError, match="normalizes to"):
         engine.identity_compose_project_name(repo, repo / "apps" / "vault")
@@ -227,10 +236,11 @@ def test_untagged_selection_enumerates_identity_projects(tmp_path):
 
 
 def test_untagged_enumeration_refuses_without_identity_record(tmp_path):
-    """No ciu.env → loud refusal (exit 2 via the CLI's ValueError mapping),
-    never a silent empty enumeration over a printed clean complete."""
+    """No generated facts → loud refusal (exit 2 via the CLI's ValueError
+    mapping), never a silent empty enumeration over a printed clean
+    complete."""
     repo = _identity_repo(tmp_path, with_env=False)
-    with pytest.raises(ValueError, match="no ciu.env"):
+    with pytest.raises(ValueError, match="declares no repo_name/instance_id"):
         deploy._stack_compose_projects(repo, {"deploy": {}}, [{"path": "apps/vault"}])
 
 
@@ -295,9 +305,9 @@ def test_untagged_container_enumeration_failure_fails_clean(monkeypatch, tmp_pat
     assert "clean completed with errors" in out
 
 
-def test_run_shipped_refuses_when_ciu_env_cannot_name_project(tmp_path, monkeypatch):
-    """S8.5/CIU-46 cutover: a checkout with NO ciu.env cannot name a
-    config-less shipped deployment — refuse loudly, never start an
+def test_run_shipped_refuses_when_identity_cannot_name_project(tmp_path, monkeypatch):
+    """S8.5/CIU-46 cutover: a checkout with NO generated identity facts cannot
+    name a config-less shipped deployment — refuse loudly, never start an
     unenumerable project."""
     stack = tmp_path / "vendor" / "vault"
     stack.mkdir(parents=True)
@@ -314,7 +324,7 @@ def test_run_shipped_refuses_when_ciu_env_cannot_name_project(tmp_path, monkeypa
     monkeypatch.setattr(engine, "to_physical_path", lambda path, **kwargs: path)
     monkeypatch.setattr(engine, "compose_project_name", lambda *args: (_ for _ in ()).throw(ValueError("no deploy")))
 
-    with pytest.raises(ValueError, match="no ciu.env"):
+    with pytest.raises(ValueError, match="declares no repo_name/instance_id"):
         engine.run_shipped(stack, define_root=tmp_path)
 
 

@@ -276,13 +276,22 @@ def project_of(instance_id: str, stack: str = "stack") -> str:
 
 
 def write_env(ciu_root: Path, instance_id: str) -> None:
+    """CIU-75: a checkout looks like a live CIU instance because it carries the
+    generated `[ciu.instance.generated]` overlay table — that is what
+    `_runtime_identity` and `_reap_uses_clean` read now, not `ciu.env`."""
+    from ciu.workspace_env import upsert_generated_facts
+
     ciu_root.mkdir(parents=True, exist_ok=True)
-    (ciu_root / "ciu.env").write_text(
-        f"REPO_NAME={REPO_NAME}\n"
-        f"INSTANCE_ID={instance_id}\n"
-        f"DOCKER_NETWORK_INTERNAL={network_of(instance_id)}\n"
-        f"PHYSICAL_REPO_ROOT={ciu_root}\n",
-        encoding="utf-8",
+    upsert_generated_facts(
+        ciu_root,
+        {
+            "repo_name": REPO_NAME,
+            "instance_id": instance_id,
+            "network": network_of(instance_id),
+            "physical_repo_root": str(ciu_root),
+            "repo_root": str(ciu_root),
+            "public_fqdn": "",
+        },
     )
 
 
@@ -337,7 +346,7 @@ def add_instance(
     record: bool = True,
     **record_kw,
 ) -> Path:
-    """One real linked worktree, with its record and generated ciu.env."""
+    """One real linked worktree, with its record and generated identity facts."""
     branch = branch or f"feat/{logical}"
     target = path or (repo.parent / "wt" / logical)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1310,7 +1319,9 @@ class TestTransactionalIsolation:
         deploy_instance(docker, root, "f00005")
 
         def _raise(_root, *, yes):
-            raise worktree.WorktreeError("[S16] ciu.env does not exist")
+            raise worktree.WorktreeError(
+                "[S16] carries no generated instance identity"
+            )
 
         monkeypatch.setattr(worktree, "_clean_in", _raise)
         out = worktree.reap_groups(repo, yes=True, now=NOW)
@@ -1425,7 +1436,7 @@ class TestTransactionalIsolation:
             schema=2, lease=held(hours_from_now=-1), env=False,
         )
         write_env(root, "f00008")
-        (root / "ciu.env").unlink()
+        (root / "ciu.global.worktree.toml.j2").unlink()
         docker.network(network_of("f00008"))
 
         out = worktree.reap_groups(repo, yes=True, dry_run=True, now=NOW)

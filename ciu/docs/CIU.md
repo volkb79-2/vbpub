@@ -13,7 +13,7 @@ orchestration see [CIU-DEPLOY.md](CIU-DEPLOY.md). Normative contract:
 # 1. Bootstrap the workspace env (once per machine / on reset)
 cd test-repo
 ciu env generate
-source ciu.env
+eval "$(ciu env print)"        # `source ciu.env` still works this release
 
 # 2. Render TOML only (preflight / debugging)
 ciu up --dir infra/redis-core --render-toml
@@ -140,8 +140,10 @@ ciu up --dir <stack> --shipped    # through CIU: adds the wiring below
 `ciu up --dir <stack> --shipped` is a passthrough that **skips** the stack config requirement and
 all secret / overlay / configfile steps, but still:
 
-- loads `ciu.env` so the compose file's `${VAR}` interpolation resolves the same
-  machine facts (UID/GID, network name, physical paths) as the native path,
+- loads the workspace environment — machine facts from `ciu.env`, the six
+  identity facts seeded from `[ciu.instance.generated]` (S3.1c clause 2a) — so
+  the compose file's `${VAR}` interpolation resolves the same UID/GID, network
+  name and physical paths as the native path,
 - ensures and (in a devcontainer) attaches the workspace network [S2.8],
 - runs the DooD reachability preflight [S1.5],
 - then `docker compose -f docker-compose.yml up -d` (override the filename with
@@ -210,7 +212,7 @@ The table below is the execution order for a single-stack `ciu up --dir <stack>`
 
 | Step | What happens | Spec |
 |---|---|---|
-| 1 | Load `ciu.env`; abort on missing required keys | S2.1–S2.2 |
+| 1 | Load the workspace environment (machine facts from `ciu.env`, identity seeded from `[ciu.instance.generated]`); abort on missing required keys | S2.1–S2.2, S3.1c |
 | 2 | Render global chain: `ciu.global.defaults.toml.j2` → `ciu.global.toml.j2` → merged `ciu.global.toml` | S3.1–S3.3 |
 | 3 | Render stack: `ciu.defaults.toml.j2` → `ciu.toml.j2` → `ciu.toml` (preserving `[state]`) | S3.1–S3.4 |
 | 4 | Deep-merge global + stack config | S3.3 |
@@ -517,7 +519,12 @@ def run(config: dict, ctx) -> dict:
 ## Workspace Environment (`ciu.env`) [S2]
 
 `ciu.env` is the machine identity layer — autodetected facts about this machine,
-not project configuration [S2.7]. Generate it once:
+not project configuration [S2.7]. **Since 7.7.0 it is not where CIU reads the
+six INSTANCE identity facts** (`REPO_NAME`, `INSTANCE_ID`,
+`DOCKER_NETWORK_INTERNAL`, `PHYSICAL_REPO_ROOT`, `REPO_ROOT`, `PUBLIC_FQDN`):
+those come from `[ciu.instance.generated]` and are seeded into every verb's
+environment from there, overriding whatever the shell exported [S3.1c].
+Generate it once:
 
 ```bash
 ciu env generate

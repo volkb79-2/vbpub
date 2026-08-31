@@ -36,7 +36,11 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    (repo / ".gitignore").write_text("ciu.env\n", encoding="utf-8")
+    # Both CIU-generated identity artifacts are gitignored (S3.1b): the overlay
+    # is the one CIU reads (CIU-75), `ciu.env` its legacy export.
+    (repo / ".gitignore").write_text(
+        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+    )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
     return repo
@@ -47,13 +51,28 @@ def _instance_id_for(path: Path) -> str:
 
 
 @pytest.fixture
-def fake_generate_env(monkeypatch):
+def fake_generate_env(monkeypatch, write_instance_facts):
+    """Stand in for `ciu env generate` — writing BOTH of its outputs.
+
+    CIU-75: the real verb still writes `ciu.env` (a legacy write-only export)
+    AND upserts `[ciu.instance.generated]` into the overlay, and only the
+    SECOND is what CIU reads back. A fake that wrote only the first would let
+    every test here pass against a product that no longer works.
+    """
     def fake(path: Path, *, identity_only: bool = False) -> int:
         instance_id = _instance_id_for(path)
         (path / "ciu.env").write_text(
             f'export INSTANCE_ID="{instance_id}"\n'
             f'export DOCKER_NETWORK_INTERNAL="repo-{instance_id}-network"\n',
             encoding="utf-8",
+        )
+        write_instance_facts(
+            path,
+            instance_id=instance_id,
+            network=f"repo-{instance_id}-network",
+            repo_root=str(path),
+            physical_repo_root=str(path),
+            repo_name="repo",
         )
         return 0
 
@@ -243,7 +262,7 @@ class TestManagedIdentityLifecycle:
             worktree.ensure(tmp_repo, "logical-one", display_name="different")
 
     def test_env_failure_is_inspectable_and_ensure_resumes(
-        self, tmp_repo, fake_generate_env, monkeypatch
+        self, tmp_repo, fake_generate_env, monkeypatch, write_instance_facts
     ):
         monkeypatch.setattr(worktree, "_generate_env_in", lambda _path, **_kw: 7)
         with pytest.raises(worktree.WorktreeError, match="env generate.*failed"):
@@ -255,10 +274,10 @@ class TestManagedIdentityLifecycle:
         assert (failed.ciu_root / "ciu.global.worktree.toml.j2").is_file()
 
         def recover(path: Path, **_kw) -> int:
-            (path / "ciu.env").write_text(
-                'export INSTANCE_ID="recover1"\n'
-                'export DOCKER_NETWORK_INTERNAL="repo-recover1-network"\n',
-                encoding="utf-8",
+            write_instance_facts(
+                path,
+                instance_id="recover1",
+                network="repo-recover1-network",
             )
             return 0
 
@@ -267,13 +286,11 @@ class TestManagedIdentityLifecycle:
         assert ready.state == "ready"
         assert ready.instance_id == "recover1"
 
-    def test_runtime_collision_never_marks_second_ready(self, tmp_repo, monkeypatch):
+    def test_runtime_collision_never_marks_second_ready(
+        self, tmp_repo, monkeypatch, write_instance_facts
+    ):
         def collide(path: Path, **_kw) -> int:
-            (path / "ciu.env").write_text(
-                'export INSTANCE_ID="same-id"\n'
-                'export DOCKER_NETWORK_INTERNAL="same-network"\n',
-                encoding="utf-8",
-            )
+            write_instance_facts(path, instance_id="same-id", network="same-network")
             return 0
 
         monkeypatch.setattr(worktree, "_generate_env_in", collide)
@@ -286,13 +303,14 @@ class TestManagedIdentityLifecycle:
         assert failed.state == "recovery-required"
         assert failed.recovery_status == "runtime-collision"
 
-    def test_network_collision_is_independent_of_instance_id(self, tmp_repo, monkeypatch):
+    def test_network_collision_is_independent_of_instance_id(
+        self, tmp_repo, monkeypatch, write_instance_facts
+    ):
         current = {"id": "one"}
 
         def collide_network(path: Path, **_kw) -> int:
-            (path / "ciu.env").write_text(
-                f'export INSTANCE_ID="{current["id"]}"\n'
-                'export DOCKER_NETWORK_INTERNAL="same-network"\n', encoding="utf-8"
+            write_instance_facts(
+                path, instance_id=current["id"], network="same-network"
             )
             return 0
 
@@ -315,7 +333,9 @@ class TestManagedIdentityLifecycle:
         assert adopted.branch == "existing"
         assert adopted.git_worktree_path == target.resolve()
 
-    def test_nested_ciu_root_keeps_exact_offset(self, tmp_path, monkeypatch):
+    def test_nested_ciu_root_keeps_exact_offset(
+        self, tmp_path, monkeypatch, write_instance_facts
+    ):
         git_root = tmp_path / "mono"
         ciu_root = git_root / "component"
         ciu_root.mkdir(parents=True)
@@ -329,10 +349,10 @@ class TestManagedIdentityLifecycle:
 
         def nested_env(path: Path, **_kw) -> int:
             assert path.name == "component"
-            (path / "ciu.env").write_text(
-                'export INSTANCE_ID="nested1"\n'
-                'export DOCKER_NETWORK_INTERNAL="mono-nested1-network"\n',
-                encoding="utf-8",
+            write_instance_facts(
+                path,
+                instance_id="nested1",
+                network="mono-nested1-network",
             )
             return 0
 
@@ -444,16 +464,15 @@ class TestManagedIdentityLifecycle:
         assert failed is not None and failed.recovery_status == "checkout-incomplete"
 
     def test_full_env_failure_and_identity_change_are_recoverable_states(
-        self, tmp_repo, monkeypatch
+        self, tmp_repo, monkeypatch, write_instance_facts
     ):
         calls = 0
 
         def full_failure(path: Path, *, identity_only: bool = False) -> int:
             nonlocal calls
             calls += 1
-            (path / "ciu.env").write_text(
-                'export INSTANCE_ID="stable1"\n'
-                'export DOCKER_NETWORK_INTERNAL="stable-network"\n', encoding="utf-8"
+            write_instance_facts(
+                path, instance_id="stable1", network="stable-network"
             )
             return 0 if identity_only else 9
 
@@ -477,9 +496,8 @@ class TestManagedIdentityLifecycle:
 
         def changes(path: Path, *, identity_only: bool = False) -> int:
             suffix = "one" if identity_only else "two"
-            (path / "ciu.env").write_text(
-                f'export INSTANCE_ID="{suffix}"\n'
-                f'export DOCKER_NETWORK_INTERNAL="network-{suffix}"\n', encoding="utf-8"
+            write_instance_facts(
+                path, instance_id=suffix, network=f"network-{suffix}"
             )
             return 0
 
@@ -647,12 +665,19 @@ class TestManagedHelperRefusals:
         assert worktree._docker_network_exists("wanted") is True
         assert worktree._docker_network_exists("missing") is False
 
-    def test_runtime_identity_reader_rejects_missing_and_malformed_env(self, tmp_path):
-        (tmp_path / "ciu.env").write_text("not shell syntax = x y\n", encoding="utf-8")
+    def test_runtime_identity_reader_rejects_missing_and_malformed_env(
+        self, tmp_path, write_instance_facts
+    ):
+        """CIU-75 — the reader's source is the overlay's generated table, so
+        both refusals are proven against THAT file, not against `ciu.env`."""
+        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+            "[ciu.instance.generated]\ninstance_id = not-a-toml-value\n",
+            encoding="utf-8",
+        )
         with pytest.raises(worktree.WorktreeError, match="could not read generated"):
             worktree._runtime_identity(tmp_path)
-        (tmp_path / "ciu.env").write_text('export INSTANCE_ID="only"\n', encoding="utf-8")
-        with pytest.raises(worktree.WorktreeError, match="lacks INSTANCE_ID"):
+        write_instance_facts(tmp_path, instance_id="only")
+        with pytest.raises(worktree.WorktreeError, match="lacks instance_id"):
             worktree._runtime_identity(tmp_path)
 
     def test_local_exclude_handles_non_newline_and_reports_write_failure(
@@ -794,11 +819,10 @@ class TestWorktreeSubprocessEnvironment:
         assert worktree._generate_env_in(tmp_path, identity_only=True) == 0
         assert seen["argv"][-1] == "--identity-only"
 
-    def test_clean_uses_target_worktree_env_not_primary(self, tmp_path, monkeypatch):
-        (tmp_path / "ciu.env").write_text(
-            'export REPO_ROOT="/target"\nexport INSTANCE_ID="target-id"\n',
-            encoding="utf-8",
-        )
+    def test_clean_uses_target_worktree_env_not_primary(
+        self, tmp_path, monkeypatch, write_instance_facts
+    ):
+        write_instance_facts(tmp_path, repo_root="/target", instance_id="target-id")
         monkeypatch.setenv("REPO_ROOT", "/primary")
         seen: dict[str, object] = {}
 
@@ -814,28 +838,39 @@ class TestWorktreeSubprocessEnvironment:
         assert seen["argv"][-1] == "-y"
 
     def test_clean_refuses_to_guess_when_target_env_is_missing(self, tmp_path):
-        with pytest.raises(worktree.WorktreeError, match="does not exist"):
+        with pytest.raises(
+            worktree.WorktreeError, match="carries no generated instance identity"
+        ):
+            worktree._clean_in(tmp_path, yes=False)
+
+    def test_clean_refuses_when_the_overlay_carries_no_generated_table(
+        self, tmp_path
+    ):
+        """CIU-75 — an overlay that exists but was never through `ciu env
+        generate` (an operator's bare profile override) is NOT an identity."""
+        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+            '[ciu]\nservice_profiles = ["core"]\n', encoding="utf-8"
+        )
+        with pytest.raises(
+            worktree.WorktreeError, match="carries no generated instance identity"
+        ):
             worktree._clean_in(tmp_path, yes=False)
 
     def test_clean_surfaces_unreadable_target_env(self, tmp_path, monkeypatch):
-        env_file = tmp_path / "ciu.env"
-        env_file.write_text('export REPO_ROOT="/target"\n', encoding="utf-8")
-        from ciu import workspace_env
-
-        monkeypatch.setattr(
-            workspace_env,
-            "parse_workspace_env",
-            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
-        )
-        with pytest.raises(worktree.WorktreeError, match="could not read.*denied"):
+        (tmp_path / "ciu.global.worktree.toml.j2").mkdir()
+        with pytest.raises(worktree.WorktreeError, match="could not read"):
             worktree._clean_in(tmp_path, yes=False)
 
     def test_clean_surfaces_a_malformed_target_env_entry(self, tmp_path):
         """CIU-62 — the COMMON failure this site used to miss. `except
         OSError` alone let `WorkspaceEnvError` (a `ValueError` subclass)
         escape as a raw traceback, and this function exists precisely so a
-        clean never runs under a half-known identity."""
-        (tmp_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        clean never runs under a half-known identity. CIU-75 moved the source
+        to the overlay; the refusal contract is unchanged."""
+        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+            "[ciu.instance.generated]\nrepo_root = not-a-toml-value\n",
+            encoding="utf-8",
+        )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\] could not read"):
             worktree._clean_in(tmp_path, yes=False)
 
@@ -843,7 +878,9 @@ class TestWorktreeSubprocessEnvironment:
         """CIU-62 — the byte-level half: `UnicodeDecodeError` is a SIBLING of
         `WorkspaceEnvError` under `ValueError`, so naming either one alone
         still leaves this open."""
-        (tmp_path / "ciu.env").write_bytes(b'export REPO_ROOT="\xff\xfe"\n')
+        (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+            b'[ciu.instance.generated]\nrepo_root = "\xff\xfe"\n'
+        )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\] could not read"):
             worktree._clean_in(tmp_path, yes=False)
 
@@ -1090,20 +1127,20 @@ class TestExactWorktreeControl:
     target environment, exact argv, and exact child exit-code propagation."""
 
     @pytest.fixture
-    def ready(self, tmp_repo, fake_generate_env):
-        """A ready managed instance whose ciu.env carries the FULL required
-        identity vocabulary (REPO_ROOT, PHYSICAL_REPO_ROOT, REPO_NAME,
-        INSTANCE_ID, DOCKER_NETWORK_INTERNAL), all matching the record."""
+    def ready(self, tmp_repo, fake_generate_env, write_instance_facts):
+        """A ready managed instance whose generated overlay table carries the
+        FULL required identity vocabulary (repo_root, physical_repo_root,
+        repo_name, instance_id, network), all matching the record."""
         worktree.create(tmp_repo, "ctrl")
         record = worktree.find_instance_record(tmp_repo, "ctrl")
         assert record is not None and record.state == "ready"
-        (record.ciu_root / "ciu.env").write_text(
-            f'export REPO_ROOT="{record.ciu_root}"\n'
-            f'export PHYSICAL_REPO_ROOT="{record.ciu_root}"\n'
-            f'export REPO_NAME="repo"\n'
-            f'export INSTANCE_ID="{record.instance_id}"\n'
-            f'export DOCKER_NETWORK_INTERNAL="{record.network}"\n',
-            encoding="utf-8",
+        write_instance_facts(
+            record.ciu_root,
+            repo_root=str(record.ciu_root),
+            physical_repo_root=str(record.ciu_root),
+            repo_name="repo",
+            instance_id=record.instance_id,
+            network=record.network,
         )
         return tmp_repo, record
 
@@ -1135,53 +1172,52 @@ class TestExactWorktreeControl:
         assert "CIU_SERVICES_PROFILE" not in env
         assert env["KEEP_ME"] == "ambient"
 
-    def test_sanitized_env_refuses_missing_required_key(self, ready):
+    def test_sanitized_env_refuses_missing_required_key(
+        self, ready, write_instance_facts
+    ):
         repo_root, record = ready
-        env_path = record.ciu_root / "ciu.env"
-        env_path.write_text(
-            "\n".join(
-                line for line in env_path.read_text(encoding="utf-8").splitlines()
-                if not line.startswith("export REPO_NAME=")
-            ),
-            encoding="utf-8",
+        write_instance_facts(
+            record.ciu_root,
+            repo_root=str(record.ciu_root),
+            physical_repo_root=str(record.ciu_root),
+            repo_name="",
+            instance_id=record.instance_id,
+            network=record.network,
         )
-        with pytest.raises(worktree.WorktreeError, match="lacks required identity.*REPO_NAME"):
+        with pytest.raises(
+            worktree.WorktreeError, match="lacks required identity fact.*repo_name"
+        ):
             worktree._sanitized_target_env(repo_root, record)
 
-    def test_sanitized_env_refuses_root_instance_or_network_mismatch(self, ready):
+    def test_sanitized_env_refuses_root_instance_or_network_mismatch(
+        self, ready, write_instance_facts
+    ):
         repo_root, record = ready
-        env_path = record.ciu_root / "ciu.env"
+        good = {
+            "repo_root": str(record.ciu_root),
+            "physical_repo_root": str(record.ciu_root),
+            "repo_name": "repo",
+            "instance_id": record.instance_id,
+            "network": record.network,
+        }
         cases = [
-            ("REPO_ROOT", "/elsewhere", r"REPO_ROOT.*does not match"),
-            ("INSTANCE_ID", "wrong-id", r"INSTANCE_ID.*does not match"),
-            ("DOCKER_NETWORK_INTERNAL", "wrong-net", r"DOCKER_NETWORK_INTERNAL.*does not match"),
+            ("repo_root", "/elsewhere", r"repo_root.*does not match"),
+            ("instance_id", "wrong-id", r"instance_id.*does not match"),
+            ("network", "wrong-net", r"network.*does not match"),
         ]
         for key, value, match in cases:
-            lines = [
-                f'export {key}="{value}"' if line.startswith(f"export {key}=") else line
-                for line in env_path.read_text(encoding="utf-8").splitlines()
-            ]
-            env_path.write_text("\n".join(lines), encoding="utf-8")
+            write_instance_facts(record.ciu_root, **{**good, key: value})
             with pytest.raises(worktree.WorktreeError, match=match):
                 worktree._sanitized_target_env(repo_root, record)
-            env_path.write_text(
-                f'export REPO_ROOT="{record.ciu_root}"\n'
-                f'export PHYSICAL_REPO_ROOT="{record.ciu_root}"\n'
-                f'export REPO_NAME="repo"\n'
-                f'export INSTANCE_ID="{record.instance_id}"\n'
-                f'export DOCKER_NETWORK_INTERNAL="{record.network}"\n',
-                encoding="utf-8",
-            )
+            write_instance_facts(record.ciu_root, **good)
 
-    def test_sanitized_env_surfaces_unreadable_env(self, ready, monkeypatch):
+    def test_sanitized_env_surfaces_unreadable_env(self, ready):
         repo_root, record = ready
-        from ciu import workspace_env
-
-        monkeypatch.setattr(
-            workspace_env, "parse_workspace_env",
-            lambda _p: (_ for _ in ()).throw(PermissionError("denied")),
+        (record.ciu_root / "ciu.global.worktree.toml.j2").write_text(
+            "[ciu.instance.generated]\nrepo_root = not-a-toml-value\n",
+            encoding="utf-8",
         )
-        with pytest.raises(worktree.WorktreeError, match="could not parse.*denied"):
+        with pytest.raises(worktree.WorktreeError, match="could not read.*malformed"):
             worktree._sanitized_target_env(repo_root, record)
 
     # -- up_instance ---------------------------------------------------------

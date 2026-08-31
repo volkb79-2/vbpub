@@ -9,10 +9,15 @@ from ciu import workspace_env
 
 
 def test_bootstrap_forwards_resolved_root_and_fqdn_before_required_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
 ) -> None:
     """Permission setup receives bootstrap context before key validation."""
     (tmp_path / workspace_env.ENV_FILE_NAME).write_text("", encoding="utf-8")
+    # CIU-75: a checkout with no generated table would be REPAIRED (a real
+    # detection run) before validation; this suite's subject is the ordering of
+    # permission setup vs key validation, so give it a table and keep the
+    # ambient PUBLIC_FQDN the one under test.
+    write_instance_facts(tmp_path, public_fqdn="current.example.test")
     monkeypatch.setenv("PUBLIC_FQDN", "current.example.test")
     permission_calls: list[tuple[Path, str | None]] = []
 

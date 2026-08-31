@@ -129,7 +129,9 @@ def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
     env_path = tmp_path / "ciu.env"
     events: list[str] = []
 
-    def generate(root: Path) -> Path:
+    def generate(root: Path, **_kw) -> Path:
+        # **_kw: CIU-75's bootstrap passes notice_stream=sys.stderr so the
+        # deprecation notice cannot land on `ciu check --json`'s stdout.
         assert root == tmp_path
         env_path.write_text(
             'DOCKER_NETWORK_INTERNAL=""\nREQUIRED_FROM_GENERATED_ENV=yes\n',

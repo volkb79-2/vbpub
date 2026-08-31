@@ -714,11 +714,24 @@ def _wants_verb_help(verb: str, rest: list[str]) -> bool:
 
 
 def _env_show() -> int:
-    """Walk up from cwd to find and print ciu.env key=value pairs."""
+    """Walk up from cwd to find and print ciu.env key=value pairs.
+
+    CIU-75: this verb reads the LEGACY write-only export, which since 7.7.0 is
+    no longer what CIU itself consults for instance identity. It keeps working
+    unchanged (the file and its key set are unchanged), but every invocation
+    carries the one-release deprecation notice on STDERR — stdout stays exactly
+    the key=value stream a consumer may already be parsing.
+    """
+    from .workspace_env import LEGACY_ENV_EXPORT_WARNING
+
     current = Path.cwd()
     while True:
         candidate = current / WORKSPACE_ENV
         if candidate.exists():
+            print(
+                f"[WARN] {LEGACY_ENV_EXPORT_WARNING.format(path=candidate)}",
+                file=sys.stderr,
+            )
             for line in candidate.read_text().splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#"):

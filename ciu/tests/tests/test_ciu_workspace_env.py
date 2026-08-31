@@ -486,6 +486,10 @@ def test_env_print_emits_export_lines_and_nothing_else(
 ):
     _hermetic_generate(monkeypatch, tmp_path)
     (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    # Drop the generate step's own output (CIU-75 prints the one-release
+    # ciu.env deprecation notice there) so this asserts on `env print` ALONE —
+    # its stdout is the eval'able stream and must carry nothing else.
+    capsys.readouterr()
 
     rc = _run_env_print(monkeypatch, tmp_path)
     out = capsys.readouterr()

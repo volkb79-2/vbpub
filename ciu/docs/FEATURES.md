@@ -46,7 +46,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Fail-closed host-key pinning** | Connections are refused when no `known_host` is pinned; `CIU_SSH_INSECURE_TOFU=1` is a documented bootstrap-only escape hatch. | S14.4a |
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
-| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own `ciu.env`, and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
+| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own identity record (`[ciu.instance.generated]`; its `ciu.env` before 7.7.0, S3.1c), and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
 | **Image provenance evidence** | `ciu provenance --json` verifies running images against the commit under test AND against a declared vendor baseline (`[deploy.provenance] vendor_images` → `vendor-pinned`, vendor drift → `mismatch`), making `verified-match` reachable on all-vendor deployments; documents are emitted at `schema_version: 2`; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 | **Assay-backed implementation gate** | The release gate runs the full suite (100% line+branch) inside `tester-unified` and is judged by the released, hash-pinned Assay CLI (vendored zipapp, `sha256sum`-verified each run): Assay judges the changed-line floor on `base..HEAD` (R1) from the coverage artifact and emits a retained verdict; the gate slice comes only from `$CGROUP_PARENT_DEV_BACKGROUND` (verified loaded, fail-closed); the gate's status is the Assay job's own. | S18 |
 
@@ -111,7 +111,8 @@ here only as a migration map; use the public verb in all scripts and docs.
 ## Common workflows
 
 ```bash
-# First-time machine setup: write ciu.env (UID/GID, network, paths, FQDN)
+# First-time machine setup: write the identity table + ciu.env (UID/GID,
+# network, paths, FQDN)
 ciu env generate
 
 # Bring up everything for the active host profile
@@ -145,7 +146,7 @@ adopting the primary checkout's containers, network, or volumes:
 ciu worktree create feature-x --prefix myapp --feature api-retry --profile dev
 # Output reports both the Git checkout and exact CIU root. Creation never starts it.
 ciu worktree ensure feature-x --json
-# Enter the reported CIU root, then: source ciu.env && ciu up
+# Enter the reported CIU root, then: eval "$(ciu env print)" && ciu up
 
 # Before a live test/evidence lane, record the artifact identity CIU inspected.
 ciu provenance --json

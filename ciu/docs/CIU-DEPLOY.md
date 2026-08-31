@@ -12,7 +12,7 @@ Normative contract: [SPEC.md](SPEC.md).
 ```bash
 # Bootstrap workspace (once per machine)
 ciu env generate
-source ciu.env
+eval "$(ciu env print)"   # `source ciu.env` still works this release
 
 # Render all stack TOMLs (fresh workspace preflight)
 ciu render
@@ -98,8 +98,11 @@ compose_profiles = ["monitoring", "debug"]   # → COMPOSE_PROFILES=monitoring,d
 
 ## Multi-Host Workflow [S7.5a]
 
-Each host carries a clone of the project, its own `ciu.env` (machine identity),
-and sets `CIU_SERVICES_PROFILE` in `ciu.env` to control which stacks run.
+Each host carries a clone of the project, its own generated records (the
+`[ciu.instance.generated]` identity table CIU reads, plus `ciu.env`'s machine
+facts), and sets `CIU_SERVICES_PROFILE` in `ciu.env` to control which stacks
+run — that key is an ambient input, not one of the six identity facts, so it
+is unaffected by CIU-75.
 
 **Order matters**: the admin executes manually, starting with the host that
 provides the shared services (Vault, databases) before the hosts that consume them.
@@ -188,7 +191,8 @@ A service entry MAY carry `shipped = true` (a plain bool; non-bool = abort,
 S7.2) to route that stack through its hand-written `docker-compose.yml` instead
 of CIU's rendered `ciu.compose.yml`. The stack still participates in phase
 ordering and the health gate exactly like a native one; CIU just runs the
-pre-shipped compose (loading `ciu.env`, ensuring the network, DooD preflight)
+pre-shipped compose (loading the workspace environment, ensuring the network,
+DooD preflight)
 without the secret / overlay / configfile steps:
 
 ```toml
@@ -263,7 +267,8 @@ Expected containers are inspected by exact name, never substring [S7.8].
 The environment passed to `docker compose` for each stack is exactly:
 
 ```
-os.environ (which includes ciu.env)
+os.environ (ciu.env's machine facts + the six identity facts CIU
+            seeds from [ciu.instance.generated], S3.1c)
 + PWD
 + COMPOSE_PROFILES (when set by a host profile's compose_profiles)
 + expose_env secrets (per-secret opt-in, discouraged — S4.19)

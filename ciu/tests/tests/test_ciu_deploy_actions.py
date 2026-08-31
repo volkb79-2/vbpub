@@ -1584,6 +1584,17 @@ import textwrap  # noqa: E402
 from ciu import provisioning  # noqa: E402
 
 
+def _write_identity_facts(root, **facts):
+    """CIU-75: `ciu check`'s S3.12 identity comes from the checkout's generated
+    `[ciu.instance.generated]` overlay table, not its legacy `ciu.env`."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    upsert_generated_facts(root, payload)
+
+
+
 _CHECK_GLOBAL: dict = {"deploy": {"project_name": "p", "environment_tag": "t"}}
 
 
@@ -2377,9 +2388,7 @@ def test_check_ignores_malformed_hook_declarations(tmp_path, capsys):
 
 def test_check_hook_context_mirrors_a_real_run_minus_secret_files(tmp_path, capsys):
     """The preflight ctx carries S3.12/CIU-41 identity + selection facts."""
-    (tmp_path / "ciu.env").write_text(
-        "INSTANCE_ID=inst-7\nDOCKER_NETWORK_INTERNAL=net-7\n", encoding="utf-8"
-    )
+    _write_identity_facts(tmp_path, instance_id="inst-7", network="net-7")
     _write(tmp_path / "infra/app/h.py", """\
         def run(config, ctx):
             return {}
@@ -2407,11 +2416,13 @@ def test_check_hook_context_mirrors_a_real_run_minus_secret_files(tmp_path, caps
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
 
 
-def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, capsys):
-    (tmp_path / "ciu.env").write_text("INSTANCE_ID=x\n", encoding="utf-8")
+def test_check_identity_survives_an_unreadable_overlay(tmp_path, monkeypatch, capsys):
+    _write_identity_facts(tmp_path, instance_id="x")
     monkeypatch.setattr(
-        deploy, "parse_workspace_env",
-        lambda _p: (_ for _ in ()).throw(OSError("permission denied")),
+        deploy, "read_generated_facts",
+        lambda _p: (_ for _ in ()).throw(
+            deploy.WorkspaceEnvError("[S3.1c] could not read ...: permission denied")
+        ),
     )
     _write(tmp_path / "infra/app/h.py", """\
         def run(config, ctx):
@@ -2427,16 +2438,19 @@ def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, ca
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
 
 
-def test_check_identity_survives_a_non_utf8_ciu_env(tmp_path, capsys):
-    """CIU-62 — a non-UTF-8 byte in ciu.env is `UnicodeDecodeError`, which is
-    a `ValueError` subclass and therefore caught by NEITHER `OSError` nor
+def test_check_identity_survives_a_non_utf8_record(tmp_path, capsys):
+    """CIU-62 — a non-UTF-8 byte is `UnicodeDecodeError`, which is a
+    `ValueError` subclass and therefore caught by NEITHER `OSError` nor
     `WorkspaceEnvError` (its sibling `ValueError` subclass). Before the fix
     this escaped `_workspace_identity` and crashed `ciu check` with a raw
     traceback; the documented contract is "absent or unreadable yields {}",
     i.e. the hook context's identity fields stay None. Written with a REAL
     undecodable file rather than a monkeypatched raiser, so it proves the
-    exception type the shipped reader actually produces."""
-    (tmp_path / "ciu.env").write_bytes(b'export INSTANCE_ID="\xff\xfe"\n')
+    exception type the shipped reader actually produces. CIU-75 moved the
+    source to the overlay's generated table."""
+    (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+        b'[ciu.instance.generated]\ninstance_id = "\xff\xfe"\n'
+    )
     _write(tmp_path / "infra/app/h.py", """\
         def run(config, ctx):
             return {}
@@ -2473,9 +2487,14 @@ def test_check_identity_survives_a_malformed_ciu_env_entry(tmp_path, capsys):
 @pytest.mark.parametrize(
     "kind, payload",
     [
-        ("non-UTF-8 byte", b'export INSTANCE_ID="\xff\xfe"\n'),
-        ("malformed entry", b'this is not = valid "shell\n'),
-        ("unreadable file", None),  # OSError, via a directory where a file is expected
+        ("non-UTF-8 byte", b'[ciu.instance.generated]\ninstance_id = "\xff\xfe"\n'),
+        ("malformed table", b"[ciu.instance.generated]\ninstance_id = bare\n"),
+        # OSError, via a directory where a file is expected. CIU-75 changed
+        # this case's verdict on purpose: `ciu.env`'s `is_file()` guard folded
+        # a DIRECTORY into "absent, stay silent", which is the estate's
+        # absence-for-emptiness anti-pattern — a path that exists and cannot be
+        # read is indeterminate, and now says so.
+        ("unreadable path", None),
     ],
 )
 def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, payload):
@@ -2493,9 +2512,9 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
        it breaks every machine consumer's parse. Using `warn()` here is a
        real regression that this assertion is what catches.
     """
-    env_path = tmp_path / "ciu.env"
+    env_path = tmp_path / "ciu.global.worktree.toml.j2"
     if payload is None:
-        env_path.mkdir()  # is_file() False -> the absent path, no warning
+        env_path.mkdir()
     else:
         env_path.write_bytes(payload)
 
@@ -2503,15 +2522,12 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
 
     assert identity == {}
     captured = capsys.readouterr()
-    if payload is None:
-        # A directory is not a file: this is the ABSENT path, which is a
-        # legitimate state and must stay silent — a warning on every
-        # unprovisioned workspace is a warning nobody reads. CIU-80: also
-        # NOT `identity_unreadable` — absent and unreadable are the two
-        # states this flag exists to keep apart.
-        assert captured.err == "" and captured.out == ""
-        assert identity_unreadable is False
-        return
+    # CIU-75 x CIU-80: all THREE parametrized cases — including the directory,
+    # which CIU-80's `is_file()` guard used to route down the silent
+    # "absent" branch with the flag False — are present-but-unreadable, so all
+    # three warn and all three set the flag. The legitimate ABSENT state keeps
+    # its own test (`test_workspace_identity_absent_record_stays_silent`),
+    # which is where `identity_unreadable is False` is now asserted.
     assert "[WARN] [S3.12] could not read workspace identity" in captured.err
     assert "ciu env generate" in captured.err, "the warning must name the repair"
     assert captured.out == "", (
@@ -2519,8 +2535,26 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
         "JSON document there (S13.4a)"
     )
     # CIU-80: PRESENT-but-unreadable sets the flag True, distinguishing this
-    # state from the legitimate-absent one asserted above.
+    # state from the legitimate-absent one, which
+    # `test_workspace_identity_absent_record_stays_silent` asserts.
     assert identity_unreadable is True
+
+
+def test_workspace_identity_absent_record_stays_silent(tmp_path, capsys):
+    """CIU-62's legitimate state, constructed (AGENTS.md: a refusal/warning
+    whose condition also matches an ordinary state gets switched off). A
+    checkout where `ciu env generate` was never run genuinely HAS no identity;
+    that must stay silent, and only that."""
+    assert not (tmp_path / "ciu.global.worktree.toml.j2").exists()
+
+    identity, identity_unreadable = deploy._workspace_identity(tmp_path)
+
+    assert identity == {}
+    # CIU-80's own pairing oracle, at the state its flag exists to keep apart
+    # from the three unreadable ones above: absent is NOT unreadable.
+    assert identity_unreadable is False
+    captured = capsys.readouterr()
+    assert captured.err == "" and captured.out == ""
 
 
 def test_check_secret_file_callback_refuses_every_name(tmp_path):

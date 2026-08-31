@@ -82,7 +82,7 @@ from .workspace_env import (
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
-    parse_workspace_env,
+    read_generated_facts,
     resolve_env_root,
 )
 
@@ -193,7 +193,8 @@ def resolve_repo_root(define_root: Optional[Path]) -> Path:
         if env_repo_root and Path(env_repo_root).resolve() != repo_root:
             raise ValueError(
                 f"[ERROR] --define-root ({repo_root}) does not match "
-                f"REPO_ROOT ({env_repo_root}). Update ciu.env or pass a "
+                f"REPO_ROOT ({env_repo_root}). Re-run `ciu env generate` and\n"
+                "re-export with `eval \"$(ciu env print)\"`, or pass a "
                 "matching --define-root."
             )
         return repo_root
@@ -2200,37 +2201,47 @@ def _check_secret_file(name: str) -> Path:
 
 
 def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
-    """This workspace's ``ciu.env`` facts, by exact path — read-only (S3.12).
+    """This workspace's ``[ciu.instance.generated]`` facts, by exact path (S3.12).
 
     The same lookup :func:`engine.main_execution` performs before building a
     HookContext, so a ``validate_config`` preflight sees the SAME
     ``ctx.instance_id`` / ``ctx.network`` a real ``run()`` would (CIU-41:
     hooks read identity from the context, never from ambient environment
-    state). An absent or unreadable ``ciu.env`` yields ``{}`` — the context
-    fields then stay ``None``, exactly as during a real run outside a
+    state). CIU-75 moved both twins from the legacy ``ciu.env`` export to the
+    overlay's generated table, together, for exactly that reason. An absent
+    overlay (or an overlay with no generated table) yields ``{}`` — the
+    context fields then stay ``None``, exactly as during a real run outside a
     provisioned workspace.
 
-    "Unreadable" here is all three ways the read can fail (CIU-62): an
+    "Unreadable" is still all three ways the read can fail (CIU-62): an
     ``OSError``, a non-UTF-8 byte (``UnicodeDecodeError``) and a malformed
-    entry (``WorkspaceEnvError``). The last two are sibling ``ValueError``
-    subclasses, so neither name covers the other; before CIU-62 a non-UTF-8
-    ``ciu.env`` escaped this handler and crashed ``ciu check`` with a raw
-    traceback instead of degrading to the documented ``{}``.
+    table. The reader normalizes them to ``WorkspaceEnvError`` at the seam, so
+    the one name here covers what three used to; before CIU-62 a non-UTF-8
+    record escaped this handler and crashed ``ciu check`` with a raw traceback
+    instead of degrading to the documented ``{}``.
 
     Returns ``(facts, identity_unreadable)`` (CIU-80): ``identity_unreadable``
-    is ``True`` only when ``ciu.env`` is PRESENT but could not be
-    read/parsed — a genuinely ABSENT ``ciu.env`` returns ``({}, False)``,
-    the same ``{}`` but a different, unambiguous state. The caller threads
-    the flag onto :class:`~ciu.hooks_runner.HookContext.identity_unreadable`
-    so a hook can tell the two states apart without either one becoming a
-    refusal.
+    is ``True`` only when the record is PRESENT but could not be read/parsed —
+    a genuinely ABSENT record returns ``({}, False)``, the same ``{}`` but a
+    different, unambiguous state. The caller threads the flag onto
+    :class:`~ciu.hooks_runner.HookContext.identity_unreadable` so a hook can
+    tell the two states apart without either one becoming a refusal.
+
+    **CIU-75 moved where that boundary falls, and moved it in CIU-80's own
+    favour.** CIU-80's flag was gated on ``ciu.env``'s ``is_file()``, which
+    answered "absent" — and therefore ``identity_unreadable=False`` — for a
+    path that exists and cannot be read at all (a DIRECTORY where the record
+    belongs, an unreadable mode). That is the absence-for-emptiness
+    anti-pattern inside the very field that exists to separate absence from
+    indeterminacy. The reader now decides: it raises for every present-but-
+    unreadable form and returns ``{}`` only for a genuinely absent overlay or
+    an overlay carrying no generated table, so the flag is exactly true when
+    CIU-80 says it should be.
     """
-    env_path = repo_root / "ciu.env"
-    if not env_path.is_file():
-        return {}, False
+    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
     try:
-        return parse_workspace_env(env_path), False
-    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        return read_generated_facts(repo_root), False
+    except WorkspaceEnvError as exc:
         # CIU-62 review ruling: the `{}` degradation stays (symmetry with
         # engine.py's real-run twin is the point), but it must not be
         # SILENT. Without this line the estate's own default test — "if this
@@ -2252,7 +2263,7 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
         # stdout channel to protect and stdout `[WARN]` is its own idiom.
         print(
             f"[WARN] [S3.12] could not read workspace identity from "
-            f"{env_path}: {exc}. Hook context identity (instance_id, network) "
+            f"{overlay_path}: {exc}. Hook context identity (instance_id, network) "
             "will be None for this check — repair with `ciu env generate`",
             file=sys.stderr,
             flush=True,
@@ -2547,8 +2558,13 @@ def _check_hooks_for_stack(
                 secret_file=_check_secret_file,
                 selected_profiles=tuple(ciu_context.get("selected_profiles") or []),
                 deployed_stacks=tuple(ciu_context.get("deployed_stacks") or []),
-                instance_id=identity.get("INSTANCE_ID"),
-                network=identity.get("DOCKER_NETWORK_INTERNAL"),
+                # CIU-75 renamed the fact keys (the overlay's snake_case
+                # names, not `ciu.env`'s SCREAMING_CASE); CIU-80's flag rides
+                # alongside them unchanged. Both halves are load-bearing: drop
+                # the rename and this reads `None` forever, drop the flag and
+                # `identity_unreadable` is permanently False forever.
+                instance_id=identity.get("instance_id"),
+                network=identity.get("network"),
                 identity_unreadable=identity_unreadable,
             )
             try:
@@ -3273,12 +3289,13 @@ def action_stop(config: dict) -> int:
 
 
 def _workspace_identity_network(repo_root: Path) -> str:
-    """Read ``DOCKER_NETWORK_INTERNAL`` from THIS workspace's own ciu.env.
+    """Read the instance ``network`` from THIS workspace's own generated facts.
 
-    The generated record (S2.7) is the authority for the workspace's network
-    name — never the ambient process environment, which a shell that sourced
-    a different checkout's ciu.env may carry (CIU-41). Empty when no
-    ciu.env/record exists or it names no network.
+    The generated ``[ciu.instance.generated]`` overlay table (S3.1b/S3.1c) is
+    the authority for the workspace's network name since CIU-75 — never the
+    legacy ``ciu.env`` export, and never the ambient process environment,
+    which a shell that sourced a different checkout's ciu.env may carry
+    (CIU-41). Empty when no generated table exists or it names no network.
 
     CIU-62 — the semantics decision, not a token widening. Two conditions used
     to collapse into the same ``""``: "this checkout has no generated record"
@@ -3289,23 +3306,22 @@ def _workspace_identity_network(repo_root: Path) -> str:
     clean would silently skip removing its own identity network and still
     announce the S6.4a zero-objects invariant as satisfied, because a network
     that was never resolved is never enumerated as a survivor either. So a
-    PRESENT but unreadable ciu.env raises: ``OSError`` (read), a non-UTF-8
-    byte (``UnicodeDecodeError``) and a malformed entry
-    (``WorkspaceEnvError``) all become one ``ValueError``, which
+    PRESENT but unreadable overlay raises: ``OSError`` (read), a non-UTF-8
+    byte (``UnicodeDecodeError``) and a malformed table (all normalized to
+    ``WorkspaceEnvError`` by the reader) become one ``ValueError``, which
     :func:`action_clean` reports and fails the clean on — the same treatment
     its sibling volume/network/container enumerations already give
-    indeterminacy. An ABSENT ciu.env still returns ``""``, unchanged.
+    indeterminacy. An ABSENT generated table still returns ``""``, unchanged.
     """
-    env_path = repo_root / "ciu.env"
-    if not env_path.is_file():
-        return ""
+    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
     try:
-        values = parse_workspace_env(env_path)
-    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        values = read_generated_facts(repo_root)
+    except WorkspaceEnvError as exc:
         raise ValueError(
-            f"could not read the workspace identity network from {env_path}: {exc}"
+            f"could not read the workspace identity network from "
+            f"{overlay_path}: {exc}"
         ) from exc
-    return values.get("DOCKER_NETWORK_INTERNAL", "")
+    return values.get("network", "")
 
 
 def _is_worktree_instance(repo_root: Path) -> bool:
@@ -3330,9 +3346,9 @@ def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> st
 
     CIU-46: when ``deploy.project_name``/``environment_tag`` are absent,
     shipped mode still deploys under the WORKSPACE-IDENTITY compose project
-    derived from THIS checkout's ciu.env (the basename fallback is
-    withdrawn) — ``engine.identity_compose_project_name`` (raises when
-    ciu.env is missing or key-less: a project that cannot be named refuses,
+    derived from THIS checkout's generated overlay facts (the basename
+    fallback is withdrawn) — ``engine.identity_compose_project_name`` (raises
+    when they are missing or key-less: a project that cannot be named refuses,
     never guesses). Tags present keeps the S8.7 scoped name via
     ``engine.compose_project_name``, unchanged.
     """
@@ -3350,14 +3366,15 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
 
     CIU-46 cutover: when ``deploy.project_name``/``environment_tag`` are
     absent, shipped mode still deploys — under the WORKSPACE-IDENTITY compose
-    project derived from THIS checkout's ciu.env (S8.7; the basename fallback
+    project derived from THIS checkout's generated overlay facts (S8.7; the
+    basename fallback
     is withdrawn). Returning ``[]`` here (the pre-CIU-46 behavior) made every
     S6.4a enumeration pass skip those stacks entirely, so their
     ``*_default`` networks and label-prefixed volumes survived a reported-
     clean teardown. Tags absent → each existing selected stack contributes
     its identity-derived name, computed by the SAME
     ``engine.identity_compose_project_name`` up passed as ``-p`` (a missing
-    or key-less ciu.env raises — a teardown that cannot be named refuses,
+    or key-less overlay raises — a teardown that cannot be named refuses,
     never skips); tags present keeps the S8.7 scoped names, unchanged.
 
     Per-entry resolution is delegated to :func:`_stack_compose_project` so
@@ -3709,9 +3726,10 @@ def action_clean(
     REQUIREMENT of plain clean). With it True, those three are additionally
     removed after everything above, for a full reset to freshly-cloned state —
     but only when everything above SUCCEEDED. A clean that failed leaves them
-    in place: `ciu.env` carries the workspace identity the retry needs, and
-    deleting it over a half-torn-down workspace would take away the very
-    record naming what is still standing.
+    in place: `ciu.global.worktree.toml.j2` carries the workspace identity
+    the retry needs (and `ciu.env` its legacy export), and deleting them over
+    a half-torn-down workspace would take away the very record naming what is
+    still standing.
     """
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
@@ -3721,7 +3739,7 @@ def action_clean(
 
     # CIU-46: resolve the selected stacks' compose projects ONCE — S8.7 scoped
     # names when the deploy tags are set, workspace-identity names derived
-    # from THIS checkout's ciu.env when absent (a tagless shipped stack runs
+    # from THIS checkout's overlay facts when absent (a tagless shipped stack runs
     # under the identity project; clean must enumerate what up actually
     # named). Drives the container, volume, and network passes below.
     deploy_cfg = config.get("deploy", {})
@@ -3807,13 +3825,13 @@ def action_clean(
         survivors = []
 
     # Step 4 (S6.4a / CIU-43): remove identity-scoped networks. The workspace
-    # identity network comes from THIS workspace's own ciu.env; the per-stack
+    # identity network comes from THIS workspace's own overlay facts; the per-stack
     # ``<compose-project>_default`` networks come from the S8.7 project names.
     is_instance = _is_worktree_instance(repo_root)
     try:
         identity_network = _workspace_identity_network(repo_root)
     except ValueError as exc:
-        # CIU-62: a PRESENT but unparseable ciu.env leaves the identity
+        # CIU-62: a PRESENT but unparseable overlay leaves the identity
         # network indeterminate. Never fold that into "there is no identity
         # network" — that would skip its removal AND skip it from the S6.4a
         # survivor check, reporting a complete clean over a surviving network.
@@ -3947,8 +3965,9 @@ def action_clean(
             warn(f"S16.9 lease not cleared (record unreadable): {exc}")
 
     # S6.4b (CIU-60) — opt-in workspace reset, LAST and ON SUCCESS ONLY. See
-    # the docstring: a failed teardown keeps ciu.env, because that file is the
-    # workspace identity a retry (and any manual cleanup) resolves from.
+    # the docstring: a failed teardown keeps the overlay (and ciu.env), because
+    # they carry the workspace identity a retry (and any manual cleanup)
+    # resolves from.
     if vanilla:
         if rc == 0:
             rc = _remove_vanilla_reset_files(repo_root) or rc

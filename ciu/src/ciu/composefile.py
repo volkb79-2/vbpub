@@ -1514,8 +1514,8 @@ def check_env_required(
         raise ValueError(
             "[V8-PREP-7] Missing required environment variable(s) declared "
             f"via env_required: {', '.join(missing)}.\n"
-            "[V8-PREP-7] ciu.env is authoritative — run 'ciu env generate' "
-            "and source ciu.env before running CIU, or confirm any "
+            "[V8-PREP-7] Run 'ciu env generate' and export the values with "
+            "'eval \"$(ciu env print)\"' before running CIU, or confirm any "
             "expose_env secret this variable relies on actually materialized."
         )
 
