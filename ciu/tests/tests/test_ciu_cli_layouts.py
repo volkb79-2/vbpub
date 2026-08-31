@@ -57,7 +57,8 @@ def remote(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: GLOBAL),
+        SimpleNamespace(load_global_config=lambda _root: GLOBAL,
+                        resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     host = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned", "bundle_dir": "/opt/app"}
     seen = {"hosts": [], "exec": [], "sync": []}
@@ -677,7 +678,55 @@ def test_layouts_verb_no_layouts_declared(remote, monkeypatch, capsys):
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: {"deploy": {}}),
+        SimpleNamespace(load_global_config=lambda _root: {"deploy": {}},
+                        resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     assert _run(monkeypatch, ["layouts"]) == 0
     assert "(no layouts declared)" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# ciu-P45 / CIU-54: `layouts` and `up --layout` now resolve repo_root via
+# `deploy.resolve_repo_root` (S1.1) instead of a bare `REPO_ROOT`-or-cwd
+# fallback that ignored `--define-root` entirely -- previously the ONLY
+# local option `layouts` (and this branch of `up`) took was none at all.
+# ---------------------------------------------------------------------------
+
+def test_layouts_verb_accepts_define_root_with_no_ambient_repo_root(
+    remote, monkeypatch, capsys, tmp_path
+):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    assert _run(monkeypatch, ["layouts", "--define-root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "dev-local: environment=dev hosts=[devbox]" in out
+
+
+def test_up_layout_define_root_resolves_and_is_not_forwarded_to_remote_argv(
+    remote, monkeypatch, tmp_path
+):
+    """--define-root is consumed LOCALLY -- it must never appear in the one
+    remote argv string every host in the layout receives."""
+    seen = remote
+    assert _run(monkeypatch, [
+        "up", "--layout", "dev-local", "--define-root", str(tmp_path),
+    ]) == 0
+    assert len(seen["exec"]) == 1
+    cfg, argv, config, repo_root, kwargs = seen["exec"][0]
+    assert repo_root == tmp_path.resolve()
+    assert not any("--define-root" in a or "--root-folder" in a for a in argv)
+
+
+def test_up_layout_define_root_disagreeing_with_ambient_repo_root_refuses(
+    remote, monkeypatch, capsys, tmp_path
+):
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv("REPO_ROOT", str(other))
+    seen = remote
+    assert _run(monkeypatch, [
+        "up", "--layout", "dev-local", "--define-root", str(tmp_path),
+    ]) == 2
+    assert seen["sync"] == [] and seen["exec"] == []
+    err = capsys.readouterr().err
+    assert "[ERROR]" in err
+    assert str(tmp_path.resolve()) in err and str(other.resolve()) in err

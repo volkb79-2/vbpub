@@ -958,6 +958,118 @@ class TestCliSshVerb:
             ["id"], False, True,
         )]
 
+    # -- ciu-P45 / CIU-54: `ssh` now resolves repo_root via
+    # `deploy.resolve_repo_root` (S1.1) instead of a bare `REPO_ROOT`-or-cwd
+    # fallback that ignored `--define-root` entirely. -----------------------
+
+    def test_ssh_verb_refuses_when_repo_root_not_set_and_no_define_root(
+        self, monkeypatch, capsys
+    ):
+        """Breaking (CIU-54): previously this silently fell back to cwd; now
+        it requires ambient REPO_ROOT or an explicit --define-root, matching
+        deploy.py's own local branches of up/down/health/render."""
+        monkeypatch.delenv("REPO_ROOT", raising=False)
+        called = []
+        import ciu.transport_ssh as tssh
+        monkeypatch.setattr(tssh, "ssh_exec", lambda *a, **k: called.append(1) or 0)
+        monkeypatch.setattr(sys, "argv", ["ciu", "ssh", "myhost"])
+
+        with pytest.raises(SystemExit) as exc:
+            cli_mod.main()
+
+        assert exc.value.code == 2
+        assert called == []
+        err = capsys.readouterr().err
+        assert "[ERROR]" in err and "REPO_ROOT not set" in err
+
+    def test_ssh_verb_define_root_resolves_repo_root_with_no_ambient_repo_root(
+        self, tmp_path, monkeypatch
+    ):
+        """--define-root alone is now enough — no `ciu env generate` needed."""
+        monkeypatch.delenv("REPO_ROOT", raising=False)
+        hosts_file = tmp_path / ".ciu.hosts.toml"
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        hosts_file.write_text(
+            f'[deploy.hosts.myhost]\n'
+            f'ssh_host = "myhost.example.com"\n'
+            f'ssh_key = "{key_file}"\n'
+            f'known_host = "ecdsa-sha2-nistp256 AAAA..."\n'
+        )
+        captured = []
+        import ciu.transport_ssh as tssh
+        monkeypatch.setattr(
+            tssh, "ssh_exec",
+            lambda host_cfg, argv, *, config, repo_root, **kw:
+                captured.append(repo_root) or 0,
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["ciu", "ssh", "myhost", "--define-root", str(tmp_path)],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cli_mod.main()
+
+        assert exc.value.code == 0
+        assert captured == [tmp_path.resolve()]
+
+    def test_ssh_verb_define_root_disagreeing_with_ambient_repo_root_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        other = tmp_path / "other-repo"
+        other.mkdir()
+        monkeypatch.setenv("REPO_ROOT", str(other))
+        called = []
+        import ciu.transport_ssh as tssh
+        monkeypatch.setattr(tssh, "ssh_exec", lambda *a, **k: called.append(1) or 0)
+        monkeypatch.setattr(
+            sys, "argv", ["ciu", "ssh", "myhost", "--define-root", str(tmp_path)],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cli_mod.main()
+
+        assert exc.value.code == 2
+        assert called == []
+        err = capsys.readouterr().err
+        assert "[ERROR]" in err
+        assert str(tmp_path.resolve()) in err and str(other.resolve()) in err
+
+    def test_ssh_verb_define_root_after_dash_dash_is_remote_argv_not_a_local_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """A literal `--define-root` after `--` is the REMOTE command, never
+        consumed by the local extractor -- the ssh_rest/cmd_argv split (S1.1,
+        CIU-54) must hold even when the remote argv happens to share a local
+        flag's spelling."""
+        monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+        hosts_file = tmp_path / ".ciu.hosts.toml"
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        hosts_file.write_text(
+            f'[deploy.hosts.myhost]\n'
+            f'ssh_host = "myhost.example.com"\n'
+            f'ssh_key = "{key_file}"\n'
+            f'known_host = "ecdsa-sha2-nistp256 AAAA..."\n'
+        )
+        captured = []
+        import ciu.transport_ssh as tssh
+        monkeypatch.setattr(
+            tssh, "ssh_exec",
+            lambda host_cfg, argv, *, config, repo_root, **kw:
+                captured.append((repo_root, argv)) or 0,
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["ciu", "ssh", "myhost", "--", "cat", "--define-root", "/etc/passwd"],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cli_mod.main()
+
+        assert exc.value.code == 0
+        assert captured == [(tmp_path.resolve(), ["cat", "--define-root", "/etc/passwd"])]
+
 
 # ===========================================================================
 # CLI — up --host routing

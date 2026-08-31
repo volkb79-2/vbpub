@@ -95,6 +95,27 @@ requirements are marked *(withdrawn)*.
   masked-default hazard family S2.7 already closes for the derived identity
   tuple (CIU-41). See `docs/DESIGN-GUIDE.md` ("Why `dev`/`worktree` refuse an
   ambient REPO_ROOT that disagrees with the derived root").
+- **S1.1a** The walk-up order above governs `dev`/`worktree`'s
+  local-repo-identity question (`_resolve_repo_root_cli` /
+  `dev.resolve_repo_root`). A SECOND, deliberately narrower resolver
+  (`deploy.resolve_repo_root`) governs every verb whose usage shape is
+  remote-push, listing, or profile-based deploy rather than "which repo am I
+  standing in": plain `ciu up`/`down`/`health`/`render`/`check`/`graph`/
+  `clean`/`profiles` (no modifier — routed through `deploy.main`), and, as of
+  CIU-54 (ciu-P45), the `--host` branches of `render`/`up`/`down`/`health`,
+  `up --layout`, `layouts`, `host-secrets`, and `ssh`. Its order is `
+  --define-root` (alias `--root-folder`), given explicitly, ALWAYS wins
+  outright, with the SAME disagreement-refusal against a conflicting ambient
+  `REPO_ROOT` S1.1 describes above; otherwise ambient `REPO_ROOT` is
+  REQUIRED — there is NO walk-up and NO cwd fallback, so an unset `REPO_ROOT`
+  with no `--define-root` is itself a refusal (`[ERROR] REPO_ROOT not set.
+  Run 'ciu env generate' and source ciu.env.`). CIU MUST route every verb
+  through the SAME one of these two resolvers across all of that verb's own
+  branches — never a `--host`/`--layout` branch resolving one way and that
+  verb's local/profile branch resolving a different way — which is exactly
+  the inconsistency CIU-54 closed: those 8 sites previously used neither
+  resolver, only a bare `REPO_ROOT`-or-cwd fallback with no `--define-root`
+  consideration at all.
 - **S1.2** A repo whose `ciu.global.defaults.toml.j2` sets
   `standalone_root = true` is a standalone root: CIU MUST refuse to run with a
   `REPO_ROOT` that does not match that directory. The guard MUST be evaluated by
